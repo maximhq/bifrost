@@ -35,6 +35,14 @@ type fakeWarpVectorStore struct {
 	listErr     error
 	addErr      error
 	createCalls int
+	// respond, when set, answers GetNearest from the filters it was given
+	// instead of from nearest - for tests where which rows come back depends on
+	// the prefilter. calls keeps every filter set asked for.
+	respond func(queries []vectorstore.Query) []vectorstore.SearchResult
+	calls   [][]vectorstore.Query
+	// respondVector, when set, answers from the query vector as well, for tests
+	// where each phrasing of a search reaches different rows.
+	respondVector func(vector []float32, queries []vectorstore.Query) []vectorstore.SearchResult
 }
 
 func newFakeWarpVectorStore() *fakeWarpVectorStore {
@@ -73,13 +81,28 @@ func (f *fakeWarpVectorStore) GetChunks(context.Context, string, []string) ([]ve
 func (f *fakeWarpVectorStore) GetAll(context.Context, string, []vectorstore.Query, []string, *string, int64) ([]vectorstore.SearchResult, *string, error) {
 	return nil, nil, nil
 }
-func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, _ []float32, queries []vectorstore.Query, _ []string, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
+func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, vector []float32, queries []vectorstore.Query, _ []string, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.queries = queries
 	f.threshold = threshold
 	f.limit = limit
 	f.limits = append(f.limits, limit)
+	f.calls = append(f.calls, queries)
+	if f.respondVector != nil {
+		page := f.respondVector(vector, queries)
+		if limit >= 0 && int64(len(page)) > limit {
+			page = page[:limit]
+		}
+		return append([]vectorstore.SearchResult(nil), page...), nil
+	}
+	if f.respond != nil {
+		page := f.respond(queries)
+		if limit >= 0 && int64(len(page)) > limit {
+			page = page[:limit]
+		}
+		return append([]vectorstore.SearchResult(nil), page...), nil
+	}
 	// A real vector store returns at most top-K. Returning the whole fixture
 	// regardless hid every bug that only shows up once the cap actually bites.
 	if limit >= 0 && int64(len(f.nearest)) > limit {
@@ -106,6 +129,14 @@ func (f *fakeWarpVectorStore) DeleteAll(context.Context, string, []vectorstore.Q
 }
 func (f *fakeWarpVectorStore) Close(context.Context, string) error { return nil }
 
+// embeddingRequestText returns the single text part the indexer embeds, or "" for any other shape.
+func embeddingRequestText(request *schemas.BifrostEmbeddingRequest) string {
+	if request == nil || !schemas.EmbeddingInput(request.Input).AllSingleText() || len(request.Input) != 1 {
+		return ""
+	}
+	return *request.Input[0].Content[0].Text
+}
+
 func TestWarpIndexerEmbedsAndStoresVisibleConversation(t *testing.T) {
 	row := validWarpConfigRow()
 	row.EmbeddingAPIKeyID = "embedding-key"
@@ -114,7 +145,7 @@ func TestWarpIndexerEmbedsAndStoresVisibleConversation(t *testing.T) {
 	executor := func(ctx *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		require.Equal(t, true, ctx.Value(schemas.BifrostContextKeySkipPluginPipeline))
 		require.Equal(t, "embedding-key", ctx.Value(schemas.BifrostContextKeyAPIKeyID))
-		embedded = *request.Input.Text
+		embedded = embeddingRequestText(request)
 		vector := make([]float64, row.EmbeddingDimension)
 		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: vector}}}}, nil
 	}
@@ -237,7 +268,7 @@ func TestWarpIndexerDrainsQueueOnClose(t *testing.T) {
 
 	executor := func(_ *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		mu.Lock()
-		seen[*request.Input.Text] = true
+		seen[embeddingRequestText(request)] = true
 		mu.Unlock()
 		indexed.Done()
 		vector := make([]float64, 1536)

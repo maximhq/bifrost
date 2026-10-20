@@ -105,7 +105,8 @@ type VectorStore interface {
 	GetChunks(ctx context.Context, namespace string, ids []string) ([]SearchResult, error)
 	// GetAll retrieves all vectors from the vector store.
 	GetAll(ctx context.Context, namespace string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error)
-	// GetNearest retrieves the nearest vectors from the vector store.
+	// GetNearest retrieves the nearest vectors from the vector store. threshold and each result's
+	// Score are cosine similarity on every store.
 	GetNearest(ctx context.Context, namespace string, vector []float32, queries []Query, selectFields []string, threshold float64, limit int64) ([]SearchResult, error)
 	// RequiresVectors returns true if the vector store requires vectors for all entries.
 	// Dedicated vector databases like Qdrant and Pinecone require vectors, while

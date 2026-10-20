@@ -97,7 +97,7 @@ export default function ImageView({ imageInput, imageEditInput, imageVariationIn
 											<img
 												key={i}
 												src={getImageSrc(img.image)}
-												alt={`Input image ${i + 1}`}
+												alt={`Input ${i + 1}`}
 												className="max-h-48 max-w-48 rounded border object-contain"
 											/>
 										) : null,
@@ -124,7 +124,7 @@ export default function ImageView({ imageInput, imageEditInput, imageVariationIn
 						<div className="text-muted-foreground mb-2 text-xs font-medium">INPUT IMAGE</div>
 						<img
 							src={getImageSrc(imageVariationInput.image.image)}
-							alt="Input image"
+							alt="Input"
 							className="max-h-48 max-w-48 rounded border object-contain"
 						/>
 					</div>

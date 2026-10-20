@@ -13,7 +13,7 @@ export interface ProviderKeyConfig {
 
 export interface CustomProviderConfig {
   name: string
-  baseProviderType: 'openai' | 'anthropic' | 'gemini' | 'cohere' | 'bedrock' | string
+  baseProviderType: 'openai' | 'anthropic' | 'gemini' | 'cohere' | 'bedrock' | 'typesafe' | string
   baseUrl?: string
   authType?: 'api_key' | 'bearer' | 'basic' | 'none'
   isKeyless?: boolean

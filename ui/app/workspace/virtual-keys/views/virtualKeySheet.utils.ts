@@ -19,3 +19,42 @@ export function vmcpAssignmentsDirty(original: number[], staged: number[]): bool
 	const { toAttach, toDetach } = diffVmcpAssignments(original, staged);
 	return toAttach.length > 0 || toDetach.length > 0;
 }
+// delete_after_expire is tri-state server-side: null inherits client.delete_expired_virtual_keys.
+// clientDefault is undefined until the client config has loaded.
+
+/**
+ * The delete_after_expire value for a create request with an expiry; undefined omits it (inherit).
+ * While the default is unknown the shown value is sent, so the key never inherits one the user did not see.
+ */
+export function createDeleteAfterExpire(value: boolean, clientDefault: boolean | undefined): boolean | undefined {
+	return clientDefault === undefined || value !== clientDefault ? value : undefined;
+}
+
+export interface UpdateDeleteAfterExpireInput {
+	switchTouched: boolean;
+	expiryChanged: boolean;
+	hasExpiry: boolean;
+	value: boolean;
+	clientDefault: boolean | undefined;
+	storedOverride: boolean | null | undefined;
+}
+
+/**
+ * The delete_after_expire value for an update; undefined omits it (the stored value stays), null resets
+ * it to inherit. Only a touched switch changes the stored value, so editing just the expiry keeps an
+ * explicit override; clearing the expiry needs nothing, since the server resets the flag then.
+ */
+export function updateDeleteAfterExpire({
+	switchTouched,
+	expiryChanged,
+	hasExpiry,
+	value,
+	clientDefault,
+	storedOverride,
+}: UpdateDeleteAfterExpireInput): boolean | null | undefined {
+	if (!hasExpiry) return undefined;
+	if (switchTouched) return clientDefault !== undefined && value === clientDefault ? null : value;
+	// A key that inherits would otherwise pick up a default the user never saw.
+	if (expiryChanged && storedOverride == null && clientDefault === undefined) return value;
+	return undefined;
+}

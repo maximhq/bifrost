@@ -474,6 +474,71 @@ func TestPreMCPHookGatesTheToolOnAccess(t *testing.T) {
 	})
 }
 
+// Codemode meta-tools skip evaluation, but their discovery side enumerates tools through the
+// request context, so PreMCPHook has to scope that context to the grant before letting them run.
+func TestPreMCPHookScopesCodemodeDiscoveryToAccess(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+
+	for _, metaTool := range []string{"listToolFiles", "readToolFile", "getToolDocs"} {
+		t.Run(metaTool+" stamps the grant when the caller sent no filter", func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, vk, nil)
+			ctx := newPreRequestCtx(nil, nil)
+
+			_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall(metaTool))
+
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "codemode meta-tools are not refused")
+			assert.Equal(t, []string{"sentry-read_file"}, ctx.Value(schemas.MCPContextKeyIncludeTools))
+		})
+	}
+
+	t.Run("a caller filter is narrowed to the grant, never widened", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, vk, nil)
+		ctx := newPreRequestCtx([]string{"sentry-read_file", "sentry-delete_project", "other-*"}, nil)
+
+		_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall("listToolFiles"))
+
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit)
+		assert.Equal(t, []string{"sentry-read_file"}, ctx.Value(schemas.MCPContextKeyIncludeTools))
+	})
+
+	t.Run("a request that presented nothing stays unrestricted", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, vk, nil)
+		ctx := emptyCtx()
+
+		_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall("listToolFiles"))
+
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit)
+		assert.Nil(t, ctx.Value(schemas.MCPContextKeyIncludeTools))
+	})
+
+	t.Run("a context carrying no grant at all is shown no tools", func(t *testing.T) {
+		// The HTTP transport installs a grant on every request; a caller of the Go API may not.
+		// Access cannot be resolved for such a context, so discovery fails closed.
+		plugin := newAccessTestPlugin(t, vk, nil)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall("listToolFiles"))
+
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit)
+		assert.Equal(t, []string{}, ctx.Value(schemas.MCPContextKeyIncludeTools))
+	})
+
+	t.Run("a credential that resolves to nothing is shown no tools", func(t *testing.T) {
+		plugin := newAccessTestPlugin(t, vk, nil)
+		ctx := presentCtx("sk-bf-revoked")
+
+		_, shortCircuit, err := plugin.PreMCPHook(ctx, mcpToolCall("listToolFiles"))
+
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "codemode meta-tools are still not refused here; evaluation refuses their tool calls")
+		assert.Equal(t, []string{}, ctx.Value(schemas.MCPContextKeyIncludeTools))
+	})
+}
+
 // ============================================================================
 // The four inputs together: a client allowed by default, an explicit VK config for another,
 // and both caller headers.

@@ -214,6 +214,7 @@ Compatibility flags that let Bifrost silently adapt request/response shapes for 
 | `bifrost.client.compat.convertChatToResponses` | Translate chat completions to Responses API format | `false` |
 | `bifrost.client.compat.shouldDropParams` | Silently drop unsupported parameters instead of erroring | `false` |
 | `bifrost.client.compat.shouldConvertParams` | Auto-convert parameter names across provider schemas | `false` |
+| `bifrost.client.compat.forceReasoningOnlyModelsToResponses` | Route chat completions to the Responses API for models that cannot reason with tool calls, so reasoning is kept instead of forced off | `true` |
 
 ```yaml
 bifrost:
@@ -320,3 +321,33 @@ kubectl create secret generic bifrost-admin \
 # Install
 helm install bifrost bifrost/bifrost -f client-full.yaml
 ```
+
+
+## Agent Gateway destination permissions
+
+| Helm value | Rendered config.json field | Default |
+| --- | --- | --- |
+| `bifrost.client.a2aPrivateAllowlist` | `client.a2a_private_allowlist` | `[]` |
+| `bifrost.agents[].credential_origins` | `agents[].credential_origins` | `[]` |
+
+The global allowlist permits private or loopback hosts, IP addresses, and CIDR ranges for card discovery, OAuth, and runtime HTTP or gRPC connections. Entries must not contain a scheme, port, or path. Link-local and cloud metadata destinations remain blocked.
+
+The per-agent list permits runtime origins outside the card's own origin, which is automatically permitted. Use an HTTP(S) scheme, hostname, and optional port without a path, userinfo, query, or fragment. Up to 32 unique additional origins are accepted. This check applies even without configured runtime authentication.
+
+For a public card that advertises a private runtime at `https://research.internal:9000`, configure both:
+
+```yaml
+bifrost:
+  client:
+    a2aPrivateAllowlist:
+      - research.internal
+  agents:
+    - name: library-research
+      agent_card_url: https://cards.example.com/.well-known/agent-card.json
+      credential_origins:
+        - https://research.internal:9000
+```
+
+Adding an origin does not grant private-network access, and adding a host to the network allowlist does not approve a different runtime origin. If the card or OAuth server is also private, include its destination in `a2aPrivateAllowlist` too. See [Agent Gateway authentication](/features/agent-gateway/authentication#additional-agent-endpoints) for credentials and TLS examples.
+
+Agent entries use the config.json field names unchanged, including `credential_origins`; the client value uses the chart's camelCase name. Registrations are reconciled at startup. See [source-of-truth behavior](/deployment-guides/config-json/source-of-truth) before managing the same agent through Helm and the dashboard.

@@ -37,18 +37,19 @@ const (
 // It provides a bridge between Bifrost and various MCP servers, supporting
 // both local tool hosting and external MCP server connections.
 type MCPManager struct {
-	ctx                 context.Context
-	logger              schemas.Logger                     // Logger instance for this manager
-	credStore           schemas.MCPCredentialStore         // Resolves credentials per-call for MCP tool execution
-	toolsManager        *ToolsManager                      // Handler for MCP tools
-	server              *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
-	clientMap           map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
-	mu                  sync.RWMutex                       // Read-write mutex for thread-safe operations
-	serverRunning       bool                               // Track whether local MCP server is running
-	checkerManager      *ConnectionCheckerManager          // Manager for per-client periodic connection checkers (liveness + discovery refresh, drives Healthy/Unstable/NeedsReauth)
-	reconnectingClients sync.Map                           // Tracks in-flight exclusive client operations per client ID (map[string]*inflightClientOp); waiters join via AwaitReconnect
-	bootClientConfigs   []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
-	connectOnce         sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
+	ctx                    context.Context
+	logger                 schemas.Logger                     // Logger instance for this manager
+	credStore              schemas.MCPCredentialStore         // Resolves credentials per-call for MCP tool execution
+	toolsManager           *ToolsManager                      // Handler for MCP tools
+	server                 *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
+	clientMap              map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
+	mu                     sync.RWMutex                       // Read-write mutex for thread-safe operations
+	serverRunning          bool                               // Track whether local MCP server is running
+	checkerManager         *ConnectionCheckerManager          // Manager for per-client periodic connection checkers (liveness + discovery refresh, drives Healthy/Unstable/NeedsReauth)
+	reconnectingClients    sync.Map                           // Tracks in-flight exclusive client operations per client ID (map[string]*inflightClientOp); waiters join via AwaitReconnect
+	bootClientConfigs      []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
+	connectOnce            sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
+	inProcessServerFactory schemas.InProcessServerFactory     // Builds synthesized servers (openapi clients); nil = unsupported
 
 	// Plugin pipeline access for connect/ping/list_tools hooks. nil-safe — gates short-circuit
 	// to the underlying op when no pipeline is configured. Also used by ToolsManager for the
@@ -95,7 +96,7 @@ type MCPManager struct {
 	// stateChangeCallback's own role for state transitions. Fired outside
 	// m.mu for the same reason: a registered callback may do arbitrary work,
 	// including I/O.
-	toolsChangeCallback func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
+	toolsChangeCallback func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)
 }
 
 // SetStateChangeCallback registers cb to be invoked on every reactive
@@ -113,7 +114,7 @@ func (m *MCPManager) SetStateChangeCallback(cb func(clientID, name string, oldSt
 // map is freshly (re)discovered — see the toolsChangeCallback field doc for
 // exactly which paths that covers. Pass nil to clear a previously registered
 // callback. Safe to call at any time; takes effect on the next discovery.
-func (m *MCPManager) SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)) {
+func (m *MCPManager) SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.toolsChangeCallback = cb
@@ -130,8 +131,8 @@ func (m *MCPManager) SetToolsChangeCallback(cb func(clientID, name string, tools
 // Must be called with m.mu (or the checker's c.manager.mu — the same
 // mutex) already held; the returned closure must be invoked AFTER releasing
 // the lock, per toolsChangeCallback's own field doc.
-func (m *MCPManager) toolsChangedCallback(clientState *schemas.MCPClientState, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) func() {
-	hash := computeToolsHash(tools, toolNameMapping)
+func (m *MCPManager) toolsChangedCallback(clientState *schemas.MCPClientState, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) func() {
+	hash := computeToolsHash(tools, toolNameMapping, instructions)
 	if clientState.LastToolsHash == hash {
 		return nil
 	}
@@ -141,7 +142,7 @@ func (m *MCPManager) toolsChangedCallback(clientState *schemas.MCPClientState, c
 		return nil
 	}
 	name := clientState.Name
-	return func() { cb(clientID, name, tools, toolNameMapping) }
+	return func() { cb(clientID, name, tools, toolNameMapping, instructions) }
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
@@ -188,11 +189,12 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 	}
 	// Creating new instance
 	manager := &MCPManager{
-		ctx:            ctx,
-		logger:         logger,
-		clientMap:      make(map[string]*schemas.MCPClientState),
-		checkerManager: NewConnectionCheckerManager(config.ToolSyncInterval),
-		credStore:      credStore,
+		ctx:                    ctx,
+		logger:                 logger,
+		clientMap:              make(map[string]*schemas.MCPClientState),
+		checkerManager:         NewConnectionCheckerManager(config.ToolSyncInterval),
+		credStore:              credStore,
+		inProcessServerFactory: config.InProcessServerFactory,
 	}
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
 	var pluginPipelineProvider func() PluginPipeline
@@ -231,6 +233,22 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 	manager.bootClientConfigs = config.ClientConfigs
 	manager.logger.Info(MCPLogPrefix + " MCP Manager initialized")
 	return manager
+}
+
+// SetInProcessServerFactory replaces the factory used to synthesize in-process
+// servers for openapi clients. Takes effect on the next connect (reconnect,
+// refresh or a newly added client); live connections are untouched.
+func (m *MCPManager) SetInProcessServerFactory(factory schemas.InProcessServerFactory) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inProcessServerFactory = factory
+}
+
+// getInProcessServerFactory returns the current factory under the read lock.
+func (m *MCPManager) getInProcessServerFactory() schemas.InProcessServerFactory {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.inProcessServerFactory
 }
 
 // ConnectConfiguredClients dials the MCP clients supplied at construction time
@@ -335,6 +353,11 @@ func (m *MCPManager) AddToolsToRequest(ctx *schemas.BifrostContext, req *schemas
 
 func (m *MCPManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	return m.toolsManager.GetAvailableTools(ctx)
+}
+
+// UpdateCodeModeLimits replaces the per-execution code mode limits at runtime.
+func (m *MCPManager) UpdateCodeModeLimits(limits *schemas.MCPCodeModeLimits) {
+	m.toolsManager.UpdateCodeModeLimits(limits)
 }
 
 // UpdateToolManagerConfig updates the configuration for the tool manager.

@@ -83,7 +83,7 @@ bifrost:
 </Tab>
 <Tab title="Prompt Guardrails">
 
-Uses a configured Bifrost LLM provider and model to evaluate text against a natural-language policy. The judge model must support Chat Completions or the Responses API, plus `response_format`. Bifrost prefers Chat Completions when the model supports both.
+Uses a configured Bifrost LLM provider and model to evaluate text against a natural-language policy. The judge model must support Chat Completions or the Responses API; structured-output (`response_format`) support is not required. Bifrost prefers Chat Completions when the model supports both.
 
 ```yaml
 bifrost:
@@ -98,7 +98,7 @@ bifrost:
           judge_provider: "openai"
           judge_model: "gpt-4o-mini"
           rule: "Block responses that provide a definitive medical diagnosis for an individual."
-          max_output_tokens: 200
+          max_output_tokens: 1000
 ```
 
 Prompt Guardrails returns binary allow or block decisions. It adds judge-model latency and token cost, and it does not inspect image pixels or binary files. See [Prompt Guardrails](/enterprise/guardrails/prompt-guardrails) for model requirements, verification, failure behavior, and policy-writing guidance.
@@ -419,6 +419,27 @@ bifrost:
 `base_url` is optional and defaults to `https://dev-app6.ai-platform.singulr.ai`. Bifrost appends `/api/v1/ai-gateway/bifrost`; set `base_url` only when Singulr provides a different API root. See [Singulr AI](/integrations/guardrails/singulr-ai) for setup, streaming behavior, and supported content.
 
 </Tab>
+<Tab title="A10 Guardrails">
+
+Calls an A10 Guardrails firewall at `<base_url>/v1/validateParsedText`. A10 blocks content or returns rewritten text, which Bifrost applies in place.
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 10
+        provider_name: "a10"
+        policy_name: "a10-production"
+        enabled: true
+        timeout: 30
+        config:
+          base_url: "https://firewall.example.com"
+          client_id: "env.A10_CLIENT_ID"
+```
+
+`base_url` is the firewall origin only; Bifrost appends `/v1/validateParsedText`. See [A10 Guardrails](/integrations/guardrails/a10) for decision mapping and supported content.
+
+</Tab>
 </Tabs>
 
 ---
@@ -580,14 +601,23 @@ Any field marked **env.\* supported** below accepts a bare `"env.VAR_NAME"` stri
 | `base_url` | No | Yes | Singulr API root. Defaults to `https://dev-app6.ai-platform.singulr.ai` |
 | `timeout` | No | **Plain only** | Provider execution timeout in seconds |
 
+### A10 Guardrails
+
+| Field | Required | env.* supported | Notes |
+|-------|----------|-----------------|-------|
+| `base_url` | Yes | **Plain only** | Firewall origin (no path), e.g. `https://firewall.example.com` |
+| `client_id` | Yes | Yes | A10 client ID sent as `x-eag-clientid` |
+| `timeout` | No | **Plain only** | Provider execution timeout in seconds (default `30`) |
+
 ### Regex
 
 | Field | Required | env.\* supported | Notes |
 |-------|----------|-----------------|-------|
-| `patterns` | Yes | **Plain only** | Array of `{ pattern, description?, entity_type?, flags?, action?, redaction_strategy?, redaction_mode? }` objects |
+| `patterns` | Yes | **Plain only** | Array of `{ pattern, description?, entity_type?, flags?, action?, redaction_strategy?, redaction_mode?, allowed_values? }` objects |
 | `patterns[].action` | No | **Plain only** | `detect_only` \| `block` \| `redact` (default: `block`) |
 | `patterns[].redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
 | `patterns[].redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
+| `patterns[].allowed_values` | No | **Plain only** | Array of exact values the pattern ignores (case-insensitive, whole-match). Matches equal to one of them are not detected, blocked, or redacted |
 
 ### Secrets
 
@@ -603,11 +633,11 @@ Any field marked **env.\* supported** below accepts a bare `"env.VAR_NAME"` stri
 | Field | Required | env.\* supported | Notes |
 |-------|----------|-----------------|-------|
 | `judge_provider` | Yes | **Plain only** | Configured Bifrost provider used for the judge request |
-| `judge_model` | Yes | **Plain only** | Judge model; must support Chat Completions or the Responses API, plus `response_format` |
+| `judge_model` | Yes | **Plain only** | Judge model; must support Chat Completions or the Responses API |
 | `rule` | Yes | **Plain only** | Natural-language policy to evaluate |
-| `prompt_template` | No | **Plain only** | Custom system-prompt template; must contain `{{rule}}` and must not contain `{{content}}` |
+| `prompt_template` | No | **Plain only** | Custom system-prompt template; must contain `{{rule}}` and must not contain `{{content}}`. Bifrost appends the required JSON output format |
 | `timeout` | No | **Plain only** | Judge-request timeout in seconds (default: `30`) |
-| `max_output_tokens` | No | **Plain only** | Judge response limit from `1` to `1024` (default: `200`) |
+| `max_output_tokens` | No | **Plain only** | Judge response limit from `1` to `1024`, including reasoning tokens (default: `1000`) |
 
 ---
 
@@ -660,9 +690,10 @@ Rule fields:
 | `max_turns_to_send` | No | Used when `send_all_conversation_turns` is `false`: number of preceding conversation turns to include. `0` sends only the current input. |
 | `evaluation_mode` | No | `bundled` (default) sends all selected turns in one guardrail call; `per_turn` evaluates each turn in isolation and uses more provider calls |
 | `stream_replay_event_interval_ms` | No | Delay between buffered events after block-capable output guardrails allow a streaming response. Valid range is `0`–`1000` milliseconds; defaults to `0` (immediate delivery). The dashboard uses `25` when pacing is enabled. |
+| `output_mode` | No | `enforce` (default) acts on output matches; `monitor` delivers the response untouched and only logs what the output guardrails would do. Requires `apply_to` `output` or `both`. See [Monitor Mode](/enterprise/guardrails#monitor-mode) |
 | `provider_config_ids` | No | Provider `id`s to invoke when this rule matches |
 
-`send_all_conversation_turns`, `max_turns_to_send`, `evaluation_mode`, and `stream_replay_event_interval_ms` configure LLM conversation and streaming behavior. They do not change MCP tool execution behavior.
+`send_all_conversation_turns`, `max_turns_to_send`, `evaluation_mode`, `stream_replay_event_interval_ms`, and `output_mode` configure LLM conversation and streaming behavior. They do not change MCP tool execution behavior.
 
 ```yaml
 bifrost:

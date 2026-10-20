@@ -7,6 +7,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/postgresconn"
+	"github.com/maximhq/bifrost/framework/storehooks"
 
 	"gorm.io/gorm"
 )
@@ -31,8 +32,18 @@ type PostgresConfig struct {
 	// views go permanently stale while still being served. Empty / unset derives a
 	// budget from MatViewRefreshInterval.
 	MatViewRefreshTimeout string `json:"matview_refresh_timeout,omitempty"`
+
+	// MigrationMatViewCancelAfter is how long schema migrations wait for an
+	// in-flight materialized-view refresh pass (from any replica, of any version)
+	// before cancelling its REFRESH statements. Migrations pause refreshes for
+	// their whole run; a long pass on a large logs table otherwise blocks their
+	// CREATE INDEX CONCURRENTLY and ALTER TABLE logs statements. Accepts a Go
+	// duration string; empty uses 60s; "off" never cancels and only waits.
+	MigrationMatViewCancelAfter string `json:"migration_matview_cancel_after,omitempty"`
 }
 
+// toPostgresConnConfig returns the shared connection config embedded in config,
+// including the runtime session timeouts, or nil when config is nil.
 func toPostgresConnConfig(config *PostgresConfig) *postgresconn.Config {
 	if config == nil {
 		return nil
@@ -141,14 +152,14 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	if err := postgresconn.Validate(pgConfig, true); err != nil {
 		return nil, err
 	}
-	dsn := postgresconn.BuildDSN(pgConfig)
+	dsn := postgresconn.WithApplicationName(postgresconn.BuildDSN(pgConfig), string(storehooks.RoleLogs))
 
 	// Migration-only DSN. Forces pgx into simple-query protocol on the throwaway
 	// migration pool so no statement plan is ever cached server-side; that makes
 	// SQLSTATE 0A000 ("cached plan must not change result type") structurally
 	// impossible when a migration mixes DDL with subsequent SELECTs against the
 	// same table. Runtime pool keeps the default cache-statement mode.
-	migrationDSN := dsn + " default_query_exec_mode=simple_protocol"
+	migrationDSN := postgresconn.MigrationDSN(dsn)
 
 	openPool := func(connDSN string) (*gorm.DB, error) {
 		return postgresconn.Open(connDSN, pgConfig, newGormLogger(logger))
@@ -203,7 +214,9 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	}
 	logger.Info("logstore: postgres server_version_num=%d; running schema migrations (may block on a cross-node advisory lock if another pod is migrating)", pgVersionNum)
 
-	if err := triggerMigrations(ctx, mDb, logger); err != nil {
+	pauseOpts := MatViewPauseOptions{CancelAfter: resolveMigrationMatViewCancelAfter(config.MigrationMatViewCancelAfter, logger)}
+	retry := postgresconn.MigrationLockRetryOptions(&config.Config, logger)
+	if err := triggerMigrationsWithOptions(ctx, mDb, logger, pauseOpts, retry); err != nil {
 		logger.Error("logstore: schema migrations failed: %v", err)
 		_ = closePool(mDb)
 		return nil, err
@@ -226,6 +239,8 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		return nil, err
 	}
 	logger.Info("logstore: runtime connection pool ready")
+	registerPGTextSafetyCallbacks(db)
+	storehooks.PoolOpened(storehooks.RoleLogs, db)
 	refreshInterval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
 	d := &RDBLogStore{db: db, logger: logger, matViewMaintenanceDisabled: refreshInterval <= 0}
 
@@ -233,42 +248,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	// deadlocks from concurrent CREATE INDEX CONCURRENTLY on the same table.
 	// Each function is idempotent and acquires its own advisory lock for
 	// cross-node serialization. Running in a goroutine avoids blocking pod startup.
-	go func() {
-		if db.Dialector.Name() != "postgres" {
-			return
-		}
-		// Acquire advisory lock to serialize GIN index builds across cluster nodes.
-		lock, err := acquireIndexLock(context.Background(), db, logger)
-		if err != nil {
-			// Lock is taken by another node, so we will skip the index build
-			return
-		}
-		defer lock.release(context.Background())
-
-		if err := ensureMetadataGINIndex(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: metadata GIN index build failed: %s (queries will still work without the index)", err))
-		} else {
-			logger.Info("logstore: metadata GIN index is ready")
-		}
-
-		if err := ensureMultiTeamBusinessUnitGINIndexes(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: team/business-unit GIN index build failed: %s (filtering will still work without the index)", err))
-		} else {
-			logger.Info("logstore: team/business-unit GIN indexes are ready")
-		}
-
-		if err := ensureDashboardEnhancements(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: dashboard enhancements failed: %s (dashboard will still work with partial data)", err))
-		} else {
-			logger.Info("logstore: dashboard enhancements completed")
-		}
-
-		if err := ensurePerformanceIndexes(context.Background(), lock.conn, logger); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: performance index build failed: %s (queries will still work without the indexes)", err))
-		} else {
-			logger.Info("logstore: performance indexes are ready")
-		}
-	}()
+	go buildBackgroundIndexes(context.Background(), db, logger)
 
 	// Create materialized views and start periodic refresh for dashboard queries.
 	go func() {
@@ -280,11 +260,14 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 			return
 		}
 		refreshTimeout := resolveMatViewRefreshTimeout(config.MatViewRefreshTimeout, refreshInterval, logger)
+		d.matViewRefreshTimeout = refreshTimeout
 
 		// The initial refresh gets the same budget as a periodic tick; on a large
 		// logs table it can be slow, and it must not hold the advisory lock forever.
 		initialCtx, cancelInitial := context.WithTimeout(context.Background(), refreshTimeout)
-		err := refreshMatViews(initialCtx, db)
+		// Spaced like a periodic tick: during a rolling restart every new process
+		// runs this, and a view another replica refreshed moments ago is skipped.
+		err := refreshMatViews(initialCtx, db, refreshInterval)
 		cancelInitial()
 		if err != nil {
 			logger.Warn(fmt.Sprintf("logstore: initial matview refresh failed: %s", err))
@@ -298,4 +281,67 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	}()
 
 	return d, nil
+}
+
+// buildBackgroundIndexes runs every post-startup index build and one-time data
+// job sequentially on one dedicated connection, holding the cross-node index
+// advisory lock. Sequential because concurrent CREATE INDEX CONCURRENTLY on the
+// same table can deadlock; in a goroutine (see newPostgresLogStore) so pod
+// startup does not wait. Each step is idempotent.
+func buildBackgroundIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) {
+	if db.Dialector.Name() != "postgres" {
+		return
+	}
+	// Acquire advisory lock to serialize GIN index builds across cluster nodes.
+	lock, err := acquireIndexLock(ctx, db, logger)
+	if err != nil {
+		// Lock is taken by another node, so we will skip the index build
+		return
+	}
+	defer lock.release(ctx)
+
+	// The runtime pool carries a short statement_timeout to protect interactive
+	// queries. Every job below runs on this dedicated connection and legitimately
+	// takes longer (CREATE INDEX CONCURRENTLY on a large table, the one-time
+	// backfills), so the timeout is lifted here and restored before the
+	// connection goes back to the pool (the deferred restore runs before release).
+	if restore, err := postgresconn.DisableStatementTimeout(ctx, lock.conn); err != nil {
+		logger.Warn(fmt.Sprintf("logstore: could not lift statement_timeout for background index builds: %s", err))
+	} else {
+		defer func() {
+			if err := postgresconn.RestoreStatementTimeoutOrDiscard(ctx, lock.conn, restore, matViewUnlockTimeout); err != nil {
+				logger.Warn(fmt.Sprintf("logstore: %s (connection discarded)", err))
+			}
+		}()
+	}
+
+	if err := ensureMetadataGINIndex(ctx, lock.conn); err != nil {
+		logger.Warn(fmt.Sprintf("logstore: metadata GIN index build failed: %s (queries will still work without the index)", err))
+	} else {
+		logger.Info("logstore: metadata GIN index is ready")
+	}
+
+	if err := ensureOwnerTimestampIndexes(ctx, lock.conn, logger); err != nil {
+		logger.Warn(fmt.Sprintf("logstore: owner/timestamp index build failed: %s (owner-filtered lists will still work without the index)", err))
+	} else {
+		logger.Info("logstore: owner/timestamp indexes are ready")
+	}
+
+	if err := ensureMultiTeamBusinessUnitGINIndexes(ctx, lock.conn); err != nil {
+		logger.Warn(fmt.Sprintf("logstore: team/business-unit GIN index build failed: %s (filtering will still work without the index)", err))
+	} else {
+		logger.Info("logstore: team/business-unit GIN indexes are ready")
+	}
+
+	if err := ensureDashboardEnhancements(ctx, lock.conn); err != nil {
+		logger.Warn(fmt.Sprintf("logstore: dashboard enhancements failed: %s (dashboard will still work with partial data)", err))
+	} else {
+		logger.Info("logstore: dashboard enhancements completed")
+	}
+
+	if err := ensurePerformanceIndexes(ctx, lock.conn, logger); err != nil {
+		logger.Warn(fmt.Sprintf("logstore: performance index build failed: %s (queries will still work without the indexes)", err))
+	} else {
+		logger.Info("logstore: performance indexes are ready")
+	}
 }

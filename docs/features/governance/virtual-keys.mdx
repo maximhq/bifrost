@@ -17,13 +17,17 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 
 <Note>Old virtual keys(without `sk-bf-*` prefix) are only supported by `x-bf-vk` header.</Note>
 
+<Info>
+**Enterprise: IdP tokens are also accepted.** Virtual keys remain the standard way to authenticate. On Bifrost Enterprise with [SSO configured](/enterprise/user-provisioning), you can also authenticate with a token issued by your identity provider: `Authorization: Bearer <idp-token>`. Bifrost validates the token and attributes the request to that user, applying their access profile, budgets, and rate limits. Use the `Authorization` header for IdP tokens; the other headers above carry virtual keys only. See [Setting up auth](/quickstart/gateway/setting-up-auth#api-calls) for details.
+</Info>
+
 **Key Features:**
 - **Access Control** - Model and provider filtering
 - **Cost Management** - Independent budgets (checked along with team/customer budgets if attached)
 - **Budget Overrides** - Temporarily add spending capacity without changing the base budget
 - **Rate Limiting** - Token and request-based throttling (VK-level only)
 - **Key Restrictions** - Limit VK to specific provider API keys (if configured, VK can only use those keys)
-- **Exclusive Attachment** - Belongs to either one team OR one customer OR neither (mutually exclusive)
+- **Exclusive Attachment** - Belongs to either one team OR one customer OR neither (mutually exclusive). In Enterprise, a key can also belong to a business unit or a user, still only one owner
 - **Active/Inactive Status** - Enable/disable access instantly
 
 ## Configuration
@@ -284,6 +288,76 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
 
 Precedence is client setting, then the key, then the `x-bf-disable-content-logging` header when per-request overrides are allowed. See [Content Logging](/features/observability/content-logging) for how each layer treats the log store and observability connectors.
 
+### Metadata per key
+
+A virtual key can carry custom key/value metadata for cost attribution, such as a cost center, project, owner or environment. Each request made with the key copies the key's metadata into the log entry's metadata, so logs and dashboard spend can be filtered by it without callers sending any headers.
+
+Rules:
+
+- keys use letters, digits, `.`, `_` and `-` (1-256 characters); `isAsyncRequest` and keys starting with `bifrost_alb_` are reserved
+- values are strings of at most 512 characters
+- at most 50 entries per key
+
+Invalid metadata is rejected with a `400` that names the offending key.
+
+Metadata is not secret: it is returned by the virtual key APIs and stored on log entries, so do not put credentials in it.
+
+<Tabs>
+<Tab title="Web UI">
+
+In the virtual key sheet, add entries under **Metadata**. The key's details sheet lists them, each with a **View spend** link that opens the logs filtered by that entry. The virtual keys table has a **Metadata** filter for one key/value pair.
+
+</Tab>
+<Tab title="API">
+
+```bash
+# Create a key with metadata
+curl -X POST http://localhost:8080/api/governance/virtual-keys \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "checkout-service",
+    "metadata": { "cost_center": "cc-1234", "owner": "payments@example.com", "env": "prod" },
+    "provider_configs": [{ "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"] }]
+  }'
+
+# Replace the metadata (omit the field to leave it unchanged, send {} to clear it)
+curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
+  -H "Content-Type: application/json" \
+  -d '{ "metadata": { "cost_center": "cc-5678", "env": "prod" } }'
+
+# List keys by metadata (several metadata_<key> parameters are AND-ed; search also matches metadata)
+curl "http://localhost:8080/api/governance/virtual-keys?metadata_cost_center=cc-5678"
+
+# Spend for that cost center, from the logs
+curl "http://localhost:8080/api/logs?metadata_cost_center=cc-5678"
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-checkout",
+        "name": "checkout-service",
+        "value": "env.CHECKOUT_VK",
+        "metadata": { "cost_center": "cc-1234", "owner": "payments@example.com", "env": "prod" },
+        "provider_configs": [{ "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"] }]
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+Metadata is snapshotted onto each log entry when the request is made. Changing a key's metadata later does not rewrite older log entries, so spend stays attributed to the values in effect at the time.
+
+On a key collision the virtual key's value wins over request-supplied log metadata (configured logging headers, `x-bf-lh-*` headers and `x-bf-dim-*` dimensions), so a caller cannot override attribution set on the key. Other request-supplied entries are kept alongside it. See [Logging](/features/observability/default) for how request headers become log metadata.
+
 ### Provider access
 
 By default a virtual key is **deny-by-default** for providers: it can only use providers listed in `provider_configs`. An empty `provider_configs` blocks every provider.
@@ -354,6 +428,21 @@ When `allow_all_providers` is `true`:
 `allow_all_providers` defaults to `false`. When it is `false`, provider access stays deny-by-default via `provider_configs`.
 </Note>
 
+#### Batches defined by an uploaded file
+
+A batch created from `input_file_id` or `input_blob` names its models inside the uploaded input, which Bifrost does not read. When a key restricts models on the provider (an `allowed_models` list other than `*`, or any `blacklisted_models`), such batches are checked against what the provider actually runs:
+
+- **OpenAI and Azure** run the models named in each input row and ignore the `model` on the batch request, so creating a file- or blob-based batch requires a key that allows every model of that provider. Otherwise the request is refused with `403` (`model_blocked`), even if an allowed `model` is supplied.
+- **Gemini, Vertex, and Bedrock** run the model named on the batch request, so that `model` must be supplied and allowed by the key.
+
+A custom provider is held to the rule of its base provider type, since it runs that provider's batch API. A request that names a file or blob and inline `requests` together is refused with `400`: no provider runs inline requests beside a file, so the batch's work must be named once.
+
+Inline batches (`requests`) are checked per item and are unaffected, as are keys that allow every model of the provider.
+
+#### Passthrough requests
+
+A passthrough route forwards the request body as the provider reads it. When a key restricts models on the provider, every model the body names is checked: the `model` of a JSON object body, or the `model` of each task in a task array (Runware). A passthrough request that names no model anywhere, neither in its path nor in its body, is refused with `403` (`model_blocked`) under such a key, since the provider would still run a model the key never allowed. Keys that allow every model of the provider forward every passthrough body as before.
+
 ## User Groups
 
 ### Teams
@@ -364,14 +453,14 @@ Teams provide organizational grouping for virtual keys with department-level bud
 - **Organizational Structure** - Group multiple virtual keys
 - **Independent Budgets** - Department-level cost control (separate from customer budgets)
 - **Customer Association** - Can belong to one customer (optional)
-- **No Rate Limits** - Teams cannot have rate limits (VK-level only)
+- **Rate Limit** - A team can have one rate limit of its own, checked alongside its keys' rate limits
 
 **Configuration**
 
 <Tabs group="config-method">
 <Tab title="Web UI">
 
-1. Go to **Users & Groups** → **Teams**
+1. Go to **Governance** → **Teams**
 
 2. Click on **Add Team** button
 
@@ -485,14 +574,14 @@ Customers represent the highest level in the governance hierarchy, typically cor
 - **Top-Level Organization** - Highest hierarchy level
 - **Independent Budgets** - Organization-wide cost control (separate from team/VK budgets)
 - **Team Management** - Contains multiple teams and direct VKs
-- **No Rate Limits** - Customers cannot have rate limits (VK-level only)
+- **Rate Limit** - A customer can have one rate limit of its own, checked alongside its teams' and keys' rate limits
 
 **Configuration**
 
 <Tabs group="config-method">
 <Tab title="Web UI">
 
-1. Go to **Users & Groups** → **Customers**
+1. Go to **Governance** → **Customers**
 
 2. Click on **Add Customer** button
 
@@ -746,22 +835,24 @@ In OSS, enabling this setting makes a valid virtual key mandatory for every infe
 
 ### Key Expiry
 
-Virtual keys can optionally carry an expiry timestamp. Once the expiry passes, requests using the key are rejected with a `403` and the reason `Virtual key has expired` — the key is not deleted or deactivated, so it stays visible for auditing and can be restored at any time.
+Virtual keys can optionally carry an expiry timestamp. Once the expiry passes, requests using the key are rejected with a `403` and the reason `Virtual key has expired`. By default the key is not deleted or deactivated, so it stays visible for auditing and can be restored at any time.
 
 - **No expiry by default** — keys without `expires_at` never expire.
 - **Fail closed** — both LLM inference and MCP tool execution are blocked once the key expires.
 - **Inactive wins** — a key that is both inactive and expired is rejected as inactive.
 - **Restore anytime** — extend the expiry to a future timestamp or clear it; access resumes immediately.
+- **Delete after expire** (optional) — a cleanup job that runs once a day removes expired keys. Turn it on for the whole workspace under **Settings → Security → Delete Expired Virtual Keys** (config.json: `client.delete_expired_virtual_keys`, default `false`), or per key with the **Delete after expire** switch (API: `delete_after_expire`). A key with no value of its own follows the workspace setting; `true` or `false` on the key wins over it. Each run that deletes at least one key posts a notification listing the removed keys; runs that find nothing stay silent. The per-key value needs an expiry: setting it without one returns `400`, and clearing the expiry resets the key to inherit.
 
 <Tabs group="config-method">
 <Tab title="Web UI">
 
 1. Go to **Virtual Keys** and create or edit a key
 2. In the **Expiry** section, pick **Never**, a preset (**30 min**, **1 hour**, **24 hours**, **7 days**), or choose a custom date and time from the calendar
+3. Optionally flip **Delete after expire**. The switch starts at the workspace setting from **Settings → Security**; leave it there to follow that setting, or flip it to decide for this key
 
 ![Virtual Key Expiry Picker](../../media/ui-virtual-key-expiry.png)
 
-Expired keys show an **Expired** badge in the virtual keys table.
+Expired keys show an **Expired** badge in the virtual keys table, with **auto-delete** appended when the key will be cleaned up, whether by its own setting or the workspace default.
 
 </Tab>
 <Tab title="API">
@@ -779,7 +870,8 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
         "key_ids": ["*"]
       }
     ],
-    "expires_at": "2026-08-01T00:00:00Z"
+    "expires_at": "2027-01-01T00:00:00Z",
+    "delete_after_expire": true
   }'
 ```
 
@@ -787,7 +879,7 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
 ```bash
 curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
   -H "Content-Type: application/json" \
-  -d '{"expires_at": "2026-09-01T00:00:00Z"}'
+  -d '{"expires_at": "2027-02-01T00:00:00Z"}'
 ```
 
 **Clear expiry (key never expires again):**
@@ -797,7 +889,7 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
   -d '{"expires_at": ""}'
 ```
 
-Timestamps must be RFC3339 and in the future; otherwise the API returns `400`. On update, omitting `expires_at` leaves the current expiry unchanged.
+Timestamps must be RFC3339 and in the future; otherwise the API returns `400`. On update, omitting `expires_at` leaves the current expiry unchanged. `delete_after_expire` can be sent on create or update: omit it to follow `client.delete_expired_virtual_keys`, send `true` or `false` to decide for this key, or send `null` on update to go back to inheriting. Any value is rejected with `400` when the key has no expiry.
 
 **Expired key rejection:**
 ```json
@@ -828,7 +920,7 @@ Timestamps must be RFC3339 and in the future; otherwise the API returns `400`. O
             "key_ids": ["*"]
           }
         ],
-        "expires_at": "2026-08-01T00:00:00Z"
+        "expires_at": "2027-01-01T00:00:00Z"
       }
     ]
   }
@@ -848,7 +940,7 @@ Virtual keys and HTTP authentication are **independent layers** that can work to
 
 | Layer | Purpose | Headers |
 |-------|---------|---------|
-| **Authentication** | Validates user identity | `Authorization: Basic/Bearer <credentials>` |
+| **Authentication** | Validates user identity | `Authorization: Basic/Bearer <credentials>`, or on Enterprise, `Authorization: Bearer <idp-token>` |
 | **Virtual Keys** | Request routing and governance | `x-bf-vk`, `Authorization`[^1], `x-api-key`, `x-goog-api-key` |
 
 [^1]: Authorization can carry virtual keys only when auth is disabled (`disable_auth_on_inference: true`). When auth is enabled, Authorization is consumed by authentication and cannot be used for virtual keys.

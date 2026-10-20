@@ -10,6 +10,7 @@ import (
 func TestServiceTierForModel(t *testing.T) {
 	ultrafast := schemas.BifrostServiceTierUltrafast
 	priority := schemas.BifrostServiceTierPriority
+	fast := schemas.BifrostServiceTierFast
 	defaultTier := schemas.BifrostServiceTierDefault
 
 	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
@@ -18,6 +19,9 @@ func TestServiceTierForModel(t *testing.T) {
 			switch model {
 			case "gpt-5.6-sol":
 				return &schemas.ModelCapabilities{ServiceTiers: []string{"default", "flex", "priority", "ultrafast"}}
+			case "gpt-6-astra":
+				// Live datasheet shape: OpenAI lists the renamed Fast tier beside priority.
+				return &schemas.ModelCapabilities{ServiceTiers: []string{"auto", "default", "flex", "priority", "fast", "ultrafast"}}
 			case "standard-model":
 				return &schemas.ModelCapabilities{ServiceTiers: []string{"default", "flex", "priority"}}
 			}
@@ -41,6 +45,9 @@ func TestServiceTierForModel(t *testing.T) {
 		{name: "unsupported ultrafast", provider: schemas.OpenAI, model: "standard-model", tier: &ultrafast, want: nil},
 		{name: "missing capabilities preserve tier", provider: schemas.OpenAI, model: "unknown-model", tier: &ultrafast, want: &ultrafast},
 		{name: "missing capabilities preserve ordinary tier", provider: schemas.OpenAI, model: "unknown-model", tier: &priority, want: &priority},
+		{name: "explicit fast support", provider: schemas.OpenAI, model: "gpt-6-astra", tier: &fast, want: &fast},
+		{name: "explicit tier list without fast drops it", provider: schemas.OpenAI, model: "standard-model", tier: &fast, want: nil},
+		{name: "missing capabilities preserve fast", provider: schemas.OpenAI, model: "unknown-model", tier: &fast, want: &fast},
 		{name: "explicit tier list rejects omitted ordinary tier", provider: schemas.OpenAI, model: "standard-model", tier: schemas.Ptr(schemas.BifrostServiceTierProvisioned), want: nil},
 		{name: "bedrock mantle keeps explicitly supported tier", provider: schemas.BedrockMantle, model: "xai.grok-4.6", tier: &priority, want: &priority},
 		{name: "bedrock mantle drops unknown non-standard tier", provider: schemas.BedrockMantle, model: "openai.gpt-5.6-luna", tier: &priority, want: nil},

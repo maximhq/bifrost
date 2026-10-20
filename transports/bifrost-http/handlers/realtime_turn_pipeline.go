@@ -11,7 +11,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 )
 
 func newRealtimeTurnContext(
@@ -518,6 +518,7 @@ func buildRealtimeResponsesUsage(usage *schemas.BifrostLLMUsage) *schemas.Respon
 			NumSearchQueries:         usage.CompletionTokensDetails.NumSearchQueries,
 		}
 	}
+	result.ToolUsage = usage.ToolUsage.DeepCopy()
 	return result
 }
 
@@ -589,6 +590,9 @@ func mapRealtimeWireErrorFields(bifrostErr *schemas.BifrostError) (string, strin
 			continue
 		case strings.Contains(lower, "invalid_request_error"):
 			return "invalid_request_error", "invalid_request_error", errorMessage, errorParam
+		case strings.Contains(lower, "unsupported_operation"):
+			// A provider configured not to serve the operation refuses the caller, not itself.
+			return "invalid_request_error", "unsupported_operation", errorMessage, errorParam
 		case isBudgetOrBillingError(lower):
 			return "insufficient_quota", "insufficient_quota", errorMessage, errorParam
 		case bifrost.IsRateLimitErrorMessage(lower):

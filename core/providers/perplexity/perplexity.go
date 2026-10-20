@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -318,9 +319,33 @@ func (provider *PerplexityProvider) Rerank(ctx *schemas.BifrostContext, key sche
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
-// Decision is not supported by the Perplexity provider.
+// Decision runs a decision on Perplexity's decider models (pplx-decider-*). The model is
+// sent as is; Perplexity rejects one it does not serve, and that error is passed through.
+// The body carries no id, so it is taken from the x-request-id header.
 func (provider *PerplexityProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+	var authHeaders map[string]string
+	if key.Value.GetValue() != "" {
+		authHeaders = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
+	}
+	bifrostResponse, bifrostErr := typesafe.HandleTypesafeDecisionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, perplexityDecisionPath),
+		request,
+		ToPerplexityDecisionRequest,
+		authHeaders,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		openai.ParseOpenAIError,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		false,
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	bifrostResponse.ID = decisionRequestID(bifrostResponse.ExtraFields.ProviderResponseHeaders)
+	return bifrostResponse, nil
 }
 
 // OCR is not supported by the Perplexity provider.
@@ -461,6 +486,11 @@ func (provider *PerplexityProvider) FileContent(_ *schemas.BifrostContext, _ []s
 // CountTokens is not supported by the Perplexity provider.
 func (provider *PerplexityProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// ModelRetrieve is not supported by the Perplexity provider.
+func (provider *PerplexityProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
 }
 
 // Compaction is not supported by the Perplexity provider.

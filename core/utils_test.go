@@ -394,11 +394,16 @@ func TestClearCtxForFallback(t *testing.T) {
 		// Set by the Bedrock InvokeModel stream path; a fallback to a plain-SSE
 		// provider must not inherit the AWS event-stream reader (#6825).
 		schemas.BifrostContextKeySSEReaderFactory,
+		// The load balancer's record of the attempt that just failed.
+		schemas.BifrostContextKeyLoadBalancerAttempt,
 	}
 	// The next attempt resolves its own limits, which needs the same credential and caller.
 	preserved := []schemas.BifrostContextKey{
 		schemas.BifrostContextKeyVirtualKey,
 		schemas.BifrostContextKeyUserID,
+		// What the caller sent is the same for every attempt of the request.
+		schemas.BifrostContextKeyRequestedProvider,
+		schemas.BifrostContextKeyRequestedModel,
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -418,6 +423,58 @@ func TestClearCtxForFallback(t *testing.T) {
 			t.Errorf("%v was cleared, leaving the next attempt unable to resolve its own limits", key)
 		}
 	}
+}
+
+// TestCanProviderKeyValueBeEmptyGithubCopilot pins that a GitHub Copilot key may carry an
+// empty value. The GitHub App bundle in github_copilot_key_config is a complete credential
+// on its own, and the HTTP key handlers consult this allowlist before their provider-specific
+// checks, so dropping the entry rejects every App-authenticated key at creation with a
+// misleading "value must not be empty" error.
+func TestCanProviderKeyValueBeEmptyGithubCopilot(t *testing.T) {
+	if !CanProviderKeyValueBeEmpty(schemas.GithubCopilot) {
+		t.Fatal("GitHub Copilot keys authenticated through a GitHub App have no value; the allowlist must include the provider")
+	}
+}
+
+// TestStampRequestedRoute pins what core records as the caller's route before any
+// PreRequestHook runs: plugins read it to report the model a routing rule rewrote.
+func TestStampRequestedRoute(t *testing.T) {
+	requested := func(ctx *schemas.BifrostContext) (schemas.ModelProvider, string) {
+		provider, _ := ctx.Value(schemas.BifrostContextKeyRequestedProvider).(schemas.ModelProvider)
+		model, _ := ctx.Value(schemas.BifrostContextKeyRequestedModel).(string)
+		return provider, model
+	}
+
+	t.Run("records the caller's provider and model", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stampRequestedRoute(ctx, schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+		provider, model := requested(ctx)
+		assert.Equal(t, schemas.OpenAI, provider)
+		assert.Equal(t, "gpt-4o-mini", model)
+	})
+
+	// Large-payload requests carry the model only in the metadata, and the routing plugin
+	// rewrites it there in place, so the value must be copied before the hooks run.
+	t.Run("large payload model is copied before routing rewrites it", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		metadata := &schemas.LargePayloadMetadata{Model: "gpt-4o-mini"}
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, metadata)
+		stampRequestedRoute(ctx, schemas.Route{Provider: schemas.OpenAI})
+		metadata.Model = "gpt-4o"
+		_, model := requested(ctx)
+		assert.Equal(t, "gpt-4o-mini", model)
+	})
+
+	// bifrost.ctx is shared by every nil-ctx caller, so an empty provider must overwrite the
+	// previous request's rather than leave it in place.
+	t.Run("reused context does not keep the previous request's route", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stampRequestedRoute(ctx, schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+		stampRequestedRoute(ctx, schemas.Route{Model: "claude-sonnet-4-6"})
+		provider, model := requested(ctx)
+		assert.Empty(t, provider)
+		assert.Equal(t, "claude-sonnet-4-6", model)
+	})
 }
 
 // TestValidateKeyGithubCopilot pins that validateKey rejects the same credentials the
@@ -500,6 +557,99 @@ func TestValidateKeyGithubCopilot(t *testing.T) {
 	}
 }
 
+func TestValidateKeyOAuthKeyConfig(t *testing.T) {
+	cc := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantClientCredentials,
+			TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			ClientID:     schemas.NewSecretVar("id"),
+			ClientSecret: schemas.NewSecretVar("secret"),
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+	jb := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:  schemas.OAuthGrantJWTBearer,
+			TokenURL:   *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			PrivateKey: schemas.NewSecretVar("pem"),
+			Issuer:     "client",
+			Audience:   "https://idp.example/oauth2/token",
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+
+	tests := []struct {
+		name      string
+		key       schemas.Key
+		wantError string
+	}{
+		{name: "client_credentials is sufficient", key: schemas.Key{OAuthKeyConfig: cc(nil)}},
+		{name: "jwt_bearer is sufficient", key: schemas.Key{OAuthKeyConfig: jb(nil)}},
+		// Key selection runs this on every request. A static value always wins over the block, so
+		// an incomplete block must not take a usable key out of rotation; the management API
+		// still refuses to save one (handlers.validateProviderKey).
+		{name: "a value alongside an incomplete config keeps the key usable", key: schemas.Key{Value: *schemas.NewSecretVar("sk"), OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientSecret = nil })}},
+		{name: "missing grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "" })}, wantError: "grant_type is required"},
+		{name: "unknown grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" })}, wantError: "must be client_credentials or jwt_bearer"},
+		{name: "missing token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar(" ") })}, wantError: "token_url is required"},
+		{name: "relative token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("/token") })}, wantError: "must be https"},
+		{name: "plain http on a public host", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://idp.example/token") })}, wantError: "must be https"},
+		{name: "token url with userinfo", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://user:pass@idp.example/token")
+		})}, wantError: "must not carry userinfo, a query, or a fragment"},
+		{name: "token url with a query", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://idp.example/token?client_secret=x")
+		})}, wantError: "must not carry userinfo, a query, or a fragment"},
+		{name: "token url with a fragment", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("https://idp.example/token#frag") })}, wantError: "must not carry userinfo, a query, or a fragment"},
+		{name: "plain http on loopback is accepted", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://127.0.0.1:9/token") })}},
+		{name: "jwt_bearer negative lifetime names the accepted range", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.AssertionLifetimeSeconds = -1 })}, wantError: "between 0 (default) and 3600"},
+		{name: "missing client id", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientID = schemas.NewSecretVar(" ") })}, wantError: "client_id and oauth_key_config.client_secret are required"},
+		{name: "bad auth style", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.AuthStyle = "query" })}, wantError: "auth_style must be header or body"},
+		{name: "jwt_bearer missing key", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = nil })}, wantError: "private_key is required"},
+		{name: "jwt_bearer missing issuer", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.Issuer = "" })}, wantError: "issuer is required"},
+		{name: "jwt_bearer missing audience", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.Audience = "" })}, wantError: "audience is required"},
+		{name: "jwt_bearer symmetric algorithm", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.SigningAlgorithm = "HS256" })}, wantError: "signing_algorithm must be one of"},
+		{name: "jwt_bearer lifetime too long", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.AssertionLifetimeSeconds = 7200 })}, wantError: "assertion_lifetime_seconds"},
+		{name: "env-backed references count as present", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("env.IDP_TOKEN_URL_UNSET_IN_TEST")
+			c.ClientSecret = schemas.NewSecretVar("env.IDP_SECRET_UNSET_IN_TEST")
+		})}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.key
+			err := validateKey(schemas.OpenAI, &key)
+			if tt.wantError == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+	}
+
+	t.Run("a key with oauth_key_config may have no value on an openai-based provider", func(t *testing.T) {
+		assert.True(t, keyValueMayBeEmpty(schemas.OpenAI, &schemas.Key{OAuthKeyConfig: cc(nil)}))
+		assert.False(t, keyValueMayBeEmpty(schemas.OpenAI, &schemas.Key{}))
+		assert.False(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{OAuthKeyConfig: cc(nil)}))
+		assert.True(t, keyValueMayBeEmpty(schemas.Databricks, &schemas.Key{}))
+	})
+
+	t.Run("oauth_key_config is refused on a provider that does not resolve it", func(t *testing.T) {
+		key := schemas.Key{OAuthKeyConfig: cc(nil)}
+		err := validateKey(schemas.Anthropic, &key)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supported on openai")
+	})
+}
+
 // A request cancelled at the same instant its backoff expires must still be
 // reported as cancelled: Go's select picks uniformly among ready cases, so a
 // timer-only check lets roughly half of such requests run one more attempt
@@ -513,5 +663,214 @@ func TestWaitRetryBackoffReportsCancellationAtTimerExpiry(t *testing.T) {
 		if !waitRetryBackoff(ctx, 0) {
 			t.Fatalf("call %d: backoff expired together with the cancel and the wait reported not cancelled", i)
 		}
+	}
+}
+
+// OpenAI-compatible clients take the assistant role from the first chunk of a
+// choice and drop tool calls without it (maximhq/bifrost#7693). Some clients
+// concatenate a repeated role, so it must appear exactly once.
+func TestWrapConvertedStreamPostHookRunnerSendsAssistantRoleOnce(t *testing.T) {
+	reasoning := schemas.ResponsesMessageTypeReasoning
+	functionCall := schemas.ResponsesMessageTypeFunctionCall
+	message := schemas.ResponsesMessageTypeMessage
+
+	tests := []struct {
+		name   string
+		events []*schemas.BifrostResponsesStreamResponse
+	}{
+		{
+			name: "tool call turn without a message item",
+			events: []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated},
+				{Type: schemas.ResponsesStreamResponseTypeInProgress},
+				{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: &reasoning}},
+				{
+					Type:        schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					OutputIndex: schemas.Ptr(1),
+					Item: &schemas.ResponsesMessage{
+						Type: &functionCall,
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_1"),
+							Name:   schemas.Ptr("get_weather"),
+						},
+					},
+				},
+				{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, Delta: schemas.Ptr("{}")},
+				{Type: schemas.ResponsesStreamResponseTypeCompleted},
+			},
+		},
+		{
+			name: "text turn",
+			events: []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated},
+				{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: &message}},
+				{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("Hello")},
+				{Type: schemas.ResponsesStreamResponseTypeCompleted},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var roles []*string
+			runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				require.NotNil(t, result.ChatResponse)
+				require.NotEmpty(t, result.ChatResponse.Choices)
+				roles = append(roles, result.ChatResponse.Choices[0].Delta.Role)
+				return result, bifrostErr
+			}, schemas.ResponsesRequest)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			for _, event := range tt.events {
+				runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+			}
+
+			require.Len(t, roles, len(tt.events))
+			require.NotNil(t, roles[0], "first chunk has no role")
+			assert.Equal(t, string(schemas.ChatMessageRoleAssistant), *roles[0])
+			for i, role := range roles[1:] {
+				assert.Nil(t, role, "chunk %d repeats the role", i+1)
+			}
+		})
+	}
+}
+
+// Only the response.created, in_progress and completed events carry the Response
+// object, so the deltas between them convert with no id, model or created. OpenAI
+// SDK stream accumulators drop a chunk whose id differs from the stream's, which
+// left the streamed text empty.
+func TestWrapConvertedStreamPostHookRunnerKeepsStreamIdentityOnEveryChunk(t *testing.T) {
+	message := schemas.ResponsesMessageTypeMessage
+	functionCall := schemas.ResponsesMessageTypeFunctionCall
+	upstream := &schemas.BifrostResponsesResponse{ID: schemas.Ptr("resp_0dd8"), Model: "gpt-6-luna", CreatedAt: 1760000000}
+	tests := []struct {
+		name   string
+		events []*schemas.BifrostResponsesStreamResponse
+	}{
+		{
+			name: "text turn",
+			events: []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated, Response: upstream},
+				{Type: schemas.ResponsesStreamResponseTypeInProgress, Response: upstream},
+				{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: &message}},
+				{Type: schemas.ResponsesStreamResponseTypeContentPartAdded},
+				{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("ok")},
+				{Type: schemas.ResponsesStreamResponseTypeOutputTextDone},
+				{Type: schemas.ResponsesStreamResponseTypeOutputItemDone},
+				{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: upstream},
+			},
+		},
+		{
+			name: "tool call turn",
+			events: []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated, Response: upstream},
+				{
+					Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					Item: &schemas.ResponsesMessage{
+						Type:                 &functionCall,
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("get_weather")},
+					},
+				},
+				{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, Delta: schemas.Ptr("{}")},
+				{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: upstream},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var chunks []*schemas.BifrostChatResponse
+			runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				require.NotNil(t, result.ChatResponse)
+				chunks = append(chunks, result.ChatResponse)
+				return result, bifrostErr
+			}, schemas.ResponsesRequest)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			for _, event := range tt.events {
+				runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+			}
+
+			require.Len(t, chunks, len(tt.events))
+			for i, chunk := range chunks {
+				assert.Equal(t, "resp_0dd8", chunk.ID, "chunk %d (%s) id", i, tt.events[i].Type)
+				assert.Equal(t, "gpt-6-luna", chunk.Model, "chunk %d (%s) model", i, tt.events[i].Type)
+				assert.Equal(t, 1760000000, chunk.Created, "chunk %d (%s) created", i, tt.events[i].Type)
+			}
+		})
+	}
+}
+
+// BenchmarkWrapConvertedStreamPostHookRunner measures one converted text turn,
+// created through completed, as a chat stream served through Responses sees it.
+func BenchmarkWrapConvertedStreamPostHookRunner(b *testing.B) {
+	message := schemas.ResponsesMessageTypeMessage
+	upstream := &schemas.BifrostResponsesResponse{ID: schemas.Ptr("resp_0dd8"), Model: "gpt-6-luna", CreatedAt: 1760000000}
+	events := []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeCreated, Response: upstream},
+		{Type: schemas.ResponsesStreamResponseTypeInProgress, Response: upstream},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: &message}},
+		{Type: schemas.ResponsesStreamResponseTypeContentPartAdded},
+		{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("ok")},
+		{Type: schemas.ResponsesStreamResponseTypeOutputTextDone},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemDone},
+		{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: upstream},
+	}
+	noop := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, bifrostErr
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runner := wrapConvertedStreamPostHookRunner(noop, schemas.ResponsesRequest)
+		for _, event := range events {
+			runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+		}
+	}
+}
+
+// A converted stream chunk still carries the upstream API's raw bytes, so it must
+// say it was converted: integrations echo RawResponse only for unconverted chunks.
+func TestWrapConvertedStreamPostHookRunnerMarksConvertedChunks(t *testing.T) {
+	tests := []struct {
+		name       string
+		targetType schemas.RequestType
+		result     *schemas.BifrostResponse
+		extra      func(*schemas.BifrostResponse) *schemas.BifrostResponseExtraFields
+	}{
+		{
+			name:       "chat served through responses",
+			targetType: schemas.ResponsesRequest,
+			result: &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:        schemas.ResponsesStreamResponseTypeCreated,
+				ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: `{"type":"response.created"}`},
+			}},
+			extra: func(r *schemas.BifrostResponse) *schemas.BifrostResponseExtraFields {
+				return &r.ChatResponse.ExtraFields
+			},
+		},
+		{
+			name:       "text served through chat",
+			targetType: schemas.ChatCompletionRequest,
+			result: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: `{"object":"chat.completion.chunk"}`},
+			}},
+			extra: func(r *schemas.BifrostResponse) *schemas.BifrostResponseExtraFields {
+				return &r.TextCompletionResponse.ExtraFields
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got *schemas.BifrostResponse
+			runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				got = result
+				return result, bifrostErr
+			}, tt.targetType)
+			runner(schemas.NewBifrostContext(context.Background(), time.Time{}), tt.result, nil)
+			require.NotNil(t, got)
+			assert.Equal(t, tt.targetType, tt.extra(got).ConvertedRequestType)
+		})
 	}
 }

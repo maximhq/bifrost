@@ -16,7 +16,13 @@ NetworkConfig:
       type: object
       additionalProperties:
         type: string
-      description: Additional headers to include in requests
+      description: Additional headers to include in requests. A value may be a literal, an `env.VAR_NAME` reference, or a `vault.path` reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400.
+    extra_headers_secret_vars:
+      type: object
+      readOnly: true
+      additionalProperties:
+        $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Response only. The same headers as `extra_headers`, as SecretVar objects (`value`, `ref`, `type`) so clients can tell literals from `env`/`vault` references without parsing prefixes. Literal values are `<REDACTED>`. Ignored on input; send `extra_headers` to change headers.
     default_request_timeout_in_seconds:
       type: integer
       description: Default timeout for requests
@@ -101,6 +107,55 @@ VertexKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     auth_credentials:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
+    force_single_region:
+      type: boolean
+      default: false
+      description: When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint.
+    use_session_routing:
+      type: boolean
+      default: false
+      description: Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.
+    aws_workload_identity:
+      type: object
+      description: >-
+        GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity,
+        ECS task role, EC2 instance profile, AWS_* env vars). Takes precedence over auth_credentials;
+        the two must not be combined. aws_role_arn is redacted in GET responses; the other fields are
+        identifiers and are returned in clear.
+      properties:
+        audience:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        service_account_email:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        token_lifetime_seconds:
+          type: integer
+          minimum: 600
+          maximum: 43200
+          description: Lifetime of the impersonated service-account token in seconds; only used with service_account_email. Default 3600. Lifetimes above 3600 require the target service account to be allowed by the organization policy constraint constraints/iam.allowServiceAccountCredentialLifetimeExtension; otherwise token generation fails.
+        aws_region:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        aws_role_arn:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+      required: [audience]
+      additionalProperties: false
+  # A key authenticates with either a credentials JSON or AWS workload identity federation, never
+  # both; mirrors the rule in transports/config.schema.json and the API's validation.
+  if:
+    required: [aws_workload_identity]
+  then:
+    properties:
+      auth_credentials:
+        anyOf:
+          - type: string
+            maxLength: 0
+          - type: object
+            properties:
+              value:
+                type: string
+                maxLength: 0
+              ref:
+                type: string
+                maxLength: 0
 
 BedrockKeyConfig:
   type: object
@@ -168,6 +223,15 @@ SglKeyConfig:
   required:
     - url
 
+CloudflareKeyConfig:
+  type: object
+  description: Cloudflare Workers AI-specific key configuration
+  properties:
+    account_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+  required:
+    - account_id
+
 VLLMKeyConfig:
   type: object
   description: vLLM-specific key configuration for per-key routing to different vLLM instances
@@ -178,6 +242,93 @@ VLLMKeyConfig:
     model_name:
       type: string
       description: Exact model name served on this vLLM instance
+
+OAuthKeyConfig:
+  type: object
+  description: OAuth-minted bearer for OpenAI-compatible providers (including custom providers on the openai base). Set this and leave value empty; Bifrost mints, caches and refreshes the access token. A non-empty value always wins. Secrets are redacted in responses.
+  required:
+    - grant_type
+    - token_url
+  properties:
+    grant_type:
+      type: string
+      enum: [client_credentials, jwt_bearer]
+      description: client_credentials (RFC 6749 §4.4) or jwt_bearer (RFC 7523, Bifrost signs an assertion with private_key)
+    token_url:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Token endpoint, absolute https URL (plain http is accepted for loopback hosts only). Must not carry userinfo, a query or a fragment; send extra parameters through extra_params
+    client_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: client_credentials client ID (redacted in responses)
+    client_secret:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: client_credentials client secret (redacted in responses)
+    private_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: jwt_bearer RSA or EC private key, PEM (redacted in responses)
+    scopes:
+      type: array
+      items:
+        type: string
+      description: Scopes requested, sent space-joined
+    audience:
+      type: string
+      description: jwt_bearer aud claim (required for that grant); client_credentials optional audience form parameter
+    issuer:
+      type: string
+      minLength: 1
+      description: jwt_bearer iss claim (required for that grant)
+    subject:
+      type: string
+      description: jwt_bearer sub claim (defaults to issuer)
+    key_id:
+      type: string
+      description: jwt_bearer kid header
+    signing_algorithm:
+      type: string
+      enum: [RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512]
+      default: RS256
+      description: jwt_bearer assertion signing algorithm
+    auth_style:
+      type: string
+      enum: [header, body]
+      default: header
+      description: client_credentials credential placement (HTTP Basic header or form body)
+    extra_params:
+      type: object
+      additionalProperties:
+        type: string
+      description: Extra form parameters sent on the token request
+    assertion_lifetime_seconds:
+      type: integer
+      minimum: 0
+      maximum: 3600
+      default: 300
+      description: >-
+        jwt_bearer: seconds from issue until the assertion expires (exp = now + value); 0 or
+        omitted uses the default of 300. iat is
+        backdated by 30 seconds for clock skew, so the assertion's exp - iat span is this value plus 30.
+  additionalProperties: false
+  allOf:
+    - if:
+        required: [grant_type]
+        properties:
+          grant_type:
+            const: client_credentials
+      then:
+        required: [client_id, client_secret]
+        description: client_credentials needs the client ID and secret
+    - if:
+        required: [grant_type]
+        properties:
+          grant_type:
+            const: jwt_bearer
+      then:
+        required: [private_key, issuer, audience]
+        properties:
+          audience:
+            minLength: 1
+        description: jwt_bearer needs the signing key plus the non-empty iss and aud claims
 
 Key:
   type: object
@@ -204,7 +355,8 @@ Key:
       description: List of models this key cannot access (blacklist), which wins over `models`. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name; an empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     weight:
       type: number
-      description: Weight for load balancing
+      minimum: 0
+      description: Weight for load balancing. A negative weight is rejected with 400. A key with weight 0 is picked only when no other eligible key has a positive weight; when every weight is 0, keys are picked uniformly.
     aliases:
       type: object
       propertyNames:
@@ -225,8 +377,12 @@ Key:
       $ref: '#/OllamaKeyConfig'
     sgl_key_config:
       $ref: '#/SglKeyConfig'
+    cloudflare_key_config:
+      $ref: '#/CloudflareKeyConfig'
     replicate_key_config:
       $ref: '#/ReplicateKeyConfig'
+    oauth_key_config:
+      $ref: '#/OAuthKeyConfig'
     enabled:
       type: boolean
       description: Whether the key is active (defaults to true)
@@ -265,6 +421,9 @@ AllowedRequests:
       type: boolean
     embedding:
       type: boolean
+    decisions:
+      type: boolean
+      description: Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API
     speech:
       type: boolean
     speech_stream:
@@ -341,6 +500,8 @@ ProviderResponse:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    injected_tools:
+      $ref: '#/InjectedToolsConfig'
     provider_status:
       $ref: '#/ProviderStatus'
     status:
@@ -388,6 +549,8 @@ AddProviderRequest:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    injected_tools:
+      $ref: '#/InjectedToolsConfig'
 
 CacheControlInjectionPoint:
   type: object
@@ -422,6 +585,37 @@ PromptCacheConfig:
       items:
         $ref: '#/CacheControlInjectionPoint'
 
+InjectedToolsConfig:
+  type: array
+  description: >-
+    MCP tools injected into every chat and responses request served by this provider and
+    executed server side when the model calls them. The client never sees the injected
+    tool call, only the final answer. Names must be unique within a provider.
+  items:
+    $ref: '#/InjectedTool'
+
+InjectedTool:
+  type: object
+  description: >-
+    One MCP tool injected under a name the model sees. The name replaces any client tool
+    with the same name; the name web_search also replaces native web search tools and
+    web_search_options.
+  required: [name, mcp_client_name, tool_name]
+  additionalProperties: false
+  properties:
+    name:
+      type: string
+      pattern: '^[a-zA-Z0-9_-]{1,64}$'
+      description: Tool name the model sees.
+    mcp_client_name:
+      type: string
+      minLength: 1
+      description: Name of the configured MCP client that provides the tool.
+    tool_name:
+      type: string
+      minLength: 1
+      description: Tool name as the MCP server exposes it, without the client prefix.
+
 UpdateProviderRequest:
   type: object
   description: Update provider request. Keys are managed separately via /api/providers/{provider}/keys.
@@ -442,6 +636,11 @@ UpdateProviderRequest:
       $ref: '#/CustomProviderConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
+    injected_tools:
+      description: Send null to remove the provider's injected tools.
+      oneOf:
+        - $ref: '#/InjectedToolsConfig'
+        - type: 'null'
 
 ListProviderKeysResponse:
   type: object

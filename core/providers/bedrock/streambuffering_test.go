@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -162,4 +163,63 @@ func TestMakeStreamingRequest_SendsIdentityAcceptEncoding(t *testing.T) {
 	mu.Unlock()
 	assert.Equal(t, "identity", got,
 		"Bedrock streaming request must send Accept-Encoding: identity to prevent net/http auto-gzip buffering (issue #4542)")
+}
+
+// TestResponsesStream_ToolInputDeltaForwardedBeforeUpstreamCompletes guards the
+// gateway side of the "tool arguments held until the call finishes" report: a
+// Converse toolUse input delta must reach the client while the upstream is still
+// generating the rest of the argument. If Bifrost ever accumulated tool input
+// until contentBlockStop, a long Write content argument would stall the client
+// exactly as the upstream per-value buffering does.
+func TestResponsesStream_ToolInputDeltaForwardedBeforeUpstreamCompletes(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok, "test server ResponseWriter must support Flush")
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+
+		writeEventStreamEvent(t, w, "messageStart", []byte(`{"role":"assistant"}`))
+		writeEventStreamEvent(t, w, "contentBlockStart", []byte(`{"start":{"toolUse":{"toolUseId":"tooluse_1","name":"Write"}},"contentBlockIndex":0}`))
+		writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"{\"file_path\":\"/tmp/x.txt\",\"content\":\"line 1\\n"}},"contentBlockIndex":0}`))
+		flusher.Flush()
+		<-release // the rest of the argument is still being generated
+		writeEventStreamEvent(t, w, "contentBlockDelta", []byte(`{"delta":{"toolUse":{"input":"line 2\"}"}},"contentBlockIndex":0}`))
+		writeEventStreamEvent(t, w, "contentBlockStop", []byte(`{"contentBlockIndex":0}`))
+		writeEventStreamEvent(t, w, "messageStop", []byte(`{"stopReason":"tool_use"}`))
+		flusher.Flush()
+	}))
+	defer ts.Close()
+	defer closeRelease()
+
+	provider := newTestProviderWithServer(t, ts)
+	req := testResponsesRequest()
+	req.Model = testConverseStreamModel
+	streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
+	require.Nil(t, bifrostErr, "stream setup should not error")
+	require.NotNil(t, streamChan)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case chunk, ok := <-streamChan:
+			require.True(t, ok, "stream closed before the tool input delta arrived")
+			require.Nil(t, chunk.BifrostError, "unexpected error chunk: %+v", chunk.BifrostError)
+			if chunk.BifrostResponsesStreamResponse != nil &&
+				chunk.BifrostResponsesStreamResponse.Type == schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta {
+				require.NotNil(t, chunk.BifrostResponsesStreamResponse.Delta)
+				assert.Contains(t, *chunk.BifrostResponsesStreamResponse.Delta, "file_path")
+				closeRelease()
+				for range streamChan {
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("tool input delta not forwarded before the upstream finished the argument; Bifrost is holding tool input")
+		}
+	}
 }

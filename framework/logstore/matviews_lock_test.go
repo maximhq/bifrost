@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"database/sql"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,7 +84,7 @@ func TestRefreshMatViewsAdvisoryLockLifecycle(t *testing.T) {
 	t.Run("normal refresh releases lock", func(t *testing.T) {
 		resetTestMatViewRefreshGate()
 
-		require.NoError(t, refreshMatViews(context.Background(), db))
+		require.NoError(t, refreshMatViews(context.Background(), db, 0))
 
 		conn := acquireTestAdvisoryLock(t, db, matviewRefreshAdvisoryLockKey)
 		releaseTestAdvisoryLock(t, conn, matviewRefreshAdvisoryLockKey)
@@ -98,7 +99,7 @@ func TestRefreshMatViewsAdvisoryLockLifecycle(t *testing.T) {
 		defer cancel()
 
 		start := time.Now()
-		require.NoError(t, refreshMatViews(ctx, db))
+		require.NoError(t, refreshMatViews(ctx, db, 0))
 		assert.Less(t, time.Since(start), time.Second)
 	})
 
@@ -113,7 +114,7 @@ func TestRefreshMatViewsAdvisoryLockLifecycle(t *testing.T) {
 			resetTestMatViewRefreshGate()
 
 			ctx, cancel := context.WithTimeout(context.Background(), budget)
-			err := refreshMatViews(ctx, db)
+			err := refreshMatViews(ctx, db, 0)
 			cancel()
 			if err != nil {
 				timedOut = true
@@ -134,7 +135,7 @@ func TestRefreshMatViewsAdvisoryLockLifecycle(t *testing.T) {
 		holderDB, holder := acquireTestAdvisoryLockOnIsolatedPool(t, matviewRefreshAdvisoryLockKey)
 		closeTestAdvisoryLockSession(t, holderDB, holder)
 
-		require.NoError(t, refreshMatViews(context.Background(), db))
+		require.NoError(t, refreshMatViews(context.Background(), db, 0))
 
 		conn := acquireTestAdvisoryLock(t, db, matviewRefreshAdvisoryLockKey)
 		releaseTestAdvisoryLock(t, conn, matviewRefreshAdvisoryLockKey)
@@ -289,4 +290,17 @@ func testMatViewExists(t *testing.T, db *gorm.DB, view string) bool {
 	`, view).Scan(&exists).Error
 	require.NoError(t, err)
 	return exists
+}
+
+// TestMatViewRefreshTickSkippedWhileMigrating pins that a refresh tick does
+// not touch the database at all while another node holds the migration lock:
+// a nil *gorm.DB would panic inside refreshMatViews if the tick ran.
+func TestMatViewRefreshTickSkippedWhileMigrating(t *testing.T) {
+	now := time.Now()
+	gate := &migrationLockProbe{now: func() time.Time { return now }, checkedAt: now, held: true}
+	var ready atomic.Bool
+	require.NotPanics(t, func() {
+		runMatViewRefreshTick(context.Background(), nil, gate, time.Minute, time.Minute, testLogger{}, &ready)
+	})
+	assert.False(t, ready.Load(), "a skipped tick must not mark the matviews ready")
 }

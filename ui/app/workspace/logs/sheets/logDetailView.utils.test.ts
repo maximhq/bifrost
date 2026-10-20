@@ -1,10 +1,18 @@
+import { registerReservedMetadataPrefix } from "@/lib/registries/logs";
 import { describe, expect, it } from "vitest";
 import {
+	decisionQuestions,
 	extractProviderErrorMessage,
+	findLastPendingClientCallIndex,
 	hasNoToolArguments,
 	isClientToolCallItem,
+	isParsedPassthroughLog,
+	isPassthroughLog,
+	passthroughLogParams,
+	showsPassthroughTag,
 	nextSessionLookupStart,
 	isResponsesToolCallItem,
+	isShownMetadataKey,
 	parseRoutingDecisionLine,
 	pickNextSessionLog,
 	resolveRawJsonNoticeState,
@@ -158,10 +166,51 @@ describe("isClientToolCallItem", () => {
 		// back as computer_call_output / local_shell_call_output next request.
 		expect(isClientToolCallItem("computer_call")).toBe(true);
 		expect(isClientToolCallItem("local_shell_call")).toBe(true);
+		expect(isClientToolCallItem("shell_call")).toBe(true);
+		expect(isClientToolCallItem("apply_patch_call")).toBe(true);
+		expect(isClientToolCallItem("shell_call_output")).toBe(false);
 		expect(isClientToolCallItem("computer_call_output")).toBe(false);
 		expect(isClientToolCallItem("web_search_call")).toBe(false);
 		expect(isClientToolCallItem("function_call_output")).toBe(false);
 		expect(isClientToolCallItem(undefined)).toBe(false);
+	});
+});
+
+describe("findLastPendingClientCallIndex", () => {
+	const input = { msg: { type: "message" as const, role: "user" as const }, fromOutput: false };
+
+	it("links under a local shell_call, whose result comes in the next request", () => {
+		const entries = [input, { msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: true }];
+		expect(findLastPendingClientCallIndex(entries)).toBe(1);
+	});
+
+	it("links under an apply_patch_call", () => {
+		const entries = [input, { msg: { type: "apply_patch_call" as const, call_id: "call_ap" }, fromOutput: true }];
+		expect(findLastPendingClientCallIndex(entries)).toBe(1);
+	});
+
+	it("picks the last pending call when the response made several", () => {
+		const entries = [
+			input,
+			{ msg: { type: "function_call" as const, call_id: "call_fn" }, fromOutput: true },
+			{ msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: true },
+			{ msg: { type: "message" as const, role: "assistant" as const }, fromOutput: true },
+		];
+		expect(findLastPendingClientCallIndex(entries)).toBe(2);
+	});
+
+	it("skips a hosted shell_call whose output is already in the response", () => {
+		const entries = [
+			input,
+			{ msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: true },
+			{ msg: { type: "shell_call_output" as const, call_id: "call_sh" }, fromOutput: true },
+		];
+		expect(findLastPendingClientCallIndex(entries)).toBe(-1);
+	});
+
+	it("ignores calls replayed in the input", () => {
+		const entries = [{ msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: false }];
+		expect(findLastPendingClientCallIndex(entries)).toBe(-1);
 	});
 });
 
@@ -256,5 +305,120 @@ describe("nextSessionLookupStart", () => {
 
 	it("keeps a timestamp it cannot parse as it is", () => {
 		expect(nextSessionLookupStart("not a time")).toBe("not a time");
+	});
+});
+describe("isShownMetadataKey", () => {
+	it("shows the caller's own keys", () => {
+		expect(isShownMetadataKey("team", false)).toBe(true);
+		expect(isShownMetadataKey("team", true)).toBe(true);
+	});
+
+	it("hides the async marker", () => {
+		expect(isShownMetadataKey("isAsyncRequest", false)).toBe(false);
+	});
+
+	it("hides a realtime turn's own keys only on a realtime turn, which shows them in its header", () => {
+		expect(isShownMetadataKey("realtime_voice", true)).toBe(false);
+		expect(isShownMetadataKey("realtime_voice", false)).toBe(true);
+	});
+
+	it("hides every key under a reserved prefix, which a registered panel shows its own way", () => {
+		registerReservedMetadataPrefix("ext_");
+		for (const key of ["ext_v", "ext_decision", "ext_some_future_key"]) {
+			expect(isShownMetadataKey(key, false)).toBe(false);
+		}
+		expect(isShownMetadataKey("extra", false)).toBe(true);
+	});
+});
+describe("decisionQuestions", () => {
+	const named = { urgency: { kind: "score", instructions: "How urgent?", criteria: ["low", "high"] } };
+	const ordered = [{ type: "predicate", name: "frustrated", instructions: "Is the customer frustrated?" }];
+
+	it("returns the questions of an older log keyed by name", () => {
+		expect(decisionQuestions("decisions", named)).toEqual({ value: named, count: 1 });
+	});
+
+	it("returns the questions in request order", () => {
+		expect(decisionQuestions("decisions", ordered)).toEqual({ value: ordered, count: 1 });
+	});
+
+	it("returns null for other request types and for empty or missing params", () => {
+		expect(decisionQuestions("chat.completion", named)).toBeNull();
+		expect(decisionQuestions("decisions", {})).toBeNull();
+		expect(decisionQuestions("decisions", [])).toBeNull();
+		expect(decisionQuestions("decisions", undefined)).toBeNull();
+		expect(decisionQuestions("decisions", "x")).toBeNull();
+	});
+});
+
+describe("isParsedPassthroughLog", () => {
+	const passthrough = { object: "passthrough", params: { method: "POST", path: "/v1/chat/completions", status_code: 200 } };
+
+	it("is false for a raw-only passthrough row", () => {
+		expect(isParsedPassthroughLog(passthrough)).toBe(false);
+	});
+
+	it("is false when parsed_type is set but nothing decoded into conversation fields", () => {
+		expect(isParsedPassthroughLog({ ...passthrough, params: { ...passthrough.params, parsed_type: "chat_completion" } })).toBe(false);
+	});
+
+	it("is true for a parsed chat or Responses passthrough row, streamed or not", () => {
+		const params = { ...passthrough.params, parsed_type: "chat_completion" };
+		expect(isParsedPassthroughLog({ ...passthrough, params, input_history: [{ role: "user", content: "hi" }] as any })).toBe(true);
+		expect(
+			isParsedPassthroughLog({
+				object: "passthrough_stream",
+				params: { ...params, parsed_type: "responses" },
+				responses_output: [{ type: "message" }] as any,
+			}),
+		).toBe(true);
+	});
+
+	it("is false for typed rows whatever their params say", () => {
+		expect(isParsedPassthroughLog({ object: "chat_completion", params: { parsed_type: "x" } as any, input_history: [{}] as any })).toBe(
+			false,
+		);
+	});
+});
+
+describe("passthroughLogParams", () => {
+	it("returns the params of a passthrough row and null otherwise", () => {
+		expect(passthroughLogParams({ object: "passthrough_stream", params: { path: "/v1/messages" } as any })?.path).toBe("/v1/messages");
+		expect(passthroughLogParams({ object: "passthrough" })).toEqual({});
+		expect(passthroughLogParams({ object: "responses", params: {} })).toBeNull();
+	});
+});
+describe("passthrough tagging", () => {
+	it("treats a tagged row stored under its inferred type as passthrough, and tags its badge", () => {
+		const row = { object: "chat_completion", is_passthrough: true };
+		expect(isPassthroughLog(row)).toBe(true);
+		expect(showsPassthroughTag(row)).toBe(true);
+	});
+
+	it("does not tag a row whose badge already says passthrough", () => {
+		expect(isPassthroughLog({ object: "passthrough", is_passthrough: true })).toBe(true);
+		expect(showsPassthroughTag({ object: "passthrough", is_passthrough: true })).toBe(false);
+		// Rows written before the tag existed.
+		expect(isPassthroughLog({ object: "passthrough_stream" })).toBe(true);
+		expect(showsPassthroughTag({ object: "passthrough_stream" })).toBe(false);
+	});
+
+	it("leaves typed rows alone", () => {
+		expect(isPassthroughLog({ object: "chat_completion" })).toBe(false);
+		expect(showsPassthroughTag({ object: "chat_completion", is_passthrough: false })).toBe(false);
+	});
+
+	it("reads passthrough params from a tagged row stored under its inferred type", () => {
+		expect(passthroughLogParams({ object: "responses", is_passthrough: true, params: { path: "/v1/messages" } as any })?.path).toBe(
+			"/v1/messages",
+		);
+		expect(
+			isParsedPassthroughLog({
+				object: "responses",
+				is_passthrough: true,
+				params: { parsed_type: "responses" } as any,
+				responses_output: [{ type: "message" }] as any,
+			}),
+		).toBe(true);
 	});
 });

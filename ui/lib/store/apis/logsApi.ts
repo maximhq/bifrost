@@ -23,6 +23,7 @@ import {
 	ThroughputHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
+import { getPeriodTimezone, withPeriodTimezone } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
 import { RoutingRule } from "@/lib/types/routingRules";
 
@@ -66,17 +67,28 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.tool_call_names && filters.tool_call_names.length > 0) {
 		params.tool_call_names = filters.tool_call_names.join(",");
 	}
+	if (filters.guardrail_outcomes && filters.guardrail_outcomes.length > 0) {
+		params.guardrail_outcomes = filters.guardrail_outcomes.join(",");
+	}
 	if (filters.complexity_tiers && filters.complexity_tiers.length > 0) {
 		params.complexity_tiers = filters.complexity_tiers.join(",");
 	}
 	if (filters.complexity_mechanisms && filters.complexity_mechanisms.length > 0) {
 		params.complexity_mechanisms = filters.complexity_mechanisms.join(",");
 	}
+	if (filters.agent_names && filters.agent_names.length > 0) {
+		params.agent_names = filters.agent_names.join(",");
+	}
 	if (filters.session_id) {
 		params.session_id = filters.session_id;
 	}
+	if (filters.agent_correlation_id) {
+		params.agent_correlation_id = filters.agent_correlation_id;
+	}
 	if (filters.period) {
 		params.period = filters.period;
+		const timezone = getPeriodTimezone(filters.period);
+		if (timezone) params.timezone = timezone;
 	} else {
 		if (filters.start_time) params.start_time = filters.start_time;
 		if (filters.end_time) params.end_time = filters.end_time;
@@ -246,11 +258,13 @@ export const logsApi = baseApi.injectEndpoints({
 			CostHistogramResponse,
 			{
 				filters: LogFilters;
+				// Overrides the bucket width the server derives from the time range.
+				bucketSizeSeconds?: number;
 			}
 		>({
-			query: ({ filters }) => ({
+			query: ({ filters, bucketSizeSeconds }) => ({
 				url: "/logs/histogram/cost",
-				params: buildFilterParams(filters),
+				params: { ...buildFilterParams(filters), ...(bucketSizeSeconds ? { bucket_size: bucketSizeSeconds } : {}) },
 			}),
 			providesTags: ["Logs"],
 		}),
@@ -448,7 +462,7 @@ export const logsApi = baseApi.injectEndpoints({
 			query: ({ filters, limit }) => ({
 				url: "/logs/recalculate-cost",
 				method: "POST",
-				body: { filters, limit },
+				body: { filters: withPeriodTimezone(filters), limit },
 			}),
 			invalidatesTags: ["Logs"],
 		}),

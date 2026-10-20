@@ -1437,6 +1437,21 @@ func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesM
 	var pendingReasoningContentBlocks []CohereContentBlock
 	var currentAssistantMessage *CohereMessage
 
+	// flushAssistant emits the assistant turn being assembled, with any pending
+	// thinking placed ahead of its other content (Cohere rejects thinking that
+	// follows a text block).
+	flushAssistant := func() {
+		if currentAssistantMessage == nil {
+			return
+		}
+		if len(pendingReasoningContentBlocks) > 0 {
+			prependCohereThinking(currentAssistantMessage, pendingReasoningContentBlocks)
+			pendingReasoningContentBlocks = nil
+		}
+		cohereMessages = append(cohereMessages, *currentAssistantMessage)
+		currentAssistantMessage = nil
+	}
+
 	for _, msg := range bifrostMessages {
 		// Handle nil Type with default
 		msgType := schemas.ResponsesMessageTypeMessage
@@ -1462,42 +1477,19 @@ func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesM
 				cohereMsg := convertBifrostMessageToCohereMessage(&msg)
 				if cohereMsg != nil {
 					if role == "assistant" {
-						// Add any pending reasoning content blocks to the message
-						if len(pendingReasoningContentBlocks) > 0 {
-							// copy the pending reasoning content blocks
-							copied := make([]CohereContentBlock, len(pendingReasoningContentBlocks))
-							copy(copied, pendingReasoningContentBlocks)
-							contentBlocks := copied
-							pendingReasoningContentBlocks = nil
-							// Add content blocks after pending reasoning content blocks are added
-							if msg.Content != nil {
-								if msg.Content.ContentStr != nil {
-									contentBlocks = append(contentBlocks, CohereContentBlock{
-										Type: CohereContentBlockTypeText,
-										Text: msg.Content.ContentStr,
-									})
-								} else if msg.Content.ContentBlocks != nil {
-									contentBlocks = append(contentBlocks, convertResponsesMessageContentBlocksToCohere(msg.Content.ContentBlocks)...)
-								}
-							}
-							cohereMsg.Content = NewBlocksContent(contentBlocks)
+						// Text after a finished assistant turn starts a new one; text after
+						// pending reasoning joins it.
+						if currentAssistantMessage != nil && cohereMessageHasNonThinkingContent(currentAssistantMessage) {
+							flushAssistant()
 						}
-						// Store assistant message for potential reasoning blocks
+						if len(pendingReasoningContentBlocks) > 0 {
+							prependCohereThinking(cohereMsg, pendingReasoningContentBlocks)
+							pendingReasoningContentBlocks = nil
+						}
+						// Store assistant message for potential reasoning blocks and tool calls
 						currentAssistantMessage = cohereMsg
 					} else {
-						// Flush any pending assistant message first for non-assistant messages
-						if currentAssistantMessage != nil {
-							if len(pendingReasoningContentBlocks) > 0 {
-								if currentAssistantMessage.Content == nil {
-									currentAssistantMessage.Content = NewBlocksContent(pendingReasoningContentBlocks)
-								} else if currentAssistantMessage.Content.BlocksContent != nil {
-									currentAssistantMessage.Content.BlocksContent = append(currentAssistantMessage.Content.BlocksContent, pendingReasoningContentBlocks...)
-								}
-								pendingReasoningContentBlocks = nil
-							}
-							cohereMessages = append(cohereMessages, *currentAssistantMessage)
-							currentAssistantMessage = nil
-						}
+						flushAssistant()
 						cohereMessages = append(cohereMessages, *cohereMsg)
 					}
 				}
@@ -1507,6 +1499,13 @@ func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesM
 			// Handle reasoning as thinking content blocks
 			reasoningBlocks := convertBifrostReasoningToCohereThinking(&msg)
 			if len(reasoningBlocks) > 0 {
+				// Cohere requires thinking blocks to precede every other block in a
+				// message, so reasoning that follows an assistant turn which already
+				// carries text or tool calls opens a new assistant turn instead of
+				// trailing it.
+				if currentAssistantMessage != nil && cohereMessageHasNonThinkingContent(currentAssistantMessage) {
+					flushAssistant()
+				}
 				if currentAssistantMessage == nil {
 					currentAssistantMessage = &CohereMessage{
 						Role: "assistant",
@@ -1516,47 +1515,38 @@ func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesM
 			}
 
 		case schemas.ResponsesMessageTypeFunctionCall:
-			// Flush any pending reasoning blocks first
-			if len(pendingReasoningContentBlocks) > 0 && currentAssistantMessage != nil {
-				if currentAssistantMessage.Content == nil {
-					currentAssistantMessage.Content = NewBlocksContent(pendingReasoningContentBlocks)
-				} else if currentAssistantMessage.Content.BlocksContent != nil {
-					currentAssistantMessage.Content.BlocksContent = append(currentAssistantMessage.Content.BlocksContent, pendingReasoningContentBlocks...)
-				}
-				cohereMessages = append(cohereMessages, *currentAssistantMessage)
-				pendingReasoningContentBlocks = nil
-				currentAssistantMessage = nil
-			}
-
-			// Handle function calls from Responses
+			// Cohere returns a reasoning/tool turn as ONE assistant message (thinking
+			// and any text in content, the calls in tool_calls), which ingress splits
+			// into reasoning, message and function_call items; fold them back so the
+			// replayed turn has the shape Cohere produced.
 			assistantMsg := convertBifrostFunctionCallToCohereMessage(&msg)
 			if assistantMsg != nil {
-				cohereMessages = append(cohereMessages, *assistantMsg)
+				if currentAssistantMessage == nil {
+					currentAssistantMessage = assistantMsg
+				} else {
+					currentAssistantMessage.ToolCalls = append(currentAssistantMessage.ToolCalls, assistantMsg.ToolCalls...)
+				}
 			}
 
 		case schemas.ResponsesMessageTypeFunctionCallOutput:
 			// Handle function call outputs
 			toolMsg := convertBifrostFunctionCallOutputToCohereMessage(&msg)
 			if toolMsg != nil {
+				flushAssistant()
 				cohereMessages = append(cohereMessages, *toolMsg)
 			}
 		}
 	}
 
-	// Flush any remaining pending reasoning blocks
-	if len(pendingReasoningContentBlocks) > 0 && currentAssistantMessage != nil {
-		if currentAssistantMessage.Content == nil {
-			currentAssistantMessage.Content = NewBlocksContent(pendingReasoningContentBlocks)
-		} else if currentAssistantMessage.Content.BlocksContent != nil {
-			currentAssistantMessage.Content.BlocksContent = append(currentAssistantMessage.Content.BlocksContent, pendingReasoningContentBlocks...)
-		}
-		cohereMessages = append(cohereMessages, *currentAssistantMessage)
-	} else if currentAssistantMessage != nil {
-		cohereMessages = append(cohereMessages, *currentAssistantMessage)
-	}
+	// Flush the assistant turn still being assembled
+	flushAssistant()
 
 	// Prepend system messages if any
 	if len(systemContent) > 0 {
+		// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
+		if params != nil && params.Instructions != nil && *params.Instructions != "" {
+			systemContent = append([]string{*params.Instructions}, systemContent...)
+		}
 		systemMsg := CohereMessage{
 			Role:    "system",
 			Content: NewStringContent(strings.Join(systemContent, "\n")),
@@ -1630,6 +1620,40 @@ func convertBifrostMessageToCohereSystemContent(msg *schemas.ResponsesMessage) [
 	}
 
 	return systemContent
+}
+
+// cohereMessageHasNonThinkingContent reports whether msg carries anything other than thinking blocks.
+func cohereMessageHasNonThinkingContent(msg *CohereMessage) bool {
+	if len(msg.ToolCalls) > 0 {
+		return true
+	}
+	if msg.Content == nil {
+		return false
+	}
+	if msg.Content.StringContent != nil {
+		return true
+	}
+	for _, block := range msg.Content.BlocksContent {
+		if block.Type != CohereContentBlockTypeThinking {
+			return true
+		}
+	}
+	return false
+}
+
+// prependCohereThinking places thinking ahead of msg's existing content, the
+// only order Cohere accepts within one message.
+func prependCohereThinking(msg *CohereMessage, thinking []CohereContentBlock) {
+	blocks := make([]CohereContentBlock, 0, len(thinking)+1)
+	blocks = append(blocks, thinking...)
+	if msg.Content != nil {
+		if msg.Content.StringContent != nil {
+			blocks = append(blocks, CohereContentBlock{Type: CohereContentBlockTypeText, Text: msg.Content.StringContent})
+		} else {
+			blocks = append(blocks, msg.Content.BlocksContent...)
+		}
+	}
+	msg.Content = NewBlocksContent(blocks)
 }
 
 // convertBifrostMessageToCohereMessage converts a regular Bifrost message to Cohere message

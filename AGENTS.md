@@ -120,7 +120,7 @@ bifrost/
 │   └── (architecture|features|providers|mcp|plugins|enterprise|...)
 │
 ├── .claude/skills/                # Claude Code skill definitions (4 skills)
-├── go.work                        # Go workspace — requires Go 1.27.0
+├── go.work                        # Go workspace — requires Go 1.27.2
 ├── Makefile                       # Build, test, dev commands (1300+ lines)
 └── terraform/                     # Infrastructure as Code
 ```
@@ -135,14 +135,14 @@ Bifrost is a **multi-module Go workspace**. Each module has its own `go.mod`:
 go.work
 ├── core/go.mod              # github.com/maximhq/bifrost/core
 ├── framework/go.mod         # github.com/maximhq/bifrost/framework
-├── transports/go.mod        # github.com/maximhq/bifrost/transports
+├── transports/go.mod        # github.com/maximhq/bifrost/transports/v2
 └── plugins/*/go.mod         # 9 plugin modules (governance, telemetry, logging, etc.)
 ```
 
 **Rules:**
 - Run `go mod tidy` in the **specific module directory**, not the root
 - Cross-module imports resolve via workspace locally, but need explicit `require` in `go.mod` for releases
-- The workspace requires **Go 1.27.0** (`go.work` directive)
+- The workspace requires **Go 1.27.2** (`go.work` directive)
 
 ---
 
@@ -219,6 +219,17 @@ Client HTTP Request
 - **Object pooling everywhere**: `sync.Pool` wrappers reduce GC pressure. Pools exist for: channel messages, response channels, error channels, stream channels, plugin pipelines, MCP requests, HTTP request/response objects, scanner buffers.
 - **Plugin pipeline symmetry**: Pre-hooks execute in registration order, post-hooks in **reverse** order (LIFO). For every pre-hook executed, the corresponding post-hook is guaranteed to run.
 - **Streaming**: SSE chunks flow through `chan chan *schemas.BifrostStreamChunk`. Accumulated into full response for post-hooks via `framework/streaming/accumulator.go`.
+
+### Every change states its cost on the request flow
+
+Bifrost's value is ~11µs of overhead at 5,000 RPS, so every change is evaluated for the memory allocations and processing time it adds to the end-to-end flow, not only for correctness. Before a PR is opened:
+
+- **Measure, do not assert.** Code on the request path (handlers, plugins, providers, streaming, key selection, auth) ships with a `Benchmark*` in the existing `_test.go` file, run with `-benchmem`, and the PR body records allocs/op and ns/op before and after. A change that cannot be benchmarked states plainly why ("config load only", "runs once per provider rebuild").
+- **The common case must not regress.** A feature that is off by default, or only applies to some keys/providers, adds zero allocations and at most a nil/empty check to requests that do not use it. Put the work behind that check, not in front of it.
+- **Per-credential or per-stream state lives in a manager, not per request.** Caches keyed by credential or `RequestID` are built once and reused (see the token cache in `core/providers/utils/tokencache` and the streaming accumulator); the per-request cost is a map load, never a rebuild.
+- **Name the memory that is retained.** Anything cached for longer than a request (tokens, connections, slots, buffers) states its bound in the PR body: what it is keyed by, how large an entry is, and when it is freed.
+
+Reviewers treat a missing cost statement the same way as missing tests.
 
 ### BifrostContext — Custom Context
 
@@ -592,6 +603,17 @@ Insert into the collection surgically (a script that splices the new object in, 
 
 The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
 
+### Provider-native features are tested on every route that reaches the provider
+
+A provider is reachable through more than its own SDK endpoint, and a fix that only looks at the route named in the issue is incomplete. Before calling a provider-native feature (a content block type, a beta header, a request parameter) fixed or added, enumerate every inbound route that can carry it to that provider and cover each one:
+
+- **The provider's native surface**: `/anthropic/v1/messages`, `/genai/...`, `/bedrock/...` and the matching SDK integration under `transports/bifrost-http/integrations/`.
+- **The neutral OpenAI-shaped surfaces**: `/v1/responses` and `/v1/chat/completions`, routed by the `provider/model` prefix. The payload arrives in neutral shape (for example a Responses `function` tool, not an Anthropic `input_schema` tool), and the client cannot set provider headers such as `anthropic-beta`, so any header the feature needs must be derived from the body by the gateway.
+- **The Go SDK**, which enters at the same neutral types as `/v1/responses`.
+- **Other hosts of the same model family** that reuse the provider's converters: Bedrock, Bedrock Mantle, Vertex, Azure, OpenRouter. Find them with `grep -rl "providers/<provider>\"" core/providers transports/bifrost-http` and check the per-host gates (`ProviderFeatures`, placement gates like `DefaultSupportsMidConversationSystem`) rather than assuming the converter change reaches them.
+
+For each route the change reaches: a unit test that drives that route's ingress type into the provider egress, and a provider-harness case in the same folder with the route in the case name, using the shape and headers a real client on that route would send (so a `/v1/responses` case must not carry `anthropic-beta`). Routes the change does not reach are not silently skipped: the PR states each one and why (no equivalent construct on that wire, gated off by the feature table, dropped by a placement fallback), so the gap is a recorded decision and not an omission. If the fix leaves a host with the beta header on but the body construct dropped, say so explicitly; that mismatch is itself a bug to track.
+
 ### Every non-exempt wire-visible fix ends with unit tests, then a harness command handed to the user
 
 Unit tests and `make test-core` are the finish line for the agent. Run the Go-level red/green loop and the regression reruns, and report what passed and what failed.
@@ -601,16 +623,19 @@ The live provider harness is the user's to run, not the agent's. Do not launch i
 **RUN THE PROVIDER HARNESS.** Unit tests are green. The live run is yours to trigger.
 
 ```bash
-# 1. backing services: Weaviate must answer on 9000 (start it if not)
-curl -s -o /dev/null -w "%{http_code}\n" http://localhost:9000/v1/.well-known/ready || docker compose -f framework/docker-compose.yml up -d weaviate
+# 1. backing services: start Weaviate (idempotent)
+docker compose -f tests/docker-compose.yml up -d weaviate
 
-# 2. pick a free port (worktrees run side by side, so never assume 8080)
+# 2. wait until Weaviate HTTP is ready (-f fails on 503) AND gRPC answers (the client does not check it at startup)
+until curl -sf http://localhost:9000/v1/.well-known/ready >/dev/null && nc -z localhost 50051; do sleep 2; done
+
+# 3. pick a free port (worktrees run side by side, so never assume 8080)
 lsof -nP -iTCP:<port> -sTCP:LISTEN
 
-# 3. start Bifrost from the code under test on that port, then wait for /health
+# 4. start Bifrost from the code under test on that port, then wait for /health
 make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python
 
-# 4. run the harness against that server
+# 5. run the harness against that server
 make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>" BASE_URL=http://localhost:<port>
 ```
 
@@ -632,7 +657,7 @@ The profile is the shared provider config at `tests/integrations/python/config.j
 
 `HARNESS_MAX_REQUESTS=<n>` is an optional enforced spend bound: the recipe checks every newman launch against its exact filtered request count before it starts and refuses any launch that would cross the cap (exit 3), so the live total never exceeds the approved number. Add it when a run is broad enough that the cost is worth capping; a `PROVIDER=` + `FEATURE=` scoped run is usually small enough not to need it. The preflight count from `filter-collection.mjs` is only an estimate because shared producers repeat per provider fork. Stream-cancellation probes are never sent under a cap.
 
-The gateway port is a blocking precondition worth restating in the block: the recipe reuses any server whose `/health` answers at `BASE_URL` and never starts the `APP_DIR` one, so a stale listener silently tests old code. `lsof -nP -iTCP:<port> -sTCP:LISTEN` must come back empty, or show only a Bifrost started from the code under test. Starting it first with `make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python` and waiting for `/health` is the reliable pattern, since a cold start can outlast the recipe's 60s health wait.
+The gateway port is a blocking precondition worth restating in the block: the recipe reuses any server whose `/health` answers at `BASE_URL` and never starts the `APP_DIR` one, so a stale listener silently tests old code. `lsof -nP -iTCP:<port> -sTCP:LISTEN` must come back empty, or show only a Bifrost started from the code under test. Starting it first with `make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python` and waiting for `/health` is the reliable pattern, since a cold start can outlast the recipe's 60s health wait. Weaviate must be up before that `make dev`: the profile enables a `weaviate` vector store on `localhost:9000`, so bring it up with `docker compose -f tests/docker-compose.yml up -d weaviate` first or the server fails to bootstrap. `up -d` returns before Weaviate is ready, so retry until `curl -sf http://localhost:9000/v1/.well-known/ready` passes (`-f` makes a 503 fail) and `nc -z localhost 50051` succeeds: the profile sets `grpc_config` to `localhost:50051`, and the client does not check gRPC reachability at startup, so a missing gRPC port only fails on the first gRPC-backed call.
 
 ### Always prefer `make test-core` over raw `go test` for provider-level tests
 

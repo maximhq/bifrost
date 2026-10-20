@@ -117,7 +117,7 @@ func TestParseBedrockRegionAndModelStripsForTheWire(t *testing.T) {
 // interchangeable. Mantle is deliberately not wired: it accepts the headers and enforces
 // nothing, so there is no rendering that works there.
 func TestWithGuardrailHeaders(t *testing.T) {
-	base := map[string]string{"X-Existing": "keep"}
+	base := schemas.NewSecretVarMap(map[string]string{"X-Existing": "keep"})
 
 	t.Run("renders the headers and consumes the extra param", func(t *testing.T) {
 		extra := map[string]any{
@@ -130,13 +130,13 @@ func TestWithGuardrailHeaders(t *testing.T) {
 		}
 		got := withGuardrailHeaders(base, extra)
 
-		if got[guardrailIdentifierHeader] != "gr-123" || got[guardrailVersionHeader] != "DRAFT" {
+		if got[guardrailIdentifierHeader].Val != "gr-123" || got[guardrailVersionHeader].Val != "DRAFT" {
 			t.Errorf("guardrail headers = %v", got)
 		}
-		if got[guardrailTraceHeader] != "ENABLED" {
-			t.Errorf("trace header = %q", got[guardrailTraceHeader])
+		if got[guardrailTraceHeader].Val != "ENABLED" {
+			t.Errorf("trace header = %q", got[guardrailTraceHeader].Val)
 		}
-		if got["X-Existing"] != "keep" {
+		if got["X-Existing"].Val != "keep" {
 			t.Error("existing headers must survive")
 		}
 		// Read, never consumed: core reuses one request across retry attempts, so
@@ -174,10 +174,10 @@ func TestWithGuardrailHeaders(t *testing.T) {
 	// SetExtraHeaders canonicalises keys and keeps the first it reaches; Go map order is
 	// random, so a differently-cased static header must be replaced, not merely shadowed.
 	t.Run("a differently-cased static header is replaced, not doubled", func(t *testing.T) {
-		static := map[string]string{
+		static := schemas.NewSecretVarMap(map[string]string{
 			"x-amzn-bedrock-guardrailidentifier": "gr-static",
 			"X-Other":                            "keep",
-		}
+		})
 		extra := map[string]any{"guardrailConfig": map[string]any{
 			"guardrailIdentifier": "gr-request", "guardrailVersion": "1"}}
 		got := withGuardrailHeaders(static, extra)
@@ -186,18 +186,18 @@ func TestWithGuardrailHeaders(t *testing.T) {
 		for k, v := range got {
 			if strings.EqualFold(k, guardrailIdentifierHeader) {
 				seen++
-				if v != "gr-request" {
-					t.Errorf("per-request value should win, got %q", v)
+				if v.Val != "gr-request" {
+					t.Errorf("per-request value should win, got %q", v.Val)
 				}
 			}
 		}
 		if seen != 1 {
 			t.Errorf("expected exactly one identifier header, found %d in %v", seen, got)
 		}
-		if got["X-Other"] != "keep" {
+		if got["X-Other"].Val != "keep" {
 			t.Error("unrelated static headers must survive")
 		}
-		if static["x-amzn-bedrock-guardrailidentifier"] != "gr-static" {
+		if static["x-amzn-bedrock-guardrailidentifier"].Val != "gr-static" {
 			t.Error("the caller's map was mutated")
 		}
 	})
@@ -209,8 +209,8 @@ func TestWithGuardrailHeaders(t *testing.T) {
 			"guardrailIdentifier": "gr-1", "guardrailVersion": "DRAFT"}}
 		first := withGuardrailHeaders(base, extra)
 		second := withGuardrailHeaders(base, extra)
-		if second[guardrailIdentifierHeader] != first[guardrailIdentifierHeader] ||
-			second[guardrailVersionHeader] != first[guardrailVersionHeader] {
+		if second[guardrailIdentifierHeader].Val != first[guardrailIdentifierHeader].Val ||
+			second[guardrailVersionHeader].Val != first[guardrailVersionHeader].Val {
 			t.Errorf("second attempt lost the guardrail: %v then %v", first, second)
 		}
 	})
@@ -218,7 +218,7 @@ func TestWithGuardrailHeaders(t *testing.T) {
 	t.Run("nil base map is handled", func(t *testing.T) {
 		extra := map[string]any{"guardrailConfig": map[string]any{
 			"guardrailIdentifier": "gr-1", "guardrailVersion": "1"}}
-		if got := withGuardrailHeaders(nil, extra); got[guardrailIdentifierHeader] != "gr-1" {
+		if got := withGuardrailHeaders(nil, extra); got[guardrailIdentifierHeader].Val != "gr-1" {
 			t.Errorf("got %v", got)
 		}
 	})

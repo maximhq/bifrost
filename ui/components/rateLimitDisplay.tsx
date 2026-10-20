@@ -88,7 +88,11 @@ function Bar({
 						</span>
 						<span className="text-muted-foreground">{formatResetDuration(resetDuration, calendarAligned)}</span>
 					</div>
-					<Progress value={pct} className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", barClass)} />
+					<Progress
+						aria-label={`${label === "req" ? "Request" : label} usage`}
+						value={pct}
+						className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", barClass)}
+					/>
 				</div>
 			</TooltipTrigger>
 			<TooltipContent>

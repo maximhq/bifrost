@@ -56,19 +56,6 @@ const buildDefaults = (initialConfig?: PrometheusFormFragmentProps["currentConfi
 	},
 });
 
-// Field paths considered "owned" by each tab — used for per-tab Reset and to
-// gate the per-tab Save button on whether *this* tab has unsaved changes.
-const PULL_FIELDS = ["metrics_enabled", "overhead_breakdown_enabled", "user_labels_enabled"] as const;
-const PUSH_FIELDS = [
-	"push_gateway_enabled",
-	"prometheus_config.push_gateway_url",
-	"prometheus_config.job_name",
-	"prometheus_config.instance_id",
-	"prometheus_config.push_interval",
-	"prometheus_config.basic_auth_username",
-	"prometheus_config.basic_auth_password",
-] as const;
-
 export function PrometheusFormFragment({
 	currentConfig: initialConfig,
 	onSave,
@@ -126,64 +113,12 @@ export function PrometheusFormFragment({
 
 	// Reset only the fields belonging to the given tab. The other tab's pending
 	// edits are preserved so a Reset on one tab feels scoped.
-	const resetPullTab = () => {
-		const defaults = buildDefaults(initialConfig);
-		form.setValue("metrics_enabled", defaults.metrics_enabled, {
-			shouldDirty: true,
-			shouldValidate: true,
-		});
-		form.setValue("overhead_breakdown_enabled", defaults.overhead_breakdown_enabled, {
-			shouldDirty: true,
-			shouldValidate: true,
-		});
-		form.setValue("user_labels_enabled", defaults.user_labels_enabled, {
-			shouldDirty: true,
-			shouldValidate: true,
-		});
-	};
 
-	const resetPushTab = () => {
-		const defaults = buildDefaults(initialConfig);
-		form.setValue("push_gateway_enabled", defaults.push_gateway_enabled, {
-			shouldDirty: true,
-			shouldValidate: true,
-		});
-		form.setValue("prometheus_config.push_gateway_url", defaults.prometheus_config.push_gateway_url, {
-			shouldDirty: true,
-			shouldValidate: true,
-		});
-		form.setValue("prometheus_config.job_name", defaults.prometheus_config.job_name, { shouldDirty: true, shouldValidate: true });
-		form.setValue("prometheus_config.instance_id", defaults.prometheus_config.instance_id ?? "", {
-			shouldDirty: true,
-			shouldValidate: true,
-		});
-		form.setValue("prometheus_config.push_interval", defaults.prometheus_config.push_interval, { shouldDirty: true, shouldValidate: true });
-		form.setValue("prometheus_config.basic_auth_username", defaults.prometheus_config.basic_auth_username ?? emptySecretVar(), {
-			shouldDirty: true,
-			shouldValidate: true,
-		});
-		form.setValue("prometheus_config.basic_auth_password", defaults.prometheus_config.basic_auth_password ?? emptySecretVar(), {
-			shouldDirty: true,
-			shouldValidate: true,
-		});
-		setShowBasicAuth(hasAuth(initialConfig?.basic_auth?.username) || hasAuth(initialConfig?.basic_auth?.password));
-	};
 
-	// Tabs can independently report whether *their* fields differ from the
-	// last-saved state. Both Save buttons submit the entire form (single API
-	// shape) — gating per-tab just avoids surfacing a Save when nothing in
-	// the visible tab changed.
-	const dirtyFields = form.formState.dirtyFields as Record<string, unknown>;
-	const isPullDirty = PULL_FIELDS.some((path) => dirtyFields[path]);
-	const isPushDirty = PUSH_FIELDS.some((path) => {
-		const segments = path.split(".");
-		let cursor: any = dirtyFields;
-		for (const seg of segments) {
-			if (cursor == null) return false;
-			cursor = cursor[seg];
-		}
-		return !!cursor;
-	});
+	// One Save and one Reset for the whole form, matching the OTEL fragment. Save
+	// always submitted the entire config, and the per-tab gating is what hid the
+	// plugin-level toggles from anyone working on the Push tab.
+	const formDirty = form.formState.isDirty;
 
 	// Whole-form validity. Save is a single API call covering both tabs, so an
 	// invalid field on the *other* tab silently blocks handleSubmit. We disable
@@ -194,67 +129,112 @@ export function PrometheusFormFragment({
 	const hasPullErrors = !!errors.metrics_enabled || !!errors.overhead_breakdown_enabled;
 	const hasPushErrors = !!errors.push_gateway_enabled || !!errors.prometheus_config;
 
-	const renderActions = (tabKey: "pull" | "push", tabDirty: boolean, onResetTab: () => void) => {
-		const thisTabHasErrors = tabKey === "pull" ? hasPullErrors : hasPushErrors;
-		const otherTabHasErrors = tabKey === "pull" ? hasPushErrors : hasPullErrors;
-		const otherTabLabel = tabKey === "pull" ? "Push-based" : "Pull-based";
-		const saveDisabled = !hasPrometheusAccess || !tabDirty || formIsInvalid;
-		let tooltipMsg = "";
-		if (!tabDirty) {
-			tooltipMsg = "No changes made in this tab";
-		} else if (formIsInvalid && otherTabHasErrors && !thisTabHasErrors) {
-			tooltipMsg = `Fix validation errors in the ${otherTabLabel} tab before saving`;
-		} else if (formIsInvalid) {
-			tooltipMsg = "Fix validation errors before saving";
-		}
+	const saveDisabled = !hasPrometheusAccess || !formDirty || formIsInvalid;
+	let tooltipMsg = "";
+	if (!formDirty) {
+		tooltipMsg = "No changes made";
+	} else if (formIsInvalid) {
+		const where = hasPullErrors ? "Pull-based" : hasPushErrors ? "Push-based" : "";
+		tooltipMsg = where ? `Fix validation errors in the ${where} tab before saving` : "Fix validation errors before saving";
+	}
 
-		return (
-			<div className="flex w-full flex-row items-center pt-4">
-				<div className="ml-auto flex justify-end space-x-2 py-2">
-					{onDelete && (
-						<Button
-							type="button"
-							variant="outline"
-							onClick={onDelete}
-							disabled={isDeleting || !hasPrometheusAccess}
-							data-testid="prometheus-connector-delete-btn"
-							title="Delete connector"
-							aria-label="Delete connector"
-						>
-							<Trash2 className="size-4" />
-						</Button>
-					)}
+	const renderFormActions = () => (
+		<div className="flex w-full flex-row items-center border-t pt-4">
+			<div className="ml-auto flex justify-end space-x-2 py-2">
+				{onDelete && (
 					<Button
 						type="button"
 						variant="outline"
-						onClick={onResetTab}
-						disabled={!hasPrometheusAccess || isLoading || !tabDirty}
-						data-testid={`prometheus-${tabKey}-reset-btn`}
+						onClick={onDelete}
+						disabled={isDeleting || !hasPrometheusAccess}
+						data-testid="prometheus-connector-delete-btn"
+						title="Delete connector"
+						aria-label="Delete connector"
 					>
-						Reset
+						<Trash2 className="size-4" />
 					</Button>
-					<TooltipProvider>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button type="submit" disabled={saveDisabled} isLoading={isSaving} data-testid={`prometheus-${tabKey}-save-btn`}>
-									Save Prometheus Configuration
-								</Button>
-							</TooltipTrigger>
-							{tooltipMsg && (
-								<TooltipContent>
-									<p>{tooltipMsg}</p>
-								</TooltipContent>
-							)}
-						</Tooltip>
-					</TooltipProvider>
-				</div>
+				)}
+				<Button
+					type="button"
+					variant="outline"
+					onClick={() => {
+						form.reset(buildDefaults(initialConfig));
+						setShowBasicAuth(hasAuth(initialConfig?.basic_auth?.username) || hasAuth(initialConfig?.basic_auth?.password));
+					}}
+					disabled={!hasPrometheusAccess || isLoading || !formDirty}
+					data-testid="prometheus-reset-btn"
+				>
+					Reset
+				</Button>
+				<TooltipProvider>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button type="submit" disabled={saveDisabled} isLoading={isSaving} data-testid="prometheus-save-btn">
+								Save Prometheus Configuration
+							</Button>
+						</TooltipTrigger>
+						{tooltipMsg && (
+							<TooltipContent>
+								<p>{tooltipMsg}</p>
+							</TooltipContent>
+						)}
+					</Tooltip>
+				</TooltipProvider>
 			</div>
-		);
-	};
+		</div>
+	);
 
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+					<div className="flex items-center justify-between gap-4">
+						<div className="flex flex-col gap-1">
+							<h3 className="text-sm font-medium">Overhead breakdown</h3>
+							<p className="text-muted-foreground text-xs">Export per-component Bifrost overhead latency as a histogram.</p>
+						</div>
+						<FormField
+							control={form.control}
+							name="overhead_breakdown_enabled"
+							render={({ field }) => (
+								<FormItem className="flex items-center gap-2">
+									<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+									<FormControl>
+										<Switch
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasPrometheusAccess}
+											data-testid="prometheus-overhead-breakdown-toggle"
+										/>
+									</FormControl>
+								</FormItem>
+							)}
+						/>
+					</div>
+
+					<div className="flex items-center justify-between gap-4">
+						<div className="flex flex-col gap-1">
+							<h3 className="text-sm font-medium">User labels</h3>
+							<p className="text-muted-foreground text-xs">Add user data labels to metrics</p>
+						</div>
+						<FormField
+							control={form.control}
+							name="user_labels_enabled"
+							render={({ field }) => (
+								<FormItem className="flex items-center gap-2">
+									<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+									<FormControl>
+										<Switch
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasPrometheusAccess}
+											data-testid="prometheus-user-labels-toggle"
+										/>
+									</FormControl>
+								</FormItem>
+							)}
+						/>
+					</div>
+
 				<Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "pull" | "push")}>
 					<TabsList className="gap-2">
 						<TabsTrigger value="pull" className="px-2 py-1" data-testid="prometheus-tab-pull">
@@ -316,55 +296,6 @@ export function PrometheusFormFragment({
 							</p>
 						</div>
 
-						<div className="flex items-center justify-between gap-4">
-							<div className="flex flex-col gap-1">
-								<h3 className="text-sm font-medium">Overhead breakdown</h3>
-								<p className="text-muted-foreground text-xs">Export per-component Bifrost overhead latency as a histogram.</p>
-							</div>
-							<FormField
-								control={form.control}
-								name="overhead_breakdown_enabled"
-								render={({ field }) => (
-									<FormItem className="flex items-center gap-2">
-										<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
-										<FormControl>
-											<Switch
-												checked={field.value}
-												onCheckedChange={field.onChange}
-												disabled={!hasPrometheusAccess}
-												data-testid="prometheus-overhead-breakdown-toggle"
-											/>
-										</FormControl>
-									</FormItem>
-								)}
-							/>
-						</div>
-
-						<div className="flex items-center justify-between gap-4">
-							<div className="flex flex-col gap-1">
-								<h3 className="text-sm font-medium">User labels</h3>
-								<p className="text-muted-foreground text-xs">Add user data labels to metrics</p>
-							</div>
-							<FormField
-								control={form.control}
-								name="user_labels_enabled"
-								render={({ field }) => (
-									<FormItem className="flex items-center gap-2">
-										<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
-										<FormControl>
-											<Switch
-												checked={field.value}
-												onCheckedChange={field.onChange}
-												disabled={!hasPrometheusAccess}
-												data-testid="prometheus-user-labels-toggle"
-											/>
-										</FormControl>
-									</FormItem>
-								)}
-							/>
-						</div>
-
-						{renderActions("pull", isPullDirty, resetPullTab)}
 					</TabsContent>
 
 					{/* Push-based tab: gates the push gateway loop */}
@@ -577,9 +508,10 @@ export function PrometheusFormFragment({
 							</div>
 						</div>
 
-						{renderActions("push", isPushDirty, resetPushTab)}
 					</TabsContent>
 				</Tabs>
+
+				{renderFormActions()}
 			</form>
 		</Form>
 	);

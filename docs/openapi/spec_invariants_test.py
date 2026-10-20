@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Structural invariants for the split OpenAPI sources. Run directly: `python3 spec_invariants_test.py`.
+Needs PyYAML and jsonschema: `pip install pyyaml jsonschema`.
 
 No test framework needed (docs/openapi has no test runner configured). These guard the
 kinds of drift that survive a successful bundle: the bundler resolves whatever `$ref`s it
@@ -10,6 +11,7 @@ produce a clean `openapi.json` that documents the wrong surface.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -316,6 +318,47 @@ def test_virtual_key_request_contract_is_current():
                 )
 
     assert not problems, "Virtual Key request contract drift:\n    " + "\n    ".join(problems)
+
+
+def test_virtual_key_metadata_contract():
+    """Virtual key metadata: update accepts null (leave unchanged), create and update exclude
+    the reserved keys (isAsyncRequest, bifrost_alb_*) the same way config.schema.json does,
+    and the list endpoint does not declare a literal `metadata_<key>` query parameter."""
+    import json
+
+    source = load(HERE / "schemas" / "management" / "governance.yaml")
+    bundle_doc = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    bundle = bundle_doc["components"]["schemas"]
+    config_schema = json.loads((REPO_ROOT / "transports" / "config.schema.json").read_text(encoding="utf-8"))
+    config_metadata = config_schema["properties"]["governance"]["properties"]["virtual_keys"]["items"][
+        "properties"
+    ]["metadata"]
+    problems = []
+
+    for schema_name in ("CreateVirtualKeyRequest", "UpdateVirtualKeyRequest"):
+        for where, schema in (
+            ("schemas/management/governance.yaml", source[schema_name]),
+            ("openapi.json", bundle[schema_name]),
+        ):
+            metadata = schema["properties"]["metadata"]
+            if metadata.get("propertyNames") != config_metadata["propertyNames"]:
+                problems.append(f"{where} {schema_name}.metadata: propertyNames differ from config.schema.json")
+            types = metadata.get("type")
+            types = types if isinstance(types, list) else [types]
+            want_null = schema_name == "UpdateVirtualKeyRequest"
+            if ("null" in types) != want_null:
+                problems.append(f"{where} {schema_name}.metadata: null allowed={'null' in types}, want {want_null}")
+
+    source_list = load(PATHS_DIR / "governance.yaml")["virtual-keys"]["get"]
+    bundle_list = bundle_doc["paths"]["/api/governance/virtual-keys"]["get"]
+    for where, operation in (("paths/management/governance.yaml", source_list), ("openapi.json", bundle_list)):
+        names = [p.get("name", "") for p in operation.get("parameters", [])]
+        if any("<" in name for name in names):
+            problems.append(f"{where} listVirtualKeys: templated query parameter name in {names}")
+        if "metadata_<key>" not in operation.get("description", ""):
+            problems.append(f"{where} listVirtualKeys: description does not document metadata_<key> filters")
+
+    assert not problems, "Virtual Key metadata contract drift:\n    " + "\n    ".join(problems)
 
 
 
@@ -661,16 +704,355 @@ def test_warp_config_input_models_the_enabled_contract():
     assert not problems, "Warp enabled-config contract:\n    " + "\n    ".join(problems)
 
 
+
+
+# Secret-shaped schemas that are deliberately object-only because they only ever appear in
+# responses, where the API never emits a bare string. Listed so the bare-string check below can
+# demand a string branch from every other secret value without a description heuristic.
+RESPONSE_ONLY_SECRET_PATHS = {
+    "/components/schemas/WebhookEndpoint/properties/headers/additionalProperties",  # RedactedSecretVar
+}
+
+
+def test_secret_capable_values_accept_bare_strings():
+    """schemas.SecretVar unmarshals a bare string as well as the {value, ref, type} object, so every
+    inlined secret value in the bundle must be a oneOf of both shapes. Fields are found by shape
+    (an object with exactly value/ref/type, or a oneOf containing one) rather than by description,
+    and the collection must stay non-trivial so a regression cannot hide behind an empty result."""
+    import json
+
+    def is_secret_object(node):
+        return (
+            isinstance(node, dict)
+            and node.get("type") == "object"
+            and set((node.get("properties") or {})) == {"value", "ref", "type"}
+        )
+
+    def is_secret_field(node):
+        if is_secret_object(node):
+            return True
+        branches = node.get("oneOf") if isinstance(node, dict) else None
+        return isinstance(branches, list) and any(is_secret_object(b) for b in branches)
+
+    def accepts_string(node):
+        branches = node.get("oneOf") if isinstance(node, dict) else None
+        if not isinstance(branches, list):
+            return False
+        return any(b.get("type") == "string" for b in branches) and any(is_secret_object(b) for b in branches)
+
+    source = load(HERE / "schemas" / "management" / "common.yaml")["EnvVar"]
+    assert accepts_string(source), "common.yaml#/EnvVar is object-only; it must be a oneOf [string, object]"
+
+    def collect(node, out, path=""):
+        if isinstance(node, dict):
+            if is_secret_field(node):
+                out.append((path, node))
+                return
+            for key, value in node.items():
+                collect(value, out, f"{path}/{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                collect(value, out, f"{path}[{index}]")
+
+    fields = []
+    collect(json.loads((HERE / "openapi.json").read_text(encoding="utf-8")), fields)
+    fields = [(path, node) for path, node in fields if path not in RESPONSE_ONLY_SECRET_PATHS]
+    assert len(fields) >= 35, f"only {len(fields)} secret-capable fields found in openapi.json; the collector is broken"
+    object_only = [path for path, node in fields if not accepts_string(node)]
+    assert not object_only, "openapi.json inlines object-only secret-capable value(s):\n    " + "\n    ".join(object_only)
+
+
+def test_vertex_aws_workload_identity_contract():
+    """The Vertex aws_workload_identity block is defined in transports/config.schema.json;
+    the OpenAPI source and bundle must document the same five fields, require the audience,
+    and reject unknown properties like the configuration contract does."""
+    import json
+
+    contract = json.loads(
+        (REPO_ROOT / "transports" / "config.schema.json").read_text(encoding="utf-8")
+    )
+    want = contract["$defs"]["vertex_key"]["allOf"][1]["properties"]["vertex_key_config"]["properties"]["aws_workload_identity"]
+
+    def check_block(where, vertex):
+        block = (vertex.get("properties") or {}).get("aws_workload_identity")
+        assert isinstance(block, dict), f"{where}: vertex_key_config has no aws_workload_identity"
+        assert set(block.get("properties") or {}) == set(want["properties"]), (
+            f"{where}: aws_workload_identity fields {sorted(block.get('properties') or {})} "
+            f"differ from config.schema.json {sorted(want['properties'])}"
+        )
+        assert block.get("required") == want["required"], f"{where}: required must be {want['required']}"
+        assert block.get("additionalProperties") is False, f"{where}: aws_workload_identity must set additionalProperties: false"
+        assert "force_single_region" in (vertex.get("properties") or {}), f"{where}: vertex_key_config is missing force_single_region"
+        # config.schema.json forbids a non-empty auth_credentials next to aws_workload_identity; the
+        # management schema must carry the same conditional so generated clients reject it too.
+        cond = vertex.get("if")
+        assert isinstance(cond, dict) and cond.get("required") == ["aws_workload_identity"], (
+            f"{where}: vertex_key_config needs `if: required: [aws_workload_identity]`"
+        )
+        then = ((vertex.get("then") or {}).get("properties") or {}).get("auth_credentials")
+        assert isinstance(then, dict), f"{where}: vertex_key_config `then` must constrain auth_credentials"
+        # The constraint must leave only the empty forms of a secret value: an empty string, or an
+        # object whose value and ref are both empty. Anything looser lets a credentials JSON through.
+        branches = then.get("anyOf")
+        assert isinstance(branches, list), f"{where}: `then` auth_credentials must be an anyOf of the empty forms"
+        empty_string = any(b.get("type") == "string" and b.get("maxLength") == 0 for b in branches)
+        empty_object = any(
+            b.get("type") == "object"
+            and all(((b.get("properties") or {}).get(field) or {}).get("maxLength") == 0 for field in ("value", "ref"))
+            for b in branches
+        )
+        assert empty_string and empty_object, f"{where}: `then` auth_credentials must permit only an empty string or an object with empty value and ref"
+
+    check_block("schemas/management/providers.yaml", load(HERE / "schemas" / "management" / "providers.yaml")["VertexKeyConfig"])
+
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    found = []
+
+    def collect(node):
+        if isinstance(node, dict):
+            vertex = node.get("vertex_key_config")
+            if isinstance(vertex, dict) and "properties" in vertex:
+                found.append(vertex)
+            for value in node.values():
+                collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    collect(bundle)
+    assert found, "openapi.json has no inlined vertex_key_config"
+    for vertex in found:
+        check_block("openapi.json", vertex)
+
+def test_injected_tools_contract_matches_config_schema():
+    """config.schema.json is the contract for injected_tools; every OpenAPI copy (the YAML
+    source and each node inlined into openapi.json) must enforce the same constraints, or a
+    client built from the spec sends values the gateway rejects."""
+    import json
+
+    defs = json.loads((REPO_ROOT / "transports" / "config.schema.json").read_text(encoding="utf-8"))["$defs"]
+    ref_def = defs["injected_tool"]
+    expected_fields = sorted(ref_def["required"])
+    problems = []
+
+    def check_ref(where, ref):
+        if not isinstance(ref, dict):
+            problems.append(f"{where}: items is not an object schema")
+            return
+        if sorted(ref.get("required") or []) != expected_fields:
+            problems.append(f"{where}: required {ref.get('required')} != {expected_fields}")
+        if ref.get("additionalProperties") is not ref_def["additionalProperties"]:
+            problems.append(f"{where}: items additionalProperties is {ref.get('additionalProperties')!r}")
+        for field in expected_fields:
+            got_prop = (ref.get("properties") or {}).get(field, {})
+            want_prop = ref_def["properties"][field]
+            for constraint in ("minLength", "pattern"):
+                if got_prop.get(constraint) != want_prop.get(constraint):
+                    problems.append(
+                        f"{where}: {field}.{constraint} is {got_prop.get(constraint)!r}, config.schema.json says {want_prop.get(constraint)!r}"
+                    )
+
+    def check_tools(where, tools, resolve):
+        # An update request wraps the list as oneOf [list, null]; check the list.
+        for alt in tools.get("oneOf") or []:
+            if isinstance(alt, dict) and alt.get("type") != "null":
+                tools = resolve(alt)
+        if tools.get("type") != defs["injected_tools"]["type"]:
+            problems.append(f"{where}: injected_tools type is {tools.get('type')!r}, config.schema.json says {defs['injected_tools']['type']!r}")
+        check_ref(where, resolve(tools.get("items")))
+
+    source = load(HERE / "schemas" / "management" / "providers.yaml")
+    resolve_yaml = lambda node: source[node["$ref"].split("/")[-1]] if isinstance(node, dict) and "$ref" in node else node
+    check_tools("providers.yaml InjectedToolsConfig", source["InjectedToolsConfig"], resolve_yaml)
+
+    found = []
+
+    def collect(node):
+        if isinstance(node, dict):
+            injected = (node.get("properties") or {}).get("injected_tools") if isinstance(node.get("properties"), dict) else None
+            if isinstance(injected, dict):
+                found.append(injected)
+            for value in node.values():
+                collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    collect(json.loads((HERE / "openapi.json").read_text(encoding="utf-8")))
+    assert found, "openapi.json has no injected_tools property"
+    for i, tools in enumerate(found):
+        check_tools(f"openapi.json injected_tools copy {i + 1}", tools, lambda node: node)
+    # PUT clears the saved list with an explicit null, so the update request must allow it.
+    def allows_null(prop):
+        return isinstance(prop, dict) and any(
+            isinstance(alt, dict) and alt.get("type") == "null" for alt in (prop.get("oneOf") or prop.get("anyOf") or [])
+        )
+
+    if not allows_null((source["UpdateProviderRequest"].get("properties") or {}).get("injected_tools")):
+        problems.append("providers.yaml UpdateProviderRequest.injected_tools does not allow null (how PUT clears it)")
+    bundled = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    update_schemas = [
+        schema for name, schema in bundled.get("components", {}).get("schemas", {}).items() if name == "UpdateProviderRequest"
+    ]
+
+    def collect_update(node):
+        if isinstance(node, dict):
+            description = node.get("description")
+            if isinstance(description, str) and description.startswith("Update provider request") and "properties" in node:
+                update_schemas.append(node)
+            for value in node.values():
+                collect_update(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect_update(value)
+
+    collect_update(bundled)
+    assert update_schemas, "openapi.json has no UpdateProviderRequest schema"
+    for i, schema in enumerate(update_schemas):
+        if not allows_null((schema.get("properties") or {}).get("injected_tools")):
+            problems.append(f"openapi.json UpdateProviderRequest copy {i + 1}: injected_tools does not allow null")
+    assert not problems, "injected_tools drifts from config.schema.json:\n    " + "\n    ".join(problems)
+
+
+
+def test_oauth_key_config_contract_matches_server_validation():
+    """OAuthKeyConfig.Validate (core/schemas/account.go) requires client_id and client_secret
+    for client_credentials and private_key, issuer and audience for jwt_bearer, and
+    transports/config.schema.json rejects unknown OAuth fields. The published OpenAPI schema
+    must say the same, or generated clients accept blocks the server rejects on save."""
+    import copy
+
+    try:
+        import jsonschema
+    except ImportError as exc:  # keep the run going; the other checks need only PyYAML
+        raise AssertionError("needs the jsonschema package: pip install jsonschema") from exc
+
+    schema = copy.deepcopy(load(HERE / "schemas" / "management" / "providers.yaml")["OAuthKeyConfig"])
+
+    def inline_envvar(node):
+        if isinstance(node, dict):
+            if node.get("$ref", "").endswith("common.yaml#/EnvVar"):
+                node.pop("$ref")
+                node["type"] = ["string", "object"]
+            for value in node.values():
+                inline_envvar(value)
+        elif isinstance(node, list):
+            for value in node:
+                inline_envvar(value)
+
+    inline_envvar(schema)
+    validator = jsonschema.Draft202012Validator(schema)
+    token_url = "https://idp.example/oauth2/token"
+    cases = [
+        ("client_credentials with both credentials", {"grant_type": "client_credentials", "token_url": token_url, "client_id": "id", "client_secret": "s"}, True),
+        ("client_credentials without client_secret", {"grant_type": "client_credentials", "token_url": token_url, "client_id": "id"}, False),
+        ("client_credentials without client_id", {"grant_type": "client_credentials", "token_url": token_url, "client_secret": "s"}, False),
+        ("jwt_bearer with key, issuer and audience", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": "a"}, True),
+        ("jwt_bearer without audience", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i"}, False),
+        ("jwt_bearer without issuer", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "audience": "a"}, False),
+        ("jwt_bearer without private_key", {"grant_type": "jwt_bearer", "token_url": token_url, "issuer": "i", "audience": "a"}, False),
+        # Validate trims and rejects a blank issuer or audience; config.schema.json says minLength 1.
+        ("jwt_bearer with an empty audience", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": ""}, False),
+        ("jwt_bearer with an empty issuer", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "", "audience": "a"}, False),
+        ("an unknown field", {"grant_type": "client_credentials", "token_url": token_url, "client_id": "id", "client_secret": "s", "client_secrett": "s"}, False),
+        # Validate accepts 0 as "use the default lifetime" and bounds the rest at 3600.
+        ("assertion_lifetime_seconds 0 means the default", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": 0}, True),
+        ("a negative assertion lifetime", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": -1}, False),
+        ("an assertion lifetime above an hour", {"grant_type": "jwt_bearer", "token_url": token_url, "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": 3601}, False),
+    ]
+    problems = [
+        f"{name}: OpenAPI says {'valid' if validator.is_valid(block) else 'invalid'}, server says {'valid' if want else 'invalid'}"
+        for name, block, want in cases
+        if validator.is_valid(block) != want
+    ]
+    assert not problems, "OAuthKeyConfig drifts from server validation:\n    " + "\n    ".join(problems)
+
+
+
+def test_oauth_token_url_descriptions_state_the_server_rules():
+    """OAuthKeyConfig.Validate accepts plain http for loopback hosts only and rejects a token_url
+    carrying userinfo, a query or a fragment (extra parameters go in extra_params). Every
+    published description of token_url must say so, or an operator reads "https URL", cannot
+    configure a local token endpoint, and discovers the query rule only on save."""
+    sources = {
+        "docs/openapi providers.yaml OAuthKeyConfig.token_url": load(HERE / "schemas" / "management" / "providers.yaml")["OAuthKeyConfig"]["properties"]["token_url"]["description"],
+        "transports/config.schema.json base_key.oauth_key_config.token_url": json.loads((REPO_ROOT / "transports" / "config.schema.json").read_text(encoding="utf-8"))["$defs"]["base_key"]["properties"]["oauth_key_config"]["properties"]["token_url"]["description"],
+        "helm values.schema.json providerKey.oauth_key_config.token_url": json.loads((REPO_ROOT / "helm-charts" / "bifrost" / "values.schema.json").read_text(encoding="utf-8"))["$defs"]["providerKey"]["properties"]["oauth_key_config"]["properties"]["token_url"]["description"],
+    }
+    problems = []
+    for where, description in sources.items():
+        text = description.lower()
+        for needle in ("https", "loopback", "userinfo", "query", "fragment", "extra_params"):
+            if needle not in text:
+                problems.append(f"{where}: description does not mention {needle!r}: {description!r}")
+    assert not problems, "token_url descriptions drift from OAuthKeyConfig.Validate:\n    " + "\n    ".join(problems)
+
+
+def test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response():
+    """The enterprise handler wraps /api/load-balancer-config outside its middleware chain, so every
+    response from the alias, an auth refusal or a validation error included, carries the Link to
+    /api/adaptive-routing/config and the Warning 299. A response that only $refs a shared error
+    response, or omits either header, documents a reply without the pointer to the successor."""
+    fragments = load(PATHS_DIR / "adaptiverouting.yaml") or {}
+    assert "adaptive-routing-config-legacy" in fragments, "adaptive-routing-config-legacy fragment is missing"
+    legacy = fragments["adaptive-routing-config-legacy"]
+    problems = []
+    for method, operation in legacy.items():
+        if not isinstance(operation, dict):
+            continue
+        if "responses" not in operation:
+            problems.append(f"{method.upper()}: missing responses")
+            continue
+        for status, response in operation["responses"].items():
+            headers = (response or {}).get("headers") or {}
+            missing = [name for name in ("Link", "Warning") if name not in headers]
+            if missing:
+                problems.append(f"{method.upper()} {status}: missing {missing}")
+    assert not problems, "legacy adaptive routing responses without deprecation headers:\n    " + "\n    ".join(problems)
+
+
+def test_adaptive_routing_put_descriptions_state_the_empty_reroute_target():
+    """The enterprise settings handler accepts an omitted or empty reroute_target and stores it as
+    pool, and refuses only other values. Every description of the PUT and of the field must say so,
+    or a caller reads that anything but pool or fallbacks earns a 400."""
+    paths = load(PATHS_DIR / "adaptiverouting.yaml") or {}
+    schemas = load(HERE / "schemas" / "management" / "adaptiverouting.yaml") or {}
+    sources = {
+        "PUT /api/adaptive-routing/config": ((paths.get("adaptive-routing-config") or {}).get("put") or {}).get("description", ""),
+        "PUT /api/load-balancer-config": ((paths.get("adaptive-routing-config-legacy") or {}).get("put") or {}).get("description", ""),
+    }
+    sources.update({
+        f"{name}.reroute_target": ((schema.get("properties") or {}).get("reroute_target") or {}).get("description", "")
+        for name, schema in schemas.items()
+        if isinstance(schema, dict) and "reroute_target" in (schema.get("properties") or {})
+    })
+    problems = []
+    for where, description in sources.items():
+        text = " ".join(description.lower().split())
+        for needle in ("omitted or empty", "stored as `pool`"):
+            if needle not in text:
+                problems.append(f"{where}: description does not mention {needle!r}")
+    assert not problems, "reroute_target descriptions drift from the settings handler:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
+check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
+check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
 check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_cooldown_bounds_match_config_schema)
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
+check("virtual key metadata contract: nullable update, reserved keys, no templated filter param", test_virtual_key_metadata_contract)
 check("warp credential contract uses api_key_id with no secret field", test_warp_credential_contract_is_current)
 check("warp config input models its embedding contract", test_warp_config_input_models_the_embedding_contract)
 check("warp chat response contract matches the agent", test_warp_chat_response_contract_is_current)
 check("warp unconfigured response satisfies its own schema", test_warp_unconfigured_response_validates)
 check("warp config input models its enabled-state contract", test_warp_config_input_models_the_enabled_contract)
 check("every operation declares its own security", test_every_operation_declares_security)
+check("injected_tools schemas match config.schema.json", test_injected_tools_contract_matches_config_schema)
+check("oauth_key_config grant rules match server validation", test_oauth_key_config_contract_matches_server_validation)
+check("oauth token_url descriptions state the loopback and URL-part rules", test_oauth_token_url_descriptions_state_the_server_rules)
+check("adaptive routing legacy alias declares Link and Warning on every response", test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response)
+check("adaptive routing PUT descriptions state that an empty reroute_target is stored as pool", test_adaptive_routing_put_descriptions_state_the_empty_reroute_target)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

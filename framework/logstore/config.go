@@ -19,6 +19,8 @@ type Config struct {
 	// ObjectStorageExcludeFields lists payload field names (DB column names) that
 	// should NOT be offloaded to object storage and instead remain in the database.
 	ObjectStorageExcludeFields []string `json:"object_storage_exclude_fields,omitempty"`
+	// ObjectStorageExcludeRequestTypes lists request types (log object_type values) whose logs stay fully in the database and are never offloaded.
+	ObjectStorageExcludeRequestTypes []string `json:"object_storage_exclude_request_types,omitempty"`
 }
 
 const (
@@ -66,13 +68,14 @@ func (c *WriterConfig) WithDefaults() WriterConfig {
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get the basic fields
 	type TempConfig struct {
-		Enabled                    bool                `json:"enabled"`
-		Type                       LogStoreType        `json:"type"`
-		Config                     json.RawMessage     `json:"config"` // Keep as raw JSON
-		RetentionDays              int                 `json:"retention_days"`
-		Writer                     *WriterConfig       `json:"writer,omitempty"`
-		ObjectStorage              *objectstore.Config `json:"object_storage,omitempty"`
-		ObjectStorageExcludeFields []string            `json:"object_storage_exclude_fields,omitempty"`
+		Enabled                          bool                `json:"enabled"`
+		Type                             LogStoreType        `json:"type"`
+		Config                           json.RawMessage     `json:"config"` // Keep as raw JSON
+		RetentionDays                    int                 `json:"retention_days"`
+		Writer                           *WriterConfig       `json:"writer,omitempty"`
+		ObjectStorage                    *objectstore.Config `json:"object_storage,omitempty"`
+		ObjectStorageExcludeFields       []string            `json:"object_storage_exclude_fields,omitempty"`
+		ObjectStorageExcludeRequestTypes []string            `json:"object_storage_exclude_request_types,omitempty"`
 	}
 
 	var temp TempConfig
@@ -87,6 +90,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.Writer = temp.Writer
 	c.ObjectStorage = temp.ObjectStorage
 	c.ObjectStorageExcludeFields = temp.ObjectStorageExcludeFields
+	c.ObjectStorageExcludeRequestTypes = temp.ObjectStorageExcludeRequestTypes
 	if !temp.Enabled {
 		c.Config = nil
 		return nil

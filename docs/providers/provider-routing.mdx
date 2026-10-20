@@ -783,10 +783,10 @@ curl -H "x-bf-vk: vk-123" -d '{"model": "gpt-4o"}'
 ```bash
 curl -H "x-bf-vk: vk-123" -d '{"model": "claude-3-5-sonnet"}'
 
-# 1. Governance checks: Is "claude-3-5-sonnet" in GetModelsForProvider("openai")?
-# 2. Catalog lookup: modelPool["openai"] does NOT contain "claude-3-5-sonnet" ❌
-# 3. Validation fails, request rejected
-# 4. Error: "model not allowed for any configured provider"
+# 1. The virtual key allows only openai, and the catalog lists claude-3-5-sonnet under anthropic
+# 2. Weighted selection finds no openai candidate for the model ❌
+# 3. The model catalog resolver finds no allowed provider either, so no provider is set
+# 4. Error (400): "could not auto resolve a provider for the request, please specify a provider explicitly"
 ```
 
 </Tab>
@@ -848,12 +848,12 @@ This is how Bifrost achieves **intelligent cross-provider routing** without manu
   v1.5.0-prerelease7 and above**.
 </Info>
 
-When a request includes a bare model name without a `provider/` prefix (e.g., `"model": "gpt-4o"` instead of `"model": "openai/gpt-4o"`), Bifrost automatically resolves the provider using the Model Catalog. This default behavior is applied **after all other routing engines** have run — the built-in `model-catalog-resolver` PreRequestHook plugin is registered as the last routing layer (order 9 within `builtin`), so governance routing rules, VK load balancing, and enterprise LB all get first crack.
+When a request includes a bare model name without a `provider/` prefix (e.g., `"model": "gpt-4o"` instead of `"model": "openai/gpt-4o"`), Bifrost automatically resolves the provider using the Model Catalog. This default behavior is applied **after all other routing engines** have run: the built-in `model-catalog-resolver` PreRequestHook plugin runs last, in the `post_builtin` group with the highest order, so routing rules, VK load balancing, and in Enterprise the adaptive load balancer and circuit breaker all get first crack.
 
 ### How It Works
 
 1. **Request arrives** without a provider prefix (e.g., `"model": "gpt-4o"`)
-2. Governance, VK LB, and enterprise LB all run first; if any of them sets `req.Provider`, the resolver no-ops
+2. Routing rules, VK load balancing, and in Enterprise the adaptive load balancer and circuit breaker all run first; if any of them sets `req.Provider`, the resolver no-ops
 3. **Catalog lookup** (if `req.Provider` is still empty): Bifrost calls `GetProvidersForModel("gpt-4o")` to find all providers that support the model
 4. **Provider selected**: If the request came in via an integration route (OpenAI / Anthropic / GenAI / Bedrock / Cohere) and the catalog includes that integration's canonical provider in the candidate list, it is preferred. Otherwise the first candidate is selected.
 5. **Request continues**: The resolved `provider/model` is used for the provider call, fallback handling, and Level 2 key selection.
@@ -888,15 +888,15 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### Routing allowlist enforcement
 
-When a Virtual Key has `provider_configs`, governance publishes the VK's allowed-provider set to the request context (`BifrostContextKeyRoutingAllowedProviders`). The constraint is then enforced at **two levels**:
+When a Virtual Key has `provider_configs`, the routing plugin publishes the VK's allowed-provider set to the request context (`BifrostContextKeyRoutingAllowedProviders`) after routing rules run. Two things act on it:
 
-1. **Cooperative filtering (observability-first):** Enterprise LB and the model-catalog-resolver intersect their catalog candidates with the allowlist before picking a provider. This produces clean routing-engine logs explaining *why* a candidate was excluded ("filtered N catalog candidates by routing allowlist").
+1. **Picking a provider:** Enterprise Adaptive Routing and the model-catalog-resolver intersect their catalog candidates with the allowlist before picking a provider, and their routing-engine logs say which candidates were excluded and why. Core itself never reads the allowlist.
 
-2. **Hard enforcement in core:** After all `PreRequestHook` plugins have run, the core validates the final `req.Provider` against the allowlist. If `req.Provider` isn't in the allowlist, the request fails with HTTP 400. Fallbacks that target non-allowed providers are silently filtered out.
+2. **Refusing an attempt:** governance checks every attempt, the primary and each fallback, against the virtual key. An attempt on a provider the VK does not allow fails with `403` (`provider_blocked`, `Provider '<provider>' is not allowed for virtual key '<name>'`), and a model it does not allow with `403` (`model_blocked`). Disallowed fallbacks are not filtered out of the chain: each one is tried and refused in turn, and when every attempt fails the primary's error is returned.
 
-**Why two levels:** cooperative filtering surfaces routing decisions in observability; core enforcement makes the constraint a *guarantee* that no plugin (or user-specified `provider/model` prefix) can bypass. A user request for `model: "anthropic/claude-3"` against a VK that allows only `[openai, azure]` is rejected by core enforcement even though the user provided an explicit prefix.
+A user request for `model: "anthropic/claude-3"` against a VK that allows only `[openai, azure]` is therefore refused with `403` even though the user provided an explicit prefix. A bare model that no allowed provider serves leaves the provider unset, and core answers `400` ("could not auto resolve a provider for the request, please specify a provider explicitly").
 
-Custom routing plugins can set the same context key to constrain downstream routing for any reason — geo restrictions, A/B test cohorts, tier-based gating, etc. The semantics are **fail-closed**: setting `BifrostContextKeyRoutingAllowedProviders` to an empty slice means "no provider is permitted for this request" → HTTP 400.
+Custom routing plugins can set the same context key to constrain downstream routing for any reason, such as geo restrictions, A/B test cohorts or tier-based gating. It narrows which providers the routing layers after it may pick; setting it to an empty slice means they pick none. It does not refuse a provider already set on the request, so a plugin that must block a provider has to refuse the request itself.
 
 ---
 
@@ -1093,7 +1093,7 @@ flowchart TB
 
 ### Level 1: Direction (Provider Selection)
 
-**When it runs**: **Always** (while the provider-selection switch is on). When no provider has been selected yet, it picks one. When an earlier layer (governance, routing rules, or an explicit `provider/` prefix) already pinned one, that provider keeps the primary slot — and with the append-fallbacks-to-pinned switch on, Level 1 still appends its sorted healthy providers as fallbacks behind any the request configured. When the re-route toggle is on, a circuit-broken pinned provider is moved to a healthy one. With both of those switches off (their defaults), a pinned request passes through untouched
+**When it runs**: **Always** (while the provider-selection switch is on). When no provider has been selected yet, it picks one. When an earlier layer (governance, routing rules, or an explicit `provider/` prefix) already pinned one, that provider keeps the primary slot, and with the append-fallbacks-to-pinned switch on, Level 1 still appends its sorted healthy providers as fallbacks behind any the request configured. When the re-route toggle is on, a pinned provider that is failing for the model is moved to a healthy one. With both of those switches off (their defaults), a pinned request passes through untouched
 
 **How it works**:
 
@@ -1104,8 +1104,9 @@ flowchart TB
 3. **Performance scoring**: Score each provider on its recent, realized performance for the model:
    - **Error rate** — the primary, time-decayed signal
    - **Token-aware latency** — secondary, comparing the provider both to its peers for the model and to its own recent baseline
-4. **Smooth selection**: Concentrate traffic on the best-scoring providers while keeping a small exploration share for the rest, so a recovered provider keeps getting re-probed
-5. **Fallbacks created**: Remaining healthy providers sorted by performance score (descending) are appended as fallbacks after any the request already carries, deduplicated. With the prune toggle on, circuit-broken configured fallbacks are removed first and never re-added
+4. **Smooth selection**: Concentrate traffic on the best-scoring providers while keeping a small exploration share for the rest, so a recovered provider keeps getting re-probed. A provider counts as failed for a model only when every configured key that can serve the model is failed; a key that has not been tried yet keeps it in rotation
+5. **Checking a held provider**: When the provider refused every key and one of them is due a check, one request is sent to that provider first with the healthy providers behind it as fallbacks (see [Held keys](/enterprise/adaptive-routing/how-it-works#held-keys))
+6. **Fallbacks created**: Remaining healthy providers sorted by performance score (descending) are appended as fallbacks after any the request already carries, deduplicated. With the prune toggle on, configured fallbacks that are failing for the model are removed first and never re-added
 
 ### Level 2: Route (Key Selection)
 
@@ -1121,7 +1122,8 @@ flowchart TB
    - TPM hits (rate limit violations)
    - Current state (Healthy, Degraded, Failed, Recovering)
 4. **Smooth weighted selection**: Concentrate traffic on higher-weight keys, with a small dedicated probe budget reserved for recovering keys so they can prove recovery
-5. **Circuit breaker**: Skip keys with zero weight (TPM hits, repeated failures)
+5. **Failed keys**: A key that is failing for the model gets no traffic until it moves to Recovering
+6. **Held keys**: Skip keys the provider refused (rejected credential, exhausted quota, no model access, retired model, blocked region, rate limit) until their wait is over, then let one request through to check each. When every key is held the request is sent anyway. See [Held keys](/enterprise/adaptive-routing/how-it-works#held-keys)
 
 ### Scoring
 
@@ -1177,6 +1179,7 @@ Which signals apply depends on the route's health: healthy routes are scored mai
 | **Automatic Optimization** | No manual weight tuning required                                    |
 | **Real-time Adaptation**   | Weights recomputed every 5 seconds based on live metrics            |
 | **Circuit Breakers**       | Failing routes automatically removed from rotation                  |
+| **Held Keys**              | Keys a provider refused are held on every node and checked again by one request |
 | **Fast Recovery**          | 90% penalty reduction in 30 seconds after issues resolve            |
 | **Health States**          | Routes transition between Healthy, Degraded, Failed, and Recovering |
 | **Smart Exploration**      | Keeps a small, dedicated share of traffic on recovering routes so they can prove recovery |
@@ -1187,8 +1190,8 @@ Monitor load balancing performance in real-time:
 
 <Frame>
   <img
-    src="/media/ui-load-balancing.png"
-    alt="Adaptive Load Balancing Dashboard"
+    src="/media/adaptive-routing/ui-dashboard.png"
+    alt="The Adaptive Routing dashboard with its figures and the Health over time timeline"
   />
 </Frame>
 
@@ -1200,7 +1203,7 @@ The dashboard shows:
 - Actual vs expected traffic distribution
 
 <Note>
-  **Scope & tuning**: Adaptive load balancing operates **per node** (each node routes on its own observed metrics; only rate-limit/TPM backoffs are shared across nodes, and only within a region) and adapts on a **~5-second cycle** — distinct from per-request fallback, which is immediate. Both levels can be toggled independently, and the scoring parameters ship pre-tuned. See [Adaptive Load Balancing](/enterprise/adaptive-load-balancing) for configuration and limitations.
+  **Scope & tuning**: Adaptive routing scores providers and keys **per node**, from each node's own traffic. Only [held keys](/enterprise/adaptive-routing/how-it-works#held-keys) are shared with every node. Health is recalculated every few seconds, while per-request retries and fallbacks act at once. Both levels can be turned on or off separately, and the scoring ships pre-tuned. See [Adaptive Routing](/enterprise/adaptive-routing/overview) for settings and limits.
 </Note>
 
 ---
@@ -1211,7 +1214,7 @@ When both methods are available in your Bifrost deployment, they work together i
 
 <Warning>
 **Key Insight**: Load balancing has **two levels**:
-- **Level 1 (Direction/Provider)**: Always runs. A pre-specified provider keeps the primary slot; with the append-fallbacks-to-pinned toggle on, Level 1 still appends its healthy providers as fallbacks — and it can re-route a circuit-broken pinned provider when that toggle is on
+- **Level 1 (Direction/Provider)**: Always runs. A pre-specified provider keeps the primary slot; with the append-fallbacks-to-pinned toggle on, Level 1 still appends its healthy providers as fallbacks, and it can re-route a pinned provider that is failing for the model when the re-route toggle is on
 - **Level 2 (Route/Key)**: **Always runs**, even when provider is specified
 
 This means key-level optimization works regardless of how the provider was chosen!
@@ -1224,9 +1227,9 @@ This means key-level optimization works regardless of how the provider was chose
 flowchart TD
     Start["Request: gpt-4o"]
 
-    subgraph PreReq["PreRequestHook Phase (once per request, registration order)"]
+    subgraph PreReq["PreRequestHook Phase (once per request, in placement and order)"]
         HasVK{"Has VK with<br/>provider_configs?"}
-        GovRoute["Governance:<br/>Routing rules + VK weighted random"]
+        GovRoute["Routing plugin:<br/>Routing rules + VK weighted random"]
         AddPrefix["Set req.Provider/Model:<br/>azure/gpt-4o"]
         PrefixCheck{"req.Provider<br/>already set?"}
         LBProvider["Enterprise LB:<br/>Performance-based selection"]
@@ -1252,29 +1255,37 @@ flowchart TD
 
 ### Execution Order
 
-All three routing layers (governance, enterprise LB Level 1, model-catalog-resolver) now run inside a single **PreRequestHook** phase that fires **once per top-level request**, before any provider call and before per-attempt hooks. Within that phase, plugins execute in placement + order:
+Every routing layer runs inside a single **PreRequestHook** phase that fires **once per top-level request**, before any provider call and before per-attempt hooks. Within that phase, plugins run by placement (`builtin`, then `post_builtin`) and then by order:
 
-1. **Governance Plugin** (PreRequestHook, builtin order 4)
+1. **Governance Plugin** (PreRequestHook, `builtin` order 4)
+   - Resolves the virtual key and the access it grants, and stamps the request's identity
+   - It does not pick a provider here. Disallowed providers and models are refused per attempt, in its PreLLMHook (see [Routing allowlist enforcement](#routing-allowlist-enforcement))
+
+2. **Routing Plugin** (PreRequestHook, `builtin` order 5)
    - Evaluates routing rules (CEL expressions, scope hierarchy)
-   - If Virtual Key has `provider_configs`: performs weighted random provider selection
+   - Publishes the virtual key's allowed providers for the layers after it
+   - If Virtual Key has `provider_configs` and no rule set a provider: performs weighted random provider selection
    - **Result**: `req.Provider`/`req.Model` set; `req.Fallbacks` populated
 
-2. **Enterprise Load Balancer Level 1** (PreRequestHook, builtin)
-   - Runs after governance and always evaluates the eligible provider set for the model
-   - If `req.Provider` is already set (by governance or by an explicit `provider/model` prefix from the user): keeps it as the primary; with the append-fallbacks-to-pinned toggle on, appends its healthy providers as fallbacks behind any configured ones, and with the re-route toggle on, a circuit-broken pinned provider is moved to a healthy one (kept when nothing healthier exists). With both toggles off (their defaults), the pinned request passes through untouched
+3. **Adaptive Routing, Level 1** (Enterprise)
+   - Runs after the routing plugin and always evaluates the eligible provider set for the model
+   - If `req.Provider` is already set (by a routing rule, the virtual key, or an explicit `provider/model` prefix from the user): keeps it as the primary; with the append-fallbacks-to-pinned toggle on, appends its healthy providers as fallbacks behind any configured ones, and with the re-route toggle on, a pinned provider that is failing for the model is moved to a healthy one (kept when nothing healthier exists). With both toggles off (their defaults), the pinned request passes through untouched
    - If not: performs performance-based provider selection across catalog providers
    - **Result**: `req.Provider`/`req.Model` set; `req.Fallbacks` extended with the sorted healthy fallback chain
 
-3. **model-catalog-resolver** (PreRequestHook, builtin order 9 — final fallback)
+4. **Circuit Breaker** (Enterprise)
+   - Redirects a primary or fallback whose circuit is open to the fallback its policy configures
+
+5. **model-catalog-resolver** (PreRequestHook, `post_builtin`, last)
    - Runs last
    - If `req.Provider` is still empty: looks up the model in the catalog and picks a provider (preferring the integration's canonical provider when the request came in via an integration route)
    - Emits a `model-catalog` routing-engine log entry
    - **Result**: Always leaves `req.Provider` populated when the catalog knows about the model
 
-4. **Empty-provider validation** (core, after PreRequestHook)
+6. **Empty-provider validation** (core, after PreRequestHook)
    - If `req.Provider` is still empty: returns 400 to the caller with a clear error
 
-5. **Load Balancer Level 2** (Key Selector — core, per provider attempt)
+7. **Load Balancer Level 2** (Key Selector, in core, per provider attempt)
    - **Always runs** during request execution
    - Gets all keys for the selected provider, filters by model restrictions
    - Scores each key by performance metrics
@@ -1430,8 +1441,8 @@ This separation is what makes the two-level architecture so powerful!
 ## Routing Rules (Dynamic Expression-Based Routing)
 
 <Info>
-  **Position in routing pipeline**: Routing Rules execute **before governance
-  provider selection** and can override it. They are evaluated before adaptive
+  **Position in routing pipeline**: Routing Rules execute **before the virtual
+  key's weighted provider selection** and can override it. They are evaluated before adaptive
   load balancing, enabling dynamic provider/model overrides based on runtime
   conditions like headers, parameters, capacity metrics, and organizational
   hierarchy.
@@ -1449,10 +1460,9 @@ flowchart TD
 
     subgraph PreReq["PreRequestHook Phase (once per request)"]
         direction TB
-        subgraph Gov["Governance Plugin"]
+        subgraph Gov["Routing Plugin"]
             RuleMatch{"CEL Routing Rule<br/>Matches?"}
             RuleDecision["Override:<br/>provider/model/fallbacks"]
-            VKValidation["Virtual Key Validation"]
             GovRouting["VK Provider Selection<br/>(weighted random)"]
         end
         LB1["Enterprise LB Level 1:<br/>Provider Selection<br/>(pinned provider kept;<br/>fallbacks appended when<br/>toggle on)"]
@@ -1463,18 +1473,18 @@ flowchart TD
 
     Start --> RuleMatch
     RuleMatch -->|Yes| RuleDecision --> LB1
-    RuleMatch -->|No| VKValidation --> GovRouting --> LB1
+    RuleMatch -->|No| GovRouting --> LB1
     LB1 --> Resolver --> LB2 --> Execute["Execute with<br/>selected provider + key"]
 ```
 
 ### How It Works
 
-All routing layers below execute inside the **PreRequestHook** phase in registration order; routing rules run first within the governance plugin's hook body, before VK load balancing:
+All routing layers below execute inside the **PreRequestHook** phase in placement and order. Routing rules run in the routing plugin (`builtin` order 5), which then runs the virtual key's load balancing. Governance checks each attempt against the virtual key later, per attempt:
 
 1. **Routing rules evaluate first** in scope precedence order (VirtualKey → Team → Customer → Global)
-2. **If a routing rule matches**: provider/model/fallbacks are overridden, the VK `provider_configs` weighted selection is skipped
+2. **If a routing rule matches**: provider/model/fallbacks are overridden; when the rule's target sets a provider, the VK `provider_configs` weighted selection is skipped
 3. **If no routing rule matches**: VK provider selection runs (weighted random)
-4. **Enterprise LB Level 1**: keeps a pre-set `req.Provider` as the primary, appending healthy fallbacks when the append-fallbacks-to-pinned toggle is on (and re-routing it only when its direction is circuit-broken and the re-route toggle is on); otherwise performs performance-based selection
+4. **Enterprise LB Level 1**: keeps a pre-set `req.Provider` as the primary, appending healthy fallbacks when the append-fallbacks-to-pinned toggle is on (and re-routing it only when it is failing for the model and the re-route toggle is on); otherwise performs performance-based selection
 5. **model-catalog-resolver**: last fallback — fills `req.Provider` from the catalog if no earlier plugin set it
 6. **Empty-provider validation** (core): returns 400 if `req.Provider` is still empty after the phase
 7. **Load balancing Level 2** (key selection, core, per attempt): always runs to select the best key within the determined provider
@@ -1559,7 +1569,7 @@ Within each scope, rules are sorted by **priority** (ascending: 0 before 10).
 | **Capacity Awareness** | Access real-time budget and rate limit usage percentages               |
 
 <Info>
-For complexity-based routing driven by request content, see [Complexity Router](/features/governance/complexity-router). It adds a `complexity_tier` CEL variable that lets routing rules steer SIMPLE, MEDIUM, and COMPLEX requests to different models.
+For complexity-based routing driven by request content, see [Complexity Router](/features/complexity-router). It adds a `complexity_tier` CEL variable that lets routing rules steer SIMPLE, MEDIUM, and COMPLEX requests to different models.
 </Info>
 
 ### Integration with Governance
@@ -1680,12 +1690,12 @@ For complete documentation, see [Routing Rules Documentation](/providers/routing
     conditions
   </Card>
   <Card
-    title="Adaptive Load Balancing"
+    title="Adaptive Routing"
     icon="brain"
-    href="/enterprise/adaptive-load-balancing"
+    href="/enterprise/adaptive-routing/overview"
   >
-    Technical implementation details: scoring algorithms, weight calculations,
-    and performance characteristics
+    How provider and key health drive routing, held keys, and the dashboard
+    and incidents
   </Card>
   <Card
     title="Virtual Keys"

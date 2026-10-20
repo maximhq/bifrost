@@ -1,6 +1,7 @@
 package tracing
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -368,4 +369,65 @@ func TestCreateTrace_ConcurrentSharedInheritedTraceID(t *testing.T) {
 			t.Errorf("request %d: got trace of another request (RequestID %q)", i, traces[i].RequestID)
 		}
 	}
+}
+
+// A trace only expires when its completion never arrived, so dropping it unexported
+// would hide the request from every connector while billing already recorded it. The
+// sweep must export it, with any span left open closed rather than carrying a zero
+// EndTime.
+func TestCleanupOldTraces_ExportsExpiredTraceInsteadOfDropping(t *testing.T) {
+	store := NewTraceStore(10*time.Millisecond, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plugin := &captureExpiredPlugin{done: make(chan struct{})}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+
+	traceID := store.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "chat gpt-4o", schemas.SpanKindLLMCall)
+	tracer.SetAttribute(handle, "gen_ai.usage.cost", 0.0421)
+	// Deliberately never ended: this is what an expired trace looks like.
+
+	time.Sleep(20 * time.Millisecond)
+	store.cleanupOldTraces()
+
+	select {
+	case <-plugin.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expired trace was dropped instead of exported")
+	}
+
+	if got := plugin.cost; got != 0.0421 {
+		t.Errorf("exported cost = %#v, want 0.0421", got)
+	}
+	if plugin.openSpans != 0 {
+		t.Errorf("%d exported span(s) had a zero EndTime; an expired span must be closed", plugin.openSpans)
+	}
+}
+
+// captureExpiredPlugin records what an expired trace carried when it reached a connector.
+type captureExpiredPlugin struct {
+	done      chan struct{}
+	cost      any
+	openSpans int
+}
+
+func (p *captureExpiredPlugin) GetName() string { return "capture-expired" }
+func (p *captureExpiredPlugin) Cleanup() error  { return nil }
+func (p *captureExpiredPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	defer close(p.done)
+	for _, span := range trace.Spans {
+		if span == nil {
+			continue
+		}
+		if span.EndTime.IsZero() {
+			p.openSpans++
+		}
+		if v, ok := span.Attributes["gen_ai.usage.cost"]; ok {
+			p.cost = v
+		}
+	}
+	return nil
 }

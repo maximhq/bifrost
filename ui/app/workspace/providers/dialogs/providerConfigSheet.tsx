@@ -8,9 +8,12 @@ import {
 	ApiStructureFormFragment,
 	BetaHeadersFormFragment,
 	GovernanceFormFragment,
+	InjectedToolsFormFragment,
 	OpenAIConfigFormFragment,
+	PricingFormFragment,
 	ProxyFormFragment,
 } from "../fragments";
+import { isTypesafeBased } from "../fragments/betaHeadersFormFragment";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { PromptCacheFormFragment } from "../fragments/promptCacheFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
@@ -24,7 +27,7 @@ interface Props {
 
 const ANTHROPIC_FAMILY_PROVIDERS = ["anthropic", "vertex", "bedrock", "bedrock_mantle", "azure"];
 
-const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean, isAnthropicFamily: boolean) => {
+const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean, hasBetaHeaders: boolean) => {
 	const tabs = [];
 	if (hasCustomProviderConfig) {
 		tabs.push({
@@ -50,7 +53,7 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 			label: "Governance",
 		});
 	}
-	if (isAnthropicFamily) {
+	if (hasBetaHeaders) {
 		tabs.push({
 			id: "beta-headers",
 			label: "Beta Headers",
@@ -59,6 +62,14 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 	tabs.push({
 		id: "prompt-cache",
 		label: "Prompt Caching",
+	});
+	tabs.push({
+		id: "pricing",
+		label: "Pricing",
+	});
+	tabs.push({
+		id: "tools",
+		label: "Tools",
 	});
 	tabs.push({
 		id: "debugging",
@@ -78,11 +89,11 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasCustomProviderConfig = !!provider.custom_provider_config;
 	const isOpenAI = provider.name === "openai";
-	const isAnthropicFamily = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase());
+	const hasBetaHeaders = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase()) || isTypesafeBased(provider);
 
 	const tabs = useMemo(() => {
-		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily);
-	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, isAnthropicFamily]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, hasBetaHeaders);
+	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, hasBetaHeaders]);
 
 	useEffect(() => {
 		setSelectedTab((previousTab) => {
@@ -154,6 +165,12 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							</TabsContent>
 							<TabsContent value="prompt-cache">
 								<PromptCacheFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="pricing">
+								<PricingFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="tools">
+								<InjectedToolsFormFragment provider={provider} />
 							</TabsContent>
 							<TabsContent value="debugging">
 								<DebuggingFormFragment provider={provider} />

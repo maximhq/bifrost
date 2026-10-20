@@ -2,13 +2,24 @@ package vertex
 
 import (
 	"context"
+	"crypto/tls"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
+	"github.com/valyala/fasthttp"
+	"golang.org/x/oauth2"
 )
 
 func TestGetVertexAPIHost(t *testing.T) {
@@ -1033,12 +1044,17 @@ func TestVertexResourceNamesStayOnExpectedEndpoint(t *testing.T) {
 		}
 	}
 
-	operation := "projects/proj/locations/us-central1/publishers/google/models/veo-3/operations/op-1"
-	if got, bifrostErr := vertexVideoModelPath(operation); bifrostErr != nil || got != "projects/proj/locations/us-central1/publishers/google/models/veo-3" {
-		t.Fatalf("vertexVideoModelPath = %q, %v", got, bifrostErr)
+	operation := "projects/proj/locations/europe-west4/publishers/google/models/veo-3/operations/op-1"
+	if got, bifrostErr := vertexVideoOperationURL(operation); bifrostErr != nil || got != "https://europe-west4-aiplatform.googleapis.com/v1/projects/proj/locations/europe-west4/publishers/google/models/veo-3:fetchPredictOperation" {
+		t.Fatalf("vertexVideoOperationURL = %q, %v", got, bifrostErr)
 	}
-	if got, bifrostErr := vertexVideoModelPath("projects/proj/locations/us-central1/../../endpoints/operations/op-1"); bifrostErr == nil {
-		t.Fatalf("vertexVideoModelPath accepted a traversal: %q", got)
+	for _, id := range []string{
+		"projects/proj/locations/us-central1/../../endpoints/operations/op-1",
+		"projects/proj/locations/attacker.example#/publishers/google/models/veo-3/operations/op-1",
+	} {
+		if got, bifrostErr := vertexVideoOperationURL(id); bifrostErr == nil {
+			t.Fatalf("vertexVideoOperationURL(%q) = %q, want error", id, got)
+		}
 	}
 
 	if got, bifrostErr := expandVertexCachedContentName("cachedContents/abc", "proj", "us-central1"); bifrostErr != nil || got != "projects/proj/locations/us-central1/cachedContents/abc" {
@@ -1046,5 +1062,364 @@ func TestVertexResourceNamesStayOnExpectedEndpoint(t *testing.T) {
 	}
 	if got, bifrostErr := expandVertexCachedContentName("projects/proj/locations/us-central1/cachedContents/../endpoints", "proj", "us-central1"); bifrostErr == nil {
 		t.Fatalf("expandVertexCachedContentName accepted a traversal: %q", got)
+	}
+}
+
+// A Veo operation lives in the region that created it, so polls must go there whatever region
+// the selected key is configured for.
+func TestVertexVideoPollUsesOperationRegion(t *testing.T) {
+	var mu sync.Mutex
+	var dialed []string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		dialed = append(dialed, r.Host)
+		mu.Unlock()
+		http.Error(w, "recorded", http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+
+	config := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10},
+		ProxyConfig:   &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)},
+	}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+
+	key := schemas.Key{
+		Value:           *schemas.NewSecretVar("api-key"),
+		VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("proj"), Region: *schemas.NewSecretVar("us-east5")},
+	}
+	videoID := providerUtils.AddVideoIDProviderSuffix("projects/proj/locations/us-central1/publishers/google/models/veo-3.0-generate-001/operations/op-1", schemas.Vertex)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	if _, bifrostErr := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: schemas.Vertex, ID: videoID}); bifrostErr == nil {
+		t.Fatal("VideoRetrieve succeeded against the recording proxy")
+	}
+	if _, bifrostErr := provider.VideoDownload(ctx, key, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Vertex, ID: videoID}); bifrostErr == nil {
+		t.Fatal("VideoDownload succeeded against the recording proxy")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"us-central1-aiplatform.googleapis.com:443", "us-central1-aiplatform.googleapis.com:443"}
+	if !reflect.DeepEqual(dialed, want) {
+		t.Fatalf("video polls dialed %v, want %v", dialed, want)
+	}
+}
+
+// The /genai_passthrough router strips the API version with its prefix, so Vertex must build
+// the upstream URL from the version the client addressed: Interactions exists only under v1beta1.
+// Model calls keep the v1 they have always used.
+func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"i-1"}`))
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID:       *schemas.NewSecretVar("proj"),
+		Region:          *schemas.NewSecretVar("global"),
+		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+
+	interactions := "/projects/client-proj/locations/global/interactions"
+	claudeStream := "/projects/client-proj/locations/global/publishers/anthropic/models/claude-sonnet-4-6:streamRawPredict"
+	geminiGenerate := "/projects/client-proj/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"
+	for _, tc := range []struct {
+		apiVersion string
+		path       string
+		want       string
+	}{
+		{"v1beta1", interactions, "/v1beta1/projects/proj/locations/global/interactions"},
+		{"v1", interactions, "/v1/projects/proj/locations/global/interactions"},
+		{"", interactions, "/v1/projects/proj/locations/global/interactions"},
+		{"v1beta", interactions, "/v1/projects/proj/locations/global/interactions"}, // Gemini-only version; Vertex has no v1beta
+		{"v2", interactions, "/v2/projects/proj/locations/global/interactions"},     // any other version is forwarded as sent
+		// Model calls keep v1: Google's v1beta1 streamRawPredict answers 500 for Claude.
+		{"v1beta1", claudeStream, "/v1/projects/proj/locations/global/publishers/anthropic/models/claude-sonnet-4-6:streamRawPredict"},
+		{"v1beta1", geminiGenerate, "/v1/projects/proj/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"},
+	} {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		req := &schemas.BifrostPassthroughRequest{
+			Method:      http.MethodPost,
+			Path:        tc.path,
+			APIVersion:  tc.apiVersion,
+			Body:        []byte(`{"model":"gemini-3-flash","input":"hi"}`),
+			SafeHeaders: map[string]string{"content-type": "application/json"},
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.Passthrough(ctx, key, req); bifrostErr != nil {
+			t.Fatalf("Passthrough(%q, %s): %s", tc.apiVersion, tc.path, bifrostErr.GetErrorString())
+		}
+		stream, bifrostErr := provider.PassthroughStream(ctx, noHooks, nil, key, req)
+		if bifrostErr != nil {
+			t.Fatalf("PassthroughStream(%q, %s): %s", tc.apiVersion, tc.path, bifrostErr.GetErrorString())
+		}
+		for drained := false; !drained; {
+			select {
+			case _, ok := <-stream:
+				drained = !ok
+			case <-time.After(5 * time.Second):
+				t.Fatalf("PassthroughStream(%q) did not finish", tc.apiVersion)
+			}
+		}
+
+		mu.Lock()
+		got := paths
+		mu.Unlock()
+		if want := []string{tc.want, tc.want}; !reflect.DeepEqual(got, want) {
+			t.Errorf("APIVersion %q %s: upstream paths %v, want %v (unary and stream)", tc.apiVersion, tc.path, got, want)
+		}
+	}
+}
+
+func TestPassthroughWireFormat(t *testing.T) {
+	tests := []struct {
+		path string
+		want schemas.ModelProvider
+	}{
+		{"/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5:rawPredict", schemas.Anthropic},
+		{"/projects/p/locations/us-east5/publishers/Anthropic/models/claude-sonnet-4-5:streamRawPredict?alt=sse", schemas.Anthropic},
+		{"/projects/p/locations/us-central1/publishers/mistralai/models/mistral-large:rawPredict", schemas.Mistral},
+		{"/projects/p/locations/us-central1/endpoints/openapi/chat/completions", schemas.OpenAI},
+		{"/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent", schemas.Gemini},
+		{"/models/gemini-2.5-flash:streamGenerateContent", schemas.Gemini},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := PassthroughWireFormat(tt.path); got != tt.want {
+				t.Fatalf("PassthroughWireFormat(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// Session routing sends prompt_cache_key as session_id only from a Vertex key that opts in, only on
+// Gemini generateContent calls, and never over a session ID the caller passes through itself.
+func TestVertexSessionRoutingSendsPromptCacheKey(t *testing.T) {
+	const geminiResponse = `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`
+	const anthropicResponse = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	type sent struct{ path, body string }
+	var mu sync.Mutex
+	var requests []sent
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		requests = append(requests, sent{r.URL.Path, string(body)})
+		mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, ":streamGenerateContent"):
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: " + geminiResponse + "\n\n"))
+		case strings.HasSuffix(r.URL.Path, ":countTokens"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"totalTokens":3}`))
+		case strings.Contains(r.URL.Path, "/publishers/anthropic/"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(anthropicResponse))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(geminiResponse))
+		}
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	keyWith := func(sessionRouting bool) schemas.Key {
+		key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID:         *schemas.NewSecretVar("proj"),
+			Region:            *schemas.NewSecretVar("global"),
+			AuthCredentials:   *schemas.NewSecretVar("test-credentials"),
+			UseSessionRouting: sessionRouting,
+		}}
+		provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+		return key
+	}
+	on, off := keyWith(true), keyWith(false)
+	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	drain := func(stream chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError) *schemas.BifrostError {
+		if bifrostErr != nil {
+			return bifrostErr
+		}
+		for {
+			select {
+			case _, ok := <-stream:
+				if !ok {
+					return nil
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("stream did not finish")
+			}
+		}
+	}
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	chat := func(model string, params *schemas.ChatParameters) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Vertex,
+			Model:    model,
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+			Params:   params,
+		}
+	}
+	responses := func(model string, params *schemas.ResponsesParameters) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Vertex,
+			Model:    model,
+			Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+			Params:   params,
+		}
+	}
+	genai := func(body string) *schemas.BifrostResponsesRequest {
+		var in gemini.GeminiGenerationRequest
+		if err := in.UnmarshalJSON([]byte(body)); err != nil {
+			t.Fatalf("genai body: %v", err)
+		}
+		return in.ToBifrostResponsesRequest(newCtx())
+	}
+	chatKey := &schemas.ChatParameters{PromptCacheKey: new("prefix-1")}
+	responsesKey := &schemas.ResponsesParameters{PromptCacheKey: new("prefix-1")}
+	anthropicIngress := (&anthropic.AnthropicMessageRequest{
+		Model:     "vertex/gemini-3.8-flash",
+		MaxTokens: 16,
+		Messages:  []anthropic.AnthropicMessage{{Role: "user", Content: anthropic.AnthropicContent{ContentStr: new("hi")}}},
+		Metadata:  &anthropic.AnthropicMetaData{UserID: new("user-1")},
+	}).ToBifrostResponsesRequest(newCtx())
+	passthroughCtx := newCtx()
+	passthroughCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+	for _, tc := range []struct {
+		name          string
+		call          func() *schemas.BifrostError
+		wantPath      string
+		wantSessionID string // raw JSON of session_id; "" means absent
+	}{
+		{"/v1/chat/completions", func() *schemas.BifrostError {
+			_, e := provider.ChatCompletion(newCtx(), on, chat("gemini-3.8-flash", chatKey))
+			return e
+		}, ":generateContent", `"prefix-1"`},
+		{"/v1/chat/completions stream", func() *schemas.BifrostError {
+			return drain(provider.ChatCompletionStream(newCtx(), noHooks, nil, on, chat("gemini-3.8-flash", chatKey)))
+		}, ":streamGenerateContent", `"prefix-1"`},
+		{"/v1/responses", func() *schemas.BifrostError {
+			_, e := provider.Responses(newCtx(), on, responses("gemini-3.8-flash", responsesKey))
+			return e
+		}, ":generateContent", `"prefix-1"`},
+		{"/v1/responses stream", func() *schemas.BifrostError {
+			return drain(provider.ResponsesStream(newCtx(), noHooks, nil, on, responses("gemini-3.8-flash", responsesKey)))
+		}, ":streamGenerateContent", `"prefix-1"`},
+		{"/anthropic metadata.user_id", func() *schemas.BifrostError {
+			_, e := provider.Responses(newCtx(), on, anthropicIngress)
+			return e
+		}, ":generateContent", `"user-1"`},
+		{"/genai session_id", func() *schemas.BifrostError {
+			_, e := provider.Responses(newCtx(), on, genai(`{"model":"vertex/gemini-3.8-flash","contents":[{"role":"user","parts":[{"text":"hi"}]}],"session_id":"prefix-g"}`))
+			return e
+		}, ":generateContent", `"prefix-g"`},
+		{"/genai numeric session_id is sent as a string", func() *schemas.BifrostError {
+			_, e := provider.Responses(newCtx(), on, genai(`{"model":"vertex/gemini-3.8-flash","contents":[{"role":"user","parts":[{"text":"hi"}]}],"session_id":12345}`))
+			return e
+		}, ":generateContent", `"12345"`},
+		{"key without session routing", func() *schemas.BifrostError {
+			_, e := provider.ChatCompletion(newCtx(), off, chat("gemini-3.8-flash", chatKey))
+			return e
+		}, ":generateContent", ""},
+		{"empty prompt_cache_key", func() *schemas.BifrostError {
+			_, e := provider.ChatCompletion(newCtx(), on, chat("gemini-3.8-flash", &schemas.ChatParameters{PromptCacheKey: new("")}))
+			return e
+		}, ":generateContent", ""},
+		{"count tokens rejects session_id, so it never gets one", func() *schemas.BifrostError {
+			_, e := provider.CountTokens(newCtx(), on, responses("gemini-3.8-flash", responsesKey))
+			return e
+		}, ":countTokens", ""},
+		{"Claude on Vertex", func() *schemas.BifrostError {
+			_, e := provider.Responses(newCtx(), on, responses("claude-sonnet-4-6", responsesKey))
+			return e
+		}, ":rawPredict", ""},
+		{"caller session_id passed through wins", func() *schemas.BifrostError {
+			params := &schemas.ChatParameters{PromptCacheKey: new("prefix-1"), ExtraParams: map[string]interface{}{"session_id": "caller"}}
+			_, e := provider.ChatCompletion(passthroughCtx, on, chat("gemini-3.8-flash", params))
+			return e
+		}, ":generateContent", `"caller"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			requests = nil
+			mu.Unlock()
+			if bifrostErr := tc.call(); bifrostErr != nil {
+				t.Fatalf("call failed: %s", bifrostErr.GetErrorString())
+			}
+			mu.Lock()
+			got := requests
+			mu.Unlock()
+			if len(got) != 1 || !strings.HasSuffix(got[0].path, tc.wantPath) {
+				t.Fatalf("upstream requests = %+v, want one to *%s", got, tc.wantPath)
+			}
+			if raw := gjson.Get(got[0].body, "session_id").Raw; raw != tc.wantSessionID {
+				t.Fatalf("session_id = %s, want %s; body %s", raw, tc.wantSessionID, got[0].body)
+			}
+			if gjson.Get(got[0].body, "sessionId").Exists() {
+				t.Fatalf("camelCase sessionId sent; body %s", got[0].body)
+			}
+		})
+	}
+}
+
+func BenchmarkApplyVertexSessionRouting(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	promptCacheKey := new("prefix-1")
+	for _, bc := range []struct {
+		name string
+		key  schemas.Key
+	}{
+		{"no vertex config", schemas.Key{}},
+		{"off", schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{}}},
+		{"on", schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{UseSessionRouting: true}}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			var req gemini.GeminiGenerationRequest
+			b.ReportAllocs()
+			for b.Loop() {
+				req.SessionID = nil
+				applyVertexSessionRouting(ctx, bc.key, "gemini-3.8-flash", promptCacheKey, &req)
+			}
+		})
 	}
 }

@@ -8,19 +8,36 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ExtractAnthropicPassthroughUsage extracts usage from a passthrough response payload. path is
-// the stripped request path; body is a single SSE data event (streaming) or the full response
-// body (non-streaming). Streaming /messages usage is assembled per-event by
-// AnthropicPassthroughStreamUsage, so here /messages only ever sees a plain JSON body.
-func ExtractAnthropicPassthroughUsage(path string, _, body []byte) *schemas.BifrostPassthroughUsage {
+// ClassifyPassthroughPath maps an Anthropic passthrough path to the Bifrost request type it
+// addresses: /messages is a Responses-shaped request (Bifrost routes Anthropic Messages through
+// the Responses schema), /messages/count_tokens is a token count and /complete a legacy text
+// completion. A query string is ignored; anything else returns "". Usage extraction and passthrough
+// log parsing both dispatch on this.
+func ClassifyPassthroughPath(path string) schemas.RequestType {
 	if idx := strings.IndexByte(path, '?'); idx >= 0 {
 		path = path[:idx]
 	}
 
 	switch {
 	case strings.HasSuffix(path, "/messages"):
-		return extractAnthropicMessagesUsage(body)
+		return schemas.ResponsesRequest
+	case strings.HasSuffix(path, "/messages/count_tokens"):
+		return schemas.CountTokensRequest
 	case strings.HasSuffix(path, "/complete"):
+		return schemas.TextCompletionRequest
+	}
+	return ""
+}
+
+// ExtractAnthropicPassthroughUsage extracts usage from a passthrough response payload. path is
+// the stripped request path; body is a single SSE data event (streaming) or the full response
+// body (non-streaming). Streaming /messages usage is assembled per-event by
+// AnthropicPassthroughStreamUsage, so here /messages only ever sees a plain JSON body.
+func ExtractAnthropicPassthroughUsage(path string, _, body []byte) *schemas.BifrostPassthroughUsage {
+	switch ClassifyPassthroughPath(path) {
+	case schemas.ResponsesRequest:
+		return extractAnthropicMessagesUsage(body)
+	case schemas.TextCompletionRequest:
 		return extractAnthropicCompleteUsage(body)
 	}
 	return nil
@@ -75,6 +92,7 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			NumSearchQueries: &n,
 		}
+		usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
 	}
 
 	// Extended-thinking tokens are already inside au.OutputTokens, so CompletionTokens

@@ -51,7 +51,7 @@ These metrics track requests forwarded to AI providers:
 | ---------------------------------- | --------- | ----------------------------------------------------------------- | ----------------------------------------------------- |
 | `bifrost_upstream_requests_total`  | Counter   | Total requests forwarded to upstream providers                    | Base Labels, custom labels                            |
 | `bifrost_success_requests_total`   | Counter   | Total successful requests to upstream providers                   | Base Labels, custom labels                            |
-| `bifrost_error_requests_total`     | Counter   | Total failed requests, by raw status and normalized reason         | Base Labels, `status_code`, `error_type`, custom labels |
+| `bifrost_error_requests_total`     | Counter   | Total failed requests, by effective status and normalized reason   | Base Labels, `status_code`, `error_type`, custom labels |
 | `bifrost_upstream_latency_seconds` | Histogram | Latency of upstream provider requests                             | Base Labels, `is_success`, custom labels              |
 | `bifrost_overhead_latency_microseconds`   | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) | Base Labels, custom labels                            |
 | `bifrost_overhead_component_microseconds` | Histogram | Same overhead broken down by internal component. Opt-in via `overhead_breakdown_enabled`; populated only when tracing is active | Base Labels, `overhead_component`, custom labels      |
@@ -65,6 +65,8 @@ These metrics track requests forwarded to AI providers:
 | `bifrost_request_retries`          | Histogram | Number of retries used per request (observed once per request; buckets `0,1,2,3,5,10`). | Base Labels |
 | `bifrost_routing_embedding_requests_total` | Counter | Embedding calls made by semantic complexity routing | `provider`, `model`, `phase` (`request` or `warmup`) |
 | `bifrost_routing_embedding_cost_total` | Counter | Cost in USD of semantic complexity routing embeddings | `provider`, `model`, `phase` (`request` or `warmup`) |
+| `bifrost_routing_llm_requests_total` | Counter | Chat completions made by the semantic router's LLM fallback | `provider`, `model` |
+| `bifrost_routing_llm_cost_total` | Counter | Cost in USD of those LLM fallback completions | `provider`, `model` |
 
 Base Labels:
 
@@ -79,7 +81,7 @@ Base Labels:
 - `routing_rule_id`: Routing rule ID that matched the request
 - `routing_rule_name`: Routing rule name that matched the request
 - `complexity_tier`: Complexity tier used for routing (`SIMPLE` / `MEDIUM` / `COMPLEX`); empty when no routing rule referenced `complexity_tier`
-- `complexity_mechanism`: How the effective complexity tier was determined (`semantic`, `llm`, `session`, or `skipped` when no tier was produced). The raw complexity score is deliberately not a label because it has unbounded cardinality; it is recorded in request logs and traces
+- `complexity_mechanism`: How the effective complexity tier was determined (`semantic`, `decision`, `llm`, `session`, or `skipped` when no tier was produced). The semantic similarity score is not a label because it has unbounded cardinality; it is recorded in request logs and traces. Decision-model confidence is recorded in the routing decision log
 - `selected_key_id`: ID of the key that successfully served the request (empty string `""` on final errors)
 - `selected_key_name`: Name of the key that successfully served the request (empty string `""` on final errors)
 - `fallback_index`: Fallback index (0 for first attempt, 1 for second attempt, etc.)

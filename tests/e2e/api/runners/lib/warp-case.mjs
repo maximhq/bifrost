@@ -25,10 +25,13 @@ export function createWarpLib(pm) {
   var DISCOVERY_TOOLS = ["describe_filter_space", "ask_user"];
   // Options the driver prefers when Warp asks, most specific first: whole
   // deployment for scope (nobody is identified, so there is no default), then a
-  // week for the window, which is what every seeded fact is measured over.
+  // week for the window, which is what every seeded fact is measured over. The
+  // rolling week is tried on its own first: asked "calendar week or last 7
+  // days?", the seeded facts are the rolling ones whichever option is listed first.
   var DEFAULT_PREFER = [
     "whole deployment|entire deployment|all traffic|everyone|all teams|everything",
-    "-7d|7 days|this week|last week",
+    "-7d|7 days|rolling",
+    "this week|last week",
     "-24h|24 hours",
   ];
 
@@ -177,6 +180,14 @@ export function createWarpLib(pm) {
       });
       if (!hit) failures.push("no " + (m.tool || "tool") + " call with arguments matching /" + m.pattern + "/");
     });
+    // A filter the question never asked for narrows the answer without saying so.
+    (e.argsNone || []).forEach(function (m) {
+      var re = pattern(m.pattern);
+      calls.forEach(function (t) {
+        if ((!m.tool || t.name === m.tool) && re.test(t.arguments || ""))
+          failures.push(t.name + " was called with arguments matching /" + m.pattern + "/: " + t.arguments);
+      });
+    });
 
     (e.answerAll || []).forEach(function (p) {
       if (!pattern(p).test(answer)) failures.push("answer lacks /" + p + "/");
@@ -247,6 +258,10 @@ export function createWarpLib(pm) {
     }
 
     if (body) failures = failures.concat(evaluate(body, c.expect));
+    // An answer that was never preceded by the question the case exists to see.
+    var minQuestions = (c.expect || {}).minQuestions;
+    if (body && typeof minQuestions === "number" && state.asked < minQuestions)
+      failures.push("asked " + state.asked + " question(s) before answering, want at least " + minQuestions);
 
     if (failures.length && state.attempt < MAX_RETRIES) {
       console.log("RETRY " + pm.info.requestName + ": " + failures.join("; ") + summary(body));

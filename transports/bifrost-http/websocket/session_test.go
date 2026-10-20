@@ -89,6 +89,14 @@ func TestSessionManagerCloseAll(t *testing.T) {
 	if !sessionA.closed || !sessionB.closed {
 		t.Fatal("expected all sessions to be closed")
 	}
+
+	// An upgrade accepted just before shutdown must not register a session nobody will close.
+	if _, err := manager.Create(newTestConn()); err != ErrSessionManagerClosed {
+		t.Fatalf("Create after CloseAll: err = %v, want ErrSessionManagerClosed", err)
+	}
+	if got := manager.Count(); got != 0 {
+		t.Fatalf("Count() after a refused Create = %d, want 0", got)
+	}
 }
 
 func TestSessionRealtimeState(t *testing.T) {

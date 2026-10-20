@@ -1,8 +1,12 @@
 package bifrost
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -156,6 +160,12 @@ func TestClassifyFailure(t *testing.T) {
 		{"520 unlisted 5xx", providerError(520, "", "", "provider API error"), schemas.FailureClassUnknown},
 		{"internal bifrost error", &schemas.BifrostError{IsBifrostError: true, Error: &schemas.ErrorField{Message: "tracer not found"}}, schemas.FailureClassUnknown},
 		{"bedrock in-stream validation", &schemas.BifrostError{IsBifrostError: true, Type: Ptr("ValidationException"), Error: &schemas.ErrorField{Type: Ptr("ValidationException"), Message: "This model version has reached the end of its life"}}, schemas.FailureClassUnknown},
+
+		// endings Bifrost itself caused, classed by their type whoever built the error
+		{"provider timeout", &schemas.BifrostError{IsBifrostError: true, StatusCode: Ptr(504), Error: &schemas.ErrorField{Type: Ptr(schemas.RequestTimedOut), Message: schemas.ErrProviderRequestTimedOut}}, schemas.FailureClassTimeout},
+		{"ttft miss", &schemas.BifrostError{IsBifrostError: true, StatusCode: Ptr(504), Error: &schemas.ErrorField{Type: Ptr(schemas.RequestTimedOut), Code: Ptr(schemas.FirstTokenTimeoutErrorCode)}}, schemas.FailureClassTimeout},
+		{"caller cancel 499", &schemas.BifrostError{IsBifrostError: true, StatusCode: Ptr(499), Error: &schemas.ErrorField{Type: Ptr(schemas.RequestCancelled), Message: schemas.ErrRequestCancelled}}, schemas.FailureClassCancelled},
+		{"context.Canceled from a provider call", &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Type: Ptr(schemas.RequestCancelled), Error: context.Canceled}}, schemas.FailureClassCancelled},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -243,9 +253,221 @@ func TestFailureClass_Policy(t *testing.T) {
 	if !schemas.FailureClassRegionBlocked.IsPerKey() || !schemas.FailureClassRegionBlocked.IsPermanentPerKey() || schemas.FailureClassRegionBlocked.FailReason() != "region_blocked_error" {
 		t.Errorf("region_blocked should be a permanent per-key failure carrying its label")
 	}
-	for _, c := range []schemas.FailureClass{schemas.FailureClassTransient, schemas.FailureClassCallerFault, schemas.FailureClassUnknown} {
+	for _, c := range []schemas.FailureClass{schemas.FailureClassTransient, schemas.FailureClassCallerFault, schemas.FailureClassUnknown, schemas.FailureClassTimeout, schemas.FailureClassCancelled} {
 		if c.IsPerKey() || c.IsPermanentPerKey() || c.FailReason() != "" {
 			t.Errorf("%s should carry no per-key policy and no label", c)
 		}
+	}
+}
+
+// TestFailureClass_CoversAllModels pins which classes cover every model on the key: a rejected
+// credential and an exhausted account do; the other per-key classes bind the key only for the
+// model that was refused, and the rest bind nothing. It also pins the classifier outputs a
+// consumer relies on: OpenAI's insufficient_quota, which names itself only in the code and type,
+// is quota, and a per-model quota is a rate limit.
+func TestFailureClass_CoversAllModels(t *testing.T) {
+	for _, c := range []schemas.FailureClass{schemas.FailureClassCredential, schemas.FailureClassQuota} {
+		if !c.CoversAllModels() {
+			t.Errorf("%s should cover every model on the key", c)
+		}
+	}
+	for _, c := range []schemas.FailureClass{
+		schemas.FailureClassModelAccess, schemas.FailureClassModelGone, schemas.FailureClassRegionBlocked, schemas.FailureClassRateLimit,
+		schemas.FailureClassTransient, schemas.FailureClassCallerFault, schemas.FailureClassUnknown, "",
+	} {
+		if c.CoversAllModels() {
+			t.Errorf("%q should not cover every model on the key", c)
+		}
+	}
+
+	status := 429
+	quota := "insufficient_quota"
+	outOfCredit := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{
+		Message: "You exceeded your current quota, please check your plan and billing details.", Type: &quota, Code: &quota,
+	}}
+	if got := ClassifyFailure(outOfCredit); !got.CoversAllModels() {
+		t.Errorf("OpenAI's insufficient_quota classified as %q, which does not cover the key", got)
+	}
+	exhausted := "RESOURCE_EXHAUSTED"
+	perModel := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{
+		Message: "Quota exceeded for aiplatform.googleapis.com/generate_requests_per_model_per_day with base model: gemini-2.5-pro.", Type: &exhausted,
+	}}
+	if got := ClassifyFailure(perModel); got != schemas.FailureClassRateLimit || got.CoversAllModels() {
+		t.Errorf("a per-model quota classified as %q, want a rate limit that does not cover the key", got)
+	}
+}
+
+// Failure classes driven through the routing scenarios of bifrost_test.go: what each class does to
+// the retry and fallback loops, and the class a timed-out attempt carries.
+
+// Each failure class through the real retry and fallback loops, on a provider with two keys and a
+// fallback: a transient error stays on its key, a rate limit rotates within the budget, a permanent
+// per-key refusal walks the pool with one granted attempt per key, a caller fault and a provider
+// timeout are not retried, and all of them move to the fallback. A caller's cancel and a request
+// deadline end the request without a fallback (plan row LB-27).
+func TestScenarioFailureClassLadder(t *testing.T) {
+	type outcome struct {
+		trail    int // upstream calls on A
+		sameKey  bool
+		bothKeys bool
+		class    schemas.FailureClass
+		fallback bool
+	}
+	cases := []struct {
+		name     string
+		reply    scenarioReply
+		deadURL  bool
+		timeout  bool
+		cancel   bool
+		deadline bool
+		want     outcome
+	}{
+		{name: "500", reply: scenarioReply{status: 500, body: `{"error":{"message":"The server had an error","type":"server_error"}}`}, want: outcome{trail: 3, sameKey: true, class: schemas.FailureClassTransient, fallback: true}},
+		{name: "502", reply: scenarioReply{status: 502, body: `{"error":{"message":"Bad gateway","type":"server_error"}}`}, want: outcome{trail: 3, sameKey: true, class: schemas.FailureClassTransient, fallback: true}},
+		{name: "connection refused", deadURL: true, want: outcome{trail: 3, sameKey: true, class: schemas.FailureClassTransient, fallback: true}},
+		{name: "429", reply: scenarioReply{status: 429, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`}, want: outcome{trail: 3, bothKeys: true, class: schemas.FailureClassRateLimit, fallback: true}},
+		{name: "401", reply: scenarioReply{status: 401, body: `{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`}, want: outcome{trail: 2, bothKeys: true, class: schemas.FailureClassCredential, fallback: true}},
+		{name: "402", reply: failureReplies["402 quota"], want: outcome{trail: 2, bothKeys: true, class: schemas.FailureClassQuota, fallback: true}},
+		{name: "404 model", reply: failureReplies["404 model"], want: outcome{trail: 2, bothKeys: true, class: schemas.FailureClassModelAccess, fallback: true}},
+		{name: "410", reply: failureReplies["410 retired"], want: outcome{trail: 2, bothKeys: true, class: schemas.FailureClassModelGone, fallback: true}},
+		{name: "403 region", reply: failureReplies["403 region"], want: outcome{trail: 2, bothKeys: true, class: schemas.FailureClassRegionBlocked, fallback: true}},
+		{name: "400", reply: failureReplies["400 caller fault"], want: outcome{trail: 1, class: schemas.FailureClassCallerFault, fallback: true}},
+		// The three below end the attempt on Bifrost's side, before the provider answers. The retry loop
+		// stops on them, and labels the attempt: a provider timeout and a request deadline are timeouts,
+		// a caller's cancel is cancelled (see TestScenarioTimedOutAttemptCarriesItsClass for the fields).
+		{name: "provider timeout", reply: scenarioReply{stall: 3 * time.Second}, timeout: true, want: outcome{trail: 1, class: schemas.FailureClassTimeout, fallback: true}},
+		{name: "caller cancel", reply: scenarioReply{stall: 3 * time.Second}, cancel: true, want: outcome{trail: 1, class: schemas.FailureClassCancelled}},
+		{name: "request deadline", reply: scenarioReply{stall: 3 * time.Second}, deadline: true, want: outcome{trail: 1, class: schemas.FailureClassTimeout}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+				provA: {scenarioKey("a1", 1), scenarioKey("a2", 1)},
+				provB: {scenarioKey("b1", 1)},
+			})
+			if tc.deadURL {
+				account.configs[provA].NetworkConfig.BaseURL = "http://127.0.0.1:1"
+			}
+			if tc.timeout {
+				account.configs[provA].NetworkConfig.DefaultRequestTimeoutInSeconds = 1
+			}
+			router := &scenarioRouter{}
+			client := scenarioClient(t, account, router, nil)
+			u.reply("sk-a1", tc.reply)
+			u.reply("sk-a2", tc.reply)
+
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			deadline := schemas.NoDeadline
+			if tc.deadline {
+				deadline = time.Now().Add(300 * time.Millisecond)
+			}
+			ctx := schemas.NewBifrostContext(parent, deadline)
+			if tc.cancel {
+				time.AfterFunc(300*time.Millisecond, cancel)
+			}
+			served, err := scenarioChat(client, ctx, provA, "m", schemas.Fallback{Provider: provB, Model: "m"})
+
+			attempts := router.awaitAttempts(t, 1)
+			trail := attempts[0].trail
+			if len(trail) != tc.want.trail {
+				t.Fatalf("A's attempt trail has %d calls %v, want %d", len(trail), trailKeys(trail), tc.want.trail)
+			}
+			if attempts[0].retries != tc.want.trail-1 {
+				t.Fatalf("A reported number_of_retries %d for %d upstream calls", attempts[0].retries, len(trail))
+			}
+			keys := trailKeys(trail)
+			if tc.want.sameKey && strings.Count(strings.Join(keys, ","), keys[0]) != len(keys) {
+				t.Fatalf("a transient failure should stay on its key, trail %v", keys)
+			}
+			if tc.want.bothKeys && (!strings.Contains(strings.Join(keys, ","), "a1") || !strings.Contains(strings.Join(keys, ","), "a2")) {
+				t.Fatalf("a per-key failure should move to the other key, trail %v", keys)
+			}
+			if tc.want.class != "" {
+				requireClass(t, trail, tc.want.class)
+			}
+			if !tc.deadURL {
+				if got := u.count("sk-a1") + u.count("sk-a2"); got != tc.want.trail {
+					t.Fatalf("A's keys reached the upstream %d times, want %d", got, tc.want.trail)
+				}
+			}
+			if tc.want.fallback {
+				requireServed(t, served, err, provB)
+				requireHits(t, u, map[string]int{"sk-b1": 1})
+				return
+			}
+			if err == nil {
+				t.Fatal("a cancelled or expired request was served")
+			}
+			requireHits(t, u, map[string]int{"sk-b1": 0})
+			if tc.cancel {
+				requireStatus(t, err, 499, schemas.RequestCancelled)
+			}
+			if tc.deadline {
+				requireStatus(t, err, http.StatusGatewayTimeout, schemas.RequestTimedOut)
+			}
+		})
+	}
+}
+
+// An attempt that ends on Bifrost's side leaves its class on the attempt trail like every other
+// attempt (plan row LB-27: "the attempt trail shows failure_class per attempt"). A provider timeout
+// and a request deadline are timeouts, 504, with fail_reason request_timed_out. A caller's cancel is
+// cancelled, 499, with no fail_reason: the caller leaving says nothing about the key, and a
+// fail_reason is what marks a key as failed.
+func TestScenarioTimedOutAttemptCarriesItsClass(t *testing.T) {
+	cases := []struct {
+		name       string
+		timeout    bool
+		deadline   bool
+		cancel     bool
+		class      schemas.FailureClass
+		status     int
+		failReason string // "" wants none
+	}{
+		{name: "provider timeout", timeout: true, class: schemas.FailureClassTimeout, status: http.StatusGatewayTimeout, failReason: schemas.RequestTimedOut},
+		{name: "request deadline", deadline: true, class: schemas.FailureClassTimeout, status: http.StatusGatewayTimeout, failReason: schemas.RequestTimedOut},
+		{name: "caller cancel", cancel: true, class: schemas.FailureClassCancelled, status: 499},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{provA: {scenarioKey("a1", 1)}})
+			if tc.timeout {
+				account.configs[provA].NetworkConfig.DefaultRequestTimeoutInSeconds = 1
+			}
+			router := &scenarioRouter{}
+			client := scenarioClient(t, account, router, nil)
+			u.reply("sk-a1", scenarioReply{stall: 3 * time.Second})
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			deadline := schemas.NoDeadline
+			if tc.deadline {
+				deadline = time.Now().Add(300 * time.Millisecond)
+			}
+			ctx := schemas.NewBifrostContext(parent, deadline)
+			if tc.cancel {
+				time.AfterFunc(300*time.Millisecond, cancel)
+			}
+			_, err := scenarioChat(client, ctx, provA, "m")
+			if err == nil {
+				t.Fatal("the request was served")
+			}
+			trail := router.awaitAttempts(t, 1)[0].trail
+			if len(trail) != 1 {
+				t.Fatalf("want one attempt, trail %+v", trail)
+			}
+			got := trail[0]
+			if got.FailureClass != tc.class || got.StatusCode == nil || *got.StatusCode != tc.status {
+				t.Fatalf("the attempt should carry class %q and status %d, got %+v", tc.class, tc.status, got)
+			}
+			switch {
+			case tc.failReason == "" && got.FailReason != nil:
+				t.Fatalf("the attempt should carry no fail_reason, got %q", *got.FailReason)
+			case tc.failReason != "" && (got.FailReason == nil || *got.FailReason != tc.failReason):
+				t.Fatalf("the attempt should carry fail_reason %q, got %v", tc.failReason, got.FailReason)
+			}
+		})
 	}
 }

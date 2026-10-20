@@ -17,6 +17,7 @@ import {
 	useMCPClientFormSatellites,
 	validateMCPClientForm,
 } from "./mcpClientFormFields";
+import { needsHeadersVerification } from "./mcpClientOpenApiUtils";
 import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
 
@@ -71,11 +72,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const satellites = useMCPClientFormSatellites();
 
 	const connectionType = watch("connection_type");
-	const authType = watch("auth_type");
 	const headers = watch("headers");
 
 	const headersValidationError =
-		connectionType === "http" || connectionType === "sse" ? getHeadersValidationError(authType, headers) : null;
+		connectionType === "http" || connectionType === "sse" || connectionType === "openapi" ? getHeadersValidationError(headers) : null;
 
 	// Reset form state when the sheet opens
 	const { reset: resetSatellites } = satellites;
@@ -104,7 +104,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		// The dialog collects sample values and POSTs once to /api/mcp/client
 		// where the server verifies, discovers tools, and persists in a single
 		// round-trip. Mirrors the per-user OAuth flow's single-call shape.
-		if (data.auth_type === "per_user_headers") {
+		if (needsHeadersVerification(payload)) {
 			setIsLoading(false);
 			setHeadersFlow({ payload });
 			return;

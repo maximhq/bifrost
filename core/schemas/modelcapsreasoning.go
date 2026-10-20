@@ -228,6 +228,24 @@ func (c ModelCaps) CanDisableReasoning(fallback bool) bool {
 	return fallback
 }
 
+// DefaultReasoningEffort returns the effort the model applies when a request omits
+// it. "none" means the model does not reason by default; "" means it never reasons.
+func (c ModelCaps) DefaultReasoningEffort(fallback string) string {
+	if c.record != nil && c.record.DefaultReasoningEffort != nil {
+		return *c.record.DefaultReasoningEffort
+	}
+	return fallback
+}
+
+// SupportsBetweenToolsThinking reports whether the model accepts
+// thinking:{type:"between_tools"}, which turns off up-front thinking.
+func (c ModelCaps) SupportsBetweenToolsThinking(fallback bool) bool {
+	if c.record != nil && c.record.SupportsBetweenToolsThinking != nil {
+		return *c.record.SupportsBetweenToolsThinking
+	}
+	return fallback
+}
+
 // SupportsDynamicReasoningBudget reports whether the model accepts a
 // self-managed thinking budget (Gemini's thinkingBudget: -1) rather than an
 // explicit token count.

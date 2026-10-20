@@ -4,6 +4,290 @@ DecisionRequest:
   type: object
   required:
     - model
+    - input
+    - questions
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format
+      example: typesafe/jev-1.13.0
+    input:
+      description: |
+        The evidence. A string of text; an array of messages, each with text and
+        image parts (images are read only by providers that accept them);
+        an object of structured data (passed to Typesafe-based models as their
+        state); or null.
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            $ref: '#/DecisionInputMessage'
+        - type: object
+          additionalProperties: true
+        - type: 'null'
+    questions:
+      type: array
+      minItems: 1
+      description: Questions in the order asked. Answers follow the same order.
+      items:
+        $ref: '#/DecisionQuestion'
+    safety_identifier:
+      type: string
+      description: Stable end-user identifier, forwarded to providers that accept one (OpenAI)
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback models in provider/model format
+
+DecisionInputMessage:
+  type: object
+  required:
+    - role
+    - content
+  properties:
+    type:
+      type: string
+      enum: [message]
+      description: Optional item type, as OpenAI's SDKs send it
+    role:
+      type: string
+      example: user
+    content:
+      description: Text, or an array of parts
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            $ref: '#/DecisionInputPart'
+
+DecisionInputPart:
+  description: One part of a message's content
+  oneOf:
+    - $ref: '#/DecisionInputText'
+    - $ref: '#/DecisionInputImage'
+    - $ref: '#/DecisionInputImageAsset'
+
+DecisionInputText:
+  type: object
+  required: [type, text]
+  properties:
+    type:
+      type: string
+      enum: [input_text]
+    text:
+      description: A string, or structured data that Typesafe-based models read as is and OpenAI receives as JSON text
+      oneOf:
+        - type: string
+        - type: object
+          additionalProperties: true
+        - type: array
+          items: {}
+
+DecisionInputImage:
+  type: object
+  description: An inline image, read as evidence
+  required: [type, image_url]
+  properties:
+    type:
+      type: string
+      enum: [input_image]
+    image_url:
+      type: string
+      description: A base64 data URL or an HTTP(S) URL
+    detail:
+      type: string
+      enum: [low, high, auto, original]
+      description: Image detail level, forwarded to models that read images (OpenAI's defaults to `auto`)
+
+DecisionInputImageAsset:
+  type: object
+  description: Typesafe only. An image sent by reference, as one of Typesafe's `assets`, placed wherever its ID is written in the input, instructions, or criteria instead of as evidence itself. Other providers reject it.
+  required: [type, id]
+  anyOf:
+    - required: [data]
+    - required: [name]
+  properties:
+    type:
+      type: string
+      enum: [input_image]
+    id:
+      type: string
+      description: The reference written where the image belongs
+    data:
+      type: string
+      format: byte
+      description: The image file, base64-encoded, without a `data:` prefix; its format is read from the bytes
+    name:
+      type: string
+      description: In a multipart request, the name of the file part that holds the image. A JSON request cannot use it.
+
+DecisionQuestion:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum: [predicate, choice, score, box]
+      description: How the question is decided. `predicate` yields the probability a condition is true (Typesafe's `noul`), `choice` one of the choices, `score` a probability-weighted level index that may fall between levels, `box` the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14).
+    name:
+      type: string
+      description: Optional name; the answer carries it back
+    instructions:
+      description: Instructions for this question. A string, or structured data preserved losslessly for providers that accept it.
+      oneOf:
+        - type: string
+        - type: object
+          additionalProperties: true
+        - type: array
+          items: {}
+    criteria:
+      type: object
+      description: Predicate only, read by Typesafe-based models. Optional descriptions of the `true` and `false` outcomes.
+      additionalProperties: false
+      properties:
+        "true":
+          description: A string, or structured data
+        "false":
+          description: A string, or structured data
+    choices:
+      type: array
+      description: Choice only. The selectable values.
+      items:
+        type: object
+        required: [value]
+        properties:
+          value:
+            description: A string or a boolean
+            oneOf:
+              - type: string
+              - type: boolean
+          description:
+            description: A string, or structured data
+    levels:
+      type: array
+      description: Score only. The ordered levels.
+      items:
+        type: object
+        required: [label]
+        properties:
+          label:
+            type: string
+          description:
+            description: A string, or structured data
+
+DecisionResponse:
+  type: object
+  required:
+    - model
+    - answers
+  properties:
+    id:
+      type: string
+      description: Unique identifier for the decision response
+    model:
+      type: string
+      description: Model that performed the decision
+    answers:
+      type: array
+      description: One answer per question, in question order
+      items:
+        $ref: '#/DecisionAnswer'
+    usage:
+      $ref: './usage.yaml#/BifrostLLMUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+    routing:
+      type: object
+      description: Laya only. The checkpoint that answered and why, passed through untouched
+
+DecisionAnswer:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      description: The question's type, or `refusal` when the model declined to answer
+      example: choice
+    name:
+      type: [string, 'null']
+      description: The question's name, when it had one. OpenAI sends null for an unnamed question
+    probability:
+      type: number
+      description: Predicate answers. Probability in [0,1] that the condition is true
+    choice:
+      description: Choice answers. The chosen value
+      oneOf:
+        - type: string
+        - type: boolean
+    score:
+      type: number
+      description: Score answers. Probability-weighted level index
+    box:
+      $ref: '#/DecisionBox'
+    probabilities:
+      type: array
+      description: Distribution over choices or levels, in question order, when supplied
+      items:
+        type: object
+        properties:
+          value:
+            description: The choice value, or the level index
+            oneOf:
+              - type: string
+              - type: boolean
+              - type: number
+          label:
+            type: string
+            description: Score answers. The level's label
+          probability:
+            type: number
+    confidence:
+      type: number
+      description: Model confidence for this answer, when supplied
+    legend:
+      type: object
+      additionalProperties: {}
+      description: Score answers. Level index to description, when supplied
+    answer_confidence:
+      type: number
+      description: Laya only. Calibrated probability of the reported answer
+    action:
+      type: object
+      description: Laya only. Action head output, passed through untouched
+    abstention:
+      type: string
+      enum: [passed, abstained, unevaluated]
+      description: Laya only, when `min_confidence` is set
+    abstention_threshold:
+      type: number
+      description: Laya only, when `min_confidence` is set
+    low_confidence:
+      type: boolean
+      description: Laya only, when `min_confidence` is set
+
+DecisionBox:
+  type: object
+  description: Box answers. Each edge is a fraction from 0 to 1 of the image's height (`top`, `bottom`) or width (`left`, `right`), measured from its top-left
+  required: [top, bottom, left, right]
+  properties:
+    top:
+      type: number
+    bottom:
+      type: number
+    left:
+      type: number
+    right:
+      type: number
+
+DecisionMapFormRequest:
+  type: object
+  deprecated: true
+  description: Deprecated map form of the request, kept for existing callers. Answered with DecisionMapFormResponse.
+  required:
+    - model
     - state
     - questions
   properties:
@@ -24,14 +308,14 @@ DecisionRequest:
       minProperties: 1
       description: Map of named questions. Question identifiers become answer field names.
       additionalProperties:
-        $ref: '#/DecisionQuestion'
+        $ref: '#/DecisionMapQuestion'
     fallbacks:
       type: array
       items:
         type: string
       description: Fallback models in provider/model format
 
-DecisionQuestion:
+DecisionMapQuestion:
   type: object
   required:
     - kind
@@ -39,8 +323,8 @@ DecisionQuestion:
   properties:
     kind:
       type: string
-      enum: [noul, choice, score]
-      description: How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions.
+      enum: [noul, choice, score, box]
+      description: How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions, `box` yields the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14).
     instructions:
       description: Instructions for this question. A string, or structured data preserved losslessly.
       oneOf:
@@ -53,7 +337,8 @@ DecisionQuestion:
       description: |
         Applicable criteria. Optional `true`/`false` descriptions for `noul`; a
         required map of option to description for `choice` (at most 255 options);
-        a required ordered array of 2-10 level descriptions for `score`.
+        a required ordered array of 2-10 level descriptions for `score`; none
+        for `box`.
       oneOf:
         - type: object
           additionalProperties:
@@ -62,8 +347,10 @@ DecisionQuestion:
           items:
             type: string
 
-DecisionResponse:
+DecisionMapFormResponse:
   type: object
+  deprecated: true
+  description: Response to a map-form request, with answers keyed by question name.
   required:
     - model
     - answers
@@ -78,13 +365,16 @@ DecisionResponse:
       type: object
       description: Map matching question identifiers to answers. Every requested question produces an answer.
       additionalProperties:
-        $ref: '#/DecisionAnswer'
+        $ref: '#/DecisionMapAnswer'
     usage:
       $ref: './usage.yaml#/BifrostLLMUsage'
     extra_fields:
       $ref: './common.yaml#/BifrostResponseExtraFields'
+    routing:
+      type: object
+      description: Laya only. The checkpoint that answered and why, passed through untouched
 
-DecisionAnswer:
+DecisionMapAnswer:
   type: object
   required:
     - kind
@@ -92,13 +382,14 @@ DecisionAnswer:
   properties:
     kind:
       type: string
-      enum: [noul, choice, score]
+      enum: [noul, choice, score, box]
       description: The question's decision kind
     value:
-      description: The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`.
+      description: The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`, the box's edges for `box`.
       oneOf:
         - type: number
         - type: string
+        - $ref: '#/DecisionBox'
     confidence:
       type: number
       description: Model confidence for this answer, when supplied
@@ -112,3 +403,21 @@ DecisionAnswer:
       additionalProperties:
         type: string
       description: Legend mapping levels to descriptions, when supplied
+    answer_confidence:
+      type: number
+      minimum: 0
+      maximum: 1
+      description: Laya only. Calibrated probability of the reported answer
+    action:
+      type: object
+      description: Laya only. Action head output, e.g. `{"act_probability":1.0}`, passed through untouched
+    abstention:
+      type: string
+      enum: [passed, abstained, unevaluated]
+      description: Laya only, when `min_confidence` is set. Whether the answer cleared the threshold
+    abstention_threshold:
+      type: number
+      description: Laya only, when `min_confidence` is set. The threshold the answer was gated on
+    low_confidence:
+      type: boolean
+      description: Laya only, when `min_confidence` is set. True when the answer fell below the threshold

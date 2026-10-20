@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/queryscope"
 )
 
 // UpsertProviderJob inserts a new provider job or merges non-zero fields into an
@@ -76,6 +78,109 @@ func (s *RDBConfigStore) UpsertProviderJob(ctx context.Context, job *tables.Tabl
 	}
 
 	return db.Model(&tables.TableProviderJob{}).Where("id = ?", job.ID).Updates(updates).Error
+}
+
+// GetProviderJobsByIDs returns the provider jobs among jobIDs that exist, in no
+// particular order. Rows no id matches are left out rather than reported. A list
+// longer than providerIDListInlineMax travels as one parameter (queryscope.InStrings).
+func (s *RDBConfigStore) GetProviderJobsByIDs(ctx context.Context, jobIDs []string) ([]*tables.TableProviderJob, error) {
+	if len(jobIDs) == 0 {
+		return nil, nil
+	}
+	db := s.DB().WithContext(ctx)
+	if len(jobIDs) <= providerIDListInlineMax {
+		db = db.Where("id IN ?", jobIDs)
+	} else {
+		db = db.Where(queryscope.InStrings(db, "id", jobIDs))
+	}
+	var jobs []*tables.TableProviderJob
+	if err := db.Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+// GetProviderJobsByFileIDs returns the provider jobs on provider that name one of
+// fileIDs as their input, output or error file, in no particular order. A list longer
+// than providerIDListInlineMax binds once per column (queryscope.InStrings).
+func (s *RDBConfigStore) GetProviderJobsByFileIDs(ctx context.Context, provider string, fileIDs []string) ([]*tables.TableProviderJob, error) {
+	if provider == "" || len(fileIDs) == 0 {
+		return nil, nil
+	}
+	db := s.DB().WithContext(ctx)
+	if len(fileIDs) <= providerIDListInlineMax {
+		db = db.Where("provider = ? AND (input_file_id IN ? OR output_file_id IN ? OR error_file_id IN ?)", provider, fileIDs, fileIDs, fileIDs)
+	} else {
+		inputClause, inputArg := queryscope.InStrings(db, "input_file_id", fileIDs)
+		outputClause, outputArg := queryscope.InStrings(db, "output_file_id", fileIDs)
+		errorClause, errorArg := queryscope.InStrings(db, "error_file_id", fileIDs)
+		db = db.Where("provider = ? AND ("+inputClause+" OR "+outputClause+" OR "+errorClause+")", provider, inputArg, outputArg, errorArg)
+	}
+	var jobs []*tables.TableProviderJob
+	if err := db.
+		Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+// GetProviderJobsByJobIDSuffixes returns the provider jobs of kind on provider whose
+// provider-side id ends in "/"+one of suffixes, in no particular order: the jobs full
+// resource names such as "projects/<p>/locations/<l>/batchPredictionJobs/<n>" name
+// by their last segment alone. Each suffix matches whole, at a path boundary, with
+// LIKE metacharacters taken literally; empty suffixes are ignored. The suffixes are read
+// suffixPatternChunkSize at a time.
+func (s *RDBConfigStore) GetProviderJobsByJobIDSuffixes(ctx context.Context, kind, provider string, suffixes []string) ([]*tables.TableProviderJob, error) {
+	patterns := suffixLikePatterns(suffixes)
+	if kind == "" || provider == "" || len(patterns) == 0 {
+		return nil, nil
+	}
+	var jobs []*tables.TableProviderJob
+	seen := make(map[string]struct{})
+	for start := 0; start < len(patterns); start += suffixPatternChunkSize {
+		chunk := patterns[start:min(start+suffixPatternChunkSize, len(patterns))]
+		suffixWhere := s.DB()
+		for _, pattern := range chunk {
+			suffixWhere = suffixWhere.Or(`batch_id LIKE ? ESCAPE '\'`, pattern)
+		}
+		var page []*tables.TableProviderJob
+		if err := s.DB().WithContext(ctx).Where("kind = ? AND provider = ?", kind, provider).Where(suffixWhere).Find(&page).Error; err != nil {
+			return nil, err
+		}
+		for _, job := range page {
+			if _, dup := seen[job.ID]; dup {
+				continue
+			}
+			seen[job.ID] = struct{}{}
+			jobs = append(jobs, job)
+		}
+	}
+	return jobs, nil
+}
+
+// suffixPatternChunkSize bounds the LIKE terms one suffix lookup ORs together. SQLite caps
+// an expression tree at depth 1000 and every term deepens the OR chain by one, so a list
+// page of short ids is read in chunks well under that.
+const suffixPatternChunkSize = 500
+
+// suffixLikePatterns turns id suffixes into the LIKE patterns that match a full resource name
+// ending in "/"+suffix, with LIKE metacharacters in the suffix taken literally. Empty suffixes are
+// dropped and duplicates collapsed.
+func suffixLikePatterns(suffixes []string) []string {
+	escaper := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	patterns := make([]string, 0, len(suffixes))
+	seen := make(map[string]struct{}, len(suffixes))
+	for _, suffix := range suffixes {
+		if suffix == "" {
+			continue
+		}
+		if _, dup := seen[suffix]; dup {
+			continue
+		}
+		seen[suffix] = struct{}{}
+		patterns = append(patterns, "%/"+escaper.Replace(suffix))
+	}
+	return patterns
 }
 
 // GetProviderJob returns a provider job by its stable id, or ErrNotFound.
@@ -153,17 +258,26 @@ func (s *RDBConfigStore) ClaimProviderJob(ctx context.Context, jobID, runnerID s
 		blocked = []string{tables.ProviderJobAccountingStatusAccounted}
 	}
 	now := time.Now().UTC()
+	updates := map[string]any{
+		"accounting_status": tables.ProviderJobAccountingStatusProcessing,
+		"runner_id":         runnerID,
+		"claimed_at":        now,
+		"last_error":        nil,
+		"updated_at":        now,
+	}
+	if allowUnpriceable {
+		// Reaching "unpriceable" cleared next_check_at (finishProviderJob). Re-opening
+		// such a job makes it due again, so that if this attempt ends in
+		// FailProviderJob the sweeper still retries it, as it did when terminal jobs
+		// kept their last next_check_at. CASE reads the pre-update row.
+		updates["next_check_at"] = gorm.Expr("CASE WHEN accounting_status = ? AND next_check_at IS NULL THEN ? ELSE next_check_at END",
+			tables.ProviderJobAccountingStatusUnpriceable, now)
+	}
 	res := s.DB().WithContext(ctx).Model(&tables.TableProviderJob{}).
 		Where("id = ?", jobID).
 		Where("accounting_status NOT IN ?", blocked).
 		Where("(accounting_status <> ? OR claimed_at IS NULL OR claimed_at < ?)", tables.ProviderJobAccountingStatusProcessing, staleBefore).
-		Updates(map[string]any{
-			"accounting_status": tables.ProviderJobAccountingStatusProcessing,
-			"runner_id":         runnerID,
-			"claimed_at":        now,
-			"last_error":        nil,
-			"updated_at":        now,
-		})
+		Updates(updates)
 	if res.Error != nil {
 		return false, res.Error
 	}
@@ -222,6 +336,16 @@ func (s *RDBConfigStore) FailProviderJob(ctx context.Context, jobID, runnerID st
 	return s.finishProviderJob(ctx, jobID, runnerID, tables.ProviderJobAccountingStatusError, "", err)
 }
 
+// isTerminalAccountingStatus reports whether status is one the sweeper never
+// polls again: the set ListDueProviderJobs excludes.
+func isTerminalAccountingStatus(status string) bool {
+	return status == tables.ProviderJobAccountingStatusAccounted || status == tables.ProviderJobAccountingStatusUnpriceable
+}
+
+// finishProviderJob moves a job this runner holds in "processing" to status,
+// releasing the runner fence and recording reason and err. Terminal statuses
+// also clear next_check_at. Fenced on runner_id and processing, so ErrNotFound
+// means the claim was lost.
 func (s *RDBConfigStore) finishProviderJob(ctx context.Context, jobID, runnerID, status, reason string, err error) error {
 	if jobID == "" {
 		return fmt.Errorf("provider job id is required")
@@ -240,6 +364,12 @@ func (s *RDBConfigStore) finishProviderJob(ctx context.Context, jobID, runnerID,
 	}
 	if status == tables.ProviderJobAccountingStatusAccounted {
 		updates["unpriceable_reason"] = nil
+	}
+	// Accounted and unpriceable are the states ListDueProviderJobs never returns.
+	// Clearing next_check_at drops the row out of the partial idx_batch_jobs_due
+	// index, so the due scan stops re-reading every job that ever finished.
+	if isTerminalAccountingStatus(status) {
+		updates["next_check_at"] = nil
 	}
 	if reason != "" {
 		updates["unpriceable_reason"] = reason

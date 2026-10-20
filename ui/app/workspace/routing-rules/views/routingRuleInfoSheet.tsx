@@ -12,7 +12,7 @@ import { getProviderLabel } from "@/lib/constants/logs";
 import { useGetCustomerQuery, useGetTeamQuery, useGetVirtualKeyQuery } from "@/lib/store/apis/governanceApi";
 import { RoutingFallbackWire, RoutingRule } from "@/lib/types/routingRules";
 import { getScopeLabel } from "@/lib/utils/labels";
-import { normalizeFallback } from "@/lib/utils/routingRules";
+import { formatTargetsTTFT, normalizeFallback } from "@/lib/utils/routingRules";
 import { formatDistanceToNow } from "date-fns";
 import { Check, Copy, GitMerge, Key } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -383,6 +383,14 @@ export function RoutingRuleInfoSheet({ rule, open, onOpenChange, onNavigate, has
 								) : (
 									<p className="text-muted-foreground text-sm">No fallbacks configured</p>
 								)}
+							</div>
+
+							{/* TTFT cutoff */}
+							<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
+								<span className="text-muted-foreground text-sm">Time to first token cutoff</span>
+								<span className="col-span-2 text-sm" data-testid="routing-rule-info-ttft-timeout">
+									{formatTargetsTTFT(rule.targets)}
+								</span>
 							</div>
 
 							<DottedSeparator />

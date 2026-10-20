@@ -5,7 +5,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -34,6 +38,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -60,12 +65,37 @@ const maxSkillGitRepoSize = 500 * 1024 * 1024 // 500 MB
 
 // skillURLClient is a dedicated HTTP client for fetching URL-sourced skill content.
 // Uses an SSRF-safe transport that blocks connections to non-public IPs, so an
-// admin-configured source_url cannot point at internal infrastructure.
+// admin-configured source_url cannot point at internal infrastructure. Once the
+// server installs its HTTP client factory (SetSkillFetchHTTPClientFactory), fetches
+// honour the global proxy for API traffic under the same SSRF policy.
 var skillURLClient = &http.Client{
-	Timeout: 15 * time.Second,
-	Transport: &http.Transport{
-		DialContext: network.SSRFSafeDialContext(10 * time.Second),
-	},
+	Timeout:   15 * time.Second,
+	Transport: skillFetchTransport{},
+}
+
+// skillURLPolicy is the SSRF policy for skill fetches, direct or proxied.
+var skillURLPolicy = network.SSRFPolicyWithDialTimeout(10*time.Second, nil)
+
+// skillDirectTransport serves skill fetches before a factory is installed.
+var skillDirectTransport = &http.Transport{DialContext: network.SSRFSafeDialContext(10 * time.Second)}
+
+// skillHTTPClients is the server's HTTP client factory, once installed.
+var skillHTTPClients atomic.Pointer[network.HTTPClientFactory]
+
+// SetSkillFetchHTTPClientFactory routes URL-sourced skill fetches through factory, so
+// they honour the global proxy for API traffic. The server calls it at startup.
+func SetSkillFetchHTTPClientFactory(factory *network.HTTPClientFactory) {
+	skillHTTPClients.Store(factory)
+}
+
+// skillFetchTransport picks the factory's policy transport when one is installed.
+type skillFetchTransport struct{}
+
+func (skillFetchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if factory := skillHTTPClients.Load(); factory != nil {
+		return factory.PolicyTransport(network.ClientPurposeAPI, skillURLPolicy).RoundTrip(req)
+	}
+	return skillDirectTransport.RoundTrip(req)
 }
 
 // fetchURLSafe fetches content from a URL with SSRF protection, timeout, and size cap.
@@ -112,18 +142,28 @@ func fetchURLSafe(ctx context.Context, rawURL string) ([]byte, error) {
 // composed SKILL.md files, individual file content, and zip archives.
 // All routes are public — intentionally NOT wrapped with auth middlewares.
 type SkillsServingHandler struct {
+	config       *lib.Config
 	store        configstore.ConfigStore
 	objectStore  objectstore.ObjectStore // nullable — may not be configured
 	gitAvailable bool
+	gitRepos     *skillsGitRepoCache
 }
 
 // NewSkillsServingHandler creates a new SkillsServingHandler.
-// Returns nil if store is nil.
-func NewSkillsServingHandler(store configstore.ConfigStore, objectStore objectstore.ObjectStore) *SkillsServingHandler {
-	if store == nil {
+// Returns nil if the store or live configuration is missing.
+func NewSkillsServingHandler(store configstore.ConfigStore, objectStore objectstore.ObjectStore, config *lib.Config) *SkillsServingHandler {
+	if store == nil || config == nil {
 		return nil
 	}
-	return &SkillsServingHandler{store: store, objectStore: objectStore, gitAvailable: CheckGitAvailability()}
+	return &SkillsServingHandler{config: config, store: store, objectStore: objectStore, gitAvailable: CheckGitAvailability(), gitRepos: newSkillsGitRepoCache()}
+}
+
+// Close removes every cached bare repository export. Call it on server shutdown.
+func (h *SkillsServingHandler) Close() {
+	if h == nil || h.gitRepos == nil {
+		return
+	}
+	h.gitRepos.purge()
 }
 
 // RegisterRoutes registers public serving endpoints.
@@ -135,16 +175,16 @@ func (h *SkillsServingHandler) RegisterRoutes(r *router.Router, middlewares ...s
 	if h.gitAvailable {
 		// Claude Code and Claude Desktop/Cowork marketplace
 		claudeMarketplaceBase := "/api/skills/serve/claude-code.git"
-		r.GET("/api/skills/serve/claude-code/.claude-plugin/marketplace.json", h.claudeCodeMarketplace)
-		r.GET(claudeMarketplaceBase+"/info/refs", h.claudeCodeMarketplaceGit())
-		r.POST(claudeMarketplaceBase+"/git-upload-pack", h.claudeCodeMarketplaceGit())
+		r.GET("/api/skills/serve/claude-code/.claude-plugin/marketplace.json", lib.ChainMiddlewares(h.claudeCodeMarketplace, h.requireMarketplaceURL))
+		r.GET(claudeMarketplaceBase+"/info/refs", lib.ChainMiddlewares(h.claudeCodeMarketplaceGit(), h.requireMarketplaceURL))
+		r.POST(claudeMarketplaceBase+"/git-upload-pack", lib.ChainMiddlewares(h.claudeCodeMarketplaceGit(), h.requireMarketplaceURL))
 
 		// Codex marketplace — Codex expects .agents/plugins/marketplace.json
-		r.GET("/api/skills/serve/codex/.agents/plugins/marketplace.json", h.codexMarketplace)
+		r.GET("/api/skills/serve/codex/.agents/plugins/marketplace.json", lib.ChainMiddlewares(h.codexMarketplace, h.requireMarketplaceURL))
 		// Codex marketplace git routes (Codex clones the marketplace URL itself)
 		codexMktBase := "/api/skills/serve/codex"
-		r.GET(codexMktBase+"/info/refs", h.codexMarketplaceGit())
-		r.POST(codexMktBase+"/git-upload-pack", h.codexMarketplaceGit())
+		r.GET(codexMktBase+"/info/refs", lib.ChainMiddlewares(h.codexMarketplaceGit(), h.requireMarketplaceURL))
+		r.POST(codexMktBase+"/git-upload-pack", lib.ChainMiddlewares(h.codexMarketplaceGit(), h.requireMarketplaceURL))
 
 		// Git smart HTTP serving (shared by both Claude Code and Codex)
 		for _, harness := range configstore.SkillHarnessNames {
@@ -183,6 +223,11 @@ func (h *SkillsServingHandler) claudeCodeMarketplace(ctx *fasthttp.RequestCtx) {
 
 // buildClaudeCodeMarketplaceJSON builds the Claude marketplace JSON bytes.
 func (h *SkillsServingHandler) buildClaudeCodeMarketplaceJSON(ctx *fasthttp.RequestCtx) ([]byte, error) {
+	baseURL := h.config.GetSkillsExternalClientURL()
+	if baseURL == "" {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "skills marketplace disabled: configure skills_external_client_url")
+		return nil, errors.New("skills marketplace disabled")
+	}
 	skills, err := h.listAllSkills(ctx)
 	if err != nil {
 		return nil, err
@@ -200,7 +245,6 @@ func (h *SkillsServingHandler) buildClaudeCodeMarketplaceJSON(ctx *fasthttp.Requ
 		}
 	}
 
-	baseURL := h.resolveBaseURL(ctx)
 	plugins := make([]map[string]any, 0, len(skills)+1)
 	for _, skillSummary := range skills {
 		plugins = append(plugins, map[string]any{
@@ -251,6 +295,11 @@ func (h *SkillsServingHandler) codexMarketplace(ctx *fasthttp.RequestCtx) {
 // buildCodexMarketplaceJSON builds the Codex marketplace JSON bytes.
 // Shared by both the plain HTTP endpoint and the git-clone endpoint.
 func (h *SkillsServingHandler) buildCodexMarketplaceJSON(ctx *fasthttp.RequestCtx) ([]byte, error) {
+	baseURL := h.config.GetSkillsExternalClientURL()
+	if baseURL == "" {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "skills marketplace disabled: configure skills_external_client_url")
+		return nil, errors.New("skills marketplace disabled")
+	}
 	skills, err := h.listAllSkills(ctx)
 	if err != nil {
 		return nil, err
@@ -268,7 +317,6 @@ func (h *SkillsServingHandler) buildCodexMarketplaceJSON(ctx *fasthttp.RequestCt
 		}
 	}
 
-	baseURL := h.resolveBaseURL(ctx)
 	plugins := make([]map[string]any, 0, len(skills)+1)
 	for _, skillSummary := range skills {
 		plugins = append(plugins, map[string]any{
@@ -537,8 +585,8 @@ func assembleMarketplaceRepoSpec(marketplaceJSON []byte, harness string) *GitRep
 // registerGitRoutes registers Git smart HTTP routes for a given harness.
 func (h *SkillsServingHandler) registerGitRoutes(r *router.Router, harness string) {
 	base := "/api/skills/serve/" + harness + "/plugins/{skill-name}"
-	r.GET(base+"/info/refs", h.servePluginGit(harness))
-	r.POST(base+"/git-upload-pack", h.servePluginGit(harness))
+	r.GET(base+"/info/refs", lib.ChainMiddlewares(h.servePluginGit(harness), h.requireMarketplaceURL))
+	r.POST(base+"/git-upload-pack", lib.ChainMiddlewares(h.servePluginGit(harness), h.requireMarketplaceURL))
 }
 
 // servePluginGit handles git smart HTTP for per-plugin repos.
@@ -560,40 +608,42 @@ func (h *SkillsServingHandler) servePluginGit(harness string) fasthttp.RequestHa
 		repoCtx, cancel := skillsServingWorkContext()
 		defer cancel()
 
+		version, ok := h.corpusVersion(ctx, repoCtx)
+		if !ok {
+			return
+		}
+
 		// Handle the bundled "all skills" plugin.
 		if rawName == allSkillsPluginName {
-			spec, err := h.assembleAllSkillsRepoSpec(repoCtx, harness)
-			if err != nil {
-				logger.Error("all-skills: failed to assemble repo spec: %v", err)
-				SendError(ctx, fasthttp.StatusInternalServerError, "failed to prepare all-skills plugin")
-				return
-			}
-			serveGitRepo(ctx, spec, repoBase)
+			h.serveGitRepo(ctx, repoBase, repoBase, version, "all-skills", func() (*GitRepoSpec, error) {
+				return h.assembleAllSkillsRepoSpec(repoCtx, harness)
+			})
 			return
 		}
 
 		// Strip the "bifrost-" prefix to look up the actual skill name.
 		skillName := strings.TrimPrefix(rawName, pluginNamePrefix)
-		skill, err := h.store.GetSkillByName(repoCtx, skillName)
-		if err != nil {
-			if errors.Is(err, configstore.ErrNotFound) {
-				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("skill %q not found", skillName))
-				return
+		h.serveGitRepo(ctx, repoBase, repoBase, version, skillName, func() (*GitRepoSpec, error) {
+			skill, err := h.store.GetSkillByName(repoCtx, skillName)
+			if err != nil {
+				return nil, err
 			}
-			logger.Error("failed to get skill %s: %v", skillName, err)
-			SendError(ctx, fasthttp.StatusInternalServerError, "failed to retrieve skill")
-			return
-		}
-
-		spec, err := h.assemblePluginRepoSpec(repoCtx, skill, harness)
-		if err != nil {
-			logger.Error("skill %s: failed to assemble repo spec: %v", skill.Name, err)
-			SendError(ctx, fasthttp.StatusInternalServerError, "failed to prepare plugin git repository")
-			return
-		}
-
-		serveGitRepo(ctx, spec, repoBase)
+			return h.assemblePluginRepoSpec(repoCtx, skill, harness)
+		})
 	}
+}
+
+// corpusVersion returns the repository-level all-skills version, which every
+// skill create, update, shift and delete bumps. It is the cache fingerprint for
+// every served git repository: a change anywhere in the corpus changes it.
+func (h *SkillsServingHandler) corpusVersion(ctx *fasthttp.RequestCtx, workCtx context.Context) (string, bool) {
+	version, err := h.store.GetAllSkillsVersion(workCtx)
+	if err != nil {
+		logger.Error("failed to get all-skills version: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to prepare git repository")
+		return "", false
+	}
+	return version, true
 }
 
 // claudeCodeMarketplaceGit serves the Claude marketplace as a git repository.
@@ -607,7 +657,7 @@ func (h *SkillsServingHandler) claudeCodeMarketplaceGit() fasthttp.RequestHandle
 		}
 
 		spec := assembleMarketplaceRepoSpec(marketplaceJSON, "claude-code")
-		serveGitRepo(ctx, spec, repoBase)
+		h.serveMarketplaceGitRepo(ctx, spec, repoBase, marketplaceJSON)
 	}
 }
 
@@ -622,33 +672,257 @@ func (h *SkillsServingHandler) codexMarketplaceGit() fasthttp.RequestHandler {
 		}
 
 		spec := assembleMarketplaceRepoSpec(marketplaceJSON, "codex")
-		serveGitRepo(ctx, spec, repoBase)
+		h.serveMarketplaceGitRepo(ctx, spec, repoBase, marketplaceJSON)
 	}
 }
 
-// serveGitRepo builds a git repo from a spec and serves it via direct git
-// upload-pack calls (inspired by go-git-http pattern). No CGI layer needed.
-func serveGitRepo(ctx *fasthttp.RequestCtx, spec *GitRepoSpec, repoBase string) {
-	storage, err := buildGitRepo(spec)
-	if err != nil {
-		logger.Error("%s: failed to build git repo: %v", spec.Label, err)
-		SendError(ctx, fasthttp.StatusInternalServerError, "failed to build git repository")
+// serveMarketplaceGitRepo serves an already-assembled marketplace spec. The
+// manifest embeds the configured base URL, so the cache key carries a digest of
+// the manifest bytes; the corpus version is the fingerprint like elsewhere.
+func (h *SkillsServingHandler) serveMarketplaceGitRepo(ctx *fasthttp.RequestCtx, spec *GitRepoSpec, repoBase string, marketplaceJSON []byte) {
+	workCtx, cancel := skillsServingWorkContext()
+	defer cancel()
+	version, ok := h.corpusVersion(ctx, workCtx)
+	if !ok {
 		return
 	}
+	digest := sha256.Sum256(marketplaceJSON)
+	cacheKey := repoBase + "#" + hex.EncodeToString(digest[:])
+	h.serveGitRepo(ctx, repoBase, cacheKey, version, spec.Label, func() (*GitRepoSpec, error) { return spec, nil })
+}
 
-	tempDir, err := exportToTempBareRepo(storage)
+// skillsCorpusServeConcurrency caps how many corpus-serving requests (git
+// smart HTTP and the all-skills zip) run at once. These routes are public and
+// each one walks the whole skill corpus, forks git, or streams every file, so
+// the cap is what keeps a burst of anonymous requests from monopolising CPU,
+// temp disk and process forks. Requests beyond the cap are answered with 503
+// and Retry-After instead of queueing.
+const skillsCorpusServeConcurrency = 4
+
+var skillsCorpusServeGate = make(chan struct{}, skillsCorpusServeConcurrency)
+
+// acquireSkillsCorpusServeSlot takes a slot in skillsCorpusServeGate without
+// waiting. When the gate is full it writes the 503 and returns ok=false; the
+// caller must return without touching the response further.
+func acquireSkillsCorpusServeSlot(ctx *fasthttp.RequestCtx) (release func(), ok bool) {
+	select {
+	case skillsCorpusServeGate <- struct{}{}:
+		var once sync.Once
+		return func() { once.Do(func() { <-skillsCorpusServeGate }) }, true
+	default:
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "skills serving is busy, retry shortly")
+		ctx.Response.Header.Set("Retry-After", "1")
+		return nil, false
+	}
+}
+
+// skillsGitRepoCacheTTL bounds how long an exported bare repository is reused
+// while the corpus version is unchanged. The version catches every change made
+// through the store; the TTL is the safety net for anything it does not.
+const skillsGitRepoCacheTTL = time.Minute
+
+// exportBareRepo is the export step serveGitRepo runs on a cache miss; tests
+// swap it to count exports.
+var exportBareRepo = exportToTempBareRepo
+
+// skillsGitRepoCache keeps the exported bare repositories git upload-pack runs
+// against, keyed by repository, so repeated fetches of an unchanged corpus
+// reuse one export instead of rebuilding the object graph and a temp directory
+// per request. All entries share one fingerprint (the corpus version); when it
+// changes every entry is dropped. A dropped entry's directory is removed once
+// no in-flight request is still serving from it.
+type skillsGitRepoCache struct {
+	mu      sync.Mutex
+	version string
+	entries map[string]*skillsGitRepoCacheEntry
+}
+
+type skillsGitRepoCacheEntry struct {
+	dir     string
+	err     error
+	builtAt time.Time
+	refs    int
+	waiters int
+	dropped bool
+	ready   chan struct{} // closed once dir/err are set
+}
+
+func newSkillsGitRepoCache() *skillsGitRepoCache {
+	return &skillsGitRepoCache{entries: make(map[string]*skillsGitRepoCacheEntry)}
+}
+
+// acquire returns the directory of the bare repo for key, building it with
+// build on a miss. The returned release must be called once the request has
+// finished reading the directory. A miss publishes a placeholder entry under
+// the lock and then builds with the lock released, so a slow export of one
+// repository never holds up cached repositories or the release of finished
+// requests; concurrent misses for the same key wait on the placeholder's ready
+// channel and share the one build instead of exporting again. A build that
+// completes after its entry was dropped (version change, purge) is removed
+// once no waiter is left to read it.
+func (c *skillsGitRepoCache) acquire(key, version string, build func() (string, error)) (string, func(), error) {
+	c.mu.Lock()
+	if c.version != version {
+		for k, entry := range c.entries {
+			c.dropLocked(k, entry)
+		}
+		c.version = version
+	}
+	entry := c.entries[key]
+	if entry != nil && entry.isBuilt() && time.Since(entry.builtAt) >= skillsGitRepoCacheTTL {
+		c.dropLocked(key, entry)
+		entry = nil
+	}
+	if entry == nil {
+		entry = &skillsGitRepoCacheEntry{ready: make(chan struct{})}
+		c.entries[key] = entry
+		c.mu.Unlock()
+		dir, err := c.runBuild(key, entry, build)
+		c.mu.Lock()
+		entry.dir, entry.err, entry.builtAt = dir, err, time.Now()
+		close(entry.ready)
+		if err != nil {
+			if c.entries[key] == entry {
+				delete(c.entries, key)
+			}
+			c.mu.Unlock()
+			return "", nil, err
+		}
+		if entry.dropped && entry.waiters == 0 {
+			c.mu.Unlock()
+			os.RemoveAll(dir)
+			return "", nil, errSkillsGitRepoDropped
+		}
+	} else {
+		entry.waiters++
+		c.mu.Unlock()
+		<-entry.ready
+		c.mu.Lock()
+		entry.waiters--
+		if entry.err != nil {
+			c.mu.Unlock()
+			return "", nil, entry.err
+		}
+	}
+	entry.refs++
+	c.mu.Unlock()
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			entry.refs--
+			if entry.dropped && entry.refs == 0 && entry.waiters == 0 {
+				os.RemoveAll(entry.dir)
+			}
+		})
+	}
+	return entry.dir, release, nil
+}
+
+// runBuild runs build for a placeholder entry with the lock released. A panic
+// inside build must not strand the placeholder: waiters would block on ready
+// forever, each holding a corpus-gate slot, so on panic the entry is failed
+// (ready closed, placeholder removed) before the panic propagates to the
+// request's recovery middleware. The next request for the key builds afresh.
+func (c *skillsGitRepoCache) runBuild(key string, entry *skillsGitRepoCacheEntry, build func() (string, error)) (dir string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.mu.Lock()
+			entry.err = fmt.Errorf("skills git repository build panicked: %v", r)
+			close(entry.ready)
+			if c.entries[key] == entry {
+				delete(c.entries, key)
+			}
+			c.mu.Unlock()
+			panic(r)
+		}
+	}()
+	return build()
+}
+
+// errSkillsGitRepoDropped is returned to the builder of an entry that was
+// dropped while it was still building and that nobody is waiting for; the
+// caller retries through the normal miss path with the current version.
+var errSkillsGitRepoDropped = errors.New("skills git repository was superseded while it was being built")
+
+// isBuilt reports whether the entry's build has finished (successfully or not).
+func (e *skillsGitRepoCacheEntry) isBuilt() bool {
+	select {
+	case <-e.ready:
+		return true
+	default:
+		return false
+	}
+}
+
+// dropLocked forgets an entry and removes its directory unless a request is
+// still serving from it or still building it, in which case the last reader
+// (or the builder, when no reader is waiting) removes it.
+func (c *skillsGitRepoCache) dropLocked(key string, entry *skillsGitRepoCacheEntry) {
+	delete(c.entries, key)
+	entry.dropped = true
+	if entry.isBuilt() && entry.err == nil && entry.refs == 0 && entry.waiters == 0 {
+		os.RemoveAll(entry.dir)
+	}
+}
+
+// purge removes every cached directory immediately, in-flight or not; an
+// entry still building is removed by its builder once the build finishes.
+func (c *skillsGitRepoCache) purge() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, entry := range c.entries {
+		delete(c.entries, key)
+		entry.dropped = true
+		if entry.isBuilt() && entry.err == nil {
+			os.RemoveAll(entry.dir)
+		}
+	}
+}
+
+// serveGitRepo serves a git repository via direct git upload-pack calls
+// (inspired by go-git-http pattern; no CGI layer). The bare repo comes from the
+// cache keyed by cacheKey and fingerprinted by version; assemble runs only on a
+// miss. A configstore.ErrNotFound from assemble is a 404.
+func (h *SkillsServingHandler) serveGitRepo(ctx *fasthttp.RequestCtx, repoBase, cacheKey, version, label string, assemble func() (*GitRepoSpec, error)) {
+	releaseSlot, ok := acquireSkillsCorpusServeSlot(ctx)
+	if !ok {
+		return
+	}
+	defer releaseSlot()
+
+	buildRepo := func() (string, error) {
+		spec, err := assemble()
+		if err != nil {
+			return "", err
+		}
+		storage, err := buildGitRepo(spec)
+		if err != nil {
+			return "", fmt.Errorf("build git repo: %w", err)
+		}
+		return exportBareRepo(storage)
+	}
+	repoDir, releaseRepo, err := h.gitRepos.acquire(cacheKey, version, buildRepo)
+	if errors.Is(err, errSkillsGitRepoDropped) {
+		repoDir, releaseRepo, err = h.gitRepos.acquire(cacheKey, version, buildRepo)
+	}
 	if err != nil {
-		logger.Error("%s: failed to export bare repo: %v", spec.Label, err)
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("skill %q not found", label))
+			return
+		}
+		logger.Error("%s: failed to prepare git repository: %v", label, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to prepare git repository")
 		return
 	}
-	defer os.RemoveAll(tempDir)
+	defer releaseRepo()
 
 	pathInfo := strings.TrimPrefix(string(ctx.Path()), repoBase)
 	if strings.HasSuffix(pathInfo, "/info/refs") {
-		serveInfoRefs(ctx, tempDir, spec.Label)
+		serveInfoRefs(ctx, repoDir, label)
 	} else if strings.HasSuffix(pathInfo, "/git-upload-pack") {
-		serveUploadPack(ctx, tempDir, spec.Label)
+		serveUploadPack(ctx, repoDir, label)
 	} else {
 		SendError(ctx, fasthttp.StatusNotFound, "unknown git endpoint")
 	}
@@ -669,11 +943,9 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 		return
 	}
 
-	// Bind to request context with a timeout so stalled git processes
-	// don't outlive a client disconnect or server shutdown. 30s is generous —
-	// upload-pack on these in-memory repos completes in <1s normally, but we
-	// allow headroom for large all-skills repos under load.
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Bound the git process so a stalled upload-pack cannot hang the worker.
+	// Never derive from the RequestCtx: see skillsServingWorkContext.
+	cmdCtx, cancel := skillsServingWorkContext()
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, gitBinaryPath, "upload-pack", "--stateless-rpc", "--advertise-refs", ".") //nolint:gosec // gitBinaryPath is from exec.LookPath
 	cmd.Dir = repoDir
@@ -701,11 +973,9 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 // serveUploadPack handles POST /git-upload-pack by piping the request body
 // into `git upload-pack --stateless-rpc` and streaming the output back.
 func serveUploadPack(ctx *fasthttp.RequestCtx, repoDir, label string) {
-	// Bind to request context with a timeout so stalled git processes
-	// don't outlive a client disconnect or server shutdown. 30s is generous —
-	// upload-pack on these in-memory repos completes in <1s normally, but we
-	// allow headroom for large all-skills repos under load.
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Bound the git process so a stalled upload-pack cannot hang the worker.
+	// Never derive from the RequestCtx: see skillsServingWorkContext.
+	cmdCtx, cancel := skillsServingWorkContext()
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, gitBinaryPath, "upload-pack", "--stateless-rpc", ".") //nolint:gosec // gitBinaryPath is from exec.LookPath
 	cmd.Dir = repoDir
@@ -1206,8 +1476,13 @@ func fetchFileContentForArchive(ctx context.Context, file *tables.TableSkillFile
 // allSkillsZipDownload serves GET /api/skills/serve/all/download.zip
 // Returns a zip archive containing all skills.
 func (h *SkillsServingHandler) allSkillsZipDownload(ctx *fasthttp.RequestCtx) {
+	releaseSlot, ok := acquireSkillsCorpusServeSlot(ctx)
+	if !ok {
+		return
+	}
 	skills, err := h.listAllSkills(ctx)
 	if err != nil {
+		releaseSlot()
 		logger.Error("all-skills zip: failed to list skills: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to list skills")
 		return
@@ -1228,7 +1503,9 @@ func (h *SkillsServingHandler) allSkillsZipDownload(ctx *fasthttp.RequestCtx) {
 	}()
 
 	// Stream the zip directly to the response -- no full in-memory buffer.
+	// The corpus slot is held until the stream writer finishes.
 	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
+		defer releaseSlot()
 		defer cancelStream()
 		zw := zip.NewWriter(w)
 
@@ -1360,26 +1637,11 @@ func buildSkillFilePath(skillName string, file *tables.TableSkillFile) string {
 	return path.Join(skillName, file.Path)
 }
 
-// skillsServingWorkTimeout bounds store, object-store and outbound HTTP work started while
-// serving a skills request.
-const skillsServingWorkTimeout = 30 * time.Second
-
 // skillsServingWorkContext returns the context to hand to the config store, the object store
-// and outbound HTTP clients while serving a skills request.
-//
-// Never pass the *fasthttp.RequestCtx itself. Its Done() returns a server-wide channel
-// (fasthttp.Server.done), closed only on server shutdown, not per request (fasthttp's own
-// documented tradeoff, since allocating a channel per request is expensive). Whenever
-// ctx.Done() != nil, database/sql and net/http spawn an internal cancellation-watcher
-// goroutine that keeps reading RequestCtx.s.done after the handler returns, while
-// Server.ShutdownWithContext writes s.done = nil once every connection has closed. That is an
-// unsynchronized write against a live reader: the data race seen under -race in
-// TestClaudeMarketplaceGitRepoContainsMarketplaceAndCloneablePlugin.
-//
-// Deriving from context.Background() gives up nothing, because a RequestCtx carries no
-// per-request cancellation to propagate in the first place.
+// and outbound HTTP clients while serving a skills request. Background-rooted because these
+// paths read no request values; see RequestWorkContext for why the RequestCtx is never used.
 func skillsServingWorkContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), skillsServingWorkTimeout)
+	return RequestWorkContext(context.Background(), RequestWorkTimeout)
 }
 
 // lookupSkillByPathParam extracts the skill-name path parameter and fetches the skill.
@@ -1438,21 +1700,13 @@ func (h *SkillsServingHandler) listAllSkills(ctx *fasthttp.RequestCtx) ([]tables
 	return skills, nil
 }
 
-// resolveBaseURL derives the base URL from the request's Host header and scheme.
-func (h *SkillsServingHandler) resolveBaseURL(ctx *fasthttp.RequestCtx) string {
-	scheme := string(ctx.Request.Header.Peek("X-Forwarded-Proto"))
-	if scheme == "" {
-		if ctx.IsTLS() {
-			scheme = "https"
-		} else {
-			scheme = "http"
+// requireMarketplaceURL disables marketplace routes without affecting management or downloads.
+func (h *SkillsServingHandler) requireMarketplaceURL(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		if h.config == nil || h.config.GetSkillsExternalClientURL() == "" {
+			SendError(ctx, fasthttp.StatusServiceUnavailable, "skills marketplace disabled: configure skills_external_client_url")
+			return
 		}
+		next(ctx)
 	}
-
-	host := string(ctx.Request.Header.Peek("X-Forwarded-Host"))
-	if host == "" {
-		host = string(ctx.Host())
-	}
-
-	return scheme + "://" + host
 }
