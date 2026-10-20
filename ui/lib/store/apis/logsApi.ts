@@ -258,11 +258,13 @@ export const logsApi = baseApi.injectEndpoints({
 			CostHistogramResponse,
 			{
 				filters: LogFilters;
+				// Overrides the bucket width the server derives from the time range.
+				bucketSizeSeconds?: number;
 			}
 		>({
-			query: ({ filters }) => ({
+			query: ({ filters, bucketSizeSeconds }) => ({
 				url: "/logs/histogram/cost",
-				params: buildFilterParams(filters),
+				params: { ...buildFilterParams(filters), ...(bucketSizeSeconds ? { bucket_size: bucketSizeSeconds } : {}) },
 			}),
 			providesTags: ["Logs"],
 		}),

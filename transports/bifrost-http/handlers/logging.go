@@ -597,7 +597,7 @@ func (h *LoggingHandler) getLogSessionByID(ctx *fasthttp.RequestCtx) {
 
 	for i, log := range result.Logs {
 		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
-			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName, log.Object)
+			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, &log)
 		}
 		if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 			result.Logs[i].VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
@@ -862,7 +862,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	// Add selected key, virtual key, and routing rule to the result
 	for i, log := range result.Logs {
 		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
-			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName, log.Object)
+			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, &log)
 		}
 		if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 			result.Logs[i].VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
@@ -906,7 +906,7 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 	// populated by GetLog) so the detail view receives the same structure as the list endpoint.
 	if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
 		redactedKeys := h.redactedKeysManager.GetAllRedactedKeys(ctx, []string{log.SelectedKeyID})
-		log.SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName, log.Object)
+		log.SelectedKey = findRedactedKey(redactedKeys, log)
 	}
 	if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 		redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, []string{*log.VirtualKeyID})
@@ -1153,6 +1153,33 @@ func calculateBucketSize(start, end *time.Time) int64 {
 	return logstore.DefaultBucketSize(start, end)
 }
 
+// maxBucketSizeOverrideBuckets caps how many buckets an explicit bucket_size may produce over the window.
+const maxBucketSizeOverrideBuckets = 5000
+
+// parseBucketSizeOverride validates an explicit bucket_size (seconds); callers check the key is present.
+// Sub-hour sizes must divide an hour and larger ones must be whole hours, so buckets read off the
+// hourly matview never split an hour between two buckets.
+func parseBucketSizeOverride(raw string, start, end *time.Time) (int64, error) {
+	size, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || size < 60 || size > 31*24*3600 {
+		return 0, fmt.Errorf("invalid bucket_size: %s. Expected seconds between 60 and 2678400", raw)
+	}
+	if (size < 3600 && 3600%size != 0) || (size >= 3600 && size%3600 != 0) {
+		return 0, fmt.Errorf("invalid bucket_size: %d. Below an hour it must divide 3600; otherwise it must be a whole number of hours", size)
+	}
+	if start == nil || end == nil {
+		return 0, fmt.Errorf("bucket_size requires start_time and end_time, or period")
+	}
+	if end.Before(*start) {
+		return 0, fmt.Errorf("bucket_size requires end_time at or after start_time")
+	}
+	// Counted the way generateBucketTimestamps lays them out: from the aligned start through end.
+	if buckets := (end.Unix()-(start.Unix()/size)*size)/size + 1; buckets > maxBucketSizeOverrideBuckets {
+		return 0, fmt.Errorf("bucket_size %d gives %d buckets for this window; at most %d are allowed", size, buckets, maxBucketSizeOverrideBuckets)
+	}
+	return size, nil
+}
+
 func parseAgentNamesFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
 	filters.AgentNames = parseCommaSeparated(string(ctx.QueryArgs().Peek("agent_names")))
 }
@@ -1340,6 +1367,14 @@ func (h *LoggingHandler) getLogsTokenHistogram(ctx *fasthttp.RequestCtx) {
 func (h *LoggingHandler) getLogsCostHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
+	if ctx.QueryArgs().Has("bucket_size") {
+		size, err := parseBucketSizeOverride(string(ctx.QueryArgs().Peek("bucket_size")), filters.StartTime, filters.EndTime)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		bucketSizeSeconds = size
+	}
 
 	result, err := h.logManager.GetCostHistogram(ctx, filters, bucketSizeSeconds)
 	if err != nil {
@@ -2665,22 +2700,20 @@ func recalcJobStatusFromRow(job *tables.TableSidekiqJob) recalcJobStatus {
 
 // Helper functions
 
-// findRedactedKey matches a redacted provider key, else returns the logged name, marked deleted unless the log is passthrough.
-func findRedactedKey(redactedKeys []schemas.Key, id string, name string, object string) *schemas.Key {
+// findRedactedKey matches the log's selected key against the redacted provider keys, else returns
+// the logged name, marked deleted unless the log came through a passthrough route. Passthrough rows
+// stored under an inferred type (is_passthrough=true) count as passthrough too.
+func findRedactedKey(redactedKeys []schemas.Key, log *logstore.Log) *schemas.Key {
 	for _, key := range redactedKeys {
-		if key.ID == id {
+		if key.ID == log.SelectedKeyID {
 			return &key
 		}
 	}
-	if name != "" && !isPassthroughObject(object) {
+	name := log.SelectedKeyName
+	if name != "" && !logstore.IsPassthroughObjectType(log.PassthroughObjectType()) {
 		name += " (deleted)"
 	}
-	return &schemas.Key{ID: id, Name: name}
-}
-
-// isPassthroughObject reports whether a log's object type is a passthrough request type.
-func isPassthroughObject(object string) bool {
-	return object == string(schemas.PassthroughRequest) || object == string(schemas.PassthroughStreamRequest)
+	return &schemas.Key{ID: log.SelectedKeyID, Name: name}
 }
 
 // findRedactedVirtualKey matches a redacted virtual key or returns a deleted-key placeholder.
