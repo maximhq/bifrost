@@ -228,7 +228,6 @@ func TestEmptyReasoningNoiseIsNotAmplified(t *testing.T) {
 	})
 }
 
-
 // The text-only reasoning_details entry that UnmarshalJSON synthesises from reasoning is a third copy
 // of the same text; it is not emitted. An entry that carries anything reasoning does not (a
 // signature for replaying Anthropic thinking on a tool turn, encrypted data, other text) is kept.
@@ -263,6 +262,7 @@ func TestSynthesizedReasoningDetailsNotEmitted(t *testing.T) {
 		"signed":    {{Type: BifrostReasoningDetailsTypeText, Text: str("r"), Signature: str("sig")}},
 		"encrypted": {{Type: BifrostReasoningDetailsTypeEncrypted, Data: str("d")}},
 		"other":     {{Type: BifrostReasoningDetailsTypeText, Text: str("other")}},
+		"indexed":   {{Type: BifrostReasoningDetailsTypeText, Text: str("r"), Index: 1}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := keys(t, ChatStreamResponseChoiceDelta{Reasoning: str("r"), ReasoningDetails: details})

@@ -1685,7 +1685,7 @@ func (cm *ChatAssistantMessage) UnmarshalJSON(data []byte) error {
 
 // emittedReasoningDetails is the reasoning_details a marshaller writes beside reasoning: nil when
 // details is exactly the text-only entry UnmarshalJSON synthesises from reasoning (one
-// reasoning.text entry with no id, signature, data or summary, whose text equals reasoning), so the
+// reasoning.text entry at index 0 with no id, signature, data or summary, whose text equals reasoning), so the
 // same text is not sent a third time; details unchanged otherwise. Parsing still synthesises the
 // entry, which the Responses and Anthropic converters read.
 func emittedReasoningDetails(reasoning *string, details []ChatReasoningDetails) []ChatReasoningDetails {
@@ -1693,7 +1693,7 @@ func emittedReasoningDetails(reasoning *string, details []ChatReasoningDetails) 
 		return details
 	}
 	d := details[0]
-	if d.Type == BifrostReasoningDetailsTypeText && d.ID == nil && d.Signature == nil && d.Data == nil &&
+	if d.Index == 0 && d.Type == BifrostReasoningDetailsTypeText && d.ID == nil && d.Signature == nil && d.Data == nil &&
 		d.Summary == nil && d.Text != nil && *d.Text == *reasoning {
 		return nil
 	}
