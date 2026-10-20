@@ -3,6 +3,7 @@ package semanticcache
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/stretchr/testify/require"
 )
 
 // TestResolveCacheKey pins that the cache key is the caller's own value. Tenant isolation is
@@ -230,6 +232,135 @@ func cacheHits(t *testing.T, plugin *Plugin, ctx *schemas.BifrostContext, req *s
 	}
 	plugin.clearCacheState(ctx.Value(schemas.BifrostContextKeyRequestID).(string))
 	return shortCircuit != nil && shortCircuit.Response != nil
+}
+
+// Exercise actual writes and hits, including SSE replay, after a JSON round trip.
+func TestCompletionUsageSurvivesCache(t *testing.T) {
+	for _, text := range []bool{false, true} {
+		for _, streaming := range []bool{false, true} {
+			for _, tc := range []struct {
+				name  string
+				usage *schemas.BifrostLLMUsage
+				want  string
+			}{
+				{"zero", &schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}, `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`},
+				{"partial", &schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, TotalTokens: 12}, `{"prompt_tokens":0,"total_tokens":12}`},
+				{"missing", &schemas.BifrostLLMUsage{TotalTokens: 12}, `{"total_tokens":12}`},
+			} {
+				name := fmt.Sprintf("text=%t/stream=%t/%s", text, streaming, tc.name)
+				t.Run(name, func(t *testing.T) {
+					plugin := identityScopeTestPlugin(t, newObservableStore(), "")
+					key := keyForTest(t, "")
+					req := identityTestChatRequest("cache explicit zero counts", nil)
+					response := identityTestChatResponse("answer")
+					if streaming {
+						req.RequestType = schemas.ChatCompletionStreamRequest
+						response = newChatStreamChunk(0, "answer", nil)
+					}
+					response.ChatResponse.Usage = tc.usage
+					if text {
+						req = &schemas.BifrostRequest{RequestType: schemas.TextCompletionRequest, TextCompletionRequest: &schemas.BifrostTextCompletionRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini", Input: &schemas.TextCompletionInput{PromptStr: schemas.Ptr("cache explicit zero counts")}}}
+						if streaming {
+							req.RequestType = schemas.TextCompletionStreamRequest
+						}
+						response = &schemas.BifrostResponse{TextCompletionResponse: response.ChatResponse.ToTextCompletionResponse()}
+						response.TextCompletionResponse.ExtraFields.RequestType = req.RequestType
+					}
+					seed := identityContext(t, key, identityRef{})
+					_, sc, err := plugin.PreLLMHook(seed, req)
+					require.Nil(t, err)
+					require.Nil(t, sc, "expected cache miss")
+					if streaming {
+						seed.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					}
+					_, _, err = plugin.PostLLMHook(seed, response, nil)
+					require.Nil(t, err)
+					plugin.WaitForPendingOperations()
+					_, sc, err = plugin.PreLLMHook(identityContext(t, key, identityRef{}), req)
+					require.Nil(t, err)
+					require.NotNil(t, sc, "expected cache hit")
+					check := func(view any) {
+						t.Helper()
+						wire, err := schemas.MarshalSorted(view)
+						require.NoError(t, err)
+						var body struct{ Usage json.RawMessage }
+						require.NoError(t, json.Unmarshal(wire, &body))
+						require.JSONEq(t, tc.want, string(body.Usage))
+					}
+					if streaming {
+						require.NotNil(t, sc.Stream)
+						count := 0
+						for chunk := range sc.Stream {
+							count++
+							check(chunk)
+						}
+						require.Equal(t, 1, count)
+					} else {
+						require.NotNil(t, sc.Response)
+						if text {
+							require.NotNil(t, sc.Response.TextCompletionResponse)
+							check(sc.Response.TextCompletionResponse.WithPreservedUsage())
+						} else {
+							require.NotNil(t, sc.Response.ChatResponse)
+							check(sc.Response.ChatResponse.WithPreservedUsage())
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func BenchmarkCachedCompletionUsage(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		usage *schemas.BifrostLLMUsage
+	}{
+		{"nonzero", &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}},
+		{"zero", &schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}},
+		{"missing", &schemas.BifrostLLMUsage{TotalTokens: 12}},
+	} {
+		response := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Usage: tc.usage}}
+		body, err := marshalCachedResponse(response)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for _, after := range []bool{false, true} {
+			version := "before"
+			if after {
+				version = "after"
+			}
+			b.Run(tc.name+"/write/"+version, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var err error
+					if after {
+						_, err = marshalCachedResponse(response)
+					} else {
+						_, err = schemas.MarshalSorted(response)
+					}
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+			b.Run(tc.name+"/read/"+version, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var response schemas.BifrostResponse
+					var err error
+					if after {
+						err = unmarshalCachedResponse(body, &response)
+					} else {
+						err = json.Unmarshal(body, &response)
+					}
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
 }
 
 // TestIdentityScopedDirectCache pins identity isolation on the direct path with scoping on (the

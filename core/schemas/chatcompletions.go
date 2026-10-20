@@ -55,6 +55,21 @@ type BifrostChatResponse struct {
 	Citations     []string       `json:"citations,omitempty"`
 }
 
+// WithPreservedUsage retains explicitly reported zero counts on the completion
+// wire without filling in missing counts or mutating the shared usage.
+func (cr *BifrostChatResponse) WithPreservedUsage() any {
+	if cr == nil || !cr.Usage.hasExplicitZeroTokens() {
+		return cr
+	}
+	return &struct {
+		*BifrostChatResponse
+		Usage completionUsage `json:"usage"`
+	}{
+		BifrostChatResponse: cr,
+		Usage:               cr.Usage.completionWireUsage(),
+	}
+}
+
 // BackfillParams populates response fields from the request that are needed
 func (cr *BifrostChatResponse) BackfillParams(request *BifrostChatRequest) {
 	if cr == nil || request == nil {
@@ -1987,6 +2002,49 @@ type BifrostLLMUsage struct {
 	// (CalculateCostForUsage) never sees RoutingInfo, so without it a fallback-served
 	// turn is priced at the requested model's rates.
 	ServerSideFallbackModel *string `json:"-"`
+
+	PromptTokensExplicitZero     bool `json:"-"` // Completion wire: zero was reported, not missing/null.
+	CompletionTokensExplicitZero bool `json:"-"` // Completion wire: zero was reported, not missing/null.
+}
+
+// PreserveTokenCountZeros records numeric zeros at the given JSON field paths.
+// Used when decoding completion responses from providers or cached snapshots.
+// Nil/nonzero usage needs no JSON lookup; no response buffer is retained.
+func (u *BifrostLLMUsage) PreserveTokenCountZeros(data []byte, promptPath, completionPath string) {
+	if u == nil || (u.PromptTokens != 0 && u.CompletionTokens != 0) {
+		return
+	}
+	if u.PromptTokens == 0 {
+		value := gjson.GetBytes(data, promptPath)
+		u.PromptTokensExplicitZero = value.Type == gjson.Number && value.Num == 0
+	}
+	if u.CompletionTokens == 0 {
+		value := gjson.GetBytes(data, completionPath)
+		u.CompletionTokensExplicitZero = value.Type == gjson.Number && value.Num == 0
+	}
+}
+
+// completionUsage overrides only explicitly reported counts.
+type completionUsage struct {
+	*BifrostLLMUsage
+	PromptTokens     *int `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int `json:"completion_tokens,omitempty"`
+}
+
+func (u *BifrostLLMUsage) hasExplicitZeroTokens() bool {
+	return u != nil && ((u.PromptTokensExplicitZero && u.PromptTokens == 0) ||
+		(u.CompletionTokensExplicitZero && u.CompletionTokens == 0))
+}
+
+func (u *BifrostLLMUsage) completionWireUsage() completionUsage {
+	wire := completionUsage{BifrostLLMUsage: u}
+	if u.PromptTokens != 0 || u.PromptTokensExplicitZero {
+		wire.PromptTokens = &u.PromptTokens
+	}
+	if u.CompletionTokens != 0 || u.CompletionTokensExplicitZero {
+		wire.CompletionTokens = &u.CompletionTokens
+	}
+	return wire
 }
 
 // NormalizeReasoningTokens folds a top-level reasoning_tokens into CompletionTokensDetails, keeping a nested value if set.
@@ -2125,6 +2183,10 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 		PromptTokens:     base.PromptTokens + add.PromptTokens,
 		CompletionTokens: base.CompletionTokens + add.CompletionTokens,
 		TotalTokens:      base.TotalTokens + add.TotalTokens,
+		// A sum is known to be zero only if both contributing turns reported
+		// zero. An unreported count in either turn must not become a known zero.
+		PromptTokensExplicitZero:     base.PromptTokensExplicitZero && add.PromptTokensExplicitZero,
+		CompletionTokensExplicitZero: base.CompletionTokensExplicitZero && add.CompletionTokensExplicitZero,
 	}
 
 	if base.PromptTokensDetails != nil || add.PromptTokensDetails != nil {

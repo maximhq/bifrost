@@ -18,6 +18,41 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// Cache the same completion usage fields sent to clients, so explicit zeros
+// survive without a separate metadata format. Other response types are unchanged.
+func marshalCachedResponse(res *schemas.BifrostResponse) ([]byte, error) {
+	if res.ChatResponse != nil {
+		if view := res.ChatResponse.WithPreservedUsage(); view != res.ChatResponse {
+			return schemas.MarshalSorted(&struct {
+				*schemas.BifrostResponse
+				ChatResponse any
+			}{res, view})
+		}
+	}
+	if res.TextCompletionResponse != nil {
+		if view := res.TextCompletionResponse.WithPreservedUsage(); view != res.TextCompletionResponse {
+			return schemas.MarshalSorted(&struct {
+				*schemas.BifrostResponse
+				TextCompletionResponse any
+			}{res, view})
+		}
+	}
+	return schemas.MarshalSorted(res)
+}
+
+func unmarshalCachedResponse(data []byte, res *schemas.BifrostResponse) error {
+	if err := json.Unmarshal(data, res); err != nil {
+		return err
+	}
+	if res.ChatResponse != nil {
+		res.ChatResponse.Usage.PreserveTokenCountZeros(data, "ChatResponse.usage.prompt_tokens", "ChatResponse.usage.completion_tokens")
+	}
+	if res.TextCompletionResponse != nil {
+		res.TextCompletionResponse.Usage.PreserveTokenCountZeros(data, "TextCompletionResponse.usage.prompt_tokens", "TextCompletionResponse.usage.completion_tokens")
+	}
+	return nil
+}
+
 // directCacheNamespace is a fixed namespace UUID for generating deterministic
 // UUID v5 cache IDs via uuid.NewSHA1, used by generateDirectCacheID. The
 // bytes are arbitrary — they only need to be stable across restarts so the

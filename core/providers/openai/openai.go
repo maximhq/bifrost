@@ -442,6 +442,7 @@ func HandleOpenAITextCompletionRequest(
 			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
+			response.Usage.PreserveTokenCountZeros(lpResult.ResponseBody, "usage.prompt_tokens", "usage.completion_tokens")
 			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency}
 			return response, nil
 		}
@@ -519,6 +520,7 @@ func HandleOpenAITextCompletionRequest(
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
+	response.Usage.PreserveTokenCountZeros(body, "usage.prompt_tokens", "usage.completion_tokens")
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
@@ -833,6 +835,8 @@ func HandleOpenAITextCompletionStreaming(
 				}
 			}
 
+			response.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
+
 			// choices be array if nil
 			if response.Choices == nil {
 				response.Choices = []schemas.BifrostResponseChoice{}
@@ -871,6 +875,8 @@ func HandleOpenAITextCompletionStreaming(
 				// Here in some cases usage comes before final message
 				// So we need to check if the response.Usage is nil and then if usage != nil
 				// then add up all tokens
+				usage.PromptTokensExplicitZero = usage.PromptTokensExplicitZero || response.Usage.PromptTokensExplicitZero
+				usage.CompletionTokensExplicitZero = usage.CompletionTokensExplicitZero || response.Usage.CompletionTokensExplicitZero
 				if response.Usage.PromptTokens > usage.PromptTokens {
 					usage.PromptTokens = response.Usage.PromptTokens
 				}
@@ -1093,6 +1099,7 @@ func HandleOpenAIChatCompletionRequest(
 			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
+			response.Usage.PreserveTokenCountZeros(lpResult.ResponseBody, "usage.prompt_tokens", "usage.completion_tokens")
 			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency}
 			return response, nil
 		}
@@ -1186,6 +1193,7 @@ func HandleOpenAIChatCompletionRequest(
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
+	response.Usage.PreserveTokenCountZeros(body, "usage.prompt_tokens", "usage.completion_tokens")
 	response.Usage.NormalizeReasoningTokens()
 
 	// A 200 is not proof of success on every OpenAI-compatible provider: some report
@@ -1619,6 +1627,8 @@ func HandleOpenAIChatCompletionStreaming(
 				}
 			}
 
+			response.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
+
 			// choices be array if nil
 			if response.Choices == nil {
 				response.Choices = []schemas.BifrostResponseChoice{}
@@ -1653,6 +1663,8 @@ func HandleOpenAIChatCompletionStreaming(
 				// Accumulate usage across chunks; attached to final event below.
 				if response.Usage != nil {
 					usageSeen = true
+					usage.PromptTokensExplicitZero = usage.PromptTokensExplicitZero || response.Usage.PromptTokensExplicitZero
+					usage.CompletionTokensExplicitZero = usage.CompletionTokensExplicitZero || response.Usage.CompletionTokensExplicitZero
 					if response.Usage.PromptTokens > usage.PromptTokens {
 						usage.PromptTokens = response.Usage.PromptTokens
 					}
@@ -1772,6 +1784,8 @@ func HandleOpenAIChatCompletionStreaming(
 					// Here in some cases usage comes before final message
 					// So we need to check if the response.Usage is nil and then if usage != nil
 					// then add up all tokens
+					usage.PromptTokensExplicitZero = usage.PromptTokensExplicitZero || response.Usage.PromptTokensExplicitZero
+					usage.CompletionTokensExplicitZero = usage.CompletionTokensExplicitZero || response.Usage.CompletionTokensExplicitZero
 					if response.Usage.PromptTokens > usage.PromptTokens {
 						usage.PromptTokens = response.Usage.PromptTokens
 					}
