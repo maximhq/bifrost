@@ -200,9 +200,10 @@ func TestWarpLogsViewLinkCarriesEveryFilter(t *testing.T) {
 		// Deliberately absent from the Logs page, so a query narrowed by one
 		// gets no link at all (TestWarpResultsFilteredByErrorFieldsCarryNoLogsLink)
 		// rather than a link that is silently wider.
-		"error_types":  "the Logs page has no error-type filter",
-		"error_codes":  "the Logs page has no error-code filter",
-		"status_codes": "the Logs page has no status-code filter",
+		"error_types":        "the Logs page has no error-type filter",
+		"error_codes":        "the Logs page has no error-code filter",
+		"status_codes":       "the Logs page has no status-code filter",
+		"guardrail_outcomes": "the Logs page has no guardrail-outcome filter",
 		// TODO: Warp does not support the agent filters from #7777 yet; remove
 		// these once logsViewLink carries agent_names and agent_correlation_id.
 		"agent_names":          "not yet supported by Warp",
@@ -583,6 +584,7 @@ func TestWarpLogsLinkPerFilterArgument(t *testing.T) {
 		"error_types":           {arg: []any{"overloaded_error"}, noLink: true},
 		"error_codes":           {arg: []any{"context_length_exceeded"}, noLink: true},
 		"status_codes":          {arg: []any{float64(429)}, noLink: true},
+		"guardrail_outcomes":    {arg: []any{"blocked", "detected"}, noLink: true},
 		// Widens the question; the page has no parameter for it.
 		"scope": {arg: "all"},
 	}

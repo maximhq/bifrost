@@ -2093,7 +2093,9 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	// Text content delta. Reasoning (if any) is closed first so blocks never overlap.
-	if hasContent {
+	// Content that arrives after a tool call closed the text item is dropped: that item
+	// already sent output_item.done, so another delta on it is a malformed stream.
+	if hasContent && !state.TextItemClosed {
 		closeReasoningItem()
 
 		if !state.TextItemAdded {

@@ -58,6 +58,12 @@ import {
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
+import {
+	GUARDRAIL_MATCH_ACTION_BADGE,
+	GUARDRAIL_MATCH_ACTION_LABEL,
+	guardrailMatchAction,
+	guardrailMatchActionHint,
+} from "@/lib/utils/guardrailMatchAction";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappingEntries } from "@/lib/utils/redaction";
 import { isJson } from "@/lib/utils/validation";
@@ -2310,17 +2316,24 @@ export function LogDetailView({
 										<BlockHeader title="Guardrail Matches" />
 										<div className="space-y-4">
 											{[
-												...(log.guardrail_debug?.interventions ?? []).map((match) => ({ match, blocked: true })),
-												...(log.guardrail_debug?.detections ?? []).map((match) => ({ match, blocked: false })),
-											].map(({ match, blocked }, index) => (
+												...(log.guardrail_debug?.interventions ?? []).map((match) => ({
+													match,
+													action: guardrailMatchAction(match, true),
+												})),
+												...(log.guardrail_debug?.detections ?? []).map((match) => ({ match, action: guardrailMatchAction(match, false) })),
+											].map(({ match, action }, index) => (
 												<div
-													key={`${blocked ? "blocked" : "flagged"}-${match.rule_id ?? match.rule_name ?? "guardrail"}-${index}`}
+													key={`${action}-${match.rule_id ?? match.rule_name ?? "guardrail"}-${index}`}
 													className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}
 												>
 													<LogEntryDetailsView
 														className="w-full"
-														label="Outcome"
-														value={<Badge variant={blocked ? "destructive" : "warning"}>{blocked ? "Blocked" : "Flagged"}</Badge>}
+														label="Action"
+														value={
+															<Badge variant={GUARDRAIL_MATCH_ACTION_BADGE[action]} title={guardrailMatchActionHint(match, action)}>
+																{GUARDRAIL_MATCH_ACTION_LABEL[action]}
+															</Badge>
+														}
 													/>
 													{match.rule_name && <LogEntryDetailsView className="w-full" label="Rule" value={match.rule_name} />}
 													{match.phase && (
