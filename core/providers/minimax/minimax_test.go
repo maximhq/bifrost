@@ -25,10 +25,10 @@ func TestMinimax(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Minimax,
-		ChatModel: "MiniMax-M3",
+		ChatModel: "MiniMax-M3.1-Flash",
 		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.Minimax, Model: "MiniMax-M3.1-Flash"},
 			{Provider: schemas.Minimax, Model: "MiniMax-M3"},
-			{Provider: schemas.Minimax, Model: "MiniMax-M2.7"},
 		},
 		TextModel:      "",
 		EmbeddingModel: "", // Minimax doesn't support embedding

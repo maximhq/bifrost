@@ -46,7 +46,7 @@ export const ModelPlaceholders = {
 	gemini: "e.g. gemini-1.5-pro, gemini-1.5-flash",
 	groq: "e.g. llama3-70b-8192, mixtral-8x7b-32768",
 	huggingface: "e.g. sambanova/meta-llama/Llama-3.1-8B-Instruct, nebius/Qwen/Qwen3-Embedding-8B",
-	minimax: "e.g. MiniMax-M3, MiniMax-M2.7",
+	minimax: "e.g. MiniMax-M3.1-Flash, MiniMax-M3",
 	mistral: "e.g. mistral-7b-instruct, mixtral-8x7b",
 	openrouter: "e.g. openai/gpt-4, anthropic/claude-3-haiku",
 	sgl: "e.g. sgl-2, sgl-vision",

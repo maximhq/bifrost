@@ -920,6 +920,10 @@ func (h *ProviderHandler) listManagementModelsForProvider(
 	models := h.modelsManager.GetModelsForProvider(provider)
 	if query.Unfiltered {
 		models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
+	} else if provider == schemas.Minimax && query.Query == "" {
+		// Curate only default suggestions, before pagination. Explicit searches
+		// and unfiltered administration retain legacy/custom model access.
+		models = currentMinimaxSuggestions(models)
 	}
 
 	// Apply VK-level model whitelist filtering.

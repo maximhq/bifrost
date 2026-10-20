@@ -8,7 +8,7 @@ icon: "m"
 
 The MiniMax provider connects Bifrost to the MiniMax API with bearer authentication and the provider's compatible request and response formats. It supports model listing, chat completions, streaming chat completions, and the Bifrost Responses API through Chat Completions compatibility.
 
-MiniMax-M3 accepts text, image, and video content in chat messages. This input capability is separate from image or video generation, which is not exposed by this provider implementation.
+Start with `MiniMax-M3.1-Flash` for text generation; `MiniMax-M3` is also available. Both accept text, image, and video content in chat messages. This input capability is separate from image or video generation, which is not exposed by this provider implementation. Existing configurations and explicitly supplied model IDs are forwarded unchanged.
 
 ### Supported Operations
 
@@ -33,7 +33,7 @@ The default provider origin is `https://api.minimax.io`. Configure a provider ke
         {
           "name": "minimax-key-1",
           "value": "env.MINIMAX_API_KEY",
-          "models": ["MiniMax-M3", "MiniMax-M2.7"],
+          "models": ["MiniMax-M3.1-Flash", "MiniMax-M3"],
           "weight": 1.0
         }
       ]
@@ -70,7 +70,7 @@ For the China endpoint, override the provider origin. Bifrost appends the operat
 | Global | `https://api.minimax.io/v1` | `https://api.minimax.io/anthropic` | `https://api.minimax.io/anthropic/v1/messages` |
 | China | `https://api.minimaxi.com/v1` | `https://api.minimaxi.com/anthropic` | `https://api.minimaxi.com/anthropic/v1/messages` |
 
-The Bifrost provider uses the OpenAI-compatible `/v1/models` and `/v1/chat/completions` upstream routes. Bifrost Responses requests are translated to Chat Completions because MiniMax does not expose an upstream `/v1/responses` route. Anthropic SDK clients use Bifrost's protocol adapter instead of putting an upstream Anthropic URL in `network_config.base_url`:
+The Bifrost provider uses the OpenAI-compatible `/v1/models` and `/v1/chat/completions` upstream routes. MiniMax also documents a native Responses endpoint at `https://api.minimax.io/v1/responses`. This Bifrost provider currently translates Responses requests to Chat Completions; it does not call that native endpoint. Regional support for native Responses must be verified separately. Anthropic SDK clients use Bifrost's protocol adapter instead of putting an upstream Anthropic URL in `network_config.base_url`:
 
 ```python
 import anthropic
@@ -81,7 +81,7 @@ client = anthropic.Anthropic(
 )
 
 response = client.messages.create(
-    model="minimax/MiniMax-M3",
+    model="minimax/MiniMax-M3.1-Flash",
     max_tokens=1024,
     messages=[{"role": "user", "content": "Explain this design."}],
 )
@@ -93,14 +93,16 @@ The Anthropic SDK appends `/v1/messages`, so the Bifrost base URL must end at `/
 
 | Model | Context window | Input modalities | Thinking |
 | --- | ---: | --- | --- |
-| `MiniMax-M3` | 1,000,000-token context window | Text, image, video | `adaptive` or `disabled`; the OpenAI-compatible API defaults to `adaptive` and the direct Anthropic-compatible API defaults to `disabled` |
-| `MiniMax-M2.7` | 204,800 | Text | Always on |
+| `MiniMax-M3.1-Flash` (recommended) | 1,000,000 tokens | Text, image, video | Always on; `adaptive` only |
+| `MiniMax-M3` | 1,000,000 tokens | Text, image, video | `adaptive` or `disabled` |
+
+Flash supports up to 524,288 output tokens. Its `reasoning_effort` accepts `low`, `medium`, `high`, `xhigh`, or `max` (default); `none` and disabled thinking are rejected. Flash does not support `service_tier` or `reasoning_split: false`. For MiniMax-M3, the OpenAI-compatible API defaults thinking to `adaptive` and the direct Anthropic-compatible API defaults to `disabled`; effort does not tune depth. Default MiniMax text suggestions show Flash first, then M3 when returned by model discovery. Saved/custom IDs remain usable, and explicit searches or unfiltered administration can still retrieve legacy models.
 
 Provider-specific fields such as `thinking` and `reasoning_split` can be supplied through `extra_params`:
 
 ```json
 {
-  "model": "minimax/MiniMax-M3",
+  "model": "minimax/MiniMax-M3.1-Flash",
   "messages": [
     {
       "role": "user",
@@ -118,15 +120,15 @@ Provider-specific fields such as `thinking` and `reasoning_split` can be supplie
 
 ### Pay-As-You-Go Pricing
 
-Prices are USD per one million tokens. MiniMax-M3 pricing depends on service tier and input length.
+Prices are USD per one million tokens. MiniMax-M3.1-Flash uses the following standard-tier prices regardless of input length; MiniMax-M3 pricing depends on service tier and input length.
 
 | Model | Service tier | Input length | Input | Output | Cache read | Cache write |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `MiniMax-M3` | Standard | Up to 512,000 input tokens | \$0.30 | \$1.20 | \$0.06 | - |
-| `MiniMax-M3` | Standard | More than 512,000 input tokens | \$0.60 | \$2.40 | \$0.12 | - |
-| `MiniMax-M3` | Priority | Up to 512,000 input tokens | \$0.45 | \$1.80 | \$0.09 | - |
-| `MiniMax-M3` | Priority | More than 512,000 input tokens | \$0.90 | \$3.60 | \$0.18 | - |
-| `MiniMax-M2.7` | Standard | Any supported input length | \$0.30 | \$1.20 | \$0.06 | \$0.375 |
+| `MiniMax-M3.1-Flash` | Standard | Any supported input length | \$0.15 | \$0.60 | \$0.015 | - |
+| `MiniMax-M3` | Standard | Up to 512k input tokens | \$0.30 | \$1.20 | \$0.06 | - |
+| `MiniMax-M3` | Standard | More than 512k input tokens | \$0.60 | \$2.40 | \$0.12 | - |
+| `MiniMax-M3` | Priority | Up to 512k input tokens | \$0.45 | \$1.80 | \$0.09 | - |
+| `MiniMax-M3` | Priority | More than 512k input tokens | \$0.90 | \$3.60 | \$0.18 | - |
 
 Set `service_tier` to `priority` to request priority admission for MiniMax-M3. If omitted, the standard tier is used.
 
@@ -134,6 +136,6 @@ See the official [model guide](https://platform.minimax.io/docs/guides/models-in
 
 ## Caveats
 
-- The classic `/v1/completions` and `/v1/responses` APIs are not listed by the upstream API. Text Completions is returned as unsupported, while Bifrost Responses requests are translated to Chat Completions.
-- MiniMax-M3 image and video support applies to chat input content; it does not enable Bifrost image-generation or video-generation operations.
+- The classic `/v1/completions` API is unsupported. MiniMax supports native `/v1/responses`, but Bifrost Responses requests currently use Chat Completions compatibility.
+- MiniMax-M3.1-Flash and MiniMax-M3 image and video support applies to chat input content; it does not enable Bifrost image-generation or video-generation operations.
 - The China endpoint requires an explicit `network_config.base_url` override.
