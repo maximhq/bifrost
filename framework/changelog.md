@@ -14,6 +14,7 @@
 - fix: ClickHouse A2A cleanup and correlation no longer issue needless mutations or load payload columns (#8596, #8608)
 - fix: SQLite busy and locked log batches are retried whole (#8707)
 - fix: custom providers with no keys no longer claim every model in the model catalog (#8706)
+- fix: Responses traces keep reasoning_text thinking from Anthropic, Gemini and Bedrock
 - chore: upgraded core to v1.13.0 and Go to 1.27.2
 [feat]: virtual key list filters by metadata key/value pairs and search matches metadata [@jimseiwert](https://github.com/jimseiwert)
 [feat]: virtual keys carry custom key/value metadata (validated, migrated, included in the config hash only when set) [@jimseiwert](https://github.com/jimseiwert)
