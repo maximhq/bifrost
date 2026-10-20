@@ -276698,8 +276698,8 @@
       ]
     },
     {
-      "name": "262. Star-shaped admin password stored as a credential (admin-star-password)",
-      "description": "Deterministic, free fixture pin for #6413. The admin password's redacted echo is always a full sentinel (<redacted>, see GET /api/config), never the prefix-preserving star mask, so a submitted password that merely matches the 4-chars + 24 asterisks + 4-chars mask shape is a new credential and must be validated, hashed and stored instead of being silently preserved-over. Pre-fix, PUT /api/config answers 400 (username and password must be provided) and the login with that password answers 401. The openai keyword is only a harness filter label; no provider calls are made. The folder enables dashboard auth for three consecutive serial requests and disables it again in the last one, so within a parallel full run the enabled window is sub-second; the scoped verification is make run-provider-harness-test PROVIDER=openai FEATURE=\"admin-star-password\".",
+      "name": "262. Star-shaped admin password stored as a credential (admin-star-password) [SERIAL]",
+      "description": "Deterministic, free fixture pin for #6413. The admin password's redacted echo is always a full sentinel (<redacted>, see GET /api/config), never the prefix-preserving star mask, so a submitted password that merely matches the 4-chars + 24 asterisks + 4-chars mask shape is a new credential and must be validated, hashed and stored instead of being silently preserved-over. Pre-fix, PUT /api/config answers 400 (username and password must be provided) and the login with that password answers 401. The openai keyword is only a harness filter label; no provider calls are made. The folder enables dashboard auth and disables it again in the last request, so it is tagged [SERIAL]: the runner keeps it out of the parallel sweep and executes it alone in the serial pass. Creating the first admin also defaults enforce_auth_on_inference to true, and the cleanup PUT restores it to false explicitly. The scoped verification is make run-provider-harness-test PROVIDER=openai FEATURE=\"admin-star-password\".",
       "item": [
         {
           "name": "[EXPECT-200] openai admin-star-password: PUT /api/config stores a star-mask-shaped admin password",
@@ -276815,7 +276815,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"client_config\": {\"log_retention_days\": 7}, \"auth_config\": {\"is_enabled\": false, \"admin_username\": \"harness-star-admin\", \"admin_password\": \"Aa1b************************cdef\", \"setup_token\": \"bifrost-e2e-setup-token\"}}"
+              "raw": "{\"client_config\": {\"log_retention_days\": 7, \"enforce_auth_on_inference\": false}, \"auth_config\": {\"is_enabled\": false, \"admin_username\": \"harness-star-admin\", \"admin_password\": \"Aa1b************************cdef\", \"setup_token\": \"bifrost-e2e-setup-token\"}}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/config",
