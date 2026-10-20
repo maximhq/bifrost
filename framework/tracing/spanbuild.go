@@ -40,7 +40,7 @@ func BuildLLMSpanData(
 		buildResponseSide(d, resp, opts)
 	}
 	if bifrostErr != nil {
-		buildErrorSide(d, bifrostErr)
+		buildErrorSide(d, bifrostErr, opts)
 	}
 	return d
 }
@@ -56,7 +56,7 @@ func ApplyResponse(d *schemas.LLMSpanData, resp *schemas.BifrostResponse, bifros
 		buildResponseSide(d, resp, opts)
 	}
 	if bifrostErr != nil {
-		buildErrorSide(d, bifrostErr)
+		buildErrorSide(d, bifrostErr, opts)
 	}
 }
 
@@ -273,18 +273,27 @@ func mergeExtraParamsJSON(dst map[string]any, extra map[string]any) map[string]a
 	return dst
 }
 
-func buildErrorSide(d *schemas.LLMSpanData, bifrostErr *schemas.BifrostError) {
-	if bifrostErr.Error == nil {
-		return
-	}
+func buildErrorSide(d *schemas.LLMSpanData, bifrostErr *schemas.BifrostError, opts SpanBuildOptions) {
+	// Detail may be nil; appendError guards it. Built anyway so the status lands.
 	d.Error = &schemas.SpanError{
 		Detail:     bifrostErr.Error,
-		StatusCode: bifrostErr.StatusCode,
+		StatusCode: schemas.Ptr(bifrostErr.EffectiveHTTPStatus()),
 	}
 	// Billed usage is what the provider charged for a failed or cancelled turn;
 	// without it every span-based consumer records zero tokens.
 	if d.Usage == nil && bifrostErr.ExtraFields.BilledUsage != nil {
 		d.Usage = bifrostErr.ExtraFields.BilledUsage
+	}
+	// A failure carries its own raw bodies, and the provider's error response is the
+	// most useful thing a connector can show for one. Only filled when still empty, so
+	// a stream failure whose accumulated response already supplied them keeps those.
+	if opts.WantRawPayloads {
+		if d.RawRequest == "" {
+			d.RawRequest = schemas.EncodeRawPayload(bifrostErr.ExtraFields.RawRequest)
+		}
+		if d.RawResponse == "" {
+			d.RawResponse = schemas.EncodeRawPayload(bifrostErr.ExtraFields.RawResponse)
+		}
 	}
 }
 

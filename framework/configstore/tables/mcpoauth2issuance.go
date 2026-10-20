@@ -69,6 +69,7 @@ const (
 	OAuth2AuthorizeRequestStatusPending    OAuth2AuthorizeRequestStatus = "pending"     // waiting for consent
 	OAuth2AuthorizeRequestStatusConsented  OAuth2AuthorizeRequestStatus = "consented"   // identity resolved, code minted
 	OAuth2AuthorizeRequestStatusCodeIssued OAuth2AuthorizeRequestStatus = "code_issued" // token exchanged, one-time consumed
+	OAuth2AuthorizeRequestStatusRevoked    OAuth2AuthorizeRequestStatus = "revoked"     // identity revoked before exchange; terminal
 )
 
 // TableOAuth2AuthorizeRequest tracks a pending downstream OAuth2 authorization

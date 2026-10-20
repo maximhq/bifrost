@@ -16,6 +16,7 @@ import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
+import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import NumberFlow from "@number-flow/react";
 import { useLocation } from "@tanstack/react-router";
@@ -63,6 +64,9 @@ export default function MCPLogsPage() {
 			server_labels: parseAsArrayOf(parseAsString).withDefault([]),
 			status: parseAsArrayOf(parseAsString).withDefault([]),
 			virtual_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			agent_names: parseAsArrayOf(parseAsString).withDefault([]),
+			session_id: parseAsSafeString.withDefault(""),
+			agent_correlation_id: parseAsSafeString.withDefault(""),
 			content_search: parseAsSafeString.withDefault(""),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
@@ -101,6 +105,9 @@ export default function MCPLogsPage() {
 			server_labels: urlState.server_labels,
 			status: urlState.status,
 			virtual_key_ids: urlState.virtual_key_ids,
+			agent_names: urlState.agent_names,
+			session_id: urlState.session_id,
+			agent_correlation_id: urlState.agent_correlation_id,
 			content_search: urlState.content_search,
 			...(urlState.period
 				? { period: urlState.period }
@@ -121,6 +128,9 @@ export default function MCPLogsPage() {
 			urlState.server_labels,
 			urlState.status,
 			urlState.virtual_key_ids,
+			urlState.agent_names,
+			urlState.session_id,
+			urlState.agent_correlation_id,
 			urlState.content_search,
 			urlState.period,
 			urlState.start_time,
@@ -252,6 +262,9 @@ export default function MCPLogsPage() {
 				server_labels: newFilters.server_labels || [],
 				status: newFilters.status || [],
 				virtual_key_ids: newFilters.virtual_key_ids || [],
+				agent_names: newFilters.agent_names || [],
+				session_id: newFilters.session_id || "",
+				agent_correlation_id: newFilters.agent_correlation_id || "",
 				content_search: newFilters.content_search || "",
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
@@ -315,10 +328,12 @@ export default function MCPLogsPage() {
 
 	const handlePollToggle = useCallback(
 		(enabled: boolean) => {
-			setUrlState({ polling: enabled });
-			if (enabled) refreshAllData();
+			const next = getLiveToggleState(enabled, urlState.period);
+			setUrlState(next);
+			// A period change alters the query args, which fetches on its own.
+			if (enabled && !next.period) refreshAllData();
 		},
-		[setUrlState, refreshAllData],
+		[setUrlState, refreshAllData, urlState.period],
 	);
 
 	const statCards = useMemo(

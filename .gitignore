@@ -87,6 +87,7 @@ node_modules/
 # Test results
 test-results/
 playwright-report/
+a11y-report/
 blob-report/
 
 # Screenshots and videos
@@ -182,6 +183,8 @@ ui/app/routeTree.gen.ts
 .infisical
 
 # e2e test artifacts
+tests/e2e/.auth/
+tests/e2e/reports/
 examples/mcps/auth-demo-server/auth-demo-server
 examples/mcps/oauth-demo-server/oauth-demo-server
 

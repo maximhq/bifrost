@@ -65,7 +65,7 @@ func seedMCPSessionsFixture(t *testing.T, store *RDBConfigStore) {
 
 	// Pending OAuth flow
 	sess := &tables.TableMCPOauthFlow{
-		ID: "sess-pending", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
+		ID: "sess-pending", State: "state-sess-pending", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
 		FlowMode: "user", Status: "pending", UserID: &uid,
 		ExpiresAt: time.Now().Add(time.Hour),
 	}
@@ -252,7 +252,7 @@ func TestGetOauthUserSessionByID_ExcludesAdminMode(t *testing.T) {
 	// lookup, even by exact ID — this is the same auth_mode discipline
 	// GetOauthUserTokenByID already applies on the token side.
 	adminFlow := &tables.TableMCPOauthFlow{
-		ID: "sess-admin", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
+		ID: "sess-admin", State: "state-sess-admin", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
 		FlowMode: "admin", Status: "pending",
 		ExpiresAt: time.Now().Add(time.Hour),
 	}
@@ -284,23 +284,23 @@ func TestGetOauthUserSessionByModeIdentityAndMCPClient_AdminMode(t *testing.T) {
 	uid := "user-1"
 	vkID := "vk-1"
 	adminFlow1 := &tables.TableMCPOauthFlow{
-		ID: "flow-admin-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
+		ID: "flow-admin-1", State: "state-flow-admin-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
 		FlowMode: "admin", Status: "pending", ExpiresAt: time.Now().Add(time.Hour),
 	}
 	adminFlow2 := &tables.TableMCPOauthFlow{
-		ID: "flow-admin-2", MCPClientID: "mcp-2", OauthConfigID: "cfg-1",
+		ID: "flow-admin-2", State: "state-flow-admin-2", MCPClientID: "mcp-2", OauthConfigID: "cfg-1",
 		FlowMode: "admin", Status: "pending", ExpiresAt: time.Now().Add(time.Hour),
 	}
 	userFlow := &tables.TableMCPOauthFlow{
-		ID: "flow-user-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
+		ID: "flow-user-1", State: "state-flow-user-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
 		FlowMode: "user", Status: "pending", UserID: &uid, ExpiresAt: time.Now().Add(time.Hour),
 	}
 	vkFlow := &tables.TableMCPOauthFlow{
-		ID: "flow-vk-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
+		ID: "flow-vk-1", State: "state-flow-vk-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
 		FlowMode: "vk", Status: "pending", VirtualKeyID: &vkID, ExpiresAt: time.Now().Add(time.Hour),
 	}
 	sessionFlow := &tables.TableMCPOauthFlow{
-		ID: "flow-session-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
+		ID: "flow-session-1", State: "state-flow-session-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
 		FlowMode: "session", Status: "pending", SessionID: "sess-tok-1", ExpiresAt: time.Now().Add(time.Hour),
 	}
 	require.NoError(t, store.DB().WithContext(ctx).Create(adminFlow1).Error)
@@ -369,16 +369,16 @@ func TestGetOauthFlowByID(t *testing.T) {
 	ctx := context.Background()
 
 	adminFlow := &tables.TableMCPOauthFlow{
-		ID: "flow-admin-x", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
+		ID: "flow-admin-x", State: "state-flow-admin-x", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
 		FlowMode: "admin", Status: "pending", ExpiresAt: time.Now().Add(time.Hour),
 	}
 	vkID := "vk-alpha"
 	vkFlow := &tables.TableMCPOauthFlow{
-		ID: "flow-vk-x", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
+		ID: "flow-vk-x", State: "state-flow-vk-x", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
 		FlowMode: "vk", Status: "pending", VirtualKeyID: &vkID, ExpiresAt: time.Now().Add(time.Hour),
 	}
 	sessionFlow := &tables.TableMCPOauthFlow{
-		ID: "flow-session-x", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
+		ID: "flow-session-x", State: "state-flow-session-x", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
 		FlowMode: "session", Status: "pending", SessionID: "sess-tok-x", ExpiresAt: time.Now().Add(time.Hour),
 	}
 	require.NoError(t, store.DB().WithContext(ctx).Create(adminFlow).Error)

@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -285,4 +286,40 @@ func TestRealtimeStopHeartbeatIsIdempotent(t *testing.T) {
 
 	client.stopHeartbeat()
 	client.stopHeartbeat()
+}
+
+// A relay runs on its own goroutine, past the recover deferred by the upgrade callback, so a
+// panic inside it (a plugin hook on the turn pipeline) must be caught by the relay runner
+// itself: it ends the session like any other relay error instead of ending the process.
+func TestRunRealtimeRelaysEndsSessionWhenARelayPanics(t *testing.T) {
+	closed := make(chan struct{})
+	var closes int
+	toProvider := func() error {
+		panic("plugin hook exploded")
+	}
+	toClient := func() error {
+		<-closed // a blocking read, released by the teardown
+		return net.ErrClosed
+	}
+	closeBoth := func() {
+		closes++
+		close(closed)
+	}
+
+	result := make(chan error, 1)
+	go func() { result <- runRealtimeRelays(nil, toProvider, toClient, closeBoth) }()
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "panic") {
+			t.Fatalf("expected the panic to end the session as a relay error, got %v", err)
+		}
+		if strings.Contains(err.Error(), "exploded") {
+			t.Fatalf("the panic value must not be echoed into the relay error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runRealtimeRelays did not return after a relay panicked")
+	}
+	if closes != 1 {
+		t.Fatalf("expected both connections to be closed once, closeBoth ran %d times", closes)
+	}
 }

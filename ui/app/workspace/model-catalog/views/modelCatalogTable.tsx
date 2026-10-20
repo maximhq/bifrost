@@ -74,6 +74,7 @@ export default function ModelCatalogTable({
 				<PageTitle title="Model Catalog">Overview of all configured providers, models, and usage.</PageTitle>
 				<ProviderSelector
 					data-testid="model-catalog-provider-trigger"
+					ariaLabel="Filter by provider"
 					className="w-[200px]"
 					allOption={ALL_PROVIDERS_OPTION}
 					value={providerFilter || ALL_PROVIDERS_VALUE}
@@ -83,12 +84,12 @@ export default function ModelCatalogTable({
 
 			{/* Table */}
 			<div className="rounded-sm border">
-				<Table className="table-fixed">
+				<Table className="min-w-[760px] table-fixed">
 					<colgroup>
-						<col className="w-[26%]" />
-						<col className="w-[44%]" />
-						<col className="w-[16%]" />
-						<col className="w-[14%]" />
+						<col className="w-[220px]" />
+						<col />
+						<col className="w-[180px]" />
+						<col className="w-[160px]" />
 					</colgroup>
 					<TableHeader>
 						<TableRow>
@@ -98,8 +99,8 @@ export default function ModelCatalogTable({
 									<div className="flex items-center gap-1">
 										Models
 										<Tooltip>
-											<TooltipTrigger data-testid="model-catalog-models-info-trigger">
-												<Info className="text-muted-foreground h-3.5 w-3.5" />
+											<TooltipTrigger aria-label="About the models column" data-testid="model-catalog-models-info-trigger">
+												<Info className="text-muted-foreground h-3.5 w-3.5" aria-hidden="true" />
 											</TooltipTrigger>
 											<TooltipContent side="bottom">Models used in the last 30 days</TooltipContent>
 										</Tooltip>

@@ -18,21 +18,26 @@ const PluginName = "compat"
 
 // Config defines the configuration for the compat plugin.
 type Config struct {
-	ConvertTextToChat      bool `json:"convert_text_to_chat"`
-	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
-	ShouldDropParams       bool `json:"should_drop_params"`
-	ShouldConvertParams    bool `json:"should_convert_params"`
-	AzureDeepseek          bool `json:"azure_deepseek"`
+	ConvertTextToChat                   bool `json:"convert_text_to_chat"`
+	ConvertChatToResponses              bool `json:"convert_chat_to_responses"`
+	ShouldDropParams                    bool `json:"should_drop_params"`
+	ShouldConvertParams                 bool `json:"should_convert_params"`
+	AzureDeepseek                       bool `json:"azure_deepseek"`
+	ForceReasoningOnlyModelsToResponses bool `json:"force_reasoning_only_models_to_responses"`
+	ConvertDecisionToResponses          bool `json:"convert_decision_to_responses"`
 }
 
-// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+// UnmarshalJSON defaults all bool fields to true when absent from JSON, except
+// ConvertDecisionToResponses: emulating a decision through a chat model is opt-in.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type config struct {
-		ConvertTextToChat      *bool `json:"convert_text_to_chat"`
-		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
-		ShouldDropParams       *bool `json:"should_drop_params"`
-		ShouldConvertParams    *bool `json:"should_convert_params"`
-		AzureDeepseek          *bool `json:"azure_deepseek"`
+		ConvertTextToChat                   *bool `json:"convert_text_to_chat"`
+		ConvertChatToResponses              *bool `json:"convert_chat_to_responses"`
+		ShouldDropParams                    *bool `json:"should_drop_params"`
+		ShouldConvertParams                 *bool `json:"should_convert_params"`
+		AzureDeepseek                       *bool `json:"azure_deepseek"`
+		ForceReasoningOnlyModelsToResponses *bool `json:"force_reasoning_only_models_to_responses"`
+		ConvertDecisionToResponses          *bool `json:"convert_decision_to_responses"`
 	}
 	var s config
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -43,12 +48,14 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
 	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
+	c.ForceReasoningOnlyModelsToResponses = s.ForceReasoningOnlyModelsToResponses == nil || *s.ForceReasoningOnlyModelsToResponses
+	c.ConvertDecisionToResponses = s.ConvertDecisionToResponses != nil && *s.ConvertDecisionToResponses
 	return nil
 }
 
 // IsEnabled returns true if any compat feature is enabled
 func (c Config) IsEnabled() bool {
-	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams || c.AzureDeepseek
+	return c.ConvertTextToChat || c.ConvertChatToResponses || c.ShouldDropParams || c.ShouldConvertParams || c.AzureDeepseek || c.ForceReasoningOnlyModelsToResponses || c.ConvertDecisionToResponses
 }
 
 // CompatPlugin provides LiteLLM-compatible request/response transformations.
@@ -99,6 +106,11 @@ func (p *CompatPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 	return nil
 }
 
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *CompatPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged.
 func (p *CompatPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
@@ -126,6 +138,8 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	shouldDropParamsOverride, shouldDropParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldDropParams).(bool)
 	shouldConvertParamsOverride, shouldConvertParamsOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatShouldConvertParams).(bool)
 	azureDeepseekOverride, azureDeepseekOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatAzureDeepseek).(bool)
+	reasoningOnlyOverride, reasoningOnlyOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatForceReasoningOnlyToResponses).(bool)
+	decisionToResponsesOverride, decisionToResponsesOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertDecisionToResponses).(bool)
 
 	modifiedReq := req
 	if (shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || (shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams || p.config.ShouldDropParams {
@@ -146,12 +160,25 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
+	// Decision → responses emulation
+	if (decisionToResponsesOverrideEnabled && decisionToResponsesOverride) || p.config.ConvertDecisionToResponses {
+		if modifiedReq.RequestType == schemas.DecisionRequest && modifiedReq.DecisionRequest != nil {
+			p.markDecisionForEmulation(ctx, modifiedReq.DecisionRequest.Provider, modifiedReq.DecisionRequest.Model)
+		}
+	}
+
 	// Azure DeepSeek: coding harnesses need reasoning, which only chat completions
 	// supports on Azure, so their Responses requests are converted by core (see azure.go).
 	// This must run before the param drop below, which reads the conversion decision.
 	// With AzureDeepseek off the request stays on /v1/responses and the drop below strips reasoning.
 	if ((azureDeepseekOverrideEnabled && azureDeepseekOverride) || p.config.AzureDeepseek) && shouldConvertAzureDeepSeekResponsesToChat(ctx, modifiedReq) {
 		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+	}
+
+	// Chat requests on models that reject reasoning alongside tools go to Responses,
+	// which keeps reasoning. Must run before the param drop below, which would otherwise force reasoning off.
+	if (reasoningOnlyOverrideEnabled && reasoningOnlyOverride) || p.config.ForceReasoningOnlyModelsToResponses {
+		p.markReasoningWithToolsForResponses(ctx, modifiedReq)
 	}
 
 	// Compute unsupported parameters to drop based on model catalog allowlist
@@ -183,10 +210,21 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
-	// Namespace-tool flattening used to run here under should_convert_params. It moved
-	// to core dispatch (prepareResponsesRequest), where it applies to every provider
-	// whose wire lacks the namespace type and maps tool calls back on the response.
-	// The flag is still parsed so existing configs load; it no longer changes anything.
+	// Convert param values the model cannot accept. Runs after the drop above so a
+	// dropped param is never converted. Fallbacks rerun this hook, so each attempt
+	// is fitted to its own model. Namespace-tool flattening used to live under
+	// this flag too; it moved to core dispatch (prepareResponsesRequest).
+	if ((shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams) && p.modelCatalog != nil {
+		provider, model, _ := modifiedReq.GetRequestFields()
+		if model != "" {
+			if changes := p.convertUnsupportedParamValues(modifiedReq, provider, model); len(changes) > 0 {
+				p.logger.Debug("compat: converted param values for model %s: %v", model, changes)
+				ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("converted %d param value(s) for model %s: %s", len(changes), model, strings.Join(changes, ", ")))
+			} else {
+				ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("no param values converted for model %s (%s)", model, provider))
+			}
+		}
+	}
 
 	return modifiedReq, nil, nil
 }
@@ -241,4 +279,54 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, targetType)
 		ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("model %s (%s) does not support %s, converting request to %s", model, provider, currentType, targetType))
 	}
+}
+
+// markDecisionForEmulation marks a decision request for emulation through the
+// Responses API unless the model catalog lists the model as a native decisions
+// model: its supports_decisions row, or without a row the decisions model
+// families the providers recognize by name (gpt-6-luna on OpenAI, Typesafe's
+// typesafe/ models, Clef on Cloudflare, deciders on Perplexity, System One
+// models on Ollama, Microsoft's decision models on Azure, ai_decide on Databricks).
+// gpt-6-luna is native by name only on OpenAI: another provider hosting it
+// (an Azure deployment, OpenRouter's gpt-6-luna chat models) serves it as a
+// chat model, so it is emulated unless that provider's datasheet row says
+// otherwise (OpenRouter's openai/gpt-6-luna-decisions).
+// Typesafe serves every model natively, so it is never marked. Custom
+// providers have no catalog rows and are matched by their own name, so one
+// serving a decisions model (on the Typesafe base, or gpt-6-luna on the OpenAI
+// base) would be emulated; the docs ask users to leave the setting off for them.
+func (p *CompatPlugin) markDecisionForEmulation(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) {
+	if provider == schemas.Typesafe {
+		return
+	}
+	fallback := (provider == schemas.OpenAI && schemas.DefaultSupportsDecisions(model)) || schemas.IsTypesafeModel(model) ||
+		(provider == schemas.Cloudflare && schemas.IsClefModel(model)) ||
+		(provider == schemas.Perplexity && schemas.IsPerplexityDeciderModel(model)) ||
+		(provider == schemas.Ollama && schemas.IsOllamaDecisionModel(model)) ||
+		(provider == schemas.Azure && schemas.IsMicrosoftDecisionModel(model)) ||
+		(provider == schemas.Databricks && schemas.IsDatabricksDecisionModel(model))
+	if schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback) {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+	ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("model %s (%s) does not serve %s natively, emulating it through %s", model, provider, schemas.DecisionRequest, schemas.ResponsesRequest))
+}
+
+// markReasoningWithToolsForResponses routes a chat request to Responses when the
+// datasheet sets supports_reasoning_with_tool_calls false for the model.
+func (p *CompatPlugin) markReasoningWithToolsForResponses(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+	if p.modelCatalog == nil || req.ChatRequest == nil {
+		return
+	}
+	if req.RequestType != schemas.ChatCompletionRequest && req.RequestType != schemas.ChatCompletionStreamRequest {
+		return
+	}
+	provider, model := req.ChatRequest.Provider, req.ChatRequest.Model
+	supported := p.modelCatalog.GetSupportedParameters(model)
+	// reasoning_with_tool_calls is listed unless the datasheet sets it explicitly false.
+	if supported == nil || !slices.Contains(supported, "reasoning") || slices.Contains(supported, "reasoning_with_tool_calls") {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+	ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("model %s (%s) does not support reasoning with tool calls on %s, converting request to %s", model, provider, schemas.ChatCompletionRequest, schemas.ResponsesRequest))
 }

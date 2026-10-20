@@ -49,6 +49,11 @@ warp-config:
       `api_key_id` is a reference, not a credential, so it round-trips in the
       clear and needs no omitted-versus-empty rule: omitting it writes an empty
       value and clears the stored reference.
+
+      `provider` and `model` are Warp's default model. `additional_models`
+      lists the others a chat request may name, so this write is also what
+      decides which models dashboard users can switch between: they pick among
+      what is stored here and cannot add to it.
     tags:
       - Warp
     requestBody:
@@ -211,6 +216,10 @@ warp-session:
       **Data visibility equals the caller's own.** Every tool query runs against
       the caller's row-level scope, so Warp can never surface data the caller
       could not already retrieve from the logs API directly.
+
+      The turn runs on Warp's default model unless the body names another with
+      `provider` and `model`. Only a model the configuration exposes is
+      accepted; anything else is a `400` and no model is called.
 
       With `stream: true` (the default) the response is `text/event-stream`. Both
       modes run the identical loop; only the sink differs.

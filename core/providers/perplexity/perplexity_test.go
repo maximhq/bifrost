@@ -1,13 +1,20 @@
 package perplexity_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
+	"github.com/maximhq/bifrost/core/providers/typesafe"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -30,6 +37,7 @@ func TestPerplexity(t *testing.T) {
 		ChatModel:      "sonar-pro",
 		TextModel:      "", // Perplexity doesn't support text completion
 		EmbeddingModel: "", // Perplexity doesn't support embedding
+		DecisionModel:  "pplx-decider-v1.1-27b",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:         false, // Not supported
 			SimpleChat:             true,
@@ -48,6 +56,7 @@ func TestPerplexity(t *testing.T) {
 			Embedding:              false, // Not supported yet
 			ListModels:             false,
 			PassThroughExtraParams: true,
+			Decision:               true,
 		},
 	}
 
@@ -136,6 +145,9 @@ func TestToBifrostChatResponse_Citations(t *testing.T) {
 		}
 		if bifrostResp.Usage.CompletionTokensDetails.NumSearchQueries == nil || *bifrostResp.Usage.CompletionTokensDetails.NumSearchQueries != 2 {
 			t.Error("expected num_search_queries to be 2")
+		}
+		if bifrostResp.Usage.ToolUsage.WebSearch.NumRequests != 2 {
+			t.Error("expected tool_usage.web_search.num_requests to be 2")
 		}
 	})
 
@@ -606,4 +618,250 @@ func TestToPerplexityChatCompletionRequest_NewFields(t *testing.T) {
 			}
 		}
 	})
+}
+
+const deciderResponseBody = `{"model":"pplx-decider-v1.1-27b","answers":{"is_red":{"type":"noul","noul":0.97}},"usage":{"input_tokens":180,"output_tokens":1}}`
+
+const testImageURL = "data:image/png;base64,iVBORw0KGgo="
+
+func newDecisionRequest(input schemas.DecisionInput) *schemas.BifrostDecisionRequest {
+	return &schemas.BifrostDecisionRequest{
+		Provider:         schemas.Perplexity,
+		Model:            "pplx-decider-v1.1-27b",
+		Input:            input,
+		SafetyIdentifier: schemas.Ptr("user-123"),
+		Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("is_red"), Instructions: schemas.NewDecisionText("Is the image mostly red?")},
+		},
+	}
+}
+
+func decisionUserMessage(parts ...schemas.DecisionInputPart) schemas.DecisionInputMessage {
+	return schemas.DecisionInputMessage{Role: "user", Content: schemas.DecisionInputContent{Parts: parts}}
+}
+
+func decisionTextPart(text string) schemas.DecisionInputPart {
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(text)}
+}
+
+func decisionImagePart(url string) schemas.DecisionInputPart {
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr(url)}
+}
+
+func encodePerplexityDecision(t *testing.T, request *schemas.BifrostDecisionRequest) string {
+	t.Helper()
+	native, err := perplexity.ToPerplexityDecisionRequest(request)
+	if err != nil {
+		t.Fatalf("ToPerplexityDecisionRequest: %v", err)
+	}
+	data, err := providerUtils.MarshalProviderRequest(native)
+	if err != nil {
+		t.Fatalf("MarshalProviderRequest: %v", err)
+	}
+	return string(data)
+}
+
+// TestToPerplexityDecisionRequest_MatchesTypesafeWithoutImages pins that an input without
+// images sends exactly Typesafe's body, so questions and state behave as they do there,
+// and that no user field is sent: Perplexity rejects unknown top-level fields.
+func TestToPerplexityDecisionRequest_MatchesTypesafeWithoutImages(t *testing.T) {
+	for name, input := range map[string]schemas.DecisionInput{
+		"text":       {Text: schemas.Ptr("The sky is blue.")},
+		"structured": {Structured: map[string]any{"ticket": "A-4021"}},
+		"messages":   {Messages: []schemas.DecisionInputMessage{decisionUserMessage(decisionTextPart("hi"))}},
+	} {
+		request := newDecisionRequest(input)
+		got := encodePerplexityDecision(t, request)
+		native, err := typesafe.ToTypesafeDecisionRequest(request)
+		if err != nil {
+			t.Fatalf("%s: ToTypesafeDecisionRequest: %v", name, err)
+		}
+		want, err := providerUtils.MarshalProviderRequest(native)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != string(want) {
+			t.Errorf("%s: body =\n%s\nwant Typesafe's\n%s", name, got, want)
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(got), &top); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := top["user"]; ok {
+			t.Errorf("%s: body carries a user field: %s", name, got)
+		}
+	}
+}
+
+// TestToPerplexityDecisionRequest_SendsImagesAsStateItems pins the image layout Perplexity
+// reads: plain-string text items and image_url items, in order, in the state array.
+func TestToPerplexityDecisionRequest_SendsImagesAsStateItems(t *testing.T) {
+	body := encodePerplexityDecision(t, newDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		decisionUserMessage(decisionTextPart("Look at this"), decisionImagePart(testImageURL)),
+	}}))
+	want := `"state":["Look at this",{"type":"image_url","image_url":{"url":"` + testImageURL + `"}}]`
+	if !strings.Contains(body, want) {
+		t.Errorf("body =\n%s\nwant state\n%s", body, want)
+	}
+}
+
+func TestToPerplexityDecisionRequest_RejectsImageWithoutURL(t *testing.T) {
+	request := newDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		decisionUserMessage(decisionTextPart("hi"), schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage}),
+	}})
+	if _, err := perplexity.ToPerplexityDecisionRequest(request); err == nil {
+		t.Error("expected an error for an input_image part without an image_url")
+	}
+}
+
+func newTestProvider(t *testing.T, baseURL string) *perplexity.PerplexityProvider {
+	t.Helper()
+	provider, err := perplexity.NewPerplexityProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("NewPerplexityProvider: %v", err)
+	}
+	return provider
+}
+
+func newTestKey() schemas.Key {
+	return schemas.Key{Value: schemas.SecretVar{Val: "test-token"}, Models: []string{"*"}}
+}
+
+// TestResponses_RoutesSonarFamilyToChatCompletions pins the Responses routing: the
+// Sonar family, bare "sonar" included, is served only on /chat/completions (Perplexity's
+// /v1/responses answers `model "sonar" is not supported`), and every other model goes to
+// /v1/responses.
+func TestResponses_RoutesSonarFamilyToChatCompletions(t *testing.T) {
+	cases := []struct {
+		model    string
+		wantPath string
+	}{
+		{"sonar", "/chat/completions"},
+		{"perplexity/sonar", "/chat/completions"},
+		{"SONAR", "/chat/completions"},
+		{"sonar-pro", "/chat/completions"},
+		{"perplexity/sonar-reasoning-pro", "/chat/completions"},
+		{"openai/gpt-5.4", "/v1/responses"},
+		{"sonar2", "/v1/responses"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			var capturedPath string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedPath = r.URL.Path
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = fmt.Fprint(w, `{"error":{"message":"stop here","type":"invalid_request_error"}}`)
+			}))
+			defer server.Close()
+
+			provider := newTestProvider(t, server.URL)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, _ = provider.Responses(ctx, newTestKey(), &schemas.BifrostResponsesRequest{
+				Provider: schemas.Perplexity,
+				Model:    tc.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				}},
+			})
+			if capturedPath != tc.wantPath {
+				t.Errorf("path = %q, want %q", capturedPath, tc.wantPath)
+			}
+		})
+	}
+}
+
+// TestDecision_PostsToDecisionsAndTakesIDFromHeader pins the native call: the request goes
+// to /v1/decisions with Bearer auth, and the id comes from x-request-id since the body has none.
+func TestDecision_PostsToDecisionsAndTakesIDFromHeader(t *testing.T) {
+	var capturedPath, capturedAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Request-Id", "14bbdf68-23cc-40bd-ac49-64e7b76845a3")
+		_, _ = fmt.Fprint(w, deciderResponseBody)
+	}))
+	defer server.Close()
+
+	provider := newTestProvider(t, server.URL)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Decision(ctx, newTestKey(), newDecisionRequest(schemas.DecisionInput{Text: schemas.Ptr("hi")}))
+	if bifrostErr != nil {
+		t.Fatalf("Decision: %v", bifrostErr.Error.Message)
+	}
+
+	if capturedPath != "/v1/decisions" {
+		t.Errorf("path = %q, want /v1/decisions", capturedPath)
+	}
+	if capturedAuth != "Bearer test-token" {
+		t.Errorf("Authorization = %q, want Bearer test-token", capturedAuth)
+	}
+	if resp.ID != "14bbdf68-23cc-40bd-ac49-64e7b76845a3" {
+		t.Errorf("id = %q, want the x-request-id header", resp.ID)
+	}
+	if len(resp.Answers) != 1 || resp.Answers[0].Probability == nil || *resp.Answers[0].Probability != 0.97 {
+		t.Errorf("unexpected answers: %+v", resp.Answers)
+	}
+	if resp.Usage == nil || resp.Usage.PromptTokens != 180 || resp.Usage.CompletionTokens != 1 {
+		t.Errorf("unexpected usage: %+v", resp.Usage)
+	}
+}
+
+// TestDecision_KeepsProviderHeadersOnErrors pins that a failed decision still records
+// Perplexity's response headers on the context, which is the only place the HTTP layer
+// reads them from for an error reply: without them a 429 loses Retry-After and a 400
+// its x-request-id.
+func TestDecision_KeepsProviderHeadersOnErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Request-Id", "req-429")
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"Rate limit exceeded","type":"rate_limit_error","code":null}}`)
+	}))
+	defer server.Close()
+
+	provider := newTestProvider(t, server.URL)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := provider.Decision(ctx, newTestKey(), newDecisionRequest(schemas.DecisionInput{Text: schemas.Ptr("hi")})); bifrostErr == nil {
+		t.Fatal("expected an error")
+	}
+	headers, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+	got := make(map[string]string, len(headers))
+	for name, value := range headers {
+		got[strings.ToLower(name)] = value
+	}
+	if got["x-request-id"] != "req-429" || got["retry-after"] != "7" {
+		t.Errorf("context headers = %v, want x-request-id and retry-after from the error reply", headers)
+	}
+}
+
+// TestDecision_PassesPerplexityErrorsThrough pins that Perplexity's own 400 reaches the
+// caller with its status and message.
+func TestDecision_PassesPerplexityErrorsThrough(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"Images must be base64 PNG, JPEG, or WebP data URLs","type":"invalid_request_error","code":"400","param":null}}`)
+	}))
+	defer server.Close()
+
+	provider := newTestProvider(t, server.URL)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.Decision(ctx, newTestKey(), newDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		decisionUserMessage(decisionImagePart("https://example.com/red.png")),
+	}}))
+	if bifrostErr == nil {
+		t.Fatal("expected an error")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
+	}
+	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "Images must be base64") {
+		t.Errorf("message = %+v, want Perplexity's", bifrostErr.Error)
+	}
 }

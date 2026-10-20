@@ -19,12 +19,14 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
 
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
 const isGeminiEmbedContentRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-embed-content-request"
+
+const isGeminiBatchEmbedContentsRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-batch-embed-contents-request"
 
 const isGeminiVideoGenerationRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-video-generation-request"
 
@@ -82,13 +84,17 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return requestType
 		},
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.EmbeddingRequest && ctx.Value(isGeminiEmbedContentRequestContextKey) != nil {
+			requestType, _ := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType)
+			if requestType == schemas.EmbeddingRequest && ctx.Value(isGeminiEmbedContentRequestContextKey) != nil {
 				return &gemini.GeminiEmbeddingRequest{}
 			}
-			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.VideoGenerationRequest && ctx.Value(isGeminiVideoGenerationRequestContextKey) != nil {
+			if requestType == schemas.EmbeddingRequest && ctx.Value(isGeminiBatchEmbedContentsRequestContextKey) != nil {
+				return &gemini.GeminiBatchEmbeddingRequest{}
+			}
+			if requestType == schemas.VideoGenerationRequest && ctx.Value(isGeminiVideoGenerationRequestContextKey) != nil {
 				return &gemini.GeminiVideoGenerationRequest{}
 			}
-			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.BatchCreateRequest && ctx.Value(isGeminiBatchCreateRequestContextKey) != nil {
+			if requestType == schemas.BatchCreateRequest && ctx.Value(isGeminiBatchCreateRequestContextKey) != nil {
 				return &gemini.GeminiBatchCreateRequest{}
 			}
 			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.CountTokensRequest {
@@ -134,13 +140,19 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					}, nil
 				}
 			} else if geminiReq, ok := req.(*gemini.GeminiEmbeddingRequest); ok {
-				req := &gemini.GeminiGenerationRequest{
-					Model:    geminiReq.Model,
-					Requests: []gemini.GeminiEmbeddingRequest{*geminiReq},
+				embReq, err := geminiReq.ToBifrostEmbeddingRequest(ctx)
+				if err != nil {
+					return nil, err
 				}
-				return &schemas.BifrostRequest{
-					EmbeddingRequest: req.ToBifrostEmbeddingRequest(ctx),
-				}, nil
+				return &schemas.BifrostRequest{EmbeddingRequest: embReq}, nil
+			} else if geminiReq, ok := req.(*gemini.GeminiBatchEmbeddingRequest); ok {
+				// :batchEmbedContents is Gemini's multi-input embedding call, not a batch job.
+				// Identical entry params go request-level; differing ones stay per input item.
+				embReq, err := geminiReq.ToBifrostEmbeddingRequest(ctx)
+				if err != nil {
+					return nil, err
+				}
+				return &schemas.BifrostRequest{EmbeddingRequest: embReq}, nil
 			} else if geminiReq, ok := req.(*gemini.GeminiVideoGenerationRequest); ok {
 				// convert to bifrost video generation request
 				bifrostReq, err := geminiReq.ToBifrostVideoGenerationRequest(ctx)
@@ -1525,6 +1537,11 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 			r.Model = modelStr
 		}
 		return nil
+	case *gemini.GeminiBatchEmbeddingRequest:
+		if modelStr != "" {
+			r.Model = modelStr
+		}
+		return nil
 	case *gemini.GeminiVideoGenerationRequest:
 		if modelStr != "" {
 			r.Model = modelStr
@@ -1763,6 +1780,11 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 	}
 	if strings.HasSuffix(modelStr, ":embedContent") {
 		ctx.SetUserValue(isGeminiEmbedContentRequestContextKey, true)
+		return modelStr, schemas.EmbeddingRequest
+	}
+	if strings.HasSuffix(modelStr, ":batchEmbedContents") {
+		ctx.SetUserValue(isGeminiBatchEmbedContentsRequestContextKey, true)
+		return modelStr, schemas.EmbeddingRequest
 	}
 	if isEmbedding {
 		return modelStr, schemas.EmbeddingRequest

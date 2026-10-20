@@ -57,7 +57,7 @@ export function BudgetDisplay({ budgets, calendarAligned, maxVisible }: BudgetDi
 										{fiscalQuarterNote(b.reset_duration, b.reset_config)}
 									</span>
 								</div>
-								<Progress value={pct} className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", barClass)} />
+								<Progress aria-label="Budget usage" value={pct} className={cn("bg-muted/70 dark:bg-muted/30 h-1.5", barClass)} />
 							</div>
 						</TooltipTrigger>
 						<TooltipContent>

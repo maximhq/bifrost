@@ -30,9 +30,9 @@ func TestFireworks(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:                schemas.Fireworks,
-		ChatModel:               "accounts/fireworks/models/kimi-k2p7-code",
+		ChatModel:               "accounts/fireworks/models/gpt-oss-120b",
 		Fallbacks:               []schemas.Fallback{},
-		TextModel:               "accounts/fireworks/models/kimi-k2p7-code",
+		TextModel:               "accounts/fireworks/models/deepseek-v4p1-flash",
 		TextCompletionFallbacks: []schemas.Fallback{},
 		EmbeddingModel:          "fireworks/qwen3-embedding-8b",
 		ReasoningModel:          "",
@@ -185,8 +185,8 @@ func fireworksModelSupportsEmbeddings(t *testing.T, client *bifrost.Bifrost, ctx
 	resp, bifrostErr := client.EmbeddingRequest(bfCtx, &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Fireworks,
 		Model:    model,
-		Input: &schemas.EmbeddingInput{
-			Text: &text,
+		Input: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}},
 		},
 	})
 	if bifrostErr != nil {
@@ -329,8 +329,8 @@ func TestFireworksProviderUsesNativeEndpoints(t *testing.T) {
 				resp, err := provider.Embedding(ctx, key, &schemas.BifrostEmbeddingRequest{
 					Provider: schemas.Fireworks,
 					Model:    "accounts/fireworks/models/nomic-embed-text-v1.5",
-					Input: &schemas.EmbeddingInput{
-						Text: schemas.Ptr("embedding test"),
+					Input: []schemas.EmbeddingInputItem{
+						{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("embedding test")}}},
 					},
 				})
 				if err != nil {

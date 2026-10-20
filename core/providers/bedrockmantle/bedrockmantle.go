@@ -148,9 +148,9 @@ func (provider *BedrockMantleProvider) listModelsByKey(ctx *schemas.BifrostConte
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-		merged := make(map[string]string, len(extraHeaders)+len(sigHeaders))
+		merged := make(map[string]schemas.SecretVar, len(extraHeaders)+len(sigHeaders))
 		maps.Copy(merged, extraHeaders)
-		maps.Copy(merged, sigHeaders)
+		maps.Copy(merged, schemas.NewSecretVarMap(sigHeaders))
 		extraHeaders = merged
 	}
 
@@ -574,6 +574,11 @@ func (provider *BedrockMantleProvider) BatchResults(_ *schemas.BifrostContext, _
 }
 
 // CountTokens is implemented in counttokens.go (native-Anthropic count_tokens path).
+
+// ModelRetrieve is not supported by the Bedrock Mantle provider.
+func (provider *BedrockMantleProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
+}
 
 // Compaction is not supported by the Bedrock Mantle provider.
 func (provider *BedrockMantleProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {

@@ -35,7 +35,7 @@ export function PricingOverridesEmptyState({ onCreateClick }: PricingOverridesEm
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
 					{onCreateClick && (
-						<Button aria-label="Create your first pricing override" data-testid="pricing-override-create-btn" onClick={onCreateClick}>
+						<Button data-testid="pricing-override-create-btn" onClick={onCreateClick}>
 							Create Override
 						</Button>
 					)}

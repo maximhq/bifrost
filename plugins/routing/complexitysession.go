@@ -15,6 +15,7 @@ import (
 const (
 	// complexitySessionKind is the session state kind under which the effective tier is kept.
 	complexitySessionKind          = "complexity"
+	complexityTurnTierKind         = "complexity-turn-tier"
 	complexitySessionInactivityTTL = 24 * time.Hour
 )
 
@@ -31,6 +32,41 @@ type complexitySessionStore struct {
 	ttl   time.Duration
 }
 
+// complexityTurnTierStore keeps the latest effective tier for tool continuations.
+type complexityTurnTierStore struct {
+	store schemas.KVStore
+}
+
+// load returns a valid tier cached for the current session, without refreshing its TTL.
+func (s *complexityTurnTierStore) load(key string) (string, bool, error) {
+	if s == nil || s.store == nil {
+		return "", false, nil
+	}
+	value, err := s.store.Get(key)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	tier, err := decodeStoredComplexityTier(value)
+	return tier, true, err
+}
+
+// save stores the served tier using the request's session-sticky inactivity TTL.
+func (s *complexityTurnTierStore) save(key, tier string, ttl time.Duration) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	if _, ok := complexityTierRank(tier); !ok {
+		return fmt.Errorf("invalid complexity continuation tier %q", tier)
+	}
+	if ttl <= 0 {
+		ttl = schemas.DefaultSessionStickyTTL
+	}
+	return s.store.SetWithTTL(key, tier, ttl)
+}
+
 type complexitySessionResolution struct {
 	PreviousTier  string
 	EffectiveTier string
@@ -38,6 +74,7 @@ type complexitySessionResolution struct {
 	Escalated     bool
 }
 
+// newComplexitySessionStore creates monotonic session-tier storage.
 func newComplexitySessionStore(store schemas.KVStore, ttl time.Duration) *complexitySessionStore {
 	return &complexitySessionStore{store: store, ttl: ttl}
 }
@@ -105,6 +142,7 @@ func (s *complexitySessionStore) resolve(key, proposed string) (complexitySessio
 	}, nil
 }
 
+// complexityTierRank returns the ordering rank for a supported tier.
 func complexityTierRank(tier string) (int, bool) {
 	switch tier {
 	case complexity.TierSimple:
@@ -118,12 +156,14 @@ func complexityTierRank(tier string) (int, bool) {
 	}
 }
 
+// complexityTierAtLeast reports whether the left tier is at least as complex as the right.
 func complexityTierAtLeast(left, right string) bool {
 	leftRank, leftOK := complexityTierRank(left)
 	rightRank, rightOK := complexityTierRank(right)
 	return leftOK && rightOK && leftRank >= rightRank
 }
 
+// decodeStoredComplexityTier validates and canonicalizes a tier read from KV storage.
 func decodeStoredComplexityTier(value any) (string, error) {
 	var tier string
 	switch typed := value.(type) {
@@ -147,4 +187,19 @@ func decodeStoredComplexityTier(value any) (string, error) {
 // the complexity kind.
 func complexitySessionKey(ctx *schemas.BifrostContext) string {
 	return bifrost.SessionStateKey(ctx, complexitySessionKind)
+}
+
+// complexityTurnTierKey scopes continuation tier state to the request's session and caller.
+func complexityTurnTierKey(ctx *schemas.BifrostContext) string {
+	return bifrost.SessionStateKey(ctx, complexityTurnTierKind)
+}
+
+// complexityTurnTierTTL honors the request's session TTL, matching provider stickiness.
+func complexityTurnTierTTL(ctx *schemas.BifrostContext) time.Duration {
+	if ctx != nil {
+		if ttl, ok := ctx.Value(schemas.BifrostContextKeySessionTTL).(time.Duration); ok && ttl > 0 {
+			return ttl
+		}
+	}
+	return schemas.DefaultSessionStickyTTL
 }

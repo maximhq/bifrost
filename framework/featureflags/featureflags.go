@@ -144,7 +144,7 @@ func (s *Store) IsEnabled(id string) bool {
 	}
 	s.mu.RUnlock()
 	if def, ok := LookupDef(id); ok {
-		return def.Default
+		return def.DefaultFor(s.isEnterprise)
 	}
 	return false
 }
@@ -333,12 +333,15 @@ func (s *Store) statusFor(def FlagDef, registered bool) FlagStatus {
 
 // statusForLocked must be called with s.mu held (read or write).
 func (s *Store) statusForLocked(def FlagDef, registered bool) FlagStatus {
+	// Default is reported per build, so the UI's "default" label and a reset
+	// to default both mean what this binary actually does.
+	buildDefault := def.DefaultFor(s.isEnterprise)
 	status := FlagStatus{
 		ID:             def.ID,
 		DisplayName:    def.DisplayName,
 		Description:    def.Description,
-		Default:        def.Default,
-		Enabled:        def.Default,
+		Default:        buildDefault,
+		Enabled:        buildDefault,
 		Source:         SourceDefault,
 		Registered:     registered,
 		EnterpriseOnly: def.EnterpriseOnly,

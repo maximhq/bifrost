@@ -49,3 +49,29 @@ func TestMetadataContextKeysPreserveLegacyValues(t *testing.T) {
 	assert.Equal(t, BifrostContextKeyCacheMetadata, BifrostContextKeyCacheDebug)
 	assert.Equal(t, BifrostContextKeyGuardrailMetadata, BifrostContextKeyGuardrailDebug)
 }
+
+// TestCacheLookupContextReturnsOwnedSnapshot pins the lookup outcome as a value a reader owns: a
+// direct hit carries no embedding fields and is still recorded, and later edits on either side
+// never reach the other.
+func TestCacheLookupContextReturnsOwnedSnapshot(t *testing.T) {
+	ctx := NewBifrostContext(nil, NoDeadline)
+	_, ok := CacheLookupFromContext(ctx)
+	assert.False(t, ok, "no lookup recorded yet")
+	assert.False(t, SetCacheLookupOnContext(ctx, nil))
+
+	cacheID := "entry-1"
+	hitType := "direct"
+	recorded := &BifrostCacheMetadata{CacheHit: true, CacheID: &cacheID, HitType: &hitType}
+	require.True(t, SetCacheLookupOnContext(ctx, recorded))
+	cacheID = "changed-after-recording"
+
+	got, ok := CacheLookupFromContext(ctx)
+	require.True(t, ok)
+	assert.True(t, got.CacheHit)
+	assert.Equal(t, "entry-1", *got.CacheID)
+	assert.Equal(t, "direct", *got.HitType)
+
+	*got.CacheID = "changed-by-reader"
+	again, _ := CacheLookupFromContext(ctx)
+	assert.Equal(t, "entry-1", *again.CacheID)
+}

@@ -58,6 +58,8 @@ const (
 	AnthropicMCPClientBetaHeader = "mcp-client-2025-11-20"
 	// AnthropicMCPClientBetaHeaderDeprecated is the previous MCP beta header (kept for fallback).
 	AnthropicMCPClientBetaHeaderDeprecated = "mcp-client-2025-04-04"
+	// AnthropicMCPClientInlineToolsBetaHeader is required for an mcp_toolset defined by value in a tool_addition block.
+	AnthropicMCPClientInlineToolsBetaHeader = "mcp-client-2026-09-15"
 	// AnthropicPromptCachingScopeBetaHeader is required for prompt caching scope.
 	AnthropicPromptCachingScopeBetaHeader = "prompt-caching-scope-2026-01-05"
 	// AnthropicCompactionBetaHeader is required for compaction.
@@ -106,6 +108,15 @@ const (
 	// while the tools array (and the cached prefix) stays fixed. Native Anthropic surface
 	// (Claude API direct + Claude in Amazon Bedrock via Mantle); Bedrock is Opus 5 only.
 	AnthropicMidConversationToolChangesBetaHeader = "mid-conversation-tool-changes-2026-07-01"
+	// AnthropicInlineToolsBetaHeader lets a tool_addition block carry the tool by value
+	// ({type: tool_definition, definition: {...}}). It also enables the by-reference blocks,
+	// so it can be sent alone. Claude API direct (+ Bedrock Mantle, which forwards the body).
+	AnthropicInlineToolsBetaHeader = "inline-tools-2026-09-15"
+	// AnthropicMidConversationOutputConfigBetaHeader enables output_config.effort on a
+	// role:"system" message inside messages (per-message effort), so the effort level can
+	// change from that point on without invalidating the cached prefix. Claude API direct;
+	// Fable/Mythos, Opus 5+, Sonnet 5.5. Other models 400 on the field.
+	AnthropicMidConversationOutputConfigBetaHeader = "mid-conversation-output-config-2026-07-01"
 
 	// AnthropicComputerUseBetaHeader is required for computer use (version-specific).
 	// computer_20251124 (Opus 4.6, Sonnet 4.6, Opus 4.5) uses the newer beta header.
@@ -136,7 +147,9 @@ const (
 	AnthropicServerSideFallbackBetaHeaderPrefix  = "server-side-fallback-"
 	AnthropicFallbackCreditBetaHeaderPrefix      = "fallback-credit-"
 	// Mid-conversation tool changes (Opus 5).
-	AnthropicMidConversationToolChangesBetaHeaderPrefix = "mid-conversation-tool-changes-"
+	AnthropicMidConversationToolChangesBetaHeaderPrefix  = "mid-conversation-tool-changes-"
+	AnthropicMidConversationOutputConfigBetaHeaderPrefix = "mid-conversation-output-config-"
+	AnthropicInlineToolsBetaHeaderPrefix                 = "inline-tools-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -203,6 +216,7 @@ type ProviderFeatureSupport struct {
 	FallbackCredit         bool // fallback_credit_token request field + stop_details credit fields — fallback-credit-2026-06-01 (AWS surfaces: -2026-06-09). Documented on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, i.e. the inverse of ServerSideFallback.
 	Safeguards             bool // Opaque Claude auto-mode classifier payloads; supported models require the dangerous-tool-use beta.
 	MidConvToolChanges     bool // tool_addition/tool_removal blocks — mid-conversation-tool-changes-2026-07-01. Native Anthropic surface (Claude API + Bedrock Mantle); Bedrock is Opus 5 only, enforced upstream.
+	MidConvOutputConfig    bool // per-message output_config.effort on role:"system" messages — mid-conversation-output-config-2026-07-01. Claude API direct only; model-gated by DefaultSupportsMidConversationOutputConfig.
 }
 
 // ProviderFeatures maps each provider to its supported Anthropic features.
@@ -220,12 +234,13 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 		InterleavedThinking: true, Skills: true, ContainerBasic: true, Context1M: true,
 		FastMode: true, RedactThinking: true, TaskBudgets: true,
 		InferenceGeo: true, EagerInputStreaming: true, AdvisorTool: true,
-		ServiceTier:        true,
-		Diagnostics:        true, // cache-diagnosis-2026-04-07 — Claude API only; only this provider keeps diagnostics.previous_message_id.
-		ServerSideFallback: true, // server-side-fallback-2026-06-01 — Claude API only.
-		FallbackCredit:     true, // fallback-credit-2026-06-01.
-		Safeguards:         true, // Claude Code auto-mode classifier; model-gated with the required beta.
-		MidConvToolChanges: true, // mid-conversation-tool-changes-2026-07-01.
+		ServiceTier:         true,
+		Diagnostics:         true, // cache-diagnosis-2026-04-07 — Claude API only; only this provider keeps diagnostics.previous_message_id.
+		ServerSideFallback:  true, // server-side-fallback-2026-06-01 — Claude API only.
+		FallbackCredit:      true, // fallback-credit-2026-06-01.
+		Safeguards:          true, // Claude Code auto-mode classifier; model-gated with the required beta.
+		MidConvToolChanges:  true, // mid-conversation-tool-changes-2026-07-01.
+		MidConvOutputConfig: true, // mid-conversation-output-config-2026-07-01.
 	},
 	// Google Vertex AI — cite: A (overview table) and V-platform.
 	// Notably NOT supported: MCP (MCP-excl), Skills/container.skills,
@@ -730,7 +745,7 @@ type AnthropicDiagnostics struct {
 }
 
 type AnthropicThinking struct {
-	Type         string  `json:"type"`                    // "enabled", "disabled", or "adaptive"
+	Type         string  `json:"type"`                    // "enabled", "disabled", "adaptive", or "between_tools"
 	BudgetTokens *int    `json:"budget_tokens,omitempty"` // Only for type "enabled" (not supported on Opus 4.7+)
 	Display      *string `json:"display,omitempty"`       // "summarized" | "omitted" — controls whether thinking content appears in the response (Opus 4.7+)
 }
@@ -1154,8 +1169,18 @@ const (
 
 // AnthropicMessage represents a message in Anthropic format
 type AnthropicMessage struct {
-	Role    AnthropicMessageRole `json:"role"`    // "user", "assistant", "system"
-	Content AnthropicContent     `json:"content"` // Array of content blocks
+	Role         AnthropicMessageRole          `json:"role"`                    // "user", "assistant", "system"
+	Content      AnthropicContent              `json:"content"`                 // Array of content blocks
+	OutputConfig *AnthropicMessageOutputConfig `json:"output_config,omitempty"` // per-message effort on role:"system" (beta mid-conversation-output-config)
+}
+
+// AnthropicMessageOutputConfig is the per-message output_config Anthropic accepts on a
+// role:"system" message under beta mid-conversation-output-config-2026-07-01. Only effort
+// is documented there; the message carries an empty content array when it exists solely to
+// change the effort level, and such a message is exempt from the mid-conversation system
+// placement rules.
+type AnthropicMessageOutputConfig struct {
+	Effort *string `json:"effort,omitempty"` // "low" | "medium" | "high" | "xhigh" | "max"
 }
 
 // AnthropicContent represents content that can be either string or array of blocks
@@ -1179,7 +1204,13 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 		return providerUtils.MarshalSorted(*mc.ContentStr)
 	}
 	if mc.ContentObj != nil {
-		return providerUtils.MarshalSorted(mc.ContentObj)
+		data, err := providerUtils.MarshalSorted(mc.ContentObj)
+		// Anthropic requires tool_references on a search result even when the search
+		// found nothing; omitempty would drop an empty list.
+		if err == nil && mc.ContentObj.Type == AnthropicContentBlockTypeToolSearchToolSearchResult && len(mc.ContentObj.ToolReferences) == 0 {
+			return providerUtils.SetRawJSONField(data, "tool_references", []byte("[]"))
+		}
+		return data, err
 	}
 	if mc.ContentBlocks != nil {
 		return providerUtils.MarshalSorted(mc.ContentBlocks)
@@ -1235,6 +1266,7 @@ const (
 	AnthropicContentBlockTypeBashCodeExecutionToolResult       AnthropicContentBlockType = "bash_code_execution_tool_result"
 	AnthropicContentBlockTypeTextEditorCodeExecutionToolResult AnthropicContentBlockType = "text_editor_code_execution_tool_result"
 	AnthropicContentBlockTypeToolSearchToolResult              AnthropicContentBlockType = "tool_search_tool_result"
+	AnthropicContentBlockTypeToolSearchToolSearchResult        AnthropicContentBlockType = "tool_search_tool_search_result" // content object of a tool_search_tool_result
 	AnthropicContentBlockTypeToolReference                     AnthropicContentBlockType = "tool_reference"
 	AnthropicContentBlockTypeContainerUpload                   AnthropicContentBlockType = "container_upload"
 	AnthropicContentBlockTypeAdvisorToolResult                 AnthropicContentBlockType = "advisor_tool_result"
@@ -1243,7 +1275,9 @@ const (
 	AnthropicContentBlockTypeThinking                          AnthropicContentBlockType = "thinking"
 	AnthropicContentBlockTypeRedactedThinking                  AnthropicContentBlockType = "redacted_thinking"
 	AnthropicContentBlockTypeCompaction                        AnthropicContentBlockType = "compaction"
-	AnthropicContentBlockTypeFallback                          AnthropicContentBlockType = "fallback" // server-side fallback boundary marker (server-side-fallback-2026-06-01)
+	AnthropicContentBlockTypeFallback                          AnthropicContentBlockType = "fallback"      // server-side fallback boundary marker (server-side-fallback-2026-06-01)
+	AnthropicContentBlockTypeToolAddition                      AnthropicContentBlockType = "tool_addition" // role:"system" only; mid-conversation-tool-changes / inline-tools betas
+	AnthropicContentBlockTypeToolRemoval                       AnthropicContentBlockType = "tool_removal"  // role:"system" only; tool is always a reference
 
 	// code_execution inner result-content discriminators (the "content" object on
 	// a *_code_execution_tool_result block; ContentObj.Type carries these).
@@ -1357,7 +1391,30 @@ type AnthropicContentBlock struct {
 	From    *AnthropicFallbackModel   `json:"from,omitempty"`    // declining model
 	To      *AnthropicFallbackModel   `json:"to,omitempty"`      // model that continues
 	Trigger *AnthropicFallbackTrigger `json:"trigger,omitempty"` // why the handoff happened
+
+	// tool_addition / tool_removal block — the tool named or defined
+	Tool *AnthropicToolChangeTarget `json:"tool,omitempty"`
+	// compaction block — server-recorded tool_addition / tool_removal entries of the compacted range, replayed verbatim
+	ToolChanges []AnthropicContentBlock `json:"tool_changes,omitempty"`
 }
+
+// AnthropicToolChangeTarget is the `tool` field of a tool_addition / tool_removal block, a
+// discriminated union on Type: tool_reference (Name), mcp_tool_reference (ServerName, Name),
+// mcp_toolset_reference (ServerName), tool_definition (Definition, any tools[] entry).
+// https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
+type AnthropicToolChangeTarget struct {
+	Type       string         `json:"type"`
+	Name       *string        `json:"name,omitempty"`
+	ServerName *string        `json:"server_name,omitempty"`
+	Definition *AnthropicTool `json:"definition,omitempty"`
+}
+
+const (
+	AnthropicToolChangeTargetTypeToolReference       = "tool_reference"
+	AnthropicToolChangeTargetTypeMCPToolReference    = "mcp_tool_reference"
+	AnthropicToolChangeTargetTypeMCPToolsetReference = "mcp_toolset_reference"
+	AnthropicToolChangeTargetTypeToolDefinition      = "tool_definition"
+)
 
 // DiscoveredToolReferences returns the tool_reference blocks a
 // tool_search_tool_result carries, accepting both shapes the payload arrives in.
@@ -1374,8 +1431,8 @@ type AnthropicContentBlock struct {
 // ToolReferences is declared flat, so live traffic never populates it:
 // AnthropicContent.UnmarshalJSON's single-object fallback parks the inner object in
 // Content.ContentBlocks, one level below where every reader was looking. Bifrost's
-// own rebuild (convertBifrostToolSearchCallToAnthropicBlocks) does set the flat
-// field, so both are honoured, flat first. The error variant
+// own rebuild (anthropicToolSearchResultBlock) nests it in Content.ContentObj; the
+// flat field is still honoured first for older payloads. The error variant
 // (tool_search_tool_result_error) legitimately carries none and yields nil.
 func (b *AnthropicContentBlock) DiscoveredToolReferences() []AnthropicContentBlock {
 	if b == nil {
@@ -1386,6 +1443,9 @@ func (b *AnthropicContentBlock) DiscoveredToolReferences() []AnthropicContentBlo
 	}
 	if b.Content == nil {
 		return nil
+	}
+	if b.Content.ContentObj != nil && len(b.Content.ContentObj.ToolReferences) > 0 {
+		return b.Content.ContentObj.ToolReferences
 	}
 	for _, inner := range b.Content.ContentBlocks {
 		if len(inner.ToolReferences) > 0 {
@@ -2229,6 +2289,8 @@ type AnthropicStreamDelta struct {
 	// Container is the code-execution sandbox container, surfaced on the final
 	// message_delta of a response that used the code execution tool.
 	Container *AnthropicResponseContainer `json:"container,omitempty"`
+	// SafeguardResults carries Claude Code's auto-mode verdicts on the final message_delta.
+	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
 }
 
 // ==================== MODEL TYPES ====================

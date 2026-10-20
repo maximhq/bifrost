@@ -2,9 +2,12 @@ package azure_test
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/azure"
+	"github.com/maximhq/bifrost/core/providers/typesafe"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -339,4 +343,230 @@ func TestAzureResponsesHonoursDatasheetSupportedEndpoints(t *testing.T) {
 		}
 		assertOnlyPath(t, upstream, "/openai/v1/chat/completions")
 	})
+}
+
+// Microsoft-Decision-1 bodies and errors below are as captured from a live Foundry
+// deployment named "Decision-1".
+const azureDecisionResponseBody = `{"model":"microsoft-decision-1","answers":{"team":{"choice":"engineering","confidence":0.99,"probabilities":{"billing":0.001,"engineering":0.998,"support":0.001},"type":"choice"}},"usage":{"input_tokens":64,"output_tokens":1}}`
+
+func newAzureDecisionRequest(input schemas.DecisionInput) *schemas.BifrostDecisionRequest {
+	return &schemas.BifrostDecisionRequest{
+		Provider: schemas.Azure,
+		Model:    "Decision-1",
+		Input:    input,
+		Questions: []schemas.DecisionQuestion{{
+			Type:         schemas.DecisionTypeChoice,
+			Name:         schemas.Ptr("team"),
+			Instructions: schemas.NewDecisionText("Which team should handle this ticket?"),
+			Choices: []schemas.DecisionChoice{
+				{Value: schemas.DecisionScalar{Str: schemas.Ptr("billing")}, Description: schemas.NewDecisionText("Charges, invoices, and refunds")},
+				{Value: schemas.DecisionScalar{Str: schemas.Ptr("engineering")}, Description: schemas.NewDecisionText("Bugs, errors, and outages")},
+				{Value: schemas.DecisionScalar{Str: schemas.Ptr("support")}, Description: schemas.NewDecisionText("How-to and account questions")},
+			},
+		}},
+	}
+}
+
+func newAzureDecisionProvider(t *testing.T) *azure.AzureProvider {
+	t.Helper()
+	provider, err := azure.NewAzureProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10},
+	}, routingTestLogger{})
+	if err != nil {
+		t.Fatalf("NewAzureProvider: %v", err)
+	}
+	return provider
+}
+
+func newAzureDecisionKey(endpoint string) schemas.Key {
+	return schemas.Key{
+		Value:          *schemas.NewSecretVar("test-key"),
+		Models:         []string{"*"},
+		AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar(endpoint)},
+	}
+}
+
+// TestAzureDecisionSendsTypesafeBodyToSystemOne pins the native call: the body is exactly
+// Typesafe's systemone request with the deployment name as the model, it goes to the
+// resource's /providers/microsoft/v1/systemone with no api-version, and authenticates with
+// the api-key header, or Bearer when a token is on the context.
+func TestAzureDecisionSendsTypesafeBodyToSystemOne(t *testing.T) {
+	request := newAzureDecisionRequest(schemas.DecisionInput{Text: schemas.Ptr("The API returns 500 on every call.")})
+	native, err := typesafe.ToTypesafeDecisionRequest(request)
+	if err != nil {
+		t.Fatalf("ToTypesafeDecisionRequest: %v", err)
+	}
+	wantBody, err := json.Marshal(native)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, token := range map[string]string{"api-key": "", "bearer": "entra-token"} {
+		t.Run(name, func(t *testing.T) {
+			type capturedRequest struct {
+				path, query, apiKey, auth string
+				body                      []byte
+			}
+			// The handler runs on the server's goroutine, so the request is handed over on a channel.
+			captured := make(chan capturedRequest, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				captured <- capturedRequest{path: r.URL.Path, query: r.URL.RawQuery, apiKey: r.Header.Get("api-key"), auth: r.Header.Get("Authorization"), body: body}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, azureDecisionResponseBody)
+			}))
+			defer server.Close()
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if token != "" {
+				ctx.SetValue(azure.AzureAuthorizationTokenKey, token)
+			}
+			resp, bifrostErr := newAzureDecisionProvider(t).Decision(ctx, newAzureDecisionKey(server.URL), request)
+			if bifrostErr != nil {
+				t.Fatalf("Decision: %+v", bifrostErr.Error)
+			}
+			sent := <-captured
+			gotPath, gotQuery, gotAPIKey, gotAuth, gotBody := sent.path, sent.query, sent.apiKey, sent.auth, sent.body
+
+			if gotPath != "/providers/microsoft/v1/systemone" || gotQuery != "" {
+				t.Errorf("request = %s?%s, want /providers/microsoft/v1/systemone with no query", gotPath, gotQuery)
+			}
+			if token == "" && (gotAPIKey != "test-key" || gotAuth != "") {
+				t.Errorf("auth = api-key %q, Authorization %q, want api-key test-key only", gotAPIKey, gotAuth)
+			}
+			if token != "" && (gotAuth != "Bearer "+token || gotAPIKey != "") {
+				t.Errorf("auth = api-key %q, Authorization %q, want Bearer %s only", gotAPIKey, gotAuth, token)
+			}
+			var got, want any
+			if err := json.Unmarshal(gotBody, &got); err != nil {
+				t.Fatalf("body is not JSON: %s", gotBody)
+			}
+			_ = json.Unmarshal(wantBody, &want)
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("body =\n%s\nwant Typesafe's\n%s", gotBody, wantBody)
+			}
+
+			if len(resp.Answers) != 1 || resp.Answers[0].Choice == nil || resp.Answers[0].Choice.Str == nil || *resp.Answers[0].Choice.Str != "engineering" {
+				t.Errorf("answers = %+v, want team=engineering", resp.Answers)
+			}
+			if resp.Usage == nil || resp.Usage.PromptTokens != 64 || resp.Usage.CompletionTokens != 1 {
+				t.Errorf("usage = %+v, want 64 input and 1 output tokens", resp.Usage)
+			}
+		})
+	}
+}
+
+// TestAzureDecisionRejectsImageInputLocally pins that an image never reaches
+// Microsoft-Decision-1: the model is text-only and answers an image part read as JSON
+// text with a 200, so the request is a local 400 instead.
+func TestAzureDecisionRejectsImageInputLocally(t *testing.T) {
+	hit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
+	defer server.Close()
+
+	request := newAzureDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
+		Role: "user",
+		Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
+		}},
+	}}})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := newAzureDecisionProvider(t).Decision(ctx, newAzureDecisionKey(server.URL), request)
+	if bifrostErr == nil {
+		t.Fatal("expected an error for an image input")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
+	}
+	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "this provider cannot read") {
+		t.Errorf("message = %+v, want the provider-neutral image rejection", bifrostErr.Error)
+	}
+	if hit {
+		t.Error("the request reached Azure")
+	}
+}
+
+// TestAzureDecisionForwardsAssets pins that images sent by reference reach Azure as
+// Typesafe's assets rather than being refused locally, and that Azure's own verdict
+// comes back: Microsoft-Decision-1 rejects the field today.
+func TestAzureDecisionForwardsAssets(t *testing.T) {
+	bodies := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies <- body
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"code":"unrecognized_request_argument","message":"Unrecognized request argument supplied: assets"}}`)
+	}))
+	defer server.Close()
+
+	request := newAzureDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
+		Role: "user",
+		Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Is r-a a red square?")},
+			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: []byte("\x89PNG\r\n\x1a\n")},
+		}},
+	}}})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := newAzureDecisionProvider(t).Decision(ctx, newAzureDecisionKey(server.URL), request)
+	if body := <-bodies; !strings.Contains(string(body), `"assets":{"r-a":{"type":"image","format":"png"`) {
+		t.Errorf("body sent to Azure = %s, want the asset", body)
+	}
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Message != "Unrecognized request argument supplied: assets" {
+		t.Errorf("error = %+v, want Azure's own message", bifrostErr)
+	}
+}
+
+// TestAzureDecisionPassesAzureErrorsThrough pins that Azure's own errors reach the caller
+// with their status and message, and that the reply's headers stay on the context.
+func TestAzureDecisionPassesAzureErrorsThrough(t *testing.T) {
+	cases := map[string]struct {
+		status      int
+		body        string
+		wantMessage string
+	}{
+		"deployment not found": {
+			status:      http.StatusNotFound,
+			body:        `{"error":{"code":"DeploymentNotFound","message":"The API deployment no-such-deployment does not exist.","details":"The API deployment no-such-deployment does not exist."}}`,
+			wantMessage: "The API deployment no-such-deployment does not exist.",
+		},
+		"unrecognized argument": {
+			status:      http.StatusBadRequest,
+			body:        `{"error":{"code":"unrecognized_request_argument","message":"Unrecognized request argument supplied: foo","details":"Unrecognized request argument supplied: foo"}}`,
+			wantMessage: "Unrecognized request argument supplied: foo",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("apim-request-id", "req-"+name)
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := newAzureDecisionProvider(t).Decision(ctx, newAzureDecisionKey(server.URL), newAzureDecisionRequest(schemas.DecisionInput{Text: schemas.Ptr("hi")}))
+			if bifrostErr == nil {
+				t.Fatal("expected an error")
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.status {
+				t.Errorf("status = %v, want %d", bifrostErr.StatusCode, tc.status)
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message != tc.wantMessage {
+				t.Errorf("message = %+v, want %q", bifrostErr.Error, tc.wantMessage)
+			}
+			headers, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+			found := false
+			for k, v := range headers {
+				if strings.EqualFold(k, "apim-request-id") && v == "req-"+name {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("context headers = %v, want apim-request-id from the error reply", headers)
+			}
+		})
+	}
 }

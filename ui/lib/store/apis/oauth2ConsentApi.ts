@@ -1,6 +1,7 @@
 import { baseApi } from "./baseApi";
 
 export interface OAuth2ConsentFlowDetail {
+	redirect_uri: string;
 	client_name: string;
 	available_modes: Array<"vk" | "session" | "user">;
 	logged_in_user?: { id: string; name?: string };

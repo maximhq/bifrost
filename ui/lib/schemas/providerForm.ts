@@ -1,5 +1,12 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { aliasConfigSchema, githubCopilotKeyConfigComplete, githubCopilotKeyConfigSchema, secretVarSchema } from "@/lib/types/schemas";
+import {
+	aliasConfigSchema,
+	githubCopilotKeyConfigComplete,
+	githubCopilotKeyConfigSchema,
+	oauthKeyConfigComplete,
+	oauthKeyConfigSchema,
+	secretVarSchema,
+} from "@/lib/types/schemas";
 import { isValidAliases, isValidVertexAuthCredentials } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -81,6 +88,15 @@ const AzureKeyConfigSchema = z.object({
 	tenant_id: z.string().optional(),
 });
 
+// AWS → GCP Workload Identity Federation block; see VertexAWSWorkloadIdentityConfig.
+const VertexAWSWorkloadIdentitySchema = z.object({
+	audience: z.string().min(1, "Workload Identity Pool provider audience is required"),
+	service_account_email: z.string().optional(),
+	token_lifetime_seconds: z.number().int().min(600).max(43200).optional(),
+	aws_region: z.string().optional(),
+	aws_role_arn: z.string().optional(),
+});
+
 const VertexKeyConfigSchema = z.object({
 	project_id: z.string().min(1, "Project ID is required for Vertex AI keys"),
 	project_number: z.string().optional(),
@@ -92,6 +108,8 @@ const VertexKeyConfigSchema = z.object({
 			message: "Auth Credentials must be a valid JSON object or env.VAR format when provided",
 		}),
 	force_single_region: z.boolean().optional(),
+	use_session_routing: z.boolean().optional(),
+	aws_workload_identity: VertexAWSWorkloadIdentitySchema.optional(),
 });
 
 // S3 bucket configuration for Bedrock batch operations
@@ -216,6 +234,7 @@ const KeySchema = z.object({
 	bedrock_mantle_key_config: BedrockMantleKeyConfigSchema.optional(),
 	replicate_key_config: ReplicateKeyConfigSchema.optional(),
 	github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
+	oauth_key_config: oauthKeyConfigSchema.optional(),
 	use_for_batch_api: z.boolean().optional(),
 });
 
@@ -320,7 +339,12 @@ export const ProviderFormSchema = z
 							path: ["keys", index, "value"],
 						});
 					}
-				} else if (effectiveProviderType !== "vertex" && effectiveProviderType !== "bedrock" && !key.value.trim()) {
+				} else if (
+					effectiveProviderType !== "vertex" &&
+					effectiveProviderType !== "bedrock" &&
+					!key.value.trim() &&
+					!oauthKeyConfigComplete(key.oauth_key_config)
+				) {
 					ctx.addIssue({
 						code: z.ZodIssueCode.custom,
 						message: "API key value cannot be empty",

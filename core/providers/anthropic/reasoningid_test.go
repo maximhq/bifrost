@@ -1,6 +1,8 @@
 package anthropic
 
 import (
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -323,5 +325,310 @@ func TestConvertAnthropicContentBlocksGrouped_ThinkingAndRedactedThinkingMergeIn
 	}
 	if msg.ResponsesReasoning == nil || msg.ResponsesReasoning.EncryptedContent == nil || *msg.ResponsesReasoning.EncryptedContent != ciphertext {
 		t.Errorf("encrypted_content missing or wrong, got %v", msg.ResponsesReasoning)
+	}
+}
+
+// A bare Claude id converts before governance picks a provider (issue #7768), so the
+// ungrouped path must keep each thinking run at its wire position, and must still
+// merge the run itself into one item.
+func TestToBifrostResponsesRequestBareClaudeKeepsThinkingOrder(t *testing.T) {
+	sig := func(s string) *string { return &s }
+	th := func(text, s string) AnthropicContentBlock {
+		return AnthropicContentBlock{Type: AnthropicContentBlockTypeThinking, Thinking: &text, Signature: sig(s)}
+	}
+	txt := func(text string) AnthropicContentBlock {
+		return AnthropicContentBlock{Type: AnthropicContentBlockTypeText, Text: &text}
+	}
+	tool := func(id string) AnthropicContentBlock {
+		return AnthropicContentBlock{Type: AnthropicContentBlockTypeToolUse, ID: &id, Name: sig("t"), Input: []byte(`{}`)}
+	}
+	req := &AnthropicMessageRequest{
+		Model: "claude-opus-5-5",
+		Messages: []AnthropicMessage{{
+			Role: AnthropicMessageRoleAssistant,
+			Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+				th("a", "sig0"), th("a2", "sig0b"), txt("x"), tool("t0"), th("b", "sig1"), txt("y"), tool("t1"),
+			}},
+		}},
+	}
+	out := req.ToBifrostResponsesRequest(&schemas.BifrostContext{})
+	var got []string
+	for _, m := range out.Input {
+		switch {
+		case m.Type != nil && *m.Type == schemas.ResponsesMessageTypeReasoning:
+			got = append(got, "reasoning:"+fmt.Sprint(len(m.Content.ContentBlocks)))
+		case m.Type != nil && *m.Type == schemas.ResponsesMessageTypeFunctionCall:
+			got = append(got, "call:"+*m.ResponsesToolMessage.CallID)
+		default:
+			got = append(got, "message")
+		}
+	}
+	want := []string{"reasoning:2", "message", "call:t0", "reasoning:1", "message", "call:t1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("thinking order not preserved:\n got  %v\n want %v", got, want)
+	}
+}
+
+// interleavedThinkingTurn builds an assistant turn that mixes signed thinking, redacted
+// thinking, text and tool calls, in an order a hoisting converter would visibly change.
+func interleavedThinkingTurn() []AnthropicContentBlock {
+	str := func(s string) *string { return &s }
+	th := func(text, sig string) AnthropicContentBlock {
+		return AnthropicContentBlock{Type: AnthropicContentBlockTypeThinking, Thinking: str(text), Signature: str(sig)}
+	}
+	red := func(data string) AnthropicContentBlock {
+		return AnthropicContentBlock{Type: AnthropicContentBlockTypeRedactedThinking, Data: str(data)}
+	}
+	txt := func(text string) AnthropicContentBlock {
+		return AnthropicContentBlock{Type: AnthropicContentBlockTypeText, Text: str(text)}
+	}
+	tool := func(id string) AnthropicContentBlock {
+		return AnthropicContentBlock{Type: AnthropicContentBlockTypeToolUse, ID: str(id), Name: str("get_weather"), Input: []byte(`{}`)}
+	}
+	return []AnthropicContentBlock{
+		red("redacted-0"), txt("x0"), tool("toolu_0"),
+		th("think-1", "sig-1"), red("redacted-1"), txt("x1"), tool("toolu_1"),
+		th("think-2", "sig-2"), tool("toolu_2"),
+	}
+}
+
+func interleavedThinkingMessages() []AnthropicMessage {
+	str := func(s string) *string { return &s }
+	result := func(id string) AnthropicContentBlock {
+		return AnthropicContentBlock{Type: AnthropicContentBlockTypeToolResult, ToolUseID: str(id), Content: &AnthropicContent{ContentStr: str("ok")}}
+	}
+	return []AnthropicMessage{
+		{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentStr: str("go")}},
+		{Role: AnthropicMessageRoleAssistant, Content: AnthropicContent{ContentBlocks: interleavedThinkingTurn()}},
+		{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{result("toolu_0"), result("toolu_1"), result("toolu_2")}}},
+	}
+}
+
+// blockLabels names a block by kind and its identity (signature, data or id), so a
+// reordered or rewritten signed block shows up in a failure diff.
+func blockLabels(blocks []AnthropicContentBlock) []string {
+	var out []string
+	for _, b := range blocks {
+		switch b.Type {
+		case AnthropicContentBlockTypeThinking:
+			out = append(out, "thinking:"+*b.Signature)
+		case AnthropicContentBlockTypeRedactedThinking:
+			out = append(out, "redacted:"+*b.Data)
+		case AnthropicContentBlockTypeText:
+			out = append(out, "text:"+*b.Text)
+		case AnthropicContentBlockTypeToolUse:
+			out = append(out, "tool:"+*b.ID)
+		}
+	}
+	return out
+}
+
+// Redacted thinking is converted by its own branch of the order-preserving path, and a
+// thinking block followed directly by a redacted one must stay two items in wire order
+// rather than merging (issue #7768).
+func TestToBifrostResponsesRequestBareClaudeKeepsRedactedThinkingOrder(t *testing.T) {
+	req := &AnthropicMessageRequest{Model: "claude-opus-5-5", Messages: interleavedThinkingMessages()}
+	out := req.ToBifrostResponsesRequest(&schemas.BifrostContext{})
+	var got []string
+	for _, m := range out.Input {
+		if m.Type == nil {
+			continue
+		}
+		switch *m.Type {
+		case schemas.ResponsesMessageTypeReasoning:
+			if m.ResponsesReasoning != nil && m.ResponsesReasoning.EncryptedContent != nil {
+				got = append(got, "redacted:"+*m.ResponsesReasoning.EncryptedContent)
+			} else {
+				got = append(got, "thinking:"+*m.Content.ContentBlocks[0].Signature)
+			}
+		case schemas.ResponsesMessageTypeFunctionCall:
+			got = append(got, "tool:"+*m.ResponsesToolMessage.CallID)
+		case schemas.ResponsesMessageTypeMessage:
+			// assistant text only; the user turns carry no assistant content
+			if m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant {
+				got = append(got, "text")
+			}
+		}
+	}
+	want := []string{
+		"redacted:redacted-0", "text", "tool:toolu_0",
+		"thinking:sig-1", "redacted:redacted-1", "text", "tool:toolu_1",
+		"thinking:sig-2", "tool:toolu_2",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("redacted/thinking order not preserved:\n got  %v\n want %v", got, want)
+	}
+}
+
+// A bare Claude id can be served by Anthropic, Vertex or Azure as well as Bedrock, and all
+// three rebuild the Anthropic message from the Bifrost items. The assistant turn must leave
+// them exactly as the client sent it -- thinking, redacted thinking, text and tool calls in
+// the same order and with the same signed payloads (issue #7768).
+func TestBareClaudeInterleavedThinkingRoundTripsAcrossAnthropicFormatProviders(t *testing.T) {
+	want := blockLabels(interleavedThinkingTurn())
+	for _, prov := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex, schemas.Azure} {
+		t.Run(string(prov), func(t *testing.T) {
+			ctx := &schemas.BifrostContext{}
+			in := (&AnthropicMessageRequest{Model: "claude-opus-5-5", Messages: interleavedThinkingMessages()}).ToBifrostResponsesRequest(ctx)
+			in.Provider = prov
+			out, err := ToAnthropicResponsesRequest(ctx, in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, m := range out.Messages {
+				if m.Role == AnthropicMessageRoleAssistant {
+					got = append(got, blockLabels(m.Content.ContentBlocks)...)
+				}
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("assistant turn changed on the way to %s:\n got  %v\n want %v", prov, got, want)
+			}
+		})
+	}
+}
+
+// assistantTurnAfterEgress sends one assistant turn through ingress conversion and back out
+// through the Anthropic-format egress, and returns the turn's block labels.
+func assistantTurnAfterEgress(t *testing.T, model string, stream bool, provider schemas.ModelProvider, blocks []AnthropicContentBlock) []string {
+	t.Helper()
+	str := func(s string) *string { return &s }
+	var results []AnthropicContentBlock
+	for _, b := range blocks {
+		if b.Type == AnthropicContentBlockTypeToolUse {
+			results = append(results, AnthropicContentBlock{Type: AnthropicContentBlockTypeToolResult, ToolUseID: b.ID, Content: &AnthropicContent{ContentStr: str("ok")}})
+		}
+	}
+	req := &AnthropicMessageRequest{Model: model, Messages: []AnthropicMessage{
+		{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentStr: str("go")}},
+		{Role: AnthropicMessageRoleAssistant, Content: AnthropicContent{ContentBlocks: blocks}},
+		{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentBlocks: results}},
+	}}
+	if stream {
+		req.Stream = schemas.Ptr(true)
+	}
+	ctx := &schemas.BifrostContext{}
+	in := req.ToBifrostResponsesRequest(ctx)
+	// governance may pick a different provider than the model string named
+	in.Provider = provider
+	out, err := ToAnthropicResponsesRequest(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, m := range out.Messages {
+		if m.Role == AnthropicMessageRoleAssistant {
+			got = append(got, blockLabels(m.Content.ContentBlocks)...)
+		}
+	}
+	return got
+}
+
+// A replayed assistant turn must leave the Anthropic-format egress exactly as the client sent
+// it, whichever shape it has, whichever provider serves it (Bedrock InvokeModel uses this same
+// builder), whichever way the model id names it, and streaming or not (issue #7768). The first
+// two shapes are the long-standing "reasoning first" inputs and pin that they are unchanged.
+func TestClaudeAssistantTurnKeepsOrderThroughAnthropicFormatEgress(t *testing.T) {
+	str := func(s string) *string { return &s }
+	th := func(i int) AnthropicContentBlock {
+		return AnthropicContentBlock{Type: AnthropicContentBlockTypeThinking, Thinking: str("t"), Signature: str(fmt.Sprint("sig-", i))}
+	}
+	rd := func(i int) AnthropicContentBlock {
+		return AnthropicContentBlock{Type: AnthropicContentBlockTypeRedactedThinking, Data: str(fmt.Sprint("red-", i))}
+	}
+	tx := func(i int) AnthropicContentBlock {
+		return AnthropicContentBlock{Type: AnthropicContentBlockTypeText, Text: str(fmt.Sprint("x", i))}
+	}
+	tu := func(i int) AnthropicContentBlock {
+		return AnthropicContentBlock{Type: AnthropicContentBlockTypeToolUse, ID: str(fmt.Sprint("toolu_", i)), Name: str("get_weather"), Input: []byte(`{}`)}
+	}
+	shapes := []struct {
+		name   string
+		blocks []AnthropicContentBlock
+	}{
+		{"reasoning first, parallel tool calls", []AnthropicContentBlock{th(0), tu(0), tu(1)}},
+		{"reasoning first, text, tool call", []AnthropicContentBlock{th(0), tx(0), tu(0)}},
+		{"thinking, text, tool, thinking, text, tool", []AnthropicContentBlock{th(0), tx(0), tu(0), th(1), tx(1), tu(1)}},
+		{"thinking, tool, thinking, tool", []AnthropicContentBlock{th(0), tu(0), th(1), tu(1)}},
+		{"tool, thinking, tool", []AnthropicContentBlock{tu(0), th(1), tu(1)}},
+		{"text, thinking, tool", []AnthropicContentBlock{tx(0), th(1), tu(1)}},
+		{"redacted, text, tool, redacted, text, tool", []AnthropicContentBlock{rd(0), tx(0), tu(0), rd(1), tx(1), tu(1)}},
+		{"thinking, redacted, tool, thinking, redacted, tool", []AnthropicContentBlock{th(0), rd(0), tu(0), th(1), rd(1), tu(1)}},
+	}
+	models := []string{"claude-opus-5-5", "anthropic/claude-opus-5-5", "vertex/claude-opus-5-5", "azure/claude-opus-5-5", "bedrock/us.anthropic.claude-opus-5-5"}
+	providers := []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex, schemas.Azure, schemas.Bedrock}
+	for _, shape := range shapes {
+		want := blockLabels(shape.blocks)
+		for _, model := range models {
+			for _, prov := range providers {
+				for _, stream := range []bool{false, true} {
+					got := assistantTurnAfterEgress(t, model, stream, prov, shape.blocks)
+					if !reflect.DeepEqual(got, want) {
+						t.Errorf("%s | model=%s provider=%s stream=%v:\n got  %v\n want %v", shape.name, model, prov, stream, got, want)
+					}
+				}
+			}
+		}
+	}
+}
+
+// The order-preserving path emits one reasoning item per thinking run. A thinking block and the
+// redacted_thinking block that carries the same embedded OpenAI item id still belong to ONE
+// item, and the id of one run must never leak into the next (issue #7768).
+func TestOrderedConversionKeepsEmbeddedReasoningIDsPerRun(t *testing.T) {
+	str := func(s string) *string { return &s }
+	embed := func(id, payload string) *string {
+		return str(providerUtils.EmbedReasoningItemID(&id, payload))
+	}
+	blocks := []AnthropicContentBlock{
+		{Type: AnthropicContentBlockTypeThinking, Thinking: str("run one"), Signature: embed("rs_one", "sig-one")},
+		{Type: AnthropicContentBlockTypeRedactedThinking, Data: embed("rs_one", "cipher-one")},
+		{Type: AnthropicContentBlockTypeText, Text: str("between")},
+		{Type: AnthropicContentBlockTypeThinking, Thinking: str("run two"), Signature: str("sig-two-no-id")},
+		{Type: AnthropicContentBlockTypeRedactedThinking, Data: embed("rs_other", "cipher-other")},
+		{Type: AnthropicContentBlockTypeToolUse, ID: str("toolu_1"), Name: str("t"), Input: []byte(`{}`)},
+	}
+	role := schemas.ResponsesMessageRoleType(AnthropicMessageRoleAssistant)
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	out := convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx, blocks, &role, false, "", true)
+
+	var reasoning []schemas.ResponsesMessage
+	var order []string
+	for _, m := range out {
+		switch {
+		case m.Type != nil && *m.Type == schemas.ResponsesMessageTypeReasoning:
+			reasoning = append(reasoning, m)
+			order = append(order, "reasoning")
+		case m.Type != nil && *m.Type == schemas.ResponsesMessageTypeFunctionCall:
+			order = append(order, "call")
+		default:
+			order = append(order, "message")
+		}
+	}
+	// run one (thinking + same-id redacted) -> 1 item; text; run two thinking -> 1 item;
+	// a redacted block with a DIFFERENT id -> its own item; then the call
+	if want := []string{"reasoning", "message", "reasoning", "reasoning", "call"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("item order = %v, want %v", order, want)
+	}
+	one := reasoning[0]
+	if one.ID == nil || *one.ID != "rs_one" {
+		t.Fatalf("run one id = %v, want rs_one", one.ID)
+	}
+	if one.Content == nil || len(one.Content.ContentBlocks) != 1 || *one.Content.ContentBlocks[0].Signature != "sig-one" {
+		t.Fatalf("run one thinking block lost or rewritten: %+v", one.Content)
+	}
+	if one.ResponsesReasoning == nil || one.ResponsesReasoning.EncryptedContent == nil || *one.ResponsesReasoning.EncryptedContent != "cipher-one" {
+		t.Fatalf("same-id redacted block was not folded into run one: %+v", one.ResponsesReasoning)
+	}
+	two := reasoning[1]
+	if two.ID == nil || *two.ID == "rs_one" || *two.ID == "rs_other" {
+		t.Fatalf("run two reused another run's id: %v", two.ID)
+	}
+	if two.ResponsesReasoning == nil || two.ResponsesReasoning.EncryptedContent != nil {
+		t.Fatalf("run one's ciphertext leaked into run two: %+v", two.ResponsesReasoning)
+	}
+	other := reasoning[2]
+	if other.ID == nil || *other.ID != "rs_other" || *other.ResponsesReasoning.EncryptedContent != "cipher-other" {
+		t.Fatalf("different-id redacted block not kept as its own item: %+v", other)
 	}
 }

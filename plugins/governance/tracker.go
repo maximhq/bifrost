@@ -35,6 +35,9 @@ type UsageUpdate struct {
 	Budgets    []schemas.Limit `json:"-"`
 	RateLimits []schemas.Limit `json:"-"`
 
+	// SkipRequestCount charges cost and tokens without counting a request (GPT Live billing windows).
+	SkipRequestCount bool `json:"skip_request_count,omitempty"`
+
 	// Streaming optimization fields
 	IsStreaming  bool `json:"is_streaming"`   // Whether this is a streaming response
 	IsFinalChunk bool `json:"is_final_chunk"` // Whether this is the final chunk
@@ -42,9 +45,12 @@ type UsageUpdate struct {
 
 	// AttemptNumber distinguishes physical provider calls within one logical
 	// request (the retry loop reuses RequestID across attempts). Billing is
-	// deduped on RequestID+AttemptNumber so each token-consuming attempt bills
-	// at most once while distinct attempts each bill.
+	// deduped on RequestID+FallbackIndex+AttemptNumber so each token-consuming
+	// attempt bills at most once while distinct attempts each bill.
 	AttemptNumber int `json:"attempt_number,omitempty"`
+
+	// Position in the fallback chain; 0 for the primary.
+	FallbackIndex int `json:"fallback_index,omitempty"`
 	// BilledReason is auditing metadata only ("success" | "partial_usage_on_error"):
 	// it makes it possible to assert we never bill both a success and a failure
 	// for the same physical call. Not used for dedup.
@@ -111,14 +117,12 @@ func NewUsageTracker(ctx context.Context, store GovernanceStore, resolver *Budge
 		batchBilled: make(map[string]time.Time),
 	}
 
-	// Start background workers for business logic
+	// Workers start only after all governance maps have been hydrated.
 	tracker.trackerCtx, tracker.trackerCancel = context.WithCancel(context.Background())
-	tracker.startWorkers(tracker.trackerCtx)
-
 	return tracker
 }
 
-// UpdateUsage queues a usage update for async processing (main business entry point)
+// UpdateUsage applies request usage to its resolved budgets and rate limits.
 func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// Bill for tokens the provider actually processed, even when the
 	// request ultimately failed or was cancelled. A failed request is only
@@ -139,7 +143,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// prior behavior.
 	isTerminal := !update.IsStreaming || update.IsFinalChunk
 	if isTerminal && !t.tryClaimBilling(update) {
-		t.logger.Debug("Usage already billed for request %s attempt %d (billing nonce %q), skipping", update.RequestID, update.AttemptNumber, update.BillingNonce)
+		t.logger.Debug("Usage already billed for request %s fallback %d attempt %d (billing nonce %q), skipping", update.RequestID, update.FallbackIndex, update.AttemptNumber, update.BillingNonce)
 		return
 	}
 
@@ -148,7 +152,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	// request adds cost+tokens but must not inflate success/rate-limit request
 	// counts.
 	shouldUpdateTokens := !update.IsStreaming || (update.IsStreaming && update.HasUsageData)
-	shouldUpdateRequests := update.Success && (!update.IsStreaming || (update.IsStreaming && update.IsFinalChunk))
+	shouldUpdateRequests := update.Success && !update.SkipRequestCount && (!update.IsStreaming || (update.IsStreaming && update.IsFinalChunk))
 	shouldUpdateBudget := !update.IsStreaming || (update.IsStreaming && update.HasUsageData)
 
 	// Everything this request answers to was resolved when its provider and model were settled, and
@@ -270,24 +274,26 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 }
 
 // tryClaimBilling records that the physical provider call identified by
-// (BillingNonce, RequestID, AttemptNumber) is being billed and returns true if
+// (BillingNonce, RequestID, FallbackIndex, AttemptNumber) is being billed and returns true if
 // this is the first claim. Subsequent calls for the same key return false so
 // the same physical call is never billed twice. An empty RequestID is treated
 // as non-dedupable (always returns true) to preserve behavior for SDK-direct
 // callers that carry no request id.
 //
-// All three components are load-bearing: the nonce alone is not enough because
+// All four components are load-bearing: the nonce alone is not enough because
 // MCP agent mode and codemode mint a fresh RequestID per nested inference call
 // while sharing one HTTP request (one nonce), and those nested calls must each
 // bill; RequestID+attempt alone is not enough because RequestID may be
 // caller-supplied (x-request-id) and two unrelated requests sharing a chosen
-// ID must not collide. The success-vs-cancellation race for one physical call
-// matches on all three, which is what this dedup exists to guard.
+// ID must not collide; and the attempt number restarts at 0 for every provider
+// in the fallback chain, so the fallback index tells a fallback's attempts from
+// the primary's. The success-vs-cancellation race for one physical call
+// matches on all four, which is what this dedup exists to guard.
 func (t *UsageTracker) tryClaimBilling(update *UsageUpdate) bool {
 	if update.RequestID == "" {
 		return true
 	}
-	key := fmt.Sprintf("%s:%s:%d", update.BillingNonce, update.RequestID, update.AttemptNumber)
+	key := fmt.Sprintf("%s:%s:%d:%d", update.BillingNonce, update.RequestID, update.FallbackIndex, update.AttemptNumber)
 	t.billedMu.Lock()
 	defer t.billedMu.Unlock()
 	if _, seen := t.billed[key]; seen {

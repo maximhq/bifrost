@@ -5,7 +5,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -16,8 +15,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -34,13 +32,17 @@ const mcpServerName = "bifrost"
 // MCPToolExecutor interface defines the method needed for executing MCP tools
 type MCPToolManager interface {
 	GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool
+	// GetMCPServerInstructions returns the upstream instructions this request may see,
+	// already aggregated and size-bounded. Scoped by the same context the tool filter reads.
+	GetMCPServerInstructions(ctx context.Context) string
 	ExecuteChatMCPTool(ctx context.Context, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
 	ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 }
 
 // MCPGatewayAdmitter decides whether a /mcp request may be served, and what it may reach. It runs
 // the request through the same governance funnel every tool execution passes, so a caller is told at
-// initialize and tools/list exactly what tools/call would tell them, by the same rules.
+// initialize and tools/list exactly what tools/call would tell them, by the same rules. It also
+// resolves what a /mcp/<slug> request may see, so slug endpoints need no optional capability.
 type MCPGatewayAdmitter interface {
 	// AdmitMCPGatewayRequest evaluates the request as an MCP tool execution with no tool named yet,
 	// resolving and recording its access on ctx. It returns that access, and the refusal governance
@@ -48,13 +50,6 @@ type MCPGatewayAdmitter interface {
 	// deployment has nothing to resolve access with, or the request presented nothing), and it is
 	// served unrestricted, as every other path serves it.
 	AdmitMCPGatewayRequest(ctx *schemas.BifrostContext) (schemas.Access, *schemas.BifrostError)
-}
-
-// mcpSlugResolver is the optional capability behind a /mcp/<slug> endpoint: it resolves the tools a
-// request may see for the Virtual MCP or MCP client the slug names, gated on the caller's grant.
-// Satisfied by the same admitter that resolves gateway access. Absent (or nil) means there is no
-// governance store to resolve against, so /mcp/<slug> is refused.
-type mcpSlugResolver interface {
 	// VirtualMCPToolAccess returns the served tool include-list and whether the slug's Virtual MCP is
 	// assigned to the request's key (assigned=false → 403). Tools are narrowed to the request's access.
 	VirtualMCPToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, assigned bool)
@@ -99,19 +94,7 @@ type MCPServerHandler struct {
 // is wired. Whether the key may be used is not decided here: governance refuses a
 // key that is inactive or expired, from the grant it resolves for it.
 func (h *MCPServerHandler) getVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, error) {
-	if h.vkCache != nil {
-		if vk, ok := h.vkCache.GetVirtualKeyByID(ctx, vkID); ok && vk != nil {
-			return vk, nil
-		}
-	}
-	if h.config.ConfigStore == nil {
-		return nil, fmt.Errorf("virtual key not found")
-	}
-	vk, err := h.config.ConfigStore.GetVirtualKey(ctx, vkID)
-	if err != nil || vk == nil {
-		return nil, fmt.Errorf("virtual key not found")
-	}
-	return vk, nil
+	return virtualKeyByID(ctx, h.vkCache, h.config.ConfigStore, vkID)
 }
 
 // NewMCPServerHandler creates a new MCP server handler instance
@@ -350,14 +333,36 @@ func (h *MCPServerHandler) server() *server.MCPServer {
 	return h.mcpServer.Load()
 }
 
+// forwardServerInstructions answers initialize with the upstream servers' own usage guidance,
+// which the MCP spec carries in this field and which a gateway that drops it eats on the
+// client's behalf. Runs as an AfterInitialize hook rather than through server.WithInstructions
+// because that option is fixed at construction, and one server here serves every caller: the
+// text has to be resolved per request, from the same context the tool filter reads, or a caller
+// narrowed to one upstream would be handed the instructions of servers it cannot reach.
+//
+// Silent when the aggregate is empty, so no upstream instructions means no field at all rather
+// than an empty one.
+func (h *MCPServerHandler) forwardServerInstructions(ctx context.Context, _ any, _ *mcp.InitializeRequest, result *mcp.InitializeResult) {
+	if result == nil {
+		return
+	}
+	if instructions := h.toolManager.GetMCPServerInstructions(ctx); instructions != "" {
+		result.Instructions = instructions
+	}
+}
+
 // buildServer registers every available tool on a fresh server. A tool's handler reads nothing
 // about the caller: what a request may see and call rides on its context, and both the tool filter
 // and the executor read it from there.
 func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *server.MCPServer {
+	hooks := &server.Hooks{}
+	hooks.AddAfterInitialize(h.forwardServerInstructions)
+
 	mcpServer := server.NewMCPServer(
 		mcpServerName,
 		version,
 		server.WithToolCapabilities(true),
+		server.WithHooks(hooks),
 	)
 	// Per-request tool filter so tools/list answers with what this request may see.
 	server.WithToolFilter(h.makeIncludeClientsFilter())(mcpServer)
@@ -553,20 +558,30 @@ func mcpAuthRequiredToolResult(authReq *schemas.MCPAuthRequiredError) string {
 }
 
 // admitBySlug narrows an already-admitted request to the Virtual MCP or MCP client its slug names,
-// stamping the served tools; 403 if the caller may reach neither.
+// stamping the served tools; 403 if the caller may reach neither. Without an admitter nothing is
+// governed, so a client slug is served whole, as /mcp serves it.
 func (h *MCPServerHandler) admitBySlug(bifrostCtx *schemas.BifrostContext, slug string, access schemas.Access) *mcpRefusal {
-	resolver, ok := h.admitter.(mcpSlugResolver)
-	if !ok {
+	if h.admitter == nil {
+		if _, clientName, found := h.config.GetMCPClientBySlug(slug); found {
+			bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, []string{clientName + "-*"})
+			return nil
+		}
 		return &mcpRefusal{status: fasthttp.StatusForbidden, message: "access_denied"}
 	}
 	// Slugs are unique across both namespaces, so try the Virtual MCP first, then a single client.
-	if served, assigned := resolver.VirtualMCPToolAccess(bifrostCtx, slug, access); assigned {
+	if served, assigned := h.admitter.VirtualMCPToolAccess(bifrostCtx, slug, access); assigned {
 		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, served)
 		return nil
 	}
-	if served, ok := resolver.MCPClientToolAccess(bifrostCtx, slug, access); ok {
+	if served, ok := h.admitter.MCPClientToolAccess(bifrostCtx, slug, access); ok {
 		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, served)
 		return nil
+	}
+	// The wire answer stays 403 either way so slugs can't be probed; the log says which it was.
+	if _, _, found := h.config.GetMCPClientBySlug(slug); found {
+		logger.Debug("mcp: refused /mcp/%s: MCP client exists but the caller's access does not grant it", slug)
+	} else {
+		logger.Debug("mcp: refused /mcp/%s: no enabled MCP client and no Virtual MCP granted to the caller has this slug", slug)
 	}
 	return &mcpRefusal{status: fasthttp.StatusForbidden, message: "access_denied"}
 }
@@ -765,39 +780,16 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 //  2. Authorization  — "Bearer <vk>", where <vk> must start with the VK prefix
 //  3. x-api-key      — must start with the VK prefix
 //  4. x-goog-api-key — must start with the VK prefix
+//  5. api-key        — must start with the VK prefix
 //
-// The prefix gate (governance.VirtualKeyPrefix) on the latter three lets real
+// The prefix gate (governance.VirtualKeyPrefix) on the latter four lets real
 // provider credentials pass through untouched, so only Bifrost virtual keys are
-// picked up here. This header set mirrors the inference path, keeping MCP and
-// inference at parity. Returns "" when no header carries a virtual key.
+// picked up here. This is a projection of the shared resolver
+// (lib.ResolveVirtualKeyFromHeaders), which is what keeps MCP, inference and the
+// Agent Gateway at parity. Returns "" when no header carries a virtual key.
 func getVKFromRequest(ctx *fasthttp.RequestCtx) string {
-	if value := strings.TrimSpace(string(ctx.Request.Header.Peek(string(schemas.BifrostContextKeyVirtualKey)))); value != "" {
-		return value
-	}
-
-	authHeader := strings.TrimSpace(string(ctx.Request.Header.Peek("Authorization")))
-	if authHeader != "" {
-		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-			token := strings.TrimSpace(authHeader[7:])
-			if token != "" && strings.HasPrefix(strings.ToLower(token), governance.VirtualKeyPrefix) {
-				return token
-			}
-		}
-	}
-
-	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key"))); apiKey != "" {
-		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
-			return apiKey
-		}
-	}
-
-	if googAPIKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key"))); googAPIKey != "" {
-		if strings.HasPrefix(strings.ToLower(googAPIKey), governance.VirtualKeyPrefix) {
-			return googAPIKey
-		}
-	}
-
-	return ""
+	vk, _ := lib.ResolveVirtualKeyFromHeaders(ctx)
+	return vk
 }
 
 func convertToolFunctionParametersToMCPInputSchema(params *schemas.ToolFunctionParameters) mcp.ToolInputSchema {

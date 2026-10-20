@@ -394,6 +394,7 @@ func TestModelAddressedRequestTypesExcludeResourceAddressed(t *testing.T) {
 // TestEveryRequestTypeIsCategorized fails on a declared RequestType missing here.
 var modelAddressingByRequestType = map[string]bool{
 	// Only the model is addressable: a 404 can mean nothing else.
+	"ModelRetrieveRequest":         true,
 	"TextCompletionRequest":        true,
 	"TextCompletionStreamRequest":  true,
 	"ChatCompletionRequest":        false,
@@ -465,6 +466,9 @@ var modelAddressingByRequestType = map[string]bool{
 	"CompactionRequest":         false,
 	"WebSocketResponsesRequest": false,
 	"RealtimeRequest":           false,
+	"LiveRequest":               false,
+	"LiveContentRequest":        false,
+	"LiveSidebandRequest":       false,
 }
 
 // Parses the RequestType constants out of bifrost.go, so the guard reflects what the
@@ -546,5 +550,115 @@ func TestClassifierMatchesCategorization(t *testing.T) {
 			t.Errorf("RequestTypeAddressesModel(%q) = %v, want %v (per modelAddressingByRequestType[%q])",
 				requestType, got, want, name)
 		}
+	}
+}
+
+// A nil StatusCode must resolve to the same status for every reader.
+func TestEffectiveHTTPStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *BifrostError
+		want int
+	}{
+		{"nil error", nil, 500},
+		{"explicit provider status wins", &BifrostError{StatusCode: statusPtr(429)}, 429},
+		{"bodyless status normalized to 502", &BifrostError{StatusCode: statusPtr(204)}, 502},
+		{"informational status normalized to 502", &BifrostError{StatusCode: statusPtr(100)}, 502},
+		{"provider-attributed, no status", &BifrostError{IsBifrostError: false}, 400},
+		{"bifrost-internal, no status", &BifrostError{IsBifrostError: true}, 500},
+		{
+			"provider auto-resolve failure is a caller mistake",
+			&BifrostError{IsBifrostError: true, Error: &ErrorField{Message: ProviderAutoResolveErrorMessage}},
+			400,
+		},
+		{
+			"model auto-resolve failure is a caller mistake",
+			&BifrostError{IsBifrostError: true, Error: &ErrorField{Message: ModelAutoResolveErrorMessage}},
+			400,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.EffectiveHTTPStatus(); got != tt.want {
+				t.Errorf("EffectiveHTTPStatus() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// A nil StatusCode used to leave the attribute unset, read as status_code="unknown".
+func TestSpanStatusAttributeMatchesEffectiveStatus(t *testing.T) {
+	internal := &BifrostError{IsBifrostError: true, Error: &ErrorField{Message: "failed to write model field"}}
+
+	d := &LLMSpanData{Error: &SpanError{
+		Detail:     internal.Error,
+		StatusCode: Ptr(internal.EffectiveHTTPStatus()),
+	}}
+
+	attrs := d.ResponseAttributes()
+	if got := GetIntAttr(attrs, AttrHTTPResponseStatusCode); got != 500 {
+		t.Errorf("%s = %d, want 500", AttrHTTPResponseStatusCode, got)
+	}
+}
+
+// A status-only error must keep its status; Error is optional.
+func TestStatusOnlyErrorStillCarriesStatus(t *testing.T) {
+	statusOnly := &BifrostError{StatusCode: statusPtr(429)}
+
+	d := &LLMSpanData{Error: &SpanError{
+		Detail:     statusOnly.Error, // nil
+		StatusCode: Ptr(statusOnly.EffectiveHTTPStatus()),
+	}}
+	attrs := d.ResponseAttributes()
+	if got := GetIntAttr(attrs, AttrHTTPResponseStatusCode); got != 429 {
+		t.Errorf("%s = %d, want 429", AttrHTTPResponseStatusCode, got)
+	}
+	// Absent, not empty.
+	if _, ok := attrs[AttrError]; ok {
+		t.Errorf("%s should be absent when Error is nil", AttrError)
+	}
+}
+
+// Both spans render failures through this helper, so one classification reaches both.
+func TestRootSpanErrorAttributes(t *testing.T) {
+	if got := RootSpanErrorAttributes(nil, ErrorTypeOther); got != nil {
+		t.Errorf("nil error returned %v, want nil", got)
+	}
+
+	err := &BifrostError{
+		StatusCode: Ptr(400),
+		Error: &ErrorField{
+			Message: "no keys found for provider: vertex and model: claude-opus-5-5",
+			Type:    Ptr(NoKeySupportsModel),
+			Code:    Ptr("bad_request"),
+		},
+	}
+	attrs := RootSpanErrorAttributes(err, ErrorTypeCallerModelNotAvailable)
+	for key, want := range map[string]any{
+		AttrError:                  "no keys found for provider: vertex and model: claude-opus-5-5",
+		AttrErrorTypeSpec:          NoKeySupportsModel,
+		AttrErrorCode:              "bad_request",
+		AttrBifrostErrorType:       string(ErrorTypeCallerModelNotAvailable),
+		AttrHTTPResponseStatusCode: 400,
+	} {
+		if got := attrs[key]; got != want {
+			t.Errorf("%s = %v, want %v", key, got, want)
+		}
+	}
+
+	// Status-only errors still classify; a missing Error must not drop the status.
+	bare := RootSpanErrorAttributes(&BifrostError{StatusCode: Ptr(429)}, ErrorTypeProviderRateLimited)
+	if got := bare[AttrHTTPResponseStatusCode]; got != 429 {
+		t.Errorf("%s = %v, want 429", AttrHTTPResponseStatusCode, got)
+	}
+	if _, ok := bare[AttrError]; ok {
+		t.Errorf("%s present for an error with no detail", AttrError)
+	}
+
+	// An unclassified failure must not stamp an empty category, which would read as
+	// a real label meaning "we did not look".
+	if _, ok := RootSpanErrorAttributes(err, "")[AttrBifrostErrorType]; ok {
+		t.Errorf("%s present when the error type is empty", AttrBifrostErrorType)
 	}
 }

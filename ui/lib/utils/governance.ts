@@ -1,3 +1,4 @@
+import { supportsCalendarAlignment } from "@/lib/constants/governance";
 /**
  * Parses a duration string (e.g., "1m", "5m", "1h", "1d", "1w", "1M") into human readable format
  */
@@ -105,6 +106,7 @@ export function getBudgetOverrideValidUntil(
 	if (!match || Number.isNaN(validUntil.getTime())) return null;
 
 	const unit = match[2];
+	calendarAligned = calendarAligned && supportsCalendarAlignment(budget.reset_duration);
 	if (calendarAligned) snapToCalendarPeriodStart(validUntil, unit);
 	const durationValue = Number(match[1]) * cycles;
 	switch (unit) {
@@ -238,3 +240,20 @@ export const budgetSignature = (budgets?: BudgetComparisonEntry[]) =>
 		})
 		.sort()
 		.join("|");
+
+export type GovernanceAction = "create" | "edit" | "delete" | "rotate";
+
+/**
+ * Why a governance action is disabled, or undefined when it is allowed. A reason
+ * that is not about permissions (e.g. the entity is managed elsewhere) wins, since
+ * granting the permission would not unblock the action.
+ */
+export function actionDisabledReason(
+	allowed: boolean,
+	action: GovernanceAction,
+	entityPlural: string,
+	blockedReason?: string,
+): string | undefined {
+	if (blockedReason) return blockedReason;
+	return allowed ? undefined : `You don't have permission to ${action} ${entityPlural}.`;
+}

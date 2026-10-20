@@ -13,8 +13,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -550,9 +550,7 @@ func writeRealtimeClientSecretResponse(ctx *fasthttp.RequestCtx, resp *schemas.B
 		return
 	}
 
-	for key, value := range resp.Headers {
-		ctx.Response.Header.Set(key, value)
-	}
+	lib.ForwardProviderResponseHeaders(ctx, resp.Headers)
 	if len(ctx.Response.Header.ContentType()) == 0 {
 		ctx.SetContentType("application/json")
 	}

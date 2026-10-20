@@ -1,3 +1,5 @@
+import { isReservedMetadataKey } from "@/lib/registries/logs";
+import type { LogEntry, PassthroughLogParams, ResponsesMessage } from "@/lib/types/logs";
 import { isLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 
 /**
@@ -35,6 +37,28 @@ export function resolveRawJsonNoticeState({
 	if (isProvidersLoading || !providers) return "loading";
 	const match = providers.find((p) => p.name === provider);
 	return match && match.store_raw_request_response === false ? "storage-disabled" : "unknown";
+}
+
+// Realtime turn keys the sheet's header already shows, so its Metadata grid leaves them out.
+const REALTIME_HEADER_METADATA_KEYS = new Set([
+	"realtime_session_id",
+	"provider_session_id",
+	"realtime_source",
+	"realtime_event_type",
+	"realtime_transport",
+	"realtime_voice",
+	"realtime",
+]);
+
+/**
+ * isShownMetadataKey says whether the log sheet's Metadata grid lists a metadata key: the caller's
+ * own keys are listed, while the async marker, a realtime turn's header keys and keys under a
+ * reserved prefix (which a registered panel shows its own way) are not.
+ */
+export function isShownMetadataKey(key: string, isRealtimeTurn: boolean): boolean {
+	if (key === "isAsyncRequest") return false;
+	if (isReservedMetadataKey(key)) return false;
+	return !(isRealtimeTurn && REALTIME_HEADER_METADATA_KEYS.has(key));
 }
 
 export interface RoutingDecisionLine {
@@ -103,11 +127,27 @@ export function isResponsesToolCallItem(type: string | undefined): boolean {
 // Calls the caller runs itself. Their output is not in this response - the caller
 // executes the tool and sends the result as input to its next request. Server-side
 // calls (web_search_call, mcp_call, ...) are resolved within the same response.
-// Computer use and local shell run on the caller's machine as well.
-const CLIENT_TOOL_CALL_TYPES = new Set(["function_call", "custom_tool_call", "computer_call", "local_shell_call"]);
+// Computer use, shell and apply_patch run on the caller's machine as well.
+const CLIENT_TOOL_CALL_TYPES = new Set([
+	"function_call",
+	"custom_tool_call",
+	"computer_call",
+	"local_shell_call",
+	"shell_call",
+	"apply_patch_call",
+]);
 
 export function isClientToolCallItem(type: string | undefined): boolean {
 	return !!type && CLIENT_TOOL_CALL_TYPES.has(type);
+}
+
+// Index of the last output call the caller still has to run, or -1. A call whose output
+// is already in the same response (a hosted shell_call) ran upstream and needs no link.
+export function findLastPendingClientCallIndex(entries: Array<{ msg: ResponsesMessage; fromOutput: boolean }>): number {
+	const resolved = new Set(
+		entries.filter((e) => e.fromOutput && e.msg.type?.endsWith("_call_output") && e.msg.call_id).map((e) => e.msg.call_id),
+	);
+	return entries.findLastIndex((e) => e.fromOutput && isClientToolCallItem(e.msg.type) && !(e.msg.call_id && resolved.has(e.msg.call_id)));
 }
 
 // Whether a call's arguments name nothing: empty, or a JSON object with no keys.
@@ -177,4 +217,54 @@ export function pickNextSessionLog<T extends { id: string; timestamp: string }>(
 		const at = parseLogTimestamp(entry.timestamp);
 		return !!at && isLaterTimestamp(at, after);
 	});
+}
+/**
+ * The questions a decision request asked, as stored in the log's params.
+ *
+ * Logs store the questions as an array in request order; logs written before
+ * decisions were normalized store an object keyed by question name. Returns
+ * null when the log is not a decision log or carries none, so the caller
+ * renders nothing.
+ */
+export function decisionQuestions(object: string | undefined, params: unknown): { value: unknown; count: number } | null {
+	if (object !== "decisions" || params === null || typeof params !== "object") return null;
+	const count = Array.isArray(params) ? params.length : Object.keys(params).length;
+	return count > 0 ? { value: params, count } : null;
+}
+
+export const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
+
+// The fields the passthrough helpers read; a LogEntry satisfies it.
+type PassthroughLogShape = { object: string; is_passthrough?: boolean; params?: object } & Partial<
+	Pick<LogEntry, "input_history" | "responses_input_history" | "output_message" | "responses_output">
+>;
+
+/**
+ * Whether a row came through a passthrough route: tagged is_passthrough (stored under its inferred
+ * type) or, for rows written before the tag existed and for routes with no typed equivalent, stored
+ * as passthrough.
+ */
+export function isPassthroughLog(log: Pick<PassthroughLogShape, "object" | "is_passthrough">): boolean {
+	return Boolean(log.is_passthrough) || isPassthroughOperation(log.object);
+}
+
+/** Whether a row's type badge needs a Passthrough tag: it is a passthrough call shown under its inferred type. */
+export function showsPassthroughTag(log: Pick<PassthroughLogShape, "object" | "is_passthrough">): boolean {
+	return Boolean(log.is_passthrough) && !isPassthroughOperation(log.object);
+}
+
+/** The params of a passthrough row, or null for any other row. */
+export function passthroughLogParams(log: PassthroughLogShape): PassthroughLogParams | null {
+	return isPassthroughLog(log) ? ((log.params as PassthroughLogParams | undefined) ?? {}) : null;
+}
+
+/**
+ * Whether a passthrough row's raw bodies were parsed into conversation fields, so it renders like a
+ * typed request. Parsing is best-effort: a row whose bodies did not decode, or whose route has no
+ * typed equivalent, keeps the raw-body view.
+ */
+export function isParsedPassthroughLog(log: PassthroughLogShape): boolean {
+	const params = passthroughLogParams(log);
+	if (!params?.parsed_type) return false;
+	return Boolean(log.input_history?.length || log.responses_input_history?.length || log.output_message || log.responses_output?.length);
 }

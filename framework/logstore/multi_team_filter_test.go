@@ -93,5 +93,7 @@ func TestCanUseMatViewFilters_ExcludesTeamBU(t *testing.T) {
 	assert.True(t, canUseMatViewFilters(SearchFilters{ProjectIDs: []string{"p1"}}), "project filter is matview-eligible")
 	assert.False(t, canUseMatViewFilters(SearchFilters{ParentRequestID: "req-1"}), "parent request filter has no matview dimension and must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{SessionID: "session-1"}), "session ID is not materialized and must force the raw path")
+	assert.False(t, canUseMatViewFilters(SearchFilters{AgentCorrelationID: "agent-1"}), "agent correlation ID is not materialized and must force the raw path")
+	assert.False(t, canUseMatViewFilters(SearchFilters{AgentNames: []string{"agent-a"}}), "agent filter correlates through session IDs and must force the raw path")
 
 }

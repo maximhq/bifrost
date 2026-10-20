@@ -119,6 +119,8 @@ func TestWarpChatCarriesSettingsAsContextValues(t *testing.T) {
 			// exempt Warp.
 			require.Equal(t, headers, seenCtx.Value(schemas.BifrostContextKeyGuardrailHeaders),
 				"guardrail rules see the same headers Warp presents to logging")
+			require.Equal(t, true, seenCtx.Value(schemas.BifrostContextKeyAdmitUngrantedUser),
+				"a signed-in user with no access profile is served, not refused: their role already allows Warp")
 
 			if tc.conversationID != "" {
 				require.Equal(t, tc.conversationID, headers[ConversationHeader])

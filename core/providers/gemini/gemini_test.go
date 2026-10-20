@@ -38,12 +38,13 @@ func TestGemini(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-3.1-flash-lite"},
 		},
-		VisionModel:          "gemini-2.5-flash",
-		EmbeddingModel:       "gemini-embedding-001",
-		TranscriptionModel:   "gemini-2.5-flash",
-		SpeechSynthesisModel: "gemini-2.5-flash-preview-tts",
-		ImageGenerationModel: "gemini-2.5-flash-image",
-		ImageEditModel:       "gemini-3-pro-image-preview",
+		VisionModel:              "gemini-2.5-flash",
+		EmbeddingModel:           "gemini-embedding-001",
+		MultimodalEmbeddingModel: "gemini-embedding-2",
+		TranscriptionModel:       "gemini-2.5-flash",
+		SpeechSynthesisModel:     "gemini-2.5-flash-preview-tts",
+		ImageGenerationModel:     "gemini-2.5-flash-image",
+		ImageEditModel:           "gemini-3-pro-image-preview",
 		SpeechSynthesisFallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-2.5-pro-preview-tts"},
 		},
@@ -75,6 +76,7 @@ func TestGemini(t *testing.T) {
 			FileURL:                    false, // supported files via gemini files api
 			CompleteEnd2End:            true,
 			Embedding:                  true,
+			MultimodalEmbedding:        true,
 			Transcription:              false,
 			TranscriptionStream:        false,
 			SpeechSynthesis:            true,
@@ -139,6 +141,25 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			},
 			isStream:     true,
 			expectFinish: "stop",
+		},
+		{
+			// A prompt Gemini refuses outright has no candidate; promptFeedback is the only signal.
+			name: "PromptBlocked_NonStream",
+			response: &gemini.GenerateContentResponse{
+				ModelVersion:   "gemini-4-argon",
+				PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{BlockReason: "SAFETY", BlockReasonMessage: "The prompt is blocked due to safety"},
+			},
+			isStream:     false,
+			expectFinish: "content_filter",
+		},
+		{
+			name: "PromptBlocked_Stream",
+			response: &gemini.GenerateContentResponse{
+				ModelVersion:   "gemini-4-argon",
+				PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{BlockReason: "PROHIBITED_CONTENT"},
+			},
+			isStream:     true,
+			expectFinish: "content_filter",
 		},
 		{
 			name: "SafetyFilter_NonStream",
@@ -222,6 +243,94 @@ func TestToBifrostEmbeddingResponsePreservesPrecision(t *testing.T) {
 	got := resp.Data[0].Embedding.EmbeddingArray[0]
 	assert.Equal(t, want, got)
 	assert.NotEqual(t, float64(float32(want)), got)
+}
+
+func TestToBifrostEmbeddingResponseUsage(t *testing.T) {
+	// Vertex :embedContent reports usage here and omits Statistics entirely.
+	t.Run("usageMetadata is surfaced", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding: &gemini.GeminiEmbedding{Values: []float64{0.1, 0.2}},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount: 9,
+				TotalTokenCount:  9,
+			},
+		}, "gemini-embedding-2-preview")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 9, resp.Usage.PromptTokens)
+		assert.Equal(t, 9, resp.Usage.TotalTokens)
+	})
+
+	t.Run("usageMetadata without a total falls back to the prompt count", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding:     &gemini.GeminiEmbedding{Values: []float64{0.1}},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{PromptTokenCount: 4},
+		}, "gemini-embedding-2-preview")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 4, resp.Usage.PromptTokens)
+		assert.Equal(t, 4, resp.Usage.TotalTokens)
+	})
+
+	// Defensive: no observed Vertex or Gemini response omits promptTokenCount, but a total
+	// with a zero prompt would otherwise bill the request as free.
+	t.Run("usageMetadata with only a total fills the prompt count from it", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding:     &gemini.GeminiEmbedding{Values: []float64{0.1}},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{TotalTokenCount: 7},
+		}, "gemini-embedding-2-preview")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 7, resp.Usage.PromptTokens)
+		assert.Equal(t, 7, resp.Usage.TotalTokens)
+	})
+
+	t.Run("a total-only usageMetadata prefers per-embedding statistics", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embeddings: []gemini.GeminiEmbedding{
+				{Values: []float64{0.1}, Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 2}},
+				{Values: []float64{0.2}, Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 3}},
+			},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{TotalTokenCount: 5},
+		}, "gemini-embedding-2-preview")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 5, resp.Usage.PromptTokens)
+		assert.Equal(t, 5, resp.Usage.TotalTokens)
+	})
+
+	t.Run("usageMetadata wins over per-embedding statistics", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding: &gemini.GeminiEmbedding{
+				Values:     []float64{0.1},
+				Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 2},
+			},
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{PromptTokenCount: 9, TotalTokenCount: 9},
+		}, "gemini-embedding-2-preview")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 9, resp.Usage.PromptTokens)
+	})
+
+	t.Run("statistics still drive usage when usageMetadata is absent", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embeddings: []gemini.GeminiEmbedding{
+				{Values: []float64{0.1}, Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 2}},
+				{Values: []float64{0.2}, Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 3}},
+			},
+		}, "gemini-embedding-001")
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 5, resp.Usage.PromptTokens)
+	})
+
+	t.Run("no usage reported leaves usage unset", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			Embedding: &gemini.GeminiEmbedding{Values: []float64{0.1}},
+		}, "gemini-embedding-001")
+
+		assert.Nil(t, resp.Usage)
+	})
 }
 
 // TestThoughtSignatureInToolCalls tests that thought signatures are properly embedded in tool call IDs
@@ -1751,6 +1860,79 @@ func TestStructuredOutputWithToolsConflict(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, result, "Conversion should not return nil")
 			tt.validate(t, result)
+		})
+	}
+}
+
+// TestResponsesStructuredOutputWithToolsConflict is the Responses-path twin of
+// TestStructuredOutputWithToolsConflict: /v1/responses (and the /genai and Vertex
+// routes that reuse ToGeminiResponsesRequest) must not send responseMimeType
+// "application/json" next to function tools to a pre-Gemini-3 model, which Google
+// rejects with "Function calling with a response mime type: 'application/json' is
+// unsupported".
+func TestResponsesStructuredOutputWithToolsConflict(t *testing.T) {
+	functionTool := func() []schemas.ResponsesTool {
+		return []schemas.ResponsesTool{{
+			Type: schemas.ResponsesToolTypeFunction,
+			Name: schemas.Ptr("get_weather"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{
+				Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+			},
+		}}
+	}
+	jsonSchemaText := func() *schemas.ResponsesTextConfig {
+		return &schemas.ResponsesTextConfig{
+			Format: &schemas.ResponsesTextConfigFormat{
+				Type: "json_schema",
+				JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+					Name:       schemas.Ptr("Result"),
+					Type:       schemas.Ptr("object"),
+					Properties: schemas.NewOrderedMapFromPairs(schemas.KV("answer", map[string]interface{}{"type": "string"})),
+				},
+			},
+		}
+	}
+	jsonObjectText := func() *schemas.ResponsesTextConfig {
+		return &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{Type: "json_object"}}
+	}
+	input := []schemas.ResponsesMessage{{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("What's the weather?")},
+	}}
+
+	tests := []struct {
+		name         string
+		model        string
+		tools        []schemas.ResponsesTool
+		text         *schemas.ResponsesTextConfig
+		wantMIMEType string
+		wantSchema   bool
+	}{
+		{name: "Gemini2.5_ToolsWithJSONSchema_DropsResponseMimeType", model: "gemini-2.5-flash", tools: functionTool(), text: jsonSchemaText()},
+		{name: "Gemini2.5_ToolsWithJSONObject_DropsResponseMimeType", model: "gemini-2.5-flash", tools: functionTool(), text: jsonObjectText()},
+		{name: "Gemini3_ToolsWithJSONSchema_KeepsResponseFormat", model: "gemini-3.5-flash", tools: functionTool(), text: jsonSchemaText(), wantMIMEType: "application/json", wantSchema: true},
+		{name: "Gemini2.5_JSONSchemaWithoutTools_KeepsResponseFormat", model: "gemini-2.5-flash", text: jsonSchemaText(), wantMIMEType: "application/json", wantSchema: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    tt.model,
+				Input:    input,
+				Params:   &schemas.ResponsesParameters{Tools: tt.tools, Text: tt.text},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, tt.wantMIMEType, result.GenerationConfig.ResponseMIMEType)
+			if tt.wantSchema {
+				assert.NotNil(t, result.GenerationConfig.ResponseJSONSchema)
+			} else {
+				assert.Nil(t, result.GenerationConfig.ResponseJSONSchema)
+			}
+			if len(tt.tools) > 0 {
+				assert.NotEmpty(t, result.Tools, "function tools must be retained")
+			}
 		})
 	}
 }
@@ -4437,6 +4619,82 @@ func TestGenAISafetyRatingsAvgLogprobsResponseID_PersistThroughBifrostRoundTrip(
 	assert.Equal(t, "LOW", out.Candidates[0].SafetyRatings[1].Probability)
 }
 
+// Regression: a /genai generateContent call with candidateCount=2 and responseLogprobs
+// must come back with both candidates and the logprobsResult. The Responses schema has
+// one output and no logprobsResult field, so the extra candidates and the first
+// candidate's logprobsResult ride on ProviderExtraFields and are restored verbatim on the
+// GenAI egress, instead of the second candidate's text being merged into the first.
+func TestGenAIMultipleCandidatesAndLogprobsResult_PersistThroughBifrostRoundTrip(t *testing.T) {
+	logprobs := &gemini.LogprobsResult{
+		ChosenCandidates: []*gemini.LogprobsResultCandidate{{Token: "Red", LogProbability: -0.5}},
+	}
+	geminiResp := &gemini.GenerateContentResponse{
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{
+			{
+				Index:          0,
+				FinishReason:   gemini.FinishReasonStop,
+				LogprobsResult: logprobs,
+				Content:        &gemini.Content{Role: "model", Parts: []*gemini.Part{{Text: "Red"}}},
+			},
+			{
+				Index:        1,
+				FinishReason: gemini.FinishReasonStop,
+				Content:      &gemini.Content{Role: "model", Parts: []*gemini.Part{{Text: "Blue"}}},
+			},
+		},
+	}
+
+	bifrostResp := geminiResp.ToResponsesBifrostResponsesResponse()
+	require.NotNil(t, bifrostResp)
+	// The neutral output describes the first candidate only.
+	require.Len(t, bifrostResp.Output, 1)
+
+	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	require.NotNil(t, out)
+	require.Len(t, out.Candidates, 2, "both candidates must reach the GenAI client")
+	require.Len(t, out.Candidates[0].Content.Parts, 1)
+	assert.Equal(t, "Red", out.Candidates[0].Content.Parts[0].Text)
+	assert.Equal(t, int32(0), out.Candidates[0].Index)
+	require.NotNil(t, out.Candidates[0].LogprobsResult)
+	assert.Equal(t, "Red", out.Candidates[0].LogprobsResult.ChosenCandidates[0].Token)
+	require.Len(t, out.Candidates[1].Content.Parts, 1)
+	assert.Equal(t, "Blue", out.Candidates[1].Content.Parts[0].Text)
+	assert.Equal(t, int32(1), out.Candidates[1].Index)
+}
+
+// Regression: when the first candidate stops on an error finish reason (SAFETY) the
+// Responses conversion fails the response early, and the further candidates must still
+// ride along so the GenAI egress returns them; a blocked first candidate does not mean
+// the others were blocked.
+func TestGenAIAdditionalCandidatesSurviveFailedFirstCandidate(t *testing.T) {
+	geminiResp := &gemini.GenerateContentResponse{
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{
+			{Index: 0, FinishReason: gemini.FinishReasonSafety},
+			{
+				Index:        1,
+				FinishReason: gemini.FinishReasonStop,
+				Content:      &gemini.Content{Role: "model", Parts: []*gemini.Part{{Text: "Blue"}}},
+			},
+		},
+	}
+
+	bifrostResp := geminiResp.ToResponsesBifrostResponsesResponse()
+	require.NotNil(t, bifrostResp)
+	require.NotNil(t, bifrostResp.Status)
+	assert.Equal(t, "failed", *bifrostResp.Status)
+
+	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	require.NotNil(t, out)
+	require.Len(t, out.Candidates, 2, "the candidate after a SAFETY-blocked first candidate must reach the GenAI client")
+	assert.Equal(t, gemini.FinishReasonSafety, out.Candidates[0].FinishReason)
+	require.NotNil(t, out.Candidates[1].Content)
+	require.Len(t, out.Candidates[1].Content.Parts, 1)
+	assert.Equal(t, "Blue", out.Candidates[1].Content.Parts[0].Text)
+	assert.Equal(t, int32(1), out.Candidates[1].Index)
+}
+
 // Regression: GenAI usageMetadata modality details must include tokenCount even when zero.
 // Some clients (e.g. @ai-sdk/google) validate tokenCount as required and reject missing fields.
 func TestGenAIUsageMetadata_IncludesZeroTokenCountInModalityDetails(t *testing.T) {
@@ -4541,13 +4799,15 @@ func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
 			},
 		},
 		{
-			name:  "StripsGenerationConfigCompatFields",
+			// Logprobs reach Google as sent, as they do on the typed path: Google validates the
+			// range and answers with logprobsResult, so stripping them hid both the 400 and the result.
+			name:  "KeepsLogprobsAndStripsPenalties",
 			input: `{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"temperature":0.7,"responseLogprobs":true,"logprobs":5,"presencePenalty":0.5,"frequencyPenalty":0.3}}`,
 			validate: func(t *testing.T, m map[string]interface{}) {
 				gc := genConfig(m)
 				require.NotNil(t, gc)
-				assert.NotContains(t, gc, "responseLogprobs")
-				assert.NotContains(t, gc, "logprobs")
+				assert.Equal(t, true, gc["responseLogprobs"], "responseLogprobs must reach Google")
+				assert.Equal(t, float64(5), gc["logprobs"], "logprobs must reach Google unclamped")
 				assert.NotContains(t, gc, "presencePenalty")
 				assert.NotContains(t, gc, "frequencyPenalty")
 				assert.Contains(t, gc, "temperature", "valid fields must be preserved")
@@ -5723,17 +5983,17 @@ func TestGoogleSearchBillingUnits(t *testing.T) {
 
 	chatQueries := func(r *gemini.GenerateContentResponse) *int {
 		u := r.ToBifrostChatResponse().Usage
-		if u == nil || u.CompletionTokensDetails == nil {
+		if u == nil || u.ToolUsage == nil {
 			return nil
 		}
-		return u.CompletionTokensDetails.NumSearchQueries
+		return schemas.Ptr(u.ToolUsage.WebSearch.NumRequests)
 	}
 	responsesQueries := func(r *gemini.GenerateContentResponse) *int {
 		u := r.ToResponsesBifrostResponsesResponse().Usage
-		if u == nil || u.OutputTokensDetails == nil {
+		if u == nil || u.ToolUsage == nil {
 			return nil
 		}
-		return u.OutputTokensDetails.NumSearchQueries
+		return schemas.Ptr(u.ToolUsage.WebSearch.NumRequests)
 	}
 
 	t.Run("gemini 3 bills per search query executed", func(t *testing.T) {
@@ -5782,9 +6042,8 @@ func TestGoogleSearchBillingUnits(t *testing.T) {
 			resps, bifrostErr, _ := chunk.ToBifrostChatCompletionStream(state)
 			require.Nil(t, bifrostErr)
 			for _, resp := range resps {
-				if resp.Usage != nil && resp.Usage.CompletionTokensDetails != nil &&
-					resp.Usage.CompletionTokensDetails.NumSearchQueries != nil {
-					billed = resp.Usage.CompletionTokensDetails.NumSearchQueries
+				if resp.Usage != nil && resp.Usage.ToolUsage != nil {
+					billed = schemas.Ptr(resp.Usage.ToolUsage.WebSearch.NumRequests)
 				}
 			}
 		}

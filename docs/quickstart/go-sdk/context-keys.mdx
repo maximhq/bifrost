@@ -269,6 +269,19 @@ keyID := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
 keyName := ctx.Value(schemas.BifrostContextKeySelectedKeyName).(string)
 ```
 
+### Requested Provider and Model
+
+The provider and model the caller sent, recorded before any `PreRequestHook` runs. Routing rules, load balancing and session routing rewrite the request itself, so a plugin reads these to report both sides of a rewrite. They are reserved, so a plugin cannot overwrite them.
+
+```go
+// What the caller sent (provider is empty when the caller sent a bare model)
+requestedProvider, _ := ctx.Value(schemas.BifrostContextKeyRequestedProvider).(schemas.ModelProvider)
+requestedModel, _ := ctx.Value(schemas.BifrostContextKeyRequestedModel).(string)
+
+// What it was routed to, inside PreLLMHook
+_, routedModel, _ := req.GetRequestFields()
+```
+
 ### Retry and Fallback Information
 
 Track retry attempts and fallback progression.
@@ -389,6 +402,8 @@ func makeRequest(client *bifrost.Bifrost) {
 | `BifrostContextKeyMCPExtraHeaders` | `map[string][]string` | Set | Extra headers forwarded to MCP servers during tool execution |
 | `BifrostContextKeySelectedKeyID` | `string` | Read | ID of the key selected by Bifrost |
 | `BifrostContextKeySelectedKeyName` | `string` | Read | Name of the key selected by Bifrost |
+| `BifrostContextKeyRequestedProvider` | `schemas.ModelProvider` | Read | Provider the caller sent, before routing rewrote it (empty for a bare model) |
+| `BifrostContextKeyRequestedModel` | `string` | Read | Model the caller sent, before routing rewrote it |
 | `BifrostContextKeyNumberOfRetries` | `int` | Read | Number of retry attempts made |
 | `BifrostContextKeyFallbackIndex` | `int` | Read | Current fallback index (0 = primary) |
 | `BifrostContextKeyStreamEndIndicator` | `bool` | Read | Whether the stream has completed |

@@ -21,6 +21,7 @@ The following table summarizes which operations are supported by each provider v
 | Bedrock (`bedrock/<model>`)          | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ✅     | ❌              | ✅         | ❌                  | ✅              | ✅         | ❌  | ❌           | ❌  | ❌           | ✅    | ✅    | ✅           | ✅     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | Bedrock Mantle (`bedrock_mantle/<model>`) | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ✅           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | Cerebras (`cerebras/<model>`)        | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
+| Cloudflare (`cloudflare/<model>`)    | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ✅     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | Cohere (`cohere/<model>`)            | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ✅           | ✅     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | Databricks (`databricks/<model>`)    | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | DeepSeek (`deepseek/<model>`)        | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
@@ -32,11 +33,11 @@ The following table summarizes which operations are supported by each provider v
 | Hugging Face (`huggingface/<model>`) | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ✅     | ✅              | ✅         | ✅                  | ❌              | ✅         | ✅  | ❌           | ✅  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | Mistral (`mistral/<model>`)          | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ✅  | ✅           | ❌    | ❌    | ❌           | ❌     | ❌     | ✅  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | Nebius (`nebius/<model>`)            | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ✅     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
-| Ollama (`ollama/<model>`)            | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
-| OpenAI (`openai/<model>`)            | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ✅     | ✅              | ✅         | ✅                  | ✅              | ✅         | ✅  | ✅           | ✅  | ✅           | ✅    | ✅    | ✅           | ❌     | ❌     | ❌  | ✅    | ✅          | ✅         | ✅          | ✅                   |
-| OpenRouter (`openrouter/<model>`)    | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
-| Parasail (`parasail/<model>`)        | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
-| Perplexity (`perplexity/<model>`)    | ❌     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
+| Ollama (`ollama/<model>`)            | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ✅     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
+| OpenAI (`openai/<model>`)            | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ✅     | ✅              | ✅         | ✅                  | ✅              | ✅         | ✅  | ✅           | ✅  | ✅           | ✅    | ✅    | ✅           | ❌     | ✅     | ❌  | ✅    | ✅          | ✅         | ✅          | ✅                   |
+| OpenRouter (`openrouter/<model>`)    | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ✅     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
+| Parasail (`parasail/<model>`)        | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
+| Perplexity (`perplexity/<model>`)    | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ✅     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | Replicate (`replicate/<model>`)      | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ✅     | ✅              | ✅         | ✅                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ✅    | ❌    | ❌           | ❌     | ❌     | ❌  | ✅    | ❌          | ❌         | ❌          | ❌                   |
 | Runware (`runware/<model>`)          | ❌     | ❌   | ❌            | ❌   | ❌            | ❌        | ❌                 | ✅     | ❌              | ✅         | ❌                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ✅    | ❌          | ❌         | ❌          | ❌                   |
 | Runway (`runway/<model>`)            | ❌     | ❌   | ❌            | ❌   | ❌            | ❌        | ❌                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ✅    | ❌          | ❌         | ❌          | ❌                   |
@@ -80,6 +81,35 @@ Notes:
 - "Video Remix" refers to the video remix operation, which generates a new video by transforming an existing one.
 - "Containers" refers to the Containers API operations for creating, listing, retrieving, and deleting containers and container files.
 - "Passthrough" refers to the Passthrough API, which forwards requests directly to the provider without Bifrost's transformation layer.
+
+### Multimodal Embeddings
+
+The "Embeddings" column above covers text. The `/v1/embeddings` endpoint also accepts image, audio, video, file (PDF) and token parts, and which of those reach the model depends on the model family rather than the provider:
+
+| Provider / model | Text | Image | Audio | Video | File | Batch (multiple entries) | Per-item params | Media sources |
+|------------------|------|-------|-------|-------|------|--------------------------|-----------------|---------------|
+| Gemini `gemini-embedding-2-preview` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | inline, Files API URI |
+| Gemini `gemini-embedding-001` | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | — |
+| Vertex `gemini-embedding-2-preview` | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | inline, `gs://`, `https://` |
+| Vertex `multimodalembedding@001` | ✅ | ✅ (max 1) | ❌ | ✅ (max 1) | ❌ | ❌ | ❌ | inline, `gs://` |
+| Vertex `text-embedding-005` and other text models | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
+| Cohere `embed-v4.0` | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | inline |
+| Cohere `embed-*-v3.0` | ✅ | ✅ (image-only entries) | ❌ | ❌ | ❌ | ✅ | ❌ | inline |
+| Bedrock `amazon.titan-embed-image-v1` | ✅ | ✅ (max 1) | ❌ | ❌ | ❌ | ❌ | ❌ | inline |
+| Bedrock `amazon.titan-embed-text-v1` / `v2:0` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | — |
+| Bedrock `cohere.embed-*` | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | inline |
+| Bedrock `amazon.nova-2-multimodal-embeddings-v1:0` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | inline, `s3://` |
+| OpenAI, Azure, Mistral, Parasail and other OpenAI-compatible | ✅ (+ tokens) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
+| Hugging Face | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
+
+Notes:
+
+- All the parts in one `input` entry produce one vector. Vertex `multimodalembedding@001` and Nova are the exceptions: they return a separate vector per modality, labelled with a `modality` field, and `multimodalembedding@001` returns one vector per video segment.
+- A part the target model cannot carry returns a `400` naming the modality. Bifrost never drops a part silently.
+- "Per-item params" means each entry can carry its own `task_type` / `dimensions` / `title`. Only Gemini's `:batchEmbedContents` has a parameter block per entry; every other provider returns a `400` for per-item overrides.
+- Nova embeds one modality per request; Titan multimodal and Nova take one entry per request.
+
+See the [multimodal embeddings guide](../../quickstart/gateway/multimodal#multimodal-embeddings) for request shapes, per-model parameters and response fields.
 
 ## Response Format
 

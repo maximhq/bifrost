@@ -10,8 +10,10 @@ The LiteLLM compatibility plugin provides two transformations:
 
 1. **Text-to-Chat Conversion** - Automatically converts text completion requests to chat completion format for models that only support chat APIs
 2. **Chat-to-Responses Conversion** - Automatically converts chat completion requests to responses format for models that only support responses APIs
-3. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them
+3. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them. A `reasoning.summary` value the datasheet marks unsupported (`supports_reasoning_summary_detailed`, `supports_reasoning_summary_concise` or `supports_reasoning_summary_auto` set to `false`) becomes `auto` when the model accepts `auto`, and is dropped otherwise. Reasoning effort is always kept
 4. **Unsupported Parameter Conversion** - Automatically converts unsupported parameters to their supported equivalents
+5. **Reasoning-Only Models to Responses** - Routes chat completion requests to the Responses API for models that cannot reason alongside tool calls on chat completions
+6. **Decision-to-Responses Emulation** - Answers decision requests for models without a native decisions endpoint by prompting the model through the Responses API (off by default)
 
 When either transformation is applied, responses include `extra_fields.converted_request_type: <transformed_request_type>`. If request parameters are dropped, the keys are added in `extra_fields.dropped_compat_plugin_params`.
 
@@ -88,6 +90,52 @@ C --> G[Chat Completion Response]
 F --> G
 ```
 
+## 3. Reasoning-Only Models to Responses
+
+Some models (for example several GPT-5 series models) do not support reasoning together with tool calls on the chat completions API. Their datasheet entry sets `supports_reasoning_with_tool_calls: false`. For any chat completion request on such a model, with or without tools, Bifrost:
+
+1. Calls the Responses API instead, where reasoning and tools work together
+2. Transforms the response back to chat completion format
+
+With `force_reasoning_only_models_to_responses` off, the request stays on chat completions. What happens to reasoning then depends on `should_drop_params`:
+
+- **`should_drop_params` on**: when the request carries tools, reasoning is turned off (dropped, or set to `none` when the model supports it).
+- **`should_drop_params` off**: the request is sent with its reasoning setting unchanged.
+
+Controlled by `force_reasoning_only_models_to_responses` (on by default).
+
+## 4. Decision-to-Responses Emulation
+
+Decision requests (`/v1/decisions`, `/openai/v1/decisions`, `/typesafe/v1/systemone`) are served natively only by decision models. With this setting off, a decision request for any other model, such as `openai/gpt-4o`, fails with HTTP 400 and code `unsupported_operation`:
+
+```text
+decisions is not supported by openai provider
+```
+
+With `convert_decision_to_responses` on, Bifrost instead:
+
+1. Checks whether the model is a native decisions model: its `supports_decisions` datasheet entry, or without one the models Bifrost recognizes by name:
+   - OpenAI's `gpt-6-luna` family on `openai` (another provider hosting it, such as Azure or OpenRouter, serves it as a chat model)
+   - Typesafe's `typesafe/` models, and every model on the `typesafe` provider
+   - `clef` models (`clef`, `clef-flash`, `clef-omni`, by bare name or `@cf/cloudflare/` ID) on `cloudflare`
+   - `pplx-decider-*` on `perplexity`
+   - `nimble`, `tev1`, `clef`, `clef-flash`, and `laya` (any tag) on `ollama`
+   - `Microsoft-Decision-1` on `azure`
+   - `ai_decide` on `databricks`
+2. If it is, calls the provider's decisions endpoint without any conversion
+3. If not, encodes the questions as a forced function tool, sends the input to the model's Responses API, and maps the call's arguments back to typed answers
+
+**Why it breaks custom providers.** The check relies on the model catalog, which has no entries for custom providers. With the setting on, a custom provider serving decisions, such as [Laya or Nimble](/providers/self-hosted-decision-models) on the Typesafe base format, or `gpt-6-luna` behind a custom provider on the OpenAI base format, is emulated through a Responses API it may not serve instead of answered natively. This applies to Complexity Router classification too.
+
+We recommend keeping this setting off and sending decisions to a model that serves them natively. An emulated answer is a chat model's guess, not a calibrated judgment, and it costs a full chat call.
+
+**Behavior notes:**
+- The check runs on every attempt, fallbacks included.
+- An emulated response reports `extra_fields.converted_request_type: "responses"` and is billed as the chat call it is.
+- A request with an image or other non-text part is rejected, as are passthrough extra params (`x-bf-passthrough-extra-params`).
+- Per request, the header `x-bf-compat: ["convert_decision_to_responses"]` turns it on for that request only.
+- In the Go SDK, it is on when the compat plugin is registered with `compat.Config{ConvertDecisionToResponses: true}`.
+
 ## Enabling LiteLLM Compatibility
 
 <Tabs group="litellm-compat">
@@ -100,8 +148,10 @@ F --> G
    - **Convert Text to Chat** - converts text completion requests to chat for models that only support chat
    - **Convert Chat to Responses** - converts chat completion requests to responses for models that only support responses
    - **Drop Unsupported Params** - drops unsupported parameters based on model catalog allowlist
-   - **Convert Unsupported Params Values** - converts unsupported parameters values to their supported equivalents. See the list of [supported parameters](#supported-parameters) below.
+   - **Convert Unsupported Params Values** - converts parameter values the model cannot accept, such as a token cap above the model limit, to values it can. See the list of [supported parameters](#supported-parameters) below.
    - **Azure DeepSeek** - converts Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses
+   - **Reasoning-only models to Responses** - routes chat completion requests to the Responses API for models that cannot reason with tool calls on chat completions
+   - **Emulate Decisions API on non-decision models** - answers decision requests for models without a native decisions endpoint through the Responses API
 4. Save your configuration
 
 ![Compatibility Settings](../media/compatibility-settings.png)
@@ -118,7 +168,9 @@ F --> G
       "convert_chat_to_responses": true,
       "should_drop_params": true,
       "should_convert_params": true,
-      "azure_deepseek": true
+      "azure_deepseek": true,
+      "force_reasoning_only_models_to_responses": true,
+      "convert_decision_to_responses": false
     }
   }
 }
@@ -130,11 +182,19 @@ F --> G
 
 ## Supported Parameters
 
-The following parameters are converted to their supported equivalents:
+The following parameter values are converted to values the model accepts:
 
 | Parameter | Original Value | Transformed Value | Provider |
 |-----------|----------------|-------------------|----------|
-| messages.role | developer | system | Gemini, Vertex, Bedrock |
+| `max_completion_tokens` / `max_tokens` (chat), `max_output_tokens` (responses), `max_tokens` (text) | Above the model's `max_output_tokens` | The model's `max_output_tokens` | Every model with a known output limit |
+| Same as above | Below the model's `min_output_tokens` | The model's `min_output_tokens` | Models whose catalog row sets `min_output_tokens` |
+| `reasoning.max_tokens` | Sent with a token cap that was lowered | Scaled by the same ratio as the cap | Every model with a known output limit |
+| `reasoning.max_tokens` | Outside the model's thinking-budget range | The nearest end of the range | Claude, Gemini 2.5, and models whose catalog row sets `reasoning_budget` |
+| `reasoning.max_tokens` | At or above the lowered cap, or the model's `max_output_tokens` when no cap was sent | One below that cap | Every model with a known output limit |
+
+Limits come from the model catalog, with built-in fallbacks for Claude output limits and Claude and Gemini 2.5 thinking budgets. Only values present in the request are changed; none are added. Budgets of `0` and `-1` are left as sent. The conversion runs again for each fallback, so every fallback model is fitted to its own limits. Each conversion is logged as a warning on the request, for example `max_output_tokens: 1000000 -> 65536`.
+
+`developer` role messages are mapped to `system` by the Gemini, Vertex and Bedrock providers themselves, so that works without this setting.
 
 Namespace-scoped tools are no longer handled by this plugin. Bifrost core flattens them for every provider whose wire does not support the `namespace` tool type, renames each nested function to `<namespace>__<function>` so names stay unique, and maps returned `function_call` items back to the original `name` plus `namespace`.
 
@@ -209,7 +269,7 @@ When errors occur on transformed requests:
 
 To enable compat plugins per request, you can use `x-bf-compat` header:
 - When `x-bf-compat: true` or `x-bf-compat: ["*"]`, enables all compat plugins options
-- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params`, `should_convert_params`, `azure_deepseek`)
+- When `x-bf-compat: ["<setting1>","<setting2>"]`, enables the specified settings (available settings: `convert_text_to_chat`, `convert_chat_to_responses`, `should_drop_params`, `should_convert_params`, `azure_deepseek`, `force_reasoning_only_models_to_responses`, `convert_decision_to_responses`)
 
 ## What's Preserved
 

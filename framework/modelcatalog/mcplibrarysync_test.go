@@ -3,11 +3,15 @@ package modelcatalog
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
@@ -231,4 +235,33 @@ func TestWithRetries_TableDriven(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFetchMCPLibraryRefusesRedirectToLinkLocal: a reachable catalog host that
+// redirects to the cloud metadata address must be refused at the redirect hop.
+func TestFetchMCPLibraryRefusesRedirectToLinkLocal(t *testing.T) {
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	_, err := fetchMCPLibrary(context.Background(), redirect.URL)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "link-local")
+}
+
+// TestFetchMCPLibraryUsesGlobalProxy pins that catalog syncs honour the global proxy when
+// it is enabled for API traffic. They used to follow only the environment proxy.
+func TestFetchMCPLibraryUsesGlobalProxy(t *testing.T) {
+	set := proxytest.NewSet(t)
+	network.SetDefaultHTTPClientFactory(network.NewHTTPClientFactory(&network.GlobalProxyConfig{
+		Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://127.0.0.1:" + set.Config.Port(), EnableForAPI: true,
+	}, nil))
+	t.Cleanup(func() { network.SetDefaultHTTPClientFactory(nil) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	// A public IP literal: ValidateExternalURL resolves the host before any request.
+	_, _ = fetchMCPLibrary(ctx, "https://203.0.113.10/mcp-library.json")
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "203.0.113.10:443", nil)
 }

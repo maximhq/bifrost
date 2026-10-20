@@ -1,7 +1,7 @@
 ---
 title: "Connecting to MCP Servers"
 sidebarTitle: "Connecting to Servers"
-description: "Connect Bifrost to external MCP servers via STDIO, HTTP, or SSE protocols."
+description: "Connect Bifrost to external MCP servers via STDIO, HTTP, or SSE, or synthesize one from an OpenAPI document."
 icon: "plug"
 ---
 
@@ -11,13 +11,14 @@ Bifrost can connect to any MCP-compatible server to discover and execute tools. 
 
 ## Connection Types
 
-Bifrost supports three connection protocols:
+Bifrost supports four connection types:
 
 | Type | Description | Best For |
 |------|-------------|----------|
 | **STDIO** | Spawns a subprocess and communicates via stdin/stdout | Local tools, CLI utilities, scripts |
 | **HTTP** | Sends requests to an HTTP endpoint | Remote APIs, microservices, cloud functions |
 | **SSE** | Server-Sent Events for persistent connections | Real-time data, streaming tools |
+| **OpenAPI** (beta) | Synthesizes an MCP server from an OpenAPI/Swagger document; each supported operation becomes a tool. In the UI this is the **Generate from an OpenAPI spec** server source | REST APIs that have no MCP server |
 
 <Info>
 Authentication is configured separately from the connection protocol. STDIO inherits its environment from the spawned subprocess and has no per-call auth. HTTP and SSE support five auth modes: `none`, `headers`, `oauth`, `per_user_oauth`, `per_user_headers`. See [Authentication →](./auth/overview).
@@ -148,6 +149,23 @@ Server-Sent Events (SSE) connections provide a persistent transport to MCP serve
 
 ---
 
+### OpenAPI Connections
+
+An OpenAPI connection has no MCP server to dial: Bifrost parses the document and serves one tool per supported operation, proxying each call to the API. See [OpenAPI Servers](/mcp/openapi-servers) for the full flow, including the preview that lets you pick operations.
+
+```json
+{
+  "name": "petstore",
+  "connection_type": "openapi",
+  "auth_type": "none",
+  "tools_to_execute": ["getInventory", "getPetById"],
+  "openapi_config": {
+    "spec_file": "specs/petstore.yaml",
+    "base_url": "https://petstore3.swagger.io/api/v3"
+  }
+}
+```
+
 ## Gateway Setup
 
 <Tabs>
@@ -161,7 +179,7 @@ Server-Sent Events (SSE) connections provide a persistent transport to MCP serve
   <img src="/media/ui-mcp-servers-table.png" alt="MCP Servers Table" />
 </Frame>
 
-2. Click **New MCP Server** button to open the creation form
+2. Click **Add MCP Server** to open the creation form
 
 3. Fill in the connection details:
 
@@ -171,9 +189,10 @@ Server-Sent Events (SSE) connections provide a persistent transport to MCP serve
 
 **Fields:**
 - **Name**: Unique identifier (no spaces or hyphens, ASCII only)
-- **Connection Type**: STDIO, HTTP, or SSE
+- **Server source**: **Connect to an MCP server**, then pick its **Connection Type** (STDIO, HTTP or SSE), or **Generate from an OpenAPI spec** (beta)
 - **For STDIO**: Command, arguments, and environment variables
 - **For HTTP/SSE**: Connection URL
+- **For OpenAPI**: Paste or upload the document (it parses on its own) or fetch it from a URL, then pick the base URL, credentials and operations (see [OpenAPI Servers](/mcp/openapi-servers))
 
 4. Click **Create** to connect
 
@@ -191,6 +210,12 @@ Here you can:
 - Configure auto-execution for specific tools
 - Edit custom headers for HTTP/SSE connections
 - View the full connection configuration as JSON
+
+<Note>
+Alongside the tools, Bifrost captures whatever the server returns in the `instructions` field of
+the MCP `initialize` handshake. Whether that text reaches your clients is a separate setting —
+see [Server Instructions](/mcp/overview#server-instructions).
+</Note>
 
 </Tab>
 <Tab title="API">
@@ -325,6 +350,10 @@ Configure MCP clients in your `config.json`:
 
 <Note>
 Use `env.VARIABLE_NAME` syntax to reference environment variables for sensitive values like URLs with API keys.
+</Note>
+
+<Note>
+Through the API (`POST /api/mcp/client`, `PUT /api/mcp/client/{id}`), `env.` and `vault.` references in `headers`, `oauth_config.client_id` / `client_secret`, `token_exchange.client_id` / `client_secret`, and `tls_config.ca_cert_pem` require an authenticated admin. On `POST /api/mcp/client` the same applies to `connection_string`; `PUT` cannot change `connection_string`. With dashboard auth disabled or unconfigured these requests answer `403` and name the fields; send literal values, enable dashboard authentication, or define the client in `config.json`, where references are always accepted.
 </Note>
 
 #### Auth-aware clients in `config.json`
@@ -468,7 +497,7 @@ A tool must be in **both** `ToolsToExecute` and `ToolsToAutoExecute` to be auto-
 
 ### Global Tool Manager Settings
 
-Tool-manager behaviour is configured once and applies to every MCP server. There are no per-server overrides for these four knobs — the only per-server tool-manager-adjacent setting is `tool_sync_interval` on each `client_configs[]` entry.
+Tool-manager behaviour is configured once and applies to every MCP server. Three of these can be overridden per server on a `client_configs[]` entry — `tool_sync_interval`, `tool_execution_timeout`, and `max_instructions_length` (which overrides the global `max_instructions_per_client`). In each case `0` or omitted means "use the global".
 
 | Field                      | Type             | Default | Description                                                                                                                  |
 | -------------------------- | ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------- |
@@ -480,7 +509,7 @@ Tool-manager behaviour is configured once and applies to every MCP server. There
 <Tabs>
 <Tab title="Web UI">
 
-The MCP configuration panel under **Settings → MCP** exposes these four knobs plus `tool_sync_interval`:
+The MCP configuration panel under **Settings → MCP** exposes these knobs; the per-server overrides live on each client's own sheet, under **Sync & Timeouts**:
 
 <Frame>
   <img src="/media/ui-mcp-config.png" alt="MCP Gateway configuration panel showing tool execution timeout, agent depth, code mode binding level, tool sync interval, and auto tool inject toggle" />
@@ -1074,6 +1103,8 @@ curl -X POST http://localhost:8080/api/mcp/client/{id}/refresh-tools
 Unlike reconnect, this applies to **every** client type. A sticky client is re-listed over its live connection. A per-call server-level client re-resolves its own configured credential and runs a one-shot connect, `tools/list`, disconnect cycle; a per-user client (`per_user_oauth`, `per_user_headers`, `token_exchange`) runs the same cycle using its retained admin discovery credential. For the per-call and per-user clients alike it is the only on-demand refresh path.
 
 The freshly discovered set is persisted and the hosted `/mcp` surface is re-synced automatically, exactly as for a periodic sync. Rediscovering an unchanged tool set writes nothing.
+
+A refresh also re-reads the server's `instructions` (see [Server Instructions](/mcp/overview#server-instructions)). `tools/list` cannot carry that field, so for a sticky HTTP or SSE client this costs one extra handshake. It is the only way to pick up instructions an operator edited upstream without restarting the server: MCP has no change notification for them, and a healthy sticky client never re-handshakes on its own. STDIO clients are skipped — Bifrost owns the subprocess, so its instructions cannot change without a reconnect.
 
 <Note>
 Returns `400` when the client is in a state where discovery is meaningless: `disabled` (enable it first), `needs_reauth` (reauthorize it first), or `pending_verification` (complete the one-time admin verification instead — refreshing a client awaiting that flow would bypass it). Returns `404` if no client is registered under that ID.

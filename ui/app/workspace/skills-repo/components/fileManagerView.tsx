@@ -1098,6 +1098,7 @@ export function FileManagerSection({
 						isSelected && "bg-primary/10 hover:bg-primary/10",
 					)}
 				>
+					{/* oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- role, tabIndex, keys set together */}
 					<div
 						className={cn("flex min-w-0 flex-1 items-center gap-2", onSelectFile && !isRenaming && "cursor-pointer")}
 						onClick={!isRenaming && onSelectFile ? () => onSelectFile(index) : undefined}
@@ -1111,7 +1112,7 @@ export function FileManagerSection({
 									}
 								: undefined
 						}
-						role={!isRenaming && onSelectFile ? "button" : undefined}
+						role={!isRenaming && onSelectFile ? "button" : "presentation"}
 						tabIndex={!isRenaming && onSelectFile ? 0 : undefined}
 					>
 						<FileText className={cn("h-3.5 w-3.5 shrink-0", isSelected ? "text-primary" : "text-muted-foreground")} />
@@ -1248,6 +1249,7 @@ export function FileManagerSection({
 				);
 
 		return (
+			// oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- role, tabIndex, keys set together
 			<div
 				className={cn(
 					"group flex min-w-0 items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted/40",
@@ -1263,7 +1265,7 @@ export function FileManagerSection({
 						onToggle();
 					}
 				}}
-				role={hasChildren ? "button" : undefined}
+				role={hasChildren ? "button" : "presentation"}
 				tabIndex={hasChildren ? 0 : undefined}
 				aria-label={hasChildren ? `${isExpanded ? "Collapse" : "Expand"} ${isRoot ? "root" : item.name}` : undefined}
 			>
@@ -1286,6 +1288,7 @@ export function FileManagerSection({
 							!isRoot && "md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100",
 							!isRoot && folderDropdownActive && "md:opacity-100",
 						)}
+						role="presentation"
 						onClick={(event) => event.stopPropagation()}
 						onKeyDown={(event) => event.stopPropagation()}
 					>

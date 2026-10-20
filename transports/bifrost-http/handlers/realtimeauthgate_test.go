@@ -7,7 +7,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -172,6 +172,7 @@ func (usableTestPermit) IsActive() bool                            { return true
 func (usableTestPermit) IsExpired() bool                           { return false }
 func (usableTestPermit) ProviderPermits() []schemas.ProviderPermit { return nil }
 func (usableTestPermit) MCPPermits() []schemas.MCPPermit           { return nil }
+func (usableTestPermit) AgentPermits() []string                    { return nil }
 func (usableTestPermit) AllowsAllProviders() bool                  { return true }
 
 // newResolvedVirtualKeyContext is a context whose presented virtual key resolved to usable

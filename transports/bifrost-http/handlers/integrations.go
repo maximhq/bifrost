@@ -6,8 +6,8 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 // IntegrationHandler manages HTTP requests for AI provider integrations
@@ -46,6 +46,7 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 		integrations.NewOpenAIPassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewAnthropicPassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewAzurePassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewBedrockPassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewRunwarePassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewCursorRouter(client, handlerStore, accessResolver, logger),
 	}
