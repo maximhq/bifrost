@@ -2897,7 +2897,8 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 			origMutable: true,
 		},
 		{
-			name: "web_search_call ID and status stripped",
+			// status is required on web_search_call, so a valid value is kept.
+			name: "web_search_call ID stripped, valid status kept",
 			input: schemas.ResponsesMessage{
 				Type:   &webSearchCallType,
 				ID:     schemas.Ptr("msg_abc_ws_0"),
@@ -2911,8 +2912,8 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 				if _, ok := item["id"]; ok {
 					t.Error("id present in wire request for web_search_call")
 				}
-				if _, ok := item["status"]; ok {
-					t.Error("status present in wire request for web_search_call")
+				if string(item["status"]) != `"in_progress"` {
+					t.Errorf("status = %s, want \"in_progress\" for web_search_call", item["status"])
 				}
 			},
 			origMutable: true,
@@ -2991,7 +2992,7 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 				},
 			},
 			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
-				for _, field := range []string{"id", "status", "call_id", "name"} {
+				for _, field := range []string{"id", "call_id", "name"} {
 					if _, ok := item[field]; ok {
 						t.Errorf("%s present in wire request for web_search_call", field)
 					}
@@ -4103,6 +4104,65 @@ func TestToOpenAIResponsesRequest_StripsWebSearchSourceProviderFields(t *testing
 		"the caller's input must not be mutated")
 }
 
+// TestToOpenAIResponsesRequest_KeepsWebSearchCallStatus: status is a required field of
+// OpenAI's web_search_call input item, and strict Responses backends (the Codex backend)
+// reject a replayed search without it: "Missing required parameter: 'input[N].status'".
+// A valid web_search_call status survives the conversion. Any other value is still stripped.
+func TestToOpenAIResponsesRequest_KeepsWebSearchCallStatus(t *testing.T) {
+	cases := []struct {
+		name       string
+		item       string
+		wantStatus string // empty: the status must not reach the wire
+	}{
+		{
+			name:       "completed search with a native id",
+			item:       `{"type":"web_search_call","id":"ws_replay_probe","status":"completed","action":{"type":"search","query":"example.com"}}`,
+			wantStatus: "completed",
+		},
+		{
+			name:       "completed search without an id (Codex replay shape)",
+			item:       `{"type":"web_search_call","status":"completed","action":{"type":"search","query":"example.com"}}`,
+			wantStatus: "completed",
+		},
+		{
+			name:       "failed search",
+			item:       `{"type":"web_search_call","status":"failed","action":{"type":"search","query":"example.com"}}`,
+			wantStatus: "failed",
+		},
+		{
+			name: "status that web_search_call does not accept is stripped",
+			item: `{"type":"web_search_call","status":"incomplete","action":{"type":"search","query":"example.com"}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"model":"gpt-4o","input":[{"role":"user","content":"Reply with OK only."},` + tc.item + `]}`
+			var req schemas.BifrostResponsesRequest
+			require.NoError(t, sonic.Unmarshal([]byte(body), &req))
+			req.Provider = schemas.OpenAI
+
+			converted := ToOpenAIResponsesRequest(nil, &req)
+			require.NotNil(t, converted)
+			wire, err := sonic.Marshal(converted)
+			require.NoError(t, err)
+
+			var payload struct {
+				Input []map[string]json.RawMessage `json:"input"`
+			}
+			require.NoError(t, sonic.Unmarshal(wire, &payload))
+			require.Len(t, payload.Input, 2, "wire: %s", wire)
+			status, ok := payload.Input[1]["status"]
+			if tc.wantStatus == "" {
+				require.False(t, ok, "status must be stripped: %s", wire)
+				return
+			}
+			require.True(t, ok, "web_search_call status must reach the wire: %s", wire)
+			require.JSONEq(t, `"`+tc.wantStatus+`"`, string(status), "wire: %s", wire)
+		})
+	}
+}
+
 // TestToOpenAIResponsesRequest_ForwardsComputerTool locks in issue #7425: the
 // bare `computer` tool (GPT-6 Astra / GPT-5.6 computer use) must pass the
 // OpenAI tool whitelist unchanged, not be dropped or rewritten to
@@ -4198,9 +4258,10 @@ func TestToOpenAIResponsesRequest_SanitizesGeminiShapedHarnessBodies(t *testing.
 				`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"This is a response"}]}]`,
 		},
 		{
-			name:      "127 web_search_call ID and status stripped",
+			// status is required on web_search_call, so the valid "in_progress" is kept.
+			name:      "127 web_search_call ID stripped, valid status kept",
 			body:      `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"search web"},{"type":"web_search_call","id":"msg_abc_ws_0","call_id":"ws_123","name":"web_search","status":"in_progress"}],"max_output_tokens":100}`,
-			wantInput: `[{"type":"message","role":"user","content":"search web"},{"type":"web_search_call"}]`,
+			wantInput: `[{"type":"message","role":"user","content":"search web"},{"type":"web_search_call","status":"in_progress"}]`,
 		},
 	}
 
