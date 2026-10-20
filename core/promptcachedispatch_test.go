@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -1183,6 +1184,77 @@ func TestChatReasoningModeDispatch(t *testing.T) {
 				assert.Empty(t, changeType)
 				dropped, _ := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
 				assert.Equal(t, []string{"service_tier"}, dropped, "the raw body still carries reasoning.mode")
+			})
+		}
+	}
+}
+
+// Drive the real custom OpenAI decoder through reasoning.mode dispatch and back to Chat.
+func TestChatReasoningModePreservesZeroUsage(t *testing.T) {
+	for _, tc := range []struct{ usage, want string }{
+		{`{"input_tokens":0,"output_tokens":0,"total_tokens":0}`, `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`},
+		{`{"input_tokens":12,"output_tokens":0,"total_tokens":12}`, `{"prompt_tokens":12,"completion_tokens":0,"total_tokens":12}`},
+		{`{"input_tokens":0,"total_tokens":12}`, `{"prompt_tokens":0,"total_tokens":12}`},
+		{`{"input_tokens":null,"output_tokens":null,"total_tokens":12}`, `{"total_tokens":12}`},
+		{`{"total_tokens":12}`, `{"total_tokens":12}`},
+	} {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.usage, streaming), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != "/v1/responses" {
+						t.Errorf("unexpected route: %s", r.URL.Path)
+						w.WriteHeader(404)
+						return
+					}
+					body := `{"id":"resp-usage","object":"response","model":"fixture","status":"completed","output":[],"usage":` + tc.usage + `}`
+					if streaming {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, `data: {"type":"response.completed","sequence_number":1,"response":`+body+"}\n\n")
+					} else {
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = io.WriteString(w, body)
+					}
+				}))
+				defer server.Close()
+				config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, CustomProviderKey: "zero-usage-fixture"}}
+				provider := openai.NewOpenAIProvider(config, NewNoOpLogger())
+				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+				request := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: "zero-usage-fixture", Model: "fixture", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}}, Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Mode: schemas.Ptr("pro")}}}}}
+				check := func(response *schemas.BifrostChatResponse) {
+					t.Helper()
+					require.NotNil(t, response)
+					require.NotNil(t, response.Usage)
+					wire, err := schemas.MarshalSorted(response.WithPreservedUsage())
+					require.NoError(t, err)
+					var body struct{ Usage json.RawMessage }
+					require.NoError(t, json.Unmarshal(wire, &body))
+					require.JSONEq(t, tc.want, string(body.Usage))
+				}
+				client := &Bifrost{}
+				key := schemas.Key{Value: *schemas.NewSecretVar("fixture-only")}
+				if !streaming {
+					response, err := client.handleProviderRequest(provider, config, request, key, nil)
+					require.Nil(t, err)
+					check(response.ChatResponse)
+					return
+				}
+				request.RequestType = schemas.ChatCompletionStreamRequest
+				hook := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return r, e
+				}
+				ch, err := client.handleProviderStreamRequest(provider, config, request, key, hook, nil)
+				require.Nil(t, err)
+				var responses []*schemas.BifrostChatResponse
+				for chunk := range ch {
+					require.Nil(t, chunk.BifrostError)
+					if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+						responses = append(responses, chunk.BifrostChatResponse)
+					}
+				}
+				require.Len(t, responses, 1)
+				check(responses[0])
 			})
 		}
 	}

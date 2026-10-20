@@ -2230,9 +2230,9 @@ func IsStreamCommitMarker(chunk *BifrostStreamChunk) bool { return chunk == stre
 // This ensures that only the non-nil embedded struct is marshaled,
 func (bs BifrostStreamChunk) MarshalJSON() ([]byte, error) {
 	if bs.BifrostTextCompletionResponse != nil {
-		return MarshalSorted(bs.BifrostTextCompletionResponse)
+		return MarshalSorted(bs.BifrostTextCompletionResponse.WithPreservedUsage())
 	} else if bs.BifrostChatResponse != nil {
-		return MarshalSorted(bs.BifrostChatResponse)
+		return MarshalSorted(bs.BifrostChatResponse.WithPreservedUsage())
 	} else if bs.BifrostResponsesStreamResponse != nil {
 		return MarshalSorted(bs.BifrostResponsesStreamResponse)
 	} else if bs.BifrostSpeechStreamResponse != nil {
