@@ -373,6 +373,54 @@ func TestResponsesStream_GoesThroughChatCompletions(t *testing.T) {
 	}
 }
 
+// TestResponsesFallback_RawRequestModeSendsChatBody pins that raw-request mode does not forward
+// the caller's Responses-shaped bytes to /v1/chat/completions. Clearing RawRequestBody alone is
+// not enough: with the raw-mode flag still set, CheckContextAndGetRequestBody would send the
+// now-empty raw body instead of converting the request.
+func TestResponsesFallback_RawRequestModeSendsChatBody(t *testing.T) {
+	t.Parallel()
+	rawResponsesBody := []byte(`{"model":"z-ai/glm-5.3-flash","input":"hi"}`)
+
+	t.Run("unary", func(t *testing.T) {
+		t.Parallel()
+		server, captured := newJSONServer(t, http.StatusOK, chatResponseBody)
+		ctx := newTestContext()
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		request := newResponsesRequest()
+		request.RawRequestBody = rawResponsesBody
+
+		if _, bifrostErr := newTestProvider(t, server.URL).Responses(ctx, newTestKey(), request); bifrostErr != nil {
+			t.Fatalf("Responses: %v", bifrostErr.Error.Message)
+		}
+		got := captured.snapshot()
+		if !strings.Contains(got.body, `"messages"`) || strings.Contains(got.body, `"input"`) {
+			t.Errorf("chat endpoint received a non-chat body: %s", got.body)
+		}
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		t.Parallel()
+		server, captured := newSSEServer(t,
+			"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"z-ai/glm-5.3-flash\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n",
+			"data: [DONE]\n\n",
+		)
+		ctx := newTestContext()
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		request := newResponsesRequest()
+		request.RawRequestBody = rawResponsesBody
+
+		stream, bifrostErr := newTestProvider(t, server.URL).ResponsesStream(ctx, passthroughPostHookRunner, nil, newTestKey(), request)
+		if bifrostErr != nil {
+			t.Fatalf("ResponsesStream: %v", bifrostErr.Error.Message)
+		}
+		drainStream(t, stream)
+		got := captured.snapshot()
+		if !strings.Contains(got.body, `"messages"`) || strings.Contains(got.body, `"input"`) {
+			t.Errorf("chat endpoint received a non-chat body: %s", got.body)
+		}
+	})
+}
+
 func TestChatCompletion_SurfacesNearAIErrorEnvelope(t *testing.T) {
 	t.Parallel()
 	server, _ := newJSONServer(t, http.StatusUnauthorized, `{"error":{"message":"Invalid API key","type":"invalid_api_key","param":null,"code":null}}`)

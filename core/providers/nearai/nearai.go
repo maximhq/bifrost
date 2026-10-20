@@ -175,7 +175,13 @@ func (provider *NearAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 // NEAR AI's own /v1/responses is not wire-compatible with OpenAI's: reasoning output items
 // carry content and summary as strings rather than arrays, the stream emits a non-standard
 // response.reasoning.delta event, and Responses-style tool_choice objects are rejected.
+//
+// Raw-request mode is switched off for the converted request: the caller's raw bytes are
+// Responses-shaped, so forwarding them to /v1/chat/completions would be wrong. Clearing
+// RawRequestBody alone is not enough, because with the mode still on the empty raw body
+// would be sent instead of the converted one.
 func (provider *NearAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
@@ -187,8 +193,9 @@ func (provider *NearAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 }
 
 // ResponsesStream serves a streaming Responses request through NEAR AI Cloud's chat
-// completions endpoint (see Responses).
+// completions endpoint, with raw-request mode switched off (see Responses).
 func (provider *NearAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
