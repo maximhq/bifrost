@@ -276698,18 +276698,85 @@
       ]
     },
     {
-      "name": "262. Anthropic chat streams keep server tool input out of tool calls (server tool stream args)",
-      "description": "On /v1/chat/completions streaming, Claude streams a server tool's input (tool search query, web search query) as input_json_delta on a server_tool_use block. That block never gets a tool-call index, but the chat stream converter looked the index up without checking it existed, so the input went out as argument deltas on tool call 0. With tool search the deferred tool that follows is also tool call 0, so clients concatenate {\"query\":...}{\"city\":...} and fail to parse the arguments; with web search alone the query streams as an orphan tool_calls delta with no id. The cases cover every route that reaches the shared Anthropic chat stream converter with a server tool: Anthropic direct, Vertex, Bedrock (a deferred tool routes Bedrock chat to InvokeModel, which reuses the converter) and Azure for tool search, and Anthropic direct for web search. Red before the fix, green after.",
+      "name": "262. Aggregate model listing completeness (#8759)",
+      "description": "Pins issue #8759. The unscoped GET /v1/models fans out to every provider and walks each provider's pages 1,000 rows at a time. The per-provider poll deadline used to cover the whole walk, and every page re-fetches the upstream catalog, so a large catalog timed out after its first page and the aggregate silently kept 1,000 rows with no next_page_token while ?provider=<name> returned everything. The case lists the unscoped aggregate, walks the provider-scoped listing through next_page_token, and asserts every scoped model id is in the aggregate. Hugging Face is the largest catalog in the integration profile; the invariant holds for every provider.",
       "item": [
         {
-          "name": "262.1 anthropic/claude-sonnet-4-6 /v1/chat/completions stream tool search then deferred tool: arguments carry only the tool input on Anthropic (server tool stream args)",
+          "name": "/v1/models - aggregate includes every row of the provider-scoped listing - huggingface - #8759",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('262.1 exact success status', function () {",
+                  "var aggBody = pm.response.text() || '';",
+                  "pm.test('unscoped /v1/models answers 200 with every row and no continuation token', function () {",
+                  "  pm.expect(pm.response.code, 'aggregate listing failed: ' + aggBody.slice(0, 2000)).to.equal(200);",
+                  "  pm.expect(pm.response.json().next_page_token, 'unpaged aggregate returned a next_page_token').to.not.be.ok;",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var aggregate = {};",
+                  "(pm.response.json().data || []).forEach(function (m) { aggregate[m.id] = true; });",
+                  "var scoped = [];",
+                  "var pages = 0;",
+                  "function check(err) {",
+                  "  pm.test('aggregate includes every model of the full huggingface listing', function () {",
+                  "    pm.expect(err, 'scoped page walk failed').to.equal(null);",
+                  "    pm.expect(scoped.length, 'scoped huggingface listing returned no models').to.be.above(0);",
+                  "    var missing = scoped.filter(function (id) { return !aggregate[id]; });",
+                  "    pm.expect(missing.length, missing.length + ' of ' + scoped.length + ' huggingface models (' + pages + ' scoped pages) missing from the aggregate, e.g. ' + missing.slice(0, 10).join(', ')).to.equal(0);",
+                  "  });",
+                  "}",
+                  "function walk(token) {",
+                  "  var url = pm.variables.get('baseUrl') + '/v1/models?provider=huggingface&page_size=1000' + (token ? '&page_token=' + encodeURIComponent(token) : '');",
+                  "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
+                  "    if (err) { return check('request error: ' + err); }",
+                  "    if (res.code !== 200) { return check('scoped page ' + (pages + 1) + ' returned ' + res.code + ': ' + res.text().slice(0, 2000)); }",
+                  "    pages++;",
+                  "    var body = res.json();",
+                  "    (body.data || []).forEach(function (m) { scoped.push(m.id); });",
+                  "    if (body.next_page_token) {",
+                  "      if (pages < 20) { return walk(body.next_page_token); }",
+                  "      return check('scoped listing still had a next_page_token after ' + pages + ' pages; raise the cap or page_size');",
+                  "    }",
+                  "    check(null);",
+                  "  });",
+                  "}",
+                  "walk('');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "263. Anthropic chat streams keep server tool input out of tool calls (server tool stream args)",
+      "description": "On /v1/chat/completions streaming, Claude streams a server tool's input (tool search query, web search query) as input_json_delta on a server_tool_use block. That block never gets a tool-call index, but the chat stream converter looked the index up without checking it existed, so the input went out as argument deltas on tool call 0. With tool search the deferred tool that follows is also tool call 0, so clients concatenate {\"query\":...}{\"city\":...} and fail to parse the arguments; with web search alone the query streams as an orphan tool_calls delta with no id. The cases cover every route that reaches the shared Anthropic chat stream converter with a server tool: Anthropic direct, Vertex, Bedrock (a deferred tool routes Bedrock chat to InvokeModel, which reuses the converter) and Azure for tool search, and Anthropic direct for web search. Red before the fix, green after.",
+      "item": [
+        {
+          "name": "263.1 anthropic/claude-sonnet-4-6 /v1/chat/completions stream tool search then deferred tool: arguments carry only the tool input on Anthropic (server tool stream args)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('263.1 exact success status', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -276733,13 +276800,13 @@
                   "  });",
                   "});",
                   "var indices = Object.keys(calls);",
-                  "pm.test('262.1 stream terminates with [DONE]', function () {",
+                  "pm.test('263.1 stream terminates with [DONE]', function () {",
                   "  pm.expect(text.indexOf('[DONE]'), 'missing [DONE]: ' + text.slice(-800)).to.be.above(-1);",
                   "});",
-                  "pm.test('262.1 the deferred tool is called', function () {",
+                  "pm.test('263.1 the deferred tool is called', function () {",
                   "  pm.expect(indices.length, 'no tool call streamed back: ' + text.slice(0, 1500)).to.be.above(0);",
                   "});",
-                  "pm.test('262.1 every tool call has its own id, a name and one JSON object of arguments', function () {",
+                  "pm.test('263.1 every tool call has its own id, a name and one JSON object of arguments', function () {",
                   "  indices.forEach(function (i) {",
                   "    var c = calls[i];",
                   "    pm.expect(c.id, 'tool call ' + i + ' has arguments but no id (orphan delta): ' + JSON.stringify(c)).to.be.a('string');",
@@ -276780,14 +276847,14 @@
           }
         },
         {
-          "name": "262.2 vertex/claude-sonnet-4-6 /v1/chat/completions stream tool search then deferred tool: arguments carry only the tool input on Vertex (server tool stream args)",
+          "name": "263.2 vertex/claude-sonnet-4-6 /v1/chat/completions stream tool search then deferred tool: arguments carry only the tool input on Vertex (server tool stream args)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('262.2 exact success status', function () {",
+                  "pm.test('263.2 exact success status', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -276811,13 +276878,13 @@
                   "  });",
                   "});",
                   "var indices = Object.keys(calls);",
-                  "pm.test('262.2 stream terminates with [DONE]', function () {",
+                  "pm.test('263.2 stream terminates with [DONE]', function () {",
                   "  pm.expect(text.indexOf('[DONE]'), 'missing [DONE]: ' + text.slice(-800)).to.be.above(-1);",
                   "});",
-                  "pm.test('262.2 the deferred tool is called', function () {",
+                  "pm.test('263.2 the deferred tool is called', function () {",
                   "  pm.expect(indices.length, 'no tool call streamed back: ' + text.slice(0, 1500)).to.be.above(0);",
                   "});",
-                  "pm.test('262.2 every tool call has its own id, a name and one JSON object of arguments', function () {",
+                  "pm.test('263.2 every tool call has its own id, a name and one JSON object of arguments', function () {",
                   "  indices.forEach(function (i) {",
                   "    var c = calls[i];",
                   "    pm.expect(c.id, 'tool call ' + i + ' has arguments but no id (orphan delta): ' + JSON.stringify(c)).to.be.a('string');",
@@ -276858,14 +276925,14 @@
           }
         },
         {
-          "name": "262.3 bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions stream tool search then deferred tool: arguments carry only the tool input on Bedrock InvokeModel (server tool stream args)",
+          "name": "263.3 bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions stream tool search then deferred tool: arguments carry only the tool input on Bedrock InvokeModel (server tool stream args)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('262.3 exact success status', function () {",
+                  "pm.test('263.3 exact success status', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -276889,13 +276956,13 @@
                   "  });",
                   "});",
                   "var indices = Object.keys(calls);",
-                  "pm.test('262.3 stream terminates with [DONE]', function () {",
+                  "pm.test('263.3 stream terminates with [DONE]', function () {",
                   "  pm.expect(text.indexOf('[DONE]'), 'missing [DONE]: ' + text.slice(-800)).to.be.above(-1);",
                   "});",
-                  "pm.test('262.3 the deferred tool is called', function () {",
+                  "pm.test('263.3 the deferred tool is called', function () {",
                   "  pm.expect(indices.length, 'no tool call streamed back: ' + text.slice(0, 1500)).to.be.above(0);",
                   "});",
-                  "pm.test('262.3 every tool call has its own id, a name and one JSON object of arguments', function () {",
+                  "pm.test('263.3 every tool call has its own id, a name and one JSON object of arguments', function () {",
                   "  indices.forEach(function (i) {",
                   "    var c = calls[i];",
                   "    pm.expect(c.id, 'tool call ' + i + ' has arguments but no id (orphan delta): ' + JSON.stringify(c)).to.be.a('string');",
@@ -276936,14 +277003,14 @@
           }
         },
         {
-          "name": "262.4 azure/claude-opus-4-8 /v1/chat/completions stream tool search then deferred tool: arguments carry only the tool input on Azure (server tool stream args)",
+          "name": "263.4 azure/claude-opus-4-8 /v1/chat/completions stream tool search then deferred tool: arguments carry only the tool input on Azure (server tool stream args)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('262.4 exact success status', function () {",
+                  "pm.test('263.4 exact success status', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -276967,13 +277034,13 @@
                   "  });",
                   "});",
                   "var indices = Object.keys(calls);",
-                  "pm.test('262.4 stream terminates with [DONE]', function () {",
+                  "pm.test('263.4 stream terminates with [DONE]', function () {",
                   "  pm.expect(text.indexOf('[DONE]'), 'missing [DONE]: ' + text.slice(-800)).to.be.above(-1);",
                   "});",
-                  "pm.test('262.4 the deferred tool is called', function () {",
+                  "pm.test('263.4 the deferred tool is called', function () {",
                   "  pm.expect(indices.length, 'no tool call streamed back: ' + text.slice(0, 1500)).to.be.above(0);",
                   "});",
-                  "pm.test('262.4 every tool call has its own id, a name and one JSON object of arguments', function () {",
+                  "pm.test('263.4 every tool call has its own id, a name and one JSON object of arguments', function () {",
                   "  indices.forEach(function (i) {",
                   "    var c = calls[i];",
                   "    pm.expect(c.id, 'tool call ' + i + ' has arguments but no id (orphan delta): ' + JSON.stringify(c)).to.be.a('string');",
@@ -277014,14 +277081,14 @@
           }
         },
         {
-          "name": "262.5 anthropic/claude-sonnet-4-6 /v1/chat/completions stream web search only: the search query never streams as a tool call (server tool stream args)",
+          "name": "263.5 anthropic/claude-sonnet-4-6 /v1/chat/completions stream web search only: the search query never streams as a tool call (server tool stream args)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('262.5 exact success status', function () {",
+                  "pm.test('263.5 exact success status', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "if (pm.response.code !== 200) { return; }",
@@ -277045,13 +277112,13 @@
                   "  });",
                   "});",
                   "var indices = Object.keys(calls);",
-                  "pm.test('262.5 stream terminates with [DONE]', function () {",
+                  "pm.test('263.5 stream terminates with [DONE]', function () {",
                   "  pm.expect(text.indexOf('[DONE]'), 'missing [DONE]: ' + text.slice(-800)).to.be.above(-1);",
                   "});",
-                  "pm.test('262.5 no tool_calls delta streams back for a server-only tool', function () {",
+                  "pm.test('263.5 no tool_calls delta streams back for a server-only tool', function () {",
                   "  pm.expect(indices.length, 'server tool input leaked as tool_calls: ' + JSON.stringify(calls)).to.equal(0);",
                   "});",
-                  "pm.test('262.5 the answer streams as content', function () {",
+                  "pm.test('263.5 the answer streams as content', function () {",
                   "  var content = '';",
                   "  frames.forEach(function (f) { (f.choices || []).forEach(function (ch) { content += (ch.delta || {}).content || ''; }); });",
                   "  pm.expect(content.length, 'no content streamed: ' + text.slice(0, 1500)).to.be.above(0);",
