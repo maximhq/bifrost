@@ -1675,11 +1675,11 @@ func (bifrost *Bifrost) SearchRequest(ctx *schemas.BifrostContext, req *schemas.
 			},
 		}
 	}
-	if req.Count != nil && (*req.Count < 1 || *req.Count > 50) {
+	if req.MaxResults != nil && *req.MaxResults < 1 {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
-				Message: "count must be between 1 and 50 for search request",
+				Message: "max_results must be at least 1 for search request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RequestType: schemas.SearchRequest,

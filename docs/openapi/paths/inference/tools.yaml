@@ -3,12 +3,12 @@ tools-search:
     operationId: searchWeb
     summary: Search the web
     description: |
-      Runs a web search through DeepSeek's Search API and returns ranked pages.
+      Runs a web search through the routed provider and returns ranked pages in one shape
+      for every provider.
 
-      This is a web call, not an inference call: it carries no model upstream and is billed
-      at a flat rate per successful request rather than per token. Omit `model` and the
-      gateway routes to DeepSeek; a `model` is accepted only as a routing handle for
-      virtual-key allowlists.
+      This is a web call, not an inference call: it carries no model upstream and is priced
+      per request from the cost the provider reports. Omit `model` and the gateway routes to
+      DeepSeek; a `model` is accepted only as a routing handle for virtual-key allowlists.
     tags:
     - Web Tools
     requestBody:

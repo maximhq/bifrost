@@ -1,3 +1,4 @@
+- [feat]: `POST /v1/tools/search` takes the provider-neutral Search fields [@Radiergummi](https://github.com/Radiergummi)
 - [feat]: DeepSeek web tools at `POST /v1/tools/search` and `POST /v1/tools/fetch`, routed to DeepSeek when a body carries no model [@jimaldon](https://github.com/jimaldon)
 ## ✨ Features
 

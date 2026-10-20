@@ -2,6 +2,7 @@ package deepseek
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -50,7 +51,104 @@ func (b *deepseekFetchBody) GetExtraParams() map[string]interface{} { return b.E
 
 // deepseekSearchWireResponse is the upstream Search envelope.
 type deepseekSearchWireResponse struct {
-	Results []schemas.BifrostSearchResult `json:"results"`
+	Results []deepseekSearchResult `json:"results"`
+}
+
+// deepseekSearchResult is one upstream result. Date is kept as the upstream RFC 3339 string so a
+// result is never silently re-zoned; Authority and RerankScore are pointers because the upstream
+// uses -1 and 0 to mean "unknown" and "not scored" rather than a real measurement.
+type deepseekSearchResult struct {
+	Title       string   `json:"title,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	Snippet     string   `json:"snippet,omitempty"`
+	Summary     string   `json:"summary,omitempty"`
+	Content     string   `json:"content,omitempty"`
+	SiteName    string   `json:"site_name,omitempty"`
+	SiteIcon    string   `json:"site_icon,omitempty"`
+	Date        *string  `json:"date,omitempty"`
+	Authority   *int     `json:"authority,omitempty"`
+	RerankScore *float64 `json:"rerank_score,omitempty"`
+}
+
+// toBifrost maps a result onto the neutral shape. RerankScore is DeepSeek's relevance score;
+// what has no neutral field is kept in ProviderFields under DeepSeek's own names.
+func (r deepseekSearchResult) toBifrost() schemas.BifrostSearchResult {
+	fields := map[string]interface{}{}
+	if r.Summary != "" {
+		fields["summary"] = r.Summary
+	}
+	if r.SiteName != "" {
+		fields["site_name"] = r.SiteName
+	}
+	if r.SiteIcon != "" {
+		fields["site_icon"] = r.SiteIcon
+	}
+	if r.Authority != nil {
+		fields["authority"] = *r.Authority
+	}
+	if len(fields) == 0 {
+		fields = nil
+	}
+	return schemas.BifrostSearchResult{
+		URL:            r.URL,
+		Title:          r.Title,
+		Snippet:        r.Snippet,
+		Content:        r.Content,
+		PublishedAt:    r.Date,
+		Score:          r.RerankScore,
+		ProviderFields: fields,
+	}
+}
+
+// deepseekSearchOpts are DeepSeek's own Search options, lifted out of ExtraParams so they reach
+// the upstream without the caller opting into extra-params passthrough.
+type deepseekSearchOpts struct {
+	oriQuestion  *string
+	localization *string
+	rest         map[string]interface{}
+}
+
+// deepseekSearchOptions refuses what DeepSeek cannot honour, so a neutral filter is never
+// silently dropped, and lifts ori_question and localization out of ExtraParams. DeepSeek bounds
+// query and ori_question at 128 Unicode characters and count at 1-50.
+func deepseekSearchOptions(request *schemas.BifrostSearchRequest) (deepseekSearchOpts, *schemas.BifrostError) {
+	var opts deepseekSearchOpts
+	if len([]rune(request.Query)) > 128 {
+		return opts, providerUtils.NewBifrostBadRequestError("query must be at most 128 characters")
+	}
+	if request.MaxResults != nil && *request.MaxResults > 50 {
+		return opts, providerUtils.NewBifrostBadRequestError("max_results must be between 1 and 50")
+	}
+	if len(request.IncludeDomains) > 0 || len(request.ExcludeDomains) > 0 {
+		return opts, providerUtils.NewBifrostBadRequestError("deepseek search does not support domain filters")
+	}
+	if request.PublishedAfter != nil || request.PublishedBefore != nil {
+		return opts, providerUtils.NewBifrostBadRequestError("deepseek search does not support date filters")
+	}
+	for name, value := range request.ExtraParams {
+		switch name {
+		case "ori_question", "localization":
+			text, ok := value.(string)
+			if !ok {
+				return opts, providerUtils.NewBifrostBadRequestError(name + " must be a string")
+			}
+			text = strings.TrimSpace(text)
+			if name == "ori_question" {
+				if text == "" || len([]rune(text)) > 128 {
+					return opts, providerUtils.NewBifrostBadRequestError("ori_question must be between 1 and 128 characters")
+				}
+				opts.oriQuestion = &text
+			} else {
+				opts.localization = &text
+			}
+		default:
+			if opts.rest == nil {
+				opts.rest = map[string]interface{}{}
+			}
+			opts.rest[name] = value
+		}
+	}
+	return opts, nil
 }
 
 // deepseekFetchWireResponse is the upstream Fetch envelope.
@@ -69,6 +167,10 @@ func (provider *DeepSeekProvider) Search(ctx *schemas.BifrostContext, key schema
 	if err := providerUtils.CheckOperationAllowed(schemas.DeepSeek, nil, schemas.SearchRequest); err != nil {
 		return nil, err
 	}
+	options, bifrostErr := deepseekSearchOptions(request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -76,11 +178,11 @@ func (provider *DeepSeekProvider) Search(ctx *schemas.BifrostContext, key schema
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return &deepseekSearchBody{
 				Query:        request.Query,
-				Count:        request.Count,
-				OriQuestion:  request.OriQuestion,
-				Localization: request.Localization,
-				NeedContent:  request.NeedContent,
-				ExtraParams:  request.ExtraParams,
+				Count:        request.MaxResults,
+				OriQuestion:  options.oriQuestion,
+				Localization: options.localization,
+				NeedContent:  request.IncludeContent,
+				ExtraParams:  options.rest,
 			}, nil
 		},
 	)
@@ -110,9 +212,9 @@ func (provider *DeepSeekProvider) Search(ctx *schemas.BifrostContext, key schema
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
-	results := wire.Results
-	if results == nil {
-		results = []schemas.BifrostSearchResult{}
+	results := make([]schemas.BifrostSearchResult, 0, len(wire.Results))
+	for _, result := range wire.Results {
+		results = append(results, result.toBifrost())
 	}
 
 	// DeepSeek does not bill a search that returns no results, so neither does the

@@ -1,22 +1,22 @@
 package schemas
 
-// BifrostSearchRequest represents a request to the DeepSeek Search API.
-//
-// Search is a web-search call rather than a model inference call: the upstream
-// contract takes a query and returns ranked pages, and it carries no model. The
-// Model field is therefore a routing and pricing handle for the gateway, not a
-// value DeepSeek consumes.
+// BifrostSearchRequest is a vendor-neutral web search. Model is a routing and pricing
+// handle for the gateway; no search vendor consumes it. A filter the chosen provider
+// cannot honour is refused rather than silently dropped. Vendor-only options travel in
+// ExtraParams.
 type BifrostSearchRequest struct {
-	Provider       ModelProvider          `json:"provider"`
-	Model          string                 `json:"model,omitempty"`
-	Query          string                 `json:"query"`
-	Count          *int                   `json:"count,omitempty"`
-	OriQuestion    *string                `json:"ori_question,omitempty"`
-	Localization   *string                `json:"localization,omitempty"`
-	NeedContent    *bool                  `json:"need_content,omitempty"`
-	Fallbacks      []Fallback             `json:"fallbacks,omitempty"`
-	ExtraParams    map[string]interface{} `json:"-"`
-	RawRequestBody []byte                 `json:"-"`
+	Provider        ModelProvider          `json:"provider"`
+	Model           string                 `json:"model,omitempty"`
+	Query           string                 `json:"query"`
+	MaxResults      *int                   `json:"max_results,omitempty"`
+	IncludeContent  *bool                  `json:"include_content,omitempty"`
+	IncludeDomains  []string               `json:"include_domains,omitempty"`
+	ExcludeDomains  []string               `json:"exclude_domains,omitempty"`
+	PublishedAfter  *string                `json:"published_after,omitempty"`  // RFC 3339 date or date-time
+	PublishedBefore *string                `json:"published_before,omitempty"` // RFC 3339 date or date-time
+	Fallbacks       []Fallback             `json:"fallbacks,omitempty"`
+	ExtraParams     map[string]interface{} `json:"-"`
+	RawRequestBody  []byte                 `json:"-"`
 }
 
 // GetRawRequestBody returns the raw request body for the search request.
@@ -24,23 +24,18 @@ func (r *BifrostSearchRequest) GetRawRequestBody() []byte {
 	return r.RawRequestBody
 }
 
-// BifrostSearchResult is one ranked page returned by Search.
-//
-// Snippet is display-length text, Summary is a model-shaped paragraph, and Content carries
-// page text only when the request asked for it. Date is kept as the upstream RFC 3339 string
-// so a result is never silently re-zoned; Authority and RerankScore are pointers because the
-// upstream uses -1 and 0 to mean "unknown" and "not scored" rather than a real measurement.
+// BifrostSearchResult is one ranked page. Content is set only when the request asked for
+// it. Score is the provider's own relevance score and is not comparable across providers.
+// ProviderFields carries what only one vendor returns (DeepSeek's authority, Exa's
+// favicon, ...).
 type BifrostSearchResult struct {
-	Title       string   `json:"title,omitempty"`
-	URL         string   `json:"url,omitempty"`
-	Snippet     string   `json:"snippet,omitempty"`
-	Summary     string   `json:"summary,omitempty"`
-	Content     string   `json:"content,omitempty"`
-	SiteName    string   `json:"site_name,omitempty"`
-	SiteIcon    string   `json:"site_icon,omitempty"`
-	Date        *string  `json:"date,omitempty"`
-	Authority   *int     `json:"authority,omitempty"`
-	RerankScore *float64 `json:"rerank_score,omitempty"`
+	URL            string                 `json:"url"`
+	Title          string                 `json:"title,omitempty"`
+	Snippet        string                 `json:"snippet,omitempty"`
+	Content        string                 `json:"content,omitempty"`
+	PublishedAt    *string                `json:"published_at,omitempty"`
+	Score          *float64               `json:"score,omitempty"`
+	ProviderFields map[string]interface{} `json:"provider_fields,omitempty"`
 }
 
 // BifrostSearchResponse represents the response from a search request.
