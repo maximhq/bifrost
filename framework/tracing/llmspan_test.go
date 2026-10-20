@@ -1156,3 +1156,66 @@ func TestChatRequestWithoutToolsOmitsAttribute(t *testing.T) {
 		t.Errorf("%s present with no tools configured", schemas.AttrTools)
 	}
 }
+
+// Anthropic, Gemini, and Bedrock return thinking as reasoning_text content
+// blocks with an empty summary; both streamed and non-streamed responses use
+// that shape, so it must reach gen_ai.output.messages.
+func TestSpanAttributesCarryReasoningTextContentBlocks(t *testing.T) {
+	const thinking = "221 factors as 13 times 17, so it is not prime."
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		ID:    schemas.Ptr("resp_1"),
+		Model: "claude-haiku-5-5",
+		Output: []schemas.ResponsesMessage{
+			{
+				ID:   schemas.Ptr("msg_1_reasoning_0"),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text:      schemas.Ptr(thinking),
+					Signature: schemas.Ptr("sig"),
+				}}},
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: schemas.Ptr("No, 221 = 13 x 17."),
+				}}},
+			},
+		},
+	}}
+	req := &schemas.BifrostRequest{RequestType: schemas.ResponsesStreamRequest}
+
+	attrs := BuildLLMSpanData(req, resp, nil, SpanBuildOptions{WantContent: true}).Attributes()
+	raw, _ := attrs[schemas.AttrOutputMessages].(string)
+	if !strings.Contains(raw, `"reasoning":"`+thinking+`"`) {
+		t.Fatalf("%s = %s, want the reasoning_text block as reasoning", schemas.AttrOutputMessages, raw)
+	}
+
+	replayed := extractResponsesInputMessages(resp.ResponsesResponse.Output)
+	if len(replayed) != 2 || replayed[0].Reasoning != thinking {
+		t.Fatalf("input summaries = %+v, want the replayed reasoning item kept", replayed)
+	}
+}
+
+// A reasoning item with both a summary and reasoning_text blocks reports the
+// summary once instead of concatenating two renderings of the same thinking.
+func TestResponsesReasoningPrefersSummaryOverContentBlocks(t *testing.T) {
+	got := extractResponsesOutputMessages(&schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+			Text: schemas.Ptr("raw chain of thought"),
+		}}},
+		ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{{
+			Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+			Text: "short summary",
+		}}},
+	}}})
+	if len(got) != 1 || got[0].Reasoning != "short summary" {
+		t.Fatalf("got = %+v, want only the summary", got)
+	}
+}

@@ -1466,7 +1466,7 @@ func extractResponsesOutputMessages(resp *schemas.BifrostResponsesResponse) []Re
 			})
 
 		case schemas.ResponsesMessageTypeReasoning:
-			reasoning := extractResponsesReasoning(msg.ResponsesReasoning)
+			reasoning := extractResponsesReasoningItem(&msg)
 			if reasoning == "" {
 				continue
 			}
@@ -1577,7 +1577,7 @@ func extractResponsesInputMessages(messages []schemas.ResponsesMessage) []Respon
 			result = append(result, summary)
 
 		case schemas.ResponsesMessageTypeReasoning:
-			reasoning := extractResponsesReasoning(msg.ResponsesReasoning)
+			reasoning := extractResponsesReasoningItem(&msg)
 			if reasoning == "" {
 				continue
 			}
@@ -1847,6 +1847,25 @@ func extractResponsesReasoning(r *schemas.ResponsesReasoning) string {
 	for _, block := range r.Summary {
 		if block.Text != "" {
 			sb.WriteString(block.Text)
+		}
+	}
+	return sb.String()
+}
+
+// extractResponsesReasoningItem returns a reasoning item's text. Providers that
+// return raw thinking (Anthropic, Gemini, Bedrock) carry it in reasoning_text
+// content blocks with an empty summary; the summary wins when both are set.
+func extractResponsesReasoningItem(msg *schemas.ResponsesMessage) string {
+	if summary := extractResponsesReasoning(msg.ResponsesReasoning); summary != "" {
+		return summary
+	}
+	if msg.Content == nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, block := range msg.Content.ContentBlocks {
+		if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
+			sb.WriteString(*block.Text)
 		}
 	}
 	return sb.String()
