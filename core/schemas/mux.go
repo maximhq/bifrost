@@ -1129,6 +1129,9 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 		TotalTokens:    cu.TotalTokens,
 		Cost:           cu.Cost,
 		CostInUsdTicks: cu.CostInUsdTicks,
+
+		InputTokensExplicitZero:  cu.PromptTokensExplicitZero,
+		OutputTokensExplicitZero: cu.CompletionTokensExplicitZero,
 	}
 
 	if cu.PromptTokensDetails != nil {
@@ -1175,6 +1178,9 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		TotalTokens:      ru.TotalTokens,
 		Cost:             ru.Cost,
 		CostInUsdTicks:   ru.CostInUsdTicks,
+
+		PromptTokensExplicitZero:     ru.InputTokensExplicitZero,
+		CompletionTokensExplicitZero: ru.OutputTokensExplicitZero,
 	}
 
 	if ru.InputTokensDetails != nil {

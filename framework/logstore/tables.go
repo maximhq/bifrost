@@ -2250,13 +2250,17 @@ func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 			}
 		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 			var result schemas.BifrostChatResponse
-			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
-				resp.Result = &result
+			data := []byte(j.Response)
+			if err := sonic.Unmarshal(data, &result); err == nil {
+				result.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
+				resp.Result = result.WithPreservedUsage()
 			}
 		case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 			var result schemas.BifrostTextCompletionResponse
-			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
-				resp.Result = &result
+			data := []byte(j.Response)
+			if err := sonic.Unmarshal(data, &result); err == nil {
+				result.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
+				resp.Result = result.WithPreservedUsage()
 			}
 		case schemas.EmbeddingRequest:
 			var result schemas.BifrostEmbeddingResponse

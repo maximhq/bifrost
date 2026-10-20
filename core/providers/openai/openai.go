@@ -442,6 +442,7 @@ func HandleOpenAITextCompletionRequest(
 			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
+			response.Usage.PreserveTokenCountZeros(lpResult.ResponseBody, "usage.prompt_tokens", "usage.completion_tokens")
 			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency}
 			return response, nil
 		}
@@ -519,6 +520,7 @@ func HandleOpenAITextCompletionRequest(
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
+	response.Usage.PreserveTokenCountZeros(body, "usage.prompt_tokens", "usage.completion_tokens")
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
@@ -833,6 +835,8 @@ func HandleOpenAITextCompletionStreaming(
 				}
 			}
 
+			response.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
+
 			// choices be array if nil
 			if response.Choices == nil {
 				response.Choices = []schemas.BifrostResponseChoice{}
@@ -871,6 +875,9 @@ func HandleOpenAITextCompletionStreaming(
 				// Here in some cases usage comes before final message
 				// So we need to check if the response.Usage is nil and then if usage != nil
 				// then add up all tokens
+				// Presence is sticky once any frame reports zero; counts still merge by max.
+				usage.PromptTokensExplicitZero = usage.PromptTokensExplicitZero || response.Usage.PromptTokensExplicitZero
+				usage.CompletionTokensExplicitZero = usage.CompletionTokensExplicitZero || response.Usage.CompletionTokensExplicitZero
 				if response.Usage.PromptTokens > usage.PromptTokens {
 					usage.PromptTokens = response.Usage.PromptTokens
 				}
@@ -1090,6 +1097,7 @@ func HandleOpenAIChatCompletionRequest(
 			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
+			response.Usage.PreserveTokenCountZeros(lpResult.ResponseBody, "usage.prompt_tokens", "usage.completion_tokens")
 			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency}
 			return response, nil
 		}
@@ -1183,6 +1191,7 @@ func HandleOpenAIChatCompletionRequest(
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
+	response.Usage.PreserveTokenCountZeros(body, "usage.prompt_tokens", "usage.completion_tokens")
 	response.Usage.NormalizeReasoningTokens()
 
 	// A 200 is not proof of success on every OpenAI-compatible provider: some report
@@ -1613,6 +1622,8 @@ func HandleOpenAIChatCompletionStreaming(
 				}
 			}
 
+			response.Usage.PreserveTokenCountZeros(data, "usage.prompt_tokens", "usage.completion_tokens")
+
 			// choices be array if nil
 			if response.Choices == nil {
 				response.Choices = []schemas.BifrostResponseChoice{}
@@ -1647,6 +1658,9 @@ func HandleOpenAIChatCompletionStreaming(
 				// Accumulate usage across chunks; attached to final event below.
 				if response.Usage != nil {
 					usageSeen = true
+					// Presence is sticky once any frame reports zero; counts still merge by max.
+					usage.PromptTokensExplicitZero = usage.PromptTokensExplicitZero || response.Usage.PromptTokensExplicitZero
+					usage.CompletionTokensExplicitZero = usage.CompletionTokensExplicitZero || response.Usage.CompletionTokensExplicitZero
 					if response.Usage.PromptTokens > usage.PromptTokens {
 						usage.PromptTokens = response.Usage.PromptTokens
 					}
@@ -1766,6 +1780,9 @@ func HandleOpenAIChatCompletionStreaming(
 					// Here in some cases usage comes before final message
 					// So we need to check if the response.Usage is nil and then if usage != nil
 					// then add up all tokens
+					// Presence is sticky once any frame reports zero; counts still merge by max.
+					usage.PromptTokensExplicitZero = usage.PromptTokensExplicitZero || response.Usage.PromptTokensExplicitZero
+					usage.CompletionTokensExplicitZero = usage.CompletionTokensExplicitZero || response.Usage.CompletionTokensExplicitZero
 					if response.Usage.PromptTokens > usage.PromptTokens {
 						usage.PromptTokens = response.Usage.PromptTokens
 					}
@@ -2051,6 +2068,7 @@ func HandleOpenAIResponsesRequest(
 			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
 				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 			}
+			response.Usage.PreserveTokenCountZeros(lpResult.ResponseBody, "usage.input_tokens", "usage.output_tokens")
 			response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: lpResult.Latency}
 			return response, nil
 		}
@@ -2137,6 +2155,8 @@ func HandleOpenAIResponsesRequest(
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
+
+	response.Usage.PreserveTokenCountZeros(body, "usage.input_tokens", "usage.output_tokens")
 
 	// Custom tools sent as function tools come back as function calls; restore them.
 	if names := customToolNamesToRestore(ctx, request); names != nil {
@@ -2455,6 +2475,10 @@ func HandleOpenAIResponsesStreaming(
 				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = jsonData
 				}
+			}
+
+			if response.Response != nil {
+				response.Response.Usage.PreserveTokenCountZeros(data, "response.usage.input_tokens", "response.usage.output_tokens")
 			}
 
 			if prefix, drop := customToolRestorer.restore(&response); drop {

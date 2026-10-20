@@ -1606,24 +1606,34 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 	return routes
 }
 
-// OpenAIUsage is the OpenAI-compatible usage shape: the standard usage fields,
-// but cost is the bare total (float) rather than the nested BifrostCost object
-// which strict OpenAI SDKs reject. The embedded pointer promotes every other
-// usage field unchanged; the shallower Cost field shadows the embedded object's
-// `cost` at marshal time.
+// OpenAIUsage is the Chat/Text Completions usage shape. Explicitly reported zero
+// counts remain present, and cost is the bare total (float) rather than the
+// nested BifrostCost object which strict OpenAI SDKs reject. The embedded pointer
+// promotes the remaining usage fields unchanged.
 type OpenAIUsage struct {
 	*schemas.BifrostLLMUsage
-	Cost *float64 `json:"cost,omitempty"`
+	PromptTokens     *int     `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int     `json:"completion_tokens,omitempty"`
+	Cost             *float64 `json:"cost,omitempty"`
 }
 
 // newOpenAIUsage wraps u so cost serializes as the bare total float. Copies the
 // total into a local, so the wrapper never aliases into the shared response.
 func newOpenAIUsage(u *schemas.BifrostLLMUsage) *OpenAIUsage {
-	if u == nil || u.Cost == nil {
-		return &OpenAIUsage{BifrostLLMUsage: u}
+	usage := &OpenAIUsage{BifrostLLMUsage: u}
+	if u != nil {
+		if u.PromptTokens != 0 || u.PromptTokensExplicitZero {
+			usage.PromptTokens = &u.PromptTokens
+		}
+		if u.CompletionTokens != 0 || u.CompletionTokensExplicitZero {
+			usage.CompletionTokens = &u.CompletionTokens
+		}
+		if u.Cost != nil {
+			total := u.Cost.TotalCost
+			usage.Cost = &total
+		}
 	}
-	total := u.Cost.TotalCost
-	return &OpenAIUsage{BifrostLLMUsage: u, Cost: &total}
+	return usage
 }
 
 // openAIResponsesUsage / openAIImageUsage / openAIVideoUsage are the same
@@ -1718,18 +1728,20 @@ func openAIWireResponses(r *schemas.BifrostResponsesResponse) *openAIResponsesRe
 // legacy shape SDKs tolerate. Only provider-supplied cost reaches here (Bifrost
 // computes cost log-only), and it stays intact in logs. The rewrite wraps rather
 // than mutates, so the shared response (which governance/telemetry may still read
-// on another goroutine) is untouched. Raw upstream payloads and cost-free
-// responses pass through unchanged.
+// on another goroutine) is untouched. Chat/Text Completions also retain the
+// explicitly reported zero counts. Raw upstream payloads pass through unchanged.
 func openAIWireCostResponse(v interface{}) interface{} {
 	switch r := v.(type) {
 	case *schemas.BifrostChatResponse:
 		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
 			return &openAIChatResponse{BifrostChatResponse: r, Usage: newOpenAIUsage(r.Usage)}
 		}
+		return r.WithPreservedUsage()
 	case *schemas.BifrostTextCompletionResponse:
 		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
 			return &openAITextResponse{BifrostTextCompletionResponse: r, Usage: newOpenAIUsage(r.Usage)}
 		}
+		return r.WithPreservedUsage()
 	case *schemas.BifrostResponsesResponse:
 		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
 			return openAIWireResponses(r)

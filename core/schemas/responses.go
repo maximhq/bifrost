@@ -1354,6 +1354,21 @@ type ResponsesResponseUsage struct {
 	CostInUsdTicks             *int64                               `json:"cost_in_usd_ticks,omitempty"`
 	ServerSideToolUsageDetails *ResponsesServerSideToolUsageDetails `json:"server_side_tool_usage_details,omitempty"`
 	ContextDetails             *ResponsesContextDetails             `json:"context_details,omitempty"`
+
+	InputTokensExplicitZero  bool `json:"-"` // Preserve reported zeros when converting back to Chat.
+	OutputTokensExplicitZero bool `json:"-"`
+}
+
+// PreserveTokenCountZeros retains presence for Responses-to-Chat conversion without
+// changing the Responses wire format or keeping the provider response buffer.
+func (u *ResponsesResponseUsage) PreserveTokenCountZeros(data []byte, inputPath, outputPath string) {
+	if u == nil {
+		return
+	}
+	counts := BifrostLLMUsage{PromptTokens: u.InputTokens, CompletionTokens: u.OutputTokens}
+	counts.PreserveTokenCountZeros(data, inputPath, outputPath)
+	u.InputTokensExplicitZero = counts.PromptTokensExplicitZero
+	u.OutputTokensExplicitZero = counts.CompletionTokensExplicitZero
 }
 
 // NormalizeProviderCost mirrors BifrostLLMUsage.NormalizeProviderCost for the responses path.
