@@ -276723,7 +276723,7 @@
                   "});",
                   "pm.test('reports the flat per-request cost', function () {",
                   "  var j = pm.response.json();",
-                  "  pm.expect(j.usage && j.usage.cost && j.usage.cost.total_cost, 'no usage.cost: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(j.usage && j.usage.cost && j.usage.cost.total_cost, 'no usage.cost: ' + pm.response.text()).to.be.closeTo(0.00075, 1e-9);",
                   "});"
                 ]
               }
@@ -276816,7 +276816,7 @@
                   "});",
                   "pm.test('reports the flat per-request cost', function () {",
                   "  var j = pm.response.json();",
-                  "  pm.expect(j.usage && j.usage.cost && j.usage.cost.total_cost, 'no usage.cost: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(j.usage && j.usage.cost && j.usage.cost.total_cost, 'no usage.cost: ' + pm.response.text()).to.be.closeTo(0.00075, 1e-9);",
                   "});"
                 ]
               }
@@ -276859,7 +276859,7 @@
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
                   "});",
                   "pm.test('the error names the missing field', function () {",
-                  "  pm.expect(pm.response.text().toLowerCase(), 'unexpected body: ' + pm.response.text()).to.include('query');",
+                  "  pm.expect(pm.response.text().toLowerCase(), 'unexpected body: ' + pm.response.text()).to.include('query is required for search');",
                   "});"
                 ]
               }
