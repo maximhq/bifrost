@@ -19,6 +19,7 @@
 
 ## 🐞 Fixed
 
+- **Built-in Plugin Ordering** - A hot reload can no longer move a built-in plugin out of its canonical execution position: caller- or database-supplied placement and order (such as post_builtin/99) are ignored for built-in plugins, which always keep the builtin placement and their fixed registration order; builtinPluginNames now mirrors the loadBuiltinPlugins sequence ([@Yoel-qin](https://github.com/Yoel-qin)) (#7157)
 - **Go Module Path** - The transports module is now published as `github.com/maximhq/bifrost/transports/v2`, so `go get` resolves the `v2.x` tags (#8450)
   <Note>
   Go code that imports `github.com/maximhq/bifrost/transports/bifrost-http/...` must switch to `github.com/maximhq/bifrost/transports/v2/bifrost-http/...`.

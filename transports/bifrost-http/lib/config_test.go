@@ -386,6 +386,7 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
+	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15179,6 +15180,38 @@ func TestSetPluginOrderInfo_Defaults(t *testing.T) {
 	info = config.pluginOrderMap["plugin-c"]
 	require.Equal(t, schemas.PluginPlacementBuiltin, info.Placement)
 	require.Equal(t, 1, info.Order)
+}
+
+// TestSetPluginOrderInfo_BuiltinPluginsUseFixedOrdering pins #7157: a built-in plugin's
+// canonical placement and order survive a hot reload that supplies database-carried
+// values such as post_builtin/99. Placement controls where governance, routing, caching,
+// logging and telemetry hooks execute relative to one another, so caller-supplied values
+// must not move a built-in plugin out of its canonical execution position.
+func TestSetPluginOrderInfo_BuiltinPluginsUseFixedOrdering(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	for idx, name := range builtinPluginNames {
+		placement := schemas.PluginPlacementPostBuiltin
+		order := 99
+		config.SetPluginOrderInfo(name, &placement, &order)
+
+		info := config.pluginOrderMap[name]
+		require.Equal(t, schemas.PluginPlacementBuiltin, info.Placement, "%s must keep the builtin placement", name)
+		require.Equal(t, idx+1, info.Order, "%s must keep its canonical order from builtinPluginNames", name)
+	}
+
+	// nil placement/order must not demote a built-in plugin to the post_builtin default either.
+	config.SetPluginOrderInfo(builtinPluginNames[0], nil, nil)
+	info := config.pluginOrderMap[builtinPluginNames[0]]
+	require.Equal(t, schemas.PluginPlacementBuiltin, info.Placement)
+	require.Equal(t, 1, info.Order)
+
+	// The canonical orders must stay load-bearing neighbours of loadBuiltinPlugins: routing
+	// runs right after governance and ahead of otel there, so the derived orders must agree.
+	governanceIdx := slices.Index(builtinPluginNames, governance.PluginName)
+	otelIdx := slices.Index(builtinPluginNames, otelPlugin.PluginName)
+	require.Equal(t, routing.PluginName, builtinPluginNames[governanceIdx+1], "routing must sit right after governance")
+	require.Equal(t, governanceIdx+2, otelIdx, "otel must follow governance with exactly routing between them")
 }
 
 // TestSortAndRebuildPlugins_PlacementGroups verifies plugins sort into pre_builtin → builtin → post_builtin.

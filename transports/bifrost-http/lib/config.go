@@ -131,18 +131,22 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
-// BuiltinPluginNames is the canonical list of built-in plugin names.
+// BuiltinPluginNames is the canonical list of built-in plugin names, in registration
+// order: SetPluginOrderInfo derives each built-in plugin's canonical execution order from
+// its position here (index plus one), so this sequence must mirror the registration order
+// in server.loadBuiltinPlugins — routing runs right after governance, ahead of otel, so
+// a hot reload cannot reorder the pipeline relative to a fresh boot.
 // It is the single source of truth — update here when adding or removing a built-in plugin.
 var builtinPluginNames = []string{
 	telemetry.PluginName,
 	prompts.PluginName,
 	logging.PluginName,
 	governance.PluginName,
+	routing.PluginName,
 	otel.PluginName,
 	semanticcache.PluginName,
 	compat.PluginName,
 	maxim.PluginName,
-	routing.PluginName,
 }
 
 func GetBuiltinPluginNames() []string {
@@ -8341,12 +8345,22 @@ func (c *Config) UnregisterPlugin(name string) error {
 
 // SetPluginOrderInfo stores ordering metadata for a plugin.
 // If placement is nil, defaults to "post_builtin". If order is nil, defaults to 0.
+// Built-in plugins keep their canonical ordering instead — the "builtin" placement and
+// their index in builtinPluginNames plus one — regardless of what the caller supplies:
+// placement decides where governance, routing, caching, logging and telemetry hooks
+// execute relative to one another, so database- or caller-supplied values such as
+// post_builtin/99 must not move a built-in plugin out of position during hot reload.
 func (c *Config) SetPluginOrderInfo(name string, placement *schemas.PluginPlacement, order *int) {
 	c.pluginsMu.Lock()
 	defer c.pluginsMu.Unlock()
 
 	if c.pluginOrderMap == nil {
 		c.pluginOrderMap = make(map[string]pluginOrderInfo)
+	}
+
+	if idx := slices.Index(builtinPluginNames, name); idx >= 0 {
+		c.pluginOrderMap[name] = pluginOrderInfo{Placement: schemas.PluginPlacementBuiltin, Order: idx + 1}
+		return
 	}
 
 	p := schemas.PluginPlacementPostBuiltin
