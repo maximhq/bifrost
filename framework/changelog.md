@@ -1,1 +1,2 @@
+- fix: logstore builds without cgo again [@jeremym-tanium](https://github.com/jeremym-tanium)
 - chore: upgraded Go to 1.27.3 and core to v1.13.1
