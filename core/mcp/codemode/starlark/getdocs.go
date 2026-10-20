@@ -274,7 +274,7 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 		sb.WriteString("    Example:\n")
 		sb.WriteString(fmt.Sprintf("        r = %s.%s(%s)\n", clientName, toolName, getExampleParams(tool.Function.Parameters)))
 		sb.WriteString("        print(type(r))  # check the shape before indexing it\n")
-		sb.WriteString("        result = r.get(\"key\") if type(r) == \"dict\" else r\n")
+		sb.WriteString("        result = r.get(\"key\") if type(r) == \"dict\" else type(r)\n")
 		sb.WriteString("    \"\"\"\n")
 		sb.WriteString("    ...\n\n")
 	}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1891,6 +1892,26 @@ func TestStubsDescribeResultShapes(t *testing.T) {
 	}
 	if strings.Contains(docs, "print(result)") {
 		t.Errorf("getToolDocs still tells the model to print a whole response, got:\n%s", docs)
+	}
+	// result is appended to the reply, so the example must not hand back a whole response of any shape.
+	var exampleResult string
+	for _, line := range strings.Split(docs, "\n") {
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "result = ") {
+			exampleResult = trimmed
+		}
+	}
+	if exampleResult == "" {
+		t.Fatalf("getToolDocs example assigns no result, got:\n%s", docs)
+	}
+	for _, response := range []string{`["a", "b", "c"]`, `"plain text"`, `{"other": 1}`} {
+		run := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "r = "+response+"\n"+exampleResult, nil, nil)
+		if run.Errors != nil {
+			t.Fatalf("example %q fails for r = %s: %s", exampleResult, response, run.Errors.Message)
+		}
+		whole := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "result = "+response, nil, nil)
+		if reflect.DeepEqual(run.Result, whole.Result) {
+			t.Errorf("example %q returns the whole response for r = %s", exampleResult, response)
+		}
 	}
 }
 
