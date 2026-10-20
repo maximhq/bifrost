@@ -3595,6 +3595,66 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 	require.NotEmpty(t, byName["filesystem_tools"].ConfigHash)
 }
 
+// TestMergeMCPConfig_ToolSyncIntervalAndTimeoutEditsSyncFromFile: an edit to only
+// tool_sync_interval or tool_execution_timeout on an existing config.json client
+// must update the stored client on restart, not keep the stored row.
+func TestMergeMCPConfig_ToolSyncIntervalAndTimeoutEditsSyncFromFile(t *testing.T) {
+	initTestLogger()
+
+	tests := []struct {
+		name  string
+		edit  func(c *schemas.MCPClientConfig)
+		check func(t *testing.T, row tables.TableMCPClient)
+	}{
+		{
+			name: "tool_sync_interval",
+			edit: func(c *schemas.MCPClientConfig) { c.ToolSyncInterval = 60 * time.Second },
+			check: func(t *testing.T, row tables.TableMCPClient) {
+				require.Equal(t, 60, row.ToolSyncInterval)
+			},
+		},
+		{
+			name: "tool_execution_timeout",
+			edit: func(c *schemas.MCPClientConfig) { c.ToolExecutionTimeout = 45 * time.Second },
+			check: func(t *testing.T, row tables.TableMCPClient) {
+				require.Equal(t, 45, row.ToolExecutionTimeout)
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := func() *schemas.MCPClientConfig {
+				return &schemas.MCPClientConfig{
+					Name:             "echo_http",
+					ConnectionType:   schemas.MCPConnectionTypeHTTP,
+					ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
+					ToolsToExecute:   schemas.WhiteList{"*"},
+				}
+			}
+
+			stored := client()
+			stored.ID = "mcp-existing"
+			storedRow, err := mcpClientConfigToTable(stored)
+			require.NoError(t, err)
+			stored.ConfigHash, err = configstore.GenerateMCPClientHash(storedRow)
+			require.NoError(t, err)
+			store := NewMockConfigStore()
+			store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{stored}}
+
+			fileClient := client()
+			tc.edit(fileClient)
+			fileMCP := &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{fileClient}}
+
+			cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			mergeMCPConfig(context.Background(), cfg, &ConfigData{MCP: fileMCP}, store.mcpConfig)
+
+			require.Len(t, store.mcpClientConfigUpdates, 1, "an edit to only %s in config.json must update the stored client", tc.name)
+			require.Equal(t, "mcp-existing", store.mcpClientConfigUpdates[0].ID)
+			tc.check(t, store.mcpClientConfigUpdates[0].Config)
+		})
+	}
+}
+
 // TestSourceOfTruthConfigJSON_MCPMissingLeavesDBUntouched verifies missing mcp does not prune DB MCP clients.
 func TestSourceOfTruthConfigJSON_MCPMissingLeavesDBUntouched(t *testing.T) {
 	initTestLogger()

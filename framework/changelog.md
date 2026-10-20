@@ -1,3 +1,4 @@
+[fix]: config.json MCP clients sync tool_sync_interval and tool_execution_timeout edits on restart (#8730) [@ykakade](https://github.com/ykakade)
 - feat: openapimcp package synthesizes an MCP server from an OpenAPI document, and the config store persists openapi_config (#8308, #8309)
 - feat: passthroughparse package parses passthrough bodies into typed requests, rebuilds streamed responses, summarizes multipart uploads and infers the request type; streaming exports its chat and Responses message builders (#8517, #8518, #8519, #8520, #8522, #8523, #8524)
 - feat: rssfeed package and rss_feeds config store table (#8537)

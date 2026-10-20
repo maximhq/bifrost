@@ -68,6 +68,31 @@ func TestGenerateMCPClientHash_EndpointSlug(t *testing.T) {
 	assert.Equal(t, hash("my-slug"), hash("My Slug"), "spellings of the same slug must hash the same")
 }
 
+// TestGenerateMCPClientHash_ToolSyncIntervalAndExecutionTimeout: 0 (use the global setting) leaves
+// the hash exactly as before these fields were hashed (no mass re-sync of stored clients), and a
+// declared or changed value drifts it, so an edit to only these fields in config.json is synced.
+func TestGenerateMCPClientHash_ToolSyncIntervalAndExecutionTimeout(t *testing.T) {
+	hash := func(syncIntervalSeconds, executionTimeoutSeconds int) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{
+			Name:                 "client",
+			ConnectionType:       "http",
+			AuthType:             "headers",
+			ToolSyncInterval:     syncIntervalSeconds,
+			ToolExecutionTimeout: executionTimeoutSeconds,
+		})
+		require.NoError(t, err)
+		return h
+	}
+
+	assert.Equal(t, "4e079178fdf0b46b348e3f1b415589e6bd519a73a280faf9200ad204ad389edf", hash(0, 0),
+		"unset values must not move existing stored hashes")
+	assert.NotEqual(t, hash(0, 0), hash(60, 0), "declaring tool_sync_interval must drift the hash")
+	assert.NotEqual(t, hash(60, 0), hash(120, 0), "changing tool_sync_interval must drift the hash")
+	assert.NotEqual(t, hash(0, 0), hash(0, 30), "declaring tool_execution_timeout must drift the hash")
+	assert.NotEqual(t, hash(0, 30), hash(0, 45), "changing tool_execution_timeout must drift the hash")
+	assert.NotEqual(t, hash(60, 0), hash(0, 60), "the two fields must not hash the same")
+}
+
 // TestGenerateKeyHash_OAuthKeyConfigIsOrderIndependent pins that an unchanged OAuth key hashes
 // the same on every call. extra_params is a map; an encoder that walks it in iteration order
 // makes the hash differ between restarts, and reconcileProviderKeys then treats the stored key
