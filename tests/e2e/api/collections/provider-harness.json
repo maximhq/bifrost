@@ -276696,6 +276696,187 @@
           }
         }
       ]
+    },
+    {
+      "name": "262. Responses web_search_call replay keeps its status (web-search-call-status)",
+      "description": "Pins #8382. status is a required field of OpenAI's web_search_call input item. Codex replays each completed search as {type, status, action}, and strict Responses backends (the Codex backend behind CLIProxyAPI) reject the item without it: 400 \"Missing required parameter: 'input[38].status'.\". ToOpenAIResponsesRequest stripped status from every web_search_call input item, so the replayed search lost it before it reached the provider. A valid web_search_call status (in_progress, searching, completed, failed) is now kept. The item id is still stripped.\n\napi.openai.com accepts the item without status (see folder 127), so the status code alone cannot show the bug. Each case reads extra_fields.raw_request (x-bf-send-back-raw-request) and asserts status \"completed\" on the outgoing web_search_call. Pre-fix the outgoing item had no status, so every case is red before the fix and green after.",
+      "item": [
+        {
+          "name": "262.1 openai/gpt-4o-mini /openai/v1/responses replayed web_search_call keeps status on the wire - web-search-call-status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('openai native web_search_call replay: 200 and no missing-status rejection - web-search-call-status', function () {",
+                  "  pm.expect(txt, 'provider rejected the replayed web_search_call: ' + txt.slice(0, 400)).to.not.match(/input\\[\\d+\\]\\.status/);",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('openai native web_search_call replay: status completed reaches the OpenAI wire - web-search-call-status', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var items = ((rr && rr.input) || []).filter(function (it) { return it && it.type === 'web_search_call'; });",
+                  "  pm.expect(items, 'the replayed web_search_call must reach the wire: ' + wire.slice(0, 400)).to.have.length(1);",
+                  "  pm.expect(items[0].status, 'pre-fix signature: the converter stripped status: ' + wire.slice(0, 400)).to.equal('completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"store\":false,\"max_output_tokens\":16,\"input\":[{\"role\":\"user\",\"content\":\"Search the web for example.com.\"},{\"type\":\"web_search_call\",\"id\":\"ws_replay_probe\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"example.com\"}},{\"role\":\"user\",\"content\":\"Reply with OK only.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.2 openai/gpt-4o-mini /v1/responses replayed web_search_call keeps status on the wire - web-search-call-status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('openai web_search_call replay: 200 and no missing-status rejection - web-search-call-status', function () {",
+                  "  pm.expect(txt, 'provider rejected the replayed web_search_call: ' + txt.slice(0, 400)).to.not.match(/input\\[\\d+\\]\\.status/);",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('openai web_search_call replay: status completed reaches the OpenAI wire - web-search-call-status', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var items = ((rr && rr.input) || []).filter(function (it) { return it && it.type === 'web_search_call'; });",
+                  "  pm.expect(items, 'the replayed web_search_call must reach the wire: ' + wire.slice(0, 400)).to.have.length(1);",
+                  "  pm.expect(items[0].status, 'pre-fix signature: the converter stripped status: ' + wire.slice(0, 400)).to.equal('completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"store\":false,\"max_output_tokens\":16,\"input\":[{\"role\":\"user\",\"content\":\"Search the web for example.com.\"},{\"type\":\"web_search_call\",\"id\":\"ws_replay_probe\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"example.com\"}},{\"role\":\"user\",\"content\":\"Reply with OK only.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.3 openai/gpt-4o-mini /v1/responses streaming replayed web_search_call keeps status on the wire - web-search-call-status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('openai stream web_search_call replay: 200 SSE that reaches response.completed - web-search-call-status', function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + txt.slice(0, 400)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('event-stream');",
+                  "  pm.expect(txt, 'provider rejected the replayed web_search_call: ' + txt.slice(0, 400)).to.not.match(/input\\[\\d+\\]\\.status/);",
+                  "  pm.expect(txt, txt.slice(-800)).to.include('response.completed');",
+                  "});",
+                  "var terminal = null;",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (ev && ev.type === 'response.completed') { terminal = ev; }",
+                  "});",
+                  "var rr = terminal && terminal.extra_fields && terminal.extra_fields.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('openai stream web_search_call replay: status completed reaches the OpenAI wire - web-search-call-status', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var items = ((rr && rr.input) || []).filter(function (it) { return it && it.type === 'web_search_call'; });",
+                  "  pm.expect(items, 'the replayed web_search_call must reach the wire: ' + wire.slice(0, 400)).to.have.length(1);",
+                  "  pm.expect(items[0].status, 'pre-fix signature: the converter stripped status: ' + wire.slice(0, 400)).to.equal('completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"store\":false,\"max_output_tokens\":16,\"input\":[{\"role\":\"user\",\"content\":\"Search the web for example.com.\"},{\"type\":\"web_search_call\",\"id\":\"ws_replay_probe\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"example.com\"}},{\"role\":\"user\",\"content\":\"Reply with OK only.\"}],\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

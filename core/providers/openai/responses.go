@@ -727,7 +727,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
-		// Strip it, with three exceptions. message is a value copy, so the caller's input is
+		// Strip it, with four exceptions. message is a value copy, so the caller's input is
 		// untouched.
 		switch {
 		case message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeApplyPatchCall ||
@@ -747,6 +747,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// An assistant message that keeps its id is a ResponseOutputMessageParam, where
 			// id and status are both required. Dropping only the status leaves an item that
 			// matches neither input shape, and strict validators reject it.
+		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeWebSearchCall &&
+			message.Status != nil &&
+			(*message.Status == "in_progress" || *message.Status == "searching" ||
+				*message.Status == "completed" || *message.Status == "failed"):
+			// status is required on a web_search_call input item. Strict Responses backends
+			// (the Codex backend) reject a replayed search without it: "Missing required
+			// parameter: input[N].status". Only a value this item accepts is kept.
 		default:
 			message.Status = nil
 		}
