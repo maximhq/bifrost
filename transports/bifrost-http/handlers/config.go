@@ -84,6 +84,22 @@ func getPasswordPolicyFailures(password string) []string {
 	return failures
 }
 
+// adminPasswordPreservesStored reports whether the submitted admin password is a
+// client-side placeholder that must not overwrite the stored credential. The redacted
+// echo of the admin password is always a full sentinel (see getConfig: "<redacted>" /
+// FullyRedacted), never the prefix-preserving star mask, so the star shape is not
+// accepted here — a legitimate password that happens to match the mask pattern is a
+// new credential, not an unchanged echo.
+func adminPasswordPreservesStored(password *schemas.SecretVar) bool {
+	if password == nil {
+		return true
+	}
+	if password.IsFromSecret() {
+		return false
+	}
+	return password.GetValue() == "" || password.IsSentinelPlaceholder()
+}
+
 // ConfigManager is the interface for the config manager
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
@@ -463,7 +479,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				return
 			}
 			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" ||
-				payload.AuthConfig.AdminPassword == nil || payload.AuthConfig.AdminPassword.GetValue() == "" || payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+				payload.AuthConfig.AdminPassword == nil || payload.AuthConfig.AdminPassword.GetValue() == "" || adminPasswordPreservesStored(payload.AuthConfig.AdminPassword) {
 				SendError(ctx, fasthttp.StatusBadRequest, "auth username and password must be provided")
 				return
 			}
@@ -1098,9 +1114,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		} else {
 			// Compare with existing config using value comparison (not pointer comparison)
 			// Password is considered changed when it was intentionally submitted —
-			// ShouldPreserveStored() returns false for both plain values and secret refs.
+			// adminPasswordPreservesStored() returns false for both plain values and secret refs.
 			passwordChanged := payload.AuthConfig.AdminPassword != nil &&
-				!payload.AuthConfig.AdminPassword.ShouldPreserveStored()
+				!adminPasswordPreservesStored(payload.AuthConfig.AdminPassword)
 			usernameChanged := payload.AuthConfig.AdminUserName != nil &&
 				!payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
 			if payload.AuthConfig.IsEnabled != authConfig.IsEnabled ||
@@ -1152,7 +1168,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 			// Fetching current Auth config
 			if payload.AuthConfig.AdminUserName.GetValue() != "" {
-				if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+				if adminPasswordPreservesStored(payload.AuthConfig.AdminPassword) {
 					if authConfig == nil || authConfig.AdminPassword.GetValue() == "" {
 						SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
 						return
@@ -1182,7 +1198,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		} else if authConfig != nil {
 			// Auth is being disabled (or kept disabled) over an existing config - preserve the
 			// credentials that were not resubmitted and update the disabled state.
-			passwordReplaced := !payload.AuthConfig.AdminPassword.ShouldPreserveStored()
+			passwordReplaced := !adminPasswordPreservesStored(payload.AuthConfig.AdminPassword)
 			if !passwordReplaced {
 				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
 			}

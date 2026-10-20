@@ -276696,6 +276696,140 @@
           }
         }
       ]
+    },
+    {
+      "name": "262. Star-shaped admin password stored as a credential (admin-star-password)",
+      "description": "Deterministic, free fixture pin for #6413. The admin password's redacted echo is always a full sentinel (<redacted>, see GET /api/config), never the prefix-preserving star mask, so a submitted password that merely matches the 4-chars + 24 asterisks + 4-chars mask shape is a new credential and must be validated, hashed and stored instead of being silently preserved-over. Pre-fix, PUT /api/config answers 400 (username and password must be provided) and the login with that password answers 401. The openai keyword is only a harness filter label; no provider calls are made. The folder enables dashboard auth for three consecutive serial requests and disables it again in the last one, so within a parallel full run the enabled window is sub-second; the scoped verification is make run-provider-harness-test PROVIDER=openai FEATURE=\"admin-star-password\".",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai admin-star-password: PUT /api/config stores a star-mask-shaped admin password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Pre-fix the star-mask shape is misread as an unchanged redacted echo and the save is",
+                  "// silently discarded with 400 auth username and password must be provided.",
+                  "pm.test('admin-star-password: PUT /api/config answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('admin-star-password: the star-shaped password is not called a placeholder', function () {",
+                  "  pm.expect(txt, 'failed: ' + txt.slice(0, 400)).to.not.include('must be provided');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7}, \"auth_config\": {\"is_enabled\": true, \"admin_username\": \"harness-star-admin\", \"admin_password\": \"Aa1b************************cdef\", \"setup_token\": \"bifrost-e2e-setup-token\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai admin-star-password: login accepts the star-mask-shaped password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The issue repro step: after the save above, the submitted password must actually sign in.",
+                  "pm.test('admin-star-password: login with the star-shaped password answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\": \"harness-star-admin\", \"password\": \"Aa1b************************cdef\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/session/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "session",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai admin-star-password: PUT /api/config disables dashboard auth (cleanup)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Leave dashboard auth disabled so the rest of the harness run is unaffected.",
+                  "pm.test('admin-star-password: cleanup PUT /api/config answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7}, \"auth_config\": {\"is_enabled\": false, \"admin_username\": \"harness-star-admin\", \"admin_password\": \"Aa1b************************cdef\", \"setup_token\": \"bifrost-e2e-setup-token\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

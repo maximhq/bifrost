@@ -1159,6 +1159,50 @@ func TestUpdateConfig_FirstAdminStillRequiresSetupToken(t *testing.T) {
 	}
 }
 
+// TestUpdateConfig_StarShapedAdminPasswordTreatedAsNewCredential pins #6413: the redacted
+// echo of the admin password is always a full sentinel ("<redacted>", see getConfig), never
+// the prefix-preserving star mask, so a submitted password that merely matches the
+// 4-chars + 24 asterisks + 4-chars mask shape must be stored as a new credential instead
+// of being silently preserved-over. The legitimate "<redacted>" echo must still preserve
+// the stored credential.
+func TestUpdateConfig_StarShapedAdminPasswordTreatedAsNewCredential(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const (
+		storedUser = "admin"
+		storedPass = "Current-Pass-1234!"
+		starShaped = "Aa1b************************cdef"
+	)
+	store := newRealOAuth2Store(t)
+	hash, err := encrypt.Hash(storedPass)
+	require.NoError(t, err)
+	require.NoError(t, store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar(storedUser),
+		AdminPassword: schemas.NewSecretVar(hash),
+		IsEnabled:     true,
+	}))
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store}}
+
+	// Authenticated save submitting a new password that matches the star-mask shape.
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":true,"admin_username":"` + storedUser + `","admin_password":"` + starShaped + `"}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+	stored, err := store.GetAuthConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	ok, _ := encrypt.CompareHash(stored.AdminPassword.GetValue(), starShaped)
+	assert.True(t, ok, "a password matching the star-mask shape must be stored as a new credential, not silently ignored")
+
+	// The unchanged "<redacted>" echo still preserves the stored credential.
+	ctx = putConfigCtx(`{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":true,"admin_username":"` + storedUser + `","admin_password":"<redacted>"}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+	stored, err = store.GetAuthConfig(context.Background())
+	require.NoError(t, err)
+	ok, _ = encrypt.CompareHash(stored.AdminPassword.GetValue(), starShaped)
+	assert.True(t, ok, `the "<redacted>" echo must preserve the stored password`)
+}
+
 // recordingToolManagerConfig records the code mode limits handed to the MCP hot reload.
 type recordingToolManagerConfig struct {
 	stubConfigManager

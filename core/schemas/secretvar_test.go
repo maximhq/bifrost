@@ -555,6 +555,74 @@ func TestSecretVar_IsRedacted(t *testing.T) {
 	}
 }
 
+func TestSecretVar_IsSentinelPlaceholder(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *SecretVar
+		expected bool
+	}{
+		{
+			name:     "nil",
+			input:    nil,
+			expected: false,
+		},
+		{
+			name:     "empty",
+			input:    &SecretVar{},
+			expected: false,
+		},
+		{
+			name:     "redacted sentinel",
+			input:    &SecretVar{Val: "<redacted>"},
+			expected: true,
+		},
+		{
+			name:     "uppercase redacted sentinel",
+			input:    &SecretVar{Val: "<REDACTED>"},
+			expected: true,
+		},
+		{
+			name:     "mixed case redacted sentinel",
+			input:    &SecretVar{Val: "<Redacted>"},
+			expected: true,
+		},
+		{
+			name:     "scim redacted sentinel",
+			input:    &SecretVar{Val: "[REDACTED]"},
+			expected: true,
+		},
+		{
+			name:     "star mask shape is not a sentinel",
+			input:    &SecretVar{Val: "sk-1************************mnop"},
+			expected: false,
+		},
+		{
+			name:     "short all asterisks is not a sentinel",
+			input:    &SecretVar{Val: "****"},
+			expected: false,
+		},
+		{
+			name:     "normal value",
+			input:    &SecretVar{Val: "sk-test-key"},
+			expected: false,
+		},
+		{
+			name:     "sentinel text in an env reference stays a ref, not a placeholder",
+			input:    &SecretVar{Val: "<redacted>", ref: "env.KEY", SecretType: SecretTypeEnv},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.input.IsSentinelPlaceholder()
+			if result != tt.expected {
+				t.Errorf("Expected IsSentinelPlaceholder=%v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
 // TestSecretVar_IsSet verifies the semantic difference between GetValue() != "" and IsSet().
 // IsSet() must return true when the SecretVar references an env var or vault secret
 // (regardless of whether the reference has been resolved to a non-empty Val).

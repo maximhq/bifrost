@@ -19,6 +19,7 @@
 
 ## 🐞 Fixed
 
+- **Admin Passwords Matching the Redaction Mask** - A submitted admin password that happens to match the prefix-preserving star mask shape (4 chars, 24 asterisks, 4 chars) is now validated, hashed and stored instead of being silently treated as an unchanged redacted echo. The unchanged echo itself remains the full `<redacted>` sentinel ([@Yoel-qin](https://github.com/Yoel-qin)) (#6413)
 - **Go Module Path** - The transports module is now published as `github.com/maximhq/bifrost/transports/v2`, so `go get` resolves the `v2.x` tags (#8450)
   <Note>
   Go code that imports `github.com/maximhq/bifrost/transports/bifrost-http/...` must switch to `github.com/maximhq/bifrost/transports/v2/bifrost-http/...`.
