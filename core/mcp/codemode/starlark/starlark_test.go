@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1892,6 +1893,26 @@ func TestStubsDescribeResultShapes(t *testing.T) {
 	if strings.Contains(docs, "print(result)") {
 		t.Errorf("getToolDocs still tells the model to print a whole response, got:\n%s", docs)
 	}
+	// result is appended to the reply, so the example must not hand back a whole response of any shape.
+	var exampleResult string
+	for _, line := range strings.Split(docs, "\n") {
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "result = ") {
+			exampleResult = trimmed
+		}
+	}
+	if exampleResult == "" {
+		t.Fatalf("getToolDocs example assigns no result, got:\n%s", docs)
+	}
+	for _, response := range []string{`["a", "b", "c"]`, `"plain text"`, `{"other": 1}`} {
+		run := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "r = "+response+"\n"+exampleResult, nil, nil)
+		if run.Errors != nil {
+			t.Fatalf("example %q fails for r = %s: %s", exampleResult, response, run.Errors.Message)
+		}
+		whole := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "result = "+response, nil, nil)
+		if reflect.DeepEqual(run.Result, whole.Result) {
+			t.Errorf("example %q returns the whole response for r = %s", exampleResult, response)
+		}
+	}
 }
 
 // A code mode server bound as "json" keeps that name in the sandbox, so the stubs must not point
@@ -2187,6 +2208,24 @@ func TestExecuteToolCodeDescriptionMatchesTheSandbox(t *testing.T) {
 	}
 	if strings.Contains(description, "cannot be caught") {
 		t.Errorf("description still says tool failures cannot be caught:\n%s", description)
+	}
+
+	// print() output and result both reach the reply, so the text must say so and its example
+	// must not print the data it then returns: models copy the example and pay for the data twice.
+	tool := newSearchCodeMode(searchToolSchema()).createExecuteToolCodeTool()
+	codeProp, _ := tool.Function.Parameters.Properties.Get("code")
+	codeDescription := codeProp.(map[string]interface{})["description"].(string)
+	for _, text := range []string{description, codeDescription} {
+		if !strings.Contains(text, "never print a value you also assign to 'result'") && !strings.Contains(text, "send each piece of data through only one of them") {
+			t.Errorf("text does not say print output and result both reach the reply:\n%s", text)
+		}
+	}
+	_, example, ok := strings.Cut(codeDescription, "Example: ")
+	if !ok {
+		t.Fatalf("code description has no example:\n%s", codeDescription)
+	}
+	if strings.Contains(example, "print(item") || strings.Contains(example, "result = items") {
+		t.Errorf("example prints the data it returns:\n%s", example)
 	}
 
 	_, rest, ok := strings.Cut(description, "AVAILABLE BUILTINS: ")

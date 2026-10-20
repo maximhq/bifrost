@@ -52,10 +52,11 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 	executeToolCodeProps := schemas.NewOrderedMapFromPairs(
 		schemas.KV("code", map[string]interface{}{
 			"type": "string",
-			"description": "Python (Starlark) code to execute. Tool calls are synchronous: result = server.tool(param=\"value\"). " +
-				"Use print() for logging. Assign to 'result' variable to return a value. " +
+			"description": "Python (Starlark) code to execute. Tool calls are synchronous: r = server.tool(param=\"value\"). " +
+				"The reply carries both the print() output and the 'result' variable (as JSON), so send each piece of data through only one of them: " +
+				"print() short per-step notes such as counts or ids, and assign the data you need to 'result'. " +
 				"Retry after fixing syntax or logic errors, especially for read-only flows. Before rerunning code that already made tool calls, inspect prior outputs and avoid replaying stateful operations. " +
-				"Example: items = server.list_items()\nfor item in items:\n    print(item[\"name\"])\nresult = items",
+				"Example: items = server.list_items()\nprint(\"fetched %d items\" % len(items))\nresult = [item[\"name\"] for item in items]",
 		}),
 	)
 	return schemas.ChatTool{
@@ -64,7 +65,7 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 			Name: codemcp.ToolTypeExecuteToolCode,
 			Description: schemas.Ptr(
 				"Executes Python code in a sandboxed Starlark interpreter with MCP server tool access. " +
-					"Servers are exposed as global objects: result = serverName.toolName(param=\"value\"). " +
+					"Servers are exposed as global objects: r = serverName.toolName(param=\"value\"). " +
 					"This is the final step of the four-tool code mode workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode. " +
 					"If you have not already read a tool's .pyi stub in this conversation, do that before writing code. " +
 					"Do NOT guess callable tool names from natural language or stale assumptions; use the exact identifier returned by listToolFiles/readToolFile. " +
@@ -78,15 +79,14 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"6. Each executeToolCode call runs in a FRESH ISOLATED SCOPE — no variables, functions, or state persist between calls. Re-fetch data or store it via MCP tools (e.g., SQLite, FileSystem) if needed across calls. " +
 
 					"SYNTAX NOTES: " +
-					"• Synchronous calls — NO async/await: result = server.tool(arg=\"value\") " +
+					"• Synchronous calls — NO async/await: r = server.tool(arg=\"value\") " +
 					"• Use keyword arguments: server.tool(param=\"value\") NOT server.tool({\"param\": \"value\"}) " +
 					"• Access dict values with brackets: result[\"key\"] NOT result.key (a failed call's r.error is the exception) " +
-					"• Use print() for logging/debugging " +
+					"• Output: the reply holds everything print() wrote, then the value of 'result' as JSON. print() short notes, put the data in 'result', and never print a value you also assign to 'result' " +
 					"• List comprehensions: [x for x in items if x[\"active\"]] " +
 					"• String escapes work normally: \"line1\\nline2\" produces a newline " +
 					"• Triple-quoted strings for multiline: \"\"\"multi\\nline\"\"\" " +
 					"• chr(10) for newline character, chr(9) for tab " +
-					"• To return a value, assign to 'result': result = computed_value " +
 					"• MCP tool calls are timeout-limited; avoid long or infinite loops " +
 
 					"AVAILABLE BUILTINS: print, len, range, enumerate, zip, sorted, reversed, min, max, " +
@@ -183,7 +183,7 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 				responseText = completionLine(result.FailedToolCalls)
 			}
 			if hasResult {
-				resultJSON, err := schemas.MarshalSortedIndent(result.Result, "", "  ")
+				resultJSON, err := formatReturnValue(result.Result)
 				if err == nil {
 					responseText += fmt.Sprintf("\nReturn value: %s", string(resultJSON))
 					s.logger.Debug("%s Added return value to response (JSON length: %d chars)", codemcp.CodeModeLogPrefix, len(resultJSON))
@@ -238,6 +238,16 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 
 // completionLine closes the reply of a run that finished. A nested call that returned an
 // error does not stop the script, so the line says so rather than claiming a clean run.
+// returnValueAPI renders the return value appended to every successful reply. Keys are sorted
+// so the same value yields the same bytes (prompt caching); output is compact and not HTML-escaped
+// because the reply is model input, where indentation and \u0026-style escapes only add tokens.
+var returnValueAPI = sonic.Config{SortMapKeys: true, ValidateString: true}.Froze()
+
+// formatReturnValue marshals the script's result variable for the reply.
+func formatReturnValue(v interface{}) ([]byte, error) {
+	return returnValueAPI.Marshal(v)
+}
+
 func completionLine(failedCalls int) string {
 	switch failedCalls {
 	case 0:
