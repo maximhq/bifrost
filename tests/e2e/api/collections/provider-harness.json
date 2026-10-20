@@ -276696,6 +276696,66 @@
           }
         }
       ]
+    },
+    {
+      "name": "262. Code mode returns the result variable as compact JSON (code-mode-reply)",
+      "description": "A successful executeToolCode reply carries the print() output and then the result variable. The result used to be indented JSON with HTML escaping (& as \\u0026), which inflated every reply that clients such as LibreChat resend on later turns. Pins: the result is compact, key-sorted, not HTML-escaped, and still follows the print output. Local computation in the in-process interpreter; no provider requests.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-reply result is compact unescaped JSON after the print output",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode-reply result is compact unescaped JSON after the print output', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(content, 'print output missing: ' + content).to.include('Print output:\\nfetched 2 rows\\n');",
+                  "  pm.expect(content, 'result is not compact, sorted JSON: ' + content).to.include('Return value: {\"rows\":[{\"id\":1},{\"id\":2}],\"url\":\"https://example.com/?a=1&b=<2>\"}');",
+                  "  pm.expect(content, 'result is still HTML-escaped: ' + content).to.not.include('\\\\u0026');",
+                  "  pm.expect(content.indexOf('Print output:'), 'result comes before the print output: ' + content).to.be.below(content.indexOf('Return value:'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-reply-compact\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"print(\\\\\\\"fetched 2 rows\\\\\\\")\\\\nresult = {\\\\\\\"url\\\\\\\": \\\\\\\"https://example.com/?a=1&b=<2>\\\\\\\", \\\\\\\"rows\\\\\\\": [{\\\\\\\"id\\\\\\\": 1}, {\\\\\\\"id\\\\\\\": 2}]}\\\"}\"\n  }\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

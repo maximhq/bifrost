@@ -2189,6 +2189,24 @@ func TestExecuteToolCodeDescriptionMatchesTheSandbox(t *testing.T) {
 		t.Errorf("description still says tool failures cannot be caught:\n%s", description)
 	}
 
+	// print() output and result both reach the reply, so the text must say so and its example
+	// must not print the data it then returns: models copy the example and pay for the data twice.
+	tool := newSearchCodeMode(searchToolSchema()).createExecuteToolCodeTool()
+	codeProp, _ := tool.Function.Parameters.Properties.Get("code")
+	codeDescription := codeProp.(map[string]interface{})["description"].(string)
+	for _, text := range []string{description, codeDescription} {
+		if !strings.Contains(text, "never print a value you also assign to 'result'") && !strings.Contains(text, "send each piece of data through only one of them") {
+			t.Errorf("text does not say print output and result both reach the reply:\n%s", text)
+		}
+	}
+	_, example, ok := strings.Cut(codeDescription, "Example: ")
+	if !ok {
+		t.Fatalf("code description has no example:\n%s", codeDescription)
+	}
+	if strings.Contains(example, "print(item") || strings.Contains(example, "result = items") {
+		t.Errorf("example prints the data it returns:\n%s", example)
+	}
+
 	_, rest, ok := strings.Cut(description, "AVAILABLE BUILTINS: ")
 	if !ok {
 		t.Fatalf("description lists no builtins:\n%s", description)
