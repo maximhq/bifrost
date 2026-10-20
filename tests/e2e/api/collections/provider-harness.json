@@ -276700,7 +276700,7 @@
 ,
     {
       "name": "262. DeepSeek Search and Fetch tools (#8710)",
-      "description": "DeepSeek ships two standalone web-access endpoints beside its model API: POST /v1/tools/search (query, count, ori_question, localization, need_content) and POST /v1/tools/fetch (url). Neither is OpenAI-shaped and neither takes a model, so Bifrost exposes them as their own operations at DeepSeek's paths, routes a supplied model as a gateway-only handle, and defaults to DeepSeek when no model is present. Search and Fetch are billed flat at $0.75 per 1,000 successful requests, which the provider reports on usage.cost. Rows: (1) a search with an explicit model returns results and a per-request cost; (2) a search with no model at all still routes to deepseek; (3) fetch returns page markdown and a per-request cost; (4) a blank query is rejected by the gateway before any upstream call. Run with FEATURE=\"deepseek tools\".",
+      "description": "DeepSeek ships two standalone web-access endpoints beside its model API: POST /v1/tools/search (query, max_results, include_content, plus DeepSeek's ori_question and localization as extra fields) and POST /v1/tools/fetch (url). Neither is OpenAI-shaped and neither takes a model, so Bifrost exposes them as their own operations at DeepSeek's paths, routes a supplied model as a gateway-only handle, and defaults to DeepSeek when no model is present. Search and Fetch are billed flat at $0.75 per 1,000 successful requests, which the provider reports on usage.cost. Rows: (1) a search with an explicit model returns results and a per-request cost; (2) a search with no model at all still routes to deepseek; (3) fetch returns page markdown and a per-request cost; (4) a blank query is rejected by the gateway before any upstream call. Run with FEATURE=\"deepseek tools\".",
       "item": [
         {
           "name": "262.1 deepseek/deepseek-v4-flash search returns ranked results (deepseek tools)",
@@ -276739,7 +276739,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"query\": \"bifrost llm gateway\",\n  \"count\": 3\n}"
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"query\": \"bifrost llm gateway\",\n  \"max_results\": 3\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/tools/search",
@@ -276783,7 +276783,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"query\": \"bifrost llm gateway\",\n  \"count\": 1\n}"
+              "raw": "{\n  \"query\": \"bifrost llm gateway\",\n  \"max_results\": 1\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/tools/search",
