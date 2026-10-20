@@ -7,6 +7,7 @@
 - feat: code mode adds the json and math Starlark modules, returns failed tool calls as error values, trims replies to what the script prints and returns, and adds tracebacks and accurate error hints (#8605, #8606, #8607, #8692, #8693)
 - feat: spans carry the stored prompt (bifrost.prompt.id/name/version), MCP client name and bifrost.mcp.tool.is_error, and the inbound W3C tracestate; A2A operations export complete observability data (#8575, #8681, #8682, #8683)
 - feat: Antigravity CLI and Antigravity Desktop user agent detection (#8543)
+- fix: Anthropic chat streams no longer merge server tool input (tool search, web search) into the first tool call's arguments (thanks [@mo-radwan1](https://github.com/mo-radwan1)!)
 - fix: Anthropic tool_reference blocks in a client tool_result survive for custom tool search (thanks [@CMWR421](https://github.com/CMWR421)!) (#7813)
 - fix: Claude server tool search blocks replay unchanged (#8555)
 - fix: Bedrock creates a cache point for Anthropic automatic caching and emits a standalone cachePoint after toolResult (#8573, #8595)

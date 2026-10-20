@@ -2263,6 +2263,94 @@ func TestToBifrostChatCompletionStream_MixedToolBlocks(t *testing.T) {
 	}
 }
 
+// TestToBifrostChatCompletionStream_ServerToolInputSkipped replays the event
+// order Claude streams when it runs a server tool (tool search, web search)
+// before calling a client tool. The server_tool_use block streams its input
+// as input_json_delta but never gets a tool-call index, so its input must not
+// reach the client: before the fix it was emitted on tool call 0 and merged
+// into the real tool call's arguments.
+func TestToBifrostChatCompletionStream_ServerToolInputSkipped(t *testing.T) {
+	cases := []struct {
+		name       string
+		serverName string
+		resultType AnthropicContentBlockType
+		inputFrags []string
+	}{
+		{
+			name:       "tool search",
+			serverName: "tool_search_tool_bm25",
+			resultType: AnthropicContentBlockTypeToolSearchToolResult,
+			inputFrags: []string{`{"query": "ji`, `ra issue"}`},
+		},
+		{
+			name:       "web search",
+			serverName: "web_search",
+			resultType: AnthropicContentBlockTypeWebSearchToolResult,
+			inputFrags: []string{`{"query": "DATAGO`, ` release notes"}`},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state := NewAnthropicStreamState()
+
+			textIdx, serverIdx, resultIdx, toolIdx := 0, 1, 2, 3
+			serverID := "srvtoolu_01"
+			toolID, toolName := "toolu_01", "get_jira_issue"
+			text := "Let me look that up."
+			argFrags := []string{`{"issue_k`, `ey": "DATAGO-1"}`}
+
+			events := []*AnthropicStreamEvent{
+				{Type: AnthropicStreamEventTypeContentBlockStart, Index: &textIdx, ContentBlock: &AnthropicContentBlock{Type: AnthropicContentBlockTypeText}},
+				{Type: AnthropicStreamEventTypeContentBlockDelta, Index: &textIdx, Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeText, Text: &text}},
+				{Type: AnthropicStreamEventTypeContentBlockStop, Index: &textIdx},
+				{Type: AnthropicStreamEventTypeContentBlockStart, Index: &serverIdx, ContentBlock: &AnthropicContentBlock{Type: AnthropicContentBlockTypeServerToolUse, ID: &serverID, Name: &tc.serverName}},
+			}
+			for i := range tc.inputFrags {
+				events = append(events, &AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockDelta, Index: &serverIdx, Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: &tc.inputFrags[i]}})
+			}
+			events = append(events,
+				&AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStop, Index: &serverIdx},
+				&AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStart, Index: &resultIdx, ContentBlock: &AnthropicContentBlock{Type: tc.resultType}},
+				&AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStop, Index: &resultIdx},
+				&AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStart, Index: &toolIdx, ContentBlock: &AnthropicContentBlock{Type: AnthropicContentBlockTypeToolUse, ID: &toolID, Name: &toolName}},
+			)
+			for i := range argFrags {
+				events = append(events, &AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockDelta, Index: &toolIdx, Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeInputJSON, PartialJSON: &argFrags[i]}})
+			}
+			events = append(events, &AnthropicStreamEvent{Type: AnthropicStreamEventTypeContentBlockStop, Index: &toolIdx})
+
+			args := map[uint16]string{}
+			ids := map[uint16]string{}
+			for _, ev := range events {
+				r, bErr, _ := ev.ToBifrostChatCompletionStream(nil, "", state)
+				if bErr != nil {
+					t.Fatalf("unexpected error: %v", bErr)
+				}
+				if r == nil {
+					continue
+				}
+				for _, call := range r.Choices[0].ChatStreamResponseChoice.Delta.ToolCalls {
+					args[call.Index] += call.Function.Arguments
+					if call.ID != nil {
+						ids[call.Index] = *call.ID
+					}
+				}
+			}
+
+			if len(args) != 1 {
+				t.Fatalf("got %d tool calls, want 1: %#v", len(args), args)
+			}
+			if ids[0] != toolID {
+				t.Errorf("tool call 0 id = %q, want %q", ids[0], toolID)
+			}
+			if want := `{"issue_key": "DATAGO-1"}`; args[0] != want {
+				t.Errorf("tool call 0 arguments = %q, want %q", args[0], want)
+			}
+		})
+	}
+}
+
 // TestToAnthropicChatRequest_PromotesThinkingFromExtraParams pins that Anthropic's
 // native top-level "thinking" object survives the unified /v1/chat/completions
 // route. The unified request schema has no "thinking" field, so it decodes into
