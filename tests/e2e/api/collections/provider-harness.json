@@ -321,7 +321,7 @@
           "  // JSON or multipart body, or from the path on the Gemini-shaped routes, up to the last colon since",
           "  // a Bedrock id can contain one. Only standard provider names count as a prefix: a namespaced",
           "  // model such as meta-llama/Llama-3.1-8B names no provider, and a custom provider is not known here.",
-          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe'];",
+          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'nearai'];",
           "  var __model = null;",
           "  try {",
           "    var __raw = pm.request && pm.request.body && pm.request.body.mode === 'raw' ? pm.request.body.raw : '';",
@@ -276691,6 +276691,411 @@
                 "model",
                 "azure%2Fgpt-5.6-luna",
                 "converse"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "262. NEAR AI Cloud provider (nearai-cloud)",
+      "description": "NEAR AI Cloud is an OpenAI-compatible provider at https://cloud-api.near.ai with Bearer auth. Bifrost routes:\n\n  chat / chat streaming / tools  -> /v1/chat/completions\n  text completions               -> /v1/completions\n  Responses + streaming          -> /v1/chat/completions (converted; NEAR AI's /v1/responses is not OpenAI wire-compatible)\n  embeddings                     -> /v1/embeddings\n  list models                    -> /v1/models\n\nThe Responses case reads raw_request back and requires a chat-shaped body (messages, no input), so a regression to NEAR AI's non-compatible /v1/responses fails it. Rerank, images and transcription are served by NEAR AI but not routed by Bifrost yet; they return unsupported_operation and are pinned by Go unit tests instead.",
+      "item": [
+        {
+          "name": "nearai/z-ai/glm-5.3-flash /v1/chat/completions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('nearai chat completes with the OpenAI usage object', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.eql(200);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.choices, 'no choices returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(json.usage, 'usage missing; NEAR AI returns the OpenAI usage object: ' + body).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"nearai/z-ai/glm-5.3-flash\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"What is 2+2? Answer with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "nearai/z-ai/glm-5.3-flash /v1/chat/completions streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('nearai chat stream emits OpenAI-shaped SSE chunks', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.eql(200);",
+                  "  pm.expect(body, 'no SSE data frames: ' + body.slice(0, 300)).to.include('data:');",
+                  "  pm.expect(body, 'no chat.completion.chunk objects in the stream: ' + body.slice(0, 300)).to.include('chat.completion.chunk');",
+                  "  pm.expect(body, 'stream carried an error: ' + body.slice(0, 400)).to.not.include('\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"nearai/z-ai/glm-5.3-flash\",\"max_tokens\":32,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Count to three.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "nearai/z-ai/glm-5.3-flash /v1/chat/completions tool call",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('nearai tool calls survive the OpenAI-compatible round trip', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.eql(200);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.tool_calls, 'no tool_calls returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(msg.tool_calls[0].function.name).to.eql('get_weather');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"nearai/z-ai/glm-5.3-flash\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\"tool_choice\":\"auto\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "nearai/Qwen/Qwen3.8-27B /v1/completions text completion",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('nearai legacy text completion returns choices[].text', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.eql(200);",
+                  "  var choices = pm.response.json().choices;",
+                  "  pm.expect(choices, 'no choices returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(choices[0].text, 'choices[0].text is empty; Qwen3.8 spends a small budget reasoning: ' + body).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"nearai/Qwen/Qwen3.8-27B\",\"max_tokens\":64,\"prompt\":\"The capital of France is\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "nearai/z-ai/glm-5.3-flash /v1/responses through chat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var json = {};",
+                  "try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "var rr = (json.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('nearai Responses request completes with output items', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + txt).to.eql(200);",
+                  "  pm.expect(json.output, 'no output items returned: ' + txt).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('nearai Responses request is converted to chat completions, not sent to NEAR AI /v1/responses', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.messages, 'raw_request has no chat messages; the request reached NEAR AI /v1/responses: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(rr.input, 'raw_request carries a Responses input field; the request reached NEAR AI /v1/responses: ' + JSON.stringify(rr).slice(0, 400)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"nearai/z-ai/glm-5.3-flash\",\"max_output_tokens\":64,\"input\":\"What is 2+2? Answer with just the number.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "nearai/z-ai/glm-5.3-flash /v1/responses streaming through chat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('nearai Responses stream emits response.created and response.completed', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.eql(200);",
+                  "  pm.expect(body, 'no response.created event: ' + body.slice(0, 300)).to.include('response.created');",
+                  "  pm.expect(body, 'no response.completed event: ' + body.slice(-300)).to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"nearai/z-ai/glm-5.3-flash\",\"max_output_tokens\":64,\"stream\":true,\"input\":\"Count to three.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "nearai/Qwen/Qwen3-Embedding-0.6B /v1/embeddings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('nearai embeddings return a vector', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.eql(200);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.data, 'no embedding data returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(json.data[0].embedding, 'embedding vector is empty: ' + body.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"nearai/Qwen/Qwen3-Embedding-0.6B\",\"input\":\"What is NEAR AI Cloud?\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "nearai /v1/models lists chat and embedding models",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('nearai list models returns the NEAR AI catalog with the provider prefix', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.eql(200);",
+                  "  var ids = (pm.response.json().data || []).map(function (m) { return m.id; });",
+                  "  pm.expect(ids, 'chat model missing: ' + body.slice(0, 600)).to.include('nearai/z-ai/glm-5.3-flash');",
+                  "  pm.expect(ids, 'embedding model missing: ' + body.slice(0, 600)).to.include('nearai/Qwen/Qwen3-Embedding-0.6B');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=nearai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "nearai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] nearai/does-not-exist/model /v1/chat/completions unknown model surfaces the upstream error",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('nearai unknown model is reported as a client error carrying the upstream message', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'expected a 4xx for an unknown model; got: ' + body).to.be.within(400, 499);",
+                  "  var json = {};",
+                  "  try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "  var message = (json.error || {}).message;",
+                  "  pm.expect(message, 'the NEAR AI error message was not surfaced: ' + body).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"nearai/does-not-exist/model\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
               ]
             }
           }

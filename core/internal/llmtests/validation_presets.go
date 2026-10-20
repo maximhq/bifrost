@@ -499,6 +499,10 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true
 
+	case schemas.NearAI:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveLatency = true
+
 	case schemas.OpenRouter:
 		// OpenRouter proxies to multiple providers; returns OpenAI-compatible fields
 		expectations.ShouldHaveUsageStats = true

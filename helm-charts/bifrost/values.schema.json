@@ -1290,7 +1290,8 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "cloudflare"
+                        "cloudflare",
+                        "nearai"
                       ]
                     },
                     "embedding_model": {

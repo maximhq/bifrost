@@ -1,0 +1,186 @@
+---
+title: "NEAR AI"
+description: "NEAR AI Cloud API conversion guide - OpenAI-compatible private inference with chat, Responses, text completions, embeddings, and streaming"
+icon: "n"
+---
+
+## Overview
+
+[NEAR AI Cloud](https://docs.near.ai/cloud/) serves open-weight and frontier models through an **OpenAI-compatible API** at `https://cloud-api.near.ai/v1`, with hosted open-weight models running in GPU trusted execution environments. Bifrost delegates every supported operation to the shared OpenAI provider implementation. Key characteristics:
+- **OpenAI compatibility** - Chat Completions, Responses, legacy Completions, Embeddings, and Models
+- **Responses API** - Served through the chat completions endpoint with format conversion
+- **Tool calling and structured outputs** - Function definitions and `json_schema` response formats
+- **Streaming** - Server-Sent Events for chat, text completions, and Responses
+- **Reasoning** - Reasoning models return `reasoning_content` and report reasoning tokens in usage
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| Text Completions | ✅ | ✅ | `/v1/completions` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| List Models | ✅ | - | `/v1/models` |
+| Rerank | ❌ | - | - |
+| Image Generation / Edit | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): NEAR AI Cloud also serves rerank, image generation and edits, and audio transcription, but Bifrost does not route them to NEAR AI yet. Speech, Files, and Batch are not offered by NEAR AI Cloud. All of these return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Create an API key in the [NEAR AI Cloud console](https://cloud.near.ai), then configure NEAR AI as a provider. Model IDs use NEAR AI's own names, for example `nearai/z-ai/glm-5.3-flash` or `nearai/Qwen/Qwen3-Embedding-0.6B`.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **NEAR AI** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **NEAR AI**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.NEARAI_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "nearai": {
+      "keys": [
+        {
+          "name": "nearai-key-1",
+          "value": "env.NEARAI_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.NearAI:
+    return []schemas.Key{{
+        Name:   "nearai-key-1",
+        Value:  *schemas.NewSecretVar("env.NEARAI_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+The default base URL is `https://cloud-api.near.ai`. Override it with `network_config.base_url` only if you route NEAR AI traffic through your own proxy.
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+NEAR AI accepts the standard OpenAI chat completion parameters. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+### Filtered Parameters
+
+Bifrost removes OpenAI-only parameters before sending the request, as it does for other OpenAI-compatible providers:
+- `prompt_cache_key`, `prompt_cache_retention` - OpenAI prompt caching
+- `prediction` - OpenAI predicted outputs
+- `verbosity` - OpenAI-specific
+- `store` - NEAR AI stores no conversation history
+- `service_tier` - OpenAI-specific
+
+### Reasoning
+
+`reasoning.effort` is mapped to `reasoning_effort` per the OpenAI-compatible providers convention. Whether a model honors it depends on the model and its route on NEAR AI; see [NEAR AI reasoning models](https://docs.near.ai/cloud/reasoning-models). Reasoning models return their reasoning in `reasoning_content`, and reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens`.
+
+---
+
+# 2. Responses API
+
+Bifrost converts Responses API requests to Chat Completions internally, then converts the response back:
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+Same parameter support as Chat Completions, with Responses output items instead of message content. Bifrost does not call NEAR AI's own `/v1/responses` endpoint because it is not wire-compatible with OpenAI's: reasoning output items carry `content` and `summary` as strings instead of arrays, streams emit a non-standard `response.reasoning.delta` event, and Responses-style `tool_choice` objects are rejected.
+
+---
+
+# 3. Text Completions
+
+NEAR AI supports the legacy text completion API:
+
+| Parameter | Mapping |
+|-----------|---------|
+| `prompt` | Sent as-is |
+| `max_tokens` | max_tokens |
+| `temperature` | temperature |
+| `top_p` | top_p |
+| `stop` | stop sequences |
+
+Response returns `choices[].text` with completion text. Streaming text completions use the same SSE format as chat streaming.
+
+---
+
+# 4. Embeddings
+
+Embedding requests go to `/v1/embeddings` in the standard OpenAI format, for example with `Qwen/Qwen3-Embedding-0.6B`. NEAR AI can also back [semantic caching](/features/semantic-caching) as its embedding provider.
+
+---
+
+# 5. List Models
+
+Lists the models NEAR AI Cloud currently serves from `/v1/models`. The endpoint returns both models hosted by NEAR AI and models it relays from other labs (for example `anthropic/...`, `openai/...`, and `google/...` IDs).
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Rerank | Served by NEAR AI, not yet routed by Bifrost |
+| Image Generation / Edit | Served by NEAR AI, not yet routed by Bifrost |
+| Transcription/STT | Served by NEAR AI, not yet routed by Bifrost |
+| Speech/TTS | Not offered by NEAR AI Cloud |
+| Batch Operations | Not offered by NEAR AI Cloud |
+| File Management | Not offered by NEAR AI Cloud |
+
+---
+
+## Caveats
+
+<Accordion title="Feature Support Varies by Model">
+**Severity**: Medium
+**Behavior**: NEAR AI relays some models to their original labs, so a feature can work on one model and not another. For example, the `deepseek/...` route rejects `json_schema` response formats, and reasoning models such as `z-ai/glm-5.3-flash` spend part of `max_tokens` on reasoning before producing text
+**Impact**: Structured output requests can fail on some routes, and small token budgets can return empty text from reasoning models
+**Code**: Bifrost forwards these parameters unchanged; configure [fallbacks](/features/retries-and-fallbacks) or pick a model that supports the feature
+</Accordion>
+
+<Accordion title="Model ID Casing">
+**Severity**: Low
+**Behavior**: NEAR AI model IDs are case-sensitive and spell some labs both ways (for example `Qwen/Qwen3.8-27B` and `qwen/qwen3.7-max`)
+**Impact**: A model ID with the wrong casing is rejected by NEAR AI
+**Code**: Bifrost passes the model ID through unchanged
+</Accordion>
