@@ -1,6 +1,7 @@
 package deepseek_test
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -574,10 +575,11 @@ func TestSearch_SendsDocumentedContractAndReportsPerRequestCost(t *testing.T) {
 	needContent := false
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	resp, bifrostErr := provider.Search(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostSearchRequest{
-		Provider:    schemas.DeepSeek,
-		Query:       "bifrost gateway",
-		Count:       &count,
-		NeedContent: &needContent,
+		Provider:       schemas.DeepSeek,
+		Query:          "bifrost gateway",
+		MaxResults:     &count,
+		IncludeContent: &needContent,
+		ExtraParams:    map[string]interface{}{"ori_question": "  what is bifrost  ", "localization": "203.0.113.7"},
 	})
 	if bifrostErr != nil {
 		t.Fatalf("Search: %v", bifrostErr.Error.Message)
@@ -602,6 +604,14 @@ func TestSearch_SendsDocumentedContractAndReportsPerRequestCost(t *testing.T) {
 	if sent["need_content"] != false {
 		t.Fatalf("need_content = %v, want false", sent["need_content"])
 	}
+	// DeepSeek's own options reach the wire without the caller opting into extra-params
+	// passthrough, trimmed as their bounds are checked.
+	if sent["ori_question"] != "what is bifrost" {
+		t.Fatalf("ori_question = %v, want the trimmed question", sent["ori_question"])
+	}
+	if sent["localization"] != "203.0.113.7" {
+		t.Fatalf("localization = %v, want the caller's value", sent["localization"])
+	}
 	// The upstream contract carries no model; a routing model must never leak onto the wire.
 	if _, present := sent["model"]; present {
 		t.Fatalf("model must not be sent to the tools API, got %v", sent["model"])
@@ -614,11 +624,17 @@ func TestSearch_SendsDocumentedContractAndReportsPerRequestCost(t *testing.T) {
 	if result.Title != "Bifrost" || result.URL != "https://example.com/a" {
 		t.Fatalf("result = %+v, want the upstream title and url", result)
 	}
-	if result.Authority == nil || *result.Authority != 3 {
-		t.Fatalf("authority = %v, want 3", result.Authority)
+	if result.Snippet != "short" {
+		t.Fatalf("snippet = %q, want the upstream snippet", result.Snippet)
 	}
-	if result.Date == nil || *result.Date != "2026-10-18T00:00:00Z" {
-		t.Fatalf("date = %v, want the upstream RFC 3339 string", result.Date)
+	if result.Score == nil || *result.Score != 1.5 {
+		t.Fatalf("score = %v, want the upstream rerank_score", result.Score)
+	}
+	if result.PublishedAt == nil || *result.PublishedAt != "2026-10-18T00:00:00Z" {
+		t.Fatalf("published_at = %v, want the upstream RFC 3339 string", result.PublishedAt)
+	}
+	if result.ProviderFields["authority"] != 3 || result.ProviderFields["summary"] != "longer" || result.ProviderFields["site_name"] != "Example" {
+		t.Fatalf("provider_fields = %v, want authority, summary and site_name under DeepSeek's names", result.ProviderFields)
 	}
 	if resp.Usage == nil || resp.Usage.Cost == nil {
 		t.Fatal("Usage.Cost must be reported so the gateway can price a model-less call")
@@ -824,5 +840,71 @@ func TestTools_PreservesUpstreamErrors(t *testing.T) {
 				t.Fatalf("message = %+v, want it to carry the upstream text", bifrostErr.Error)
 			}
 		})
+	}
+}
+
+// A neutral filter DeepSeek cannot honour is refused before the call, never dropped: a caller
+// who asked for one domain must not be billed for results from every domain.
+func TestSearch_RefusesWhatDeepSeekCannotHonour(t *testing.T) {
+	t.Parallel()
+
+	provider, err := newTestDeepSeekProvider("http://127.0.0.1:1")
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	fiftyOne := 51
+	after := "2026-01-01"
+	for _, tc := range []struct {
+		name    string
+		request schemas.BifrostSearchRequest
+	}{
+		{"query above 128 characters", schemas.BifrostSearchRequest{Query: strings.Repeat("a", 129)}},
+		{"max_results above 50", schemas.BifrostSearchRequest{Query: "q", MaxResults: &fiftyOne}},
+		{"domain filter", schemas.BifrostSearchRequest{Query: "q", IncludeDomains: []string{"go.dev"}}},
+		{"date filter", schemas.BifrostSearchRequest{Query: "q", PublishedAfter: &after}},
+		{"blank ori_question", schemas.BifrostSearchRequest{Query: "q", ExtraParams: map[string]interface{}{"ori_question": "  "}}},
+		{"ori_question not a string", schemas.BifrostSearchRequest{Query: "q", ExtraParams: map[string]interface{}{"ori_question": 3}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			request := tc.request
+			request.Provider = schemas.DeepSeek
+			_, bifrostErr := provider.Search(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &request)
+			if bifrostErr == nil {
+				t.Fatal("expected a refusal")
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
+			}
+		})
+	}
+}
+
+// fasthttp returns response buffers to a pool when a call ends, so the body must be decoded into
+// one the call owns: read raw, a gzipped answer does not decode, and a pooled one can be
+// overwritten by the next request.
+func TestSearch_DecodesACompressedResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		zw := gzip.NewWriter(w)
+		_, _ = io.WriteString(zw, `{"results":[{"title":"Bifrost","url":"https://example.com/a"}]}`)
+		_ = zw.Close()
+	}))
+	t.Cleanup(server.Close)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Search(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostSearchRequest{Provider: schemas.DeepSeek, Query: "q"})
+	if bifrostErr != nil {
+		t.Fatalf("Search: %v", bifrostErr.Error.Message)
+	}
+	if len(resp.Results) != 1 || resp.Results[0].URL != "https://example.com/a" {
+		t.Fatalf("results = %+v, want the decoded page", resp.Results)
 	}
 }

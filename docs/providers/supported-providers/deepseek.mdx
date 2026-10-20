@@ -54,14 +54,21 @@ routing handle (`deepseek/deepseek-chat`) when a virtual key's allowlist needs o
 ```bash
 curl -X POST http://localhost:8080/v1/tools/search \
   -H "Content-Type: application/json" \
-  -d '{"query":"lang:en after:2026-01-01 go generics","count":5}'
+  -d '{"query":"lang:en after:2026-01-01 go generics","max_results":5}'
 ```
 
-Search accepts `query` (1-128 characters, required), `count` (1-50, default 10),
-`ori_question` (the user's original question, improves query understanding),
-`localization` (an IP address used to localize results), and `need_content` (return page
-text in each result). Query operators pass through: `site:`, `-site:`, `-term`,
-`"exact phrase"`, `lang:`, `after:` and `before:`.
+Search takes the provider-neutral request: `query` (required; DeepSeek allows 1-128
+characters) and `max_results` (DeepSeek allows 1-50, default 10), and `include_content`
+returns page text in each result. DeepSeek has no domain or date filters, so
+`include_domains`, `exclude_domains`, `published_after` and `published_before` are refused
+with a 400; use the query operators instead: `site:`, `-site:`, `-term`, `"exact phrase"`,
+`lang:`, `after:` and `before:`. DeepSeek's own options are sent as top-level fields:
+`ori_question` (the user's original question, 1-128 characters, improves query
+understanding) and `localization` (an IP address used to localize results).
+
+Each result carries `url`, `title`, `snippet`, `content`, `published_at` and `score`
+(DeepSeek's `rerank_score`, 0-3). DeepSeek's `summary`, `site_name`, `site_icon` and
+`authority` (0-4, -1 when unknown) are in `provider_fields`.
 
 ```bash
 curl -X POST http://localhost:8080/v1/tools/fetch \

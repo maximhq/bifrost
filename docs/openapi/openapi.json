@@ -2225,7 +2225,7 @@
       "post": {
         "operationId": "searchWeb",
         "summary": "Search the web",
-        "description": "Runs a web search through DeepSeek's Search API and returns ranked pages.\n\nThis is a web call, not an inference call: it carries no model upstream and is billed\nat a flat rate per successful request rather than per token. Omit `model` and the\ngateway routes to DeepSeek; a `model` is accepted only as a routing handle for\nvirtual-key allowlists.\n",
+        "description": "Runs a web search through the routed provider and returns ranked pages in one shape\nfor every provider.\n\nThis is a web call, not an inference call: it carries no model upstream and is priced\nper request from the cost the provider reports. Omit `model` and the gateway routes to\nDeepSeek; a `model` is accepted only as a routing handle for virtual-key allowlists.\n",
         "tags": [
           "Web Tools"
         ],
@@ -89944,6 +89944,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "bucket_size",
+            "in": "query",
+            "description": "Bucket width in seconds, overriding the width derived from the time range. Requires start_time and end_time (or period). Below an hour it must divide 3600; from an hour up it must be a whole number of hours, at most 31 days. The window may span at most 5000 buckets.",
+            "schema": {
+              "type": "integer",
+              "minimum": 60
+            }
           }
         ],
         "security": [
@@ -116993,6 +117002,8 @@
         "required": [
           "query"
         ],
+        "description": "A provider-neutral web search. Each provider refuses a bound or filter it cannot honour\nwith a 400 rather than dropping it. Options only one provider has (DeepSeek's\n`ori_question` and `localization`) are sent as additional top-level fields.\n",
+        "additionalProperties": true,
         "properties": {
           "model": {
             "type": "string",
@@ -117002,38 +117013,48 @@
           "query": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 128,
-            "description": "Search query. Passes DeepSeek's operators through unchanged: site:, -site:, -term,\n\"exact phrase\", lang:, after: and before:.\n",
-            "example": "lang:en after:2026-01-01 go generics"
+            "description": "Search query. Providers bound its length differently (DeepSeek: 128 characters) and\nsome pass operators through unchanged.\n",
+            "example": "go generics"
           },
-          "count": {
+          "max_results": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 50,
-            "default": 10,
-            "description": "Number of results to return. Does not affect price."
+            "description": "Number of results to return. Providers cap it differently (DeepSeek: 50)."
           },
-          "ori_question": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-            "description": "The user's original question, used to improve query understanding."
-          },
-          "localization": {
-            "type": "string",
-            "description": "An IP address used to localize results."
-          },
-          "need_content": {
+          "include_content": {
             "type": "boolean",
             "default": false,
             "description": "When true, each result carries page text in content. Increases response size."
+          },
+          "include_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Only return results from these domains."
+          },
+          "exclude_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Never return results from these domains."
+          },
+          "published_after": {
+            "type": "string",
+            "description": "Only return pages published after this RFC 3339 date or date-time.",
+            "example": "2026-01-01"
+          },
+          "published_before": {
+            "type": "string",
+            "description": "Only return pages published before this RFC 3339 date or date-time."
           },
           "fallbacks": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Fallback providers and models in provider/model format."
+            "description": "Fallback providers, each a provider name alone or provider/model. An unknown provider is refused."
           }
         }
       },
@@ -117070,43 +117091,38 @@
       },
       "SearchResult": {
         "type": "object",
+        "required": [
+          "url"
+        ],
         "properties": {
-          "title": {
+          "url": {
             "type": "string"
           },
-          "url": {
+          "title": {
             "type": "string"
           },
           "snippet": {
             "type": "string",
-            "description": "Display-length excerpt."
-          },
-          "summary": {
-            "type": "string",
-            "description": "A 600-800 character summary shaped for a model."
+            "description": "Display-length excerpt, when the provider returns one."
           },
           "content": {
             "type": "string",
-            "description": "Page text, present only when need_content was true."
+            "description": "Page text, present only when include_content was true."
           },
-          "site_name": {
-            "type": "string"
-          },
-          "site_icon": {
-            "type": "string"
-          },
-          "date": {
+          "published_at": {
             "type": "string",
             "nullable": true,
             "description": "RFC 3339 publication date, or null when unknown."
           },
-          "authority": {
-            "type": "integer",
-            "description": "0-4 source authority, -1 when unknown. 3 or above is authoritative."
-          },
-          "rerank_score": {
+          "score": {
             "type": "number",
-            "description": "0-3 relevance score. 1.5 or above is considered high quality."
+            "nullable": true,
+            "description": "The provider's own relevance score. Not comparable across providers."
+          },
+          "provider_fields": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "What only this provider returns, under its own names. DeepSeek: summary, site_name,\nsite_icon and authority (0-4, -1 when unknown).\n"
           }
         }
       },
@@ -117131,7 +117147,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Fallback providers and models in provider/model format."
+            "description": "Fallback providers, each a provider name alone or provider/model. An unknown provider is refused."
           }
         }
       },

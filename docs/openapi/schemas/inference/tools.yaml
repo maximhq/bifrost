@@ -1,4 +1,4 @@
-# DeepSeek web tools schemas (Search and Fetch)
+# Web tools schemas (Search and Fetch)
 #
 # Neither operation takes a model upstream. "model" is accepted only as a gateway routing
 # handle so a virtual key's allowlist has something to gate on.
@@ -7,6 +7,11 @@ SearchRequest:
   type: object
   required:
     - query
+  description: |
+    A provider-neutral web search. Each provider refuses a bound or filter it cannot honour
+    with a 400 rather than dropping it. Options only one provider has (DeepSeek's
+    `ori_question` and `localization`) are sent as additional top-level fields.
+  additionalProperties: true
   properties:
     model:
       type: string
@@ -17,65 +22,70 @@ SearchRequest:
     query:
       type: string
       minLength: 1
-      maxLength: 128
       description: |
-        Search query. Passes DeepSeek's operators through unchanged: site:, -site:, -term,
-        "exact phrase", lang:, after: and before:.
-      example: 'lang:en after:2026-01-01 go generics'
-    count:
+        Search query. Providers bound its length differently (DeepSeek: 128 characters) and
+        some pass operators through unchanged.
+      example: go generics
+    max_results:
       type: integer
       minimum: 1
-      maximum: 50
-      default: 10
-      description: Number of results to return. Does not affect price.
-    ori_question:
-      type: string
-      minLength: 1
-      maxLength: 128
-      description: The user's original question, used to improve query understanding.
-    localization:
-      type: string
-      description: An IP address used to localize results.
-    need_content:
+      description: 'Number of results to return. Providers cap it differently (DeepSeek: 50).'
+    include_content:
       type: boolean
       default: false
       description: When true, each result carries page text in content. Increases response size.
+    include_domains:
+      type: array
+      items:
+        type: string
+      description: Only return results from these domains.
+    exclude_domains:
+      type: array
+      items:
+        type: string
+      description: Never return results from these domains.
+    published_after:
+      type: string
+      description: Only return pages published after this RFC 3339 date or date-time.
+      example: '2026-01-01'
+    published_before:
+      type: string
+      description: Only return pages published before this RFC 3339 date or date-time.
     fallbacks:
       type: array
       items:
         type: string
-      description: Fallback providers and models in provider/model format.
+      description: Fallback providers, each a provider name alone or provider/model. An unknown provider is refused.
 
 SearchResult:
   type: object
+  required:
+    - url
   properties:
-    title:
-      type: string
     url:
+      type: string
+    title:
       type: string
     snippet:
       type: string
-      description: Display-length excerpt.
-    summary:
-      type: string
-      description: A 600-800 character summary shaped for a model.
+      description: Display-length excerpt, when the provider returns one.
     content:
       type: string
-      description: Page text, present only when need_content was true.
-    site_name:
-      type: string
-    site_icon:
-      type: string
-    date:
+      description: Page text, present only when include_content was true.
+    published_at:
       type: string
       nullable: true
       description: RFC 3339 publication date, or null when unknown.
-    authority:
-      type: integer
-      description: 0-4 source authority, -1 when unknown. 3 or above is authoritative.
-    rerank_score:
+    score:
       type: number
-      description: 0-3 relevance score. 1.5 or above is considered high quality.
+      nullable: true
+      description: The provider's own relevance score. Not comparable across providers.
+    provider_fields:
+      type: object
+      additionalProperties: true
+      description: |
+        What only this provider returns, under its own names. DeepSeek: summary, site_name,
+        site_icon and authority (0-4, -1 when unknown).
 
 SearchResponse:
   type: object
@@ -116,7 +126,7 @@ FetchRequest:
       type: array
       items:
         type: string
-      description: Fallback providers and models in provider/model format.
+      description: Fallback providers, each a provider name alone or provider/model. An unknown provider is refused.
 
 FetchResponse:
   type: object

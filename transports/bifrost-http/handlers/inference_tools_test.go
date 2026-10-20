@@ -34,7 +34,7 @@ func TestPrepareSearchRequest_DefaultsToDeepSeekWithoutAModel(t *testing.T) {
 
 func TestPrepareSearchRequest_CarriesOptionalFields(t *testing.T) {
 	req, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search",
-		`{"model":"deepseek/deepseek-chat","query":"lang:en after:2026-01-01 go generics","count":3,"ori_question":"how do generics work","localization":"203.0.113.7","need_content":true}`), nil)
+		`{"model":"deepseek/deepseek-chat","query":"go generics","max_results":3,"include_content":true,"include_domains":["go.dev"],"exclude_domains":["example.com"],"published_after":"2026-01-01","published_before":"2026-10-01T00:00:00Z"}`), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,17 +44,39 @@ func TestPrepareSearchRequest_CarriesOptionalFields(t *testing.T) {
 	if req.Model != "deepseek-chat" {
 		t.Fatalf("model = %q, want the routing model without its provider prefix", req.Model)
 	}
-	if req.Count == nil || *req.Count != 3 {
-		t.Fatalf("count = %v, want 3", req.Count)
+	if req.MaxResults == nil || *req.MaxResults != 3 {
+		t.Fatalf("max_results = %v, want 3", req.MaxResults)
 	}
-	if req.OriQuestion == nil || *req.OriQuestion != "how do generics work" {
-		t.Fatalf("ori_question = %v", req.OriQuestion)
+	if req.IncludeContent == nil || !*req.IncludeContent {
+		t.Fatalf("include_content = %v, want true", req.IncludeContent)
 	}
-	if req.Localization == nil || *req.Localization != "203.0.113.7" {
-		t.Fatalf("localization = %v", req.Localization)
+	if len(req.IncludeDomains) != 1 || req.IncludeDomains[0] != "go.dev" {
+		t.Fatalf("include_domains = %v", req.IncludeDomains)
 	}
-	if req.NeedContent == nil || !*req.NeedContent {
-		t.Fatalf("need_content = %v, want true", req.NeedContent)
+	if len(req.ExcludeDomains) != 1 || req.ExcludeDomains[0] != "example.com" {
+		t.Fatalf("exclude_domains = %v", req.ExcludeDomains)
+	}
+	if req.PublishedAfter == nil || *req.PublishedAfter != "2026-01-01" {
+		t.Fatalf("published_after = %v", req.PublishedAfter)
+	}
+	if req.PublishedBefore == nil || *req.PublishedBefore != "2026-10-01T00:00:00Z" {
+		t.Fatalf("published_before = %v", req.PublishedBefore)
+	}
+}
+
+// A provider's own options are not part of the neutral shape; they reach the provider in
+// ExtraParams, which is where DeepSeek reads ori_question and localization from.
+func TestPrepareSearchRequest_CarriesProviderOptionsInExtraParams(t *testing.T) {
+	req, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search",
+		`{"query":"q","ori_question":"how do generics work","localization":"203.0.113.7"}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.ExtraParams["ori_question"] != "how do generics work" {
+		t.Fatalf("ori_question = %v, want it in ExtraParams", req.ExtraParams["ori_question"])
+	}
+	if req.ExtraParams["localization"] != "203.0.113.7" {
+		t.Fatalf("localization = %v, want it in ExtraParams", req.ExtraParams["localization"])
 	}
 }
 
@@ -65,10 +87,8 @@ func TestPrepareSearchRequest_RejectsInvalidInput(t *testing.T) {
 	}{
 		{name: "missing query", body: `{}`},
 		{name: "blank query", body: `{"query":"   "}`},
-		{name: "query too long", body: `{"query":"` + strings.Repeat("a", 129) + `"}`},
-		{name: "count below range", body: `{"query":"q","count":0}`},
-		{name: "count above range", body: `{"query":"q","count":51}`},
-		{name: "blank ori_question", body: `{"query":"q","ori_question":"  "}`},
+		{name: "published_after not a date", body: `{"query":"q","published_after":"last week"}`},
+		{name: "published_before not a date", body: `{"query":"q","published_before":"2026-13-01"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -79,27 +99,22 @@ func TestPrepareSearchRequest_RejectsInvalidInput(t *testing.T) {
 	}
 }
 
-// The bounds are checked on trimmed values, so the trimmed values are what goes upstream.
-// Sending the untrimmed text would turn a 128-character query plus whitespace into an
-// upstream 400 after the gateway had already accepted it.
-func TestPrepareSearchRequest_SendsTrimmedFields(t *testing.T) {
-	req, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search",
-		`{"query":"  bifrost gateway  ","ori_question":"  what is bifrost  "}`), nil)
+func TestPrepareSearchRequest_SendsTrimmedQuery(t *testing.T) {
+	req, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search", `{"query":"  bifrost gateway  "}`), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if req.Query != "bifrost gateway" {
 		t.Fatalf("query = %q, want the trimmed query", req.Query)
 	}
-	if req.OriQuestion == nil || *req.OriQuestion != "what is bifrost" {
-		t.Fatalf("ori_question = %v, want the trimmed question", req.OriQuestion)
-	}
 }
 
-func TestPrepareSearchRequest_AcceptsMaximumQueryLength(t *testing.T) {
-	body := `{"query":"` + strings.Repeat("a", 128) + `"}`
+// Query length and result bounds differ by provider, so the edge leaves them to the provider:
+// a 129-character query is DeepSeek's to refuse, and another provider accepts it.
+func TestPrepareSearchRequest_LeavesProviderBoundsToTheProvider(t *testing.T) {
+	body := `{"query":"` + strings.Repeat("a", 129) + `","max_results":100}`
 	if _, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search", body), nil); err != nil {
-		t.Fatalf("128 characters is the documented maximum: %v", err)
+		t.Fatalf("provider-specific bounds must not be enforced at the edge: %v", err)
 	}
 }
 
@@ -137,5 +152,33 @@ func TestPrepareFetchRequest_RejectsInvalidURLs(t *testing.T) {
 				t.Fatalf("expected %q to be rejected", tc.url)
 			}
 		})
+	}
+}
+
+// Search and Fetch name no model, so a fallback naming a provider alone is the common case and
+// must survive parsing; parseFallbacks would drop it for having no model.
+func TestToolsFallbacks_AcceptAProviderAlone(t *testing.T) {
+	search, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search", `{"query":"q","fallbacks":["deepseek","deepseek/deepseek-chat"]}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []schemas.Fallback{{Provider: schemas.DeepSeek}, {Provider: schemas.DeepSeek, Model: "deepseek-chat"}}
+	if len(search.Fallbacks) != len(want) || search.Fallbacks[0] != want[0] || search.Fallbacks[1] != want[1] {
+		t.Fatalf("search fallbacks = %+v, want %+v", search.Fallbacks, want)
+	}
+	fetch, err := prepareFetchRequest(jsonToolsCtx("/v1/tools/fetch", `{"url":"https://example.com","fallbacks":["deepseek"]}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fetch.Fallbacks) != 1 || fetch.Fallbacks[0] != want[0] {
+		t.Fatalf("fetch fallbacks = %+v, want [%+v]", fetch.Fallbacks, want[0])
+	}
+}
+
+// A fallback that names no known provider is refused, never dropped: dropping it would leave a
+// caller without the fallback it relied on and no sign that it was gone.
+func TestToolsFallbacks_RefuseAnUnknownProvider(t *testing.T) {
+	if _, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search", `{"query":"q","fallbacks":["not-a-provider"]}`), nil); err == nil {
+		t.Fatal("expected an unknown fallback provider to be refused")
 	}
 }

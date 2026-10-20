@@ -221,13 +221,15 @@ var rerankParamsKnownFields = map[string]bool{
 
 // Known fields for SearchHandlerRequest.
 var searchParamsKnownFields = map[string]bool{
-	"model":        true,
-	"fallbacks":    true,
-	"query":        true,
-	"count":        true,
-	"ori_question": true,
-	"localization": true,
-	"need_content": true,
+	"model":            true,
+	"fallbacks":        true,
+	"query":            true,
+	"max_results":      true,
+	"include_content":  true,
+	"include_domains":  true,
+	"exclude_domains":  true,
+	"published_after":  true,
+	"published_before": true,
 }
 
 // Known fields for FetchHandlerRequest.
@@ -675,11 +677,13 @@ type RerankRequest struct {
 
 // SearchHandlerRequest is a bifrost web search request.
 type SearchHandlerRequest struct {
-	Query        string  `json:"query"`
-	Count        *int    `json:"count"`
-	OriQuestion  *string `json:"ori_question"`
-	Localization *string `json:"localization"`
-	NeedContent  *bool   `json:"need_content"`
+	Query           string   `json:"query"`
+	MaxResults      *int     `json:"max_results"`
+	IncludeContent  *bool    `json:"include_content"`
+	IncludeDomains  []string `json:"include_domains"`
+	ExcludeDomains  []string `json:"exclude_domains"`
+	PublishedAfter  *string  `json:"published_after"`
+	PublishedBefore *string  `json:"published_before"`
 	BifrostParams
 }
 
@@ -1579,8 +1583,10 @@ func (h *CompletionHandler) fetch(ctx *fasthttp.RequestCtx) {
 
 // prepareSearchRequest builds a BifrostSearchRequest from the HTTP body.
 //
-// DeepSeek bounds query and ori_question at 128 Unicode characters and count at 1-50, so the
-// same bounds are rejected at the edge with a 400 instead of being sent upstream to fail.
+// Only what holds for every provider is checked here: a query, and dates a provider can parse.
+// Each provider refuses the bounds and filters it cannot honour, because those differ (DeepSeek
+// caps a query at 128 characters and has no date filter; Exa takes up to 100 results).
+// Fields outside the neutral shape, such as DeepSeek's ori_question, arrive in ExtraParams.
 func prepareSearchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostSearchRequest, error) {
 	req, base, err := prepareRequest[SearchHandlerRequest](ctx, config, searchParamsKnownFields)
 	if err != nil {
@@ -1590,32 +1596,38 @@ func prepareSearchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schema
 	if query == "" {
 		return nil, fmt.Errorf("query is required for search")
 	}
-	if len([]rune(query)) > 128 {
-		return nil, fmt.Errorf("query must be at most 128 characters")
-	}
-	if req.Count != nil && (*req.Count < 1 || *req.Count > 50) {
-		return nil, fmt.Errorf("count must be between 1 and 50")
-	}
-	var oriQuestion *string
-	if req.OriQuestion != nil {
-		trimmed := strings.TrimSpace(*req.OriQuestion)
-		if trimmed == "" || len([]rune(trimmed)) > 128 {
-			return nil, fmt.Errorf("ori_question must be between 1 and 128 characters")
+	for name, value := range map[string]*string{"published_after": req.PublishedAfter, "published_before": req.PublishedBefore} {
+		if value != nil && !isSearchDate(*value) {
+			return nil, fmt.Errorf("%s must be an RFC 3339 date or date-time", name)
 		}
-		oriQuestion = &trimmed
+	}
+	fallbacks, err := parseToolsFallbacks(req.Fallbacks)
+	if err != nil {
+		return nil, err
 	}
 	provider, model := resolveToolsRouting(base)
 	return &schemas.BifrostSearchRequest{
-		Provider:     provider,
-		Model:        model,
-		Query:        query,
-		Count:        req.Count,
-		OriQuestion:  oriQuestion,
-		Localization: req.Localization,
-		NeedContent:  req.NeedContent,
-		Fallbacks:    base.Fallbacks,
-		ExtraParams:  base.ExtraParams,
+		Provider:        provider,
+		Model:           model,
+		Query:           query,
+		MaxResults:      req.MaxResults,
+		IncludeContent:  req.IncludeContent,
+		IncludeDomains:  req.IncludeDomains,
+		ExcludeDomains:  req.ExcludeDomains,
+		PublishedAfter:  req.PublishedAfter,
+		PublishedBefore: req.PublishedBefore,
+		Fallbacks:       fallbacks,
+		ExtraParams:     base.ExtraParams,
 	}, nil
+}
+
+// isSearchDate reports whether value is an RFC 3339 date (2026-01-02) or date-time.
+func isSearchDate(value string) bool {
+	if _, err := time.Parse(time.DateOnly, value); err == nil {
+		return true
+	}
+	_, err := time.Parse(time.RFC3339, value)
+	return err == nil
 }
 
 // prepareFetchRequest builds a BifrostFetchRequest from the HTTP body.
@@ -1647,14 +1659,40 @@ func prepareFetchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas
 	if parsed.User != nil {
 		return nil, fmt.Errorf("url must not include credentials")
 	}
+	fallbacks, err := parseToolsFallbacks(req.Fallbacks)
+	if err != nil {
+		return nil, err
+	}
 	provider, model := resolveToolsRouting(base)
 	return &schemas.BifrostFetchRequest{
 		Provider:    provider,
 		Model:       model,
 		URL:         rawURL,
-		Fallbacks:   base.Fallbacks,
+		Fallbacks:   fallbacks,
 		ExtraParams: base.ExtraParams,
 	}, nil
+}
+
+// parseToolsFallbacks reads Search and Fetch fallbacks. These operations carry no model, so a
+// fallback may name a provider alone ("exa"), which parseFallbacks would drop for having no
+// model. A provider/model entry still names a routing model, as on the primary. An entry that
+// names no known provider is refused rather than dropped, so a typo never quietly removes the
+// fallback a caller relied on.
+func parseToolsFallbacks(entries []string) ([]schemas.Fallback, error) {
+	fallbacks := make([]schemas.Fallback, 0, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if schemas.IsKnownProvider(entry) {
+			fallbacks = append(fallbacks, schemas.Fallback{Provider: schemas.ModelProvider(entry)})
+			continue
+		}
+		provider, model := schemas.ParseModelString(entry, "")
+		if provider == "" || model == "" {
+			return nil, fmt.Errorf("fallback %q must name a provider, or a provider/model", entry)
+		}
+		fallbacks = append(fallbacks, schemas.Fallback{Provider: provider, Model: model})
+	}
+	return fallbacks, nil
 }
 
 // resolveToolsRouting resolves the provider for a tools request.

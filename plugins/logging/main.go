@@ -1150,9 +1150,9 @@ type LogMessage struct {
 // result content: need_content can return whole pages, so only the query and its bounds are
 // recorded.
 type toolsSearchLogParams struct {
-	Query       string `json:"query"`
-	Count       *int   `json:"count,omitempty"`
-	NeedContent *bool  `json:"need_content,omitempty"`
+	Query          string `json:"query"`
+	MaxResults     *int   `json:"max_results,omitempty"`
+	IncludeContent *bool  `json:"include_content,omitempty"`
 }
 
 // toolsFetchLogParams is the fetch request shape kept in a log row.
@@ -3655,9 +3655,9 @@ func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *sch
 	case schemas.SearchRequest:
 		if req.SearchRequest != nil {
 			initialData.Params = toolsSearchLogParams{
-				Query:       req.SearchRequest.Query,
-				Count:       req.SearchRequest.Count,
-				NeedContent: req.SearchRequest.NeedContent,
+				Query:          req.SearchRequest.Query,
+				MaxResults:     req.SearchRequest.MaxResults,
+				IncludeContent: req.SearchRequest.IncludeContent,
 			}
 		}
 	case schemas.FetchRequest:

@@ -30,6 +30,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/databricks"
 	"github.com/maximhq/bifrost/core/providers/deepseek"
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
+	"github.com/maximhq/bifrost/core/providers/exa"
 	"github.com/maximhq/bifrost/core/providers/fireworks"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/githubcopilot"
@@ -1675,11 +1676,11 @@ func (bifrost *Bifrost) SearchRequest(ctx *schemas.BifrostContext, req *schemas.
 			},
 		}
 	}
-	if req.Count != nil && (*req.Count < 1 || *req.Count > 50) {
+	if req.MaxResults != nil && *req.MaxResults < 1 {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
-				Message: "count must be between 1 and 50 for search request",
+				Message: "max_results must be at least 1 for search request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RequestType: schemas.SearchRequest,
@@ -5117,6 +5118,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return gemini.NewGeminiProvider(config, bifrost.logger), nil
 	case schemas.OpenRouter:
 		return openrouter.NewOpenRouterProvider(config, bifrost.logger), nil
+	case schemas.Exa:
+		return exa.NewExaProvider(config, bifrost.logger)
 	case schemas.Elevenlabs:
 		return elevenlabs.NewElevenlabsProvider(config, bifrost.logger), nil
 	case schemas.Nebius:
