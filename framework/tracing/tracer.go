@@ -77,6 +77,18 @@ type Tracer struct {
 	flushWG           sync.WaitGroup
 	// Trace IDs whose completion the HTTP side must skip because a worker still owns them.
 	deferredCompletions sync.Map
+	// Trace IDs whose export waits for background writers (see HoldTraceFlush).
+	// Changes take flushHoldsMu; CompleteAndFlushTrace reads lock-free and locks
+	// only when a hold exists.
+	flushHolds   sync.Map // traceID -> *flushHold
+	flushHoldsMu sync.Mutex
+}
+
+// flushHold counts a trace's background writers and records whether its flush
+// was requested while they were still writing.
+type flushHold struct {
+	count     int
+	requested bool
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
@@ -815,6 +827,80 @@ func (t *Tracer) ClearTraceCompletionDeferral(traceID string) {
 	t.deferredCompletions.Delete(traceID)
 }
 
+// HoldTraceFlush keeps CompleteAndFlushTrace from exporting the trace until the
+// returned release runs, so a background writer (e.g. an output guardrail
+// evaluating after the response was delivered) can still add spans to it. A
+// flush requested while held runs on the last release. Unlike
+// DeferTraceCompletion, the transport still completes the trace as usual; only
+// the export waits. A trace that already ended gets a no-op release.
+func (t *Tracer) HoldTraceFlush(traceID string) func() {
+	traceID = strings.TrimSpace(traceID)
+	if t == nil || traceID == "" || t.store == nil || t.store.GetTrace(traceID) == nil {
+		return func() {}
+	}
+	t.flushHoldsMu.Lock()
+	hold, _ := t.flushHolds.LoadOrStore(traceID, &flushHold{})
+	hold.(*flushHold).count++
+	t.flushHoldsMu.Unlock()
+	return sync.OnceFunc(func() { t.releaseTraceFlush(traceID) })
+}
+
+// releaseTraceFlush drops one hold and, on the last one, runs the flush that
+// was requested while the trace was held.
+func (t *Tracer) releaseTraceFlush(traceID string) {
+	t.flushHoldsMu.Lock()
+	value, ok := t.flushHolds.Load(traceID)
+	if !ok {
+		t.flushHoldsMu.Unlock()
+		return
+	}
+	hold := value.(*flushHold)
+	hold.count--
+	if hold.count > 0 {
+		t.flushHoldsMu.Unlock()
+		return
+	}
+	t.flushHolds.Delete(traceID)
+	t.flushHoldsMu.Unlock()
+	if hold.requested {
+		t.CompleteAndFlushTrace(traceID)
+	}
+}
+
+// deferHeldFlush records a flush requested while the trace is held and reports
+// whether it was held, in which case the last release runs the flush.
+func (t *Tracer) deferHeldFlush(traceID string) bool {
+	if _, ok := t.flushHolds.Load(traceID); !ok {
+		return false
+	}
+	t.flushHoldsMu.Lock()
+	defer t.flushHoldsMu.Unlock()
+	value, ok := t.flushHolds.Load(traceID)
+	if !ok {
+		return false
+	}
+	value.(*flushHold).requested = true
+	return true
+}
+
+// flushHeldTraces runs every flush still waiting on a hold, so shutdown exports
+// those traces without the late spans instead of losing them.
+func (t *Tracer) flushHeldTraces() {
+	var requested []string
+	t.flushHoldsMu.Lock()
+	t.flushHolds.Range(func(key, value any) bool {
+		t.flushHolds.Delete(key)
+		if value.(*flushHold).requested {
+			requested = append(requested, key.(string))
+		}
+		return true
+	})
+	t.flushHoldsMu.Unlock()
+	for _, traceID := range requested {
+		t.CompleteAndFlushTrace(traceID)
+	}
+}
+
 // StoreDeferredSpan stores a span handle for later completion (used for streaming requests).
 // The span handle is stored keyed by trace ID so it can be retrieved when the stream completes.
 func (t *Tracer) StoreDeferredSpan(traceID string, handle schemas.SpanHandle) {
@@ -1181,6 +1267,7 @@ func (t *Tracer) Stop() {
 	// Bounded wait: a connector blocked on an unreachable collector would otherwise
 	// hold up shutdown and config reload indefinitely (gRPC exports carry no deadline
 	// of their own).
+	t.flushHeldTraces()
 	t.waitForFlushes(flushStopTimeout)
 	if t.store != nil {
 		t.store.Stop()
@@ -1220,6 +1307,9 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		return
 	}
 	traceID = strings.TrimSpace(traceID)
+	if t.deferHeldFlush(traceID) {
+		return
+	}
 
 	// Nothing is listening: end the trace and return it to the pool, skipping the
 	// redaction pass, the export snapshot and the flush goroutine. The snapshot
@@ -1344,6 +1434,9 @@ func (t *Tracer) FlushExpiredTrace(trace *schemas.Trace) {
 		return
 	}
 	t.deferredCompletions.Delete(trace.TraceID)
+	t.flushHoldsMu.Lock()
+	t.flushHolds.Delete(trace.TraceID)
+	t.flushHoldsMu.Unlock()
 	// Spans left open would export with a zero EndTime, so close them as timed out.
 	now := time.Now()
 	if trace.EndTime.IsZero() {

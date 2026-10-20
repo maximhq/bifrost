@@ -104,6 +104,10 @@ type Tracer interface {
 	ClearTraceCompletionDeferral(traceID string)
 	// AwaitTransportHandoff blocks until the transport has attached its own logs.
 	AwaitTransportHandoff(traceID string)
+	// HoldTraceFlush keeps CompleteAndFlushTrace from exporting the trace until the
+	// returned release runs, so a background writer can still add spans to it. A
+	// flush requested while held runs on the last release.
+	HoldTraceFlush(traceID string) (release func())
 
 	// StoreDeferredSpan stores a span handle for later completion (used for streaming requests).
 	// The span handle is stored keyed by trace ID so it can be retrieved when the stream completes.
@@ -271,6 +275,9 @@ func (n *NoOpTracer) ClearTraceCompletionDeferral(_ string) {}
 
 // AwaitTransportHandoff is a no-op.
 func (n *NoOpTracer) AwaitTransportHandoff(_ string) {}
+
+// HoldTraceFlush returns a no-op release.
+func (n *NoOpTracer) HoldTraceFlush(_ string) func() { return func() {} }
 
 // GetDeferredSpanHandle returns nil.
 func (n *NoOpTracer) GetDeferredSpanHandle(_ string) SpanHandle { return nil }
