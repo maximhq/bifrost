@@ -274,7 +274,7 @@ type BifrostResponsesResponse struct {
 	Truncation           *string                             `json:"truncation,omitempty"`
 	Usage                *ResponsesResponseUsage             `json:"usage"`
 	ToolUsage            *ToolUsage                          `json:"tool_usage,omitempty"` // Top-level like OpenAI; Usage.ToolUsage mirrors it for pricing and logging
-	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields"`
+	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields,omitzero"`
 	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
 
 	// Perplexity-specific fields

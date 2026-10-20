@@ -627,7 +627,14 @@ export interface GuardrailMatch {
 	guardrail_provider?: string;
 	reason?: string;
 	assessments?: string[];
+	// Detections only: what the guardrail did (detect, block, redact,
+	// transform), and enforced=false when an output-monitor rule recorded the
+	// match without acting on it.
+	action?: GuardrailDetectionAction;
+	enforced?: boolean;
 }
+
+export type GuardrailDetectionAction = "detect" | "block" | "redact" | "transform";
 
 export interface GuardrailMetadata {
 	judge_calls?: GuardrailJudgeCall[];

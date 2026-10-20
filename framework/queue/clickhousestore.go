@@ -3,12 +3,15 @@ package queue
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -262,8 +265,8 @@ func (s *clickhouseStore) loadGroup(ctx context.Context, topic, group string) (c
 		return g, true, nil
 	}
 	var rows []chQueueGroup
-	if err := s.db.WithContext(ctx).Raw("SELECT topic, group_name, start_from, created_at FROM queue_groups FINAL WHERE topic = ? AND group_name = ?",
-		topic, group).Scan(&rows).Error; err != nil {
+	if err := s.readRows(ctx, &rows, chGroupColumns, "SELECT topic, group_name, start_from, created_at FROM queue_groups FINAL WHERE topic = ? AND group_name = ?",
+		topic, group); err != nil {
 		return chQueueGroup{}, false, fmt.Errorf("load group: %w", err)
 	}
 	if len(rows) == 0 {
@@ -281,9 +284,10 @@ func (s *clickhouseStore) loadGroup(ctx context.Context, topic, group string) (c
 func (s *clickhouseStore) backfill(ctx context.Context, topic, group string) error {
 	live, liveArg := s.liveWhere()
 	var msgs []chQueueMessage
-	if err := s.db.WithContext(ctx).Raw("SELECT id, topic, msg_key, seq, deliver_at, created_at, dead_at FROM queue_messages FINAL WHERE topic = ? AND "+live+
-		" AND id NOT IN (SELECT message_id FROM queue_deliveries FINAL WHERE topic = ? AND group_name = ?) ORDER BY seq, id",
-		topic, liveArg, topic, group).Scan(&msgs).Error; err != nil {
+	if err := s.readRows(ctx, &msgs, []string{"id", "topic", "msg_key", "seq", "deliver_at", "created_at", "dead_at"},
+		"SELECT id, topic, msg_key, seq, deliver_at, created_at, dead_at FROM queue_messages FINAL WHERE topic = ? AND "+live+
+			" AND id NOT IN (SELECT message_id FROM queue_deliveries FINAL WHERE topic = ? AND group_name = ?) ORDER BY seq, id",
+		topic, liveArg, topic, group); err != nil {
 		return fmt.Errorf("backfill scan: %w", err)
 	}
 	dels := make([]chQueueDelivery, len(msgs))
@@ -319,7 +323,7 @@ func (s *clickhouseStore) existingIDs(ctx context.Context, table string, topics,
 	found := make(map[string]bool, len(ids))
 	for chunk := range slices.Chunk(ids, sqlChunk) {
 		var got []string
-		if err := s.db.WithContext(ctx).Raw("SELECT id FROM "+table+" FINAL WHERE topic IN ? AND id IN ?", topics, chunk).Scan(&got).Error; err != nil {
+		if err := s.readRows(ctx, &got, chIDColumn, "SELECT id FROM "+table+" FINAL WHERE topic IN ? AND id IN ?", topics, chunk); err != nil {
 			return nil, fmt.Errorf("existence check on %s: %w", table, err)
 		}
 		for _, id := range got {
@@ -409,7 +413,7 @@ func (s *clickhouseStore) Append(ctx context.Context, msgs []*Message) error {
 		return err
 	}
 	var groups []chQueueGroup
-	if err := s.db.WithContext(held).Raw("SELECT topic, group_name FROM queue_groups FINAL WHERE topic IN ?", topics).Scan(&groups).Error; err != nil {
+	if err := s.readRows(held, &groups, []string{"topic", "group_name"}, "SELECT topic, group_name FROM queue_groups FINAL WHERE topic IN ?", topics); err != nil {
 		return fmt.Errorf("load groups: %w", err)
 	}
 	base, err := s.readClock(held, "toUnixTimestamp64Nano(now64(9))")
@@ -470,39 +474,91 @@ func (s *clickhouseStore) Append(ctx context.Context, msgs []*Message) error {
 const chDeliveryColumns = "id, message_id, topic, group_name, msg_key, seq, status, attempts, deliver_at, next_attempt_at, " +
 	"claimed_by, claim_token, claimed_until, last_error, created_at, dead_at"
 
+// Column lists the reads check their results against; see readRows.
+var (
+	chDeliveryColumnList = strings.Split(chDeliveryColumns, ", ")
+	chGroupColumns       = []string{"topic", "group_name", "start_from", "created_at"}
+	chTopicIDColumns     = []string{"topic", "id"}
+	chIDColumn           = []string{"id"}
+	chCountColumn        = []string{"n"}
+)
+
 // dbNow reads the database clock in unix microseconds. Lease and retry
 // deadlines are computed from it, never from this instance's clock.
 func (s *clickhouseStore) dbNow(ctx context.Context) (int64, error) {
 	return s.readClock(ctx, chNowMicros)
 }
 
-// readClock reads one integer the database computes from expr. It reads the
-// rows itself rather than through gorm's Scan so that a result of the wrong
-// shape names the columns it carried, which a bare Scan count error does not.
+// readClock reads one integer the database computes from expr.
 func (s *clickhouseStore) readClock(ctx context.Context, expr string) (int64, error) {
-	rows, err := s.db.WithContext(ctx).Raw("SELECT " + expr).Rows()
-	if err != nil {
+	var v int64
+	if err := s.readRows(ctx, &v, []string{"v"}, "SELECT "+expr+" AS v"); err != nil {
 		return 0, fmt.Errorf("read clock: %w", err)
+	}
+	return v, nil
+}
+
+// errCHWrongShape marks a read whose result carried other columns than its
+// SELECT names.
+var errCHWrongShape = errors.New("result has the wrong columns")
+
+// chReadAttempts bounds how often readRows runs a read whose result came back
+// with the wrong columns.
+const chReadAttempts = 2
+
+// readRows runs query and scans its rows into dest the way gorm's Raw().Scan
+// does, after checking the result carries exactly cols. Under concurrent load
+// a read has been seen to receive another statement's result (2026-10, cause
+// not yet found). A connection that does so is discarded rather than pooled,
+// so the stray result cannot shift onto the next read, and the read is retried
+// once on a fresh connection. The error names the query and the columns it
+// got, so the next occurrence identifies which statement leaked.
+func (s *clickhouseStore) readRows(ctx context.Context, dest any, cols []string, query string, args ...any) error {
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return err
+	}
+	for attempt := 1; ; attempt++ {
+		err := s.readRowsOnce(ctx, sqlDB, dest, cols, query, args...)
+		if !errors.Is(err, errCHWrongShape) || attempt >= chReadAttempts {
+			return err
+		}
+		if s.logger != nil {
+			s.logger.Warn("queue: clickhouse read returned another statement's result, retrying on a fresh connection: %v", err)
+		}
+	}
+}
+
+func (s *clickhouseStore) readRowsOnce(ctx context.Context, sqlDB *sql.DB, dest any, cols []string, query string, args ...any) error {
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	tx := s.db.WithContext(ctx)
+	tx.Statement.ConnPool = conn
+	rows, err := tx.Raw(query, args...).Rows()
+	if err != nil {
+		return err
+	}
+	got, err := rows.Columns()
+	if err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if !slices.Equal(got, cols) {
+		_ = rows.Close()
+		// database/sql closes a connection whose Raw callback reports ErrBadConn.
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		return fmt.Errorf("%w: %s returned %v, want %v", errCHWrongShape, query, got, cols)
 	}
 	defer rows.Close()
-	cols, err := rows.Columns()
-	if err != nil {
-		return 0, fmt.Errorf("read clock: %w", err)
-	}
-	if len(cols) != 1 {
-		return 0, fmt.Errorf("read clock: SELECT %s returned columns %v, want one", expr, cols)
-	}
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return 0, fmt.Errorf("read clock: %w", err)
+	if rows.Next() {
+		if err := tx.ScanRows(rows, dest); err != nil {
+			return err
 		}
-		return 0, errors.New("read clock: no row")
 	}
-	var v int64
-	if err := rows.Scan(&v); err != nil {
-		return 0, fmt.Errorf("read clock: %w", err)
-	}
-	return v, rows.Err()
+	return rows.Err()
 }
 
 func (s *clickhouseStore) Claim(ctx context.Context, req ClaimRequest) ([]*Claimed, error) {
@@ -540,8 +596,8 @@ func (s *clickhouseStore) Claim(ctx context.Context, req ClaimRequest) ([]*Claim
 		// The group lock is held, so no other claim can change the count.
 		live, liveArg := s.liveWhere()
 		var inFlight int64
-		if err := s.db.WithContext(held).Raw("SELECT count() FROM queue_deliveries FINAL WHERE topic = ? AND group_name = ? "+
-			"AND status = 'leased' AND claimed_until >= ? AND "+live, topic, group, dbNow, liveArg).Scan(&inFlight).Error; err != nil {
+		if err := s.readRows(held, &inFlight, chCountColumn, "SELECT count() AS n FROM queue_deliveries FINAL WHERE topic = ? AND group_name = ? "+
+			"AND status = 'leased' AND claimed_until >= ? AND "+live, topic, group, dbNow, liveArg); err != nil {
 			return nil, fmt.Errorf("count in flight: %w", err)
 		}
 		if max = min(max, req.MaxInFlight-int(inFlight)); max <= 0 {
@@ -554,13 +610,13 @@ func (s *clickhouseStore) Claim(ctx context.Context, req ClaimRequest) ([]*Claim
 	// subquery.
 	live, liveArg := s.liveWhere()
 	var picked []chQueueDelivery
-	if err := s.db.WithContext(held).Raw("WITH active AS (SELECT "+chDeliveryColumns+" FROM queue_deliveries FINAL "+
+	if err := s.readRows(held, &picked, chDeliveryColumnList, "WITH active AS (SELECT "+chDeliveryColumns+" FROM queue_deliveries FINAL "+
 		"WHERE topic = ? AND group_name = ? AND status IN ('pending', 'leased') AND "+live+") "+
 		"SELECT "+chDeliveryColumns+" FROM active "+
 		"WHERE ((status = 'pending' AND next_attempt_at <= ?) OR (status = 'leased' AND claimed_until < ?)) "+
 		"AND (msg_key = '' OR id IN (SELECT argMin(id, (seq, id)) FROM active WHERE msg_key != '' GROUP BY msg_key)) "+
 		"ORDER BY seq, id LIMIT ?",
-		topic, group, liveArg, dbNow, dbNow, max).Scan(&picked).Error; err != nil {
+		topic, group, liveArg, dbNow, dbNow, max); err != nil {
 		return nil, fmt.Errorf("claim scan: %w", err)
 	}
 	if len(picked) == 0 {
@@ -602,9 +658,9 @@ func (s *clickhouseStore) Claim(ctx context.Context, req ClaimRequest) ([]*Claim
 func (s *clickhouseStore) countDue(ctx context.Context, topic, group string) (int64, error) {
 	live, liveArg := s.liveWhere()
 	var n int64
-	err := s.db.WithContext(ctx).Raw("SELECT count() FROM queue_deliveries FINAL WHERE topic = ? AND group_name = ? AND "+live+
+	err := s.readRows(ctx, &n, chCountColumn, "SELECT count() AS n FROM queue_deliveries FINAL WHERE topic = ? AND group_name = ? AND "+live+
 		" AND ((status = 'pending' AND next_attempt_at <= "+chNowMicros+") OR (status = 'leased' AND claimed_until < "+chNowMicros+"))",
-		topic, group, liveArg).Scan(&n).Error
+		topic, group, liveArg)
 	if err != nil {
 		return 0, fmt.Errorf("count due: %w", err)
 	}
@@ -615,8 +671,9 @@ func (s *clickhouseStore) loadMessages(ctx context.Context, topic string, ids []
 	out := make(map[string]*Message, len(ids))
 	for chunk := range slices.Chunk(ids, sqlChunk) {
 		var rows []chQueueMessage
-		if err := s.db.WithContext(ctx).Raw("SELECT id, topic, msg_key, payload, headers, published_at, deliver_at FROM queue_messages FINAL WHERE topic = ? AND id IN ?",
-			topic, chunk).Scan(&rows).Error; err != nil {
+		if err := s.readRows(ctx, &rows, []string{"id", "topic", "msg_key", "payload", "headers", "published_at", "deliver_at"},
+			"SELECT id, topic, msg_key, payload, headers, published_at, deliver_at FROM queue_messages FINAL WHERE topic = ? AND id IN ?",
+			topic, chunk); err != nil {
 			return nil, fmt.Errorf("load messages: %w", err)
 		}
 		for _, r := range rows {
@@ -656,8 +713,8 @@ func (s *clickhouseStore) heldRows(ctx context.Context, cs []*Claimed) (map[stri
 			}
 		}
 		var rows []chQueueDelivery
-		if err := s.db.WithContext(ctx).Raw("SELECT "+chDeliveryColumns+" FROM queue_deliveries FINAL WHERE topic IN ? AND group_name IN ? AND id IN ?",
-			topics, groups, ids).Scan(&rows).Error; err != nil {
+		if err := s.readRows(ctx, &rows, chDeliveryColumnList, "SELECT "+chDeliveryColumns+" FROM queue_deliveries FINAL WHERE topic IN ? AND group_name IN ? AND id IN ?",
+			topics, groups, ids); err != nil {
 			return nil, 0, fmt.Errorf("read held deliveries: %w", err)
 		}
 		for _, r := range rows {
@@ -822,8 +879,8 @@ func (s *clickhouseStore) Purge(ctx context.Context, policy PurgePolicy, batch i
 		Topic string
 		ID    string
 	}
-	if err := s.db.WithContext(ctx).Raw("SELECT topic, id FROM queue_deliveries FINAL WHERE status = ? OR (status = ? AND dead_at < "+chNowMicros+" - ?) LIMIT ?",
-		chStatusAcked, statusDead, policy.DeadRetention.Microseconds(), batch).Scan(&finished).Error; err != nil {
+	if err := s.readRows(ctx, &finished, chTopicIDColumns, "SELECT topic, id FROM queue_deliveries FINAL WHERE status = ? OR (status = ? AND dead_at < "+chNowMicros+" - ?) LIMIT ?",
+		chStatusAcked, statusDead, policy.DeadRetention.Microseconds(), batch); err != nil {
 		return 0, fmt.Errorf("purge scan: %w", err)
 	}
 	var topics, ids []string
@@ -864,7 +921,7 @@ func (s *clickhouseStore) purgeByTopic(ctx context.Context, table, scan string, 
 		Topic string
 		ID    string
 	}
-	if err := s.db.WithContext(ctx).Raw(scan, args...).Scan(&rows).Error; err != nil {
+	if err := s.readRows(ctx, &rows, chTopicIDColumns, scan, args...); err != nil {
 		return 0, fmt.Errorf("purge scan of %s: %w", table, err)
 	}
 	byTopic := map[string][]string{}
@@ -880,8 +937,8 @@ func (s *clickhouseStore) purgeByTopic(ctx context.Context, table, scan string, 
 			}
 			defer release()
 			var ids []string
-			if err := s.db.WithContext(held).Raw("SELECT id FROM "+table+" FINAL WHERE topic = ? AND id IN ? AND "+recheck,
-				topic, byTopic[topic], topic).Scan(&ids).Error; err != nil {
+			if err := s.readRows(held, &ids, chIDColumn, "SELECT id FROM "+table+" FINAL WHERE topic = ? AND id IN ? AND "+recheck,
+				topic, byTopic[topic], topic); err != nil {
 				return 0, fmt.Errorf("purge recheck of %s: %w", table, err)
 			}
 			return int64(len(ids)), s.deleteIDs(held, table, []string{topic}, ids)
@@ -911,8 +968,8 @@ func (s *clickhouseStore) Stats(ctx context.Context, topic, group string) (Stats
 		Status string
 		N      int64
 	}
-	if err := s.db.WithContext(ctx).Raw("SELECT status, count() AS n FROM queue_deliveries FINAL WHERE topic = ? AND group_name = ? AND "+live+" GROUP BY status",
-		topic, group, liveArg).Scan(&rows).Error; err != nil {
+	if err := s.readRows(ctx, &rows, []string{"status", "n"}, "SELECT status, count() AS n FROM queue_deliveries FINAL WHERE topic = ? AND group_name = ? AND "+live+" GROUP BY status",
+		topic, group, liveArg); err != nil {
 		return Stats{}, fmt.Errorf("stats: %w", err)
 	}
 	var st Stats

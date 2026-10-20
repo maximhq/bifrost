@@ -2427,6 +2427,28 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 			}
 		}
 
+		// ConverseInput has no prompt_cache_options field either. Since #8334 a gpt-5.6
+		// target stays in implicit mode, so this is the only way a /bedrock caller can ask
+		// for breakpoint-only caching, or turn caching off with no cachePoint (#8554).
+		if raw, ok := request.AdditionalModelRequestFields.Get("prompt_cache_options"); ok {
+			if om, ok := schemas.SafeExtractOrderedMap(raw); ok && om != nil {
+				var options schemas.PromptCacheOptions
+				if mode, ok := om.Get("mode"); ok {
+					if s, ok := schemas.SafeExtractString(mode); ok {
+						options.Mode = new(s)
+					}
+				}
+				if ttl, ok := om.Get("ttl"); ok {
+					if s, ok := schemas.SafeExtractString(ttl); ok {
+						options.TTL = new(s)
+					}
+				}
+				if options.Mode != nil || options.TTL != nil {
+					bifrostReq.Params.PromptCacheOptions = &options
+				}
+			}
+		}
+
 		// The Converse spelling of parallel_tool_calls for Claude; egress re-synthesizes it per target.
 		if choice, ok := request.AdditionalModelRequestFields.Get("tool_choice"); ok {
 			if om, ok := choice.(*schemas.OrderedMap); ok && om.Len() == 1 {
