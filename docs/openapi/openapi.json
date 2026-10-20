@@ -117054,7 +117054,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Fallback providers and models in provider/model format."
+            "description": "Fallback providers, each a provider name alone or provider/model. An unknown provider is refused."
           }
         }
       },
@@ -117147,7 +117147,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Fallback providers and models in provider/model format."
+            "description": "Fallback providers, each a provider name alone or provider/model. An unknown provider is refused."
           }
         }
       },

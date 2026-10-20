@@ -154,3 +154,31 @@ func TestPrepareFetchRequest_RejectsInvalidURLs(t *testing.T) {
 		})
 	}
 }
+
+// Search and Fetch name no model, so a fallback naming a provider alone is the common case and
+// must survive parsing; parseFallbacks would drop it for having no model.
+func TestToolsFallbacks_AcceptAProviderAlone(t *testing.T) {
+	search, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search", `{"query":"q","fallbacks":["deepseek","deepseek/deepseek-chat"]}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []schemas.Fallback{{Provider: schemas.DeepSeek}, {Provider: schemas.DeepSeek, Model: "deepseek-chat"}}
+	if len(search.Fallbacks) != len(want) || search.Fallbacks[0] != want[0] || search.Fallbacks[1] != want[1] {
+		t.Fatalf("search fallbacks = %+v, want %+v", search.Fallbacks, want)
+	}
+	fetch, err := prepareFetchRequest(jsonToolsCtx("/v1/tools/fetch", `{"url":"https://example.com","fallbacks":["deepseek"]}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fetch.Fallbacks) != 1 || fetch.Fallbacks[0] != want[0] {
+		t.Fatalf("fetch fallbacks = %+v, want [%+v]", fetch.Fallbacks, want[0])
+	}
+}
+
+// A fallback that names no known provider is refused, never dropped: dropping it would leave a
+// caller without the fallback it relied on and no sign that it was gone.
+func TestToolsFallbacks_RefuseAnUnknownProvider(t *testing.T) {
+	if _, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search", `{"query":"q","fallbacks":["not-a-provider"]}`), nil); err == nil {
+		t.Fatal("expected an unknown fallback provider to be refused")
+	}
+}

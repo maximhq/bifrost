@@ -1601,6 +1601,10 @@ func prepareSearchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schema
 			return nil, fmt.Errorf("%s must be an RFC 3339 date or date-time", name)
 		}
 	}
+	fallbacks, err := parseToolsFallbacks(req.Fallbacks)
+	if err != nil {
+		return nil, err
+	}
 	provider, model := resolveToolsRouting(base)
 	return &schemas.BifrostSearchRequest{
 		Provider:        provider,
@@ -1612,7 +1616,7 @@ func prepareSearchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schema
 		ExcludeDomains:  req.ExcludeDomains,
 		PublishedAfter:  req.PublishedAfter,
 		PublishedBefore: req.PublishedBefore,
-		Fallbacks:       base.Fallbacks,
+		Fallbacks:       fallbacks,
 		ExtraParams:     base.ExtraParams,
 	}, nil
 }
@@ -1655,14 +1659,40 @@ func prepareFetchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas
 	if parsed.User != nil {
 		return nil, fmt.Errorf("url must not include credentials")
 	}
+	fallbacks, err := parseToolsFallbacks(req.Fallbacks)
+	if err != nil {
+		return nil, err
+	}
 	provider, model := resolveToolsRouting(base)
 	return &schemas.BifrostFetchRequest{
 		Provider:    provider,
 		Model:       model,
 		URL:         rawURL,
-		Fallbacks:   base.Fallbacks,
+		Fallbacks:   fallbacks,
 		ExtraParams: base.ExtraParams,
 	}, nil
+}
+
+// parseToolsFallbacks reads Search and Fetch fallbacks. These operations carry no model, so a
+// fallback may name a provider alone ("exa"), which parseFallbacks would drop for having no
+// model. A provider/model entry still names a routing model, as on the primary. An entry that
+// names no known provider is refused rather than dropped, so a typo never quietly removes the
+// fallback a caller relied on.
+func parseToolsFallbacks(entries []string) ([]schemas.Fallback, error) {
+	fallbacks := make([]schemas.Fallback, 0, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if schemas.IsKnownProvider(entry) {
+			fallbacks = append(fallbacks, schemas.Fallback{Provider: schemas.ModelProvider(entry)})
+			continue
+		}
+		provider, model := schemas.ParseModelString(entry, "")
+		if provider == "" || model == "" {
+			return nil, fmt.Errorf("fallback %q must name a provider, or a provider/model", entry)
+		}
+		fallbacks = append(fallbacks, schemas.Fallback{Provider: provider, Model: model})
+	}
+	return fallbacks, nil
 }
 
 // resolveToolsRouting resolves the provider for a tools request.
