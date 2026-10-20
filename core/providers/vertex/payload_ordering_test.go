@@ -79,3 +79,44 @@ func TestVertexGeminiResponsesNativeToolSubFieldsReachWire(t *testing.T) {
 	assert.Equal(t, retrieval, gotRetrieval, "retrieval tool must reach Vertex unchanged; body %s", wire)
 	assert.Equal(t, searchRetrieval, gotSearchRetrieval, "googleSearchRetrieval must reach Vertex unchanged; body %s", wire)
 }
+
+// Vertex Gemini image requests must keep Bifrost output_format as imageOutputOptions.mimeType
+// on the body Vertex receives, through the same strip/marshal/region-removal steps as ImageGeneration/ImageEdit.
+func TestVertexGeminiImageOutputFormatReachesWire(t *testing.T) {
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	jpeg := "jpeg"
+	genReq := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Vertex,
+		Model:    "gemini-2.5-flash-image",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a red apple"},
+		Params:   &schemas.ImageGenerationParameters{OutputFormat: &jpeg},
+	}
+	editReq := &schemas.BifrostImageEditRequest{
+		Provider: schemas.Vertex,
+		Model:    "gemini-2.5-flash-image",
+		Input: &schemas.ImageEditInput{
+			Prompt: "make it pop",
+			Images: []schemas.ImageInput{{Image: png}},
+		},
+		Params: &schemas.ImageEditParameters{OutputFormat: &jpeg},
+	}
+
+	toWire := func(t *testing.T, reqBody *gemini.GeminiGenerationRequest) []byte {
+		t.Helper()
+		require.NotNil(t, reqBody)
+		stripVertexGeminiUnsupportedFields(reqBody)
+		raw, err := providerUtils.MarshalSorted(reqBody)
+		require.NoError(t, err)
+		raw, err = providerUtils.DeleteJSONField(raw, "region")
+		require.NoError(t, err)
+		return stripVertexGeminiUnsupportedFieldsRaw(raw)
+	}
+
+	cases := map[string][]byte{
+		"generation": toWire(t, gemini.ToGeminiImageGenerationRequest(genReq)),
+		"edit":       toWire(t, gemini.ToGeminiImageEditRequest(editReq)),
+	}
+	for name, body := range cases {
+		assert.Equal(t, "image/jpeg", gjson.GetBytes(body, "generationConfig.imageConfig.imageOutputOptions.mimeType").String(), "%s body %s", name, body)
+	}
+}
