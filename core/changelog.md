@@ -1,3 +1,4 @@
+- fix: SecretVar.IsSentinelPlaceholder splits full sentinels from the star mask ([@Yoel-qin](https://github.com/Yoel-qin)) (#6413)
 - feat: openapi MCP connection type, backed by an in-process server built through the new MCPConfig.InProcessServerFactory hook (#8307)
 - feat: cache_control on chat assistant tool_calls reaches the Anthropic and Bedrock tool_use block (#8494)
 - feat: native decisions on Azure (Microsoft-Decision-1) and Databricks (ai_decide), and Typesafe image assets by reference plus box questions (#8485, #8498, #8571)

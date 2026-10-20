@@ -234,15 +234,24 @@ func (e *SecretVar) IsRedacted() bool {
 			return true
 		}
 	}
-	// Check for <redacted> sentinel (case-insensitive for compatibility)
-	if strings.EqualFold(e.Val, "<redacted>") {
-		return true
-	}
-	// Check for [REDACTED] sentinel produced by MarshalJSON in scim config serialization
-	if strings.EqualFold(e.Val, "[REDACTED]") {
+	// Check for full-value sentinels (see IsSentinelPlaceholder)
+	if e.IsSentinelPlaceholder() {
 		return true
 	}
 	return false
+}
+
+// IsSentinelPlaceholder reports whether the value is one of the full-value sentinels
+// ("<redacted>", "[REDACTED]"). Unlike the prefix-preserving star mask, a full sentinel
+// cannot collide with a legitimate credential of the same shape, so fields whose
+// redacted echo is a full sentinel (e.g. the admin password) should gate placeholder
+// handling on this instead of IsMaskedPlaceholder — a real 32-character password that
+// happens to match the star-mask pattern must not be mistaken for an unchanged echo.
+func (e *SecretVar) IsSentinelPlaceholder() bool {
+	if e == nil || e.IsFromSecret() {
+		return false
+	}
+	return strings.EqualFold(e.Val, "<redacted>") || strings.EqualFold(e.Val, "[REDACTED]")
 }
 
 // Equals checks if two SecretVars are equal.
