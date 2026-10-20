@@ -2002,6 +2002,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.3.2",
               "changelogs/v2.3.1",
               "changelogs/v2.3.0",
               "changelogs/v2.2.6",

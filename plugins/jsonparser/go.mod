@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/plugins/jsonparser
 
-go 1.27.2
+go 1.27.3
 
 require github.com/maximhq/bifrost/core v1.13.0
 
