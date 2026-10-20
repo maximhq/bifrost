@@ -276697,5 +276697,186 @@
         }
       ]
     }
+  ,
+    {
+      "name": "230. Nil reasoning summary is omitted, not sent as null (reasoning-summary-null)",
+      "description": "Codex 0.162.1 sends {\"reasoning\": {\"effort\": \"low\"}} for a model it has no metadata for. ResponsesParametersReasoning.Summary had no omitempty, so Bifrost forwarded {\"reasoning\": {\"effort\": \"low\", \"summary\": null}}. Ark's Responses schema has no summary field and rejects the key itself (\"json: unknown field \\\"summary\\\"\"), null included, so the same body that returns 200 sent straight to Ark returned 400 through Bifrost. summary:\"none\" is nilled before marshaling and hit the same path.\n\nThe shared harness profile has no Ark provider, and Ark is the only upstream whose schema rejects the field, so these cases pin the wire body through x-bf-send-back-raw-request instead of the upstream status. openai/gpt-5 accepts both shapes, which is why its own 200 cannot catch this.\n\n  1  effort only: reasoning.summary is absent from the body that reaches the provider, reasoning.effort survives\n  2  summary:\"none\": stripped to nil and then absent, not \"summary\": null\n  3  summary:\"detailed\": forwarded unchanged",
+      "item": [
+        {
+          "name": "openai gpt-5 /v1/responses: reasoning effort only - reasoning-summary-null",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "pm.test('request reached the provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "pm.test('raw_request is echoed', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning, 'reasoning was dropped before the provider: ' + wire.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "pm.test('reasoning.effort survives', function () {",
+                  "  pm.expect(rr.reasoning.effort, wire.slice(0, 400)).to.eql('low');",
+                  "});",
+                  "pm.test('reasoning.summary is absent, not null', function () {\n  pm.expect(rr.reasoning, wire.slice(0, 400)).to.not.have.property('summary');\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 32,\n  \"reasoning\": {\n    \"effort\": \"low\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5 /v1/responses: reasoning summary none - reasoning-summary-null",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "pm.test('request reached the provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "pm.test('raw_request is echoed', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning, 'reasoning was dropped before the provider: ' + wire.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "pm.test('reasoning.effort survives', function () {",
+                  "  pm.expect(rr.reasoning.effort, wire.slice(0, 400)).to.eql('low');",
+                  "});",
+                  "pm.test('reasoning.summary is absent, not null', function () {\n  pm.expect(rr.reasoning, wire.slice(0, 400)).to.not.have.property('summary');\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 32,\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"summary\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5 /v1/responses: reasoning summary detailed - reasoning-summary-null",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "pm.test('request reached the provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.be.below(400);",
+                  "});",
+                  "pm.test('raw_request is echoed', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning, 'reasoning was dropped before the provider: ' + wire.slice(0, 400)).to.be.an('object');",
+                  "});",
+                  "pm.test('reasoning.effort survives', function () {",
+                  "  pm.expect(rr.reasoning.effort, wire.slice(0, 400)).to.eql('low');",
+                  "});",
+                  "pm.test('reasoning.summary is forwarded', function () {\n  pm.expect(rr.reasoning.summary, wire.slice(0, 400)).to.eql('detailed');\n});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 32,\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"summary\": \"detailed\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    }
   ]
 }
