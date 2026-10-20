@@ -95,9 +95,10 @@ The value is clamped to between 1 second and 5 minutes, and the field is absent 
 
 The same hint is recorded per attempt on the `attempt_trail` as `retry_after_ms`, so a key that was rotated away from still shows how long it asked for. The request's final error only carries the answer from the key it ended on.
 
-The hint is recorded for clients and observability. For the standard HTTP
-`Retry-After` header, Bifrost's retry scheduler also uses the header as the
-minimum delay for a retry; the precise scheduling and cap policy is described
+The hints above are recorded for clients and observability. For retryable
+responses, Bifrost's retry scheduler also uses `extra_fields.retry_after_ms` as the
+minimum delay, regardless of which supported source supplied it. The precise
+scheduling and cap policy is described
 in [Provider `Retry-After` hints](#provider-retry-after-hints) below.
 
 <Note>
@@ -124,12 +125,13 @@ With the defaults of `retry_backoff_initial = 500ms` and `retry_backoff_max = 50
 
 ### Provider `Retry-After` hints
 
-For retryable responses, Bifrost honors the standard `Retry-After` response header
-as either a non-negative integer number of seconds or an HTTP date. The next
-attempt waits for the longer of the existing exponential backoff and the remaining
-provider-specified delay. Missing, invalid, zero, or past hints do not shorten the
+For retryable responses, Bifrost uses the explicit hint in `extra_fields.retry_after_ms`,
+whether supplied by `google.rpc.RetryInfo`, Azure's `retry-after-ms`, or the standard
+`Retry-After` header (seconds or an HTTP date). The next attempt waits for the longer
+of the existing exponential backoff and the remaining provider-specified delay.
+Missing, invalid, zero, or past hints do not shorten the
 local backoff. Provider-specific rate-limit reset headers and prose in error
-messages are not interpreted as `Retry-After`.
+messages are not interpreted as explicit retry hints.
 
 If the provider's minimum wait exceeds `retry_backoff_max`, or reaches beyond the
 remaining request deadline, Bifrost stops retrying that provider and returns its
