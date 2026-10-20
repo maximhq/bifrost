@@ -1,3 +1,4 @@
+- [feat]: Exa provider for Search (`/search`) and Fetch (`/contents`), priced at Exa's reported cost [@Radiergummi](https://github.com/Radiergummi)
 - [fix]: decode DeepSeek tools responses into an owned body, including compressed ones [@Radiergummi](https://github.com/Radiergummi)
 - [feat]: Search takes one provider-neutral request and result shape [@Radiergummi](https://github.com/Radiergummi)
 - [feat]: DeepSeek provider - add Search and Fetch as first-class operations (`POST /v1/tools/search`, `POST /v1/tools/fetch`), model-less and priced per request [@jimaldon](https://github.com/jimaldon)
