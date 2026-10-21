@@ -37,6 +37,7 @@ import {
 	useGetCoreConfigQuery,
 	useGetVirtualMCPsQuery,
 	useLazyGetMCPClientOpenAPISpecQuery,
+	useLazyGetVirtualMCPsQuery,
 	usePreviewOpenAPISpecMutation,
 	useUpdateMCPClientMutation
 } from "@/lib/store";
@@ -72,6 +73,12 @@ import {
 	type OpenAPICredentialField,
 	type OpenAPISourceMode
 } from "./mcpClientOpenApiUtils";
+import {
+	deriveMemberVirtualMCPs,
+	getNextVirtualMCPPageOffset,
+	mergeVirtualMCPPages,
+	VIRTUAL_MCPS_PAGE_SIZE,
+} from "./mcpClientSheet.utils";
 import { ConnectionFailureBlock } from "./mcpConnectionFailure";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreviewPanel";
@@ -168,6 +175,13 @@ function toolExecutionTimeoutToSeconds(v: string | number | undefined | null): n
 	return Math.ceil(total);
 }
 
+/**
+ * Slide-out drawer sheet component for inspecting and managing an individual MCP client server,
+ * including tool permissions, OAuth/header configuration, OpenAPI previews, and Virtual MCP membership.
+ *
+ * @param props MCPClientSheetProps containing client data, callbacks, and navigation state.
+ * @returns React component representing the MCP client details and configuration drawer.
+ */
 export default function MCPClientSheet({
 	mcpClient,
 	onClose,
@@ -263,16 +277,76 @@ export default function MCPClientSheet({
 	// Reverse lookup for the Access tab: which Virtual MCPs bundle this server's
 	// tools. There's no dedicated endpoint, but the list response already carries
 	// every vMCP's tools[].mcp_client_id, so membership is derived client-side.
-	const { data: virtualMcpsData, isLoading: virtualMcpsLoading, isError: virtualMcpsError } = useGetVirtualMCPsQuery({ limit: 1000 });
-	const memberVirtualMcps = useMemo(() => {
-		const clientID = mcpClient.config.client_id;
-		const out: { vmcp: VirtualMCP; toolNames: string[] }[] = [];
-		for (const vmcp of virtualMcpsData?.virtual_mcps ?? []) {
-			const spec = vmcp.tools.find((t) => t.mcp_client_id === clientID);
-			if (spec) out.push({ vmcp, toolNames: spec.tool_names });
-		}
-		return out;
-	}, [virtualMcpsData, mcpClient.config.client_id]);
+	// The backend clamps page requests to 100 via ClampPaginationParams; we paginate
+	// until total_count is satisfied so reverse lookups beyond row 100 are not truncated.
+	const {
+		data: firstPageVirtualMcps,
+		isLoading: isFirstPageLoading,
+		isError: firstPageError,
+	} = useGetVirtualMCPsQuery({ limit: VIRTUAL_MCPS_PAGE_SIZE, offset: 0 });
+	const [fetchVirtualMCPsPage] = useLazyGetVirtualMCPsQuery();
+	const [allVirtualMcps, setAllVirtualMcps] = useState<VirtualMCP[]>([]);
+	const [isLoadingMorePages, setIsLoadingMorePages] = useState(false);
+	const [virtualMcpsPaginationError, setVirtualMcpsPaginationError] = useState(false);
+
+	useEffect(() => {
+		if (!firstPageVirtualMcps) return;
+		let cancelled = false;
+
+		const loadAllPages = async () => {
+			let current = firstPageVirtualMcps.virtual_mcps ?? [];
+			let consumedRows = current.length;
+			setAllVirtualMcps(current);
+			setVirtualMcpsPaginationError(false);
+
+			const total = firstPageVirtualMcps.total_count ?? 0;
+
+			setIsLoadingMorePages(true);
+			try {
+				while (!cancelled) {
+					const nextOffset = getNextVirtualMCPPageOffset(consumedRows, total);
+					if (nextOffset === null) {
+						break;
+					}
+
+					try {
+						const res = await fetchVirtualMCPsPage({ limit: VIRTUAL_MCPS_PAGE_SIZE, offset: nextOffset }).unwrap();
+						if (cancelled) break;
+						const incoming = res.virtual_mcps ?? [];
+						if (incoming.length === 0) {
+							if (consumedRows < total) {
+								setVirtualMcpsPaginationError(true);
+							}
+							break;
+						}
+						consumedRows += incoming.length;
+						current = mergeVirtualMCPPages(current, incoming);
+						setAllVirtualMcps(current);
+					} catch {
+						if (!cancelled) setVirtualMcpsPaginationError(true);
+						break;
+					}
+				}
+			} finally {
+				if (!cancelled) {
+					setIsLoadingMorePages(false);
+				}
+			}
+		};
+
+		void loadAllPages();
+
+		return () => {
+			cancelled = true;
+		};
+	}, [firstPageVirtualMcps, fetchVirtualMCPsPage]);
+
+	const memberVirtualMcps = useMemo(
+		() => deriveMemberVirtualMCPs(allVirtualMcps, mcpClient.config.client_id),
+		[allVirtualMcps, mcpClient.config.client_id],
+	);
+	const virtualMcpsLoading = isFirstPageLoading || isLoadingMorePages;
+	const virtualMcpsError = firstPageError || virtualMcpsPaginationError;
 
 	const toolOptions = useMemo(
 		() => [

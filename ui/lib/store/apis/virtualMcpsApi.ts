@@ -69,6 +69,7 @@ export const virtualMcpsApi = baseApi.injectEndpoints({
 
 export const {
 	useGetVirtualMCPsQuery,
+	useLazyGetVirtualMCPsQuery,
 	useGetVirtualMCPQuery,
 	useGetVirtualMCPAccessProfilesQuery,
 	useCreateVirtualMCPMutation,
