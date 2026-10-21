@@ -1,6 +1,6 @@
 .github/ @maximhq/bifrost-admin
 .claude/ @maximhq/bifrost-admin
-.nix/ @maximhq/bifrost-admin
+nix/ @maximhq/bifrost-admin
 Makefile @maximhq/bifrost-admin
 flake.nix @maximhq/bifrost-admin
 tests/scripts/ @maximhq/bifrost-admin
@@ -9,3 +9,17 @@ helm-charts/ @maximhq/bifrost-admin
 terraform/ @maximhq/bifrost-admin
 ui/package.json @maximhq/bifrost-admin
 tests/e2e/package.json @maximhq/bifrost-admin
+
+# Changes that can alter released bytes or the consumer trust boundary.
+**/go.mod @maximhq/bifrost-admin
+**/go.sum @maximhq/bifrost-admin
+go.work* @maximhq/bifrost-admin
+**/package.json @maximhq/bifrost-admin
+**/package-lock.json @maximhq/bifrost-admin
+**/pyproject.toml @maximhq/bifrost-admin
+**/uv.lock @maximhq/bifrost-admin
+**/requirements*.txt @maximhq/bifrost-admin
+**/Dockerfile* @maximhq/bifrost-admin
+flake.lock @maximhq/bifrost-admin
+npx/ @maximhq/bifrost-admin
+cli/internal/update/ @maximhq/bifrost-admin

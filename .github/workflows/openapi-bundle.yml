@@ -9,11 +9,13 @@ on:
       - "!docs/openapi/openapi.json"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   bundle-openapi:
     name: Bundle OpenAPI Spec
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
