@@ -618,3 +618,81 @@ func TestGenAIFlashLiteMinimalThinkingAfterRouting(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractAndSetModelAndRequestTypeKeepsURLAudioOutOfTranscription covers #7508:
+// audio carried by fileData (a URI the gateway never fetches) is a normal
+// multimodal generation, but isTranscriptionRequest flagged it as transcription
+// and the transcription path then rejected it for having no inline bytes.
+func TestExtractAndSetModelAndRequestTypeKeepsURLAudioOutOfTranscription(t *testing.T) {
+	rawBody := []byte(`{"contents":[{"role":"user","parts":[` +
+		`{"fileData":{"mimeType":"audio/mpeg","fileUri":"https://example.com/sample.mp3"}},` +
+		`{"text":"Summarise this recording."}]}]}`)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("model", "gemini/gemini-3.8-flash:generateContent")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.SetBody(rawBody)
+
+	_, reqType := extractModelAndRequestType(ctx)
+	assert.Equal(t, schemas.ResponsesRequest, reqType)
+
+	req := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, req))
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	require.NoError(t, extractAndSetModelAndRequestType(ctx, bifrostCtx, req))
+	assert.False(t, req.IsTranscription)
+	assert.False(t, req.IsSpeech)
+
+	// The audio part must survive as an ordinary content part rather than being
+	// hoisted into a transcription request that has no bytes to send, so the
+	// request still converts to a generation input.
+	responsesReq := req.ToBifrostResponsesRequest(bifrostCtx)
+	require.NotNil(t, responsesReq)
+	assert.NotEmpty(t, responsesReq.Input)
+}
+
+// TestExtractAndSetModelAndRequestTypeKeepsMixedMediaOutOfTranscription pins the
+// same rule for a request that mixes URL audio with another modality: video and
+// audio together is generation, so neither part may select the transcription path.
+func TestExtractAndSetModelAndRequestTypeKeepsMixedMediaOutOfTranscription(t *testing.T) {
+	rawBody := []byte(`{"contents":[{"role":"user","parts":[` +
+		`{"fileData":{"mimeType":"video/mp4","fileUri":"https://example.com/clip.mp4"}},` +
+		`{"fileData":{"mimeType":"audio/mpeg","fileUri":"https://example.com/sample.mp3"}},` +
+		`{"text":"Describe the clip."}]}]}`)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("model", "gemini/gemini-3.8-flash:generateContent")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.SetBody(rawBody)
+
+	_, reqType := extractModelAndRequestType(ctx)
+	assert.Equal(t, schemas.ResponsesRequest, reqType)
+
+	req := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, req))
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	require.NoError(t, extractAndSetModelAndRequestType(ctx, bifrostCtx, req))
+	assert.False(t, req.IsTranscription)
+}
+
+// TestExtractAndSetModelAndRequestTypeStillDetectsInlineAudioTranscription is the
+// red-to-green guard: inline bytes are the one form the transcription path can
+// actually serve, so that detection must survive the fix unchanged.
+func TestExtractAndSetModelAndRequestTypeStillDetectsInlineAudioTranscription(t *testing.T) {
+	rawBody := []byte(`{"contents":[{"role":"user","parts":[` +
+		`{"inlineData":{"mimeType":"audio/mpeg","data":"SUQzBAAAAAA="}}]}]}`)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("model", "gemini/gemini-3.8-flash:generateContent")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.SetBody(rawBody)
+
+	_, reqType := extractModelAndRequestType(ctx)
+	assert.Equal(t, schemas.TranscriptionRequest, reqType)
+
+	req := &gemini.GeminiGenerationRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, req))
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	require.NoError(t, extractAndSetModelAndRequestType(ctx, bifrostCtx, req))
+	assert.True(t, req.IsTranscription)
+}
