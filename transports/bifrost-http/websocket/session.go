@@ -36,6 +36,9 @@ type Session struct {
 	// providerSessionID tracks the upstream provider's session identifier when exposed.
 	providerSessionID string
 
+	responsesKeyProvider schemas.ModelProvider // provider of responsesKeyID
+	responsesKeyID       string                // key that served this session's last Responses turn
+
 	// realtimeOutputText accumulates assistant/provider turn text until the terminal event.
 	realtimeOutputText string
 
@@ -165,6 +168,25 @@ func (s *Session) MarkResponsesTurnCompleted() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.responsesCompleted = true
+}
+
+// SetResponsesKey records the key that served a Responses WS turn on provider.
+func (s *Session) SetResponsesKey(provider schemas.ModelProvider, keyID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.responsesKeyProvider = provider
+	s.responsesKeyID = keyID
+}
+
+// ResponsesKey returns the key that served this session's last Responses WS turn on provider,
+// or "" when no turn on provider has been served yet.
+func (s *Session) ResponsesKey(provider schemas.ModelProvider) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.responsesKeyProvider != provider {
+		return ""
+	}
+	return s.responsesKeyID
 }
 
 // SetProviderSessionID stores the upstream provider session identifier when available.
