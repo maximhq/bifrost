@@ -1511,6 +1511,38 @@ func TestComputeEmbeddingCost_TotalTokensFallback(t *testing.T) {
 	assert.InDelta(t, 764*0.0000001, cost, 1e-12)
 }
 
+func TestCalculateCost_EmbeddingTotalTokensFallbackWithOverride(t *testing.T) {
+	// End-to-end through CalculateCost: the provider-scoped override must
+	// resolve AND the embedding response must dispatch into the total_tokens
+	// fallback — a regression in override resolution or response dispatch
+	// returns an unpriced (or base-priced) embedding cost while the unit tests
+	// above keep passing.
+	model := "text-embedding-override"
+	pricing := configstoreTables.TableModelPricing{
+		Model:             model,
+		Provider:          "openai",
+		Mode:              "embedding",
+		InputCostPerToken: bifrost.Ptr(0.00000001),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	providerID := "openai"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "embedding-total-fallback-override",
+		ScopeKind:        string(ScopeKindProvider),
+		ProviderID:       &providerID,
+		MatchType:        string(MatchTypeExact),
+		Pattern:          model,
+		RequestTypes:     []schemas.RequestType{schemas.EmbeddingRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.00000002}`,
+	}}))
+	resp := makeEmbeddingResponse(schemas.OpenAI, model, &schemas.BifrostLLMUsage{TotalTokens: 764})
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 764*0.00000002, breakdown.TotalCost, 1e-12)
+}
+
 func TestComputeEmbeddingCost_PromptTokensWinOverTotal(t *testing.T) {
 	// When both fields are present the explicit prompt count stays authoritative.
 	p := configstoreTables.TableModelPricing{
