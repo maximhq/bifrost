@@ -19,7 +19,7 @@ import (
 // last attempt. So every site that blocks on a provider socket adds its own
 // duration here, and the sum is read once at request end.
 //
-// The value is an *atomic.Int64 (nanoseconds) stored on the context. The pointer
+// The value is an *upstreamAccumulator (nanoseconds) stored on the context. The pointer
 // is installed once per request and only ever dereferenced afterwards, so
 // concurrent adds never touch the context's value map. This matters: streaming
 // keeps writing from the provider goroutine long after the request handler has
@@ -36,7 +36,73 @@ func (bc *BifrostContext) ResetUpstreamLatency() {
 	if bc == nil {
 		return
 	}
-	bc.setReservedValue(BifrostContextKeyUpstreamLatency, &atomic.Int64{})
+	bc.setReservedValue(BifrostContextKeyUpstreamLatency, &upstreamAccumulator{})
+}
+
+// upstreamAccumulator is the per-request upstream total plus a mark of where the
+// current attempt (one log row) began, so each row can report its own share.
+type upstreamAccumulator struct {
+	total             atomic.Int64 // nanoseconds blocked on upstream, whole request
+	attemptStartNanos atomic.Int64 // unix nanos when the current attempt began; 0 = unmarked
+	attemptUpstream   atomic.Int64 // total at the moment the current attempt began
+	attempts          atomic.Int64 // attempts marked so far in this request
+}
+
+func upstreamAccumulatorFrom(ctx context.Context) *upstreamAccumulator {
+	if isNilContext(ctx) {
+		return nil
+	}
+	acc, _ := ctx.Value(BifrostContextKeyUpstreamLatency).(*upstreamAccumulator)
+	return acc
+}
+
+// MarkAttemptStart records that a new attempt (an LLM call that gets its own log
+// row: a fallback attempt or an agent-loop turn) begins now. No-op without an accumulator.
+func (bc *BifrostContext) MarkAttemptStart() {
+	acc := upstreamAccumulatorFrom(bc)
+	if acc == nil {
+		return
+	}
+	acc.attemptUpstream.Store(acc.total.Load())
+	acc.attemptStartNanos.Store(time.Now().UnixNano())
+	acc.attempts.Add(1)
+}
+
+// AttemptWindow is the span of one attempt on the request's upstream clock.
+type AttemptWindow struct {
+	Index         int // 1 for the request's first attempt
+	Start         time.Time
+	End           time.Time
+	UpstreamStart time.Duration // request upstream total when the attempt began
+	UpstreamEnd   time.Duration // request upstream total when the window was read
+}
+
+// Upstream is the upstream time spent inside the window.
+func (w AttemptWindow) Upstream() time.Duration {
+	if d := w.UpstreamEnd - w.UpstreamStart; d > 0 {
+		return d
+	}
+	return 0
+}
+
+// GetAttemptWindow returns the current attempt's window, ending now. ok is false
+// when no accumulator is present or no attempt has been marked.
+func GetAttemptWindow(ctx context.Context) (AttemptWindow, bool) {
+	acc := upstreamAccumulatorFrom(ctx)
+	if acc == nil {
+		return AttemptWindow{}, false
+	}
+	startNanos := acc.attemptStartNanos.Load()
+	if startNanos == 0 {
+		return AttemptWindow{}, false
+	}
+	return AttemptWindow{
+		Index:         int(acc.attempts.Load()),
+		Start:         time.Unix(0, startNanos),
+		End:           time.Now(),
+		UpstreamStart: time.Duration(acc.attemptUpstream.Load()),
+		UpstreamEnd:   time.Duration(acc.total.Load()),
+	}, true
 }
 
 // AddUpstreamLatency adds d to the request's upstream total.
@@ -50,8 +116,8 @@ func AddUpstreamLatency(ctx context.Context, d time.Duration) {
 	if d <= 0 || isNilContext(ctx) {
 		return
 	}
-	if acc, ok := ctx.Value(BifrostContextKeyUpstreamLatency).(*atomic.Int64); ok && acc != nil {
-		acc.Add(int64(d))
+	if acc, ok := ctx.Value(BifrostContextKeyUpstreamLatency).(*upstreamAccumulator); ok && acc != nil {
+		acc.total.Add(int64(d))
 	}
 }
 
@@ -76,8 +142,8 @@ func GetUpstreamLatency(ctx context.Context) (time.Duration, bool) {
 	if isNilContext(ctx) {
 		return 0, false
 	}
-	if acc, ok := ctx.Value(BifrostContextKeyUpstreamLatency).(*atomic.Int64); ok && acc != nil {
-		return time.Duration(acc.Load()), true
+	if acc, ok := ctx.Value(BifrostContextKeyUpstreamLatency).(*upstreamAccumulator); ok && acc != nil {
+		return time.Duration(acc.total.Load()), true
 	}
 	return 0, false
 }

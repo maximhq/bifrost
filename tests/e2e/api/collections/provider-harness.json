@@ -279156,6 +279156,147 @@
           }
         }
       ]
+    },
+    {
+      "name": "266. MCP agent loop upstream latency covers every turn (agent-loop-upstream)",
+      "description": "Requests that opt into the slow_mcp client (x-bf-mcp-include-clients) run Bifrost's MCP agent loop: turn 1 calls the auto-executed slow_echo tool, which the fixture holds for a fixed 1500ms, Bifrost runs it and sends turn 2. Every turn re-entered Bifrost's request handler on the same context and reset the running upstream total, so the response's extra_fields.upstream_latency covered only the last turn. Turn 1's model time and the tool call's time then showed up as Bifrost overhead (in the log detail view and the OTEL/Datadog overhead attributes), which made agent-mode requests look like Bifrost added seconds of latency.\n\nEach case forces the two-turn loop, proves the second turn ran (the final upstream request carries the slow_echo result), proves the 1500ms tool wait sits inside the request, and pins that the client's measured wait minus upstream_latency stays within 250ms. Before the fix that gap is at least the 1500ms tool call plus turn 1's model call, so both cases fail on the old code however fast the model is. Chat and Responses both enter the loop through the same handler, so both routes are pinned.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai gpt-4o-mini chat agent-loop-upstream: upstream_latency covers both turns",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the agent loop completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('the echo tool ran server side and a second turn answered', function () {",
+                  "  var msg = ((body.choices || [])[0] || {}).message || {};",
+                  "  pm.expect(msg.tool_calls || [], 'the tool call came back unexecuted: ' + text).to.have.length(0);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+                  "  pm.expect(raw, 'raw_request missing: ' + text.slice(0, 400)).to.not.equal('null');",
+                  "  pm.expect(raw, 'the final upstream turn carries no echo tool result, so only one turn ran: ' + raw.slice(0, 2000)).to.include('echoed');",
+                  "  pm.expect(raw, 'slow_mcp-slow_echo was not declared upstream: ' + raw.slice(0, 2000)).to.include('slow_mcp-slow_echo');",
+                  "});",
+                  "pm.test('the fixed slow_echo wait happened inside the request', function () {",
+                  "  pm.expect(pm.response.responseTime, 'the request finished before the 1500ms tool wait, so slow_echo did not run: ' + text.slice(0, 600)).to.be.at.least(1500);",
+                  "});",
+                  "pm.test('upstream_latency covers both turns: the client wait is upstream plus a small Bifrost overhead', function () {",
+                  "  var up = (body.extra_fields || {}).upstream_latency;",
+                  "  pm.expect(up, 'extra_fields.upstream_latency missing: ' + text.slice(0, 600)).to.be.a('number');",
+                  "  var gap = pm.response.responseTime - up;",
+                  "  pm.expect(gap, 'client waited ' + pm.response.responseTime + 'ms but upstream_latency is ' + up + 'ms: a ' + gap + 'ms gap means an earlier turn\\'s model time was dropped from upstream and reported as Bifrost overhead').to.be.at.most(250);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "slow_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call the slow_echo tool exactly once with the message \\\"agent-upstream-4417\\\". After it returns, reply with one short sentence that includes agent-upstream-4417.\"\n    }\n  ],\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai gpt-4o-mini responses agent-loop-upstream: upstream_latency covers both turns",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('the agent loop completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "pm.test('the echo tool ran server side and a second turn answered', function () {",
+                  "  var calls = (body.output || []).filter(function (o) { return o.type === 'function_call' && (o.name || '').indexOf('echo') !== -1; });",
+                  "  pm.expect(calls.length, 'the echo call came back unexecuted: ' + text).to.equal(0);",
+                  "  var raw = JSON.stringify((body.extra_fields || {}).raw_request || null);",
+                  "  pm.expect(raw, 'raw_request missing: ' + text.slice(0, 400)).to.not.equal('null');",
+                  "  pm.expect(raw, 'the final upstream turn carries no echo tool result, so only one turn ran: ' + raw.slice(0, 2000)).to.include('echoed');",
+                  "  pm.expect(raw, 'slow_mcp-slow_echo was not declared upstream: ' + raw.slice(0, 2000)).to.include('slow_mcp-slow_echo');",
+                  "});",
+                  "pm.test('the fixed slow_echo wait happened inside the request', function () {",
+                  "  pm.expect(pm.response.responseTime, 'the request finished before the 1500ms tool wait, so slow_echo did not run: ' + text.slice(0, 600)).to.be.at.least(1500);",
+                  "});",
+                  "pm.test('upstream_latency covers both turns: the client wait is upstream plus a small Bifrost overhead', function () {",
+                  "  var up = (body.extra_fields || {}).upstream_latency;",
+                  "  pm.expect(up, 'extra_fields.upstream_latency missing: ' + text.slice(0, 600)).to.be.a('number');",
+                  "  var gap = pm.response.responseTime - up;",
+                  "  pm.expect(gap, 'client waited ' + pm.response.responseTime + 'ms but upstream_latency is ' + up + 'ms: a ' + gap + 'ms gap means an earlier turn\\'s model time was dropped from upstream and reported as Bifrost overhead').to.be.at.most(250);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "slow_mcp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Call the slow_echo tool exactly once with the message \\\"agent-upstream-4417\\\". After it returns, reply with one short sentence that includes agent-upstream-4417.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

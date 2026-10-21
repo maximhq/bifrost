@@ -2557,7 +2557,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		say "$(GREEN)MCP test server already listening on 3012$(NC)"; \
 	else \
 		MCP_FIXTURE_BIN="$(CURDIR)/examples/mcps/remote-test-server/bin/remote-test-server"; \
-		if [ ! -x "$$MCP_FIXTURE_BIN" ]; then \
+		if [ ! -x "$$MCP_FIXTURE_BIN" ] || [ examples/mcps/remote-test-server/main.go -nt "$$MCP_FIXTURE_BIN" ]; then \
 			say "$(CYAN)Building MCP test server (examples/mcps/remote-test-server)...$(NC)"; \
 			(cd examples/mcps/remote-test-server && GOWORK=off go build -o bin/remote-test-server .) || { \
 				say "$(RED)Could not build the MCP test server; injected-web-search rows will fail$(NC)"; \

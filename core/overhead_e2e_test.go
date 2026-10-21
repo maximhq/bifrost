@@ -304,6 +304,73 @@ func TestOverheadResetBetweenRequests(t *testing.T) {
 	}
 }
 
+// An MCP agent loop re-enters handleRequest once per turn on the same context. Every turn's
+// provider wait must stay in upstream; dropping an earlier turn reports that model time as
+// Bifrost overhead on the response, the context and the root span the log row is built from.
+func TestOverheadAccumulatesAcrossAgentLoopTurns(t *testing.T) {
+	const turnDelay = 200 * time.Millisecond
+	server, models := agentLoopServer(t, turnDelay)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newAgentLoopClient(t, account)
+	tracer := newRecordingTracer()
+	client.SetTracer(tracer)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-overhead-test")
+
+	start := time.Now()
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    testChatModel,
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("echo hi")}},
+		},
+	})
+	total := time.Since(start)
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+	}
+	if got := len(models()); got != 2 {
+		t.Fatalf("provider served %d turns, want 2", got)
+	}
+	bothTurns := 2 * turnDelay
+
+	upstream, ok := schemas.GetUpstreamLatency(ctx)
+	if !ok {
+		t.Fatal("no upstream accumulator on the context after the agent loop")
+	}
+	if upstream < bothTurns {
+		t.Errorf("context upstream = %v, want >= %v (both turns' provider time)", upstream, bothTurns)
+	}
+
+	if body := resp.ExtraFields.UpstreamLatency; body == nil {
+		t.Error("ExtraFields.UpstreamLatency not populated on the final response")
+	} else if *body < bothTurns.Milliseconds() {
+		t.Errorf("ExtraFields.UpstreamLatency = %dms, want >= %dms", *body, bothTurns.Milliseconds())
+	}
+	if overhead := resp.ExtraFields.OverheadLatency; overhead == nil {
+		t.Error("ExtraFields.OverheadLatency not populated on the final response")
+	} else if *overhead >= turnDelay.Milliseconds() {
+		t.Errorf("ExtraFields.OverheadLatency = %dms, want < %dms: an earlier turn's provider time is reported as overhead", *overhead, turnDelay.Milliseconds())
+	}
+
+	raw, ok := tracer.get(schemas.AttrBifrostUpstreamDurationMs)
+	if !ok {
+		t.Fatalf("%s was never stamped on the root span", schemas.AttrBifrostUpstreamDurationMs)
+	}
+	if ms, _ := raw.(float64); ms < float64(bothTurns.Milliseconds()) {
+		t.Errorf("root span upstream = %vms, want >= %dms (log rows derive overhead from it)", ms, bothTurns.Milliseconds())
+	}
+
+	t.Logf("total=%v upstream=%v", total, upstream)
+}
+
 // Streaming is where the old measurement was worst: fasthttp returns as soon as
 // headers arrive, so the only provider time ever recorded was TTFB and the whole
 // token-generation window looked like Bifrost overhead. This asserts the
