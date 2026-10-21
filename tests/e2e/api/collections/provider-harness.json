@@ -263393,6 +263393,57 @@
           }
         },
         {
+          "name": "openai mcp-openapi-spec preview of a spec_url above 5 MiB is parsed under the 32 MiB default",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bifrost's own spec at an immutable release tag is 5.06 MiB: above the old 5 MiB limit (413), under the 32 MiB default.",
+                  "pm.test('openapi preview of a 5.06 MiB spec is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 2000)).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the whole document was read', function () {",
+                  "  pm.expect(body.spec_size, 'spec_size').to.be.above(5 * 1024 * 1024);",
+                  "});",
+                  "pm.test('its operations become tools', function () {",
+                  "  pm.expect(body.tool_count, 'tool_count').to.be.above(100);",
+                  "  var names = (body.tools || []).map(function (t) { return t.name; });",
+                  "  pm.expect(names, 'tool names').to.include('listProviders');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"spec_url\": \"https://raw.githubusercontent.com/maximhq/bifrost/refs/tags/transports/v2.3.1/docs/openapi/openapi.json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
           "name": "openai mcp-openapi-spec create registers a client synthesized from the document",
           "event": [
             {

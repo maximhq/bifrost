@@ -161,6 +161,29 @@ func TestFactory_ErrorClassification(t *testing.T) {
 	require.ErrorIs(t, err, ErrSpecTooLarge)
 }
 
+// TestFactory_MaxSpecBytes: the configured limit is read on every connect, and
+// a spec above it fails permanently.
+func TestFactory_MaxSpecBytes(t *testing.T) {
+	spec := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://api.example"}],
+"paths":{"/a":{"get":{"operationId":"getA","responses":{"200":{"description":"ok"}}}}}}`
+	limit := len(spec) - 1
+	factory := Factory(WithMaxSpecBytes(func() int { return limit }))
+	cfg := &schemas.MCPClientConfig{Name: "sized", OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}}
+	deps := schemas.InProcessServerDeps{HTTPClient: &http.Client{}}
+
+	_, err := factory(context.Background(), cfg, deps)
+	require.ErrorIs(t, err, schemas.ErrMCPOpenAPIConfigInvalid)
+	require.ErrorIs(t, err, ErrSpecTooLarge)
+
+	limit = len(spec)
+	_, err = factory(context.Background(), cfg, deps)
+	require.NoError(t, err)
+
+	limit = 0 // unset: MaxSpecBytes
+	_, err = factory(context.Background(), cfg, deps)
+	require.NoError(t, err)
+}
+
 // TestFactory_SpecURLConfigErrorsArePermanent: a spec_url that is not an
 // http(s) URL, or cannot form a request, fails the same way on every attempt.
 func TestFactory_SpecURLConfigErrorsArePermanent(t *testing.T) {

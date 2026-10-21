@@ -842,6 +842,7 @@ export interface CoreConfig {
 	mcp_disable_auto_tool_inject: boolean;
 	mcp_max_instructions_per_client: number;
 	mcp_max_instructions_total: number;
+	mcp_openapi_max_spec_mb: number;
 	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
 	mcp_oauth_private_allowlist?: string[];
@@ -910,6 +911,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_disable_auto_tool_inject: false,
 	mcp_max_instructions_per_client: 0,
 	mcp_max_instructions_total: 0,
+	mcp_openapi_max_spec_mb: 0,
 	mcp_enable_temp_token_auth: false,
 	async_job_result_ttl: 3600,
 	allowed_headers: [],

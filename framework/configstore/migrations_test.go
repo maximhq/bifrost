@@ -4577,6 +4577,28 @@ func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
 	require.NoError(t, migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx, db, testMigrationLogger))
 }
 
+func TestMigrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "mcp_openapi_max_spec_mb"))
+	mg := db.Migrator()
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "mcp_openapi_max_spec_mb"))
+
+	require.NoError(t, migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "mcp_openapi_max_spec_mb"))
+
+	// Existing rows read back as 0: the built-in limit.
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Zero(t, cfg.MCPOpenAPIMaxSpecMB)
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_mcp_openapi_max_spec_mb_column").Error)
+	require.NoError(t, migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()

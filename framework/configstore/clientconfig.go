@@ -114,6 +114,7 @@ type ClientConfig struct {
 	MCPAgentDepth                         int                                   `json:"mcp_agent_depth"`                             // The maximum depth for MCP agent mode tool execution
 	MCPMaxInstructionsPerClient           int                                   `json:"mcp_max_instructions_per_client"`             // Byte bound on one server's forwarded instructions; 0 is the default
 	MCPMaxInstructionsTotal               int                                   `json:"mcp_max_instructions_total"`                  // Byte bound on the whole forwarded aggregate; 0 is the default
+	MCPOpenAPIMaxSpecMB                   int                                   `json:"mcp_openapi_max_spec_mb"`                     // Size limit on an openapi MCP client's spec in MiB; 0 is the default (32)
 	MCPCodeModeLimits                     *schemas.MCPCodeModeLimits            `json:"mcp_code_mode_limits,omitempty"`              // Per-execution code mode limits; nil or zero fields use the defaults
 	MCPOAuthPrivateAllowlist              []string                              `json:"mcp_oauth_private_allowlist,omitempty"`       // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
 	A2APrivateAllowlist                   []string                              `json:"a2a_private_allowlist,omitempty"`             // Private hosts, IPs and CIDRs the Agent Gateway may reach for clients registered with admin auth
@@ -281,6 +282,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.MCPMaxInstructionsTotal > 0 {
 		hash.Write([]byte("mcpMaxInstructionsTotal:" + strconv.Itoa(c.MCPMaxInstructionsTotal)))
+	}
+	if c.MCPOpenAPIMaxSpecMB > 0 {
+		hash.Write([]byte("mcpOpenAPIMaxSpecMB:" + strconv.Itoa(c.MCPOpenAPIMaxSpecMB)))
 	}
 
 	if c.MCPToolExecutionTimeout > 0 {
