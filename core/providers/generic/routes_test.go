@@ -65,3 +65,18 @@ func TestMatchRouteFirstWins(t *testing.T) {
 	assert.True(t, billable, "no route means the provider defaults, billable")
 	assert.InDelta(t, 0.01, usage.costPerRequest, 1e-9)
 }
+
+// strict_routes turns the routes list into an allowlist: anything it does not name is refused.
+func TestRouteAllowed(t *testing.T) {
+	cfg := &schemas.GenericProviderConfig{Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/search"}, {Method: "GET", Path: "/jobs/*"}}}
+	open := &GenericProvider{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(cfg.Usage, nil)}
+	assert.True(t, open.RouteAllowed("DELETE", "/anything"), "without strict_routes every operation is relayed")
+
+	strictCfg := &schemas.GenericProviderConfig{StrictRoutes: true, Routes: cfg.Routes}
+	strict := &GenericProvider{cfg: strictCfg, routes: compileRoutes(strictCfg), usage: resolveUsage(nil, nil)}
+	assert.True(t, strict.RouteAllowed("POST", "/search"))
+	assert.True(t, strict.RouteAllowed("GET", "/jobs/42"))
+	assert.False(t, strict.RouteAllowed("DELETE", "/search"), "method must be listed")
+	assert.False(t, strict.RouteAllowed("POST", "/other"))
+	assert.False(t, strict.RouteAllowed("GET", "/jobs/42/status"))
+}

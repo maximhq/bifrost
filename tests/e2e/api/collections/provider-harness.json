@@ -281768,6 +281768,90 @@
               ]
             }
           }
+        },
+        {
+          "name": "262.11 POST /passthrough/generic_echo_strict/post - a listed route is relayed under strict_routes (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_strict lists POST /post and GET /get with strict_routes on: the list is an allowlist.",
+                  "pm.test('generic relay: listed route relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('generic relay: body relayed', function () { pm.expect(j.json, JSON.stringify(j.json)).to.eql({q: 'hi'}); });",
+                  "pm.test('generic relay: key injected', function () { pm.expect(j.headers['x-api-key']).to.eql('harness-dummy'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"q\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_strict/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_strict",
+                "post"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] 262.12 DELETE /passthrough/generic_echo_strict/delete - an unlisted operation is refused under strict_routes (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('generic relay: unlisted operation is a 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('strict_routes');",
+                  "});",
+                  "pm.test('generic relay: refused before dispatch', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'no provider header on a router refusal').to.be.undefined; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_strict/delete",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_strict",
+                "delete"
+              ]
+            }
+          }
         }
       ]
     }

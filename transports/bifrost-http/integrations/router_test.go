@@ -2166,8 +2166,9 @@ func TestResponsesPassthroughFailureBeforeCreatedHasNoIdentity(t *testing.T) {
 // genericPassthroughTestAccount configures one generic custom provider ("echo", header auth) and a
 // standard provider, both pointed at the same upstream.
 type genericPassthroughTestAccount struct{ baseURL string }
+
 func (a genericPassthroughTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{"echo", schemas.OpenAI}, nil
+	return []schemas.ModelProvider{"echo", "strict", schemas.OpenAI}, nil
 }
 func (a genericPassthroughTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
 	return []schemas.Key{{ID: "k-" + string(p), Value: *schemas.NewSecretVar("operator-" + string(p)), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
@@ -2186,15 +2187,26 @@ func (a genericPassthroughTestAccount) GetConfigForProvider(p schemas.ModelProvi
 				Streaming: &schemas.GenericStreamingConfig{Paths: []string{"/live/**"}},
 			},
 		}
+	case "strict":
+		cfg.CustomProviderConfig = &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.Generic,
+			GenericConfig: &schemas.GenericProviderConfig{
+				Auth:         schemas.GenericAuthConfig{Type: schemas.GenericAuthBearer},
+				StrictRoutes: true,
+				Routes:       []schemas.GenericRouteConfig{{Method: "POST", Path: "/post"}, {Method: "DELETE", Path: "/items/*"}},
+			},
+		}
 	case schemas.OpenAI:
 	default:
 		return nil, fmt.Errorf("unsupported provider %s", p)
 	}
 	return cfg, nil
 }
+
 type genericUpstreamHit struct {
 	method, path, apiKey, authorization string
 }
+
 func newGenericPassthroughFixture(t *testing.T) (*router.Router, func() []genericUpstreamHit) {
 	t.Helper()
 	var mu sync.Mutex
@@ -2232,6 +2244,7 @@ func newGenericPassthroughFixture(t *testing.T) (*router.Router, func() []generi
 	}
 	return r, takeHits
 }
+
 // /passthrough/{provider}/... serves exactly the custom providers whose base type is generic: the
 // segment is resolved per request, the configured key replaces whatever credential the caller
 // sent, and a standard or unknown provider name is a 404 before anything is forwarded.
@@ -2298,6 +2311,46 @@ func TestGenericPassthroughRoute(t *testing.T) {
 		})
 	}
 }
+
+// With strict_routes the routes list is an allowlist: an unlisted operation is a 404 before anything
+// is forwarded; a provider without the flag is untouched.
+func TestGenericPassthroughStrictRoutes(t *testing.T) {
+	r, takeHits := newGenericPassthroughFixture(t)
+	tests := []struct {
+		name, method, uri      string
+		wantStatus             int
+		wantUpstream, wantBody string
+	}{
+		{name: "listed op relayed", method: fasthttp.MethodPost, uri: "/passthrough/strict/post", wantStatus: fasthttp.StatusOK, wantUpstream: "/post"},
+		{name: "glob route relayed", method: fasthttp.MethodDelete, uri: "/passthrough/strict/items/42", wantStatus: fasthttp.StatusOK, wantUpstream: "/items/42"},
+		{name: "unlisted method is a 404", method: fasthttp.MethodDelete, uri: "/passthrough/strict/post", wantStatus: fasthttp.StatusNotFound, wantBody: "strict_routes"},
+		{name: "unlisted path is a 404", method: fasthttp.MethodPost, uri: "/passthrough/strict/other", wantStatus: fasthttp.StatusNotFound, wantBody: "no route for POST /other"},
+		{name: "provider without the flag relays anything", method: fasthttp.MethodDelete, uri: "/passthrough/echo/anything", wantStatus: fasthttp.StatusOK, wantUpstream: "/anything"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			takeHits()
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.method)
+			ctx.Request.SetRequestURI(tc.uri)
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.SetBodyString(`{}`)
+			r.Handler(&ctx)
+			got := takeHits()
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			if tc.wantBody != "" {
+				require.Contains(t, string(ctx.Response.Body()), tc.wantBody)
+			}
+			if tc.wantUpstream == "" {
+				require.Empty(t, got, "a refused request never reaches the upstream")
+				return
+			}
+			require.Len(t, got, 1)
+			require.Equal(t, tc.wantUpstream, got[0].path)
+		})
+	}
+}
+
 func TestExtractGenericModel(t *testing.T) {
 	assert.Equal(t, "gpt-4o", extractGenericModel([]byte(`{"model":"gpt-4o"}`), "application/json", ""))
 	assert.Equal(t, "fast", extractGenericModel([]byte(`{"engine":"fast"}`), "application/json", "engine"))

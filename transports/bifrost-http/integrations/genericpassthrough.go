@@ -107,6 +107,14 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 		return
 	}
 
+	// With strict_routes, an operation the operator did not list is refused before anything else
+	// is looked at, the same way the path guard refuses a malformed path.
+	method := string(ctx.Method())
+	if !gp.RouteAllowed(method, path) {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "no route for "+method+" "+path+" on provider "+name+" (strict_routes)", fasthttp.StatusNotFound))
+		return
+	}
+
 	// x-model-provider, when sent, must name the provider the route resolved to.
 	if _, err := getPassthroughProvider(ctx, g.handlerStore, provider, false); err != nil {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
@@ -124,7 +132,6 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 	model := extractGenericModel(body, contentType, modelPath)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
-	method := string(ctx.Method())
 	passthroughReq := &schemas.BifrostPassthroughRequest{
 		Method:      method,
 		Path:        path,

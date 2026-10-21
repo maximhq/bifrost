@@ -13349,6 +13349,10 @@
           "items": {
             "$ref": "#/$defs/generic_route_config"
           }
+        },
+        "strict_routes": {
+          "type": "boolean",
+          "description": "Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist (for example one imported from the API's OpenAPI document)"
         }
       },
       "additionalProperties": false

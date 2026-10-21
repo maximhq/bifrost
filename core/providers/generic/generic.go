@@ -28,6 +28,9 @@ var genericPassthroughMaxResponseBytes int64 = 64 << 20
 type PassthroughProvider interface {
 	GenericConfig() *schemas.GenericProviderConfig
 	Streams(method, path, accept string, bodyStream bool) bool
+	// RouteAllowed reports whether an operation may be relayed: always, unless strict_routes is on
+	// and no routes[] entry matches it.
+	RouteAllowed(method, path string) bool
 }
 
 // GenericProvider relays raw HTTP requests to one configured upstream.
@@ -113,6 +116,11 @@ func (provider *GenericProvider) Streams(method, path, accept string, bodyStream
 		return true
 	}
 	return bodyStream || strings.Contains(strings.ToLower(path), "stream")
+}
+
+// RouteAllowed implements PassthroughProvider.
+func (provider *GenericProvider) RouteAllowed(method, path string) bool {
+	return !provider.cfg.StrictRoutes || provider.matchRoute(method, path) != nil
 }
 
 func acceptsEventStream(accept string) bool {
