@@ -408,7 +408,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
 	// of assignees — directly-attached users don't imply an access-profile relation.
-	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
+	const { assignedUsers, isUserProfileManaged, isOwnerGoverned, managingProfile } = useVirtualKeyUsage(virtualKey);
 	// On create, the VK is governed when the role lacks CreateStandalone (the freedom to create
 	// ungoverned keys) *and* vkCreationPolicy resolves a profile to govern with — with no profile
 	// the server creates the key ungoverned. If governed, lock the governance fields up front:
@@ -429,7 +429,10 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// create: the server governs the key correctly whatever this form shows, so all that is at
 	// stake is whether these fields survive. It says so and offers a retry.
 	const isVkCreationPolicyUnresolved = !isEditing && !hasCreateStandalone && isVkCreationPolicyError;
-	const isManagedByProfile = (isEditing && isManagedByProfileHook) || willBeGovernedOnCreate;
+	// The full lock is for a user's managed key. A key its owner's access profile governs is the
+	// owner's key: it is edited, reassigned and unassigned here like any other, and only its
+	// governance fields follow the owner's profile (isGovernedByOwnerProfile below).
+	const isManagedByProfile = (isEditing && isUserProfileManaged) || willBeGovernedOnCreate;
 	// User assignment is enterprise-only: OSS registers no picker, so the option stays hidden.
 	const UserPicker = getUserPicker();
 	// Business unit ownership is enterprise-only for the same reason: the option shows only when a
@@ -751,6 +754,12 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	const ownerProfileStatus = (ownerProfileError as unknown as { status?: number } | null | undefined)?.status;
 	const ownerProfileFailed = !!owner && isOwnerProfileError && ownerProfileStatus !== 404;
 	const isOwnerProfileUnknown = !!owner && (isOwnerProfileFetching || ownerProfileFailed);
+	// An owner-governed key gave its own configuration up to the profile, so taking it off that owner
+	// (unassigning it, or moving it under an owner without a profile) leaves it with nothing
+	// configured until it is set up again here.
+	const originalOwnerId = virtualKey?.team_id || virtualKey?.customer_id || virtualKey?.business_unit_id || "";
+	const leavesGoverningOwner =
+		isEditing && isOwnerGoverned && (owner?.entityId ?? "") !== originalOwnerId && !isGovernedByOwnerProfile && !isOwnerProfileUnknown;
 	const ownerProfileNotice =
 		ownerProfile && owner ? (
 			<p data-testid="vk-owner-profile-notice">
@@ -1867,6 +1876,15 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 									{/* Entity Assignment */}
 									<div className="space-y-4">
 										<Label className="text-sm font-medium">Entity Assignment</Label>
+										{leavesGoverningOwner && (
+											<Alert variant="warning" data-testid="vk-leaves-governing-owner-warning">
+												<AlertTriangle className="h-4 w-4" />
+												<AlertDescription>
+													This key&apos;s providers, budgets and rate limit came from its owner&apos;s access profile, and it has none of
+													its own. Configure it below, or it will refuse requests once it is unassigned.
+												</AlertDescription>
+											</Alert>
+										)}
 
 										<div className="grid grid-cols-1 items-start gap-2 md:grid-cols-2">
 											<FormField
