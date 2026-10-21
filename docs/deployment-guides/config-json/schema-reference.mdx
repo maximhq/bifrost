@@ -108,6 +108,7 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `mcp_tool_execution_timeout` | integer or string | `30` | Per-tool execution timeout in seconds (integer = seconds, string = Go duration like "30s", "2m") |
 | `mcp_tool_sync_interval` | integer | `10` | Tool sync interval in minutes (`0` = default of 10 minutes) |
 | `mcp_disable_auto_tool_inject` | boolean | `false` | Disable automatic MCP tool injection |
+| `mcp_openapi_max_spec_mb` | integer | `0` | Size limit in MiB on an OpenAPI MCP server's spec (`0` = default of 32, maximum 256) |
 | `async_job_result_ttl` | integer | `3600` | TTL for async job results in seconds |
 | `disable_db_pings_in_health` | boolean | `false` | Exclude DB connectivity from `/health` |
 | `routing_chain_max_depth` | integer | `10` | Max routing rule chain evaluation depth |

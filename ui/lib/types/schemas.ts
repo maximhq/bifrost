@@ -1426,6 +1426,7 @@ export const coreConfigSchema = z.object({
 	mcp_disable_auto_tool_inject: z.boolean().default(false),
 	mcp_max_instructions_per_client: z.number().int().min(0).default(0),
 	mcp_max_instructions_total: z.number().int().min(0).default(0),
+	mcp_openapi_max_spec_mb: z.number().int().min(0).max(256).default(0),
 	mcp_code_mode_limits: z
 		.object({
 			max_source_bytes: z.number().int().min(0).optional(),

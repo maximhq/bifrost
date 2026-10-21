@@ -144,6 +144,16 @@ ClientConfig:
         caller can see. This rides on every MCP-bearing request that carries
         tools, so raising it raises per-request tokens. 0 uses the
         built-in default of 16384.
+    mcp_openapi_max_spec_mb:
+      type: integer
+      minimum: 0
+      maximum: 256
+      default: 0
+      description: >
+        Size limit, in MiB, on the spec of an openapi MCP client, whether
+        inline, uploaded or fetched from spec_url. Applies to previews,
+        creates, updates and connects. 0 uses the built-in default of 32.
+        Omit the field to keep the stored value.
     mcp_oauth_private_allowlist:
       type: array
       items:

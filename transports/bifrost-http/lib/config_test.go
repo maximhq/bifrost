@@ -25818,7 +25818,7 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 	str := func(s string) *string { return &s }
 
 	fromFile := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("specs/petstore.yaml")}}
-	require.NoError(t, prepareOpenAPIClientFromFile(fromFile, dir))
+	require.NoError(t, prepareOpenAPIClientFromFile(fromFile, dir, 0))
 	assert.Equal(t, spec, fromFile.OpenAPIConfig.Spec, "spec_file is inlined so the persisted row carries the document")
 	assert.Equal(t, "Petstore", fromFile.OpenAPIConfig.SpecTitle)
 	assert.Equal(t, "3.0.3", fromFile.OpenAPIConfig.OpenAPIVersion)
@@ -25826,7 +25826,7 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 	assert.NotEmpty(t, fromFile.OpenAPIConfig.SpecHash)
 
 	urlOnly := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeHeaders, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: str("https://api.example.com/openapi.json")}}
-	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir))
+	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir, 0))
 	assert.Empty(t, urlOnly.OpenAPIConfig.Spec, "a spec_url is fetched at connect time, not at load")
 
 	for name, cfg := range map[string]*schemas.MCPClientConfig{
@@ -25839,7 +25839,7 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 		"unparseable":    {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "not: openapi"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			assert.Error(t, prepareOpenAPIClientFromFile(cfg, dir))
+			assert.Error(t, prepareOpenAPIClientFromFile(cfg, dir, 0))
 		})
 	}
 }

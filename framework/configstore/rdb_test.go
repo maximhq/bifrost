@@ -2754,6 +2754,34 @@ func TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip(t 
 	assert.NotEqual(t, creationHash, deletionHash)
 }
 
+func TestUpdateClientConfig_MCPOpenAPIMaxSpecMBRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, result.MCPOpenAPIMaxSpecMB, "unset reads back as 0, the built-in limit")
+
+	sized := base
+	sized.MCPOpenAPIMaxSpecMB = 64
+	require.NoError(t, store.UpdateClientConfig(ctx, &sized))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 64, result.MCPOpenAPIMaxSpecMB)
+
+	// Only a set value is hashed, so configs written before the field existed keep their hash.
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	sizedHash, err := sized.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, sizedHash)
+	unsetHash, err := (&ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, unsetHash)
+}
+
 func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
