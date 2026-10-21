@@ -64,7 +64,7 @@ upload_with_retry() {
 }
 
 # Upload to versioned path
-if ! upload_with_retry "./dist/" "s3://$R2_BUCKET/bifrost/$CLI_VERSION/"; then
+if ! bash "$(dirname "$0")/run-security-tool.sh" immutableupload ./dist "bifrost/$CLI_VERSION"; then
   exit 1
 fi
 
