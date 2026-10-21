@@ -440,6 +440,16 @@ MCPLogsFilterDataResponse:
       items:
         type: string
       description: All unique server labels
+    apps:
+      type: array
+      items:
+        type: string
+      description: All unique detected client apps
+    user_agents:
+      type: array
+      items:
+        type: string
+      description: All unique raw User-Agent strings
     virtual_keys:
       type: array
       items:
@@ -542,6 +552,93 @@ SearchFilters:
       type: boolean
     content_search:
       type: string
+    aliases:
+      type: array
+      items:
+        type: string
+    stop_reasons:
+      type: array
+      items:
+        type: string
+    tool_call_names:
+      type: array
+      items:
+        type: string
+      description: Requests whose response called any of these function names
+    parent_request_id:
+      type: string
+    request_id:
+      type: string
+      description: Exact match on the log ID (the request ID); time-range filters are skipped when set
+    team_ids:
+      type: array
+      items:
+        type: string
+    customer_ids:
+      type: array
+      items:
+        type: string
+    user_ids:
+      type: array
+      items:
+        type: string
+    business_unit_ids:
+      type: array
+      items:
+        type: string
+    complexity_tiers:
+      type: array
+      items:
+        type: string
+      description: Routing complexity tiers (SIMPLE, MEDIUM, COMPLEX)
+    complexity_mechanisms:
+      type: array
+      items:
+        type: string
+      description: Complexity decision mechanisms (semantic, decision, llm, session, skipped)
+    agent_names:
+      type: array
+      items:
+        type: string
+    session_id:
+      type: string
+    agent_correlation_id:
+      type: string
+    apps:
+      type: array
+      items:
+        type: string
+    user_agents:
+      type: array
+      items:
+        type: string
+    cache_hit_types:
+      type: array
+      items:
+        type: string
+      description: Local-cache hit types (direct, semantic)
+    guardrail_outcomes:
+      type: array
+      items:
+        type: string
+        enum: [blocked, detected]
+    error_types:
+      type: array
+      items:
+        type: string
+    error_codes:
+      type: array
+      items:
+        type: string
+    status_codes:
+      type: array
+      items:
+        type: integer
+    metadata_filters:
+      type: object
+      description: Exact-match filters on custom log metadata, keyed by metadata key
+      additionalProperties:
+        type: string
 
 SearchLogsResponse:
   type: object
@@ -1684,3 +1781,69 @@ UserRankingResult:
       type: array
       items:
         $ref: '#/UserRankingEntry'
+
+UserAgentMappingInput:
+  type: object
+  description: |
+    A rule that maps matching User-Agent values to an app label. `pattern` and
+    `app` are trimmed and must be non-empty. On update every field is replaced:
+    an omitted `logo` is cleared and an omitted `is_active` becomes false.
+  required:
+    - pattern
+    - match_type
+    - app
+  properties:
+    pattern:
+      type: string
+      maxLength: 512
+      description: Value to match against the User-Agent; a Go regular expression when `match_type` is `regex`
+    match_type:
+      type: string
+      enum: [contains, starts_with, exact, regex]
+    app:
+      type: string
+      maxLength: 128
+      description: App label assigned to matching requests
+    logo:
+      type: string
+      format: byte
+      description: Base64-encoded logo image
+    logo_mime:
+      type: string
+      maxLength: 128
+      description: MIME type of `logo`, for example `image/png`
+    is_active:
+      type: boolean
+      description: Whether the rule is applied
+
+UserAgentMapping:
+  allOf:
+    - $ref: '#/UserAgentMappingInput'
+    - type: object
+      required:
+        - id
+        - is_active
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+          description: Zero-valued in the update response, which echoes the submitted mapping
+        updated_at:
+          type: string
+          format: date-time
+
+UserAgentMappingList:
+  type: object
+  required:
+    - mappings
+  properties:
+    mappings:
+      type: array
+      description: Every mapping, active or not, oldest first
+      items:
+        $ref: '#/UserAgentMapping'

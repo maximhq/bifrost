@@ -749,10 +749,16 @@ paths:
   # Configuration
   /api/config:
     $ref: "./paths/management/config.yaml#/config"
+  /api/config/metadata:
+    $ref: "./paths/management/config.yaml#/config-metadata"
   /api/version:
     $ref: "./paths/management/config.yaml#/version"
   /api/proxy-config:
     $ref: "./paths/management/config.yaml#/proxy-config"
+  /api/feature-flags:
+    $ref: "./paths/management/featureflags.yaml#/feature-flags"
+  /api/feature-flags/{id}:
+    $ref: "./paths/management/featureflags.yaml#/feature-flag-by-id"
   /api/pricing/force-sync:
     $ref: "./paths/management/config.yaml#/force-sync-pricing"
 
@@ -769,8 +775,6 @@ paths:
     $ref: "./paths/management/users.yaml#/users-role"
   /api/governance/users/{user_id}/teams:
     $ref: "./paths/management/users.yaml#/users-teams"
-  /api/governance/users/{user_id}/governance:
-    $ref: "./paths/management/users.yaml#/users-governance"
   /api/governance/users/{user_id}/virtual-keys:
     $ref: "./paths/management/governanceextensions.yaml#/user-virtual-keys"
   /api/governance/users/email/{email}/virtual-keys:
@@ -801,10 +805,14 @@ paths:
     $ref: "./paths/management/providers.yaml#/providers"
   /api/providers/{provider}:
     $ref: "./paths/management/providers.yaml#/providers-by-name"
+  /api/providers/{provider}/refresh-models:
+    $ref: "./paths/management/providers.yaml#/provider-refresh-models"
   /api/providers/{provider}/keys:
     $ref: "./paths/management/providers.yaml#/provider-keys"
   /api/providers/{provider}/keys/{key_id}:
     $ref: "./paths/management/providers.yaml#/provider-key-by-id"
+  /api/providers/{provider}/keys/{key_id}/refresh-models:
+    $ref: "./paths/management/providers.yaml#/provider-key-refresh-models"
   /api/keys:
     $ref: "./paths/management/providers.yaml#/keys"
   /api/models:
@@ -817,12 +825,16 @@ paths:
     $ref: "./paths/management/providers.yaml#/models-base"
   /api/models/newest:
     $ref: "./paths/management/providers.yaml#/models-newest"
+  /api/models/catalog:
+    $ref: "./paths/management/providers.yaml#/models-catalog"
 
   # Plugins
   /api/plugins:
     $ref: "./paths/management/plugins.yaml#/plugins"
   /api/plugins/builtins:
     $ref: "./paths/management/plugins.yaml#/plugins-builtins"
+  /api/plugins/loaded:
+    $ref: "./paths/management/plugins.yaml#/plugins-loaded"
   /api/plugins/{name}:
     $ref: "./paths/management/plugins.yaml#/~1plugins~1{name}"
 
@@ -863,6 +875,14 @@ paths:
     $ref: "./paths/management/mcp.yaml#/session-by-id"
   /api/mcp/sessions/{id}/reauth:
     $ref: "./paths/management/mcp.yaml#/session-reauth"
+  /api/mcp/library:
+    $ref: "./paths/management/mcp.yaml#/library"
+  /api/mcp/library/filterdata:
+    $ref: "./paths/management/mcp.yaml#/library-filterdata"
+  /api/mcp/library/force-sync:
+    $ref: "./paths/management/mcp.yaml#/library-force-sync"
+  /api/mcp/library/{id}:
+    $ref: "./paths/management/mcp.yaml#/library-by-id"
 
   # MCP — per-user-headers submission flow
   /api/mcp/per-user-headers/flows/{id}:
@@ -883,6 +903,12 @@ paths:
     $ref: "./paths/management/oauth.yaml#/oauth-config-status"
   /api/oauth/config/{id}:
     $ref: "./paths/management/oauth.yaml#/oauth-config-by-id"
+  /api/oauth2/sessions:
+    $ref: "./paths/management/oauth.yaml#/oauth2-sessions"
+  /api/oauth2/sessions/{id}:
+    $ref: "./paths/management/oauth.yaml#/oauth2-session-by-id"
+  /api/oauth2/consent/flows/{id}:
+    $ref: "./paths/management/oauth.yaml#/oauth2-consent-flow"
 
   # Governance - Virtual Keys
   /api/governance/virtual-keys:
@@ -891,8 +917,6 @@ paths:
     $ref: "./paths/management/governance.yaml#/virtual-keys-quota"
   /api/governance/virtual-keys/{vk_id}:
     $ref: "./paths/management/governance.yaml#/virtual-keys-by-id"
-  /api/governance/virtual-keys/{vk_id}/rotate:
-    $ref: "./paths/management/governance.yaml#/virtual-keys-rotate-by-id"
   /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override:
     $ref: "./paths/management/governance.yaml#/virtual-keys-budget-override"
   /api/governance/virtual-keys/{vk_id}/users:
@@ -1248,6 +1272,10 @@ paths:
     $ref: "./paths/management/logging.yaml#/logs-recalculate-cost-status"
   /api/logs/recalculate-cost/cancel:
     $ref: "./paths/management/logging.yaml#/logs-recalculate-cost-cancel"
+  /api/logs/user-agent-mappings:
+    $ref: "./paths/management/logging.yaml#/logs-user-agent-mappings"
+  /api/logs/user-agent-mappings/{id}:
+    $ref: "./paths/management/logging.yaml#/logs-user-agent-mappings-by-id"
 
   # MCP Logs
   /api/mcp-logs:

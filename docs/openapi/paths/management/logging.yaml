@@ -127,6 +127,19 @@ logs:
         description: Only show logs with missing cost
         schema:
           type: boolean
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - name: content_search
         in: query
@@ -358,6 +371,19 @@ logs-stats:
         description: Only show logs with missing cost
         schema:
           type: boolean
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - name: content_search
         in: query
@@ -566,6 +592,14 @@ logs-histogram:
       - $ref: "#/_histogram-parameters/tool_call_names"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -623,6 +657,23 @@ logs-histogram-tokens:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -680,6 +731,23 @@ logs-histogram-cost:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -743,6 +811,23 @@ logs-histogram-models:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -800,6 +885,23 @@ logs-histogram-latency:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -857,6 +959,23 @@ logs-histogram-cost-by-provider:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -914,6 +1033,23 @@ logs-histogram-tokens-by-provider:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -971,6 +1107,23 @@ logs-histogram-latency-by-provider:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -1033,6 +1186,19 @@ logs-histogram-throughput:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -1093,6 +1259,19 @@ logs-histogram-throughput-by-provider:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -1107,6 +1286,168 @@ logs-histogram-throughput-by-provider:
               $ref: "../../schemas/management/logging.yaml#/ProviderThroughputHistogramResult"
       "400":
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+logs-user-agent-mappings:
+  get:
+    operationId: listUserAgentMappings
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List user agent mappings
+    description: |
+      Returns every custom rule that maps User-Agent values to an app label,
+      active or not, oldest first.
+    tags:
+      - Logging
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/UserAgentMappingList"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+  post:
+    operationId: createUserAgentMapping
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Create a user agent mapping
+    description: |
+      Creates a rule that maps matching User-Agent values to an app label.
+      `is_active` decides whether the rule is applied; omitted, it is false and
+      the rule is stored inactive. The server assigns `id` and both timestamps.
+    tags:
+      - Logging
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "../../schemas/management/logging.yaml#/UserAgentMappingInput"
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Mapping created
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/UserAgentMapping"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+logs-user-agent-mappings-by-id:
+  put:
+    operationId: updateUserAgentMapping
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a user agent mapping
+    description: |
+      Replaces a user agent mapping. Every field is overwritten: an omitted
+      `logo` is cleared and an omitted `is_active` becomes false.
+    tags:
+      - Logging
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User agent mapping ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "../../schemas/management/logging.yaml#/UserAgentMappingInput"
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Mapping updated
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/UserAgentMapping"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
+  delete:
+    operationId: deleteUserAgentMapping
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Delete a user agent mapping
+    description: |
+      Deletes a user agent mapping and stops applying it to new requests.
+    tags:
+      - Logging
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: User agent mapping ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Mapping deleted
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                success:
+                  type: boolean
+                  example: true
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
 
@@ -1322,6 +1663,43 @@ _histogram-parameters:
     description: Parent request ID to filter by
     schema:
       type: string
+  user_agents:
+    name: user_agents
+    in: query
+    description: >-
+      Raw User-Agent strings to filter by. Send a JSON array (for example
+      `["Mozilla/5.0 (X11; Linux x86_64) KHTML, like Gecko"]`) so values containing commas
+      survive intact; a plain comma-separated list is also accepted.
+    schema:
+      type: string
+  apps:
+    name: apps
+    in: query
+    description: >-
+      Detected client apps to filter by. Send a JSON array of strings or a comma-separated list.
+    schema:
+      type: string
+  agent_names:
+    name: agent_names
+    in: query
+    description: Comma-separated list of registered agent names whose context IDs correlate the matching logs
+    schema:
+      type: string
+  agent_correlation_id:
+    name: agent_correlation_id
+    in: query
+    description: Exact caller-supplied agent correlation ID (the `x-bf-agent-correlation-id` request header)
+    schema:
+      type: string
+  guardrail_outcomes:
+    name: guardrail_outcomes
+    in: query
+    description: >-
+      Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a
+      guardrail intervened on; `detected` matches detect-only guardrail matches. Several values
+      are OR-ed together.
+    schema:
+      type: string
   metadata_key:
     name: metadata_<key>
     in: query
@@ -1366,6 +1744,141 @@ _ranking-parameters:
     schema:
       type: boolean
       default: false
+
+# Shared MCP tool log filter parameters
+_mcp-filter-parameters:
+  tool_names:
+    name: tool_names
+    in: query
+    description: Comma-separated list of tool names to filter by
+    schema:
+      type: string
+  server_labels:
+    name: server_labels
+    in: query
+    description: Comma-separated list of server labels to filter by
+    schema:
+      type: string
+  status:
+    name: status
+    in: query
+    description: >-
+      Comma-separated list of statuses to filter by. Values: `processing`, `success`, `error`
+      (for example `success,error`).
+    schema:
+      type: string
+  virtual_key_ids:
+    name: virtual_key_ids
+    in: query
+    description: Comma-separated list of virtual key IDs to filter by
+    schema:
+      type: string
+  llm_request_ids:
+    name: llm_request_ids
+    in: query
+    description: Comma-separated list of LLM request IDs to filter by
+    schema:
+      type: string
+  user_ids:
+    name: user_ids
+    in: query
+    description: Comma-separated list of user IDs to filter by
+    schema:
+      type: string
+  team_ids:
+    name: team_ids
+    in: query
+    description: Comma-separated list of team IDs to filter by
+    schema:
+      type: string
+  customer_ids:
+    name: customer_ids
+    in: query
+    description: Comma-separated list of customer IDs to filter by
+    schema:
+      type: string
+  business_unit_ids:
+    name: business_unit_ids
+    in: query
+    description: Comma-separated list of business unit IDs to filter by
+    schema:
+      type: string
+  project_ids:
+    name: project_ids
+    in: query
+    description: Comma-separated list of project IDs to filter by
+    schema:
+      type: string
+  device_ids:
+    name: device_ids
+    in: query
+    description: Comma-separated list of device IDs to filter by
+    schema:
+      type: string
+  agent_names:
+    name: agent_names
+    in: query
+    description: Comma-separated list of registered agent names whose context IDs correlate the matching logs
+    schema:
+      type: string
+  session_id:
+    name: session_id
+    in: query
+    description: Exact Bifrost session ID used for request correlation
+    schema:
+      type: string
+  agent_correlation_id:
+    name: agent_correlation_id
+    in: query
+    description: Exact caller-supplied agent correlation ID (the `x-bf-agent-correlation-id` request header)
+    schema:
+      type: string
+  user_agents:
+    name: user_agents
+    in: query
+    description: >-
+      Raw User-Agent strings to filter by. Send a JSON array so values containing commas
+      survive intact; a plain comma-separated list is also accepted.
+    schema:
+      type: string
+  apps:
+    name: apps
+    in: query
+    description: Detected client apps to filter by. Send a JSON array of strings or a comma-separated list.
+    schema:
+      type: string
+  start_time:
+    name: start_time
+    in: query
+    description: Start time filter (RFC3339 format). An unparseable value is rejected with 400 unless `period` is set.
+    schema:
+      type: string
+      format: date-time
+  end_time:
+    name: end_time
+    in: query
+    description: End time filter (RFC3339 format). An unparseable value is rejected with 400 unless `period` is set.
+    schema:
+      type: string
+      format: date-time
+  min_latency:
+    name: min_latency
+    in: query
+    description: Minimum latency filter (milliseconds)
+    schema:
+      type: number
+  max_latency:
+    name: max_latency
+    in: query
+    description: Maximum latency filter (milliseconds)
+    schema:
+      type: number
+  content_search:
+    name: content_search
+    in: query
+    description: Search in tool arguments and results
+    schema:
+      type: string
 
 logs-recalculate-cost:
   post:
@@ -1551,61 +2064,29 @@ mcp-logs:
     tags:
       - Logging
     parameters:
-      - name: tool_names
-        in: query
-        description: Comma-separated list of tool names to filter by
-        schema:
-          type: string
-      - name: server_labels
-        in: query
-        description: Comma-separated list of server labels to filter by
-        schema:
-          type: string
-      - name: status
-        in: query
-        description: Comma-separated list of statuses to filter by (processing, success, error)
-        schema:
-          type: string
-          enum: [processing, success, error]
-      - name: virtual_key_ids
-        in: query
-        description: Comma-separated list of virtual key IDs to filter by
-        schema:
-          type: string
-      - name: llm_request_ids
-        in: query
-        description: Comma-separated list of LLM request IDs to filter by
-        schema:
-          type: string
-      - name: start_time
-        in: query
-        description: Start time filter (RFC3339 format)
-        schema:
-          type: string
-          format: date-time
-      - name: end_time
-        in: query
-        description: End time filter (RFC3339 format)
-        schema:
-          type: string
-          format: date-time
+      - $ref: "#/_mcp-filter-parameters/tool_names"
+      - $ref: "#/_mcp-filter-parameters/server_labels"
+      - $ref: "#/_mcp-filter-parameters/status"
+      - $ref: "#/_mcp-filter-parameters/virtual_key_ids"
+      - $ref: "#/_mcp-filter-parameters/llm_request_ids"
+      - $ref: "#/_mcp-filter-parameters/user_ids"
+      - $ref: "#/_mcp-filter-parameters/team_ids"
+      - $ref: "#/_mcp-filter-parameters/customer_ids"
+      - $ref: "#/_mcp-filter-parameters/business_unit_ids"
+      - $ref: "#/_mcp-filter-parameters/project_ids"
+      - $ref: "#/_mcp-filter-parameters/device_ids"
+      - $ref: "#/_mcp-filter-parameters/agent_names"
+      - $ref: "#/_mcp-filter-parameters/session_id"
+      - $ref: "#/_mcp-filter-parameters/agent_correlation_id"
+      - $ref: "#/_mcp-filter-parameters/user_agents"
+      - $ref: "#/_mcp-filter-parameters/apps"
+      - $ref: "#/_mcp-filter-parameters/start_time"
+      - $ref: "#/_mcp-filter-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
       - $ref: "#/_histogram-parameters/timezone"
-      - name: min_latency
-        in: query
-        description: Minimum latency filter (milliseconds)
-        schema:
-          type: number
-      - name: max_latency
-        in: query
-        description: Maximum latency filter (milliseconds)
-        schema:
-          type: number
-      - name: content_search
-        in: query
-        description: Search in tool arguments and results
-        schema:
-          type: string
+      - $ref: "#/_mcp-filter-parameters/min_latency"
+      - $ref: "#/_mcp-filter-parameters/max_latency"
+      - $ref: "#/_mcp-filter-parameters/content_search"
       - name: limit
         in: query
         description: Number of logs to return (default 50, max 1000)
@@ -1753,61 +2234,29 @@ mcp-logs-stats:
     tags:
       - Logging
     parameters:
-      - name: tool_names
-        in: query
-        description: Comma-separated list of tool names to filter by
-        schema:
-          type: string
-      - name: server_labels
-        in: query
-        description: Comma-separated list of server labels to filter by
-        schema:
-          type: string
-      - name: status
-        in: query
-        description: Comma-separated list of statuses to filter by
-        schema:
-          type: string
-          enum: [processing, success, error]
-      - name: virtual_key_ids
-        in: query
-        description: Comma-separated list of virtual key IDs to filter by
-        schema:
-          type: string
-      - name: llm_request_ids
-        in: query
-        description: Comma-separated list of LLM request IDs to filter by
-        schema:
-          type: string
-      - name: start_time
-        in: query
-        description: Start time filter (RFC3339 format)
-        schema:
-          type: string
-          format: date-time
-      - name: end_time
-        in: query
-        description: End time filter (RFC3339 format)
-        schema:
-          type: string
-          format: date-time
+      - $ref: "#/_mcp-filter-parameters/tool_names"
+      - $ref: "#/_mcp-filter-parameters/server_labels"
+      - $ref: "#/_mcp-filter-parameters/status"
+      - $ref: "#/_mcp-filter-parameters/virtual_key_ids"
+      - $ref: "#/_mcp-filter-parameters/llm_request_ids"
+      - $ref: "#/_mcp-filter-parameters/user_ids"
+      - $ref: "#/_mcp-filter-parameters/team_ids"
+      - $ref: "#/_mcp-filter-parameters/customer_ids"
+      - $ref: "#/_mcp-filter-parameters/business_unit_ids"
+      - $ref: "#/_mcp-filter-parameters/project_ids"
+      - $ref: "#/_mcp-filter-parameters/device_ids"
+      - $ref: "#/_mcp-filter-parameters/agent_names"
+      - $ref: "#/_mcp-filter-parameters/session_id"
+      - $ref: "#/_mcp-filter-parameters/agent_correlation_id"
+      - $ref: "#/_mcp-filter-parameters/user_agents"
+      - $ref: "#/_mcp-filter-parameters/apps"
+      - $ref: "#/_mcp-filter-parameters/start_time"
+      - $ref: "#/_mcp-filter-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
       - $ref: "#/_histogram-parameters/timezone"
-      - name: min_latency
-        in: query
-        description: Minimum latency filter
-        schema:
-          type: number
-      - name: max_latency
-        in: query
-        description: Maximum latency filter
-        schema:
-          type: number
-      - name: content_search
-        in: query
-        description: Search in tool arguments and results
-        schema:
-          type: string
+      - $ref: "#/_mcp-filter-parameters/min_latency"
+      - $ref: "#/_mcp-filter-parameters/max_latency"
+      - $ref: "#/_mcp-filter-parameters/content_search"
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -1837,9 +2286,26 @@ mcp-logs-filterdata:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get available MCP log filter data
     description: |
-      Returns all unique filter data from MCP tool logs (tool names, server labels).
+      Returns the distinct values each MCP log filter dimension offers (tool names,
+      server labels, apps, user agents, virtual keys).
     tags:
       - Logging
+    parameters:
+      - name: dimensions
+        in: query
+        description: >-
+          Comma-separated dimensions to return. One or more of `tool_names`,
+          `server_labels`, `apps`, `user_agents`, `virtual_keys`. Unrecognised
+          values are ignored, and asking for none returns every dimension.
+        schema:
+          type: string
+      - name: q
+        in: query
+        description: >-
+          Free-text search within the requested dimensions. Passing it bypasses
+          the response cache.
+        schema:
+          type: string
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -1880,11 +2346,12 @@ logs-sessions-by-id:
           type: string
       - name: limit
         in: query
-        description: Number of logs to return (default 200, max 200)
+        description: Number of logs to return (default 500, max 500)
         schema:
           type: integer
-          default: 200
-          maximum: 200
+          minimum: 1
+          default: 500
+          maximum: 500
       - name: offset
         in: query
         description: Number of logs to skip
@@ -2003,6 +2470,13 @@ logs-rankings:
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/parent_request_id"
       - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -2085,6 +2559,13 @@ logs-rankings-by-dimension:
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/parent_request_id"
       - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -2225,6 +2706,15 @@ logs-dashboard:
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/parent_request_id"
       - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_mcp-filter-parameters/llm_request_ids"
+      - $ref: "#/_mcp-filter-parameters/device_ids"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -2303,6 +2793,23 @@ logs-histogram-cost-by-dimension:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -2367,6 +2874,23 @@ logs-histogram-tokens-by-dimension:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -2431,6 +2955,23 @@ logs-histogram-latency-by-dimension:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/aliases"
+      - $ref: "#/_histogram-parameters/parent_request_id"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/stop_reasons"
+      - $ref: "#/_histogram-parameters/tool_call_names"
+      - $ref: "#/_histogram-parameters/user_agents"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/agent_names"
+      - $ref: "#/_histogram-parameters/session_id"
+      - $ref: "#/_histogram-parameters/agent_correlation_id"
+      - $ref: "#/_histogram-parameters/complexity_tiers"
+      - $ref: "#/_histogram-parameters/complexity_mechanisms"
+      - $ref: "#/_histogram-parameters/cache_hit_types"
+      - $ref: "#/_histogram-parameters/guardrail_outcomes"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -2467,60 +3008,29 @@ mcp-logs-histogram:
     tags:
       - Logging
     parameters:
-      - name: tool_names
-        in: query
-        description: Comma-separated list of tool names to filter by
-        schema:
-          type: string
-      - name: server_labels
-        in: query
-        description: Comma-separated list of server labels to filter by
-        schema:
-          type: string
-      - name: status
-        in: query
-        description: Comma-separated list of statuses to filter by (processing, success, error)
-        schema:
-          type: string
-      - name: virtual_key_ids
-        in: query
-        description: Comma-separated list of virtual key IDs to filter by
-        schema:
-          type: string
-      - name: llm_request_ids
-        in: query
-        description: Comma-separated list of LLM request IDs to filter by
-        schema:
-          type: string
-      - name: start_time
-        in: query
-        description: Start time filter (RFC3339 format)
-        schema:
-          type: string
-          format: date-time
-      - name: end_time
-        in: query
-        description: End time filter (RFC3339 format)
-        schema:
-          type: string
-          format: date-time
+      - $ref: "#/_mcp-filter-parameters/tool_names"
+      - $ref: "#/_mcp-filter-parameters/server_labels"
+      - $ref: "#/_mcp-filter-parameters/status"
+      - $ref: "#/_mcp-filter-parameters/virtual_key_ids"
+      - $ref: "#/_mcp-filter-parameters/llm_request_ids"
+      - $ref: "#/_mcp-filter-parameters/user_ids"
+      - $ref: "#/_mcp-filter-parameters/team_ids"
+      - $ref: "#/_mcp-filter-parameters/customer_ids"
+      - $ref: "#/_mcp-filter-parameters/business_unit_ids"
+      - $ref: "#/_mcp-filter-parameters/project_ids"
+      - $ref: "#/_mcp-filter-parameters/device_ids"
+      - $ref: "#/_mcp-filter-parameters/agent_names"
+      - $ref: "#/_mcp-filter-parameters/session_id"
+      - $ref: "#/_mcp-filter-parameters/agent_correlation_id"
+      - $ref: "#/_mcp-filter-parameters/user_agents"
+      - $ref: "#/_mcp-filter-parameters/apps"
+      - $ref: "#/_mcp-filter-parameters/start_time"
+      - $ref: "#/_mcp-filter-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
       - $ref: "#/_histogram-parameters/timezone"
-      - name: min_latency
-        in: query
-        description: Minimum latency filter (milliseconds)
-        schema:
-          type: number
-      - name: max_latency
-        in: query
-        description: Maximum latency filter (milliseconds)
-        schema:
-          type: number
-      - name: content_search
-        in: query
-        description: Search in tool arguments and results
-        schema:
-          type: string
+      - $ref: "#/_mcp-filter-parameters/min_latency"
+      - $ref: "#/_mcp-filter-parameters/max_latency"
+      - $ref: "#/_mcp-filter-parameters/content_search"
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -2554,60 +3064,29 @@ mcp-logs-histogram-cost:
     tags:
       - Logging
     parameters:
-      - name: tool_names
-        in: query
-        description: Comma-separated list of tool names to filter by
-        schema:
-          type: string
-      - name: server_labels
-        in: query
-        description: Comma-separated list of server labels to filter by
-        schema:
-          type: string
-      - name: status
-        in: query
-        description: Comma-separated list of statuses to filter by (processing, success, error)
-        schema:
-          type: string
-      - name: virtual_key_ids
-        in: query
-        description: Comma-separated list of virtual key IDs to filter by
-        schema:
-          type: string
-      - name: llm_request_ids
-        in: query
-        description: Comma-separated list of LLM request IDs to filter by
-        schema:
-          type: string
-      - name: start_time
-        in: query
-        description: Start time filter (RFC3339 format)
-        schema:
-          type: string
-          format: date-time
-      - name: end_time
-        in: query
-        description: End time filter (RFC3339 format)
-        schema:
-          type: string
-          format: date-time
+      - $ref: "#/_mcp-filter-parameters/tool_names"
+      - $ref: "#/_mcp-filter-parameters/server_labels"
+      - $ref: "#/_mcp-filter-parameters/status"
+      - $ref: "#/_mcp-filter-parameters/virtual_key_ids"
+      - $ref: "#/_mcp-filter-parameters/llm_request_ids"
+      - $ref: "#/_mcp-filter-parameters/user_ids"
+      - $ref: "#/_mcp-filter-parameters/team_ids"
+      - $ref: "#/_mcp-filter-parameters/customer_ids"
+      - $ref: "#/_mcp-filter-parameters/business_unit_ids"
+      - $ref: "#/_mcp-filter-parameters/project_ids"
+      - $ref: "#/_mcp-filter-parameters/device_ids"
+      - $ref: "#/_mcp-filter-parameters/agent_names"
+      - $ref: "#/_mcp-filter-parameters/session_id"
+      - $ref: "#/_mcp-filter-parameters/agent_correlation_id"
+      - $ref: "#/_mcp-filter-parameters/user_agents"
+      - $ref: "#/_mcp-filter-parameters/apps"
+      - $ref: "#/_mcp-filter-parameters/start_time"
+      - $ref: "#/_mcp-filter-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
       - $ref: "#/_histogram-parameters/timezone"
-      - name: min_latency
-        in: query
-        description: Minimum latency filter (milliseconds)
-        schema:
-          type: number
-      - name: max_latency
-        in: query
-        description: Maximum latency filter (milliseconds)
-        schema:
-          type: number
-      - name: content_search
-        in: query
-        description: Search in tool arguments and results
-        schema:
-          type: string
+      - $ref: "#/_mcp-filter-parameters/min_latency"
+      - $ref: "#/_mcp-filter-parameters/max_latency"
+      - $ref: "#/_mcp-filter-parameters/content_search"
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -2641,60 +3120,29 @@ mcp-logs-histogram-top-tools:
     tags:
       - Logging
     parameters:
-      - name: tool_names
-        in: query
-        description: Comma-separated list of tool names to filter by
-        schema:
-          type: string
-      - name: server_labels
-        in: query
-        description: Comma-separated list of server labels to filter by
-        schema:
-          type: string
-      - name: status
-        in: query
-        description: Comma-separated list of statuses to filter by (processing, success, error)
-        schema:
-          type: string
-      - name: virtual_key_ids
-        in: query
-        description: Comma-separated list of virtual key IDs to filter by
-        schema:
-          type: string
-      - name: llm_request_ids
-        in: query
-        description: Comma-separated list of LLM request IDs to filter by
-        schema:
-          type: string
-      - name: start_time
-        in: query
-        description: Start time filter (RFC3339 format)
-        schema:
-          type: string
-          format: date-time
-      - name: end_time
-        in: query
-        description: End time filter (RFC3339 format)
-        schema:
-          type: string
-          format: date-time
+      - $ref: "#/_mcp-filter-parameters/tool_names"
+      - $ref: "#/_mcp-filter-parameters/server_labels"
+      - $ref: "#/_mcp-filter-parameters/status"
+      - $ref: "#/_mcp-filter-parameters/virtual_key_ids"
+      - $ref: "#/_mcp-filter-parameters/llm_request_ids"
+      - $ref: "#/_mcp-filter-parameters/user_ids"
+      - $ref: "#/_mcp-filter-parameters/team_ids"
+      - $ref: "#/_mcp-filter-parameters/customer_ids"
+      - $ref: "#/_mcp-filter-parameters/business_unit_ids"
+      - $ref: "#/_mcp-filter-parameters/project_ids"
+      - $ref: "#/_mcp-filter-parameters/device_ids"
+      - $ref: "#/_mcp-filter-parameters/agent_names"
+      - $ref: "#/_mcp-filter-parameters/session_id"
+      - $ref: "#/_mcp-filter-parameters/agent_correlation_id"
+      - $ref: "#/_mcp-filter-parameters/user_agents"
+      - $ref: "#/_mcp-filter-parameters/apps"
+      - $ref: "#/_mcp-filter-parameters/start_time"
+      - $ref: "#/_mcp-filter-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
       - $ref: "#/_histogram-parameters/timezone"
-      - name: min_latency
-        in: query
-        description: Minimum latency filter (milliseconds)
-        schema:
-          type: number
-      - name: max_latency
-        in: query
-        description: Maximum latency filter (milliseconds)
-        schema:
-          type: number
-      - name: content_search
-        in: query
-        description: Search in tool arguments and results
-        schema:
-          type: string
+      - $ref: "#/_mcp-filter-parameters/min_latency"
+      - $ref: "#/_mcp-filter-parameters/max_latency"
+      - $ref: "#/_mcp-filter-parameters/content_search"
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []

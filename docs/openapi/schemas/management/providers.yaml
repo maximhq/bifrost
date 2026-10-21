@@ -43,6 +43,30 @@ NetworkConfig:
     ca_cert_pem:
       type: string
       description: PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)
+    stream_idle_timeout_in_seconds:
+      type: integer
+      minimum: 0
+      description: Idle timeout per stream chunk in seconds (0 = use the default of 60s)
+    keep_alive_timeout_in_seconds:
+      type: integer
+      minimum: 0
+      description: Idle keep-alive for pooled connections in seconds; set below the upstream server's keep-alive to avoid reusing connections it has already closed (default 30s)
+    max_conns_per_host:
+      type: integer
+      minimum: 0
+      description: Maximum TCP connections per provider host (default 5000)
+    enforce_http2:
+      type: boolean
+      description: Force HTTP/2 on provider connections (relevant for net/http-based providers such as Bedrock)
+    http2_ping_interval_in_seconds:
+      type: integer
+      minimum: 0
+      description: Seconds of stream idle before an HTTP/2 keepalive PING (0 = disabled; only applies with enforce_http2)
+    beta_header_overrides:
+      type: object
+      additionalProperties:
+        type: boolean
+      description: Override default beta header support for this provider. Keys are beta header prefixes such as `redact-thinking-`; values enable or disable them.
     allow_private_network:
       type: boolean
       default: false
@@ -222,6 +246,93 @@ SageMakerKeyConfig:
   required:
     - region
   additionalProperties: false
+
+BedrockMantleKeyConfig:
+  type: object
+  description: AWS Bedrock Mantle-specific key configuration
+  properties:
+    access_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    secret_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    session_token:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    region:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: AWS region used to build the bedrock-mantle endpoint host
+    role_arn:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: IAM role to assume with STS AssumeRole
+    external_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    session_name:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    project_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Bedrock project that scopes inference and model listing; empty routes to the account's default project
+    endpoints:
+      type: object
+      description: Routes each AWS endpoint service through an interface VPC endpoint
+      properties:
+        runtime:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        control_plane:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        mantle:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        agent_runtime:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+        s3:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+
+DatabricksKeyConfig:
+  type: object
+  description: Databricks-specific key configuration
+  properties:
+    workspace_url:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Databricks workspace URL; a scheme and trailing path are tolerated
+    api_format:
+      type: string
+      enum: [auto, model_serving, ai_gateway]
+      default: auto
+      description: Which Databricks inference surface to target
+    client_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: OAuth M2M service principal client ID
+    client_secret:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: OAuth M2M service principal client secret
+    forward_gateway_tags:
+      type: boolean
+      description: Forward Bifrost governance labels as Databricks-Ai-Gateway-Request-Tags
+  required:
+    - workspace_url
+
+GithubCopilotKeyConfig:
+  type: object
+  description: GitHub Copilot-specific key configuration (GitHub App installation credentials)
+  properties:
+    app_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: GitHub App ID or Client ID, used as the App JWT issuer
+    installation_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Installation to mint tokens for; digits only
+    repository_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Repository the installation token is scoped to; digits only
+    private_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: GitHub App private key, PKCS#1 or PKCS#8 PEM
+    github_domain:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: GitHub Enterprise domain such as acme.ghe.com; empty means github.com
+  required:
+    - app_id
+    - installation_id
+    - repository_id
+    - private_key
 
 VllmKeyConfig:
   type: object
@@ -410,12 +521,18 @@ Key:
       $ref: '#/BedrockKeyConfig'
     sagemaker_key_config:
       $ref: '#/SageMakerKeyConfig'
+    bedrock_mantle_key_config:
+      $ref: '#/BedrockMantleKeyConfig'
     vllm_key_config:
       $ref: '#/VllmKeyConfig'
     ollama_key_config:
       $ref: '#/OllamaKeyConfig'
     sgl_key_config:
       $ref: '#/SglKeyConfig'
+    databricks_key_config:
+      $ref: '#/DatabricksKeyConfig'
+    github_copilot_key_config:
+      $ref: '#/GithubCopilotKeyConfig'
     cloudflare_key_config:
       $ref: '#/CloudflareKeyConfig'
     replicate_key_config:
@@ -428,6 +545,12 @@ Key:
     use_for_batch_api:
       type: boolean
       description: Whether this key can be used for batch API operations
+    use_anthropic_endpoints:
+      type: boolean
+      description: Whether to use Anthropic endpoints for this key
+    use_openai_endpoints:
+      type: boolean
+      description: Whether to use OpenAI-compatible endpoints for this key
     config_hash:
       type: string
       description: Hash of config.json version, used for change detection
@@ -440,9 +563,11 @@ Key:
 
 AllowedRequests:
   type: object
-  description: Allowed request types for custom providers
+  description: Allowed request types for custom providers. When set, only operations whose flag is true are allowed; omit allowed_requests entirely to allow every operation.
   properties:
     list_models:
+      type: boolean
+    model_retrieve:
       type: boolean
     text_completion:
       type: boolean
@@ -456,13 +581,27 @@ AllowedRequests:
       type: boolean
     responses_stream:
       type: boolean
+    responses_retrieve:
+      type: boolean
+    responses_delete:
+      type: boolean
+    responses_cancel:
+      type: boolean
+    responses_input_items:
+      type: boolean
     count_tokens:
       type: boolean
+    compaction:
+      type: boolean
     embedding:
+      type: boolean
+    rerank:
       type: boolean
     decisions:
       type: boolean
       description: Decision requests via /v1/decisions. A typesafe or openai base serves them natively; other bases emulate them through the Responses API only when the compat plugin's convert_decision_to_responses is enabled, and otherwise return unsupported_operation
+    ocr:
+      type: boolean
     speech:
       type: boolean
     speech_stream:
@@ -475,6 +614,26 @@ AllowedRequests:
       type: boolean
     image_generation_stream:
       type: boolean
+    image_edit:
+      type: boolean
+    image_edit_stream:
+      type: boolean
+    image_variation:
+      type: boolean
+    video_generation:
+      type: boolean
+    video_edit:
+      type: boolean
+    video_retrieve:
+      type: boolean
+    video_download:
+      type: boolean
+    video_delete:
+      type: boolean
+    video_list:
+      type: boolean
+    video_remix:
+      type: boolean
     batch_create:
       type: boolean
     batch_list:
@@ -482,6 +641,8 @@ AllowedRequests:
     batch_retrieve:
       type: boolean
     batch_cancel:
+      type: boolean
+    batch_delete:
       type: boolean
     batch_results:
       type: boolean
@@ -494,6 +655,44 @@ AllowedRequests:
     file_delete:
       type: boolean
     file_content:
+      type: boolean
+    container_create:
+      type: boolean
+    container_list:
+      type: boolean
+    container_retrieve:
+      type: boolean
+    container_delete:
+      type: boolean
+    container_file_create:
+      type: boolean
+    container_file_list:
+      type: boolean
+    container_file_retrieve:
+      type: boolean
+    container_file_content:
+      type: boolean
+    container_file_delete:
+      type: boolean
+    passthrough:
+      type: boolean
+    passthrough_stream:
+      type: boolean
+    websocket_responses:
+      type: boolean
+    realtime:
+      type: boolean
+    live:
+      type: boolean
+    cached_content_create:
+      type: boolean
+    cached_content_list:
+      type: boolean
+    cached_content_retrieve:
+      type: boolean
+    cached_content_update:
+      type: boolean
+    cached_content_delete:
       type: boolean
 
 CustomProviderConfig:
@@ -508,6 +707,12 @@ CustomProviderConfig:
         Provider ends streams on finish_reason without sending a data: [DONE] marker.
         Without this, a provider that also keeps the connection open leaves the stream
         waiting for a marker it never sends.
+    wait_for_usage:
+      type: boolean
+      description: >-
+        With does_not_send_done_marker, keep reading past finish_reason so the trailing
+        usage-only chunk is not dropped. A silent upstream then ends the stream on
+        network_config.stream_idle_timeout_in_seconds.
     base_provider_type:
       $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     allowed_requests:
@@ -535,8 +740,12 @@ ProviderResponse:
       type: boolean
     store_raw_request_response:
       type: boolean
+    ignore_provider_cost:
+      type: boolean
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    openai_config:
+      $ref: '#/OpenAIConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
     injected_tools:
@@ -584,12 +793,27 @@ AddProviderRequest:
       type: boolean
     store_raw_request_response:
       type: boolean
+    ignore_provider_cost:
+      type: boolean
+      default: false
+      description: Ignore the provider-reported usage cost and price requests from Bifrost's model catalog instead
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    openai_config:
+      $ref: '#/OpenAIConfig'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
     injected_tools:
       $ref: '#/InjectedToolsConfig'
+
+OpenAIConfig:
+  type: object
+  description: OpenAI-specific provider configuration
+  properties:
+    disable_store:
+      type: boolean
+      default: false
+      description: When true, forces store=false on every outgoing OpenAI request
 
 CacheControlInjectionPoint:
   type: object
@@ -657,7 +881,10 @@ InjectedTool:
 
 UpdateProviderRequest:
   type: object
-  description: Update provider request. Keys are managed separately via /api/providers/{provider}/keys.
+  description: Update provider request. Keys are managed separately via /api/providers/{provider}/keys. network_config and concurrency_and_buffer_size are replaced as a whole; other omitted fields keep their stored values.
+  required:
+    - network_config
+    - concurrency_and_buffer_size
   properties:
     network_config:
       $ref: '#/NetworkConfig'
@@ -671,8 +898,16 @@ UpdateProviderRequest:
       type: boolean
     store_raw_request_response:
       type: boolean
+    ignore_provider_cost:
+      type: boolean
+      description: Ignore the provider-reported usage cost and price requests from Bifrost's model catalog instead
     custom_provider_config:
       $ref: '#/CustomProviderConfig'
+    openai_config:
+      description: Send null to remove the OpenAI-specific configuration.
+      oneOf:
+        - $ref: '#/OpenAIConfig'
+        - type: 'null'
     prompt_cache:
       $ref: '#/PromptCacheConfig'
     injected_tools:
@@ -680,6 +915,69 @@ UpdateProviderRequest:
       oneOf:
         - $ref: '#/InjectedToolsConfig'
         - type: 'null'
+
+StoredProviderKey:
+  type: object
+  description: A stored provider key as listed by GET /api/keys. Secret values are redacted. Unlike Key, `id` is the numeric database row ID and the key UUID is in `key_id`. Provider-specific configuration is returned in the same `*_key_config` objects as Key.
+  additionalProperties: true
+  properties:
+    id:
+      type: integer
+      description: Database row ID
+    key_id:
+      type: string
+      description: Key UUID, as used in /api/providers/{provider}/keys/{key_id}
+    name:
+      type: string
+    provider:
+      type: string
+      description: Provider the key belongs to
+    provider_id:
+      type: integer
+    value:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: API key value (redacted)
+    models:
+      type: array
+      items:
+        type: string
+    blacklisted_models:
+      type: array
+      items:
+        type: string
+    weight:
+      type: number
+    enabled:
+      type: boolean
+    config_hash:
+      type: string
+    status:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+ModelPricingAttributesEntry:
+  type: object
+  description: Catalog attributes for one model and provider pair.
+  required:
+    - model
+    - provider
+  properties:
+    model:
+      type: string
+      minLength: 1
+    provider:
+      type: string
+      minLength: 1
+    additional_attributes:
+      type: object
+      additionalProperties:
+        type: string
+      description: Replaces the stored additional attributes. An empty or omitted map clears them.
 
 ListProviderKeysResponse:
   type: object
