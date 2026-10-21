@@ -1,1 +1,2 @@
+- [feat]: log Search queries and Fetch URLs, never result pages, and report per-request cost on recalculation [@jimaldon](https://github.com/jimaldon)
 - chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1

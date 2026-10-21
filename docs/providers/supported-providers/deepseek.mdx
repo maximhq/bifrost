@@ -23,6 +23,8 @@ DeepSeek is a provider with a dedicated Bifrost provider implementation. By defa
 | Responses API | ✅ | ✅ | `/chat/completions` (via Chat Completions fallback) | `/anthropic/v1/messages` |
 | Text Completions | ✅ | ✅ | `/beta/completions` | `/beta/completions` (unaffected) |
 | List Models | ✅ | - | `/models` | `/models` (unaffected) |
+| Web Search | ✅ | - | `/v1/tools/search` | `/v1/tools/search` (unaffected) |
+| Page Fetch | ✅ | - | `/v1/tools/fetch` | `/v1/tools/fetch` (unaffected) |
 | Embeddings | ❌ | ❌ | - | - |
 | Image Generation | ❌ | ❌ | - | - |
 | Speech (TTS) | ❌ | ❌ | - | - |
@@ -33,6 +35,60 @@ DeepSeek is a provider with a dedicated Bifrost provider implementation. By defa
 <Note>
 **Unsupported Operations** (❌): Embeddings, Image Generation, Speech, Transcriptions, Files, Batch, cached content, containers, token counting, compaction, OCR, rerank, video, and passthrough are not supported by the upstream DeepSeek API through this provider. These return `UnsupportedOperationError`.
 </Note>
+
+### Web Search and Page Fetch
+
+DeepSeek also ships two standalone web tools that are not model inference calls. Bifrost
+exposes them as first-class operations rather than chat tools, at the same paths DeepSeek
+uses, so migrating a client means changing only its base URL:
+
+| Operation | Route | Upstream |
+|-----------|-------|----------|
+| Web Search | `POST /v1/tools/search` | `POST /tools/search` |
+| Page Fetch | `POST /v1/tools/fetch` | `POST /tools/fetch` |
+
+Neither call takes a model, which makes them the only routes in Bifrost that work without
+one. Omit `model` and the gateway routes to DeepSeek; a `model` is still accepted as a
+routing handle (`deepseek/deepseek-chat`) when a virtual key's allowlist needs one.
+
+```bash
+curl -X POST http://localhost:8080/v1/tools/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"lang:en after:2026-01-01 go generics","max_results":5}'
+```
+
+Search takes the provider-neutral request: `query` (required; DeepSeek allows 1-128
+characters) and `max_results` (DeepSeek allows 1-50, default 10), and `include_content`
+returns page text in each result. DeepSeek has no domain or date filters, so
+`include_domains`, `exclude_domains`, `published_after` and `published_before` are refused
+with a 400; use the query operators instead: `site:`, `-site:`, `-term`, `"exact phrase"`,
+`lang:`, `after:` and `before:`. DeepSeek's own options are sent as top-level fields:
+`ori_question` (the user's original question, 1-128 characters, improves query
+understanding) and `localization` (an IP address used to localize results).
+
+Each result carries `url`, `title`, `snippet`, `content`, `published_at` and `score`
+(DeepSeek's `rerank_score`, 0-3). DeepSeek's `summary`, `site_name`, `site_icon` and
+`authority` (0-4, -1 when unknown) are in `provider_fields`.
+
+```bash
+curl -X POST http://localhost:8080/v1/tools/fetch \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/page"}'
+```
+
+Fetch returns `{title, content}` with `content` as Markdown. The URL must be absolute
+HTTP(S), at most 8192 characters, and must not embed credentials.
+
+<Pricing>
+Search and Fetch are billed at a flat **$0.75 per 1,000 successful requests** each,
+counted per request rather than per result, with nothing billed on failure or an empty
+result set. Bifrost reports that cost on each response, so it appears in logs and
+governance budgets without a model catalog entry. Search and Fetch are rate limited
+**separately at 5 QPS per DeepSeek account, across all keys**, and Fetch also answers a `429`
+when it exceeds a target domain's own QPS limit, so a `429` on either route means the caller
+was throttled upstream — by the account cap, or on Fetch by that domain — and a `402` means
+the account needs a top-up rather than a retry.
+</Pricing>
 
 ## Setup & Configuration
 

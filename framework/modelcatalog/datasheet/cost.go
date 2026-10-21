@@ -544,12 +544,23 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		return input.imageUsage.Cost
 	}
 
+	// A Search that matched nothing is a successful answer DeepSeek does not bill, which is why
+	// its response carries no usage. That absence must not reach the per-request fallback below,
+	// where a catalog row's cost_per_request would price a call the provider charged nothing for.
+	// This sits after the provider-cost short-circuit on purpose: if a provider ever does report
+	// a fee on an empty result set, that report wins.
+	if input.emptySearchResults {
+		return nil
+	}
+
 	// If no usage data at all, nothing to price.
 	//
-	// Rerank is exempt: it bills per query rather than per unit of reported usage, so a call
-	// that reports nothing still owes one query. Vertex returns no usage on rerank at all, and
-	// treating that as free would silently under-report every one of its calls.
-	if requestType != schemas.RerankRequest &&
+	// Rerank, Search and Fetch are exempt: each bills per request rather than per unit of
+	// reported usage, so a call that reports nothing still owes one unit. Vertex returns no
+	// usage on rerank at all, and treating that as free would silently under-report every one
+	// of its calls.
+	perRequestBilled := requestType == schemas.RerankRequest || requestType == schemas.SearchRequest || requestType == schemas.FetchRequest
+	if !perRequestBilled &&
 		input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
 		return nil
 	}
@@ -635,6 +646,15 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeEmbeddingCost(pricing, input.usage, input.tier)
 	case schemas.RerankRequest:
 		cost = computeRerankCost(pricing, input.usage, input.tier)
+	case schemas.SearchRequest, schemas.FetchRequest:
+		// Per-request operations with no token usage to compute from. The fee itself comes
+		// from the generic cost_per_request surcharge below, or from the provider-reported
+		// cost, which returned before this switch. A resolved row without a fee means there
+		// is nothing to record.
+		if pricing.CostPerRequest == nil {
+			return nil
+		}
+		cost = &schemas.BifrostCost{}
 	case schemas.DecisionRequest:
 		cost = computeDecisionCost(pricing, input.usage, input.tier)
 	case schemas.SpeechRequest:
@@ -734,6 +754,15 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	// carries no usage at all (Vertex reports none) still owes one query's cost.
 	case result.RerankResponse != nil:
 		input.usage = result.RerankResponse.Usage
+
+	// Search and Fetch bill per successful request, and the provider reports that fee on the
+	// response because the calls carry no model for the pricing store to look up.
+	case result.SearchResponse != nil:
+		input.usage = result.SearchResponse.Usage
+		input.emptySearchResults = len(result.SearchResponse.Results) == 0
+
+	case result.FetchResponse != nil:
+		input.usage = result.FetchResponse.Usage
 
 	case result.DecisionResponse != nil && result.DecisionResponse.Usage != nil:
 		input.usage = result.DecisionResponse.Usage

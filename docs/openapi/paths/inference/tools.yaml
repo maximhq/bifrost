@@ -1,0 +1,114 @@
+tools-search:
+  post:
+    operationId: searchWeb
+    summary: Search the web
+    description: |
+      Runs a web search through the routed provider and returns ranked pages in one shape
+      for every provider.
+
+      This is a web call, not an inference call: it carries no model upstream and is priced
+      per request. The charge is the cost the provider reports when it reports one, and the
+      model catalog's per-request price otherwise; a search that returns no results is free.
+      Omit `model` and the gateway routes to DeepSeek; a `model` is accepted only as a
+      routing handle for virtual-key allowlists.
+    tags:
+    - Web Tools
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/tools.yaml#/SearchRequest'
+    responses:
+      '200':
+        description: Successful response. An empty results array means no match.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/tools.yaml#/SearchResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '402':
+        description: Insufficient DeepSeek account balance. Top up rather than retry.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '429':
+        description: The 5 QPS per-account search limit was exceeded.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+tools-fetch:
+  post:
+    operationId: fetchPage
+    summary: Fetch a page as Markdown
+    description: |
+      Retrieves a single page through the routed provider and returns its content as
+      Markdown. Priced per request from the cost the provider reports when it reports one,
+      and from the model catalog otherwise. Omit `model` to route to DeepSeek; a `model` is
+      accepted only as a routing handle for virtual-key allowlists.
+
+      The page is read by the provider's servers, not by Bifrost, so the gateway's
+      private-network safeguards do not apply. A URL rejected by the provider's security
+      policy surfaces as a 403.
+    tags:
+    - Web Tools
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/tools.yaml#/FetchRequest'
+    responses:
+      '200':
+        description: Successful response.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/tools.yaml#/FetchResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
+      '402':
+        description: Insufficient DeepSeek account balance. Top up rather than retry.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '403':
+        description: The page was rejected by DeepSeek's fetch security policy.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '404':
+        description: The page carried no usable content.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '429':
+        description: The provider's rate limit was exceeded. DeepSeek answers 429 for its
+          5 QPS per-account Fetch cap and for a target domain's own limit.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

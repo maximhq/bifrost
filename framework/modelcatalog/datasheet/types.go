@@ -424,6 +424,11 @@ type costInput struct {
 	// tied to a specific model. Currently only used for container creates.
 	containerIdentifierString string
 	tier                      serviceTier
+	// emptySearchResults marks a successful Search that matched nothing. DeepSeek does not
+	// bill an empty result set, so its response carries no usage on purpose. That absence is
+	// not the same as a billable call that reported nothing, so the per-request fallback needs
+	// this marker to tell them apart.
+	emptySearchResults bool
 }
 
 // customPricingEntry is one flattened override ready for lookup.
@@ -489,6 +494,10 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "embedding"
 	case schemas.RerankRequest:
 		return "rerank"
+	case schemas.SearchRequest:
+		return "search"
+	case schemas.FetchRequest:
+		return "fetch"
 	case schemas.DecisionRequest:
 		return "decisions"
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:

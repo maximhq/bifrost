@@ -183,6 +183,10 @@ paths:
     $ref: "./paths/inference/ocr.yaml#/ocr"
   /v1/rerank:
     $ref: "./paths/inference/rerank.yaml#/rerank"
+  /v1/tools/search:
+    $ref: "./paths/inference/tools.yaml#/tools-search"
+  /v1/tools/fetch:
+    $ref: "./paths/inference/tools.yaml#/tools-fetch"
   /v1/decisions:
     $ref: "./paths/inference/decisions.yaml#/decisions"
   /v1/embeddings:
@@ -1882,6 +1886,18 @@ components:
       $ref: "./schemas/inference/rerank.yaml#/RerankDocument"
     RerankResult:
       $ref: "./schemas/inference/rerank.yaml#/RerankResult"
+
+    # ==================== Web Tools ====================
+    SearchRequest:
+      $ref: "./schemas/inference/tools.yaml#/SearchRequest"
+    SearchResponse:
+      $ref: "./schemas/inference/tools.yaml#/SearchResponse"
+    SearchResult:
+      $ref: "./schemas/inference/tools.yaml#/SearchResult"
+    FetchRequest:
+      $ref: "./schemas/inference/tools.yaml#/FetchRequest"
+    FetchResponse:
+      $ref: "./schemas/inference/tools.yaml#/FetchResponse"
 
     # ==================== Decisions ====================
     DecisionRequest:

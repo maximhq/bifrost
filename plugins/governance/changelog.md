@@ -1,1 +1,3 @@
+- [fix]: charge Search and Fetch calls that report a cost, which name no model and were never billed [@Radiergummi](https://github.com/Radiergummi)
+- [feat]: hold Search and Fetch to the model allowlist when they carry a routing model, and skip the model requirement when they do not [@jimaldon](https://github.com/jimaldon)
 - chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1

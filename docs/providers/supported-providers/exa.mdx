@@ -1,0 +1,115 @@
+---
+title: "Exa"
+description: "Exa web search guide - provider-neutral Search and Fetch over Exa's /search and /contents, priced at the cost Exa reports for each call"
+icon: "e"
+---
+
+## Overview
+
+Exa is a web search API. Bifrost serves it through the provider-neutral Search and Fetch
+operations, so a call to Exa takes the same request and returns the same result shape as a
+call to DeepSeek, and either can be the other's fallback. Exa serves no model inference.
+
+- **Provider-neutral** - `POST /v1/tools/search` and `POST /v1/tools/fetch`, the same request for every search provider
+- **Every neutral filter** - result count, page text, include and exclude domains, and published-after and -before dates all map onto Exa's own fields
+- **Priced as Exa reports** - each response carries Exa's `costDollars.total`, which Bifrost uses as the call's cost in logs and governance budgets without a model catalog entry
+- **Gateway-held credential** - the key is sent in `x-api-key`; callers present only their virtual key
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Web Search | ✅ | - | `/search` |
+| Page Fetch | ✅ | - | `/contents` |
+| Chat, Responses, Embeddings and every other inference operation | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Exa serves no models, so every inference operation returns `UnsupportedOperationError`.
+</Note>
+
+### Web Search
+
+Search calls carry no model. Route one to Exa by naming the provider in `model`:
+
+```bash
+curl -X POST http://localhost:8080/v1/tools/search \
+  -H "Content-Type: application/json" \
+  -d '{"model":"exa","query":"go generics","max_results":5,"include_domains":["go.dev"],"published_after":"2026-01-01"}'
+```
+
+| Neutral field | Exa field |
+|---------------|-----------|
+| `query` | `query` |
+| `max_results` (1-100) | `numResults` |
+| `include_content` | `contents.text` |
+| `include_domains`, `exclude_domains` | `includeDomains`, `excludeDomains` |
+| `published_after`, `published_before` | `startPublishedDate`, `endPublishedDate` |
+
+Each result carries `url`, `title`, `content` (with `include_content`) and `published_at`.
+Exa has no snippet of its own; `snippet` is its first highlight when highlights are
+requested. Exa's `id`, `author`, `summary`, `image`, `favicon` and further highlights are in
+`provider_fields`. Exa's own options, such as `type`, `category` or `contents.highlights`,
+are sent as top-level fields with the `x-bf-passthrough-extra-params: true` header.
+
+A search can fall back to another search provider by name:
+
+```json
+{"query": "go generics", "fallbacks": ["deepseek"]}
+```
+
+### Page Fetch
+
+```bash
+curl -X POST http://localhost:8080/v1/tools/fetch \
+  -H "Content-Type: application/json" \
+  -d '{"model":"exa","url":"https://go.dev/doc"}'
+```
+
+Fetch reads one page through Exa's `/contents` and returns `{title, content}`. Exa answers
+a page it could not read with a per-URL status rather than an HTTP error; Bifrost turns that
+into an error carrying Exa's status code (a `404` for a page Exa could not find) and its tag
+as the error type.
+
+<Pricing>
+Exa reports the price of every call in `costDollars.total`, and Bifrost uses that figure as
+the call's cost, so it appears in logs and governance budgets as Exa bills it. Page text
+requested with `include_content` is priced by Exa on top of the search. A `402` means the
+Exa account is out of credit, and a `429` a rate limit.
+</Pricing>
+
+## Setup & Configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**, click **Add New Provider** and select **Exa**.
+2. Click **Add Key**, set a name, and paste your API key or use an environment variable (for example, `env.EXA_API_KEY`).
+3. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "exa": {
+      "keys": [
+        {
+          "name": "exa-key-1",
+          "value": "env.EXA_API_KEY",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+</Tabs>
+
+A virtual key reaches Exa when its provider configs grant `exa`.

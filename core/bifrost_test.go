@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/keyselectors"
 	"github.com/maximhq/bifrost/core/mcp"
+	deepseekprovider "github.com/maximhq/bifrost/core/providers/deepseek"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -596,6 +597,52 @@ func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported base provider type") {
 		t.Fatalf("vertex is not a supported base provider, got err=%v", err)
+	}
+}
+
+// The tools operations are gated like every other typed operation: a custom provider
+// whose allowed_requests does not enable them must be refused before the provider call.
+func TestHandleProviderRequest_ToolsOperationsNotAllowed(t *testing.T) {
+	for _, requestType := range []schemas.RequestType{schemas.SearchRequest, schemas.FetchRequest} {
+		t.Run(string(requestType), func(t *testing.T) {
+			providerConfig := &schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{
+					BaseURL:                        "http://127.0.0.1:1",
+					DefaultRequestTimeoutInSeconds: 1,
+				},
+				CustomProviderConfig: &schemas.CustomProviderConfig{
+					CustomProviderKey: "custom-deepseek",
+					BaseProviderType:  schemas.DeepSeek,
+					AllowedRequests:   &schemas.AllowedRequests{},
+				},
+			}
+			provider, err := deepseekprovider.NewDeepSeekProvider(providerConfig, NewDefaultLogger(schemas.LogLevelError))
+			if err != nil {
+				t.Fatalf("NewDeepSeekProvider: %v", err)
+			}
+
+			req := &ChannelMessage{
+				Context:        schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+				BifrostRequest: schemas.BifrostRequest{RequestType: requestType},
+			}
+			switch requestType {
+			case schemas.SearchRequest:
+				req.SearchRequest = &schemas.BifrostSearchRequest{Provider: schemas.DeepSeek, Query: "q"}
+			case schemas.FetchRequest:
+				req.FetchRequest = &schemas.BifrostFetchRequest{Provider: schemas.DeepSeek, URL: "https://example.com/"}
+			}
+
+			response, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, providerConfig, req, schemas.Key{}, nil)
+			if response != nil {
+				t.Fatalf("expected nil response, got %#v", response)
+			}
+			if bifrostErr == nil || bifrostErr.Error == nil {
+				t.Fatal("expected an unsupported operation error")
+			}
+			if bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
+				t.Fatalf("code = %v, want unsupported_operation", bifrostErr.Error.Code)
+			}
+		})
 	}
 }
 

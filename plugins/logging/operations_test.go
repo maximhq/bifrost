@@ -3496,6 +3496,59 @@ func TestApplyNonStreamingOutputToEntryContentLoggingEnabled(t *testing.T) {
 	}
 }
 
+// TestApplyNonStreamingOutputToEntryDropsToolsRawResponse verifies that Search and Fetch keep
+// their bodies out of the log store even when raw storage and content logging are enabled: a
+// Fetch with need_content returns whole page text, and a Search result can carry page content.
+// The caller's ExtraFields.RawResponse stays intact so the API response is unaffected.
+func TestApplyNonStreamingOutputToEntryDropsToolsRawResponse(t *testing.T) {
+	const pageText = "whole page text that must not be persisted"
+	rawBody := map[string]any{"content": pageText}
+
+	fetchResult := &schemas.BifrostResponse{
+		FetchResponse: &schemas.BifrostFetchResponse{
+			Title:       "example",
+			Content:     pageText,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.FetchRequest, RawResponse: rawBody},
+		},
+	}
+	searchResult := &schemas.BifrostResponse{
+		SearchResponse: &schemas.BifrostSearchResponse{
+			Results:     []schemas.BifrostSearchResult{{Title: "t", URL: "https://example.com", Content: pageText}},
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.SearchRequest, RawResponse: rawBody},
+		},
+	}
+	chatResult := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, RawResponse: rawBody},
+		},
+	}
+
+	tests := []struct {
+		name   string
+		result *schemas.BifrostResponse
+	}{
+		{name: "fetch drops the body", result: fetchResult},
+		{name: "search drops the body", result: searchResult},
+		{name: "chat keeps the body", result: chatResult},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := &LoggerPlugin{}
+			entry := &logstore.Log{}
+
+			plugin.applyNonStreamingOutputToEntry(entry, tt.result, true, true)
+
+			if tt.result == chatResult {
+				require.NotEmpty(t, entry.RawResponse, "other request types keep raw-response persistence")
+				return
+			}
+			require.Empty(t, entry.RawResponse, "tools page text must not be persisted")
+			require.NotNil(t, tt.result.GetExtraFields().RawResponse, "the API response keeps its raw body")
+		})
+	}
+}
+
 // TestApplyNonStreamingOutputToEntryVideoOutputs verifies that each video response lands in
 // its own log column. Generation, remix and retrieve all return BifrostVideoGenerationResponse,
 // so the request type is the only thing separating generation from retrieve.

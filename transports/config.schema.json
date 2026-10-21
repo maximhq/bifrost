@@ -697,6 +697,9 @@
         "wafer": {
           "$ref": "#/$defs/provider"
         },
+        "exa": {
+          "$ref": "#/$defs/provider"
+        },
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },
@@ -12754,6 +12757,8 @@
         "responses",
         "embedding",
         "rerank",
+        "search",
+        "fetch",
         "decisions",
         "speech",
         "transcription",
@@ -12882,6 +12887,12 @@
               "type": "boolean"
             },
             "rerank": {
+              "type": "boolean"
+            },
+            "search": {
+              "type": "boolean"
+            },
+            "fetch": {
               "type": "boolean"
             },
             "decisions": {

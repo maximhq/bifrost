@@ -30,6 +30,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/databricks"
 	"github.com/maximhq/bifrost/core/providers/deepseek"
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
+	"github.com/maximhq/bifrost/core/providers/exa"
 	"github.com/maximhq/bifrost/core/providers/fireworks"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/githubcopilot"
@@ -1652,6 +1653,87 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 		return nil, err
 	}
 	return response.RerankResponse, nil
+}
+
+// SearchRequest sends a web search request to the specified provider's tools API.
+func (bifrost *Bifrost) SearchRequest(ctx *schemas.BifrostContext, req *schemas.BifrostSearchRequest) (*schemas.BifrostSearchResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "search request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.SearchRequest,
+			},
+		}
+	}
+	if strings.TrimSpace(req.Query) == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "query not provided for search request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.SearchRequest,
+			},
+		}
+	}
+	if req.MaxResults != nil && *req.MaxResults < 1 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "max_results must be at least 1 for search request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.SearchRequest,
+			},
+		}
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.SearchRequest
+	bifrostReq.SearchRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.SearchResponse, nil
+}
+
+// FetchRequest sends a page fetch request to the specified provider's tools API.
+func (bifrost *Bifrost) FetchRequest(ctx *schemas.BifrostContext, req *schemas.BifrostFetchRequest) (*schemas.BifrostFetchResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "fetch request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FetchRequest,
+			},
+		}
+	}
+	if strings.TrimSpace(req.URL) == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "url not provided for fetch request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FetchRequest,
+			},
+		}
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.FetchRequest
+	bifrostReq.FetchRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.FetchResponse, nil
 }
 
 // DecisionRequest sends an decision request to the specified provider.
@@ -5039,6 +5121,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return gemini.NewGeminiProvider(config, bifrost.logger), nil
 	case schemas.OpenRouter:
 		return openrouter.NewOpenRouterProvider(config, bifrost.logger), nil
+	case schemas.Exa:
+		return exa.NewExaProvider(config, bifrost.logger)
 	case schemas.Elevenlabs:
 		return elevenlabs.NewElevenlabsProvider(config, bifrost.logger), nil
 	case schemas.Nebius:
@@ -5705,6 +5789,22 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
 		fallbackReq.RerankRequest = &tmp
+	}
+	// Search and Fetch keep their arms even though only DeepSeek implements ToolsProvider
+	// today: a fallback to a provider without the capability returns the standard
+	// unsupported-operation error, which is honest, whereas a missing arm would silently
+	// re-run the primary and report it as a fallback (#6966).
+	if req.SearchRequest != nil {
+		tmp := *req.SearchRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.SearchRequest = &tmp
+	}
+	if req.FetchRequest != nil {
+		tmp := *req.FetchRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.FetchRequest = &tmp
 	}
 	if req.DecisionRequest != nil {
 		tmp := *req.DecisionRequest
@@ -9134,6 +9234,40 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.RerankResponse = rerankResponse
+	case schemas.SearchRequest:
+		var customProviderConfig *schemas.CustomProviderConfig
+		if config != nil {
+			customProviderConfig = config.CustomProviderConfig
+		}
+		if bifrostError := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), customProviderConfig, schemas.SearchRequest); bifrostError != nil {
+			return nil, bifrostError
+		}
+		tools, ok := provider.(schemas.ToolsProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.SearchRequest, provider.GetProviderKey())
+		}
+		searchResponse, bifrostError := tools.Search(req.Context, key, req.SearchRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.SearchResponse = searchResponse
+	case schemas.FetchRequest:
+		var customProviderConfig *schemas.CustomProviderConfig
+		if config != nil {
+			customProviderConfig = config.CustomProviderConfig
+		}
+		if bifrostError := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), customProviderConfig, schemas.FetchRequest); bifrostError != nil {
+			return nil, bifrostError
+		}
+		tools, ok := provider.(schemas.ToolsProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.FetchRequest, provider.GetProviderKey())
+		}
+		fetchResponse, bifrostError := tools.Fetch(req.Context, key, req.FetchRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.FetchResponse = fetchResponse
 	case schemas.DecisionRequest:
 		var decisionResponse *schemas.BifrostDecisionResponse
 		var bifrostError *schemas.BifrostError
@@ -10516,6 +10650,8 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.CompactionRequest = nil
 	req.EmbeddingRequest = nil
 	req.RerankRequest = nil
+	req.SearchRequest = nil
+	req.FetchRequest = nil
 	req.DecisionRequest = nil
 	req.OCRRequest = nil
 	req.SpeechRequest = nil
@@ -10762,7 +10898,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 
 	// Skip model check conditions
 	// We can improve these conditions in the future
-	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isCachedContentRequestType(requestType) || isModellessVideoRequestType(requestType) || isPassthroughRequestType(requestType) || requestType == schemas.LiveRequest || requestType == schemas.LiveContentRequest)) || requestType == schemas.ListModelsRequest || isResponsesLifecycleRequestType(requestType)
+	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isCachedContentRequestType(requestType) || isModellessVideoRequestType(requestType) || isPassthroughRequestType(requestType) || isToolsRequestType(requestType) || requestType == schemas.LiveRequest || requestType == schemas.LiveContentRequest)) || requestType == schemas.ListModelsRequest || isResponsesLifecycleRequestType(requestType)
 	if skipModelCheck {
 		// When skipping model check: just verify keys are enabled and have values
 		for _, key := range keys {

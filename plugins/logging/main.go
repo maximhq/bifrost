@@ -1146,6 +1146,20 @@ type LogMessage struct {
 }
 
 // InitialLogData contains data for initial log entry creation
+// toolsSearchLogParams is the search request shape kept in a log row. It deliberately omits
+// result content: need_content can return whole pages, so only the query and its bounds are
+// recorded.
+type toolsSearchLogParams struct {
+	Query          string `json:"query"`
+	MaxResults     *int   `json:"max_results,omitempty"`
+	IncludeContent *bool  `json:"include_content,omitempty"`
+}
+
+// toolsFetchLogParams is the fetch request shape kept in a log row.
+type toolsFetchLogParams struct {
+	URL string `json:"url"`
+}
+
 type InitialLogData struct {
 	Status                 string
 	Provider               string
@@ -3635,6 +3649,21 @@ func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *sch
 		initialData.EmbeddingInput = items
 	case schemas.RerankRequest:
 		initialData.Params = req.RerankRequest.Params
+	// Search and Fetch log only what types the row and reads well: the query and its bounds
+	// for search, the URL for fetch. Result pages are never copied into the log, because
+	// need_content can return whole pages.
+	case schemas.SearchRequest:
+		if req.SearchRequest != nil {
+			initialData.Params = toolsSearchLogParams{
+				Query:          req.SearchRequest.Query,
+				MaxResults:     req.SearchRequest.MaxResults,
+				IncludeContent: req.SearchRequest.IncludeContent,
+			}
+		}
+	case schemas.FetchRequest:
+		if req.FetchRequest != nil {
+			initialData.Params = toolsFetchLogParams{URL: req.FetchRequest.URL}
+		}
 	case schemas.DecisionRequest:
 		initialData.Params = req.DecisionRequest.Questions
 	case schemas.OCRRequest:
