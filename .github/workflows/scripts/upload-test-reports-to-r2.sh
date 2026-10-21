@@ -22,9 +22,10 @@ set -uo pipefail
 # version-derived key lets push-mintlify-changelog.sh construct the same URL
 # independently, with no coordination at all.
 #
-# NEVER fails the calling job. These reports are release *documentation*; a
-# flaky object-store upload must not turn a green test run red. Every failure
-# path warns and exits 0.
+# Object-store failures never fail the calling job: these reports are release
+# *documentation*, and a flaky upload must not turn a green test run red, so
+# every path after input validation warns and exits 0. Invalid inputs are the
+# one exception: a bad version or label means a tampered artifact and exits 1.
 
 if [ $# -ne 3 ]; then
   echo "Usage: $0 <transport-version> <label> <source-dir>" >&2
@@ -34,6 +35,14 @@ fi
 VERSION="${1#v}"
 LABEL="$2"
 SOURCE_DIR="$3"
+
+# Treat report artifacts as untrusted data; they must not select object keys
+# outside the reports prefix or make the uploader follow filesystem links.
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]] ||
+   [[ ! "$LABEL" =~ ^(provider-harness|cli-harness-[a-z0-9-]+)$ ]]; then
+  echo "Invalid report version or label" >&2
+  exit 1
+fi
 
 if [ -z "${R2_ENDPOINT:-}" ] || [ -z "${R2_BUCKET:-}" ]; then
   echo "::warning::R2 not configured (R2_ENDPOINT/R2_BUCKET unset) - skipping test report upload for $LABEL"
@@ -65,6 +74,7 @@ upload() {
     --profile "${R2_AWS_PROFILE:-R2}" \
     --no-progress \
     --recursive \
+    --no-follow-symlinks \
     --exclude "*" \
     --include "$include" \
     --content-type "$content_type"

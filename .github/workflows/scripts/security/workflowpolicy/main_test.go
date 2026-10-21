@@ -61,6 +61,19 @@ func TestPublicIPEndpointsAreRejected(t *testing.T) {
 	}
 }
 
+// TestReleaseKeysStayOutOfTestJobs rejects publisher storage keys in test environments.
+func TestReleaseKeysStayOutOfTestJobs(t *testing.T) {
+	d := fixture("step-security/harden-runner@" + strings.Repeat("a", 40))
+	job := d.Jobs["test"]
+	delete(d.Jobs, "test")
+	job.Steps[0].With = map[string]any{"egress-policy": "block"}
+	job.Other = map[string]any{"env": map[string]any{"R2_ACCESS_KEY_ID": "${{ secrets.R2_ACCESS_KEY_ID }}"}}
+	d.Jobs["test-provider"] = job
+	if len(check(d, "release-pipeline.yml")) == 0 {
+		t.Fatal("release storage key accepted in tests")
+	}
+}
+
 // TestRawContentAndFakePaths rejects aliases, wildcard bypasses, and URL-path rules.
 func TestRawContentAndFakePaths(t *testing.T) {
 	for _, endpoint := range []string{"raw.githubusercontent.com:443", "raw.github.com:443", "gist.githubusercontent.com:443", "*.githubusercontent.com:443", "*.com:443", "RAW.GITHUBUSERCONTENT.COM:443", "github.com:443/approved/repository"} {

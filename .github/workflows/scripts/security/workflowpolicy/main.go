@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/securitytools/internal/workflows"
+	"gopkg.in/yaml.v3"
 )
 
 // rawContentURL matches any tool fetching unreviewed bytes from GitHub's raw or gist hosts.
@@ -69,6 +70,12 @@ func check(document workflows.Workflow, filename string) []string {
 	for name, job := range document.Jobs {
 		if filename == "network-security-validation.yml" && job.Environment != "pr-testing" {
 			failures = append(failures, name+": live network diagnostics require admin approval")
+		}
+		if filename == "release-pipeline.yml" && strings.HasPrefix(name, "test-") {
+			body, err := yaml.Marshal(job)
+			if err != nil || regexp.MustCompile(`secrets\.R2_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)`).Match(body) {
+				failures = append(failures, name+": tests must not receive release storage credentials")
+			}
 		}
 		references := append([]workflows.Step{{Uses: job.Uses}}, job.Steps...)
 		for _, step := range references {
