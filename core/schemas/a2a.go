@@ -214,6 +214,8 @@ const (
 // BifrostA2AEvent is a bounded, protocol-neutral observation of one event that
 // was accepted by the downstream iterator. Sequence is gateway observation
 // order within the operation; Body is the typed strict-v1 event serialization.
+// Observers explicitly declaring no body demand may receive metadata-only
+// observations. Undeclared observers remain body-inclusive.
 type BifrostA2AEvent struct {
 	RequestType A2ARequestType
 	AgentName   string
@@ -233,6 +235,21 @@ type BifrostA2AEvent struct {
 // stream and is invoked only for plugins whose operation pre-hook already ran.
 type A2AEventObserver interface {
 	ObserveA2AEvent(ctx *BifrostContext, event *BifrostA2AEvent)
+}
+
+// A2AEventBodyDemandProvider optionally declares an observer's body requirements
+// for the entire operation, after its pre-hook has run. A false result must be
+// based on immutable request state: live configuration, retention settings, or
+// event-dependent requirements must conservatively return true.
+//
+// The returned observer must be the same instance that receives ObserveA2AEvent
+// (normally the receiver itself). This prevents a wrapper overriding observation
+// from silently opting out through a promoted method. Unknown or mismatched
+// observers retain the complete body. The method must not mutate context, retain
+// its scoped context, or otherwise affect forwarding.
+type A2AEventBodyDemandProvider interface {
+	A2AEventObserver
+	A2AEventBodyDemand(ctx *BifrostContext) (observer A2AEventObserver, required bool)
 }
 
 // BifrostA2AResponseExtraFields lets PostA2AHook discriminate the operation from
