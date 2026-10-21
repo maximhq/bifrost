@@ -6,17 +6,16 @@ name: Workflow Lint
 # real release, with the release riding on it.
 on:
   pull_request:
-    paths:
-      - ".github/workflows/**"
-      - "**/go.mod"
-      - "**/version"
+  merge_group:
+  push:
+    branches: [dev, main, v2.0.0]
 
 permissions:
   contents: read
 
 jobs:
   check-egress-allowlist:
-    name: Egress allowlist covers apt + provider-harness hosts
+    name: Supply chain policy
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -26,25 +25,24 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             api.github.com:443
-            files.pythonhosted.org:443
             github.com:443
-            pypi.org:443
+            proxy.golang.org:443
+            sum.golang.org:443
+            storage.googleapis.com:443
+            go.dev:443
+            dl.google.com:443
             release-assets.githubusercontent.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      # PyYAML only - deliberately no apt-get here, so this job needs no Ubuntu
-      # mirror access and stays outside the very rule it enforces.
-      #
-      # --require-hashes against a checked-in pin: an unpinned `pip install pyyaml`
-      # takes whatever the index serves at run time, which is what Scorecard's
-      # Pinned-Dependencies check flags. pip verifies every downloaded artifact
-      # against requirements/pyyaml.txt and fails closed on a mismatch.
-      - name: Install PyYAML
-        run: |
-          python3 -m pip install --user --disable-pip-version-check \
-            --require-hashes -r .github/workflows/requirements/pyyaml.txt
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+          cache: false
 
       - name: Check egress allowlists
         run: ./.github/workflows/scripts/check-egress-allowlist.sh
@@ -54,3 +52,11 @@ jobs:
 
       - name: Check module path major versions
         run: ./.github/workflows/scripts/module-major.test.sh
+
+      - name: Check release security policy
+        run: bash .github/workflows/scripts/run-security-tool.sh workflowpolicy "$GITHUB_WORKSPACE/.github/workflows"
+
+      - name: Test release security controls
+        run: |
+          bash .github/tests/configure-r2.test.sh
+          bash .github/workflows/scripts/run-security-tool.sh test

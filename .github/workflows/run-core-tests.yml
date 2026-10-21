@@ -138,6 +138,9 @@ jobs:
             pypi.org:443
             getbifrost.ai:443
             github.com:443
+            iamcredentials.googleapis.com:443
+            sts.googleapis.com:443
+            petstore3.swagger.io:443
             huggingface.co:443
             iojs.org:443
             login.microsoftonline.com:443
@@ -161,6 +164,7 @@ jobs:
       - name: Checkout requested branch
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
           ref: ${{ inputs.branch }}
 
       - name: Set up Go
