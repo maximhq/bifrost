@@ -40,8 +40,9 @@ func mcpJWTPublicKey(signingKey *configtables.OAuth2SigningKey) (*rsa.PublicKey,
 // jwtMCPClaims are the custom claims embedded in Bifrost-issued /mcp JWTs.
 type jwtMCPClaims struct {
 	jwt.RegisteredClaims
-	BfMode string `json:"bf_mode"` // user | vk | session
-	Scope  string `json:"scope"`
+	BfMode          string `json:"bf_mode"` // user | vk | session
+	Scope           string `json:"scope"`
+	ManagedClientID string `json:"bf_mc,omitempty"` // managed client row that minted the token (jwt-bearer grant only)
 }
 
 // extractBearerJWT returns the raw JWT string from an Authorization: Bearer

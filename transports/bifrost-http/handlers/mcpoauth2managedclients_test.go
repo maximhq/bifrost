@@ -21,7 +21,15 @@ func newManagedClientsHandler(t *testing.T, resolver OAuth2IdentityResolver) (*O
 	vk := &configtables.TableVirtualKey{ID: "vk-managed", Name: "managed", Value: *schemas.NewSecretVar("sk-bf-managed"), IsActive: &active}
 	require.NoError(t, store.CreateVirtualKey(context.Background(), vk))
 	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
-	return NewOAuth2ManagedClientsHandler(cfg, resolver), vk.ID
+	return NewOAuth2ManagedClientsHandler(cfg, resolver, &recordingEvictor{}), vk.ID
+}
+
+// recordingEvictor records the managed client IDs the handler asked to evict.
+type recordingEvictor struct{ evicted []string }
+
+// EvictManagedClientCache records id.
+func (r *recordingEvictor) EvictManagedClientCache(_ context.Context, id string) {
+	r.evicted = append(r.evicted, id)
 }
 
 // jsonCtx builds an initialized request with a JSON body and optional {id} path value.
@@ -118,6 +126,8 @@ func TestManagedClients_UpdateRotateDelete(t *testing.T) {
 	updated := decodeManagedClient(t, patch)
 	assert.Equal(t, "renamed", updated.Name)
 	assert.True(t, updated.Disabled)
+	evictor := h.cacheEvictor.(*recordingEvictor)
+	assert.Equal(t, []string{id}, evictor.evicted, "disabling evicts the client's cached status")
 
 	// A key that dies after binding must not block disabling or renaming the
 	// client, but re-binding still needs a live key.
@@ -137,9 +147,11 @@ func TestManagedClients_UpdateRotateDelete(t *testing.T) {
 	assert.True(t, rotated.HasSecret)
 	assert.NotEmpty(t, rotated.ClientSecret)
 
+	evictor.evicted = nil
 	del := jsonCtx("DELETE", "", id)
 	h.delete(del)
 	assert.Equal(t, fasthttp.StatusOK, del.Response.StatusCode())
+	assert.Equal(t, []string{id}, evictor.evicted, "deleting evicts the client's cached status")
 	missing := jsonCtx("PATCH", `{"name":"x"}`, id)
 	h.update(missing)
 	assert.Equal(t, fasthttp.StatusNotFound, missing.Response.StatusCode())
@@ -157,7 +169,9 @@ func TestManagedClients_WritesRefusedWhenAuthBypassed(t *testing.T) {
 type suggestingResolver struct{ fakeResolver }
 
 // SuggestedManagedAuthIssuer returns a fixed Okta org issuer.
-func (suggestingResolver) SuggestedManagedAuthIssuer(context.Context) string { return "https://acme.okta.com" }
+func (suggestingResolver) SuggestedManagedAuthIssuer(context.Context) string {
+	return "https://acme.okta.com"
+}
 
 func TestManagedClients_ListCarriesIssuerSuggestion(t *testing.T) {
 	h, _ := newManagedClientsHandler(t, &suggestingResolver{})

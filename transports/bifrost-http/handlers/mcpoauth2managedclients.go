@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/lrucache"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -33,12 +35,91 @@ const (
 //   - POST   /api/oauth2/managed-clients/{id}/rotate-secret
 type OAuth2ManagedClientsHandler struct {
 	store            *lib.Config
-	identityResolver OAuth2IdentityResolver // nil in OSS-only builds; gates the user identity
+	identityResolver OAuth2IdentityResolver    // nil in OSS-only builds; gates the user identity
+	cacheEvictor     ManagedClientCacheEvictor // drops a client's cached status after a write; may be nil
 }
 
-// NewOAuth2ManagedClientsHandler creates the managed-clients handler. identityResolver may be nil.
-func NewOAuth2ManagedClientsHandler(store *lib.Config, identityResolver OAuth2IdentityResolver) *OAuth2ManagedClientsHandler {
-	return &OAuth2ManagedClientsHandler{store: store, identityResolver: identityResolver}
+// NewOAuth2ManagedClientsHandler creates the managed-clients handler. identityResolver and
+// cacheEvictor may be nil.
+func NewOAuth2ManagedClientsHandler(store *lib.Config, identityResolver OAuth2IdentityResolver, cacheEvictor ManagedClientCacheEvictor) *OAuth2ManagedClientsHandler {
+	return &OAuth2ManagedClientsHandler{store: store, identityResolver: identityResolver, cacheEvictor: cacheEvictor}
+}
+
+// ManagedClientCacheEvictor drops a managed client's cached status after a write
+// that can revoke its tokens (disable, delete). The server evicts locally; a
+// clustered deployment also notifies peers.
+type ManagedClientCacheEvictor interface {
+	EvictManagedClientCache(ctx context.Context, id string)
+}
+
+// Bounds of the managed-client status cache: a write evicts on the node that
+// handled it at once, and on other nodes the entry expires within the TTL.
+const (
+	managedClientStatusTTL      = 30 * time.Second
+	managedClientStatusCapacity = 4096
+)
+
+// managedClientStatus is the cached answer for one managed client row.
+type managedClientStatus struct {
+	active    bool // exists and is not disabled
+	expiresAt time.Time
+}
+
+// ManagedClientStatusCache answers whether the managed client that minted a
+// token is still active, so /mcp can refuse its tokens once the client is
+// disabled or deleted. Answers, including "deleted", are cached for
+// managedClientStatusTTL in a bounded LRU, so the store is read at most once per
+// client per TTL, not per request.
+type ManagedClientStatusCache struct {
+	config *lib.Config
+	cache  *lrucache.Cache[managedClientStatus]
+}
+
+// NewManagedClientStatusCache creates the cache over config's store.
+func NewManagedClientStatusCache(config *lib.Config) *ManagedClientStatusCache {
+	return &ManagedClientStatusCache{config: config, cache: lrucache.New(managedClientStatusCapacity,
+		lrucache.WithValidator(func(s managedClientStatus) bool { return time.Now().Before(s.expiresAt) }))}
+}
+
+// Active reports whether managed client id still exists and is enabled. A store
+// failure is returned, not cached, so the caller can fail closed. A nil cache or
+// store reports active: there is then nothing to revoke against.
+func (c *ManagedClientStatusCache) Active(ctx context.Context, id string) (bool, error) {
+	if c == nil || c.config == nil || c.config.ConfigStore == nil {
+		return true, nil
+	}
+	if s, ok := c.cache.Get(id); ok {
+		return s.active, nil
+	}
+	s, err := c.cache.Fill(ctx, id, func() (managedClientStatus, string, error) {
+		row, err := c.config.ConfigStore.GetOAuth2ManagedClientByID(ctx, id)
+		if errors.Is(err, configstore.ErrNotFound) {
+			return managedClientStatus{active: false, expiresAt: time.Now().Add(managedClientStatusTTL)}, "", nil
+		}
+		if err != nil {
+			return managedClientStatus{}, "", err
+		}
+		return managedClientStatus{active: !row.Disabled, expiresAt: time.Now().Add(managedClientStatusTTL)}, "", nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return s.active, nil
+}
+
+// Evict drops the cached status of managed client id on this node.
+func (c *ManagedClientStatusCache) Evict(id string) {
+	if c == nil {
+		return
+	}
+	c.cache.Evict(id)
+}
+
+// evictCachedStatus asks the server to drop id's cached status after a write.
+func (h *OAuth2ManagedClientsHandler) evictCachedStatus(ctx context.Context, id string) {
+	if h.cacheEvictor != nil {
+		h.cacheEvictor.EvictManagedClientCache(ctx, id)
+	}
 }
 
 // RegisterRoutes wires the managed-client admin routes behind the API middleware chain.
@@ -206,10 +287,12 @@ func (h *OAuth2ManagedClientsHandler) update(ctx *fasthttp.RequestCtx) {
 		h.sendStoreError(ctx, err, "update")
 		return
 	}
+	h.evictCachedStatus(ctx, client.ID)
 	SendJSON(ctx, managedClientView{TableOAuth2ManagedClient: *client, HasSecret: client.HasSecret()})
 }
 
-// delete removes a managed client. Tokens it already minted run out on their own lifetime.
+// delete removes a managed client. /mcp refuses the tokens it already minted
+// once its cached status is evicted or expires.
 func (h *OAuth2ManagedClientsHandler) delete(ctx *fasthttp.RequestCtx) {
 	if !h.storeReady(ctx) || !h.requireAuthenticatedAdmin(ctx) {
 		return
@@ -219,6 +302,7 @@ func (h *OAuth2ManagedClientsHandler) delete(ctx *fasthttp.RequestCtx) {
 		h.sendStoreError(ctx, err, "delete")
 		return
 	}
+	h.evictCachedStatus(ctx, id)
 	SendJSON(ctx, map[string]any{"status": "success"})
 }
 

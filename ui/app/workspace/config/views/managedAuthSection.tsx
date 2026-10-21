@@ -400,7 +400,7 @@ function ManagedClients({ canEdit, userIdentityAvailable, clients }: ManagedClie
 					<AlertDialogHeader>
 						<AlertDialogTitle>Delete managed client?</AlertDialogTitle>
 						<AlertDialogDescription>
-							The client can no longer exchange identity assertions. Tokens it already received keep working until they expire.
+							The client can no longer exchange identity assertions, and the tokens it already received stop working within 30 seconds.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>

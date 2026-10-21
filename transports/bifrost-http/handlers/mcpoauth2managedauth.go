@@ -174,7 +174,7 @@ func (h *OAuth2IssuanceHandler) handleTokenAssertion(ctx *fasthttp.RequestCtx, s
 	}
 
 	ttl := cfg.EffectiveAccessTokenTTL()
-	accessToken, err := h.signAccessToken(ctx, principal.mode, principal.sub, managedAuthScope, resource, ttl)
+	accessToken, err := h.signAccessToken(ctx, principal.mode, principal.sub, managedAuthScope, resource, ttl, client.ID)
 	if err != nil {
 		outcome.Reason = "signing failed"
 		h.recordManagedAuthOutcome(ctx, outcome)

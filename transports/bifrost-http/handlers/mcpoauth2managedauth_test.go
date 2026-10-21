@@ -221,6 +221,68 @@ func TestManagedAuth_ClientIDFromQueryIgnored(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode(), "a query-string client_id is not client authentication")
 }
 
+// TestManagedAuth_TokenRefusedOnceClientIsRevoked checks a managed-auth token
+// names its client (bf_mc) and /mcp refuses it once the client is disabled or
+// deleted, or managed auth is turned off. The status is cached, so a change is
+// seen after an eviction (or the TTL), not on every request.
+func TestManagedAuth_TokenRefusedOnceClientIsRevoked(t *testing.T) {
+	f := newManagedAuthFixture(t, nil)
+	client := f.seedManagedClient(t, "pub", "", configtables.ManagedClientIdentityVK)
+	tokenCtx, body := f.tokenRequest(url.Values{"assertion": {f.idp.mint(t, "pub", nil)}, "client_id": {"pub"}}, "", "")
+	require.Equal(t, fasthttp.StatusOK, tokenCtx.Response.StatusCode(), string(tokenCtx.Response.Body()))
+	token := body["access_token"].(string)
+
+	key, err := f.cfg.GetOAuth2SigningKey(bgCtx())
+	require.NoError(t, err)
+	claims, err := verifyMCPJWT(bgCtx(), token, f.cfg, key)
+	require.NoError(t, err)
+	assert.Equal(t, client.ID, claims.ManagedClientID, "the token names the managed client row")
+
+	cache := NewManagedClientStatusCache(f.cfg)
+	h := newTestMCPHandler(f.cfg)
+	h.SetManagedClientStatusCache(cache)
+	// An initialized RequestCtx: the status lookup reaches the store through it.
+	mcpRequest := func(bearer string) (*fasthttp.RequestCtx, *schemas.BifrostContext) {
+		ctx := initCtx(&fasthttp.Request{})
+		ctx.Request.Header.Set("Authorization", "Bearer "+bearer)
+		return ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	authenticate := func() error {
+		ctx, bifrostCtx := mcpRequest(token)
+		return h.authenticate(ctx, bifrostCtx)
+	}
+	setDisabled := func(disabled bool) {
+		require.NoError(t, f.store.UpdateOAuth2ManagedClient(context.Background(), client.ID, configtables.OAuth2ManagedClientPatch{Disabled: &disabled}))
+	}
+
+	require.NoError(t, authenticate(), "an active client's token is admitted")
+	setDisabled(true)
+	require.NoError(t, authenticate(), "the cached status stands until evicted or expired")
+	cache.Evict(client.ID)
+	require.Error(t, authenticate(), "a disabled client's token is refused")
+
+	setDisabled(false)
+	cache.Evict(client.ID)
+	require.NoError(t, authenticate(), "re-enabling admits it again")
+
+	require.NoError(t, f.store.DeleteOAuth2ManagedClient(context.Background(), client.ID))
+	cache.Evict(client.ID)
+	require.Error(t, authenticate(), "a deleted client's token is refused")
+	require.Error(t, authenticate(), "and the refusal is cached, not re-read")
+
+	f2 := newManagedAuthFixture(t, nil)
+	f2.seedManagedClient(t, "pub", "", configtables.ManagedClientIdentityVK)
+	ctx2, body2 := f2.tokenRequest(url.Values{"assertion": {f2.idp.mint(t, "pub", nil)}, "client_id": {"pub"}}, "", "")
+	require.Equal(t, fasthttp.StatusOK, ctx2.Response.StatusCode())
+	off := *oauth2ServerCfg(f2.cfg)
+	off.ManagedAuth = &configtables.ManagedAuthConfig{Enabled: false}
+	f2.cfg.ClientConfig.OAuth2ServerConfig = &off
+	h2 := newTestMCPHandler(f2.cfg)
+	h2.SetManagedClientStatusCache(NewManagedClientStatusCache(f2.cfg))
+	mcpCtx, bifrostCtx := mcpRequest(body2["access_token"].(string))
+	require.Error(t, h2.authenticate(mcpCtx, bifrostCtx), "turning managed auth off refuses its tokens")
+}
+
 func TestManagedAuth_PublicClientWithBodyClientID(t *testing.T) {
 	f := newManagedAuthFixture(t, nil)
 	cimd := "https://claude.ai/oauth/claude-code-client-metadata"

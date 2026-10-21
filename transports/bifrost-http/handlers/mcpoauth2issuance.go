@@ -612,7 +612,7 @@ func (h *OAuth2IssuanceHandler) issueTokenPair(
 	ctx *fasthttp.RequestCtx,
 	familyID, clientID, bfMode, bfSub, scope, resource string,
 ) (accessToken, refreshTokenPlain string, rt *configtables.TableOAuth2RefreshToken, err error) {
-	accessToken, err = h.signAccessToken(ctx, bfMode, bfSub, scope, resource, oauth2ServerCfg(h.store).AccessTokenTTL)
+	accessToken, err = h.signAccessToken(ctx, bfMode, bfSub, scope, resource, oauth2ServerCfg(h.store).AccessTokenTTL, "")
 	if err != nil {
 		return
 	}
@@ -640,7 +640,7 @@ func (h *OAuth2IssuanceHandler) issueTokenPair(
 // signAccessToken mints the RS256 /mcp access token shared by every grant. A
 // non-positive ttl falls back to DefaultAccessTokenTTL. On error it writes an
 // OAuth error response to ctx and returns a non-nil error.
-func (h *OAuth2IssuanceHandler) signAccessToken(ctx *fasthttp.RequestCtx, bfMode, bfSub, scope, resource string, ttl int) (string, error) {
+func (h *OAuth2IssuanceHandler) signAccessToken(ctx *fasthttp.RequestCtx, bfMode, bfSub, scope, resource string, ttl int, managedClientID string) (string, error) {
 	if ttl <= 0 {
 		ttl = configtables.DefaultAccessTokenTTL
 	}
@@ -664,6 +664,11 @@ func (h *OAuth2IssuanceHandler) signAccessToken(ctx *fasthttp.RequestCtx, bfMode
 		"iat":     now.Unix(),
 		"nbf":     now.Unix(),
 		"exp":     now.Add(time.Duration(ttl) * time.Second).Unix(),
+	}
+	// A managed-auth token names its client so /mcp can refuse it once the
+	// client is disabled or removed; other grants leave the claim out.
+	if managedClientID != "" {
+		claims["bf_mc"] = managedClientID
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	tok.Header["kid"] = signingKey.KID

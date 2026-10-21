@@ -81,6 +81,9 @@ type MCPServerHandler struct {
 	// governance in-memory store, avoiding a per-request DB read. Optional: a nil
 	// cache or a miss falls back to the config store. See getVirtualKeyByID.
 	vkCache VirtualKeyCache
+	// managedClients answers whether the managed client that minted a jwt-bearer
+	// token is still active. Optional: nil admits such tokens until they expire.
+	managedClients *ManagedClientStatusCache
 	// mcpServer is the one server every caller is served from. What each caller sees of it is
 	// decided per request, from the tool list stamped on the request context, so nothing about
 	// it is per caller. Replaced whole when the tool registry changes; a request already holding
@@ -95,6 +98,30 @@ type MCPServerHandler struct {
 // key that is inactive or expired, from the grant it resolves for it.
 func (h *MCPServerHandler) getVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, error) {
 	return virtualKeyByID(ctx, h.vkCache, h.config.ConfigStore, vkID)
+}
+
+// checkManagedClient refuses a token minted through managed auth once managed
+// auth is turned off or its client is disabled or deleted. A failed status
+// lookup also refuses, matching how a failed virtual-key lookup is treated.
+func (h *MCPServerHandler) checkManagedClient(ctx context.Context, id string) error {
+	if !oauth2ServerCfg(h.config).IsManagedAuthEnabled() {
+		return fmt.Errorf("enterprise-managed authorization is disabled; re-authenticate")
+	}
+	active, err := h.managedClients.Active(ctx, id)
+	if err != nil {
+		logger.Error("mcp: failed to check managed client %s: %v", id, err)
+		return fmt.Errorf("failed to verify the managed client")
+	}
+	if !active {
+		return fmt.Errorf("the managed client that issued this token is disabled or removed; re-authenticate")
+	}
+	return nil
+}
+
+// SetManagedClientStatusCache wires the cache /mcp uses to refuse tokens minted
+// by a managed client that has since been disabled or deleted.
+func (h *MCPServerHandler) SetManagedClientStatusCache(c *ManagedClientStatusCache) {
+	h.managedClients = c
 }
 
 // NewMCPServerHandler creates a new MCP server handler instance
@@ -685,6 +712,14 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// faults ("signing key unavailable", ...) must not be mislabeled as
 			// the client's token being bad.
 			return err
+		}
+		// A jwt-bearer token stays valid only while managed auth and the client
+		// that minted it are. Tokens from other grants carry no bf_mc.
+		if claims.ManagedClientID != "" {
+			if err := h.checkManagedClient(ctx, claims.ManagedClientID); err != nil {
+				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+				return err
+			}
 		}
 
 		switch schemas.MCPAuthMode(claims.BfMode) {

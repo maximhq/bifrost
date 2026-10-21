@@ -141,7 +141,7 @@ In Claude's organization settings, add Bifrost's `/mcp` URL as a custom connecto
 - An ID-JAG may be presented more than once while it is valid; this is how the grant replaces a refresh token. Bifrost checks its audience, client and expiry on every presentation, but does not refuse a repeat. Issued tokens are logged at debug level with the ID-JAG's `jti`, and denials as warnings. Enterprise also records every outcome in the audit log.
 - Okta limits Cross App Access to **250 ID-JAGs per user, per resource app, per month**. A client that fetches a new ID-JAG for every Bifrost token spends one per token lifetime, so the default `access_token_ttl` is `86400` (24 hours).
 - Bifrost-side changes apply immediately: a deleted or disabled virtual key, or a deleted or deactivated user, is refused on the next `/mcp` request.
-- Disabling or deleting a managed client stops new tokens. Tokens it already received keep working until they expire.
+- Disabling or deleting a managed client, or turning managed auth off, also refuses the tokens it already issued. Each token names its client, and `/mcp` checks the client on every request against a cache that lasts 30 seconds. The change applies at once on the node that handled it, and within 30 seconds on other nodes. Enterprise clusters apply it on every node at once.
 - Grants from this flow do not appear on the **OAuth Grants** page, which lists refresh-token grants. The managed clients table shows when each client last obtained a token.
 
 ---

@@ -201,6 +201,10 @@ type ServerCallbacks interface {
 	// client-level mutation that invalidates its credential rows as a set
 	// (needs_update schema flip, access reconciliation, client deletion).
 	EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string)
+	// EvictManagedClientCache drops the cached status of a managed client after
+	// it is disabled, updated or deleted, so /mcp re-checks it on the next
+	// request that carries one of its tokens.
+	EvictManagedClientCache(ctx context.Context, id string)
 	// ResolveAccess answers what a request may reach, resolving it once onto the request's grant,
 	// for the listing routes that run outside the request pipeline and so cannot wait for a hook
 	// to resolve it.
@@ -286,6 +290,10 @@ type BifrostHTTPServer struct {
 	// is available, otherwise left nil (user-mode requests fall back to the
 	// global server).
 	OAuth2IdentityResolver handlers.OAuth2IdentityResolver
+	// managedClientStatus caches whether each managed client is still active, so
+	// /mcp can refuse tokens minted by a disabled or deleted one without a
+	// per-request database read. Created with the /mcp handler.
+	managedClientStatus *handlers.ManagedClientStatusCache
 	// AgentGatewayIdentityResolver validates pre-authenticated Authorization
 	// credentials for A2A HTTP and gRPC ingress. Optional; OSS leaves it nil.
 	AgentGatewayIdentityResolver handlers.AgentGatewayIdentityResolver
@@ -1502,6 +1510,12 @@ func (s *BifrostHTTPServer) EvictOauthTokenCacheByID(ctx context.Context, tokenI
 		return
 	}
 	s.Config.OAuthProvider.EvictUserTokenByID(tokenID)
+}
+
+// EvictManagedClientCache drops the cached status of a managed client on this
+// node. A clustered deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) EvictManagedClientCache(ctx context.Context, id string) {
+	s.managedClientStatus.Evict(id)
 }
 
 // EvictOauthTokenCacheByMCPClient drops every cached per-user MCP OAuth
@@ -2769,6 +2783,8 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	if err != nil {
 		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
 	}
+	s.managedClientStatus = handlers.NewManagedClientStatusCache(s.Config)
+	mcpServerHandler.SetManagedClientStatusCache(s.managedClientStatus)
 	s.MCPServerHandler = mcpServerHandler
 	asyncHandler := handlers.NewAsyncHandler(s.Client, s.Config)
 	s.IntegrationHandler.RegisterRoutes(s.Router, middlewares...)
@@ -2964,7 +2980,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	oauth2IssuanceHandler := handlers.NewOAuth2IssuanceHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
 	oauth2SessionsHandler := handlers.NewOAuth2SessionsHandler(s.Config)
 	oauth2ConsentHandler := handlers.NewOAuth2ConsentHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
-	oauth2ManagedClientsHandler := handlers.NewOAuth2ManagedClientsHandler(s.Config, s.OAuth2IdentityResolver)
+	oauth2ManagedClientsHandler := handlers.NewOAuth2ManagedClientsHandler(s.Config, s.OAuth2IdentityResolver, callbacks)
 
 	oauth2DiscoveryHandler.RegisterRoutes(s.Router, middlewares...)
 	// No middleware needed for mcp issuance routes, they should be open
