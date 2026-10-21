@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -159,24 +160,43 @@ func TestManagedAuth_ConfidentialVKClientGetsAccessOnlyToken(t *testing.T) {
 	assert.NotNil(t, stored.LastUsedAt)
 }
 
-// TestManagedAuth_ScopeFromAssertion checks the IdP's scope decision is applied:
-// no scope claim grants mcp, a claim must include mcp, and other scopes in it
-// are ignored rather than refused.
+// setScopes stores the scopes managed client id may be granted.
+func (f *managedAuthFixture) setScopes(t *testing.T, id, scopes string) {
+	t.Helper()
+	require.NoError(t, f.store.UpdateOAuth2ManagedClient(context.Background(), id, configtables.OAuth2ManagedClientPatch{Scopes: &scopes}))
+}
+
+// TestManagedAuth_ScopeFromAssertion checks the IdP's scope decision is applied
+// within the client's allowed scopes: no claim grants everything the client
+// allows, a claim grants what it names that the client allows (other scopes are
+// ignored), and nothing granted is invalid_scope. The audience follows the
+// granted scopes, so an llm-only token cannot reach /mcp.
 func TestManagedAuth_ScopeFromAssertion(t *testing.T) {
 	for name, tc := range map[string]struct {
-		scope      any // nil leaves the claim out
-		wantStatus int
-		wantError  string
+		clientScopes string // "" keeps the default, mcp
+		scope        any    // nil leaves the claim out
+		wantStatus   int
+		wantScope    string
+		wantError    string
 	}{
-		"no claim":           {nil, fasthttp.StatusOK, ""},
-		"mcp":                {"mcp", fasthttp.StatusOK, ""},
-		"mcp among others":   {"openid mcp chat.read", fasthttp.StatusOK, ""},
-		"only other scopes":  {"chat.read chat.write", fasthttp.StatusBadRequest, "invalid_scope"},
-		"empty string claim": {"", fasthttp.StatusOK, ""},
+		"no claim":                       {"", nil, fasthttp.StatusOK, "mcp", ""},
+		"mcp":                            {"", "mcp", fasthttp.StatusOK, "mcp", ""},
+		"mcp among others":               {"", "openid mcp chat.read", fasthttp.StatusOK, "mcp", ""},
+		"only other scopes":              {"", "chat.read chat.write", fasthttp.StatusBadRequest, "", "invalid_scope"},
+		"empty string claim":             {"", "", fasthttp.StatusOK, "mcp", ""},
+		"llm not allowed for the client": {"", "llm", fasthttp.StatusBadRequest, "", "invalid_scope"},
+		"llm allowed, no claim":          {"mcp llm", nil, fasthttp.StatusOK, "mcp llm", ""},
+		"llm allowed, both claimed":      {"mcp llm", "llm mcp", fasthttp.StatusOK, "mcp llm", ""},
+		"llm allowed, mcp claimed":       {"mcp llm", "mcp", fasthttp.StatusOK, "mcp", ""},
+		"llm allowed, llm claimed":       {"mcp llm", "llm", fasthttp.StatusOK, "llm", ""},
+		"llm-only client, mcp claimed":   {"llm", "mcp", fasthttp.StatusBadRequest, "", "invalid_scope"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newManagedAuthFixture(t, nil)
-			f.seedManagedClient(t, "pub", "", configtables.ManagedClientIdentityVK)
+			client := f.seedManagedClient(t, "pub", "", configtables.ManagedClientIdentityVK)
+			if tc.clientScopes != "" {
+				f.setScopes(t, client.ID, tc.clientScopes)
+			}
 			assertion := f.idp.mint(t, "pub", func(c jwt.MapClaims) {
 				if tc.scope != nil {
 					c["scope"] = tc.scope
@@ -188,9 +208,124 @@ func TestManagedAuth_ScopeFromAssertion(t *testing.T) {
 				assert.Equal(t, tc.wantError, body["error"])
 				return
 			}
-			assert.Equal(t, "mcp", body["scope"])
+			assert.Equal(t, tc.wantScope, body["scope"])
+			parsed, _, err := jwt.NewParser().ParseUnverified(body["access_token"].(string), jwt.MapClaims{})
+			require.NoError(t, err)
+			aud, err := parsed.Claims.GetAudience()
+			require.NoError(t, err)
+			var wantAud []string
+			for _, s := range strings.Fields(tc.wantScope) {
+				wantAud = append(wantAud, map[string]string{"mcp": testMCPResource, "llm": testIssuer}[s])
+			}
+			assert.Equal(t, wantAud, []string(aud), "one audience per granted scope")
 		})
 	}
+}
+
+// TestManagedAuth_LLMScopeToken checks VerifyManagedLLMToken accepts only a
+// managed-auth token granted llm, keeps /mcp on the mcp scope, and refuses the
+// token once the client loses llm, is disabled, or managed auth is turned off.
+func TestManagedAuth_LLMScopeToken(t *testing.T) {
+	issue := func(t *testing.T, f *managedAuthFixture, claim any) string {
+		t.Helper()
+		ctx, body := f.tokenRequest(url.Values{"assertion": {f.idp.mint(t, "pub", func(c jwt.MapClaims) {
+			if claim != nil {
+				c["scope"] = claim
+			}
+		})}, "client_id": {"pub"}}, "", "")
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		return body["access_token"].(string)
+	}
+	bearerCtx := func(token string) *fasthttp.RequestCtx {
+		ctx := initCtx(&fasthttp.Request{})
+		ctx.Request.Header.Set("Authorization", "Bearer "+token)
+		return ctx
+	}
+	newHandler := func(f *managedAuthFixture, resolver OAuth2IdentityResolver) (*MCPServerHandler, *ManagedClientStatusCache) {
+		cache := NewManagedClientStatusCache(f.cfg)
+		h := newTestMCPHandler(f.cfg)
+		h.identityResolver = resolver
+		h.SetManagedClientStatusCache(cache)
+		return h, cache
+	}
+
+	t.Run("vk client", func(t *testing.T) {
+		f := newManagedAuthFixture(t, nil)
+		client := f.seedManagedClient(t, "pub", "", configtables.ManagedClientIdentityVK)
+		f.setScopes(t, client.ID, "mcp llm")
+		h, cache := newHandler(f, nil)
+		both, llmOnly, mcpOnly := issue(t, f, nil), issue(t, f, "llm"), issue(t, f, "mcp")
+
+		p, err := h.VerifyManagedLLMToken(bearerCtx(both), both)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.MCPAuthModeVK, p.Mode)
+		assert.Equal(t, "sk-bf-xaa", p.VirtualKey, "the principal carries the key value governance resolves")
+		assert.Equal(t, client.ID, p.ManagedClientID)
+		_, err = h.VerifyManagedLLMToken(bearerCtx(llmOnly), llmOnly)
+		require.NoError(t, err)
+		_, err = h.VerifyManagedLLMToken(bearerCtx(mcpOnly), mcpOnly)
+		require.Error(t, err, "an mcp-only token is not an inference credential")
+
+		authMCP := func(token string) error {
+			return h.authenticate(bearerCtx(token), schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+		}
+		require.NoError(t, authMCP(both), "a token granted both still reaches /mcp")
+		require.Error(t, authMCP(llmOnly), "an llm-only token does not reach /mcp")
+
+		f.setScopes(t, client.ID, "mcp")
+		cache.Evict(client.ID)
+		_, err = h.VerifyManagedLLMToken(bearerCtx(both), both)
+		require.Error(t, err, "removing llm from the client revokes its inference tokens")
+		require.NoError(t, authMCP(both), "while its /mcp access stands")
+
+		disabled := true
+		require.NoError(t, f.store.UpdateOAuth2ManagedClient(context.Background(), client.ID, configtables.OAuth2ManagedClientPatch{Disabled: &disabled}))
+		f.setScopes(t, client.ID, "mcp llm")
+		cache.Evict(client.ID)
+		_, err = h.VerifyManagedLLMToken(bearerCtx(both), both)
+		require.Error(t, err, "a disabled client's tokens are refused")
+	})
+
+	t.Run("user client", func(t *testing.T) {
+		r := &managedAuthResolver{fakeResolver: fakeResolver{userModeAvailable: true}, resolvedUserID: "user-alice"}
+		f := newManagedAuthFixture(t, r)
+		client := f.seedManagedClient(t, "pub", "", configtables.ManagedClientIdentityUser)
+		f.setScopes(t, client.ID, "mcp llm")
+		token := issue(t, f, "mcp llm")
+		h, _ := newHandler(f, r)
+		p, err := h.VerifyManagedLLMToken(bearerCtx(token), token)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.MCPAuthModeUser, p.Mode)
+		assert.Equal(t, "user-alice", p.UserID)
+
+		r.userInactive = true
+		_, err = h.VerifyManagedLLMToken(bearerCtx(token), token)
+		require.Error(t, err, "a deactivated user's token is refused")
+	})
+
+	t.Run("tokens from other grants never qualify", func(t *testing.T) {
+		f := newManagedAuthFixture(t, nil)
+		h, _ := newHandler(f, nil)
+		// A DCR client may register any scope string; without bf_mc its token is still refused.
+		ctx := initCtx(&fasthttp.Request{})
+		forged, err := f.h.signAccessToken(ctx, string(schemas.MCPAuthModeVK), f.vkID, "mcp llm", []string{testMCPResource, testIssuer}, 300, "")
+		require.NoError(t, err)
+		_, err = h.VerifyManagedLLMToken(bearerCtx(forged), forged)
+		require.Error(t, err)
+	})
+
+	t.Run("managed auth off", func(t *testing.T) {
+		f := newManagedAuthFixture(t, nil)
+		client := f.seedManagedClient(t, "pub", "", configtables.ManagedClientIdentityVK)
+		f.setScopes(t, client.ID, "mcp llm")
+		token := issue(t, f, nil)
+		h, _ := newHandler(f, nil)
+		off := *oauth2ServerCfg(f.cfg)
+		off.ManagedAuth = &configtables.ManagedAuthConfig{Enabled: false}
+		f.cfg.ClientConfig.OAuth2ServerConfig = &off
+		_, err := h.VerifyManagedLLMToken(bearerCtx(token), token)
+		require.Error(t, err)
+	})
 }
 
 // TestManagedAuth_UsesOneConfigSnapshot checks a save that removes managed auth

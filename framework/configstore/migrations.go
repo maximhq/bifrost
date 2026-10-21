@@ -571,6 +571,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_rss_feeds_table"}, run: migrationAddRSSFeedsTable},
 	{IDs: []string{"add_rss_feeds_icon_url_column"}, run: migrationAddRSSFeedsIconURLColumn},
 	{IDs: []string{"add_oauth2_managed_clients_table"}, run: migrationAddOAuth2ManagedClientsTable},
+	{IDs: []string{"add_oauth2_managed_client_scopes_column"}, run: migrationAddOAuth2ManagedClientScopesColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16351,6 +16352,32 @@ func migrationAddVertexUseSessionRoutingColumn(ctx context.Context, db *gorm.DB,
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
+}
+
+// migrationAddOAuth2ManagedClientScopesColumn adds the scopes a managed client
+// may be granted; existing rows take the column default, mcp, so they keep
+// exactly the access they had.
+func migrationAddOAuth2ManagedClientScopesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "add_oauth2_managed_client_scopes_column",
+		Migrate: func(tx *gorm.DB) error {
+			mg := tx.WithContext(ctx).Migrator()
+			if mg.HasColumn(&tables.TableOAuth2ManagedClient{}, "scopes") {
+				return nil
+			}
+			if err := mg.AddColumn(&tables.TableOAuth2ManagedClient{}, "Scopes"); err != nil {
+				return fmt.Errorf("add oauth2_managed_clients.scopes column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			mg := tx.WithContext(ctx).Migrator()
+			if !mg.HasColumn(&tables.TableOAuth2ManagedClient{}, "scopes") {
+				return nil
+			}
+			return mg.DropColumn(&tables.TableOAuth2ManagedClient{}, "Scopes")
+		},
+	})
 }
 
 // migrationAddOAuth2ManagedClientsTable creates oauth2_managed_clients, the

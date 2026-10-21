@@ -107,6 +107,7 @@ In the same section, click **Add client**:
 - **Client ID**: leave empty to generate one, or enter the identifier the MCP client uses for itself. Claude Code identifies itself as `https://claude.ai/oauth/claude-code-client-metadata`.
 - **Require a client secret**: keep on for clients that can store a secret, such as Claude's hosted apps configured with a client ID and secret. Turn off for public clients. The secret is shown once; rotate it from the table if it is lost.
 - **Tokens act as**: a virtual key, or the signed-in user on enterprise deployments.
+- **Allowed scopes** (enterprise): `MCP` (the default) and **LLM inference**. See [LLM requests](#llm-requests-enterprise).
 
 The same operations are available at `GET`/`POST /api/oauth2/managed-clients`, `PATCH`/`DELETE /api/oauth2/managed-clients/{id}` and `POST /api/oauth2/managed-clients/{id}/rotate-secret`. Creating or changing a client requires an authenticated admin session.
 
@@ -123,7 +124,7 @@ The same operations are available at `GET`/`POST /api/oauth2/managed-clients`, `
    | **Audience/tenant ID** | Bifrost's `issuer_url` again, `https://bifrost.example.com` |
 
    Copy `issuer_url` exactly as it is set in Bifrost. Bifrost rejects an ID-JAG whose `aud` is anything else. Okta checks that the issuer is reachable when you save, so Bifrost must already be serving its discovery document at that URL.
-3. In **Directory → AI Agents**, open the agent registered for the requesting app (for example Claude), add a **resource connection** to the Bifrost app, and enter the managed client's **Client ID** as the client ID registered in the resource app. If the connection limits scopes, include `mcp`.
+3. In **Directory → AI Agents**, open the agent registered for the requesting app (for example Claude), add a **resource connection** to the Bifrost app, and enter the managed client's **Client ID** as the client ID registered in the resource app. If the connection limits scopes, include `mcp`, and `llm` for clients that call the model endpoints.
 
 </Step>
 <Step title="Enable the connector in Claude">
@@ -135,13 +136,28 @@ In Claude's organization settings, add Bifrost's `/mcp` URL as a custom connecto
 
 ---
 
+## LLM requests (enterprise)
+
+A managed client allowed the `llm` scope can use its token on Bifrost's model endpoints, such as `/v1/chat/completions`, `/v1/responses` and the provider-compatible routes like `/anthropic/v1/messages`, not only on `/mcp`. This suits agents and command-line tools that get an ID-JAG from the IdP themselves.
+
+1. On the managed client, tick **LLM inference** under **Allowed scopes**.
+2. In Okta, add `llm` to the scopes allowed on the resource connection, and have the requesting app ask for it.
+3. Exchange the ID-JAG as usual. The token response's `scope` lists what was granted.
+4. Send the token as `Authorization: Bearer <token>` on model requests. Don't send a virtual key header with it; a request carrying both is refused.
+
+The request runs as the client's principal. With user identity, the user's access profiles decide which models they may use and which budgets apply, and the logs show the user. With virtual-key identity, the bound key applies.
+
+The token gets the scopes the ID-JAG names that the client allows. With no scope claim, it gets every scope the client allows. Its `aud` lists `/mcp` for the `mcp` scope and Bifrost's `issuer_url` for `llm`, so a token granted only `llm` is refused on `/mcp`. Only tokens from this grant are accepted on model endpoints: tokens from the interactive OAuth flow, and `mcp`-only tokens, are refused there.
+
+---
+
 ## Token lifetime and revocation
 
 - Bifrost issues **no refresh token** for this grant. When the access token expires, the client re-presents its ID-JAG while that is still valid, or fetches a new one from the IdP. Removing a user's assignment in the IdP therefore takes effect within one token lifetime plus the ID-JAG's own lifetime.
 - An ID-JAG may be presented more than once while it is valid; this is how the grant replaces a refresh token. Bifrost checks its audience, client and expiry on every presentation, but does not refuse a repeat. Issued tokens are logged at debug level with the ID-JAG's `jti`, and denials as warnings. Enterprise also records every outcome in the audit log.
 - Okta limits Cross App Access to **250 ID-JAGs per user, per resource app, per month**. A client that fetches a new ID-JAG for every Bifrost token spends one per token lifetime, so the default `access_token_ttl` is `86400` (24 hours).
 - Bifrost-side changes apply immediately: a deleted or disabled virtual key, or a deleted or deactivated user, is refused on the next `/mcp` request.
-- Disabling or deleting a managed client, or turning managed auth off, also refuses the tokens it already issued. Each token names its client, and `/mcp` checks the client on every request against a cache that lasts 30 seconds. The change applies at once on the node that handled it, and within 30 seconds on other nodes. Enterprise clusters apply it on every node at once.
+- Disabling or deleting a managed client, or turning managed auth off, also refuses the tokens it already issued. So does removing **LLM inference** from a client, for its tokens on model endpoints. Each token names its client, and `/mcp` checks the client on every request against a cache that lasts 30 seconds. The change applies at once on the node that handled it, and within 30 seconds on other nodes. Enterprise clusters apply it on every node at once.
 - Grants from this flow do not appear on the **OAuth Grants** page, which lists refresh-token grants. The managed clients table shows when each client last obtained a token.
 
 ---
@@ -154,9 +170,9 @@ For every `jwt-bearer` request Bifrost:
 2. Rejects an ID-JAG whose `iss` is not the trusted issuer **before** verifying the signature, so an attacker-run IdP can never influence key lookup.
 3. Requires the header `typ` to be `oauth-id-jag+jwt` and an asymmetric signing algorithm, then verifies the signature against the issuer's JWKS.
 4. Requires `aud` to be Bifrost's `issuer_url`, `client_id` to equal the authenticated client, a valid `exp`/`iat`, and `sub` and `jti` to be present.
-5. When the ID-JAG or the request carries a `resource`, requires it to be Bifrost's `/mcp` URL.
+5. When the request carries a `resource`, requires it to be Bifrost's `/mcp` URL or its `issuer_url`, and the ID-JAG's `resource`, if any, to match it.
 6. Refuses an ID-JAG bound to a key (`cnf` claim), since Bifrost does not check proof of possession.
-7. Applies the ID-JAG's `scope`. With no scope claim, the token gets the `mcp` scope. A scope claim must include `mcp`; other scopes in it are ignored. What the token can reach is still decided by the bound virtual key or user.
+7. Applies the ID-JAG's `scope` within the client's allowed scopes. The token gets the scopes the claim names that the client allows, or every allowed scope when there is no claim; other scopes in the claim are ignored, and nothing granted is `invalid_scope`. What the token can reach is still decided by the bound virtual key or user.
 
 The same ID-JAG may be presented again while it is valid, as the profile allows. Every denial is logged with its reason and the client ID. The issuer, subject and `jti` are added once the ID-JAG has passed verification. When verification fails they are empty, and the reason says what failed: an untrusted issuer, for example, is named in the reason. The assertion itself is never logged.
 
@@ -178,4 +194,4 @@ The Bifrost log line `[ManagedAuth] denied jwt-bearer grant` gives the reason. T
 
 ### `invalid_scope`
 
-The ID-JAG has a `scope` claim that doesn't include `mcp`. Add `mcp` to the scopes allowed on the resource connection in Okta, and to the scopes the client requests.
+The ID-JAG's `scope` claim names none of the scopes the managed client allows. Add `mcp` (or `llm`) to the scopes allowed on the resource connection in Okta and to the scopes the client requests, and check the client's **Allowed scopes** in Bifrost.

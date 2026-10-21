@@ -101,21 +101,95 @@ func (h *MCPServerHandler) getVirtualKeyByID(ctx context.Context, vkID string) (
 }
 
 // checkManagedClient refuses a token minted through managed auth once managed
-// auth is turned off or its client is disabled or deleted. A failed status
-// lookup also refuses, matching how a failed virtual-key lookup is treated.
-func (h *MCPServerHandler) checkManagedClient(ctx context.Context, id string) error {
+// auth is turned off or its client is disabled, deleted or, when scope is set,
+// no longer allowed scope. A failed status lookup also refuses, matching how a
+// failed virtual-key lookup is treated.
+func (h *MCPServerHandler) checkManagedClient(ctx context.Context, id, scope string) error {
 	if !oauth2ServerCfg(h.config).IsManagedAuthEnabled() {
 		return fmt.Errorf("enterprise-managed authorization is disabled; re-authenticate")
 	}
-	active, err := h.managedClients.Active(ctx, id)
+	allowed, err := h.managedClients.Allows(ctx, id, scope)
 	if err != nil {
 		logger.Error("mcp: failed to check managed client %s: %v", id, err)
 		return fmt.Errorf("failed to verify the managed client")
 	}
-	if !active {
-		return fmt.Errorf("the managed client that issued this token is disabled or removed; re-authenticate")
+	if !allowed {
+		return fmt.Errorf("the managed client that issued this token is disabled, removed or no longer allowed this scope; re-authenticate")
 	}
 	return nil
+}
+
+// checkUserActive refuses a deleted or deactivated user at request time rather
+// than letting an already-issued token keep working until it expires.
+func (h *MCPServerHandler) checkUserActive(ctx context.Context, userID string) error {
+	if h.identityResolver == nil {
+		return nil
+	}
+	active, err := h.identityResolver.IsUserActive(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to verify user: %w", err)
+	}
+	if !active {
+		return fmt.Errorf("user is no longer active")
+	}
+	return nil
+}
+
+// ManagedTokenPrincipal is who a managed-auth token granted the llm scope acts as.
+type ManagedTokenPrincipal struct {
+	Mode            schemas.MCPAuthMode // user or vk
+	UserID          string              // user mode
+	VirtualKey      string              // vk mode: the key value governance resolves
+	ManagedClientID string
+}
+
+// VerifyManagedLLMToken verifies a managed-auth access token presented on an
+// inference route. Only tokens from the jwt-bearer grant (bf_mc) issued for the
+// gateway audience with the llm scope qualify, so /mcp tokens and DCR tokens,
+// whatever scope they registered, never do. The same liveness checks as /mcp
+// apply: managed auth on, the client active and still allowed llm, and the
+// user active or the key present. OSS does not call it; enterprise inference
+// authentication does.
+func (h *MCPServerHandler) VerifyManagedLLMToken(ctx *fasthttp.RequestCtx, rawToken string) (*ManagedTokenPrincipal, error) {
+	if !oauth2ServerCfg(h.config).IsManagedAuthEnabled() {
+		return nil, fmt.Errorf("enterprise-managed authorization is disabled")
+	}
+	signingKey, err := h.config.GetOAuth2SigningKey(ctx)
+	if err != nil {
+		logger.Error("mcp: failed to load oauth2 signing key for jwt verification: %v", err)
+		return nil, fmt.Errorf("signing key unavailable")
+	}
+	claims, err := verifyBifrostJWT(ctx, rawToken, h.config, signingKey, oauth2LLMAudience(ctx, h.config))
+	if err != nil {
+		return nil, err
+	}
+	if claims.ManagedClientID == "" || !hasScope(claims.Scope, tables.ManagedClientScopeLLM) {
+		return nil, fmt.Errorf("token is not valid for inference")
+	}
+	if err := h.checkManagedClient(ctx, claims.ManagedClientID, tables.ManagedClientScopeLLM); err != nil {
+		return nil, err
+	}
+	principal := &ManagedTokenPrincipal{Mode: schemas.MCPAuthMode(claims.BfMode), ManagedClientID: claims.ManagedClientID}
+	switch principal.Mode {
+	case schemas.MCPAuthModeUser:
+		if err := h.checkUserActive(ctx, claims.Subject); err != nil {
+			return nil, err
+		}
+		principal.UserID = claims.Subject
+	case schemas.MCPAuthModeVK:
+		// The same virtual-key identity cutoff /mcp applies.
+		if oauth2ServerCfg(h.config).DisableVKIdentity && h.identityResolver != nil && h.identityResolver.IsUserModeAvailable() {
+			return nil, fmt.Errorf("virtual-key identity is no longer accepted; re-authenticate")
+		}
+		vk, err := h.getVirtualKeyByID(ctx, claims.Subject)
+		if err != nil {
+			return nil, err
+		}
+		principal.VirtualKey = vk.Value.GetValue()
+	default:
+		return nil, fmt.Errorf("token is not valid for inference")
+	}
+	return principal, nil
 }
 
 // SetManagedClientStatusCache wires the cache /mcp uses to refuse tokens minted
@@ -714,9 +788,14 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			return err
 		}
 		// A jwt-bearer token stays valid only while managed auth and the client
-		// that minted it are. Tokens from other grants carry no bf_mc.
+		// that minted it are, and only if it was granted mcp. Tokens from other
+		// grants carry no bf_mc and are unchanged.
 		if claims.ManagedClientID != "" {
-			if err := h.checkManagedClient(ctx, claims.ManagedClientID); err != nil {
+			if !hasScope(claims.Scope, tables.ManagedClientScopeMCP) {
+				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+				return fmt.Errorf("token was not granted the mcp scope")
+			}
+			if err := h.checkManagedClient(ctx, claims.ManagedClientID, ""); err != nil {
 				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
 				return err
 			}
@@ -734,15 +813,9 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
 				return fmt.Errorf("session user does not match the authenticated token")
 			}
-			// Reject deleted or deactivated users at request time rather than letting an
-			// already-issued access token keep working until it expires. Whether the user
-			// still exists is an identity question; what they may reach is governance's.
-			if h.identityResolver != nil {
-				if active, err := h.identityResolver.IsUserActive(ctx, claims.Subject); err != nil {
-					return fmt.Errorf("failed to verify user: %w", err)
-				} else if !active {
-					return fmt.Errorf("user is no longer active")
-				}
+			// Whether the user still exists is an identity question; what they may reach is governance's.
+			if err := h.checkUserActive(ctx, claims.Subject); err != nil {
+				return err
 			}
 			return injectJWTContext(bifrostCtx, claims, nil)
 

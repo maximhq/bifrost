@@ -10006,6 +10006,9 @@ func (s *RDBConfigStore) UpdateOAuth2ManagedClient(ctx context.Context, id strin
 	if patch.Disabled != nil {
 		cols["disabled"] = *patch.Disabled
 	}
+	if patch.Scopes != nil {
+		cols["scopes"] = *patch.Scopes
+	}
 	// UpdateColumns with a map skips hooks, so the client_id hash is never recomputed from a zero model.
 	res := s.DB().WithContext(ctx).Model(&tables.TableOAuth2ManagedClient{}).Where("id = ?", id).UpdateColumns(cols)
 	if res.Error != nil {

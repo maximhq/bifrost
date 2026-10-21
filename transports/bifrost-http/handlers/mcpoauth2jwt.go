@@ -66,12 +66,23 @@ func extractBearerJWT(ctx *fasthttp.RequestCtx) string {
 	return token
 }
 
-// verifyMCPJWT parses and verifies a Bifrost-issued JWT for the /mcp endpoint.
-// It validates the RS256 signature using the supplied signing key, checks the
-// audience matches the canonical /mcp resource URL (RFC 8707), and returns
-// the verified claims. The caller provides the signing key (typically from a
-// process-lifetime cache) so verification need not read it per request.
+// verifyMCPJWT parses and verifies a Bifrost-issued JWT for the /mcp endpoint:
+// its audience must be the canonical /mcp resource URL (RFC 8707).
 func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, signingKey *configtables.OAuth2SigningKey) (*jwtMCPClaims, error) {
+	return verifyBifrostJWT(ctx, rawToken, store, signingKey, oauth2MCPResourceURL(ctx, store))
+}
+
+// hasScope reports whether the space-separated scope claim includes want.
+func hasScope(scope, want string) bool {
+	return slices.Contains(strings.Fields(scope), want)
+}
+
+// verifyBifrostJWT parses and verifies a Bifrost-issued JWT. It validates the
+// RS256 signature using the supplied signing key, checks the audience includes
+// resource (RFC 8707), and returns the verified claims. The caller provides the
+// signing key (typically from a process-lifetime cache) so verification need
+// not read it per request.
+func verifyBifrostJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, signingKey *configtables.OAuth2SigningKey, resource string) (*jwtMCPClaims, error) {
 	if signingKey == nil {
 		return nil, fmt.Errorf("signing key unavailable")
 	}
@@ -114,7 +125,6 @@ func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, 
 	}
 
 	// RFC 8707: the token must have been issued for this specific resource.
-	resource := oauth2MCPResourceURL(ctx, store)
 	aud, err := claims.GetAudience()
 	if err != nil || !slices.Contains(aud, resource) {
 		return nil, fmt.Errorf("token audience does not match this resource")

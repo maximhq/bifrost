@@ -10,7 +10,9 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
@@ -18,9 +20,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage } from "@/lib/store";
 import {
 	type ManagedClientIdentity,
+	type ManagedClientScope,
 	type OAuth2ManagedClient,
 	useCreateOAuth2ManagedClientMutation,
 	useDeleteOAuth2ManagedClientMutation,
@@ -31,13 +35,24 @@ import {
 import type { ManagedAuthConfig } from "@/lib/types/config";
 import { isHTTPSOrLoopbackURL } from "@/lib/types/schemas";
 import { formatRelativePast } from "@/lib/utils/mcpCredential";
-import { Copy, MoreHorizontal, RotateCcw, Trash2 } from "lucide-react";
+import { Copy, MoreHorizontal, PencilIcon, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 export const DEFAULT_MANAGED_AUTH_TTL = 86400;
 const MIN_MANAGED_AUTH_TTL = 60;
 const MAX_MANAGED_AUTH_TTL = 86400;
+
+// Scopes offered per client. Only enterprise builds accept llm tokens on the inference routes, so OSS offers mcp alone.
+const MANAGED_CLIENT_SCOPES: { scope: ManagedClientScope; label: string }[] = [
+	{ scope: "mcp", label: "MCP" },
+	{ scope: "llm", label: "LLM inference" },
+];
+
+// toggleScope returns scopes with scope added or removed, in the offered order.
+function toggleScope(scopes: ManagedClientScope[], scope: ManagedClientScope, on: boolean): ManagedClientScope[] {
+	return MANAGED_CLIENT_SCOPES.map((s) => s.scope).filter((s) => (s === scope ? on : scopes.includes(s)));
+}
 
 // validateManagedAuth mirrors the backend's ManagedAuthConfig.Validate so the
 // page can refuse a save that would come back as a 400.
@@ -252,6 +267,7 @@ function ManagedClients({ canEdit, userIdentityAvailable, clients }: ManagedClie
 	const [revealed, setRevealed] = useState<OAuth2ManagedClient | null>(null);
 	const [pendingDelete, setPendingDelete] = useState<OAuth2ManagedClient | null>(null);
 	const [pendingRotate, setPendingRotate] = useState<OAuth2ManagedClient | null>(null);
+	const [editingScopes, setEditingScopes] = useState<OAuth2ManagedClient | null>(null);
 	const [updateClient] = useUpdateOAuth2ManagedClientMutation();
 	const [rotateSecret, { isLoading: rotating }] = useRotateOAuth2ManagedClientSecretMutation();
 	const [deleteClient] = useDeleteOAuth2ManagedClientMutation();
@@ -285,6 +301,7 @@ function ManagedClients({ canEdit, userIdentityAvailable, clients }: ManagedClie
 								<TableHead>Name</TableHead>
 								<TableHead>Client ID</TableHead>
 								<TableHead>Acts as</TableHead>
+								{IS_ENTERPRISE && <TableHead>Scopes</TableHead>}
 								<TableHead>Secret</TableHead>
 								<TableHead>Last used</TableHead>
 								<TableHead>Enabled</TableHead>
@@ -310,6 +327,17 @@ function ManagedClients({ canEdit, userIdentityAvailable, clients }: ManagedClie
 										</div>
 									</TableCell>
 									<TableCell className="text-sm">{client.identity === "user" ? "The signed-in user" : "Bound virtual key"}</TableCell>
+									{IS_ENTERPRISE && (
+										<TableCell>
+											<div className="flex flex-wrap gap-1">
+												{client.scopes.map((scope) => (
+													<Badge key={scope} variant="outline" className="font-mono text-xs">
+														{scope}
+													</Badge>
+												))}
+											</div>
+										</TableCell>
+									)}
 									<TableCell className="text-muted-foreground text-sm">{client.has_secret ? "Required" : "None (public)"}</TableCell>
 									<TableCell className="text-muted-foreground text-sm">
 										{client.last_used_at ? formatRelativePast(client.last_used_at) : "Never"}
@@ -332,6 +360,7 @@ function ManagedClients({ canEdit, userIdentityAvailable, clients }: ManagedClie
 										<ManagedClientActionsMenu
 											client={client}
 											disabled={!canEdit}
+											onEditScopes={IS_ENTERPRISE ? () => setEditingScopes(client) : undefined}
 											onRotate={() => setPendingRotate(client)}
 											onDelete={() => setPendingDelete(client)}
 										/>
@@ -369,6 +398,17 @@ function ManagedClients({ canEdit, userIdentityAvailable, clients }: ManagedClie
 					</DialogFooter>
 				</DialogContent>
 			</Dialog>
+
+			<EditScopesDialog
+				client={editingScopes}
+				onClose={() => setEditingScopes(null)}
+				onSave={(client, scopes) =>
+					run(async () => {
+						await updateClient({ id: client.id, scopes }).unwrap();
+						setEditingScopes(null);
+					}, "Client scopes updated.")
+				}
+			/>
 
 			<AlertDialog open={!!pendingRotate} onOpenChange={(open) => !open && setPendingRotate(null)}>
 				<AlertDialogContent>
@@ -425,11 +465,13 @@ function ManagedClients({ canEdit, userIdentityAvailable, clients }: ManagedClie
 function ManagedClientActionsMenu({
 	client,
 	disabled,
+	onEditScopes,
 	onRotate,
 	onDelete,
 }: {
 	client: OAuth2ManagedClient;
 	disabled: boolean;
+	onEditScopes?: () => void;
 	onRotate: () => void;
 	onDelete: () => void;
 }) {
@@ -455,6 +497,15 @@ function ManagedClientActionsMenu({
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end" onCloseAutoFocus={(e) => e.preventDefault()}>
+				{onEditScopes && (
+					<DropdownMenuItem
+						className="cursor-pointer"
+						onSelect={select(onEditScopes)}
+						data-testid={`managed-client-edit-scopes-btn-${client.id}`}
+					>
+						<PencilIcon className="h-4 w-4" /> Edit scopes
+					</DropdownMenuItem>
+				)}
 				{client.has_secret && (
 					<DropdownMenuItem className="cursor-pointer" onSelect={select(onRotate)} data-testid={`managed-client-rotate-btn-${client.id}`}>
 						<RotateCcw className="h-4 w-4" /> Rotate secret
@@ -470,6 +521,80 @@ function ManagedClientActionsMenu({
 				</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
+	);
+}
+
+// ScopeCheckboxes edits the scopes a managed client may be granted; the last one cannot be cleared.
+function ScopeCheckboxes({
+	idPrefix,
+	scopes,
+	disabled,
+	onChange,
+}: {
+	idPrefix: string;
+	scopes: ManagedClientScope[];
+	disabled?: boolean;
+	onChange: (scopes: ManagedClientScope[]) => void;
+}) {
+	return (
+		<div className="flex flex-col gap-1">
+			{MANAGED_CLIENT_SCOPES.map(({ scope, label }) => {
+				const checked = scopes.includes(scope);
+				const id = `${idPrefix}-scope-${scope}`;
+				return (
+					<div key={scope} className="flex items-center gap-2">
+						<Checkbox
+							id={id}
+							data-testid={id}
+							checked={checked}
+							disabled={disabled || (checked && scopes.length === 1)}
+							onCheckedChange={(on) => onChange(toggleScope(scopes, scope, on === true))}
+						/>
+						<label htmlFor={id} className="text-sm">
+							{label}
+						</label>
+					</div>
+				);
+			})}
+		</div>
+	);
+}
+
+// EditScopesDialog edits the scopes a managed client may be granted. Removing
+// one refuses the tokens that carry it within 30 seconds.
+function EditScopesDialog({
+	client,
+	onClose,
+	onSave,
+}: {
+	client: OAuth2ManagedClient | null;
+	onClose: () => void;
+	onSave: (client: OAuth2ManagedClient, scopes: ManagedClientScope[]) => void;
+}) {
+	const [scopes, setScopes] = useState<ManagedClientScope[]>([]);
+	useEffect(() => {
+		if (client) setScopes(client.scopes);
+	}, [client]);
+	return (
+		<Dialog open={!!client} onOpenChange={(open) => !open && onClose()}>
+			<DialogContent data-testid="managed-client-scopes-dialog">
+				<DialogHeader>
+					<DialogTitle>Edit scopes</DialogTitle>
+					<DialogDescription>
+						LLM inference lets the client call the model endpoints with its token. Removing a scope refuses the tokens that carry it.
+					</DialogDescription>
+				</DialogHeader>
+				<ScopeCheckboxes idPrefix="managed-client-edit" scopes={scopes} onChange={setScopes} />
+				<DialogFooter>
+					<Button variant="outline" onClick={onClose}>
+						Cancel
+					</Button>
+					<Button onClick={() => client && onSave(client, scopes)} data-testid="managed-client-scopes-save">
+						Save
+					</Button>
+				</DialogFooter>
+			</DialogContent>
+		</Dialog>
 	);
 }
 
@@ -504,6 +629,7 @@ function CreateManagedClientDialog({ open, onOpenChange, userIdentityAvailable, 
 	const [confidential, setConfidential] = useState(true);
 	const [identity, setIdentity] = useState<ManagedClientIdentity>(userIdentityAvailable ? "user" : "vk");
 	const [virtualKeyID, setVirtualKeyID] = useState("");
+	const [scopes, setScopes] = useState<ManagedClientScope[]>(["mcp"]);
 
 	useEffect(() => {
 		if (open) {
@@ -512,6 +638,7 @@ function CreateManagedClientDialog({ open, onOpenChange, userIdentityAvailable, 
 			setConfidential(true);
 			setIdentity(userIdentityAvailable ? "user" : "vk");
 			setVirtualKeyID("");
+			setScopes(["mcp"]);
 		}
 	}, [open, userIdentityAvailable]);
 
@@ -527,6 +654,7 @@ function CreateManagedClientDialog({ open, onOpenChange, userIdentityAvailable, 
 				public: !confidential,
 				identity,
 				virtual_key_id: identity === "vk" ? virtualKeyID : undefined,
+				scopes: IS_ENTERPRISE ? scopes : undefined,
 			}).unwrap();
 			onCreated(created);
 		} catch (error) {
@@ -590,6 +718,15 @@ function CreateManagedClientDialog({ open, onOpenChange, userIdentityAvailable, 
 							</>
 						)}
 					</div>
+					{IS_ENTERPRISE && (
+						<div className="space-y-1.5">
+							<p className="text-sm font-medium">Allowed scopes</p>
+							<p className="text-muted-foreground text-xs">
+								LLM inference lets the client call the model endpoints with its token. The identity provider must also grant the scope.
+							</p>
+							<ScopeCheckboxes idPrefix="managed-client-create" scopes={scopes} onChange={setScopes} />
+						</div>
+					)}
 				</div>
 				<DialogFooter>
 					<Button variant="outline" onClick={() => onOpenChange(false)}>

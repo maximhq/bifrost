@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -61,7 +63,8 @@ const (
 
 // managedClientStatus is the cached answer for one managed client row.
 type managedClientStatus struct {
-	active    bool // exists and is not disabled
+	active    bool     // exists and is not disabled
+	scopes    []string // scopes the client may be granted; nil when inactive
 	expiresAt time.Time
 }
 
@@ -85,11 +88,28 @@ func NewManagedClientStatusCache(config *lib.Config) *ManagedClientStatusCache {
 // failure is returned, not cached, so the caller can fail closed. A nil cache or
 // store reports active: there is then nothing to revoke against.
 func (c *ManagedClientStatusCache) Active(ctx context.Context, id string) (bool, error) {
+	return c.Allows(ctx, id, "")
+}
+
+// Allows reports whether managed client id still exists, is enabled and, when
+// scope is set, may still be granted scope, so narrowing a client's scopes
+// revokes the tokens it minted with the wider set. Failures and the nil cases
+// behave as in Active.
+func (c *ManagedClientStatusCache) Allows(ctx context.Context, id, scope string) (bool, error) {
 	if c == nil || c.config == nil || c.config.ConfigStore == nil {
 		return true, nil
 	}
+	s, err := c.status(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	return s.active && (scope == "" || slices.Contains(s.scopes, scope)), nil
+}
+
+// status returns the cached status of managed client id, reading the store on a miss.
+func (c *ManagedClientStatusCache) status(ctx context.Context, id string) (managedClientStatus, error) {
 	if s, ok := c.cache.Get(id); ok {
-		return s.active, nil
+		return s, nil
 	}
 	s, err := c.cache.Fill(ctx, id, func() (managedClientStatus, string, error) {
 		row, err := c.config.ConfigStore.GetOAuth2ManagedClientByID(ctx, id)
@@ -99,12 +119,9 @@ func (c *ManagedClientStatusCache) Active(ctx context.Context, id string) (bool,
 		if err != nil {
 			return managedClientStatus{}, "", err
 		}
-		return managedClientStatus{active: !row.Disabled, expiresAt: time.Now().Add(managedClientStatusTTL)}, "", nil
+		return managedClientStatus{active: !row.Disabled, scopes: row.AllowedScopes(), expiresAt: time.Now().Add(managedClientStatusTTL)}, "", nil
 	})
-	if err != nil {
-		return false, err
-	}
-	return s.active, nil
+	return s, err
 }
 
 // Evict drops the cached status of managed client id on this node.
@@ -134,8 +151,14 @@ func (h *OAuth2ManagedClientsHandler) RegisterRoutes(r *router.Router, middlewar
 // managedClientView is the wire shape of a managed client. The secret hash never leaves the server.
 type managedClientView struct {
 	configtables.TableOAuth2ManagedClient
-	HasSecret    bool   `json:"has_secret"`
-	ClientSecret string `json:"client_secret,omitempty"` // create and rotate-secret responses only
+	Scopes       []string `json:"scopes"`
+	HasSecret    bool     `json:"has_secret"`
+	ClientSecret string   `json:"client_secret,omitempty"` // create and rotate-secret responses only
+}
+
+// newManagedClientView builds the wire shape of c; secret is set only when it was just issued.
+func newManagedClientView(c configtables.TableOAuth2ManagedClient, secret string) managedClientView {
+	return managedClientView{TableOAuth2ManagedClient: c, Scopes: c.AllowedScopes(), HasSecret: c.HasSecret(), ClientSecret: secret}
 }
 
 // managedClientCreateRequest is the POST body. An empty client_id is generated.
@@ -143,8 +166,9 @@ type managedClientCreateRequest struct {
 	Name         string `json:"name"`
 	ClientID     string `json:"client_id"`
 	Public       bool   `json:"public"`
-	Identity     string `json:"identity"`
-	VirtualKeyID string `json:"virtual_key_id"`
+	Identity     string   `json:"identity"`
+	VirtualKeyID string   `json:"virtual_key_id"`
+	Scopes       []string `json:"scopes"` // empty: mcp only
 }
 
 // managedClientUpdateRequest is the PATCH body; nil fields are left unchanged.
@@ -152,8 +176,9 @@ type managedClientCreateRequest struct {
 type managedClientUpdateRequest struct {
 	Name         *string `json:"name"`
 	Identity     *string `json:"identity"`
-	VirtualKeyID *string `json:"virtual_key_id"`
-	Disabled     *bool   `json:"disabled"`
+	VirtualKeyID *string   `json:"virtual_key_id"`
+	Disabled     *bool     `json:"disabled"`
+	Scopes       *[]string `json:"scopes"`
 }
 
 // list returns every managed client.
@@ -169,7 +194,7 @@ func (h *OAuth2ManagedClientsHandler) list(ctx *fasthttp.RequestCtx) {
 	}
 	views := make([]managedClientView, 0, len(clients))
 	for _, c := range clients {
-		views = append(views, managedClientView{TableOAuth2ManagedClient: c, HasSecret: c.HasSecret()})
+		views = append(views, newManagedClientView(c, ""))
 	}
 	resp := map[string]any{"clients": views, "user_identity_available": h.userIdentityAvailable()}
 	if suggester, ok := h.identityResolver.(ManagedAuthIssuerSuggester); ok {
@@ -210,6 +235,7 @@ func (h *OAuth2ManagedClientsHandler) create(ctx *fasthttp.RequestCtx) {
 		Name:         req.Name,
 		Identity:     req.Identity,
 		VirtualKeyID: strings.TrimSpace(req.VirtualKeyID),
+		Scopes:       strings.Join(req.Scopes, " "),
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
@@ -236,7 +262,7 @@ func (h *OAuth2ManagedClientsHandler) create(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to create managed client")
 		return
 	}
-	SendJSONWithStatus(ctx, managedClientView{TableOAuth2ManagedClient: *client, HasSecret: client.HasSecret(), ClientSecret: secret}, fasthttp.StatusCreated)
+	SendJSONWithStatus(ctx, newManagedClientView(*client, secret), fasthttp.StatusCreated)
 }
 
 // update changes a managed client's name, identity binding or disabled flag.
@@ -266,6 +292,9 @@ func (h *OAuth2ManagedClientsHandler) update(ctx *fasthttp.RequestCtx) {
 	if req.Disabled != nil {
 		client.Disabled = *req.Disabled
 	}
+	if req.Scopes != nil {
+		client.Scopes = strings.Join(*req.Scopes, " ")
+	}
 	normalizeManagedClient(client)
 	// A key deactivated after the client was bound must not block renaming or
 	// disabling it, so the binding is re-checked only when the PATCH changes it.
@@ -283,12 +312,15 @@ func (h *OAuth2ManagedClientsHandler) update(ctx *fasthttp.RequestCtx) {
 	if req.VirtualKeyID != nil || client.VirtualKeyID != before.VirtualKeyID {
 		patch.VirtualKeyID = &client.VirtualKeyID
 	}
+	if req.Scopes != nil {
+		patch.Scopes = &client.Scopes
+	}
 	if err := h.store.ConfigStore.UpdateOAuth2ManagedClient(ctx, client.ID, patch); err != nil {
 		h.sendStoreError(ctx, err, "update")
 		return
 	}
 	h.evictCachedStatus(ctx, client.ID)
-	SendJSON(ctx, managedClientView{TableOAuth2ManagedClient: *client, HasSecret: client.HasSecret()})
+	SendJSON(ctx, newManagedClientView(*client, ""))
 }
 
 // delete removes a managed client. /mcp refuses the tokens it already minted
@@ -326,14 +358,32 @@ func (h *OAuth2ManagedClientsHandler) rotateSecret(ctx *fasthttp.RequestCtx) {
 		h.sendStoreError(ctx, err, "rotate secret for")
 		return
 	}
-	SendJSON(ctx, managedClientView{TableOAuth2ManagedClient: *client, HasSecret: true, ClientSecret: secret})
+	SendJSON(ctx, newManagedClientView(*client, secret))
 }
 
-// normalizeManagedClient drops a virtual key binding that the identity does not use.
+// normalizeManagedClient drops a virtual key binding that the identity does not
+// use, and stores the allowed scopes deduplicated in supported order, mcp when none.
 func normalizeManagedClient(c *configtables.TableOAuth2ManagedClient) {
 	if c.Identity == configtables.ManagedClientIdentityUser {
 		c.VirtualKeyID = ""
 	}
+	requested := strings.Fields(c.Scopes)
+	scopes := make([]string, 0, len(requested))
+	for _, s := range configtables.ManagedClientSupportedScopes {
+		if slices.Contains(requested, s) {
+			scopes = append(scopes, s)
+		}
+	}
+	// Unknown scopes are kept so validateClient can name them.
+	for _, s := range requested {
+		if !slices.Contains(scopes, s) {
+			scopes = append(scopes, s)
+		}
+	}
+	if len(scopes) == 0 {
+		scopes = []string{configtables.ManagedClientScopeMCP}
+	}
+	c.Scopes = strings.Join(scopes, " ")
 }
 
 // validateClient reports, as a client-facing error, why the client is unusable.
@@ -343,6 +393,11 @@ func normalizeManagedClient(c *configtables.TableOAuth2ManagedClient) {
 func (h *OAuth2ManagedClientsHandler) validateClient(ctx *fasthttp.RequestCtx, c *configtables.TableOAuth2ManagedClient, checkBinding bool) error {
 	if len(c.Name) > maxManagedClientNameLen {
 		return errors.New("name must be at most 255 characters")
+	}
+	for _, s := range c.AllowedScopes() {
+		if !slices.Contains(configtables.ManagedClientSupportedScopes, s) {
+			return fmt.Errorf("unsupported scope %q: scopes must be mcp or llm", s)
+		}
 	}
 	switch c.Identity {
 	case configtables.ManagedClientIdentityVK:

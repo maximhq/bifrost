@@ -11,6 +11,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
+	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/oauth2/idjag"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -121,6 +122,7 @@ func (h *OAuth2DiscoveryHandler) handleASMetadata(ctx *fasthttp.RequestCtx) {
 		doc["grant_types_supported"] = []string{"authorization_code", "refresh_token", idjag.GrantTypeJWTBearer}
 		doc["authorization_grant_profiles_supported"] = []string{idjag.GrantProfileIDJAG}
 		doc["token_endpoint_auth_methods_supported"] = []string{"none", "client_secret_basic", "client_secret_post"}
+		doc["scopes_supported"] = configtables.ManagedClientSupportedScopes
 	}
 	data, err := sonic.Marshal(doc)
 	if err != nil {

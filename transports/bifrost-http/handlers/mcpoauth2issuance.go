@@ -612,7 +612,7 @@ func (h *OAuth2IssuanceHandler) issueTokenPair(
 	ctx *fasthttp.RequestCtx,
 	familyID, clientID, bfMode, bfSub, scope, resource string,
 ) (accessToken, refreshTokenPlain string, rt *configtables.TableOAuth2RefreshToken, err error) {
-	accessToken, err = h.signAccessToken(ctx, bfMode, bfSub, scope, resource, oauth2ServerCfg(h.store).AccessTokenTTL, "")
+	accessToken, err = h.signAccessToken(ctx, bfMode, bfSub, scope, []string{resource}, oauth2ServerCfg(h.store).AccessTokenTTL, "")
 	if err != nil {
 		return
 	}
@@ -637,10 +637,11 @@ func (h *OAuth2IssuanceHandler) issueTokenPair(
 	return
 }
 
-// signAccessToken mints the RS256 /mcp access token shared by every grant. A
-// non-positive ttl falls back to DefaultAccessTokenTTL. On error it writes an
-// OAuth error response to ctx and returns a non-nil error.
-func (h *OAuth2IssuanceHandler) signAccessToken(ctx *fasthttp.RequestCtx, bfMode, bfSub, scope, resource string, ttl int, managedClientID string) (string, error) {
+// signAccessToken mints the RS256 access token shared by every grant; audience
+// lists the resources it is for. A non-positive ttl falls back to
+// DefaultAccessTokenTTL. On error it writes an OAuth error response to ctx and
+// returns a non-nil error.
+func (h *OAuth2IssuanceHandler) signAccessToken(ctx *fasthttp.RequestCtx, bfMode, bfSub, scope string, audience []string, ttl int, managedClientID string) (string, error) {
 	if ttl <= 0 {
 		ttl = configtables.DefaultAccessTokenTTL
 	}
@@ -657,7 +658,7 @@ func (h *OAuth2IssuanceHandler) signAccessToken(ctx *fasthttp.RequestCtx, bfMode
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"iss":     oauth2IssuerURL(ctx, h.store),
-		"aud":     jwt.ClaimStrings{resource},
+		"aud":     jwt.ClaimStrings(audience),
 		"sub":     bfSub,
 		"bf_mode": bfMode,
 		"scope":   scope,

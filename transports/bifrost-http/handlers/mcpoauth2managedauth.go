@@ -23,9 +23,6 @@ import (
 // maxAssertionLen bounds the ID-JAG accepted at the public token endpoint.
 const maxAssertionLen = 16 * 1024
 
-// managedAuthScope is the only scope Bifrost issues: /mcp access. What a token
-// can reach is still decided by the bound virtual key or user.
-const managedAuthScope = "mcp"
 
 // ErrManagedAuthUserDenied marks a ManagedAuthUserResolver refusal (unknown
 // user, no role, provisioning disabled). It yields invalid_grant; any other
@@ -149,10 +146,19 @@ func (h *OAuth2IssuanceHandler) handleTokenAssertion(ctx *fasthttp.RequestCtx, s
 		return
 	}
 
-	resource := oauth2MCPResourceURL(ctx, h.store)
-	if requested := string(ctx.PostArgs().Peek("resource")); requested != "" && strings.TrimRight(requested, "/") != strings.TrimRight(resource, "/") {
-		deny(&managedAuthDenial{status: fasthttp.StatusBadRequest, code: "invalid_target", description: "resource does not identify this MCP server", reason: "resource mismatch: " + requested})
-		return
+	// The resource names /mcp (the default) or, for inference, the gateway; it
+	// binds the ID-JAG's resource claim, while the scopes decide the audience.
+	mcpResource, llmAudience := oauth2MCPResourceURL(ctx, h.store), oauth2LLMAudience(ctx, h.store)
+	resource := mcpResource
+	if requested := strings.TrimRight(string(ctx.PostArgs().Peek("resource")), "/"); requested != "" {
+		switch requested {
+		case strings.TrimRight(mcpResource, "/"):
+		case llmAudience:
+			resource = llmAudience
+		default:
+			deny(&managedAuthDenial{status: fasthttp.StatusBadRequest, code: "invalid_target", description: "resource does not identify this server", reason: "resource mismatch: " + requested})
+			return
+		}
 	}
 
 	claims, err := h.managedAuthVerifier(cfg, oauth2IssuerURL(ctx, h.store)).Verify(ctx, assertion, creds.id, resource)
@@ -161,10 +167,20 @@ func (h *OAuth2IssuanceHandler) handleTokenAssertion(ctx *fasthttp.RequestCtx, s
 		return
 	}
 	outcome.Issuer, outcome.Subject, outcome.Email, outcome.JTI = claims.Issuer, claims.Subject, claims.Email, claims.JTI
-	if denial := checkManagedAuthScope(claims.Scope); denial != nil {
+	scopes, denial := grantManagedAuthScopes(claims.Scope, client)
+	if denial != nil {
 		deny(denial)
 		return
 	}
+	audience := make([]string, 0, len(scopes))
+	for _, s := range scopes {
+		if s == configtables.ManagedClientScopeLLM {
+			audience = append(audience, llmAudience)
+		} else {
+			audience = append(audience, mcpResource)
+		}
+	}
+	scope := strings.Join(scopes, " ")
 
 	principal, denial := h.resolveManagedPrincipal(ctx, serverCfg, client, claims)
 	outcome.BfMode, outcome.BfSub = principal.mode, principal.sub
@@ -174,7 +190,7 @@ func (h *OAuth2IssuanceHandler) handleTokenAssertion(ctx *fasthttp.RequestCtx, s
 	}
 
 	ttl := cfg.EffectiveAccessTokenTTL()
-	accessToken, err := h.signAccessToken(ctx, principal.mode, principal.sub, managedAuthScope, resource, ttl, client.ID)
+	accessToken, err := h.signAccessToken(ctx, principal.mode, principal.sub, scope, audience, ttl, client.ID)
 	if err != nil {
 		outcome.Reason = "signing failed"
 		h.recordManagedAuthOutcome(ctx, outcome)
@@ -185,7 +201,7 @@ func (h *OAuth2IssuanceHandler) handleTokenAssertion(ctx *fasthttp.RequestCtx, s
 	}
 	outcome.Issued = true
 	h.recordManagedAuthOutcome(ctx, outcome)
-	sendTokenResponse(ctx, accessToken, "", managedAuthScope, ttl)
+	sendTokenResponse(ctx, accessToken, "", scope, ttl)
 }
 
 // authenticateManagedClient loads the managed client and checks it is enabled
@@ -323,17 +339,27 @@ func clientCredentialsFromRequest(ctx *fasthttp.RequestCtx) (clientCredentials, 
 	return clientCredentials{id: bodyID, secret: bodySecret, hasSecret: bodySecret != ""}, nil
 }
 
-// checkManagedAuthScope applies the IdP's scope decision (ID-JAG draft §4.4.1).
-// No scope claim grants the default. A claim must include managedAuthScope;
-// other scopes in it are ignored, since the granted scope may be a subset.
-func checkManagedAuthScope(claim string) *managedAuthDenial {
-	if strings.TrimSpace(claim) == "" || slices.Contains(strings.Fields(claim), managedAuthScope) {
-		return nil
+// grantManagedAuthScopes applies the IdP's scope decision (ID-JAG draft
+// §4.4.1) within what the client may be granted. A claim grants the scopes it
+// names that the client allows; other scopes in it are ignored, since the
+// granted scope may be a subset. No claim grants every scope the client
+// allows. Nothing granted is invalid_scope.
+func grantManagedAuthScopes(claim string, client *configtables.TableOAuth2ManagedClient) ([]string, *managedAuthDenial) {
+	requested := strings.Fields(claim)
+	var granted []string
+	for _, s := range configtables.ManagedClientSupportedScopes {
+		if client.AllowsScope(s) && (len(requested) == 0 || slices.Contains(requested, s)) {
+			granted = append(granted, s)
+		}
 	}
-	return &managedAuthDenial{
+	if len(granted) > 0 {
+		return granted, nil
+	}
+	allowed := strings.Join(client.AllowedScopes(), " ")
+	return nil, &managedAuthDenial{
 		status: fasthttp.StatusBadRequest, code: "invalid_scope",
-		description: fmt.Sprintf("the identity assertion does not grant the %q scope", managedAuthScope),
-		reason:      "assertion scope lacks " + managedAuthScope + ": " + claim,
+		description: fmt.Sprintf("the identity assertion grants none of the scopes this client may use (%s)", allowed),
+		reason:      fmt.Sprintf("assertion scope %q, client allows %q", claim, allowed),
 	}
 }
 

@@ -3,6 +3,8 @@ package tables
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -15,6 +17,16 @@ const (
 	// ManagedClientIdentityUser maps the ID-JAG subject to a Bifrost user (needs an identity resolver).
 	ManagedClientIdentityUser = "user"
 )
+
+// Scopes a managed client may be granted. mcp reaches /mcp; llm reaches the
+// inference routes, which only enterprise builds accept such tokens on.
+const (
+	ManagedClientScopeMCP = "mcp"
+	ManagedClientScopeLLM = "llm"
+)
+
+// ManagedClientSupportedScopes lists every scope a managed client may be allowed.
+var ManagedClientSupportedScopes = []string{ManagedClientScopeMCP, ManagedClientScopeLLM}
 
 // TableOAuth2ManagedClient is an administrator-registered client allowed to use
 // the jwt-bearer (ID-JAG) grant. It is separate from the DCR table because the
@@ -31,6 +43,7 @@ type TableOAuth2ManagedClient struct {
 	Identity         string     `gorm:"type:varchar(16);not null" json:"identity"`
 	VirtualKeyID     string     `gorm:"type:varchar(255)" json:"virtual_key_id,omitempty"`
 	Disabled         bool       `gorm:"not null;default:false" json:"disabled"`
+	Scopes           string     `gorm:"type:varchar(255);not null;default:'mcp'" json:"-"` // space-separated; see AllowedScopes
 	LastUsedAt       *time.Time `json:"last_used_at,omitempty"`
 	CreatedAt        time.Time  `gorm:"not null" json:"created_at"`
 	UpdatedAt        time.Time  `gorm:"not null" json:"updated_at"`
@@ -45,6 +58,21 @@ func (c *TableOAuth2ManagedClient) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
+// AllowedScopes returns the scopes the client may be granted. An empty column,
+// from a row written before scopes existed, allows mcp only.
+func (c *TableOAuth2ManagedClient) AllowedScopes() []string {
+	scopes := strings.Fields(c.Scopes)
+	if len(scopes) == 0 {
+		return []string{ManagedClientScopeMCP}
+	}
+	return scopes
+}
+
+// AllowsScope reports whether the client may be granted scope.
+func (c *TableOAuth2ManagedClient) AllowsScope(scope string) bool {
+	return slices.Contains(c.AllowedScopes(), scope)
+}
+
 // HasSecret reports whether the client is confidential.
 func (c *TableOAuth2ManagedClient) HasSecret() bool { return c.ClientSecretHash != "" }
 
@@ -57,6 +85,7 @@ type OAuth2ManagedClientPatch struct {
 	Identity         *string
 	VirtualKeyID     *string
 	Disabled         *bool
+	Scopes           *string
 }
 
 // ManagedClientIDHash returns the lookup hash for a managed client_id.

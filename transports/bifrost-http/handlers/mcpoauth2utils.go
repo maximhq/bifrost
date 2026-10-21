@@ -68,6 +68,13 @@ func oauth2MCPResourceURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {
 	return strings.TrimRight(oauth2IssuerURL(ctx, store), "/") + "/mcp"
 }
 
+// oauth2LLMAudience returns the resource identifier for Bifrost's inference
+// routes: the gateway itself. Managed-auth tokens granted the llm scope carry it
+// in aud, and only those are accepted for inference.
+func oauth2LLMAudience(ctx *fasthttp.RequestCtx, store *lib.Config) string {
+	return strings.TrimRight(oauth2IssuerURL(ctx, store), "/")
+}
+
 // oauth2ServerCfg returns the OAuth2 AS-specific config under the read lock,
 // falling back to sensible defaults when not yet configured.
 func oauth2ServerCfg(store *lib.Config) *configtables.OAuth2ServerConfig {

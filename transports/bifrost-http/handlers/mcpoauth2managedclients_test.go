@@ -97,6 +97,7 @@ func TestManagedClients_Validation(t *testing.T) {
 		"user without resolver": `{"identity":"user"}`,
 		"bad identity":          `{"identity":"session","virtual_key_id":"` + vkID + `"}`,
 		"whitespace client_id":  `{"client_id":"a b","identity":"vk","virtual_key_id":"` + vkID + `"}`,
+		"unsupported scope":     `{"identity":"vk","virtual_key_id":"` + vkID + `","scopes":["mcp","admin"]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := jsonCtx("POST", body, "")
@@ -104,6 +105,37 @@ func TestManagedClients_Validation(t *testing.T) {
 			assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 		})
 	}
+}
+
+// TestManagedClients_Scopes checks a client defaults to mcp, stores scopes
+// deduplicated in a fixed order, and a scope change evicts its cached status
+// so tokens it minted with llm stop working.
+func TestManagedClients_Scopes(t *testing.T) {
+	h, vkID := newManagedClientsHandler(t, nil)
+	create := jsonCtx("POST", `{"public":true,"identity":"vk","virtual_key_id":"`+vkID+`"}`, "")
+	h.create(create)
+	require.Equal(t, fasthttp.StatusCreated, create.Response.StatusCode(), string(create.Response.Body()))
+	created := decodeManagedClient(t, create)
+	assert.Equal(t, []string{"mcp"}, created.Scopes, "a client defaults to mcp only")
+
+	patch := jsonCtx("PATCH", `{"scopes":["llm","mcp","llm"]}`, created.ID)
+	h.update(patch)
+	require.Equal(t, fasthttp.StatusOK, patch.Response.StatusCode(), string(patch.Response.Body()))
+	assert.Equal(t, []string{"mcp", "llm"}, decodeManagedClient(t, patch).Scopes)
+	stored, err := h.store.ConfigStore.GetOAuth2ManagedClientByID(context.Background(), created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "mcp llm", stored.Scopes)
+	assert.Equal(t, []string{created.ID}, h.cacheEvictor.(*recordingEvictor).evicted)
+
+	llmOnly := jsonCtx("POST", `{"public":true,"identity":"vk","virtual_key_id":"`+vkID+`","scopes":["llm"]}`, "")
+	h.create(llmOnly)
+	require.Equal(t, fasthttp.StatusCreated, llmOnly.Response.StatusCode(), string(llmOnly.Response.Body()))
+	assert.Equal(t, []string{"llm"}, decodeManagedClient(t, llmOnly).Scopes)
+
+	cleared := jsonCtx("PATCH", `{"scopes":[]}`, created.ID)
+	h.update(cleared)
+	require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode())
+	assert.Equal(t, []string{"mcp"}, decodeManagedClient(t, cleared).Scopes, "no scopes falls back to mcp")
 }
 
 func TestManagedClients_UserIdentityNeedsResolver(t *testing.T) {

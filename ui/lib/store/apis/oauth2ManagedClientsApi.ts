@@ -2,6 +2,9 @@ import { baseApi } from "./baseApi";
 
 export type ManagedClientIdentity = "vk" | "user";
 
+// Scopes a managed client may be granted: mcp reaches /mcp, llm the inference routes (enterprise only).
+export type ManagedClientScope = "mcp" | "llm";
+
 // A client allowed to use the jwt-bearer (ID-JAG) grant. client_secret is only
 // present in the create and rotate-secret responses.
 export interface OAuth2ManagedClient {
@@ -11,6 +14,7 @@ export interface OAuth2ManagedClient {
 	identity: ManagedClientIdentity;
 	virtual_key_id?: string;
 	disabled: boolean;
+	scopes: ManagedClientScope[];
 	has_secret: boolean;
 	client_secret?: string;
 	last_used_at?: string | null;
@@ -30,6 +34,7 @@ export interface CreateOAuth2ManagedClientRequest {
 	public?: boolean;
 	identity: ManagedClientIdentity;
 	virtual_key_id?: string;
+	scopes?: ManagedClientScope[];
 }
 
 export interface UpdateOAuth2ManagedClientRequest {
@@ -38,6 +43,7 @@ export interface UpdateOAuth2ManagedClientRequest {
 	identity?: ManagedClientIdentity;
 	virtual_key_id?: string;
 	disabled?: boolean;
+	scopes?: ManagedClientScope[];
 }
 
 export const oauth2ManagedClientsApi = baseApi.injectEndpoints({

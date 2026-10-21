@@ -1065,6 +1065,9 @@ func TestOAuth2ManagedClients_CRUD(t *testing.T) {
 	assert.Equal(t, "mc-1", got.ID)
 	assert.Equal(t, tables.ManagedClientIDHash(cimd), got.ClientIDHash)
 	assert.False(t, got.HasSecret())
+	assert.Equal(t, "mcp", got.Scopes, "the column defaults to mcp")
+	assert.Equal(t, []string{"mcp"}, got.AllowedScopes())
+	assert.False(t, got.AllowsScope(tables.ManagedClientScopeLLM))
 	_, err = s.GetOAuth2ManagedClientByClientID(ctx, "unknown")
 	assert.ErrorIs(t, err, ErrNotFound)
 
@@ -1087,6 +1090,13 @@ func TestOAuth2ManagedClients_CRUD(t *testing.T) {
 	assert.Equal(t, "renamed", reloaded.Name)
 	assert.True(t, reloaded.Disabled)
 
+	scopes := "mcp llm"
+	require.NoError(t, s.UpdateOAuth2ManagedClient(ctx, "mc-1", tables.OAuth2ManagedClientPatch{Scopes: &scopes}))
+	reloaded, err = s.GetOAuth2ManagedClientByID(ctx, "mc-1")
+	require.NoError(t, err)
+	assert.True(t, reloaded.AllowsScope(tables.ManagedClientScopeLLM))
+	assert.Equal(t, "renamed", reloaded.Name, "a scopes patch leaves other columns alone")
+
 	usedAt := time.Now().Truncate(time.Second)
 	require.NoError(t, s.TouchOAuth2ManagedClientLastUsed(ctx, "mc-1", usedAt))
 	reloaded, err = s.GetOAuth2ManagedClientByID(ctx, "mc-1")
@@ -1101,4 +1111,26 @@ func TestOAuth2ManagedClients_CRUD(t *testing.T) {
 	require.NoError(t, s.DeleteOAuth2ManagedClient(ctx, "mc-1"))
 	assert.ErrorIs(t, s.DeleteOAuth2ManagedClient(ctx, "mc-1"), ErrNotFound)
 	assert.ErrorIs(t, s.UpdateOAuth2ManagedClient(ctx, "mc-1", tables.OAuth2ManagedClientPatch{Name: &renamed}), ErrNotFound)
+}
+
+// TestMigrationAddsManagedClientScopesColumn checks the upgrade path: a client
+// stored before the column existed reads back as mcp only, keeping exactly the
+// access it had, and replaying the migration is a no-op.
+func TestMigrationAddsManagedClientScopesColumn(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	ctx := context.Background()
+	db := s.DB()
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableOAuth2ManagedClient{}, "Scopes"))
+	require.NoError(t, db.WithContext(ctx).Exec(
+		`INSERT INTO oauth2_managed_clients (id, client_id, client_id_hash, identity, disabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-mc", "legacy", tables.ManagedClientIDHash("legacy"), tables.ManagedClientIdentityVK, false, time.Now().UTC(), time.Now().UTC(),
+	).Error)
+
+	require.NoError(t, migrationAddOAuth2ManagedClientScopesColumn(ctx, db, testMigrationLogger))
+	require.NoError(t, migrationAddOAuth2ManagedClientScopesColumn(ctx, db, testMigrationLogger))
+
+	got, err := s.GetOAuth2ManagedClientByID(ctx, "legacy-mc")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"mcp"}, got.AllowedScopes())
 }
