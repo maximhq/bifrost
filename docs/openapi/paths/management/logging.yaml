@@ -1348,6 +1348,7 @@ _ranking-parameters:
 logs-recalculate-cost:
   post:
     operationId: recalculateLogCosts
+    x-bifrost-destructive: true
     x-mint:
       content: |
         **Required Permissions**
