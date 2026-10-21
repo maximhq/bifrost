@@ -289,7 +289,7 @@ curl -X POST https://your-bifrost-gateway/api/governance/budget-requests/{reques
 | `add_keep_lifetime` | Adds to the active override and keeps its lifetime. |
 | anything else | Returns `400`. |
 
-Each request in the API response includes a budget snapshot with `override_cycles_remaining`, which is `0` for an override that lasts until removed. If the override is removed before approval, the approval also returns `409`.
+Each request in the API response includes a budget snapshot with `override_cycles_remaining`, the active override's remaining cycles. It is omitted when the override lasts until removed or there is no active override. If the override is removed before approval, the approval also returns `409`.
 
 ---
 
