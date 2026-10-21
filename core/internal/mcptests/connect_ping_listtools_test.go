@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,6 +67,21 @@ func inProcessClientConfig(clientName string, s *server.MCPServer) *schemas.MCPC
 		ConnectionType:  schemas.MCPConnectionTypeInProcess,
 		InProcessServer: s,
 		ToolsToExecute:  []string{"*"},
+	}
+}
+
+// legacyHTTPClientConfig serves s over Streamable HTTP pinned to 2025-11-25, the newest revision
+// that still has ping, and returns a Client config for it.
+func legacyHTTPClientConfig(t *testing.T, clientName string, s *server.MCPServer) *schemas.MCPClientConfig {
+	t.Helper()
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125)))
+	t.Cleanup(ts.Close)
+	return &schemas.MCPClientConfig{
+		ID:               clientName + "-id",
+		Name:             clientName,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+		ToolsToExecute:   []string{"*"},
 	}
 }
 
@@ -430,7 +446,7 @@ func TestPingHook_FiresViaHealthMonitor(t *testing.T) {
 	plugin := NewTestPingPlugin()
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
-	cfg := inProcessClientConfig("ping_fires", buildInProcessServer(t))
+	cfg := legacyHTTPClientConfig(t, "ping_fires", buildInProcessServer(t))
 	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
 	// AddClient starts its own connection checker at 10s interval — far too slow for
@@ -468,7 +484,7 @@ func TestPingHook_PreHookShortCircuitHealthy(t *testing.T) {
 	plugin.SetShortCircuitHealthy(true)
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
-	cfg := inProcessClientConfig("ping_healthy", buildInProcessServer(t))
+	cfg := legacyHTTPClientConfig(t, "ping_healthy", buildInProcessServer(t))
 	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
 	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
@@ -502,7 +518,7 @@ func TestPingHook_PreHookShortCircuitError_DoesNotPanic(t *testing.T) {
 	})
 
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
-	cfg := inProcessClientConfig("ping_err", buildInProcessServer(t))
+	cfg := legacyHTTPClientConfig(t, "ping_err", buildInProcessServer(t))
 	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
 	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
@@ -551,6 +567,28 @@ func TestPingHook_DoesNotFireWhenPingUnavailable(t *testing.T) {
 
 	assert.Equal(t, 0, pingPlugin.GetPreHookCallCount(), "Ping hook MUST NOT fire when isPingAvailable=false")
 	assert.GreaterOrEqual(t, listPlugin.GetPreHookCallCount(), 2, "list_tools hook fires as liveness fallback")
+}
+
+// TestPingHook_DoesNotFireOnModernUpstream pins that a 2026-07-28 upstream, whose protocol has no
+// ping, is health checked by list_tools alone: no ping runs through the plugin pipeline.
+func TestPingHook_DoesNotFireOnModernUpstream(t *testing.T) {
+	t.Parallel()
+
+	pingPlugin := NewTestPingPlugin()
+	listPlugin := NewTestListToolsPlugin()
+	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{pingPlugin, listPlugin})
+
+	cfg := inProcessClientConfig("ping_modern", buildInProcessServer(t))
+	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	listPlugin.Reset()
+
+	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
+	monitor.Start()
+	defer monitor.Stop()
+
+	require.Eventually(t, func() bool { return listPlugin.GetPreHookCallCount() >= 2 }, 2*time.Second, 10*time.Millisecond,
+		"list_tools hook fires as the liveness check")
+	assert.Equal(t, 0, pingPlugin.GetPreHookCallCount(), "no ping for an upstream whose protocol has none")
 }
 
 // =============================================================================

@@ -1519,3 +1519,20 @@ func FixArraySchemas(properties map[string]interface{}, logger schemas.Logger) {
 		}
 	}
 }
+
+// initializeClient runs the MCP handshake for any protocol revision. mcp-go gives up when
+// server/discover is refused with only pre-2026-07-28 versions supported, so those are retried
+// through the initialize handshake at the newest version both sides support.
+func initializeClient(ctx context.Context, c *client.Client, request mcp.InitializeRequest) (*mcp.InitializeResult, error) {
+	result, err := c.Initialize(ctx, request)
+	var unsupported mcp.UnsupportedProtocolVersionError
+	if err == nil || !errors.As(err, &unsupported) {
+		return result, err
+	}
+	legacy := mcp.NegotiateMutuallySupportedVersion(unsupported.Supported)
+	if legacy == "" || mcp.IsModernProtocol(legacy) {
+		return nil, err
+	}
+	request.Params.ProtocolVersion = legacy
+	return c.Initialize(ctx, request)
+}
