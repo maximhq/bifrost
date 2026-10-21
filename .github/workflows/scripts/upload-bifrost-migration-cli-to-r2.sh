@@ -43,7 +43,8 @@ upload_with_retry() {
        --endpoint-url "$R2_ENDPOINT" \
        --profile "${R2_AWS_PROFILE:-R2}" \
        --no-progress \
-       --delete; then
+       --no-follow-symlinks \
+       --exclude version.txt; then
       echo "✅ Upload successful to $dest_path"
       return 0
     else
@@ -61,7 +62,7 @@ upload_with_retry() {
 }
 
 # Upload to versioned path
-if ! upload_with_retry "./dist/" "s3://$R2_BUCKET/bifrost-migration-cli/$CLI_VERSION/"; then
+if ! bash "$(dirname "$0")/run-security-tool.sh" immutableupload ./dist "bifrost-migration-cli/$CLI_VERSION"; then
   exit 1
 fi
 
@@ -80,6 +81,9 @@ else
   if ! upload_with_retry "./dist/" "s3://$R2_BUCKET/bifrost-migration-cli/latest/"; then
     exit 1
   fi
+  aws s3 cp ./dist/version.txt "s3://$R2_BUCKET/bifrost-migration-cli/latest/version.txt" \
+    --endpoint-url "$R2_ENDPOINT" --profile "${R2_AWS_PROFILE:-R2}" \
+    --cache-control no-cache --content-type text/plain
 fi
 
 echo "🎉 All bifrost-migration-cli binaries uploaded successfully to R2"
