@@ -127,6 +127,38 @@
         "default_request_timeout_in_seconds": 60
       }
     },
+    "generic_echo_sigv4": {
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Generic Echo SigV4 Key",
+          "value": "",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false,
+          "bedrock_key_config": {
+            "access_key": "AKIAHARNESSEXAMPLE",
+            "secret_key": "harness-secret-not-a-real-key",
+            "region": "us-east-1"
+          }
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": {
+            "type": "aws_sigv4",
+            "aws": {
+              "service": "execute-api"
+            }
+          }
+        }
+      },
+      "network_config": {
+        "base_url": "https://postman-echo.com",
+        "default_request_timeout_in_seconds": 60
+      }
+    },
     "generic_openai": {
       "store_raw_request_response": true,
       "keys": [

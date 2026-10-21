@@ -149,7 +149,82 @@ func TestGeneric(t *testing.T) {
 		t.Run("StreamNonSSEUsesDefaultUsage", testStreamNonSSEUsesDefaultUsage)
 		t.Run("UnsupportedOperations", testUnsupportedOperations)
 		t.Run("AllowedRequestsGate", testAllowedRequestsGate)
+		t.Run("SigV4SignsRequest", testSigV4SignsRequest)
+		t.Run("SigV4MissingRegionIs400", testSigV4MissingRegion)
+		t.Run("SigV4DropsCallerSignatureHeaders", testSigV4DropsCallerSignatureHeaders)
 	})
+}
+
+func sigv4Key(region string) schemas.Key {
+	k := schemas.Key{ID: "aws", Name: "aws", Weight: 1, BedrockKeyConfig: &schemas.BedrockKeyConfig{
+		AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+		SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+	}}
+	if region != "" {
+		k.BedrockKeyConfig.Region = schemas.NewSecretVar(region)
+	}
+	return k
+}
+
+// A generic provider with aws_sigv4 auth signs the relayed request with the key's AWS credentials
+// for the configured service: this is what puts Textract and Translate behind Bifrost.
+func testSigV4SignsRequest(t *testing.T) {
+	up := jsonUpstream(t, http.StatusOK, `{"Blocks":[]}`)
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract", Region: "us-east-1"}}})
+
+	body := `{"Document":{"Bytes":"aGk="}}`
+	resp, bifrostErr := provider.Passthrough(testCtx(t), sigv4Key(""), relayRequest(http.MethodPost, "/", "", body, map[string]string{"x-amz-target": "Textract.DetectDocumentText", "content-type": "application/x-amz-json-1.1"}))
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	got := up.requests()
+	require.Len(t, got, 1)
+	auth := got[0].Header.Get("Authorization")
+	assert.True(t, strings.HasPrefix(auth, "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/"), auth)
+	assert.Contains(t, auth, "/us-east-1/textract/aws4_request", "scope follows the configured region and service")
+	assert.NotEmpty(t, got[0].Header.Get("X-Amz-Date"))
+	assert.Equal(t, "Textract.DetectDocumentText", got[0].Header.Get("X-Amz-Target"), "the operation header the caller sent is kept and signed")
+	assert.Equal(t, "application/x-amz-json-1.1", got[0].Header.Get("Content-Type"))
+	assert.Equal(t, body, got[0].Body)
+
+	t.Run("region falls back to the key", func(t *testing.T) {
+		up := jsonUpstream(t, http.StatusOK, `{}`)
+		provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "translate"}}})
+		_, bifrostErr := provider.Passthrough(testCtx(t), sigv4Key("eu-west-1"), relayRequest(http.MethodPost, "/", "", `{}`, nil))
+		require.Nil(t, bifrostErr)
+		got := up.requests()
+		require.Len(t, got, 1)
+		assert.Contains(t, got[0].Header.Get("Authorization"), "/eu-west-1/translate/aws4_request")
+	})
+}
+
+func testSigV4MissingRegion(t *testing.T) {
+	up := jsonUpstream(t, http.StatusOK, `{}`)
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}}})
+	_, bifrostErr := provider.Passthrough(testCtx(t), sigv4Key(""), relayRequest(http.MethodPost, "/", "", `{}`, nil))
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+	assert.Contains(t, bifrostErr.Error.Message, "region")
+	assert.Empty(t, up.requests())
+}
+
+// Signature-bearing headers a caller sends are the signer's to set; they are dropped before
+// signing so a stale caller signature can never be forwarded or folded into ours.
+func testSigV4DropsCallerSignatureHeaders(t *testing.T) {
+	up := jsonUpstream(t, http.StatusOK, `{}`)
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract", Region: "us-east-1"}}})
+	_, bifrostErr := provider.Passthrough(testCtx(t), sigv4Key(""), relayRequest(http.MethodPost, "/", "", `{}`, map[string]string{
+		"x-amz-date": "20200101T000000Z", "x-amz-security-token": "caller-token", "x-amz-content-sha256": "deadbeef", "authorization": "AWS4-HMAC-SHA256 Credential=CALLER/...",
+		"x-amz-target": "Textract.AnalyzeDocument",
+	}))
+	require.Nil(t, bifrostErr)
+	got := up.requests()
+	require.Len(t, got, 1)
+	assert.NotEqual(t, "20200101T000000Z", got[0].Header.Get("X-Amz-Date"))
+	assert.Empty(t, got[0].Header.Get("X-Amz-Security-Token"), "no session token on the key means none upstream")
+	assert.NotEqual(t, "deadbeef", got[0].Header.Get("X-Amz-Content-Sha256"))
+	assert.Contains(t, got[0].Header.Get("Authorization"), "Credential=AKIAIOSFODNN7EXAMPLE/")
+	assert.Equal(t, "Textract.AnalyzeDocument", got[0].Header.Get("X-Amz-Target"))
 }
 
 func testRelayPOSTBearer(t *testing.T) {

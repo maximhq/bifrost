@@ -281711,6 +281711,63 @@
               ]
             }
           }
+        },
+        {
+          "name": "262.10 POST /passthrough/generic_echo_sigv4/post - aws_sigv4 auth signs the relayed request (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_sigv4 has auth.type aws_sigv4 (service execute-api) and a key that carries only",
+                  "// bedrock_key_config credentials. postman-echo echoes the headers Bifrost signed with.",
+                  "pm.test('generic relay: sigv4-signed POST reached postman-echo', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('generic relay: Authorization carries a SigV4 signature for the configured scope', function () { pm.expect(j.headers.authorization, JSON.stringify(j.headers)).to.match(/^AWS4-HMAC-SHA256 Credential=AKIAHARNESSEXAMPLE\\/\\d{8}\\/us-east-1\\/execute-api\\/aws4_request/); });",
+                  "pm.test('generic relay: x-amz-date set by the signer', function () { pm.expect(j.headers['x-amz-date'], JSON.stringify(j.headers)).to.match(/^\\d{8}T\\d{6}Z$/); });",
+                  "pm.test('generic relay: x-amz-content-sha256 is the body hash, not the caller value', function () { pm.expect(j.headers['x-amz-content-sha256']).to.match(/^[0-9a-f]{64}$/).and.not.eql('deadbeef'); });",
+                  "pm.test('generic relay: caller operation header kept', function () { pm.expect(j.headers['x-amz-target']).to.eql('Harness.Echo'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-amz-target",
+                "value": "Harness.Echo"
+              },
+              {
+                "key": "x-amz-content-sha256",
+                "value": "deadbeef"
+              },
+              {
+                "key": "Authorization",
+                "value": "AWS4-HMAC-SHA256 Credential=CALLER/20200101/us-east-1/execute-api/aws4_request"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"document\": \"hello\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_sigv4/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_sigv4",
+                "post"
+              ]
+            }
+          }
         }
       ]
     }

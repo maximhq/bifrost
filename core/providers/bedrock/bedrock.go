@@ -624,6 +624,13 @@ func stripHeadersForSigning(header http.Header) []restoredHeader {
 	return restore
 }
 
+// SignAWSRequest SigV4-signs req for service in region with the key's AWS credentials (static,
+// assumed role, or the default chain when the key holds none). Other providers that relay to AWS
+// APIs (the generic base type) sign through it so the credential handling lives in one place.
+func SignAWSRequest(ctx *schemas.BifrostContext, req *http.Request, keyCfg *schemas.BedrockKeyConfig, region, service string) *schemas.BifrostError {
+	return signAWSRequest(ctx, req, keyCfg, region, service)
+}
+
 func signAWSRequest(
 	ctx *schemas.BifrostContext,
 	req *http.Request,
