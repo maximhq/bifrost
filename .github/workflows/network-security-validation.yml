@@ -1,0 +1,60 @@
+name: Manual network security validation
+
+# Intentionally contacting denied hosts generates real StepSecurity baseline
+# alerts. Never run this diagnostic automatically on PRs, pushes, or schedules.
+on:
+  workflow_dispatch:
+    inputs:
+      acknowledge_expected_alerts:
+        description: 'This diagnostic intentionally generates blocked-endpoint alerts'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: network-security-validation
+  cancel-in-progress: false
+
+jobs:
+  check-raw-egress:
+    name: Diagnose raw GitHub egress isolation
+    if: inputs.acknowledge_expected_alerts
+    environment: pr-testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+      - name: Probe an allowed host and deny raw-content hosts
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '::notice::Admin-requested network diagnostic: blocked-endpoint baseline alerts are expected.'
+          # A positive control prevents an entirely offline runner passing.
+          curl --silent --show-error --connect-timeout 5 --max-time 15 --output /dev/null https://github.com
+          failures=0
+          # No --fail or --location: an HTTP error or redirect still proves
+          # this hostname is reachable. It does not prove payload retrieval.
+          for url in \
+            https://raw.githubusercontent.com/step-security/harden-runner/main/README.md \
+            https://raw.github.com/step-security/harden-runner/main/README.md \
+            https://gist.githubusercontent.com/; do
+            if response="$(curl --silent --show-error --connect-timeout 5 --max-time 15 \
+              --output /dev/null --write-out 'HTTP %{http_code}; peer=%{remote_ip}' "$url")"; then
+              echo "::error::Raw GitHub hostname is reachable: $url ($response)"
+              failures=$((failures + 1))
+            else
+              echo "Connection denied or unavailable: $url"
+            fi
+          done
+          if [[ "$failures" -ne 0 ]]; then
+            echo '::error::Strict hostname isolation is not established; review effective policy exceptions.'
+            exit 1
+          fi
