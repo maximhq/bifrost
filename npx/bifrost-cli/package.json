@@ -1,6 +1,6 @@
 {
     "name": "@maximhq/bifrost-cli",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "Bifrost CLI - Use any harness + any models through Bifrost gateway with full observability and governance",
     "keywords": [
         "ai",
@@ -28,6 +28,6 @@
         "bifrost": "bin.js"
     },
     "type": "module",
-    "files": ["bin.js"],
+    "files": ["bin.js", "verify.js"],
   "dependencies": {}
 }

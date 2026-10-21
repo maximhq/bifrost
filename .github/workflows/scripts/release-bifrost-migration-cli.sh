@@ -131,6 +131,10 @@ else
     ${PRERELEASE_FLAG}
 fi
 
+# Second checksum source for the npx launcher: attached with the repository
+# token, which the object-store key cannot forge, and never replaced.
+bash "$SCRIPT_DIR/publish-release-checksums.sh" "$TAG_NAME" "$REPO_ROOT/dist"
+
 echo "✅ Bifrost Migration CLI released successfully"
 
 # Print summary

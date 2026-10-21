@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 
 # Finalize bifrost-http release: changelog, tagging, GitHub release, R2 latest copy
 # Usage: ./release-bifrost-http-finalize.sh <version>
@@ -165,6 +167,10 @@ gh release create "$TAG_NAME" \
   --title "$TITLE" \
   --notes "$BODY" \
   ${PRERELEASE_FLAG} ${LATEST_FLAG}
+
+# Second checksum source for the npx launcher, built from the checksums the
+# two build jobs attached to this run (see the "Collect build checksums" step).
+bash "$SCRIPT_DIR/publish-release-checksums.sh" "$TAG_NAME" "$REPO_ROOT/dist"
 
 echo "✅ Bifrost HTTP released successfully"
 
