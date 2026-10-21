@@ -1,0 +1,13 @@
+{
+  "name": "release-tags",
+  "target": "tag",
+  "enforcement": "active",
+  "bypass_actors": [{"actor_id": 0, "actor_type": "Integration", "bypass_mode": "always"}],
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/tags/core/**", "refs/tags/framework/**", "refs/tags/plugins/**", "refs/tags/transports/**"],
+      "exclude": []
+    }
+  },
+  "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}]
+}

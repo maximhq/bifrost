@@ -23,3 +23,5 @@ go.work* @maximhq/bifrost-admin
 flake.lock @maximhq/bifrost-admin
 npx/ @maximhq/bifrost-admin
 cli/internal/update/ @maximhq/bifrost-admin
+# Runs with the release app token and pushes to main.
+docs/openapi/bundle.py @maximhq/bifrost-admin

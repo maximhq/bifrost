@@ -155,3 +155,155 @@ func TestOverrideEnvironmentsAreApprovalSurfaces(t *testing.T) {
 		t.Fatal("accepted an auto-approving memory override")
 	}
 }
+
+// ruleIndex finds a rule by type so tests do not depend on rule order in the JSON.
+func ruleIndex(r *ruleset, kind string) int {
+	for i, rule := range r.Rules {
+		if rule.Type == kind {
+			return i
+		}
+	}
+	return -1
+}
+
+// rulesetFixture builds a compliant ruleset by decoding the same JSON shape the API returns.
+func rulesetFixture(t *testing.T, name string) ruleset {
+	t.Helper()
+	var r ruleset
+	if err := readJSON(filepath.Join("..", "..", "..", "..", "security", name+"-ruleset.json"), &r); err != nil {
+		t.Fatal(err)
+	}
+	r.BypassActors[0].ActorID = 12345
+	return r
+}
+
+// TestRulesetsRejectEveryHumanPath covers disabled enforcement, extra refs, missing rules, and human bypass.
+func TestRulesetsRejectEveryHumanPath(t *testing.T) {
+	for _, name := range []string{"release-branches", "release-tags"} {
+		if failures := checkRuleset(rulesetFixture(t, name), true); len(failures) != 0 {
+			t.Fatal(failures)
+		}
+	}
+	unset := rulesetFixture(t, "release-branches")
+	unset.BypassActors[0].ActorID = 0
+	if len(checkRuleset(unset, true)) == 0 {
+		t.Fatal("accepted a live ruleset whose bypass app was never set")
+	}
+	if failures := checkRuleset(unset, false); len(failures) != 0 {
+		t.Fatal(failures)
+	}
+	for name, mutate := range map[string]func(*ruleset){
+		"evaluate only": func(r *ruleset) { r.Enforcement = "evaluate" },
+		"disabled":      func(r *ruleset) { r.Enforcement = "disabled" },
+		"wrong target":  func(r *ruleset) { r.Target = "tag" },
+		"extra branch": func(r *ruleset) {
+			r.Conditions.RefName.Include = append(r.Conditions.RefName.Include, "refs/heads/dev")
+		},
+		"missing branch": func(r *ruleset) { r.Conditions.RefName.Include = []string{"refs/heads/main"} },
+		"exclusion":      func(r *ruleset) { r.Conditions.RefName.Exclude = []string{"refs/heads/main"} },
+		"human bypass":   func(r *ruleset) { r.BypassActors[0].ActorType = "RepositoryRole" },
+		"second bypass":  func(r *ruleset) { r.BypassActors = append(r.BypassActors, r.BypassActors[0]) },
+		"no bypass mode": func(r *ruleset) { r.BypassActors[0].BypassMode = "pull_request" },
+		"force push": func(r *ruleset) {
+			r.Rules = append(r.Rules[:ruleIndex(r, "non_fast_forward")], r.Rules[ruleIndex(r, "non_fast_forward")+1:]...)
+		},
+		"one review": func(r *ruleset) {
+			r.Rules[ruleIndex(r, "pull_request")].Parameters["required_approving_review_count"] = float64(1)
+		},
+		"no last push": func(r *ruleset) {
+			r.Rules[ruleIndex(r, "pull_request")].Parameters["require_last_push_approval"] = false
+		},
+		"no code owners": func(r *ruleset) {
+			r.Rules[ruleIndex(r, "pull_request")].Parameters["require_code_owner_review"] = false
+		},
+		"stale kept": func(r *ruleset) {
+			r.Rules[ruleIndex(r, "pull_request")].Parameters["dismiss_stale_reviews_on_push"] = false
+		},
+		"no status checks": func(r *ruleset) { r.Rules = r.Rules[:ruleIndex(r, "required_status_checks")] },
+		"renamed":          func(r *ruleset) { r.Name = "other" },
+	} {
+		r := rulesetFixture(t, "release-branches")
+		mutate(&r)
+		if len(checkRuleset(r, true)) == 0 {
+			t.Errorf("accepted %s", name)
+		}
+	}
+	tags := rulesetFixture(t, "release-tags")
+	tags.Rules = tags.Rules[:2]
+	if len(checkRuleset(tags, true)) == 0 {
+		t.Fatal("accepted a tag ruleset that permits tag deletion")
+	}
+}
+
+// TestClassicProtectionMayNotReopenABypass tolerates legacy protection only without human exceptions.
+func TestClassicProtectionMayNotReopenABypass(t *testing.T) {
+	app := func(slug string) struct {
+		Slug string `json:"slug"`
+	} {
+		return struct {
+			Slug string `json:"slug"`
+		}{slug}
+	}
+	good := func() classicProtection {
+		var p classicProtection
+		p.EnforceAdmins.Enabled = true
+		p.RequiredPullRequestReviews.Bypass.Apps = append(p.RequiredPullRequestReviews.Bypass.Apps, app(releaseAppSlug))
+		return p
+	}
+	if failures := checkClassic("main", good()); len(failures) != 0 {
+		t.Fatal(failures)
+	}
+	// Push restrictions, when enabled, must admit the app and only the admin team.
+	restricted := func(teams []string, apps []string, users ...any) classicProtection {
+		p := good()
+		var r struct {
+			Users []any `json:"users"`
+			Teams []struct {
+				Slug string `json:"slug"`
+			} `json:"teams"`
+			Apps []struct {
+				Slug string `json:"slug"`
+			} `json:"apps"`
+		}
+		r.Users = users
+		for _, team := range teams {
+			r.Teams = append(r.Teams, app(team))
+		}
+		for _, slug := range apps {
+			r.Apps = append(r.Apps, app(slug))
+		}
+		p.Restrictions = &r
+		return p
+	}
+	if failures := checkClassic("main", restricted([]string{adminTeamSlug}, []string{releaseAppSlug})); len(failures) != 0 {
+		t.Fatal(failures)
+	}
+	for name, p := range map[string]classicProtection{
+		"nobody may push": restricted(nil, nil),
+		"app missing":     restricted([]string{adminTeamSlug}, nil),
+		"other team":      restricted([]string{"everyone"}, []string{releaseAppSlug}),
+		"individual user": restricted([]string{adminTeamSlug}, []string{releaseAppSlug}, "someone"),
+		"second app":      restricted([]string{adminTeamSlug}, []string{releaseAppSlug, "graphite-app"}),
+	} {
+		if len(checkClassic("main", p)) == 0 {
+			t.Errorf("accepted %s", name)
+		}
+	}
+	for name, mutate := range map[string]func(*classicProtection){
+		"admins exempt": func(p *classicProtection) { p.EnforceAdmins.Enabled = false },
+		"force pushes":  func(p *classicProtection) { p.AllowForcePushes.Enabled = true },
+		"user bypass":   func(p *classicProtection) { p.RequiredPullRequestReviews.Bypass.Users = []any{"someone"} },
+		"team bypass":   func(p *classicProtection) { p.RequiredPullRequestReviews.Bypass.Teams = []any{"team"} },
+		"other app":     func(p *classicProtection) { p.RequiredPullRequestReviews.Bypass.Apps[0] = app("graphite-app") },
+		"second app": func(p *classicProtection) {
+			p.RequiredPullRequestReviews.Bypass.Apps = append(p.RequiredPullRequestReviews.Bypass.Apps, app("graphite-app"))
+		},
+		"app missing": func(p *classicProtection) { p.RequiredPullRequestReviews.Bypass.Apps = nil },
+	} {
+		q := good()
+		mutate(&q)
+		if len(checkClassic("main", q)) == 0 {
+			t.Errorf("accepted %s", name)
+		}
+	}
+}

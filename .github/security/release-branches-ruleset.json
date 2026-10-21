@@ -1,0 +1,30 @@
+{
+  "name": "release-branches",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [{"actor_id": 0, "actor_type": "Integration", "bypass_mode": "always"}],
+  "conditions": {"ref_name": {"include": ["refs/heads/main", "refs/heads/v2.0.0"], "exclude": []}},
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 2,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": true,
+        "require_last_push_approval": true,
+        "required_review_thread_resolution": false,
+        "allowed_merge_methods": ["merge", "squash", "rebase"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [{"context": "Supply chain policy", "integration_id": 15368}]
+      }
+    }
+  ]
+}

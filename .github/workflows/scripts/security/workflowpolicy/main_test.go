@@ -178,6 +178,31 @@ func TestPublishersWaitForTheHumanGate(t *testing.T) {
 	}
 }
 
+// TestPersonalTokensAreRejected keeps a stolen human credential from ever being a release path again.
+func TestPersonalTokensAreRejected(t *testing.T) {
+	for _, secret := range []string{"GH_TOKEN", "NPM_TOKEN"} {
+		d := releaseFixture()
+		job := d.Jobs["docker-publish"]
+		job.Other = map[string]any{"env": map[string]any{"TOKEN": "${{ secrets." + secret + " }}"}}
+		d.Jobs["docker-publish"] = job
+		if len(check(d, "release-pipeline.yml")) == 0 {
+			t.Errorf("accepted %s", secret)
+		}
+	}
+	d := releaseFixture()
+	job := d.Jobs["docker-publish"]
+	job.Other = map[string]any{"env": map[string]any{"GH_TOKEN": "${{ steps.release-token.outputs.token }}", "A": "${{ secrets.RELEASE_APP_PRIVATE_KEY }}"}}
+	d.Jobs["docker-publish"] = job
+	if failures := check(d, "release-pipeline.yml"); len(failures) != 0 {
+		t.Fatal(failures)
+	}
+	job.Environment = nil
+	d.Jobs["docker-publish"] = job
+	if len(check(d, "release-pipeline.yml")) == 0 {
+		t.Fatal("accepted the app private key outside the release environment")
+	}
+}
+
 // TestPublishSecretsNeedReleaseEnvironmentEverywhere applies to every workflow, not only the pipeline.
 func TestPublishSecretsNeedReleaseEnvironmentEverywhere(t *testing.T) {
 	d := fixture("step-security/harden-runner@" + strings.Repeat("a", 40))
