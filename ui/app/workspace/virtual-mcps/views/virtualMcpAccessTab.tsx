@@ -1,10 +1,22 @@
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alertDialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { VirtualKeyListItem } from "@/components/virtualKeyListItem";
-import { useGetVirtualKeysQuery } from "@/lib/store";
+import { useGetVirtualKeysQuery, useLazyGetVirtualKeyQuery } from "@/lib/store";
 import VirtualMcpAccessProfiles from "@enterprise/components/virtual-mcps/virtualMcpAccessProfiles";
 import { Plus } from "lucide-react";
+import { useState } from "react";
+import { type VirtualKeyOwner, virtualKeyOwner } from "./virtualMcpAccessTab.utils";
 
 interface VirtualMCPAccessTabProps {
 	vmcpId: number;
@@ -19,12 +31,16 @@ interface VirtualMCPAccessTabProps {
 }
 
 export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate, active, stagedCreate = false }: VirtualMCPAccessTabProps) {
-	// Access-profile-managed keys derive their MCP access from their profile, so they cannot be assigned
-	// directly here (the API rejects them too).
+	// A user's access-profile managed key derives its MCP access from that profile, so it cannot be
+	// assigned directly here (the API rejects it too). A key a team, business unit or customer owns can
+	// be, after a confirmation that names its owner.
 	const { data, isLoading, isError, refetch } = useGetVirtualKeysQuery(
 		{ limit: 1000, exclude_access_profile_managed_virtual: true },
 		{ skip: !active || (isCreate && !stagedCreate) },
 	);
+	const [fetchVirtualKey] = useLazyGetVirtualKeyQuery();
+	// A picked key that belongs to another team, business unit or customer, waiting on the confirmation.
+	const [pendingOwnedVk, setPendingOwnedVk] = useState<{ id: string; name: string; owner: VirtualKeyOwner } | null>(null);
 
 	if (isCreate && !stagedCreate) {
 		return (
@@ -51,6 +67,25 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 	const addVk = (vkId: string) => onChange([...value, vkId]);
 	const removeVk = (vkId: string) => onChange(value.filter((id) => id !== vkId));
 
+	// The list above holds the first 1000 keys; a key past it is read on its own to find its owner. A
+	// failed read skips the confirmation rather than blocking the assignment, since it only informs.
+	const selectVk = async (vkId: string, label: string) => {
+		let vk = vkById.get(vkId);
+		if (!vk) {
+			try {
+				vk = (await fetchVirtualKey(vkId, true).unwrap()).virtual_key;
+			} catch {
+				vk = undefined;
+			}
+		}
+		const owner = virtualKeyOwner(vk);
+		if (owner) {
+			setPendingOwnedVk({ id: vkId, name: vk?.name || label, owner });
+			return;
+		}
+		addVk(vkId);
+	};
+
 	return (
 		<div className="flex flex-col gap-4">
 			<div className="flex items-center justify-between">
@@ -62,7 +97,7 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 					mode="add"
 					filters={{ exclude_access_profile_managed_virtual: true }}
 					excludeIds={value}
-					onSelect={(opt) => addVk(opt.value)}
+					onSelect={(opt) => void selectVk(opt.value, opt.label)}
 					contentClassName="w-72"
 					trigger={
 						<Button variant="outline" size="sm" data-testid="virtual-mcp-assign-vk-btn">
@@ -99,6 +134,37 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 			)}
 
 			{!stagedCreate && <VirtualMcpAccessProfiles vmcpId={vmcpId} active={active} />}
+
+			{/* Granting MCP access to a key another team, business unit or customer owns is confirmed. */}
+			<AlertDialog
+				open={!!pendingOwnedVk}
+				onOpenChange={(next) => {
+					if (!next) setPendingOwnedVk(null);
+				}}
+			>
+				<AlertDialogContent data-testid="virtual-mcp-assign-owned-vk-dialog">
+					<AlertDialogHeader>
+						<AlertDialogTitle>Assign virtual key?</AlertDialogTitle>
+						<AlertDialogDescription>
+							<strong>{pendingOwnedVk?.name}</strong> belongs to the {pendingOwnedVk?.owner.kind}{" "}
+							<strong>{pendingOwnedVk?.owner.name}</strong>. Assigning it lets that {pendingOwnedVk?.owner.kind}&apos;s key reach this
+							Virtual MCP.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel data-testid="virtual-mcp-assign-owned-vk-cancel">Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							data-testid="virtual-mcp-assign-owned-vk-confirm"
+							onClick={() => {
+								if (pendingOwnedVk) addVk(pendingOwnedVk.id);
+								setPendingOwnedVk(null);
+							}}
+						>
+							Assign
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 		</div>
 	);
 }
