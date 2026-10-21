@@ -152,7 +152,76 @@ func TestGeneric(t *testing.T) {
 		t.Run("SigV4SignsRequest", testSigV4SignsRequest)
 		t.Run("SigV4MissingRegionIs400", testSigV4MissingRegion)
 		t.Run("SigV4DropsCallerSignatureHeaders", testSigV4DropsCallerSignatureHeaders)
+		t.Run("RedirectsAreReturnedNotFollowed", testRedirectsAreReturnedNotFollowed)
+		t.Run("TransportErrorRedactsQueryCredential", testTransportErrorRedactsQueryCredential)
 	})
+}
+
+// A redirect is relayed to the caller as the upstream answered it. Following it would carry the
+// injected credential to the host the upstream named and step around the base URL pinning.
+func testRedirectsAreReturnedNotFollowed(t *testing.T) {
+	elsewhere := jsonUpstream(t, http.StatusOK, `{"leaked":true}`)
+	origin := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.server.URL+"/landing", http.StatusTemporaryRedirect)
+	})
+
+	for _, tc := range []struct {
+		name string
+		cfg  *schemas.GenericProviderConfig
+	}{
+		{"header auth", &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "Ocp-Apim-Subscription-Key"}}},
+		{"query auth", &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "api_key"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := newProvider(t, origin, tc.cfg)
+			resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("SECRET"), relayRequest(http.MethodPost, "/x", "", `{}`, nil))
+			require.Nil(t, bifrostErr)
+			assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode, "the 3xx reaches the caller")
+			assert.Equal(t, elsewhere.server.URL+"/landing", resp.Headers["Location"])
+			assert.Empty(t, elsewhere.requests(), "the redirect target never sees a request, let alone the key")
+
+			ch, bifrostErr := provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("SECRET"), relayRequest(http.MethodPost, "/x/stream", "", `{}`, nil))
+			require.Nil(t, bifrostErr)
+			first, ok := nextChunk(t, ch, 3*time.Second)
+			require.True(t, ok)
+			require.NotNil(t, first.BifrostPassthroughResponse)
+			assert.Equal(t, http.StatusTemporaryRedirect, first.BifrostPassthroughResponse.StatusCode, "the streaming relay behaves the same")
+			drainStream(t, ch)
+			assert.Empty(t, elsewhere.requests())
+		})
+	}
+}
+
+// A transport failure names the host and path it could not reach, never the query string: for
+// query auth that string is the key, and the error goes to the caller and into the log row.
+func testTransportErrorRedactsQueryCredential(t *testing.T) {
+	provider, err := NewGenericProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", DefaultRequestTimeoutInSeconds: 2},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "dead",
+			BaseProviderType:  schemas.Generic,
+			GenericConfig:     &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "api_key"}},
+		},
+	}, &testLogger{})
+	require.NoError(t, err)
+
+	_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("QSECRET"), relayRequest(http.MethodPost, "/v1/search", "q=1", `{}`, nil))
+	require.NotNil(t, bifrostErr)
+	msg := bifrostErr.Error.Message
+	if bifrostErr.Error.Error != nil {
+		msg += " " + bifrostErr.Error.Error.Error()
+	}
+	assert.NotContains(t, msg, "QSECRET")
+	assert.NotContains(t, msg, "api_key")
+	assert.Contains(t, msg, "127.0.0.1:1/v1/search", "the destination is still named")
+
+	_, bifrostErr = provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("QSECRET"), relayRequest(http.MethodPost, "/v1/stream", "q=1", `{}`, nil))
+	require.NotNil(t, bifrostErr)
+	msg = bifrostErr.Error.Message
+	if bifrostErr.Error.Error != nil {
+		msg += " " + bifrostErr.Error.Error.Error()
+	}
+	assert.NotContains(t, msg, "QSECRET")
 }
 
 func sigv4Key(region string) schemas.Key {

@@ -74,6 +74,11 @@ func NewGenericProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	if err != nil {
 		return nil, err
 	}
+	// A relay never follows redirects: the caller gets the 3xx and decides. Following one would
+	// send the injected credential to whatever host the upstream named (Go strips only
+	// Authorization and Cookie across hosts) and would step around the base URL host pinning.
+	// This matches the fasthttp passthroughs, whose Do never follows redirects.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 	return &GenericProvider{
 		logger:               logger,
