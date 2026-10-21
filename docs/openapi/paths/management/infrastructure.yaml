@@ -183,17 +183,3 @@ metrics:
           text/plain:
             schema:
               type: string
-
-websocket-responses:
-  get:
-    operationId: websocketResponses
-    summary: WebSocket Responses API
-    description: |
-      Upgrades to a WebSocket connection for the streaming Responses API.
-      Clients send `response.create` events and receive streaming response events.
-      Supports authentication via Bearer token, x-api-key, or x-bf-vk headers.
-    tags:
-      - Infrastructure
-    responses:
-      "101":
-        description: WebSocket upgrade successful

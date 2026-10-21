@@ -45,14 +45,20 @@ NotificationInput:
       $ref: '#/NotificationSeverity'
     title:
       type: string
-      description: Trimmed before validation.
+      description: |
+        Must contain a non-whitespace character. The 160 limit is measured in bytes (UTF-8) and applies
+        to the value as sent, which is stored unchanged (not trimmed).
       minLength: 1
       maxLength: 160
+      pattern: '\S'
     message:
       type: string
-      description: Trimmed before validation.
+      description: |
+        Must contain a non-whitespace character. The 4000 limit is measured in bytes (UTF-8) and applies
+        to the value as sent, which is stored unchanged (not trimmed).
       minLength: 1
       maxLength: 4000
+      pattern: '\S'
     action_label:
       type: string
       description: |

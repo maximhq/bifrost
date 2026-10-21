@@ -35,6 +35,43 @@ plugins-builtins:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+plugins-loaded:
+  get:
+    operationId: listLoadedPlugins
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List loaded plugin names
+    description: |
+      Returns the names of all plugins currently loaded at runtime, whose spans an
+      observability connector can filter.
+    tags:
+      - Plugins
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Loaded plugin names retrieved successfully
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                plugins:
+                  type: array
+                  description: Names of the plugins loaded at runtime
+                  items:
+                    type: string
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 plugins:
   get:
     operationId: listPlugins

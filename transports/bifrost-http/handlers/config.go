@@ -474,10 +474,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
-	// Checking the MCP library sync interval
-	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval <= 0 {
-		logger.Warn("MCP library sync interval must be greater than 0")
-		SendError(ctx, fasthttp.StatusBadRequest, "MCP library sync interval must be greater than 0")
+	// Checking the MCP library sync interval: 0 disables background sync, as in
+	// config.json; otherwise the same minimum the config schema enforces.
+	if v := payload.FrameworkConfig.MCPLibrarySyncInterval; v != nil && *v != modelcatalog.MCPLibrarySyncDisabled && *v < modelcatalog.MinimumPricingSyncIntervalSec {
+		msg := fmt.Sprintf("MCP library sync interval must be 0 (disabled) or at least %d seconds", modelcatalog.MinimumPricingSyncIntervalSec)
+		logger.Warn(msg)
+		SendError(ctx, fasthttp.StatusBadRequest, msg)
 		return
 	}
 	// Checking the live models sync interval. Unlike the intervals above, 0 is
