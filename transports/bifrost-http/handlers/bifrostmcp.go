@@ -65,9 +65,10 @@ var bifrostMCPDeniedRoutes = bifrostMCPRouteSet(
 	// Mint, trade or end dashboard credentials.
 	"POST /api/session/login", "POST /api/session/logout", "POST /api/session/setup",
 	"POST /api/session/ws-ticket", "GET /api/session/is-auth-enabled",
-	// Browser steps of end-user OAuth and per-user-headers flows, authorized by one-time tokens.
+	// Browser steps of end-user OAuth, per-user-headers and MCP OAuth consent flows, authorized by one-time tokens.
 	"GET /api/oauth/callback", "GET /api/oauth/per-user/flows/{id}/start", "GET /api/oauth/per-user/flows/{id}",
 	"GET /api/mcp/per-user-headers/flows/{id}", "PUT /api/mcp/per-user-headers/flows/{id}",
+	"GET /api/oauth2/consent/flows/{id}", "PUT /api/oauth2/consent/flows/{id}",
 	// Streams (SSE) and WebSocket upgrades, which a request/response tool cannot carry.
 	"POST /api/warp/chat", "GET /ws", "GET /v1/realtime", "GET /openai/v1/realtime",
 	"GET /v1/responses", "GET /openai/v1/responses",
