@@ -492,6 +492,8 @@ export type RequestType =
 	| "container_file_retrieve"
 	| "container_file_content"
 	| "container_file_delete"
+	| "passthrough"
+	| "passthrough_stream"
 	| "websocket_responses"
 	| "realtime"
 	| "live";
@@ -532,6 +534,8 @@ export interface AllowedRequests {
 	video_delete: boolean;
 	video_list: boolean;
 	video_remix: boolean;
+	passthrough?: boolean;
+	passthrough_stream?: boolean;
 	websocket_responses: boolean;
 	realtime: boolean;
 	live?: boolean;
@@ -580,6 +584,18 @@ export interface InjectedTool {
 	tool_name: string;
 }
 
+// PassthroughRouteRule allows the routes that match path; empty methods match any method.
+export interface PassthroughRouteRule {
+	methods?: string[];
+	path: string;
+}
+
+// PassthroughPolicy limits the routes a provider's passthrough endpoint forwards. Absent
+// means every route on a built-in provider and none on a custom one; an empty list means none.
+export interface PassthroughPolicy {
+	allowed_routes: PassthroughRouteRule[];
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
@@ -593,6 +609,7 @@ export interface ModelProviderConfig {
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
 	injected_tools?: InjectedTool[] | null;
+	passthrough?: PassthroughPolicy | null;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -624,6 +641,7 @@ export interface AddProviderRequest {
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
 	injected_tools?: InjectedTool[] | null;
+	passthrough?: PassthroughPolicy | null;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -639,6 +657,7 @@ export interface UpdateProviderRequest {
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
 	injected_tools?: InjectedTool[] | null;
+	passthrough?: PassthroughPolicy | null;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}

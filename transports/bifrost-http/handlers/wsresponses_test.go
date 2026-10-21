@@ -66,6 +66,10 @@ func (s testWSHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { r
 func (s testWSHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testWSHandlerStore) GetMCPExternalClientURL() string                 { return "" }
 
+func (s testWSHandlerStore) GetCustomProviderPassthrough(schemas.ModelProvider) (schemas.ModelProvider, bool, bool) {
+	return "", false, false
+}
+
 type timeoutNetError struct{}
 
 func (timeoutNetError) Error() string   { return "i/o timeout" }

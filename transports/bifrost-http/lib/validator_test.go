@@ -4098,6 +4098,67 @@ func TestValidateConfigSchema_InjectedTools(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_Passthrough pins passthrough on every provider shape, including a
+// custom provider, and mirrors the rule checks PassthroughPolicy.Validate makes at write time.
+func TestValidateConfigSchema_Passthrough(t *testing.T) {
+	schema := loadLocalSchema(t)
+	const passthrough = `"passthrough": {"allowed_routes": [{"methods": ["POST"], "path": "/v1/chat/completions"}, {"methods": ["GET", "DELETE"], "path": "/v1/files/*"}, {"path": "/v1beta/models/*:generateContent"}, {"path": "/v1/batches/**"}]}`
+	keyConfigs := map[string]string{
+		"azure":      `, "azure_key_config": {"endpoint": "https://example.openai.azure.com"}`,
+		"vertex":     `, "vertex_key_config": {"project_id": "p", "region": "us-central1"}`,
+		"ollama":     `, "ollama_key_config": {"url": "http://localhost:11434"}`,
+		"sgl":        `, "sgl_key_config": {"url": "http://localhost:30000"}`,
+		"vllm":       `, "vllm_key_config": {"url": "http://localhost:8000", "model_name": "m"}`,
+		"databricks": `, "databricks_key_config": {"workspace_url": "https://dbc-1234abcd-5678.cloud.databricks.com"}`,
+	}
+	for _, provider := range []string{"openai", "anthropic", "bedrock", "bedrock_mantle", "azure", "vertex", "ollama", "sgl", "vllm", "replicate", "databricks", "deepseek", "fireworks", "github_copilot"} {
+		key := fmt.Sprintf(`{"name": "k", "value": "v", "weight": 1.0%s}`, keyConfigs[provider])
+		base := fmt.Sprintf(`{"providers": {%q: {"keys": [%s]}}}`, provider, key)
+		if err := ValidateConfigSchema([]byte(base), schema); err != nil {
+			t.Errorf("%s: base config must pass before passthrough is checked: %v", provider, err)
+			continue
+		}
+		with := fmt.Sprintf(`{"providers": {%q: {"keys": [%s], %s}}}`, provider, key, passthrough)
+		if err := ValidateConfigSchema([]byte(with), schema); err != nil {
+			t.Errorf("%s: passthrough rejected: %v", provider, err)
+		}
+	}
+	custom := `{"providers": {"baseten-sidecar": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "custom_provider_config": {"base_provider_type": "openai"}, ` + passthrough + `}}}`
+	if err := ValidateConfigSchema([]byte(custom), schema); err != nil {
+		t.Errorf("custom provider: passthrough rejected: %v", err)
+	}
+
+	config := func(block string) string {
+		return `{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "passthrough": ` + block + `}}}`
+	}
+	for _, block := range []string{`{"allowed_routes": []}`, `{"allowed_routes": [{"path": "/**"}]}`, `{"allowed_routes": [{"path": "/"}]}`, `{"allowed_routes": [{"path": "/v1/models/*/predict"}]}`, `{"allowed_routes": [{"path": "/v1/.well-known/**"}]}`} {
+		if err := ValidateConfigSchema([]byte(config(block)), schema); err != nil {
+			t.Errorf("%s: passthrough rejected: %v", block, err)
+		}
+	}
+	for name, block := range map[string]string{
+		"missing allowed_routes":  `{}`,
+		"unknown field":           `{"allowed_routes": [], "deny": []}`,
+		"rule without a path set": `{"allowed_routes": [{"methods": ["GET"]}]}`,
+		"lowercase method":        `{"allowed_routes": [{"methods": ["get"], "path": "/v1/files"}]}`,
+		"relative path":           `{"allowed_routes": [{"path": "v1/files"}]}`,
+		"query in path":           `{"allowed_routes": [{"path": "/v1/files?purpose=batch"}]}`,
+		"encoded path":            `{"allowed_routes": [{"path": "/v1/%66iles"}]}`,
+		"empty segment":           `{"allowed_routes": [{"path": "/v1//files"}]}`,
+		"trailing slash":          `{"allowed_routes": [{"path": "/v1/files/"}]}`,
+		"dot segment":             `{"allowed_routes": [{"path": "/v1/./files"}]}`,
+		"dot-dot segment":         `{"allowed_routes": [{"path": "/v1/../admin"}]}`,
+		"inner double star":       `{"allowed_routes": [{"path": "/v1/**/content"}]}`,
+		"double star in segment":  `{"allowed_routes": [{"path": "/v1/files**"}]}`,
+		"unknown rule field":      `{"allowed_routes": [{"path": "/v1/files", "method": "GET"}]}`,
+		"null rule":               `{"allowed_routes": [null]}`,
+	} {
+		if err := ValidateConfigSchema([]byte(config(block)), schema); err == nil {
+			t.Errorf("%s: expected passthrough to fail validation", name)
+		}
+	}
+}
+
 // TestValidateConfigSchema_MCPOpenAPIClient pins the config.schema.json rules
 // for connection_type "openapi": openapi_config is required there and only
 // there, it must name a spec source, and only header-shaped auth types apply.

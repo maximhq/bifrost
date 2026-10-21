@@ -429,6 +429,31 @@ test.describe("Providers", () => {
       expect(saved.custom_provider_config?.allowed_requests?.chat_completion).toBe(false);
     });
 
+    test("should show the bedrock passthrough route on a custom Bedrock provider", async ({
+      providersPage,
+      providerSettingsPage,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-bedrock-${Date.now()}`,
+        baseProviderType: "bedrock",
+        baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+      });
+
+      // Track for cleanup
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+
+      await providersPage.selectProvider(providerData.name);
+      await providerSettingsPage.selectConfigTab("passthrough");
+      const hint = providerSettingsPage.page.getByTestId("provider-passthrough-endpoint-hint");
+      await expect(hint).toContainText("/bedrock_passthrough/");
+      await expect(hint).toContainText(`x-model-provider: ${providerData.name}`);
+      // A custom provider stays off until it is given a policy.
+      await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("Off");
+    });
+
     test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({
       providersPage,
       request,
