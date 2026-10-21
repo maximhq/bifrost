@@ -7,6 +7,7 @@ on:
       - ".github/workflows/openapi-bundle.yml"
       - "docs/openapi/**"
       - "!docs/openapi/openapi.json"
+      - "!docs/openapi/openapi-oss.json"
 
 permissions:
   contents: write
@@ -49,14 +50,17 @@ jobs:
 
       - name: Bundle OpenAPI spec
         working-directory: ./docs/openapi
-        run: python bundle.py
+        run: |
+          # Writes openapi.json and, beside it, openapi-oss.json (enterprise-only
+          # operations removed), which an OSS gateway's /v1/mcp builds its tools from.
+          python bundle.py
 
       - name: Commit and push changes
         if: github.event_name == 'push'
         run: |
           CURRENT_BRANCH="${GITHUB_REF_NAME:-main}"
 
-          git add docs/openapi/openapi.json
+          git add docs/openapi/openapi.json docs/openapi/openapi-oss.json
           if git diff --staged --quiet; then
             echo "No changes to commit"
             exit 0
