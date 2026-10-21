@@ -4513,6 +4513,10 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
 func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
+	releaseStreamingResponse(ctx, resp, false)
+}
+
+func releaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response, semanticCompletion bool) {
 	if resp == nil {
 		return
 	}
@@ -4569,7 +4573,15 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			closeBodyStream(bodyStream, errStreamParkedAfterFinish)
 			return
 		}
-		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+		if semanticCompletion {
+			// Semantic completion may precede the HTTP terminator. Confirm it
+			// through the transport, never an unbounded drain of application data.
+			body, ok := bodyStream.(*streamBody)
+			if resp.ConnectionClose() || !ok || !body.finishSemanticCompletion(ctx) {
+				closeBodyStream(bodyStream, errStreamParkedAfterFinish)
+				return
+			}
+		} else if _, err := io.Copy(io.Discard, bodyStream); err != nil {
 			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
 		}
 	}

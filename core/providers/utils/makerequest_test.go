@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -561,6 +562,138 @@ func streamGet(t *testing.T, client *fasthttp.Client, method string) (*fasthttp.
 		t.Fatalf("DoStreamingRequest: %v", err)
 	}
 	return req, resp
+}
+
+func TestPassthroughSemanticCompletionReusesFinishedConnection(t *testing.T) {
+	const payload = "data: {\"finishReason\":\"STOP\"}\n\n"
+	for _, tc := range []struct{ name, response string }{
+		{"content-length", fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\n\r\n%s", len(payload), payload)},
+		{"chunked", fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n\r\n", len(payload), payload)},
+		{"trailers", fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nTrailer: X-Done\r\n\r\n%x\r\n%s\r\n0\r\nX-Done: yes\r\n\r\n", len(payload), payload)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+				for readRequest(br) {
+					writeAll(t, conn, tc.response)
+				}
+			})
+			client := BuildStreamingClient(srv.client(time.Second))
+			defer client.CloseIdleConnections()
+			for range 2 {
+				req, resp := streamGet(t, client, "GET")
+				ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+				stream := StreamPassthrough(ctx, passthroughTestHooks, nil, resp, resp.BodyStream(), PassthroughStreamParams{
+					StatusCode: 200, StartTime: time.Now(), UseTerminalDetector: true,
+				})
+				var got strings.Builder
+				finals := 0
+				for chunk := range stream {
+					if chunk.BifrostError != nil || chunk.BifrostPassthroughResponse == nil {
+						t.Fatalf("unexpected chunk: %+v", chunk)
+					}
+					response := chunk.BifrostPassthroughResponse
+					got.Write(response.Body)
+					if len(response.Body) == 0 {
+						finals++
+					}
+				}
+				if got.String() != payload || finals != 1 || ctx.Err() != nil {
+					t.Fatalf("body %q, final chunks %d, context %v", got.String(), finals, ctx.Err())
+				}
+				ctx.Cancel()
+				fasthttp.ReleaseRequest(req)
+			}
+			if got := srv.accepted.Load(); got != 1 {
+				t.Fatalf("connections accepted = %d, want one reusable connection", got)
+			}
+		})
+	}
+}
+
+func TestPassthroughSemanticCompletionAbandonsIncompleteConnection(t *testing.T) {
+	const payload = "data: {\"finishReason\":\"STOP\"}\n\n"
+	for _, tc := range []struct{ name, response string }{
+		{"content-length", fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\n\r\n%s", len(payload)+1, payload)},
+		{"missing-zero-chunk", fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n", len(payload), payload)},
+		{"missing-trailer-end", fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nTrailer: X-Done\r\n\r\n%x\r\n%s\r\n0\r\nX-Done: yes\r\n", len(payload), payload)},
+		{"identity", "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n" + payload},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+				for readRequest(br) {
+					writeAll(t, conn, tc.response)
+				}
+			})
+			client := BuildStreamingClient(srv.client(time.Second))
+			defer client.CloseIdleConnections()
+			for range 2 {
+				req, resp := streamGet(t, client, "GET")
+				ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+				stream := StreamPassthrough(ctx, passthroughTestHooks, nil, resp, resp.BodyStream(), PassthroughStreamParams{StatusCode: 200, StartTime: time.Now(), UseTerminalDetector: true})
+				done := make(chan struct{})
+				go func() {
+					for range stream {
+					}
+					close(done)
+				}()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					ctx.Cancel()
+					t.Fatal("cleanup waited for a parked upstream")
+				}
+				if ctx.Err() != nil {
+					t.Fatalf("semantic completion cancelled the request: %v", ctx.Err())
+				}
+				ctx.Cancel()
+				fasthttp.ReleaseRequest(req)
+			}
+			if got := srv.accepted.Load(); got != 2 {
+				t.Fatalf("connections accepted = %d, want incomplete connection abandoned", got)
+			}
+		})
+	}
+}
+
+func TestStreamBodySemanticCompletionRequiresHTTPFraming(t *testing.T) {
+	for _, tc := range []struct {
+		name, tail, remaining string
+		complete              bool
+	}{
+		{"complete", "0\r\n\r\n", "", true},
+		{"trailer", "0\r\nX-Done: yes\r\n\r\n", "", true},
+		{"missing-zero", "", "", false},
+		{"missing-trailer-end", "0\r\nX-Done: yes\r\n", "", false},
+		{"additional-payload", "5\r\nextra\r\n0\r\n\r\n", "extra", false},
+		{"malformed-header", "invalid\r\n", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, peer := net.Pipe()
+			defer conn.Close()
+			defer peer.Close()
+			response := &fasthttp.Response{}
+			response.Header.Set("Trailer", "X-Done")
+			br := bufio.NewReader(strings.NewReader("4\r\ndone\r\n" + tc.tail))
+			reader := &chunkedBody{chunked: httputil.NewChunkedReader(br), br: br, resp: response}
+			body := &streamBody{reader: reader, conn: conn}
+			payload := make([]byte, 4)
+			if n, err := body.Read(payload); n != 4 || string(payload) != "done" || (err != nil && tc.name != "malformed-header") {
+				t.Fatalf("initial read: %d, %q, %v", n, payload, err)
+			}
+			if got := body.finishSemanticCompletion(context.Background()); got != tc.complete {
+				t.Fatalf("complete = %v, want %v", got, tc.complete)
+			}
+			if body.fullyRead != tc.complete {
+				t.Fatalf("fullyRead = %v, want %v", body.fullyRead, tc.complete)
+			}
+			if tc.remaining != "" {
+				remaining, err := io.ReadAll(reader)
+				if err != nil || string(remaining) != tc.remaining {
+					t.Fatalf("probe consumed application data: remaining %q, error %v", remaining, err)
+				}
+			}
+		})
+	}
 }
 
 // TestContextTransport_ChunkedStreamReleasesConnForReuse verifies a chunked
