@@ -1770,7 +1770,6 @@ jobs:
           # getbifrost.ai / www.getbifrost.ai serve the pricing datasheet the
           # gateway must sync at boot; without them startup is fatal.
           allowed-endpoints: >
-            127.0.0.1
             getbifrost.ai:443
             github.com:443
             proxy.golang.org:443

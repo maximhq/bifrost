@@ -30,7 +30,6 @@ jobs:
             nodejs.org:443
             packages.microsoft.com:443
             proxy.golang.org:443
-            raw.githubusercontent.com:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             releases.astral.sh:443
@@ -106,7 +105,6 @@ jobs:
             nodejs.org:443
             packages.microsoft.com:443
             proxy.golang.org:443
-            raw.githubusercontent.com:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             releases.astral.sh:443
