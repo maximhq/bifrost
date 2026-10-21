@@ -326,7 +326,6 @@ jobs:
           # config.json, so auditing the seeded provider config does not reveal it.
           allowed-endpoints: >
             127.0.0.1:8080
-            7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             accounts.google.com:443
             aiplatform.googleapis.com:443
             api.anthropic.com:443
@@ -512,30 +511,24 @@ jobs:
             tmp/harness-attempts/
           retention-days: 30
 
-      # Publishes the provider harness's failure breakdown to R2 for the release
-      # notes. Note this is markdown, not HTML: the CI run is PARALLEL=1, and the
-      # htmlextra report is only produced in sequential mode, so there is no HTML
-      # report to publish here. newman-report.json is deliberately excluded - it
-      # routinely exceeds 500MB (see tests/e2e/api/runners/lib/read-report.mjs).
-      - name: Publish provider harness report
+      - name: Stage public provider report without publishing credentials
         if: ${{ !cancelled() }}
-        env:
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
-          chmod +x ./.github/workflows/scripts/configure-r2.sh ./.github/workflows/scripts/upload-test-reports-to-r2.sh
-          ./.github/workflows/scripts/configure-r2.sh || { echo "::warning::R2 not configured; skipping report publish"; exit 0; }
-          mkdir -p tmp/provider-harness-report
-          # index.html so the R2 key serves as a browsable page, matching the
-          # cli-harness reports the changelog links alongside it.
-          cp tmp/provider-harness-report.html tmp/provider-harness-report/index.html 2>/dev/null || true
-          cp tmp/harness-failures.md tmp/harness-token-parity.md tmp/provider-harness-report/ 2>/dev/null || true
-          ./.github/workflows/scripts/upload-test-reports-to-r2.sh \
-            "${{ needs.detect-changes.outputs.transport-version }}" \
-            "provider-harness" \
-            tmp/provider-harness-report
+          mkdir -p tmp/public-provider-report
+          for file in provider-harness-report.html harness-failures.md harness-token-parity.md; do
+            if [ -f "tmp/$file" ]; then cp "tmp/$file" tmp/public-provider-report/; fi
+          done
+          if [ -f tmp/public-provider-report/provider-harness-report.html ]; then
+            mv tmp/public-provider-report/provider-harness-report.html tmp/public-provider-report/index.html
+          fi
+      - name: Store public provider report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: public-report-provider-harness
+          path: tmp/public-provider-report/
+          if-no-files-found: ignore
+          retention-days: 7
 
   test-core-integrations:
     needs: [check-skip, detect-changes, build-gateway]
@@ -553,7 +546,6 @@ jobs:
           egress-policy: block
           allowed-endpoints: &test-core-egress >
             127.0.0.1:8080
-            7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             accounts.google.com:443
             aiplatform.googleapis.com:443
             api.anthropic.com:443
@@ -1055,7 +1047,6 @@ jobs:
           # host is already allowed for the npm installs.
           allowed-endpoints: >
             127.0.0.1:8080
-            7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -1206,23 +1197,14 @@ jobs:
             tmp/cli-harness-attempts/
           retention-days: 30
 
-      # Publishes the same report to R2 so the Mintlify release notes can link
-      # it. The artifact above needs a GitHub login and expires; R2 does not.
-      # Never fails the job - see the script's header.
-      - name: Publish CLI harness report
+      - name: Store public CLI report without publishing credentials
         if: ${{ !cancelled() }}
-        env:
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: |
-          chmod +x ./.github/workflows/scripts/configure-r2.sh ./.github/workflows/scripts/upload-test-reports-to-r2.sh
-          ./.github/workflows/scripts/configure-r2.sh || { echo "::warning::R2 not configured; skipping report publish"; exit 0; }
-          ./.github/workflows/scripts/upload-test-reports-to-r2.sh \
-            "${{ needs.detect-changes.outputs.transport-version }}" \
-            "cli-harness-${{ matrix.label }}" \
-            tests/e2e/clis/reports
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: public-report-cli-harness-${{ matrix.label }}
+          path: tests/e2e/clis/reports/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # vLLM provider tests - allocates two vLLM (one stable and one nightly) instances
   # on runpod (runpodctl):
@@ -4018,3 +4000,45 @@ jobs:
 
           payload="$(jq -n --arg content "$MESSAGE" '{content:$content}')"
           curl -sS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"
+  publish-test-reports:
+    needs: [detect-changes, test-core, test-cli-harness]
+    if: ${{ !cancelled() && vars.R2_REPORTS_ENABLED == 'true' && needs.detect-changes.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: oss-test-reports
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
+            api.github.com:443
+            github.com:443
+      - name: Checkout upload policy only
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Verify release source identity
+        run: bash .github/workflows/scripts/verify-release-source.sh
+      - name: Download reports as data
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: public-report-*
+          path: ${{ runner.temp }}/public-reports
+      - name: Publish using a reports-only bucket credential
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_REPORTS_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_REPORTS_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_REPORTS_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_REPORTS_BUCKET }}
+          VERSION: ${{ needs.detect-changes.outputs.transport-version }}
+        run: |
+          bash .github/workflows/scripts/configure-r2.sh
+          shopt -s nullglob
+          for directory in "$RUNNER_TEMP/public-reports/"public-report-*; do
+            label="${directory##*/public-report-}"
+            [[ "$label" =~ ^(provider-harness|cli-harness-[a-z0-9-]+)$ ]] || exit 1
+            bash .github/workflows/scripts/upload-test-reports-to-r2.sh "$VERSION" "$label" "$directory"
+          done
