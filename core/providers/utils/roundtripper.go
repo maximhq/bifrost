@@ -367,10 +367,11 @@ func (c *contentLengthBody) Read(p []byte) (int, error) {
 // response. net/http's chunked reader stops at the 0-length chunk and leaves the
 // trailer and its final CRLF in br; ResponseHeader.ReadTrailer reads exactly that.
 type chunkedBody struct {
-	chunked io.Reader
-	br      *bufio.Reader
-	resp    *fasthttp.Response
-	done    bool
+	chunked         io.Reader
+	br              *bufio.Reader
+	resp            *fasthttp.Response
+	done            bool
+	trailerComplete bool
 }
 
 func (c *chunkedBody) Read(p []byte) (int, error) {
@@ -378,8 +379,16 @@ func (c *chunkedBody) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	n, err := c.chunked.Read(p)
+	// Deliver the last application bytes before reading trailers. The trailer
+	// may arrive later; semantic completion must reach the bounded cleanup path
+	// rather than waiting here before the stream consumer sees those bytes.
+	if n > 0 && errors.Is(err, io.EOF) {
+		return n, nil
+	}
 	if errors.Is(err, io.EOF) {
-		if trailerErr := c.resp.Header.ReadTrailer(c.br); trailerErr != nil && !errors.Is(trailerErr, io.EOF) {
+		trailerErr := c.resp.Header.ReadTrailer(c.br)
+		c.trailerComplete = trailerErr == nil
+		if trailerErr != nil && !errors.Is(trailerErr, io.EOF) {
 			return n, trailerErr
 		}
 		c.done = true
@@ -430,6 +439,49 @@ func (s *streamBody) Read(p []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+// semanticCompletionTimeout bounds the wait for a terminating HTTP chunk and
+// trailers sent in a later TCP/TLS record than the semantic terminal event.
+// It applies only to framing, never additional application data or active streams.
+const semanticCompletionTimeout = 10 * time.Millisecond
+
+// finishSemanticCompletion confirms HTTP EOF without consuming any more
+// application bytes. It is called only by the cleanup owner after a semantic
+// terminal event; incomplete framing is never returned to the connection pool.
+func (s *streamBody) finishSemanticCompletion(ctx context.Context) bool {
+	if !s.readLock.TryLock() {
+		return false
+	}
+	defer s.readLock.Unlock()
+	if s.closed.Load() || ctx.Err() != nil {
+		return false
+	}
+	if s.fullyRead {
+		return true
+	}
+	switch body := s.reader.(type) {
+	case eofReader:
+		s.fullyRead = true
+		return true
+	case *contentLengthBody:
+		s.fullyRead = body.reader.N == 0
+		return s.fullyRead
+	case *chunkedBody:
+		// A zero-length read lets the existing chunk decoder consume only
+		// framing and trailers. If another data chunk follows, it returns nil
+		// without reading its payload, and the connection is abandoned.
+		if err := s.conn.SetReadDeadline(deadlineFor(semanticCompletionTimeout, ctx)); err != nil {
+			return false
+		}
+		_, err := body.Read(nil)
+		resetErr := s.conn.SetReadDeadline(time.Time{})
+		if err == io.EOF && body.done && body.trailerComplete && resetErr == nil && ctx.Err() == nil {
+			s.fullyRead = true
+			return true
+		}
+	}
+	return false
 }
 
 // CloseWithError implements fasthttp.ReadCloserWithError. A non-nil err, a read

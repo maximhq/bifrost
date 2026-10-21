@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1110,21 +1111,10 @@ func TestVertexVideoPollUsesOperationRegion(t *testing.T) {
 	}
 }
 
-// The /genai_passthrough router strips the API version with its prefix, so Vertex must build
-// the upstream URL from the version the client addressed: Interactions exists only under v1beta1.
-// Model calls keep the v1 they have always used.
-func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
-	var mu sync.Mutex
-	var paths []string
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		paths = append(paths, r.URL.Path)
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"i-1"}`))
-	}))
-	defer upstream.Close()
-
+func newVertexPassthroughFixture(t *testing.T, handler http.HandlerFunc) (*VertexProvider, schemas.Key) {
+	t.Helper()
+	upstream := httptest.NewTLSServer(handler)
+	t.Cleanup(upstream.Close)
 	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
 	config.CheckAndSetDefaults()
 	provider, err := NewVertexProvider(config, nil)
@@ -1141,6 +1131,22 @@ func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
 		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
 	}}
 	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+	return provider, key
+}
+
+// The /genai_passthrough router strips the API version with its prefix, so Vertex must build
+// the upstream URL from the version the client addressed: Interactions exists only under v1beta1.
+// Model calls keep the v1 they have always used.
+func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	provider, key := newVertexPassthroughFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"i-1"}`))
+	})
 	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		return result, err
 	}
@@ -1195,6 +1201,123 @@ func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
 		if want := []string{tc.want, tc.want}; !reflect.DeepEqual(got, want) {
 			t.Errorf("APIVersion %q %s: upstream paths %v, want %v (unary and stream)", tc.apiVersion, tc.path, got, want)
 		}
+	}
+}
+
+func TestVertexPassthroughStreamReusesCompletedTLSConnection(t *testing.T) {
+	const path = "/projects/proj/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent"
+	body := strings.Repeat("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}]}\n\n", 128) +
+		"data: {\"candidates\":[{\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":128,\"totalTokenCount\":133}}\n\n"
+	provider, key := newVertexPassthroughFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil || r.Header.Get("Authorization") != "Bearer test-token" {
+			w.WriteHeader(400)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, body)
+		w.(http.Flusher).Flush()
+		// The semantic event and HTTP terminator can arrive separately.
+		time.Sleep(time.Millisecond)
+	})
+	var dials atomic.Int32
+	dial := provider.streamingClient.Dial
+	provider.streamingClient.Dial = func(addr string) (net.Conn, error) { dials.Add(1); return dial(addr) }
+	defer provider.streamingClient.CloseIdleConnections()
+	for range 3 {
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		stream, err := provider.PassthroughStream(ctx, func(_ *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return response, err
+		}, nil, key,
+			&schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: path, Body: []byte(`{}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got strings.Builder
+		var usage *schemas.BifrostPassthroughUsage
+		for chunk := range stream {
+			if chunk.BifrostError != nil || chunk.BifrostPassthroughResponse == nil {
+				t.Fatalf("unexpected chunk: %+v", chunk)
+			}
+			got.Write(chunk.BifrostPassthroughResponse.Body)
+			if chunk.BifrostPassthroughResponse.PassthroughUsage != nil {
+				usage = chunk.BifrostPassthroughResponse.PassthroughUsage
+			}
+		}
+		if got.String() != body || usage == nil || usage.LLMUsage == nil || usage.LLMUsage.TotalTokens != 133 || ctx.Err() != nil {
+			t.Fatalf("bytes %d/%d, usage %v, context %v", got.Len(), len(body), usage, ctx.Err())
+		}
+		ctx.Cancel()
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("TLS dials = %d, want one reused connection", got)
+	}
+}
+
+func TestVertexPassthroughStreamTerminalLifecycle(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, body string
+	}{
+		{"gemini", "/projects/proj/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent",
+			"data: " + `{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"}}]}` + "\n\n" +
+				"data: " + `{"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"totalTokenCount":6}}` + "\n\n" +
+				"data: " + `{"candidates":[{"finishReason":"STOP"}]}` + "\n\n"},
+		{"anthropic", "/projects/proj/locations/global/publishers/anthropic/models/claude-sonnet-4-6:streamRawPredict",
+			"event: message_start\ndata: " + `{"type":"message_start","message":{"id":"msg-local","model":"claude-sonnet-4-6","role":"assistant","content":[],"usage":{"input_tokens":5,"output_tokens":0}}}` + "\n\n" +
+				"event: content_block_delta\ndata: " + `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}` + "\n\n" +
+				"event: message_delta\ndata: " + `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}` + "\n\n" +
+				"event: message_stop\ndata: " + `{"type":"message_stop"}` + "\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := make(chan struct{})
+			defer close(release)
+			provider, key := newVertexPassthroughFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1"+tc.path || r.Header.Get("Authorization") != "Bearer test-token" {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				if _, err := io.WriteString(w, tc.body); err != nil {
+					return
+				}
+				w.(http.Flusher).Flush()
+				<-release
+			})
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			defer ctx.Cancel()
+			stream, err := provider.PassthroughStream(ctx,
+				func(_ *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return response, err
+				},
+				nil, key, &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: tc.path, Body: []byte(`{}`)})
+			if err != nil {
+				t.Fatalf("PassthroughStream: %v", err)
+			}
+			var got strings.Builder
+			var usage *schemas.BifrostPassthroughUsage
+			timer := time.NewTimer(3 * time.Second)
+			defer timer.Stop()
+			for {
+				select {
+				case chunk, open := <-stream:
+					if !open {
+						if got.String() != tc.body || usage == nil || usage.LLMUsage == nil || usage.LLMUsage.TotalTokens != 6 || ctx.Err() != nil {
+							t.Fatalf("bytes %d/%d usage=%v context=%v", got.Len(), len(tc.body), usage, ctx.Err())
+						}
+						return
+					}
+					if chunk.BifrostError != nil || chunk.BifrostPassthroughResponse == nil || chunk.BifrostPassthroughResponse.StatusCode != 200 {
+						t.Fatalf("unexpected chunk: %+v", chunk)
+					}
+					response := chunk.BifrostPassthroughResponse
+					got.Write(response.Body)
+					if response.PassthroughUsage != nil {
+						usage = response.PassthroughUsage
+					}
+				case <-timer.C:
+					t.Fatal("Vertex stream did not complete before upstream EOF")
+				}
+			}
+		})
 	}
 }
 
