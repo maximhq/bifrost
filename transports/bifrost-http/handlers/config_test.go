@@ -534,39 +534,50 @@ func TestUpdateConfig_EnforceVKObjectOwnershipPresence(t *testing.T) {
 	}
 }
 
-// skip_access_profile_user_virtual_keys is copied only when sent, so a partial save from an API
-// client can't silently hand user key lifecycle back to access profiles.
-func TestUpdateConfig_SkipAccessProfileUserVirtualKeysPresence(t *testing.T) {
+// TestUpdateConfig_SkipAccessProfileUserVirtualKeyLifecyclePresence pins that each access-profile
+// user-key setting is copied only when sent, so a partial save from an API client can't silently hand
+// user key lifecycle back to access profiles, and that the two move independently.
+func TestUpdateConfig_SkipAccessProfileUserVirtualKeyLifecyclePresence(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
 	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
-	cfg.ClientConfig.SkipAccessProfileUserVirtualKeys = true
+	cfg.ClientConfig.SkipAccessProfileUserVirtualKeyCreation = true
+	cfg.ClientConfig.SkipAccessProfileUserVirtualKeyDeletion = true
 	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
 	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
-	stored := func() bool {
+	stored := func() (creation, deletion bool) {
 		t.Helper()
 		persisted, err := store.GetClientConfig(bgCtx())
 		require.NoError(t, err)
-		return persisted.SkipAccessProfileUserVirtualKeys
+		return persisted.SkipAccessProfileUserVirtualKeyCreation, persisted.SkipAccessProfileUserVirtualKeyDeletion
+	}
+	put := func(body string) {
+		t.Helper()
+		req := putConfigCtx(body)
+		h.updateConfig(req)
+		require.Equal(t, fasthttp.StatusOK, req.Response.StatusCode(), string(req.Response.Body()))
 	}
 
-	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
-	h.updateConfig(omitted)
-	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
-	assert.True(t, cfg.ClientConfig.SkipAccessProfileUserVirtualKeys, "an omitted field keeps the live value")
-	assert.True(t, stored(), "an omitted field keeps the stored value")
+	put(`{"client_config":{"log_retention_days":8}}`)
+	creation, deletion := stored()
+	assert.True(t, creation && deletion, "omitted fields keep the stored values")
+	assert.True(t, cfg.ClientConfig.SkipAccessProfileUserVirtualKeyCreation && cfg.ClientConfig.SkipAccessProfileUserVirtualKeyDeletion, "omitted fields keep the live values")
 
-	disabled := putConfigCtx(`{"client_config":{"log_retention_days":8,"skip_access_profile_user_virtual_keys":false}}`)
-	h.updateConfig(disabled)
-	require.Equal(t, fasthttp.StatusOK, disabled.Response.StatusCode(), string(disabled.Response.Body()))
-	assert.False(t, cfg.ClientConfig.SkipAccessProfileUserVirtualKeys)
-	assert.False(t, stored())
+	put(`{"client_config":{"log_retention_days":8,"skip_access_profile_user_virtual_key_creation":false}}`)
+	creation, deletion = stored()
+	assert.False(t, creation)
+	assert.True(t, deletion, "turning creation back on leaves deletion alone")
+	assert.False(t, cfg.ClientConfig.SkipAccessProfileUserVirtualKeyCreation)
 
-	enabled := putConfigCtx(`{"client_config":{"log_retention_days":8,"skip_access_profile_user_virtual_keys":true}}`)
-	h.updateConfig(enabled)
-	require.Equal(t, fasthttp.StatusOK, enabled.Response.StatusCode(), string(enabled.Response.Body()))
-	assert.True(t, cfg.ClientConfig.SkipAccessProfileUserVirtualKeys)
-	assert.True(t, stored())
+	put(`{"client_config":{"log_retention_days":8,"skip_access_profile_user_virtual_key_deletion":false}}`)
+	creation, deletion = stored()
+	assert.False(t, creation)
+	assert.False(t, deletion)
+	assert.False(t, cfg.ClientConfig.SkipAccessProfileUserVirtualKeyDeletion)
+
+	put(`{"client_config":{"log_retention_days":8,"skip_access_profile_user_virtual_key_creation":true,"skip_access_profile_user_virtual_key_deletion":true}}`)
+	creation, deletion = stored()
+	assert.True(t, creation && deletion)
 }
 
 // extra_fields_placement is copied only when sent, so a partial save keeps the stored value,

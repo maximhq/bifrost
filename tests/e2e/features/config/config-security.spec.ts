@@ -1,6 +1,6 @@
 import { coreConfigApi } from "../../core/actions/api";
 import { expect, test } from "../../core/fixtures/base.fixture";
-import { ConfigSettingsState } from "./pages/config-settings.page";
+import { ConfigSettingsPage, ConfigSettingsState } from "./pages/config-settings.page";
 import { DefaultCoreConfig } from "../../../../ui/lib/types/config";
 import { storageStatePath } from "../../plan";
 
@@ -324,32 +324,38 @@ test.describe("Security Settings", () => {
     ).toBe(!initial);
   });
 
-  test("should persist the access profile user virtual keys switch", async ({
-    configSettingsPage,
-    request,
-  }) => {
-    // Enterprise only; the generic afterEach restore puts the switch back.
-    await configSettingsPage.dismissOnboardingWidget();
-    const skip = configSettingsPage.skipAccessProfileUserVirtualKeysSwitch;
-    if (!(await skip.isVisible().catch(() => false))) {
-      test.skip(true, "Access profile user virtual keys switch not available");
-      return;
-    }
-    const initial = await configSettingsPage.getSwitchState(skip);
+  for (const { name, switchOf, field } of [
+    {
+      name: "creation",
+      switchOf: (p: ConfigSettingsPage) => p.skipAccessProfileUserVirtualKeyCreationSwitch,
+      field: "skip_access_profile_user_virtual_key_creation",
+    },
+    {
+      name: "deletion",
+      switchOf: (p: ConfigSettingsPage) => p.skipAccessProfileUserVirtualKeyDeletionSwitch,
+      field: "skip_access_profile_user_virtual_key_deletion",
+    },
+  ] as const) {
+    test(`should persist the access profile user virtual key ${name} switch`, async ({
+      configSettingsPage,
+      request,
+    }) => {
+      // Enterprise only; the generic afterEach restore puts the switch back.
+      await configSettingsPage.dismissOnboardingWidget();
+      const skip = switchOf(configSettingsPage);
+      if (!(await skip.isVisible().catch(() => false))) {
+        test.skip(true, `Access profile user virtual key ${name} switch not available`);
+        return;
+      }
+      const initial = await configSettingsPage.getSwitchState(skip);
 
-    await skip.click();
-    await configSettingsPage.saveSettings();
-    await configSettingsPage.goto("security");
-    expect(
-      await configSettingsPage.getSwitchState(
-        configSettingsPage.skipAccessProfileUserVirtualKeysSwitch,
-      ),
-    ).toBe(!initial);
-    expect(
-      (await coreConfigApi.get(request)).client_config
-        .skip_access_profile_user_virtual_keys ?? false,
-    ).toBe(!initial);
-  });
+      await skip.click();
+      await configSettingsPage.saveSettings();
+      await configSettingsPage.goto("security");
+      expect(await configSettingsPage.getSwitchState(switchOf(configSettingsPage))).toBe(!initial);
+      expect((await coreConfigApi.get(request)).client_config[field] ?? false).toBe(!initial);
+    });
+  }
 
   test("should display required headers textarea", async ({
     configSettingsPage,

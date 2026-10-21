@@ -2712,7 +2712,10 @@ func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
 	assert.NotEqual(t, onHash, offHash)
 }
 
-func TestUpdateClientConfig_SkipAccessProfileUserVirtualKeysRoundTrip(t *testing.T) {
+// TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip pins that the two
+// access-profile user-key settings persist independently, and that only an opt-in is hashed so a
+// config written before the fields existed keeps its hash.
+func TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
 
@@ -2720,21 +2723,34 @@ func TestUpdateClientConfig_SkipAccessProfileUserVirtualKeysRoundTrip(t *testing
 	require.NoError(t, store.UpdateClientConfig(ctx, &off))
 	result, err := store.GetClientConfig(ctx)
 	require.NoError(t, err)
-	assert.False(t, result.SkipAccessProfileUserVirtualKeys)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyCreation)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyDeletion)
 
-	on := off
-	on.SkipAccessProfileUserVirtualKeys = true
-	require.NoError(t, store.UpdateClientConfig(ctx, &on))
+	creationOnly := off
+	creationOnly.SkipAccessProfileUserVirtualKeyCreation = true
+	require.NoError(t, store.UpdateClientConfig(ctx, &creationOnly))
 	result, err = store.GetClientConfig(ctx)
 	require.NoError(t, err)
-	assert.True(t, result.SkipAccessProfileUserVirtualKeys)
+	assert.True(t, result.SkipAccessProfileUserVirtualKeyCreation)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyDeletion, "the settings are independent")
 
-	// Only the opt-in is hashed, so configs written before the field existed keep their hash.
+	deletionOnly := off
+	deletionOnly.SkipAccessProfileUserVirtualKeyDeletion = true
+	require.NoError(t, store.UpdateClientConfig(ctx, &deletionOnly))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyCreation, "the settings are independent")
+	assert.True(t, result.SkipAccessProfileUserVirtualKeyDeletion)
+
 	offHash, err := off.GenerateClientConfigHash()
 	require.NoError(t, err)
-	onHash, err := on.GenerateClientConfigHash()
+	creationHash, err := creationOnly.GenerateClientConfigHash()
 	require.NoError(t, err)
-	assert.NotEqual(t, offHash, onHash)
+	deletionHash, err := deletionOnly.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, offHash, creationHash)
+	assert.NotEqual(t, offHash, deletionHash)
+	assert.NotEqual(t, creationHash, deletionHash)
 }
 
 func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {

@@ -860,8 +860,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.EnforceVKObjectOwnership = payload.ClientConfig.EnforceVKObjectOwnership
 	}
 	// Copied only when sent, so a partial save doesn't silently hand key lifecycle back to access profiles.
-	if _, present := clientConfigFields["skip_access_profile_user_virtual_keys"]; present {
-		updatedConfig.SkipAccessProfileUserVirtualKeys = payload.ClientConfig.SkipAccessProfileUserVirtualKeys
+	if _, present := clientConfigFields["skip_access_profile_user_virtual_key_creation"]; present {
+		updatedConfig.SkipAccessProfileUserVirtualKeyCreation = payload.ClientConfig.SkipAccessProfileUserVirtualKeyCreation
+	}
+	if _, present := clientConfigFields["skip_access_profile_user_virtual_key_deletion"]; present {
+		updatedConfig.SkipAccessProfileUserVirtualKeyDeletion = payload.ClientConfig.SkipAccessProfileUserVirtualKeyDeletion
 	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally

@@ -148,9 +148,14 @@ export default function SecurityView() {
 		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
 		const enforceVKObjectOwnershipChanged =
 			(localConfig.enforce_vk_object_ownership ?? true) !== (config.enforce_vk_object_ownership ?? true);
-		const skipAccessProfileUserVirtualKeysChanged =
+		const skipAccessProfileUserVirtualKeyCreationChanged =
 			IS_ENTERPRISE &&
-			(localConfig.skip_access_profile_user_virtual_keys ?? false) !== (config.skip_access_profile_user_virtual_keys ?? false);
+			(localConfig.skip_access_profile_user_virtual_key_creation ?? false) !==
+				(config.skip_access_profile_user_virtual_key_creation ?? false);
+		const skipAccessProfileUserVirtualKeyDeletionChanged =
+			IS_ENTERPRISE &&
+			(localConfig.skip_access_profile_user_virtual_key_deletion ?? false) !==
+				(config.skip_access_profile_user_virtual_key_deletion ?? false);
 		const dualCredentialConflictBehaviorChanged =
 			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
 		const vkRotationCooldownChanged = formatCooldown(localConfig.vk_rotation_cooldown) !== formatCooldown(config.vk_rotation_cooldown);
@@ -165,7 +170,8 @@ export default function SecurityView() {
 			allowDirectKeysChanged ||
 			deleteExpiredVirtualKeysChanged ||
 			enforceVKObjectOwnershipChanged ||
-			skipAccessProfileUserVirtualKeysChanged ||
+			skipAccessProfileUserVirtualKeyCreationChanged ||
+			skipAccessProfileUserVirtualKeyDeletionChanged ||
 			dualCredentialConflictBehaviorChanged ||
 			vkRotationCooldownChanged
 		);
@@ -668,24 +674,42 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("enforce_vk_object_ownership", checked)}
 					/>
 				</div>
-				{/* Access Profiles Don't Manage User Virtual Keys */}
+				{/* Access profiles creating and deleting users' virtual keys, each switched separately */}
 				{IS_ENTERPRISE && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="skip-access-profile-user-virtual-keys" className="text-sm font-medium">
+							<label htmlFor="skip-access-profile-user-virtual-key-creation" className="text-sm font-medium">
 								Don&apos;t Create User Virtual Keys for Access Profiles
 							</label>
 							<p className="text-muted-foreground text-sm">
-								When enabled, assigning an access profile to a user doesn&apos;t create a virtual key for them, and removing their last
-								access profile doesn&apos;t delete their virtual keys. Keys the user already owns are still governed by the profile while
-								they hold one. Deleting the user still deletes their keys.
+								When enabled, a user&apos;s first access profile doesn&apos;t create a virtual key for them. Keys the user already owns, or
+								that you add for them, are still governed by the profile while they hold one.
 							</p>
 						</div>
 						<Switch
-							id="skip-access-profile-user-virtual-keys"
-							data-testid="security-skip-access-profile-user-virtual-keys-switch"
-							checked={localConfig.skip_access_profile_user_virtual_keys ?? false}
-							onCheckedChange={(checked) => handleConfigChange("skip_access_profile_user_virtual_keys", checked)}
+							id="skip-access-profile-user-virtual-key-creation"
+							data-testid="security-skip-access-profile-user-virtual-key-creation-switch"
+							checked={localConfig.skip_access_profile_user_virtual_key_creation ?? false}
+							onCheckedChange={(checked) => handleConfigChange("skip_access_profile_user_virtual_key_creation", checked)}
+						/>
+					</div>
+				)}
+				{IS_ENTERPRISE && (
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="skip-access-profile-user-virtual-key-deletion" className="text-sm font-medium">
+								Don&apos;t Delete User Virtual Keys When Access Profiles Are Removed
+							</label>
+							<p className="text-muted-foreground text-sm">
+								When enabled, removing a user&apos;s last access profile keeps their virtual keys as ordinary keys, with none of the
+								profile&apos;s providers or access. Deleting the user still deletes their keys.
+							</p>
+						</div>
+						<Switch
+							id="skip-access-profile-user-virtual-key-deletion"
+							data-testid="security-skip-access-profile-user-virtual-key-deletion-switch"
+							checked={localConfig.skip_access_profile_user_virtual_key_deletion ?? false}
+							onCheckedChange={(checked) => handleConfigChange("skip_access_profile_user_virtual_key_deletion", checked)}
 						/>
 					</div>
 				)}
