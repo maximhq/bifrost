@@ -93,6 +93,7 @@ type Operation struct {
 	HasSecurity bool                  // op declared its own security (even if empty)
 	Servers     []string              // op/path-level server override
 	Unsupported string                // non-empty: reason the operation cannot become a tool
+	Extensions  map[string]any        // the operation object's x-* keys, as decoded
 }
 
 // Parameter is one path/query/header/cookie/querystring parameter.

@@ -147,7 +147,7 @@ func LoadURL(ctx context.Context, client *http.Client, specURL string, maxBytes 
 	if specURL == "" {
 		return nil, "", errors.New("spec_url is empty")
 	}
-	if !strings.HasPrefix(specURL, "http://") && !strings.HasPrefix(specURL, "https://") {
+	if lower := strings.ToLower(specURL); !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
 		return nil, "", fmt.Errorf("%w: %q must be an http(s) URL", ErrSpecURLInvalid, specURL)
 	}
 	if _, err := url.ParseRequestURI(specURL); err != nil {

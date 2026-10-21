@@ -209,3 +209,16 @@ func TestSpecFetchTimeout(t *testing.T) {
 	assert.Equal(t, 30*time.Second, SpecFetchTimeout(33<<20))
 	assert.Equal(t, 2*time.Minute, SpecFetchTimeout(256<<20))
 }
+
+// A spec_url is fetched whatever the case of its scheme.
+func TestLoadURL_UppercaseScheme(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(fixture(t, "petstore-3.1.json"))
+	}))
+	t.Cleanup(srv.Close)
+	for _, scheme := range []string{"HTTP://", "Http://"} {
+		data, _, err := LoadURL(context.Background(), srv.Client(), scheme+strings.TrimPrefix(srv.URL, "http://")+"/openapi.json", 0)
+		require.NoError(t, err, scheme)
+		require.NotEmpty(t, data)
+	}
+}
