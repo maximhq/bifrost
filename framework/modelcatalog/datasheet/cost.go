@@ -47,6 +47,9 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 	} else {
 		requestCost = s.calculateBaseCost(result, lookupScopes)
 	}
+	// Advisor sub-inferences run on a different model than the request's and are billed by the provider
+	// at that model's rate; the usage the base cost reads mirrors the executor passes only.
+	requestCost = requestCost.Add(s.calculateAdvisorIterationCost(result, lookupScopes))
 	if extraFields == nil {
 		return requestCost
 	}
@@ -481,6 +484,64 @@ func computeContainerCreationCost(pricing *configstoreTables.TableModelPricing) 
 	// Container creation is a flat per-session cost, not a token cost, so it folds
 	// onto the input side as a flat request cost.
 	return totalOnlyCost(*pricing.CodeInterpreterCostPerSession)
+}
+
+// advisorIterationType is the usage.iterations[] type of an Anthropic advisor sub-inference. The provider bills
+// these at the advisor model's rates and reports them only in the iterations array.
+const advisorIterationType = "advisor_message"
+
+// advisorIterations returns the advisor_message entries of the response's per-pass usage breakdown.
+func advisorIterations(result *schemas.BifrostResponse) []schemas.ResponsesResponseUsage {
+	var iterations []schemas.ResponsesResponseUsage
+	switch {
+	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+		iterations = result.ResponsesResponse.Usage.Iterations
+	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
+		iterations = result.ResponsesStreamResponse.Response.Usage.Iterations
+	case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil:
+		iterations = result.PassthroughResponse.PassthroughUsage.Iterations
+	}
+	var out []schemas.ResponsesResponseUsage
+	for _, it := range iterations {
+		if it.Type != nil && *it.Type == advisorIterationType {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// calculateAdvisorIterationCost prices every advisor sub-inference at the model that ran it. A model with no
+// pricing row is priced at the request's own model rather than for free.
+func (s *Store) calculateAdvisorIterationCost(result *schemas.BifrostResponse, scopes LookupScopes) *schemas.BifrostCost {
+	iterations := advisorIterations(result)
+	if len(iterations) == 0 {
+		return nil
+	}
+	extraFields := result.GetExtraFields()
+	if extraFields == nil {
+		return nil
+	}
+	routingInfo := extraFields.RoutingInfo
+	if routingInfo.Provider == "" && routingInfo.Model == "" {
+		routingInfo.Provider = extraFields.Provider
+		routingInfo.Model = extraFields.OriginalModelRequested
+	}
+	var total *schemas.BifrostCost
+	for i := range iterations {
+		it := iterations[i]
+		input := costInput{usage: responsesUsageToBifrostUsage(&it)}
+		input.usage.Cost = nil // the iteration is priced from tokens, never from a provider-reported total
+		info := routingInfo
+		if it.Model != nil && *it.Model != "" {
+			info = schemas.RoutingInfo{Provider: routingInfo.Provider, Model: *it.Model}
+		}
+		cost := s.computeCostFromInput(input, info, schemas.ResponsesRequest, scopes)
+		if cost == nil && info.Model != routingInfo.Model {
+			cost = s.computeCostFromInput(input, routingInfo, schemas.ResponsesRequest, scopes)
+		}
+		total = total.Add(cost)
+	}
+	return total
 }
 
 // calculateBaseCost extracts usage from the response and routes to the appropriate compute function.

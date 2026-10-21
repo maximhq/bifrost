@@ -94,6 +94,51 @@ func TestExtractAnthropicPassthroughUsage(t *testing.T) {
 	}
 }
 
+func TestPassthroughPreservesAdvisorIterations(t *testing.T) {
+	const usage = `{"input_tokens":1000,"output_tokens":500,"iterations":[{"type":"message","input_tokens":1000,"output_tokens":500},{"type":"advisor_message","model":"claude-opus-4-6","input_tokens":2000,"output_tokens":1000,"cache_read_input_tokens":100}]}`
+	check := func(t *testing.T, u *schemas.BifrostPassthroughUsage) {
+		t.Helper()
+		anthropicMustLLM(t, u, 1000, 500, 1500)
+		if len(u.Iterations) != 2 {
+			t.Fatalf("iterations = %d, want 2", len(u.Iterations))
+		}
+		advisor := u.Iterations[1]
+		if advisor.Type == nil || *advisor.Type != "advisor_message" || advisor.Model == nil || *advisor.Model != "claude-opus-4-6" {
+			t.Fatalf("advisor identity lost: %+v", advisor)
+		}
+		if advisor.InputTokens != 2100 || advisor.OutputTokens != 1000 || advisor.InputTokensDetails == nil || advisor.InputTokensDetails.CachedReadTokens != 100 {
+			t.Fatalf("advisor token breakdown lost: %+v", advisor)
+		}
+	}
+	t.Run("unary", func(t *testing.T) {
+		check(t, anthropic.ExtractAnthropicPassthroughUsage("/v1/messages", nil, []byte(`{"usage":`+usage+`}`)))
+	})
+	t.Run("stream retains latest cumulative breakdown through message_stop", func(t *testing.T) {
+		acc := &anthropic.AnthropicPassthroughStreamUsage{}
+		acc.ObserveEvent([]byte(`{"type":"message_start","message":{"usage":{"input_tokens":1000,"output_tokens":1}}}`))
+		event := []byte(`{"type":"message_delta","usage":` + usage + `}`)
+		check(t, acc.ObserveEvent(event))
+		check(t, acc.ObserveEvent(event))
+		check(t, acc.ObserveEvent([]byte(`{"type":"message_stop"}`)))
+	})
+}
+
+func BenchmarkExtractAnthropicPassthroughAdvisorUsage(b *testing.B) {
+	for _, tc := range []struct{ name, body string }{
+		{"no_advisor", `{"usage":{"input_tokens":1000,"output_tokens":500}}`},
+		{"advisor", `{"usage":{"input_tokens":1000,"output_tokens":500,"iterations":[{"type":"message","input_tokens":1000,"output_tokens":500},{"type":"advisor_message","model":"claude-opus-4-6","input_tokens":2000,"output_tokens":1000}]}}`},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			body := []byte(tc.body)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				anthropic.ExtractAnthropicPassthroughUsage("/v1/messages", nil, body)
+			}
+		})
+	}
+}
+
 // TestAnthropicPassthroughStreamUsage exercises the per-event max-merge accumulator used for
 // streaming /messages: input/cache/tier come from message_start, final output from message_delta.
 func TestAnthropicPassthroughStreamUsage(t *testing.T) {

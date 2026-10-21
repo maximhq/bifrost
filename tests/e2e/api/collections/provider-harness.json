@@ -276763,6 +276763,374 @@
           }
         }
       ]
+    },
+    {
+      "name": "263. Anthropic advisor admission enforces model allowlists",
+      "description": "Each case creates a temporary virtual key allowing only Haiku, names Opus in an advisor tool, requires a gateway policy_model_blocked 403, then deletes its key. Covers native Messages and neutral Responses, both ordinary and streaming. The pre-fix gateway forwards these requests; the patched gateway rejects them before provider execution. Per-model token billing and the no-advisor controls are covered by Go regressions. No account credentials are stored in this collection.",
+      "item": [
+        {
+          "name": "263.1 Anthropic haiku advisor admission /v1/responses [EXPECT-403]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.unset('advisorAdmissionVK');",
+                  "pm.variables.unset('advisorAdmissionVKID');",
+                  "pm.sendRequest({",
+                  "  url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys',",
+                  "  method: 'POST',",
+                  "  header: {'Content-Type': 'application/json'},",
+                  "  body: {mode: 'raw', raw: JSON.stringify({",
+                  "    name: 'harness-advisor-admission-' + Date.now() + '-' + Math.floor(Math.random() * 1000000),",
+                  "    provider_configs: [{provider: 'anthropic', weight: 1, allowed_models: ['claude-haiku-4-5-20251001']}]",
+                  "  })}",
+                  "}, function (err, res) {",
+                  "  pm.test('setup creates a restricted virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.not.exist;",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "  });",
+                  "  if (err || !res || res.code !== 200) { return; }",
+                  "  var vk = res.json().virtual_key || {};",
+                  "  var value = vk.value && typeof vk.value === 'object' ? vk.value.value : vk.value;",
+                  "  pm.test('setup returns key value and id', function () {",
+                  "    pm.expect(value, res.text()).to.be.a('string').and.not.empty;",
+                  "    pm.expect(vk.id, res.text()).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "  pm.variables.set('advisorAdmissionVK', value);",
+                  "  pm.variables.set('advisorAdmissionVKID', vk.id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor model outside the virtual key allowlist is rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(403);",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('policy_model_blocked');",
+                  "});",
+                  "var keyID = pm.variables.get('advisorAdmissionVKID');",
+                  "if (keyID) {",
+                  "  pm.sendRequest({url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + keyID, method: 'DELETE'}, function (err, res) {",
+                  "    pm.test('cleanup removes this test virtual key', function () {",
+                  "      pm.expect(err, String(err)).to.not.exist;",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{advisorAdmissionVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-20251001\",\n  \"tools\": [\n    {\n      \"type\": \"advisor\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-6\",\n      \"max_uses\": 1,\n      \"max_tokens\": 1024\n    }\n  ],\n  \"stream\": false,\n  \"input\": \"Reply with ok.\",\n  \"max_output_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "263.2 Anthropic haiku advisor admission /v1/responses streaming [EXPECT-403]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.unset('advisorAdmissionVK');",
+                  "pm.variables.unset('advisorAdmissionVKID');",
+                  "pm.sendRequest({",
+                  "  url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys',",
+                  "  method: 'POST',",
+                  "  header: {'Content-Type': 'application/json'},",
+                  "  body: {mode: 'raw', raw: JSON.stringify({",
+                  "    name: 'harness-advisor-admission-' + Date.now() + '-' + Math.floor(Math.random() * 1000000),",
+                  "    provider_configs: [{provider: 'anthropic', weight: 1, allowed_models: ['claude-haiku-4-5-20251001']}]",
+                  "  })}",
+                  "}, function (err, res) {",
+                  "  pm.test('setup creates a restricted virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.not.exist;",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "  });",
+                  "  if (err || !res || res.code !== 200) { return; }",
+                  "  var vk = res.json().virtual_key || {};",
+                  "  var value = vk.value && typeof vk.value === 'object' ? vk.value.value : vk.value;",
+                  "  pm.test('setup returns key value and id', function () {",
+                  "    pm.expect(value, res.text()).to.be.a('string').and.not.empty;",
+                  "    pm.expect(vk.id, res.text()).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "  pm.variables.set('advisorAdmissionVK', value);",
+                  "  pm.variables.set('advisorAdmissionVKID', vk.id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor model outside the virtual key allowlist is rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(403);",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('policy_model_blocked');",
+                  "});",
+                  "var keyID = pm.variables.get('advisorAdmissionVKID');",
+                  "if (keyID) {",
+                  "  pm.sendRequest({url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + keyID, method: 'DELETE'}, function (err, res) {",
+                  "    pm.test('cleanup removes this test virtual key', function () {",
+                  "      pm.expect(err, String(err)).to.not.exist;",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{advisorAdmissionVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-20251001\",\n  \"tools\": [\n    {\n      \"type\": \"advisor\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-6\",\n      \"max_uses\": 1,\n      \"max_tokens\": 1024\n    }\n  ],\n  \"stream\": true,\n  \"input\": \"Reply with ok.\",\n  \"max_output_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "263.3 Anthropic haiku advisor admission /anthropic/v1/messages [EXPECT-403]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.unset('advisorAdmissionVK');",
+                  "pm.variables.unset('advisorAdmissionVKID');",
+                  "pm.sendRequest({",
+                  "  url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys',",
+                  "  method: 'POST',",
+                  "  header: {'Content-Type': 'application/json'},",
+                  "  body: {mode: 'raw', raw: JSON.stringify({",
+                  "    name: 'harness-advisor-admission-' + Date.now() + '-' + Math.floor(Math.random() * 1000000),",
+                  "    provider_configs: [{provider: 'anthropic', weight: 1, allowed_models: ['claude-haiku-4-5-20251001']}]",
+                  "  })}",
+                  "}, function (err, res) {",
+                  "  pm.test('setup creates a restricted virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.not.exist;",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "  });",
+                  "  if (err || !res || res.code !== 200) { return; }",
+                  "  var vk = res.json().virtual_key || {};",
+                  "  var value = vk.value && typeof vk.value === 'object' ? vk.value.value : vk.value;",
+                  "  pm.test('setup returns key value and id', function () {",
+                  "    pm.expect(value, res.text()).to.be.a('string').and.not.empty;",
+                  "    pm.expect(vk.id, res.text()).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "  pm.variables.set('advisorAdmissionVK', value);",
+                  "  pm.variables.set('advisorAdmissionVKID', vk.id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor model outside the virtual key allowlist is rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(403);",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('policy_model_blocked');",
+                  "});",
+                  "var keyID = pm.variables.get('advisorAdmissionVKID');",
+                  "if (keyID) {",
+                  "  pm.sendRequest({url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + keyID, method: 'DELETE'}, function (err, res) {",
+                  "    pm.test('cleanup removes this test virtual key', function () {",
+                  "      pm.expect(err, String(err)).to.not.exist;",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{advisorAdmissionVK}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-6\",\n      \"max_uses\": 1,\n      \"max_tokens\": 1024\n    }\n  ],\n  \"stream\": false,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with ok.\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "263.4 Anthropic haiku advisor admission /anthropic/v1/messages streaming [EXPECT-403]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.unset('advisorAdmissionVK');",
+                  "pm.variables.unset('advisorAdmissionVKID');",
+                  "pm.sendRequest({",
+                  "  url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys',",
+                  "  method: 'POST',",
+                  "  header: {'Content-Type': 'application/json'},",
+                  "  body: {mode: 'raw', raw: JSON.stringify({",
+                  "    name: 'harness-advisor-admission-' + Date.now() + '-' + Math.floor(Math.random() * 1000000),",
+                  "    provider_configs: [{provider: 'anthropic', weight: 1, allowed_models: ['claude-haiku-4-5-20251001']}]",
+                  "  })}",
+                  "}, function (err, res) {",
+                  "  pm.test('setup creates a restricted virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.not.exist;",
+                  "    pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "  });",
+                  "  if (err || !res || res.code !== 200) { return; }",
+                  "  var vk = res.json().virtual_key || {};",
+                  "  var value = vk.value && typeof vk.value === 'object' ? vk.value.value : vk.value;",
+                  "  pm.test('setup returns key value and id', function () {",
+                  "    pm.expect(value, res.text()).to.be.a('string').and.not.empty;",
+                  "    pm.expect(vk.id, res.text()).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "  pm.variables.set('advisorAdmissionVK', value);",
+                  "  pm.variables.set('advisorAdmissionVKID', vk.id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('advisor model outside the virtual key allowlist is rejected', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(403);",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('policy_model_blocked');",
+                  "});",
+                  "var keyID = pm.variables.get('advisorAdmissionVKID');",
+                  "if (keyID) {",
+                  "  pm.sendRequest({url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + keyID, method: 'DELETE'}, function (err, res) {",
+                  "    pm.test('cleanup removes this test virtual key', function () {",
+                  "      pm.expect(err, String(err)).to.not.exist;",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{advisorAdmissionVK}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-6\",\n      \"max_uses\": 1,\n      \"max_tokens\": 1024\n    }\n  ],\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with ok.\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

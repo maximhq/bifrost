@@ -55,11 +55,26 @@ func ExtractAnthropicMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage
 	return extractAnthropicMessagesUsage(body)
 }
 
+// convertAnthropicIterations converts usage.iterations[] to the neutral per-pass form that pricing reads.
+func convertAnthropicIterations(its []AnthropicUsage) []schemas.ResponsesResponseUsage {
+	if len(its) == 0 {
+		return nil
+	}
+	out := make([]schemas.ResponsesResponseUsage, 0, len(its))
+	for i := range its {
+		if converted := ConvertAnthropicUsageToBifrostUsage(&its[i]); converted != nil {
+			out = append(out, *converted)
+		}
+	}
+	return out
+}
+
 // buildAnthropicPassthroughUsage converts AnthropicUsage directly into BifrostPassthroughUsage.
 func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthroughUsage {
 	if au == nil {
 		return nil
 	}
+	iterations := convertAnthropicIterations(au.Iterations)
 	au = billableAnthropicUsage(au)
 	totalInput := au.InputTokens + au.CacheReadInputTokens + au.CacheCreationInputTokens
 	total := totalInput + au.OutputTokens
@@ -104,7 +119,7 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		usage.CompletionTokensDetails.ReasoningTokens = au.OutputTokensDetails.ThinkingTokens
 	}
 
-	u := &schemas.BifrostPassthroughUsage{LLMUsage: usage}
+	u := &schemas.BifrostPassthroughUsage{LLMUsage: usage, Iterations: iterations}
 	if au.ServiceTier != nil {
 		t := MapAnthropicServiceTierToBifrost(*au.ServiceTier)
 		u.ServiceTier = &t
@@ -126,6 +141,8 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 type AnthropicPassthroughStreamUsage struct {
 	combined AnthropicUsage
 	seen     bool
+	// iterations is the latest usage.iterations[] seen, as sent (billableAnthropicUsage drops it from combined).
+	iterations []AnthropicUsage
 }
 
 // ObserveEvent merges one framed SSE data payload's usage into the running total and returns
@@ -146,6 +163,9 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 		return a.usage()
 	}
 
+	if len(u.Iterations) > 0 {
+		a.iterations = u.Iterations
+	}
 	u = billableAnthropicUsage(u)
 
 	a.seen = true
@@ -200,7 +220,11 @@ func (a *AnthropicPassthroughStreamUsage) usage() *schemas.BifrostPassthroughUsa
 	if !a.seen {
 		return nil
 	}
-	return buildAnthropicPassthroughUsage(&a.combined)
+	u := buildAnthropicPassthroughUsage(&a.combined)
+	if u != nil {
+		u.Iterations = convertAnthropicIterations(a.iterations)
+	}
+	return u
 }
 
 // extractAnthropicMessagesUsage parses usage from a /v1/messages response body. Streaming usage

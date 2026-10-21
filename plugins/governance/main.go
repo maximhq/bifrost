@@ -1195,9 +1195,20 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	// limits each body model settles are kept: usage is charged against the request's own pass,
 	// so a body model's limit that pass does not settle would be checked and never charged.
 	var bodyModelLimits map[string]string // limit id -> the body model that settled it
-	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
-		bodyModels := passthroughBodyModels(req)
-		evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
+	// A server-side advisor tool names a second model that the provider runs on the key's behalf and bills
+	// at its own rate. It is evaluated like any other model the request will run.
+	advisorModels := advisorToolModels(req)
+	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest || len(advisorModels) > 0 {
+		var bodyModels []string
+		if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
+			bodyModels = passthroughBodyModels(req)
+			evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
+		}
+		for _, advisorModel := range advisorModels {
+			if !slices.Contains(bodyModels, advisorModel) {
+				bodyModels = append(bodyModels, advisorModel)
+			}
+		}
 		resourceNamed := p.namesModelsAsResources(provider)
 		for _, bodyModel := range bodyModels {
 			if resourceNamed {
@@ -1294,6 +1305,33 @@ func refuseUnchargedBodyModelLimits(ctx *schemas.BifrostContext, bodyModelLimits
 		Error: &schemas.ErrorField{Message: fmt.Sprintf("the request body names models with budgets or rate limits of their own (%s) that one request cannot be charged against; send one model per request",
 			strings.Join(models, ", "))},
 	}}
+}
+
+// advisorToolModels returns the distinct advisor-tool models a request names: the "model" of each
+// advisor_* tool of a Responses request, or of a passthrough body's tools array.
+func advisorToolModels(req *schemas.BifrostRequest) []string {
+	var models []string
+	add := func(m string) {
+		if m = strings.TrimSpace(m); m != "" && !slices.Contains(models, m) {
+			models = append(models, m)
+		}
+	}
+	if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
+		for _, tool := range req.ResponsesRequest.Params.Tools {
+			if tool.ResponsesToolAdvisor != nil {
+				add(tool.ResponsesToolAdvisor.Model)
+			}
+		}
+	}
+	if req.PassthroughRequest != nil && len(req.PassthroughRequest.Body) > 0 && gjson.ValidBytes(req.PassthroughRequest.Body) {
+		gjson.GetBytes(req.PassthroughRequest.Body, "tools").ForEach(func(_, tool gjson.Result) bool {
+			if strings.HasPrefix(tool.Get("type").Str, "advisor") {
+				add(tool.Get("model").Str)
+			}
+			return true
+		})
+	}
+	return models
 }
 
 // passthroughBodyModels returns every distinct model a passthrough body names: the "model" of a
