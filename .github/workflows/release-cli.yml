@@ -81,34 +81,154 @@ jobs:
         working-directory: cli
         run: go test ./...
 
-  release-cli:
+  build-cli:
     needs: [check-version, test-cli]
     if: needs.check-version.outputs.tag_exists == 'false'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+      - name: Checkout approved source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Verify release source identity
+        run: bash .github/workflows/scripts/verify-release-source.sh
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - name: Build the final binaries without publishing authority
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          bash .github/workflows/scripts/build-cli-executables.sh "$VERSION"
+          bash .github/workflows/scripts/run-security-tool.sh releaseartifacts create dist cli "$VERSION" "$GITHUB_SHA"
+      - name: Store the complete release inventory
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cli-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  verify-cli:
+    needs: [check-version, build-cli]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+      - name: Checkout approved source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Verify release source identity
+        run: bash .github/workflows/scripts/verify-release-source.sh
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - name: Build the final binaries without publishing authority
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          bash .github/workflows/scripts/build-cli-executables.sh "$VERSION"
+          bash .github/workflows/scripts/run-security-tool.sh releaseartifacts create dist cli "$VERSION" "$GITHUB_SHA"
+      - name: Retrieve original build as data
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: cli-${{ github.sha }}
+          path: candidate
+      - name: Compare independent rebuild and smoke test the original binary
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          bash .github/workflows/scripts/run-security-tool.sh releaseartifacts verify candidate cli "$VERSION" "$GITHUB_SHA"
+          diff -r dist candidate
+          chmod +x candidate/linux/amd64/bifrost
+          timeout 15 candidate/linux/amd64/bifrost version
+
+  release-cli:
+    needs: [check-version, verify-cli]
+    if: needs.check-version.outputs.tag_exists == 'false'
+    environment: oss-native-release
+    runs-on: ubuntu-latest
+    permissions:
       contents: write
+      id-token: write
+      attestations: write
     outputs:
       success: ${{ steps.release.outputs.success }}
     steps:
-      - name: Harden the runner (Audit all outbound calls)
+      - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
+            github.com:443
+            go.dev:443
+            dl.google.com:443
+            storage.googleapis.com:443
+            release-assets.githubusercontent.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN }}
+          persist-credentials: false
 
       - name: Verify release source identity
         run: bash .github/workflows/scripts/verify-release-source.sh
 
-      - name: Set up Go
+      - name: Download the verified final binaries
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: cli-${{ github.sha }}
+          path: dist
+      - name: Set up Go for the standard-library verifier
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.27.3"
+          cache: false
+      - name: Verify inventory before granting publication
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: bash .github/workflows/scripts/run-security-tool.sh releaseartifacts verify dist cli "$VERSION" "$GITHUB_SHA"
+      - name: Attest the verified release inventory
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/release.json
 
       - name: Configure Git
         run: |
@@ -118,7 +238,7 @@ jobs:
       - name: Release CLI
         id: release
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

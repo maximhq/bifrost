@@ -25,7 +25,12 @@ fi
 # Strip 'cli/' prefix from version
 VERSION_ONLY=${CLI_TAG#cli/v}
 CLI_VERSION="v${VERSION_ONLY}"
-printf '%s' "$CLI_VERSION" > "./dist/version.txt"
+# dist/version.txt was written and verified against the rebuilt inventory by
+# releaseartifacts; the uploader must not rewrite what was verified.
+if [[ "$(cat ./dist/version.txt)" != "$CLI_VERSION" ]]; then
+  echo "dist/version.txt does not match $CLI_VERSION; refusing to upload" >&2
+  exit 1
+fi
 R2_ENDPOINT="$(echo "$R2_ENDPOINT" | tr -d '[:space:]')"
 
 echo "📤 Uploading CLI binaries for version: $CLI_VERSION"
