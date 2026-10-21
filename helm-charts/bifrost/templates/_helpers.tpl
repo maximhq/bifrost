@@ -1151,6 +1151,9 @@ false
 {{- if .Values.storage.logsStore.matviewRefreshTimeout }}
 {{- $_ := set $pgConfig "matview_refresh_timeout" .Values.storage.logsStore.matviewRefreshTimeout }}
 {{- end }}
+{{- if .Values.storage.logsStore.matviewRefreshTempFileLimit }}
+{{- $_ := set $pgConfig "matview_refresh_temp_file_limit" .Values.storage.logsStore.matviewRefreshTempFileLimit }}
+{{- end }}
 {{- if .Values.storage.logsStore.migrationMatviewCancelAfter }}
 {{- $_ := set $pgConfig "migration_matview_cancel_after" .Values.storage.logsStore.migrationMatviewCancelAfter }}
 {{- end }}
