@@ -200,9 +200,19 @@ export interface MCPTokenExchangeConfig {
 	resource_token_endpoint?: string; // id_jag: upstream token endpoint; discovered when empty
 	resource_client_id?: SecretVar; // id_jag: Bifrost's client at the upstream authorization server. Redacted on GET.
 	resource_client_secret?: SecretVar; // id_jag: omit for a public client. Redacted on GET.
+	resource_client_auth_method?: MCPResourceClientAuthMethod; // id_jag: how the secret is sent; "" follows discovery
+	resource_private_key?: SecretVar; // id_jag: PEM key for private_key_jwt at the upstream, instead of a secret. Redacted on GET.
+	resource_key_id?: string; // id_jag: kid header of the client assertion
+	resource_signing_algorithm?: string; // id_jag: default RS256
+	resource_assertion_audience?: string; // id_jag: client assertion aud; defaults to the upstream token endpoint
+	resource_auth_mode?: MCPResourceAuthMode; // form only, never sent: the upstream authentication the admin chose
 }
 
 export type MCPTokenExchangeProfile = "" | "id_jag";
+
+export type MCPResourceClientAuthMethod = "" | "client_secret_basic" | "client_secret_post";
+
+export type MCPResourceAuthMode = "secret" | "private_key";
 
 export interface OAuthConfig {
 	client_id: SecretVar;

@@ -2,12 +2,15 @@ import { Button } from "@/components/ui/button";
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import type { MCPTokenExchangeConfig } from "@/lib/types/mcp";
+import { OAuthSigningAlgorithms } from "@/lib/types/config";
+import type { MCPResourceAuthMode, MCPTokenExchangeConfig } from "@/lib/types/mcp";
+import { isSecretVarSet, type SecretVar } from "@/lib/types/schemas";
 import { Info, TriangleAlert } from "lucide-react";
 import type { Control } from "react-hook-form";
-import { useWatch } from "react-hook-form";
+import { useFormContext, useWatch } from "react-hook-form";
 
 /**
  * tokenExchangeProfilePayload returns the Cross App Access (id_jag) fields of a
@@ -17,13 +20,19 @@ import { useWatch } from "react-hook-form";
  */
 export function tokenExchangeProfilePayload(te?: Partial<MCPTokenExchangeConfig>): Partial<MCPTokenExchangeConfig> {
 	if (te?.profile !== "id_jag") return {};
-	const secret = te.resource_client_secret;
+	const usesKey = isSecretVarSet(te.resource_private_key);
+	const usesSecret = !usesKey && isSecretVarSet(te.resource_client_secret);
 	return {
 		profile: "id_jag",
 		resource: te.resource?.trim() || undefined,
 		resource_token_endpoint: te.resource_token_endpoint?.trim() || undefined,
 		resource_client_id: te.resource_client_id,
-		resource_client_secret: secret?.value || secret?.type === "env" || secret?.type === "vault" ? secret : undefined,
+		resource_client_secret: usesSecret ? te.resource_client_secret : undefined,
+		resource_client_auth_method: usesSecret ? te.resource_client_auth_method || undefined : undefined,
+		resource_private_key: usesKey ? te.resource_private_key : undefined,
+		resource_key_id: usesKey ? te.resource_key_id?.trim() || undefined : undefined,
+		resource_signing_algorithm: usesKey ? te.resource_signing_algorithm || undefined : undefined,
+		resource_assertion_audience: usesKey ? te.resource_assertion_audience?.trim() || undefined : undefined,
 	};
 }
 
@@ -35,6 +44,12 @@ export function tokenExchangeProfileFormValues(te?: Partial<MCPTokenExchangeConf
 		resource_token_endpoint: te?.resource_token_endpoint,
 		resource_client_id: te?.resource_client_id,
 		resource_client_secret: te?.resource_client_secret,
+		resource_client_auth_method: te?.resource_client_auth_method ?? "",
+		resource_private_key: te?.resource_private_key,
+		resource_key_id: te?.resource_key_id,
+		resource_signing_algorithm: te?.resource_signing_algorithm,
+		resource_assertion_audience: te?.resource_assertion_audience,
+		resource_auth_mode: isSecretVarSet(te?.resource_private_key) ? "private_key" : "secret",
 	};
 }
 
@@ -413,27 +428,12 @@ export function TokenExchangeFields({
 								</FormItem>
 							)}
 						/>
-						<FormField
+						<ResourceClientAuthFields
 							control={control}
-							name="token_exchange.resource_client_secret"
-							render={({ field }) => (
-								<FormItem className="flex flex-col gap-2">
-									<FormLabel>Client secret at the upstream server</FormLabel>
-									<FormControl>
-										<SecretVarInput
-											data-testid="token-exchange-resource-client-secret-input"
-											placeholder="Leave empty for a public client"
-											disabled={disabled}
-											hideValueWhenEnv={clientSecretHideValueWhenEnv}
-											maskNonEnvValue={clientSecretMaskNonEnvValue}
-											redactNonEnvValue={clientSecretRedactNonEnvValue}
-											value={field.value}
-											onChange={field.onChange}
-										/>
-									</FormControl>
-									<FormMessage />
-								</FormItem>
-							)}
+							disabled={disabled}
+							hideValueWhenEnv={clientSecretHideValueWhenEnv}
+							maskNonEnvValue={clientSecretMaskNonEnvValue}
+							redactNonEnvValue={clientSecretRedactNonEnvValue}
 						/>
 						<FormField
 							control={control}
@@ -511,6 +511,218 @@ export function TokenExchangeFields({
 					</div>
 				)}
 			</div>
+		</>
+	);
+}
+
+// Radix Select can't hold an empty value; this stands in for "" (follow discovery).
+const AUTO_CLIENT_AUTH = "auto";
+
+interface ResourceClientAuthFieldsProps {
+	control: Control<any>;
+	disabled?: boolean;
+	hideValueWhenEnv?: boolean;
+	maskNonEnvValue?: boolean;
+	redactNonEnvValue?: boolean;
+}
+
+/**
+ * ResourceClientAuthFields picks how Bifrost authenticates to the upstream
+ * authorization server when redeeming an ID-JAG: a client secret, or a client
+ * assertion signed with a private key (private_key_jwt). Switching clears the
+ * other method's settings, since the backend refuses both together. The fields
+ * themselves are registered by their FormFields; this only watches and clears.
+ */
+function ResourceClientAuthFields({
+	control,
+	disabled,
+	hideValueWhenEnv,
+	maskNonEnvValue,
+	redactNonEnvValue,
+}: ResourceClientAuthFieldsProps) {
+	const { setValue } = useFormContext();
+	const key = useWatch({ control, name: "token_exchange.resource_private_key" }) as SecretVar | undefined;
+	const mode = useWatch({ control, name: "token_exchange.resource_auth_mode" }) as MCPResourceAuthMode | undefined;
+	// The choice lives in the form so validation can require a key for it; a
+	// form seeded without one goes by whether a key is stored.
+	const method: MCPResourceAuthMode = mode ?? (isSecretVarSet(key) ? "private_key" : "secret");
+
+	const choose = (next: MCPResourceAuthMode) => {
+		setValue("token_exchange.resource_auth_mode", next, { shouldDirty: true });
+		const clear = (name: string) => setValue(`token_exchange.${name}`, undefined, { shouldDirty: true });
+		if (next === "private_key") {
+			["resource_client_secret", "resource_client_auth_method"].forEach(clear);
+		} else {
+			["resource_private_key", "resource_key_id", "resource_signing_algorithm", "resource_assertion_audience"].forEach(clear);
+		}
+	};
+
+	return (
+		<>
+			<FormItem className="flex flex-col gap-2">
+				<FormLabel>Authentication at the upstream server</FormLabel>
+				<Select value={method} onValueChange={(v) => choose(v as MCPResourceAuthMode)} disabled={disabled}>
+					<SelectTrigger className="w-full" data-testid="token-exchange-resource-auth-method-select">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="secret">Client secret, or none for a public client</SelectItem>
+						<SelectItem value="private_key">Private key (private_key_jwt)</SelectItem>
+					</SelectContent>
+				</Select>
+			</FormItem>
+			{method === "secret" ? (
+				<>
+					<FormField
+						control={control}
+						name="token_exchange.resource_client_secret"
+						render={({ field }) => (
+							<FormItem className="flex flex-col gap-2">
+								<FormLabel>Client secret at the upstream server</FormLabel>
+								<FormControl>
+									<SecretVarInput
+										data-testid="token-exchange-resource-client-secret-input"
+										placeholder="Leave empty for a public client"
+										disabled={disabled}
+										hideValueWhenEnv={hideValueWhenEnv}
+										maskNonEnvValue={maskNonEnvValue}
+										redactNonEnvValue={redactNonEnvValue}
+										value={field.value}
+										onChange={field.onChange}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="token_exchange.resource_client_auth_method"
+						render={({ field }) => (
+							<FormItem className="flex flex-col gap-2">
+								<FormLabel>Send the secret</FormLabel>
+								<Select
+									value={field.value || AUTO_CLIENT_AUTH}
+									onValueChange={(v) => field.onChange(v === AUTO_CLIENT_AUTH ? "" : v)}
+									disabled={disabled}
+								>
+									<FormControl>
+										<SelectTrigger className="w-full" data-testid="token-exchange-resource-client-auth-method-select">
+											<SelectValue />
+										</SelectTrigger>
+									</FormControl>
+									<SelectContent>
+										<SelectItem value={AUTO_CLIENT_AUTH}>Automatic</SelectItem>
+										<SelectItem value="client_secret_basic">HTTP Basic (client_secret_basic)</SelectItem>
+										<SelectItem value="client_secret_post">Request body (client_secret_post)</SelectItem>
+									</SelectContent>
+								</Select>
+								<p className="text-muted-foreground text-xs">
+									Automatic uses the request body when the server&apos;s metadata lists only client_secret_post, otherwise HTTP Basic.
+									Choose one when you set the token endpoint yourself.
+								</p>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</>
+			) : (
+				<>
+					<FormField
+						control={control}
+						name="token_exchange.resource_private_key"
+						render={({ field }) => (
+							<FormItem className="flex flex-col gap-2">
+								<FormLabel>Private key</FormLabel>
+								<FormControl>
+									<SecretVarInput
+										data-testid="token-exchange-resource-private-key-input"
+										variant="textarea"
+										rows={4}
+										placeholder="-----BEGIN PRIVATE KEY----- or env.UPSTREAM_PRIVATE_KEY"
+										disabled={disabled}
+										hideValueWhenEnv={hideValueWhenEnv}
+										maskNonEnvValue={maskNonEnvValue}
+										redactNonEnvValue={redactNonEnvValue}
+										value={field.value}
+										onChange={field.onChange}
+									/>
+								</FormControl>
+								<p className="text-muted-foreground text-xs">
+									RSA or EC key in PEM form. Bifrost signs a client assertion with it for each redemption; register the public key with the
+									upstream server.
+								</p>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="token_exchange.resource_key_id"
+						render={({ field }) => (
+							<FormItem className="flex flex-col gap-2">
+								<FormLabel>Key ID (optional)</FormLabel>
+								<FormControl>
+									<Input
+										{...field}
+										value={field.value ?? ""}
+										disabled={disabled}
+										placeholder="The kid the upstream server registered for this key"
+										data-testid="token-exchange-resource-key-id-input"
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="token_exchange.resource_signing_algorithm"
+						render={({ field }) => (
+							<FormItem className="flex flex-col gap-2">
+								<FormLabel>Signing algorithm</FormLabel>
+								<Select value={field.value || "RS256"} onValueChange={field.onChange} disabled={disabled}>
+									<FormControl>
+										<SelectTrigger className="w-full" data-testid="token-exchange-resource-signing-algorithm-select">
+											<SelectValue />
+										</SelectTrigger>
+									</FormControl>
+									<SelectContent>
+										{OAuthSigningAlgorithms.map((alg) => (
+											<SelectItem key={alg} value={alg}>
+												{alg}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="token_exchange.resource_assertion_audience"
+						render={({ field }) => (
+							<FormItem className="flex flex-col gap-2">
+								<FormLabel>Assertion audience (optional)</FormLabel>
+								<FormControl>
+									<Input
+										{...field}
+										value={field.value ?? ""}
+										disabled={disabled}
+										placeholder="Defaults to the upstream token endpoint"
+										data-testid="token-exchange-resource-assertion-audience-input"
+									/>
+								</FormControl>
+								<p className="text-muted-foreground text-xs">
+									Set this only when the upstream server expects a different aud, such as its issuer URL.
+								</p>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</>
+			)}
 		</>
 	);
 }

@@ -8154,7 +8154,30 @@
             },
             "resourceClientSecret": {
               "type": "string",
-              "description": "id_jag only: secret for resourceClientId; omit for a public client. Can use env./vault. prefix. Renders into resource_client_secret."
+              "description": "id_jag only: secret for resourceClientId; omit for a public client or when resourcePrivateKey is set. Can use env./vault. prefix. Renders into resource_client_secret."
+            },
+            "resourceClientAuthMethod": {
+              "type": "string",
+              "enum": ["", "client_secret_basic", "client_secret_post"],
+              "description": "id_jag only: how resourceClientSecret is sent. Empty follows the server's metadata (request body when it lists only client_secret_post, else HTTP Basic). Requires resourceClientSecret. Renders into resource_client_auth_method."
+            },
+            "resourcePrivateKey": {
+              "type": "string",
+              "description": "id_jag only: PEM RSA or EC private key for private_key_jwt authentication at the upstream authorization server, instead of resourceClientSecret. Can use env./vault. prefix. Renders into resource_private_key."
+            },
+            "resourceKeyId": {
+              "type": "string",
+              "description": "id_jag only: kid header of the client assertion. Requires resourcePrivateKey. Renders into resource_key_id."
+            },
+            "resourceSigningAlgorithm": {
+              "type": "string",
+              "enum": ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"],
+              "description": "id_jag only: client assertion signing algorithm; default RS256. Requires resourcePrivateKey. Renders into resource_signing_algorithm."
+            },
+            "resourceAssertionAudience": {
+              "type": "string",
+              "pattern": "^$|^https://[^/?#@\\s]+([/?#].*)?$|^http://(localhost|127(\\.[0-9]{1,3}){3}|\\[::1\\])(:[0-9]+)?([/?#].*)?$",
+              "description": "id_jag only: aud of the client assertion; defaults to the upstream token endpoint. Set it for servers that expect their issuer URL. Requires resourcePrivateKey. Renders into resource_assertion_audience."
             }
           },
           "required": ["audience"],
@@ -8165,6 +8188,25 @@
                 "required": ["profile"]
               },
               "then": { "required": ["resourceClientId"] }
+            },
+            {
+              "not": { "required": ["resourceClientSecret", "resourcePrivateKey"] }
+            },
+            {
+              "if": { "required": ["resourceKeyId"], "properties": { "resourceKeyId": { "minLength": 1 } } },
+              "then": { "required": ["resourcePrivateKey"], "properties": { "resourcePrivateKey": { "minLength": 1 } } }
+            },
+            {
+              "if": { "required": ["resourceSigningAlgorithm"] },
+              "then": { "required": ["resourcePrivateKey"], "properties": { "resourcePrivateKey": { "minLength": 1 } } }
+            },
+            {
+              "if": { "required": ["resourceAssertionAudience"], "properties": { "resourceAssertionAudience": { "minLength": 1 } } },
+              "then": { "required": ["resourcePrivateKey"], "properties": { "resourcePrivateKey": { "minLength": 1 } } }
+            },
+            {
+              "if": { "required": ["resourceClientAuthMethod"], "properties": { "resourceClientAuthMethod": { "minLength": 1 } } },
+              "then": { "required": ["resourceClientSecret"], "properties": { "resourceClientSecret": { "minLength": 1 } } }
             }
           ],
           "additionalProperties": false

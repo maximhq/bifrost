@@ -672,6 +672,12 @@ bifrost:
       #     scopes: ["read"]
       #     resourceClientId: "env.LINEAR_XAA_CLIENT_ID"  # required: Bifrost's client at the upstream authorization server
       #     resourceClientSecret: "env.LINEAR_XAA_CLIENT_SECRET"  # omit for a public client
+      #     resourceClientAuthMethod: ""                  # client_secret_basic | client_secret_post; empty follows discovery
+      #     # Or authenticate with private_key_jwt instead of a secret (not both):
+      #     # resourcePrivateKey: "env.LINEAR_XAA_PRIVATE_KEY"  # PEM RSA or EC key
+      #     # resourceKeyId: "key-1"                            # kid, if the upstream selects keys by ID
+      #     # resourceSigningAlgorithm: "RS256"                 # default RS256
+      #     # resourceAssertionAudience: ""                     # assertion aud; defaults to the upstream token endpoint
       #     resourceTokenEndpoint: ""                     # optional; discovered from the MCP server when empty
       #     resource: ""                                  # optional; only if the IdP connection defines a resource indicator
       # - name: "example-per-user-headers-mcp"

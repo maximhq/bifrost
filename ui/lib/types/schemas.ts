@@ -69,9 +69,44 @@ export const secretVarSchema = Object.assign(_secretVarBase, {
 });
 
 // Helper to check if a secretVar field has a value or secret reference
-function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolean {
+export function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolean {
 	if (!v) return false;
 	return !!v.value?.trim() || !!v.ref?.trim();
+}
+
+// Message for private_key_jwt settings saved without the key they configure.
+export const PRIVATE_KEY_REQUIRED_MESSAGE = "A private key is required for private_key_jwt";
+
+// Message for a send method chosen without the secret it sends.
+export const SECRET_REQUIRED_FOR_METHOD_MESSAGE = "A client secret is required to choose how it is sent";
+
+// The id_jag upstream-authentication fields the form checks below read.
+interface IDJAGUpstreamAuthFields {
+	profile?: string;
+	resource_auth_mode?: string;
+	resource_client_secret?: { value?: string; ref?: string };
+	resource_client_auth_method?: string;
+	resource_private_key?: { value?: string; ref?: string };
+	resource_key_id?: string;
+	resource_signing_algorithm?: string;
+	resource_assertion_audience?: string;
+}
+
+// hasPrivateKeySettingsWithoutKey reports an id_jag config set to private_key_jwt, or carrying a key
+// ID, signing algorithm or assertion audience, without a private key. Saved as is, the payload would
+// store a public client, so the forms refuse it.
+export function hasPrivateKeySettingsWithoutKey(te?: IDJAGUpstreamAuthFields): boolean {
+	if (te?.profile !== "id_jag" || isSecretVarSet(te.resource_private_key)) return false;
+	return (
+		te.resource_auth_mode === "private_key" ||
+		!!(te.resource_key_id?.trim() || te.resource_signing_algorithm || te.resource_assertion_audience?.trim())
+	);
+}
+
+// hasSendMethodWithoutSecret reports an id_jag config that names how to send the client secret but
+// has none. The payload would drop the method and store a public client, which the server refuses.
+export function hasSendMethodWithoutSecret(te?: IDJAGUpstreamAuthFields): boolean {
+	return te?.profile === "id_jag" && !!te.resource_client_auth_method && !isSecretVarSet(te.resource_client_secret);
 }
 
 // Azure key config schema
@@ -1791,6 +1826,29 @@ export const mcpClientUpdateSchema = z
 					}),
 				resource_client_id: secretVarSchema.optional(),
 				resource_client_secret: secretVarSchema.optional(),
+				resource_client_auth_method: z.enum(["", "client_secret_basic", "client_secret_post"]).optional(),
+				resource_private_key: secretVarSchema.optional(),
+				resource_key_id: z.string().optional(),
+				resource_signing_algorithm: z.string().optional(),
+				resource_auth_mode: z.enum(["secret", "private_key"]).optional(),
+				resource_assertion_audience: z
+					.string()
+					.optional()
+					.refine((val) => !val?.trim() || isHTTPSOrLoopbackURL(val.trim()), {
+						message: "Assertion audience must be an https URL (http is allowed only for localhost)",
+					}),
+			})
+			.refine((te) => !(isSecretVarSet(te.resource_client_secret) && isSecretVarSet(te.resource_private_key)), {
+				message: "Use either a client secret or a private key at the upstream server, not both",
+				path: ["resource_private_key"],
+			})
+			.refine((te) => !hasPrivateKeySettingsWithoutKey(te), {
+				message: PRIVATE_KEY_REQUIRED_MESSAGE,
+				path: ["resource_private_key"],
+			})
+			.refine((te) => !hasSendMethodWithoutSecret(te), {
+				message: SECRET_REQUIRED_FOR_METHOD_MESSAGE,
+				path: ["resource_client_secret"],
 			})
 			.optional(),
 		tls_config: z

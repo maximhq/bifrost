@@ -663,6 +663,11 @@ export default function MCPClientSheet({
 		form.formState.dirtyFields.token_exchange?.resource_token_endpoint ||
 		form.formState.dirtyFields.token_exchange?.resource_client_id ||
 		form.formState.dirtyFields.token_exchange?.resource_client_secret ||
+		form.formState.dirtyFields.token_exchange?.resource_client_auth_method ||
+		form.formState.dirtyFields.token_exchange?.resource_private_key ||
+		form.formState.dirtyFields.token_exchange?.resource_key_id ||
+		form.formState.dirtyFields.token_exchange?.resource_signing_algorithm ||
+		form.formState.dirtyFields.token_exchange?.resource_assertion_audience ||
 		tokenExchangeScopesDirty
 	);
 	// Gates the "takes effect immediately" warning below the toggle — the

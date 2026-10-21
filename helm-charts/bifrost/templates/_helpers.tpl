@@ -1486,6 +1486,11 @@ false
 {{- with $client.tokenExchange.resourceTokenEndpoint }}{{- $_ := set $te "resource_token_endpoint" . }}{{- end }}
 {{- with $client.tokenExchange.resourceClientId }}{{- $_ := set $te "resource_client_id" . }}{{- end }}
 {{- with $client.tokenExchange.resourceClientSecret }}{{- $_ := set $te "resource_client_secret" . }}{{- end }}
+{{- with $client.tokenExchange.resourceClientAuthMethod }}{{- $_ := set $te "resource_client_auth_method" . }}{{- end }}
+{{- with $client.tokenExchange.resourcePrivateKey }}{{- $_ := set $te "resource_private_key" . }}{{- end }}
+{{- with $client.tokenExchange.resourceKeyId }}{{- $_ := set $te "resource_key_id" . }}{{- end }}
+{{- with $client.tokenExchange.resourceSigningAlgorithm }}{{- $_ := set $te "resource_signing_algorithm" . }}{{- end }}
+{{- with $client.tokenExchange.resourceAssertionAudience }}{{- $_ := set $te "resource_assertion_audience" . }}{{- end }}
 {{- $_ := set $cc "token_exchange" $te }}
 {{- end }}
 {{- if hasKey $client "isPingAvailable" }}
