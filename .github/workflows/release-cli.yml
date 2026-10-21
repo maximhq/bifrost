@@ -34,6 +34,9 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Verify release source identity
+        run: bash .github/workflows/scripts/verify-release-source.sh
+
       - name: Get version from file
         id: get-version
         run: echo "version=$(cat cli/version)" >> "$GITHUB_OUTPUT"
@@ -66,6 +69,9 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Verify release source identity
+        run: bash .github/workflows/scripts/verify-release-source.sh
+
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
@@ -95,6 +101,9 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           token: ${{ secrets.GH_TOKEN }}
+
+      - name: Verify release source identity
+        run: bash .github/workflows/scripts/verify-release-source.sh
 
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
@@ -134,6 +143,9 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           token: ${{ secrets.GH_TOKEN }}
+
+      - name: Verify release source identity
+        run: bash .github/workflows/scripts/verify-release-source.sh
 
       - name: Push Mintlify changelog
         run: |
