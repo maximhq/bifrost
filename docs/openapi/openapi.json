@@ -135782,6 +135782,13 @@
                 "default": 0,
                 "description": "Byte bound on the whole forwarded aggregate across every MCP server the caller can see. This rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.\n"
               },
+              "mcp_openapi_max_spec_mb": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 256,
+                "default": 0,
+                "description": "Size limit, in MiB, on the spec of an openapi MCP client, whether inline, uploaded or fetched from spec_url. Applies to previews, creates, updates and connects. 0 uses the built-in default of 32. Omit the field to keep the stored value. An inline or uploaded spec travels inside the JSON request body, so it is also capped by max_request_body_size_mb (100 by default): uploads larger than about 100 MiB need max_request_body_size_mb raised above the spec size, with headroom for JSON escaping, and a server restart. A request that sends only spec_url is not subject to that cap, since the server fetches the document itself; the dashboard, however, saves a URL import as the inline document its preview fetched, so a URL import larger than max_request_body_size_mb fails there.\n"
+              },
               "mcp_oauth_private_allowlist": {
                 "type": "array",
                 "items": {
@@ -136322,6 +136329,13 @@
                 "minimum": 0,
                 "default": 0,
                 "description": "Byte bound on the whole forwarded aggregate across every MCP server the caller can see. This rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.\n"
+              },
+              "mcp_openapi_max_spec_mb": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 256,
+                "default": 0,
+                "description": "Size limit, in MiB, on the spec of an openapi MCP client, whether inline, uploaded or fetched from spec_url. Applies to previews, creates, updates and connects. 0 uses the built-in default of 32. Omit the field to keep the stored value. An inline or uploaded spec travels inside the JSON request body, so it is also capped by max_request_body_size_mb (100 by default): uploads larger than about 100 MiB need max_request_body_size_mb raised above the spec size, with headroom for JSON escaping, and a server restart. A request that sends only spec_url is not subject to that cap, since the server fetches the document itself; the dashboard, however, saves a URL import as the inline document its preview fetched, so a URL import larger than max_request_body_size_mb fails there.\n"
               },
               "mcp_oauth_private_allowlist": {
                 "type": "array",

@@ -1270,6 +1270,7 @@
 		},
 		"source": {
 			"fileTooLarge": "파일이 OpenAPI 문서의 크기 제한({{size}})을 초과했어요.",
+			"fileTooLargeBodyCap": "파일이 너무 커서 보낼 수 없어요. 요청은 client.max_request_body_size_mb에 의해 {{size}}(으)로 제한돼요. 더 큰 문서를 업로드하려면 값을 늘리고 Bifrost를 다시 시작하세요.",
 			"fileReadFailed": "파일을 읽을 수 없어요: {{message}}",
 			"fileEmpty": "파일이 비어 있어요.",
 			"fetch": "가져오기",
@@ -1281,6 +1282,8 @@
 			"urlHelp": "Bifrost는 문서를 한 번 가져와 서버와 함께 저장하며, URL은 출처로 보관돼요.",
 			"chooseFile": "파일 선택",
 			"uploadHelp": "JSON 또는 YAML, 최대 {{size}}. 파일은 브라우저에서 읽어 서버와 함께 저장돼요.",
+			"uploadHelpBodyCap": "JSON 또는 YAML, 최대 약 {{size}}. 요청 크기가 OpenAPI 문서 제한보다 작은 client.max_request_body_size_mb(으)로 제한돼요. 파일은 브라우저에서 읽어 서버와 함께 저장돼요.",
+			"uploadHelpNoLimit": "JSON 또는 YAML. 파일은 브라우저에서 읽어 서버와 함께 저장돼요.",
 			"parsing": "문서를 파싱하는 중…",
 			"staleNotice": "문서를 가져온 이후 URL 또는 서버 이름이 변경되었어요. 아래 작업을 새로 고치려면 다시 가져오세요."
 		},

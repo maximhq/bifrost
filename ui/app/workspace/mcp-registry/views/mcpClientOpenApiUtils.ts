@@ -13,8 +13,88 @@ import type {
 /** How the user supplied the document in the create/replace sheet. */
 export type OpenAPISourceMode = "paste" | "url" | "upload";
 
-/** Client-side cap on a pasted or uploaded document, mirroring the server's 5 MiB limit. */
-export const OPENAPI_MAX_SPEC_BYTES = 5 * 1024 * 1024;
+/** Client-side cap on a pasted or uploaded document, mirroring the server's default 32 MiB limit. */
+export const OPENAPI_MAX_SPEC_BYTES = 32 * 1024 * 1024;
+
+/** The spec size limit for client_config.mcp_openapi_max_spec_mb, where 0 or unset is the default. */
+export function openAPIMaxSpecBytes(mb: number | undefined): number {
+	return mb && mb > 0 ? mb * 1024 * 1024 : OPENAPI_MAX_SPEC_BYTES;
+}
+
+/**
+ * The spec size limit once the core config has loaded, or null while it is pending or failed to
+ * load: the configured limit may be above the default, so guessing would refuse a document the
+ * server accepts. With null the server alone enforces the limit.
+ */
+export function knownOpenAPIMaxSpecBytes(config: { client_config?: { mcp_openapi_max_spec_mb?: number } } | undefined): number | null {
+	return config ? openAPIMaxSpecBytes(config.client_config?.mcp_openapi_max_spec_mb) : null;
+}
+
+/** Room a create, replace or preview request needs besides the document: its other fields and the JSON framing. */
+export const OPENAPI_REQUEST_OVERHEAD_BYTES = 64 * 1024;
+
+/**
+ * What an uploaded document must fit: the spec limit on its raw size, and the request body limit
+ * (client_config.max_request_body_size_mb, applied at startup) on the request that carries it as an
+ * escaped JSON string. `bytes` is the smaller of the two before escaping, what the help text shows
+ * and a file is checked against before it is read; `bodyBound` says the body limit is that one.
+ */
+export interface OpenAPIUploadLimit {
+	specBytes: number;
+	bodyBytes: number | null;
+	bytes: number;
+	bodyBound: boolean;
+}
+
+/** The upload limit once the core config has loaded, or null while it is pending (see knownOpenAPIMaxSpecBytes). */
+export function knownOpenAPIUploadLimit(
+	config: { client_config?: { mcp_openapi_max_spec_mb?: number; max_request_body_size_mb?: number } } | undefined,
+): OpenAPIUploadLimit | null {
+	const specBytes = knownOpenAPIMaxSpecBytes(config);
+	if (specBytes === null) return null;
+	const bodyMb = config?.client_config?.max_request_body_size_mb;
+	const bodyBytes = bodyMb && bodyMb > 0 ? bodyMb * 1024 * 1024 : null;
+	const room = bodyBytes === null ? Infinity : Math.max(0, bodyBytes - OPENAPI_REQUEST_OVERHEAD_BYTES);
+	return room < specBytes
+		? { specBytes, bodyBytes, bytes: room, bodyBound: true }
+		: { specBytes, bodyBytes, bytes: specBytes, bodyBound: false };
+}
+
+/** The size of a document once it is a JSON string in a request body: quotes, escapes and UTF-8. */
+export function serializedSpecBytes(text: string): number {
+	return new TextEncoder().encode(JSON.stringify(text)).length;
+}
+
+/**
+ * Why a read document cannot be sent, or null when it fits: "spec" when it is over the spec limit,
+ * "body" when escaping it would push the request over the body limit.
+ */
+export function uploadOverLimit(rawBytes: number, serializedBytes: number, limit: OpenAPIUploadLimit): "spec" | "body" | null {
+	if (rawBytes > limit.specBytes) return "spec";
+	if (limit.bodyBytes !== null && serializedBytes + OPENAPI_REQUEST_OVERHEAD_BYTES > limit.bodyBytes) return "body";
+	return null;
+}
+
+/** The largest limit mcp_openapi_max_spec_mb accepts (256 MiB), which bounds an upload while the configured one is unknown. */
+export const OPENAPI_MAX_SUPPORTED_SPEC_BYTES = 256 * 1024 * 1024;
+
+/**
+ * The limit an upload is read under. The cached limit may be stale (raised in another tab or by
+ * another admin), so a file over it re-reads the config first and only the refreshed limit
+ * refuses it. An unknown limit (config pending, unreadable, or the refresh failed) falls back to
+ * the supported maximum and leaves the rest to the server.
+ */
+export async function uploadSpecLimit(fileBytes: number, cached: number | null, refresh: () => Promise<number | null>): Promise<number> {
+	if (cached === null) return OPENAPI_MAX_SUPPORTED_SPEC_BYTES;
+	if (!isSpecTooLarge(fileBytes, cached)) return cached;
+	let current: number | null = null;
+	try {
+		current = await refresh();
+	} catch {
+		current = null;
+	}
+	return current ?? OPENAPI_MAX_SUPPORTED_SPEC_BYTES;
+}
 
 /** Picks the editor language from the document's first non-blank character. */
 export function detectSpecLanguage(text: string | undefined): "json" | "yaml" {
@@ -402,15 +482,19 @@ export function applyParsedPreview(
 	return { selection, baseUrl, baseUrlChoice, credentials };
 }
 
-/** Reads an uploaded spec file, returning its text or the error to show. */
-export async function readUploadedSpec(file: {
-	size: number;
-	text: () => Promise<string>;
-}): Promise<{ text: string; error: string | null }> {
-	if (isSpecTooLarge(file.size)) {
+/** Reads an uploaded spec file, returning its text or the error to show; tooLargeMessage replaces the spec-limit wording. */
+export async function readUploadedSpec(
+	file: {
+		size: number;
+		text: () => Promise<string>;
+	},
+	maxBytes: number = OPENAPI_MAX_SPEC_BYTES,
+	tooLargeMessage?: string,
+): Promise<{ text: string; error: string | null }> {
+	if (isSpecTooLarge(file.size, maxBytes)) {
 		return {
 			text: "",
-			error: i18n.t("openapi.source.fileTooLarge", { ns: "mcp", size: formatBytes(OPENAPI_MAX_SPEC_BYTES) }),
+			error: tooLargeMessage ?? i18n.t("openapi.source.fileTooLarge", { ns: "mcp", size: formatBytes(maxBytes) }),
 		};
 	}
 	let text: string;

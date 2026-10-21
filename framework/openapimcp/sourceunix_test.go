@@ -20,7 +20,7 @@ func TestLoadFile_RequiresRegularFile(t *testing.T) {
 	require.NoError(t, syscall.Mkfifo(fifo, 0o644))
 	done := make(chan error, 1)
 	go func() {
-		_, err := LoadFile("spec.fifo", dir)
+		_, err := LoadFile("spec.fifo", dir, 0)
 		done <- err
 	}()
 	select {

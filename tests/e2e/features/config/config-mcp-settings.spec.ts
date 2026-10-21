@@ -1,3 +1,4 @@
+import { coreConfigApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 
 test.describe('MCP Settings', () => {
@@ -21,5 +22,27 @@ test.describe('MCP Settings', () => {
     const saveBtn = configSettingsPage.page.getByTestId('mcp-settings-save-btn')
     await expect(saveBtn).toBeVisible()
     await expect(saveBtn).toBeDisabled()
+  })
+
+  test('should save the OpenAPI spec size limit', async ({ configSettingsPage, request }) => {
+    const original = (await coreConfigApi.get(request)).client_config.mcp_openapi_max_spec_mb ?? 0
+    try {
+      await configSettingsPage.goto('mcp-gateway')
+      const input = configSettingsPage.page.getByTestId('mcp-openapi-max-spec-mb-input')
+      await expect(input).toHaveValue(String(original))
+
+      // Differs from the stored value, so the form is dirty and Save enables.
+      const target = original === 64 ? 65 : 64
+      await input.fill(String(target))
+      const saveBtn = configSettingsPage.page.getByTestId('mcp-settings-save-btn')
+      await expect(saveBtn).toBeEnabled()
+      await saveBtn.click()
+      await expect.poll(async () => (await coreConfigApi.get(request)).client_config.mcp_openapi_max_spec_mb).toBe(target)
+
+      await configSettingsPage.page.reload()
+      await expect(input).toHaveValue(String(target))
+    } finally {
+      await coreConfigApi.updateClientConfig(request, { mcp_openapi_max_spec_mb: original })
+    }
   })
 })
