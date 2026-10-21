@@ -5,11 +5,104 @@ import (
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func advisorPricingFixture(route string, withAdvisor bool) (*Store, *schemas.BifrostResponse) {
+	executor := chatPricing(0.000001, 0.000002)
+	executor.Provider, executor.Model = "anthropic", "claude-haiku-4-5-20251001"
+	advisor := chatPricing(0.000005, 0.000020)
+	advisor.Provider, advisor.Model = "anthropic", "claude-opus-4-6"
+	store := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(executor.Model, executor.Provider, executor.Mode): executor,
+		makeKey(advisor.Model, advisor.Provider, advisor.Mode):    advisor,
+	})
+	usage := anthropic.AnthropicUsage{InputTokens: 1000, OutputTokens: 500}
+	if withAdvisor {
+		usage.Iterations = []anthropic.AnthropicUsage{
+			{Type: schemas.Ptr("message"), Model: schemas.Ptr(executor.Model), InputTokens: 1000, OutputTokens: 500},
+			{Type: schemas.Ptr("advisor_message"), Model: schemas.Ptr(advisor.Model), InputTokens: 2000, OutputTokens: 1000},
+		}
+	}
+	extra := schemas.BifrostResponseExtraFields{RequestType: schemas.ResponsesRequest, RoutingInfo: routingInfoFor(schemas.Anthropic, executor.Model)}
+	converted := anthropic.ConvertAnthropicUsageToBifrostUsage(&usage)
+	switch route {
+	case "responses":
+		return store, &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Usage: converted, ExtraFields: extra}}
+	case "responses_stream":
+		extra.RequestType = schemas.ResponsesStreamRequest
+		return store, &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Response: &schemas.BifrostResponsesResponse{Usage: converted}, ExtraFields: extra}}
+	default:
+		body, err := json.Marshal(struct {
+			Usage anthropic.AnthropicUsage `json:"usage"`
+		}{usage})
+		if err != nil {
+			panic(err)
+		}
+		parsed := anthropic.ExtractAnthropicPassthroughUsage("/v1/messages", nil, body)
+		extra.RequestType = schemas.PassthroughRequest
+		if route == "passthrough_stream" {
+			acc := &anthropic.AnthropicPassthroughStreamUsage{}
+			event, err := json.Marshal(struct {
+				Type  string                   `json:"type"`
+				Usage anthropic.AnthropicUsage `json:"usage"`
+			}{"message_delta", usage})
+			if err != nil {
+				panic(err)
+			}
+			acc.ObserveEvent(event)
+			parsed = acc.ObserveEvent([]byte(`{"type":"message_stop"}`))
+			extra.RequestType = schemas.PassthroughStreamRequest
+		}
+		return store, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: parsed, ExtraFields: extra}}
+	}
+}
+
+func TestCalculateCostAdvisorIterations(t *testing.T) {
+	for _, route := range []string{"responses", "responses_stream", "passthrough", "passthrough_stream"} {
+		t.Run(route, func(t *testing.T) {
+			store, response := advisorPricingFixture(route, true)
+			// Executor: 1000 * $1/M + 500 * $2/M = $0.002.
+			// Advisor: 2000 * $5/M + 1000 * $20/M = $0.030.
+			assert.InDelta(t, 0.032, store.CalculateCost(response, nil), 1e-12)
+			assert.InDelta(t, 0.032, store.CalculateCost(response, nil), 1e-12, "pricing must not mutate usage")
+			store, response = advisorPricingFixture(route, false)
+			assert.InDelta(t, 0.002, store.CalculateCost(response, nil), 1e-12)
+		})
+	}
+}
+
+func TestCalculateCostAdvisorIterationFallback(t *testing.T) {
+	store, response := advisorPricingFixture("responses", true)
+	iterations := response.ResponsesResponse.Usage.Iterations
+	iterations[1].Model = schemas.Ptr("unpriced-advisor")
+	assert.InDelta(t, 0.006, store.CalculateCost(response, nil), 1e-12)
+	iterations[1].Model = nil
+	assert.InDelta(t, 0.006, store.CalculateCost(response, nil), 1e-12)
+	iterations[1].Type = schemas.Ptr("message")
+	assert.InDelta(t, 0.002, store.CalculateCost(response, nil), 1e-12, "executor iterations must not be billed twice")
+}
+
+func BenchmarkCalculateCostAdvisorIterations(b *testing.B) {
+	for _, withAdvisor := range []bool{false, true} {
+		name := "no_advisor"
+		if withAdvisor {
+			name = "advisor"
+		}
+		b.Run(name, func(b *testing.B) {
+			store, response := advisorPricingFixture("responses", withAdvisor)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				store.CalculateCost(response, nil)
+			}
+		})
+	}
+}
 
 func TestCalculateCost_RealtimeTranscriptionPricingOverride(t *testing.T) {
 	pricing := configstoreTables.TableModelPricing{

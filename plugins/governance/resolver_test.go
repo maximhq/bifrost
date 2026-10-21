@@ -764,6 +764,71 @@ func newCustomProviderTestPlugin(t *testing.T, vk *configstoreTables.TableVirtua
 	return plugin
 }
 
+func advisorGovernanceRequest(requestType schemas.RequestType, advisor bool) *schemas.BifrostRequest {
+	const executor = "claude-haiku-4-5-20251001"
+	if requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
+		body := `{"model":"claude-haiku-4-5-20251001","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`
+		if advisor {
+			body = `{"model":"claude-haiku-4-5-20251001","max_tokens":8,"tools":[{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-6"}],"messages":[{"role":"user","content":"hi"}]}`
+		}
+		return &schemas.BifrostRequest{RequestType: requestType, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.Anthropic, Model: executor, Method: "POST", Path: "/v1/messages", Body: []byte(body)}}
+	}
+	params := &schemas.ResponsesParameters{}
+	if advisor {
+		params.Tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeAdvisor, ResponsesToolAdvisor: &schemas.ResponsesToolAdvisor{Model: "claude-opus-4-6"}}}
+	}
+	return &schemas.BifrostRequest{RequestType: requestType, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: executor, Params: params}}
+}
+
+func TestPreLLMHookAdvisorModelAdmission(t *testing.T) {
+	for _, requestType := range []schemas.RequestType{schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.PassthroughRequest, schemas.PassthroughStreamRequest} {
+		for _, allowed := range []bool{false, true} {
+			name := string(requestType) + "/restricted"
+			models := []string{"claude-haiku-4-5-20251001"}
+			if allowed {
+				name = string(requestType) + "/allowed"
+				models = append(models, "claude-opus-4-6")
+			}
+			t.Run(name, func(t *testing.T) {
+				vk := buildVirtualKeyWithProviders("vk-advisor", "sk-bf-advisor", "Advisor test", []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("anthropic", models)})
+				plugin := newAccessTestPlugin(t, vk, nil)
+				_, shortCircuit, err := plugin.PreLLMHook(presentCtx("sk-bf-advisor"), advisorGovernanceRequest(requestType, true))
+				require.NoError(t, err)
+				want := DecisionModelBlocked
+				if allowed {
+					want = DecisionAllow
+				}
+				assertShortCircuitDecision(t, want, shortCircuit)
+				_, shortCircuit, err = plugin.PreLLMHook(presentCtx("sk-bf-advisor"), advisorGovernanceRequest(requestType, false))
+				require.NoError(t, err)
+				assertShortCircuitDecision(t, DecisionAllow, shortCircuit)
+			})
+		}
+	}
+}
+
+func BenchmarkPreLLMHookAdvisorModels(b *testing.B) {
+	for _, advisor := range []bool{false, true} {
+		name := "no_advisor"
+		if advisor {
+			name = "advisor"
+		}
+		b.Run(name, func(b *testing.B) {
+			vk := buildVirtualKeyWithProviders("vk-advisor", "sk-bf-advisor", "Advisor benchmark", []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("anthropic", []string{"*"})})
+			plugin := newAccessTestPlugin(b, vk, nil)
+			req := advisorGovernanceRequest(schemas.ResponsesRequest, advisor)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _, err := plugin.PreLLMHook(presentCtx("sk-bf-advisor"), req)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 // A passthrough body is forwarded as the provider reads it, and a Runware task array names a
 // model per task that the request itself does not carry. Under a key that restricts models on
 // the provider, every model the body names is checked, and a body naming none is refused:

@@ -1,1 +1,2 @@
+- [fix]: include advisor iterations in per-model request cost [@tomatomptt](https://github.com/tomatomptt)
 - chore: upgraded Go to 1.27.3 and core to v1.13.1
