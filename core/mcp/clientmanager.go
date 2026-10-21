@@ -1,11 +1,13 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -19,6 +21,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
 	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -2861,7 +2864,11 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 					// HTTP already has timeout
 					perAttemptCtx = ctx
 				}
-				return externalClient.Start(perAttemptCtx)
+				if startErr := externalClient.Start(perAttemptCtx); startErr != nil {
+					return startErr
+				}
+				drainStderr(externalClient, config)
+				return nil
 			},
 			transportRetryConfig,
 			m.logger,
@@ -3508,6 +3515,11 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 			args = overrides.StdioArgs
 		}
 	}
+	// mcp-go's Start silently spawns nothing for an empty command, leaving a
+	// client with no subprocess or pipes.
+	if strings.TrimSpace(cmd) == "" {
+		return nil, nil, fmt.Errorf("stdio command is empty for MCP client %s", config.Name)
+	}
 
 	cmdString := fmt.Sprintf("%s %s", cmd, strings.Join(args, " "))
 
@@ -3537,6 +3549,86 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 
 	// Return nil for cmd since mark3labs/mcp-go manages the process internally
 	return client.NewClient(stdioTransport), connectionInfo, nil
+}
+
+// maxStderrLineBytes bounds a single line forwarded to StderrHandler. A
+// subprocess line that never emits a newline within this many bytes is
+// truncated; the remainder of that write is still read (so the writer never
+// blocks) but dropped instead of buffered without limit.
+const maxStderrLineBytes = 64 * 1024
+
+// stderrQueueSize bounds the backlog of lines awaiting delivery to
+// StderrHandler. If the handler is slow or blocked and the queue fills,
+// further lines are dropped so handler latency can never stall pipe
+// draining.
+const stderrQueueSize = 256
+
+// drainStderr always reads cli's stderr pipe to completion in a background
+// goroutine, forwarding each line to config.StdioConfig.StderrHandler if one
+// is supplied. Safe to call for any connection type: GetStderr's transport
+// type assertion no-ops for non-stdio clients. Must be called after
+// cli.Start(), when the pipe exists. The pipe is closed by cli.Close(), which
+// ends the goroutines.
+func drainStderr(cli *client.Client, config *schemas.MCPClientConfig) {
+	stderr, ok := client.GetStderr(cli)
+	if !ok || stderr == nil {
+		// nil when the transport spawned no subprocess (empty command).
+		return
+	}
+	var handler func(line string)
+	if config.StdioConfig != nil {
+		handler = config.StdioConfig.StderrHandler
+	}
+	if handler == nil {
+		go func() { _, _ = io.Copy(io.Discard, stderr) }()
+		return
+	}
+
+	lines := make(chan string, stderrQueueSize)
+	go func() {
+		for line := range lines {
+			handler(line)
+		}
+	}()
+	go func() {
+		defer close(lines)
+		r := bufio.NewReaderSize(stderr, maxStderrLineBytes)
+		for {
+			line, err := readStderrLine(r)
+			// Forward every complete line, including blank ones; at EOF only a
+			// non-empty trailing partial line is forwarded.
+			if err == nil || line != "" {
+				select {
+				case lines <- line:
+				default: // queue full: drop rather than block the reader
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+}
+
+// readStderrLine reads one newline-terminated line from r, truncating at
+// maxStderrLineBytes. Bytes beyond the limit are still consumed from r (so
+// an unbroken write larger than the limit can't stall the writer) but are
+// not included in the returned line.
+func readStderrLine(r *bufio.Reader) (string, error) {
+	var buf []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if n := maxStderrLineBytes - len(buf); n > 0 {
+			if n > len(chunk) {
+				n = len(chunk)
+			}
+			buf = append(buf, chunk[:n]...)
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		return strings.TrimRight(string(buf), "\r\n"), err
+	}
 }
 
 // createSSEConnection creates a SSE-based MCP client connection without holding locks.
