@@ -4197,3 +4197,39 @@ func TestValidateConfigSchema_MCPOpenAPIClient(t *testing.T) {
 		})
 	}
 }
+
+// TestSchemaAuditLogsSigningKeys pins the audit signing-key rules the gateway
+// enforces at startup: a literal key needs 32 characters (an env. reference
+// is resolved later), and several keys need active_key_id, where hmac_key
+// counts as the key "default".
+func TestSchemaAuditLogsSigningKeys(t *testing.T) {
+	compiled := compileSchema(t)
+	key := `"` + strings.Repeat("k", 32) + `"`
+
+	tests := []struct {
+		name      string
+		auditLogs string
+		wantError bool
+	}{
+		{name: "one named key", auditLogs: `{"hmac_keys":[{"id":"a","key":` + key + `}]}`},
+		{name: "env reference key", auditLogs: `{"hmac_key":"env.AUDIT_KEY"}`},
+		{name: "short literal hmac_key", auditLogs: `{"hmac_key":"short"}`, wantError: true},
+		{name: "short literal named key", auditLogs: `{"hmac_keys":[{"id":"a","key":"short"}]}`, wantError: true},
+		{name: "two named keys without active_key_id", auditLogs: `{"hmac_keys":[{"id":"a","key":` + key + `},{"id":"b","key":` + key + `}]}`, wantError: true},
+		{name: "two named keys with active_key_id", auditLogs: `{"hmac_keys":[{"id":"a","key":` + key + `},{"id":"b","key":` + key + `}],"active_key_id":"b"}`},
+		{name: "hmac_key plus a named key without active_key_id", auditLogs: `{"hmac_key":` + key + `,"hmac_keys":[{"id":"a","key":` + key + `}]}`, wantError: true},
+		{name: "hmac_key plus a named key with active_key_id", auditLogs: `{"hmac_key":` + key + `,"hmac_keys":[{"id":"a","key":` + key + `}],"active_key_id":"a"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, `{"audit_logs":`+tt.auditLogs+`}`)
+			if tt.wantError && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected schema validation to pass, got: %v", err)
+			}
+		})
+	}
+}

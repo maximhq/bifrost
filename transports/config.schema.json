@@ -12177,16 +12177,54 @@
         },
         "hmac_key": {
           "type": "string",
-          "description": "HMAC secret key for signing audit events (minimum 32 bytes). Can use env. prefix for environment variables (e.g., 'env.AUDIT_HMAC_KEY')."
+          "description": "HMAC secret key for signing audit events (minimum 32 bytes). Can use env. prefix for environment variables (e.g., 'env.AUDIT_HMAC_KEY').",
+          "anyOf": [
+            { "pattern": "^env\\." },
+            { "minLength": 32 }
+          ]
         },
         "retention_days": {
           "type": "integer",
           "minimum": 0,
           "description": "Number of days to retain audit logs (0 means no retention limit)"
         },
+        "hmac_keys": {
+          "type": "array",
+          "description": "Named HMAC signing keys for rotation. active_key_id picks the key that signs new events; the others still verify older events. hmac_key, when also set, is the key named \"default\". Each key needs at least 32 bytes and supports the env. prefix.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,32}$",
+                "description": "Key ID recorded in each signature, e.g. \"2026-q4\""
+              },
+              "key": {
+                "type": "string",
+                "description": "HMAC secret (minimum 32 bytes). Can use env. prefix (e.g. 'env.AUDIT_HMAC_KEY_2026Q4').",
+                "anyOf": [
+                  { "pattern": "^env\\." },
+                  { "minLength": 32 }
+                ]
+              }
+            },
+            "required": ["id", "key"],
+            "additionalProperties": false
+          }
+        },
+        "active_key_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,32}$",
+          "description": "ID of the key that signs new audit events. Required when more than one key is configured."
+        },
         "omit_ip_addresses": {
           "type": "boolean",
           "description": "Stop recording client IP addresses in audit logs while keeping every other field. When true, new events are stored without request_ip or initiator host, and IPs from rows written before the setting was enabled are hidden from the API, filter data, search, exports and object storage archives. Existing database rows are not rewritten. Use this where employee privacy rules or works council agreements forbid tracking IPs. Default: false",
+          "default": false
+        },
+        "include_reads": {
+          "type": "boolean",
+          "description": "Audit every GET request. When false, reads are audited only when they disclose a secret or export data (virtual key reveal/copy, audit log export, downloads) or a handler tags them with an explicit audit action (such as an SSO login) or a high severity. Default: false",
           "default": false
         },
         "archive_interval": {
@@ -12650,7 +12688,14 @@
           }
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": {
+        "anyOf": [
+          { "properties": { "hmac_keys": { "minItems": 2 } }, "required": ["hmac_keys"] },
+          { "properties": { "hmac_keys": { "minItems": 1 } }, "required": ["hmac_keys", "hmac_key"] }
+        ]
+      },
+      "then": { "required": ["active_key_id"] }
     },
     "large_payload_optimization": {
       "type": "object",
