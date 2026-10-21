@@ -18,6 +18,8 @@ permissions:
 
 jobs:
   live-fake:
+    # GitHub holds this job before allocating a runner until an admin approves.
+    environment: ${{ (github.event_name == 'schedule' || (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2.0.0'))) && 'ci-trusted-branch' || 'pr-testing' }}
     name: GPT Live (fake upstream)
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -62,6 +64,8 @@ jobs:
             tmp/live-gateway.log
 
   live-long:
+    # GitHub holds this job before allocating a runner until an admin approves.
+    environment: ${{ (github.event_name == 'schedule' || (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2.0.0'))) && 'ci-trusted-branch' || 'pr-testing' }}
     name: GPT Live (long sessions, fake upstream)
     runs-on: ubuntu-latest
     timeout-minutes: 45
