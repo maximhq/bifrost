@@ -187,5 +187,12 @@ func (h *OAuth2SessionsHandler) revokeSession(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to revoke session")
 		return
 	}
+
+	// Evict any cached access token backed by this session so the revocation
+	// takes effect immediately instead of waiting for the cache TTL to expire.
+	if h.store.OAuthProvider != nil {
+		h.store.OAuthProvider.EvictUserTokenByID(id)
+	}
+
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
