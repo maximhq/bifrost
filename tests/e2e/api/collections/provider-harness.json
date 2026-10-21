@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "bifrost-provider-harness-2026-05",
     "name": "Bifrost Provider Harness",
-    "description": "Smoke-test harness exercising every Bifrost provider surface.\n\nCovers:\n1. Native Bifrost API (`/v1/chat/completions`, `/v1/responses`).\n2. Drop-in integrations: `/openai`, `/anthropic`, `/bedrock`, `/genai`, plus Azure (via `/openai/openai/deployments/...`) and Vertex (via `/genai`).\n3. Criss-Cross matrix (§8): every drop-in request shape × every model provider × every supported modality (chat, streaming, embeddings, audio, image gen, tool calling, vision, JSON, reasoning). Cells where the provider doesn't support the modality are tagged `[SKIP]` and skipped at runtime unless `include_skip=1`.\n\nSet the `baseUrl` and provider key variables before running. Run end-to-end with `make run-provider-harness-test` from the repo root. Run criss-cross only with `make run-provider-harness-test FOLDER=\"8. Criss-Cross\"`.",
+    "description": "Smoke-test harness exercising every Bifrost provider surface.\n\nCovers:\n1. Native Bifrost API (`/v1/chat/completions`, `/v1/responses`).\n2. Drop-in integrations: `/openai`, `/anthropic`, `/bedrock`, `/genai`, plus Azure (via `/openai/openai/deployments/...`) and Vertex (via `/genai`).\n3. Criss-Cross matrix (\u00a78): every drop-in request shape \u00d7 every model provider \u00d7 every supported modality (chat, streaming, embeddings, audio, image gen, tool calling, vision, JSON, reasoning). Cells where the provider doesn't support the modality are tagged `[SKIP]` and skipped at runtime unless `include_skip=1`.\n\nSet the `baseUrl` and provider key variables before running. Run end-to-end with `make run-provider-harness-test` from the repo root. Run criss-cross only with `make run-provider-harness-test FOLDER=\"8. Criss-Cross\"`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -18,7 +18,7 @@
           "  pm.execution.skipRequest();",
           "}",
           "// Skip [SKIP]-tagged requests unless include_skip=1 (set via Newman --env-var include_skip=1).",
-          "// Used in the criss-cross matrix (§8) to mark provider+modality cells that return NewUnsupportedOperationError by design (e.g., anthropic embeddings, bedrock audio).",
+          "// Used in the criss-cross matrix (\u00a78) to mark provider+modality cells that return NewUnsupportedOperationError by design (e.g., anthropic embeddings, bedrock audio).",
           "if (name.indexOf('[SKIP]') !== -1 && (pm.environment.get('include_skip') || pm.variables.get('include_skip') || '') !== '1') {",
           "  pm.execution.skipRequest();",
           "}",
@@ -89,7 +89,7 @@
           "    } else if (j.choices && j.choices[0] && j.choices[0].message) {",
           "        shape = 'openai-chat-completion';",
           "        hasContent = !!(j.choices[0].message.content || (j.choices[0].message.tool_calls && j.choices[0].message.tool_calls.length));",
-          "        // Stop-sequence truncation can yield content:null with non-zero completion_tokens — treat as valid response.",
+          "        // Stop-sequence truncation can yield content:null with non-zero completion_tokens \u2014 treat as valid response.",
           "        if (!hasContent && j.choices[0].finish_reason === 'stop' && j.usage && j.usage.completion_tokens > 0) { hasContent = true; }",
           "        // finish_reason 'length' is the openai-shaped twin of the anthropic-messages stop_reason 'max_tokens' forgiveness below. A reasoning model can spend the whole max_tokens cap thinking and end the turn mid-thought, returning content:null alongside a populated reasoning/reasoning_content field. Tokens were produced and the gateway relayed exactly what the provider sent, so failing here reports a defect in whatever the row was actually measuring rather than anything that went wrong. An empty content with zero completion tokens is still a failure.",
           "        if (!hasContent && j.choices[0].finish_reason === 'length' && j.usage && j.usage.completion_tokens > 0) { hasContent = true; }",
@@ -768,7 +768,7 @@
           }
         },
         {
-          "name": "POST /bedrock/model/{modelId}/converse — guardrailConfig forwarded",
+          "name": "POST /bedrock/model/{modelId}/converse \u2014 guardrailConfig forwarded",
           "request": {
             "method": "POST",
             "header": [
@@ -796,7 +796,7 @@
           }
         },
         {
-          "name": "POST /bedrock/model/{modelId}/converse — guardrailConfig + trace (outputAssessments regression)",
+          "name": "POST /bedrock/model/{modelId}/converse \u2014 guardrailConfig + trace (outputAssessments regression)",
           "event": [
             {
               "listen": "test",
@@ -847,7 +847,7 @@
           }
         },
         {
-          "name": "POST /bedrock/model/{modelId}/converse-stream — streaming (incremental events)",
+          "name": "POST /bedrock/model/{modelId}/converse-stream \u2014 streaming (incremental events)",
           "event": [
             {
               "listen": "test",
@@ -904,7 +904,7 @@
           }
         },
         {
-          "name": "POST /v1/chat/completions — bedrock streaming (SSE incremental deltas)",
+          "name": "POST /v1/chat/completions \u2014 bedrock streaming (SSE incremental deltas)",
           "event": [
             {
               "listen": "test",
@@ -965,7 +965,7 @@
           }
         },
         {
-          "name": "POST /v1/chat/completions — bedrock streaming (SSE incremental deltas)",
+          "name": "POST /v1/chat/completions \u2014 bedrock streaming (SSE incremental deltas)",
           "event": [
             {
               "listen": "test",
@@ -1150,16 +1150,16 @@
       ]
     },
     {
-      "name": "8. Criss-Cross (endpoint × provider × modality matrix)",
-      "description": "Every Bifrost drop-in request shape × every model provider × every supported modality.\n\nBifrost's `ParseModelString` (core/schemas/utils.go) splits the `provider/model-name` prefix and dispatches to the right backend; per-shape converters in `transports/bifrost-http/integrations/` normalize the incoming payload to `BifrostChatRequest` (or the equivalent for embeddings/audio/images) regardless of which provider serves it.\n\nSub-folders:\n- 8.1 Text Chat (non-streaming) — rows A-G × providers\n- 8.2 Text Chat (streaming) — same matrix with stream:true / :streamGenerateContent / converse-stream\n- 8.3 Embeddings — rows H-J × providers\n- 8.4 Audio — transcriptions (K-L) + speech (M-N)\n- 8.5 Image generation / editing — rows O-Q\n- 8.6 Feature combinations — tool calling, vision, JSON/structured output, reasoning\n\nCells where the provider doesn't support the modality (e.g., Anthropic embeddings, Bedrock audio input — see core/providers/*/{anthropic.go:1878-1923, bedrock.go:1936-1941}) are tagged `[SKIP]` and skipped at runtime unless `include_skip=1`.",
+      "name": "8. Criss-Cross (endpoint \u00d7 provider \u00d7 modality matrix)",
+      "description": "Every Bifrost drop-in request shape \u00d7 every model provider \u00d7 every supported modality.\n\nBifrost's `ParseModelString` (core/schemas/utils.go) splits the `provider/model-name` prefix and dispatches to the right backend; per-shape converters in `transports/bifrost-http/integrations/` normalize the incoming payload to `BifrostChatRequest` (or the equivalent for embeddings/audio/images) regardless of which provider serves it.\n\nSub-folders:\n- 8.1 Text Chat (non-streaming) \u2014 rows A-G \u00d7 providers\n- 8.2 Text Chat (streaming) \u2014 same matrix with stream:true / :streamGenerateContent / converse-stream\n- 8.3 Embeddings \u2014 rows H-J \u00d7 providers\n- 8.4 Audio \u2014 transcriptions (K-L) + speech (M-N)\n- 8.5 Image generation / editing \u2014 rows O-Q\n- 8.6 Feature combinations \u2014 tool calling, vision, JSON/structured output, reasoning\n\nCells where the provider doesn't support the modality (e.g., Anthropic embeddings, Bedrock audio input \u2014 see core/providers/*/{anthropic.go:1878-1923, bedrock.go:1936-1941}) are tagged `[SKIP]` and skipped at runtime unless `include_skip=1`.",
       "item": [
         {
           "name": "8.1 Text Chat (non-streaming)",
-          "description": "Minimal `Hello` text-chat request across every endpoint shape × every model provider. Native /v1/chat/completions is the diagonal (provider/model strings only); rows B-G exercise the cross-shape conversion path (e.g., /anthropic/v1/messages with model=openai/gpt-5).",
+          "description": "Minimal `Hello` text-chat request across every endpoint shape \u00d7 every model provider. Native /v1/chat/completions is the diagonal (provider/model strings only); rows B-G exercise the cross-shape conversion path (e.g., /anthropic/v1/messages with model=openai/gpt-5).",
           "item": [
             {
               "name": "8.1.A Native /v1/chat/completions (unified, 10 per provider)",
-              "description": "The headline demo: one endpoint, one request shape, only the `model` field varies. 5 providers x 10 models = 50 requests (Azure intentionally skipped — Azure deployments use a different URL shape, covered separately in 8.1.C and the legacy §5).",
+              "description": "The headline demo: one endpoint, one request shape, only the `model` field varies. 5 providers x 10 models = 50 requests (Azure intentionally skipped \u2014 Azure deployments use a different URL shape, covered separately in 8.1.C and the legacy \u00a75).",
               "item": [
                 {
                   "name": "OpenAI (10 latest)",
@@ -2873,7 +2873,7 @@
               ]
             },
             {
-              "name": "8.1.B Native /v1/responses (Responses shape × all providers)",
+              "name": "8.1.B Native /v1/responses (Responses shape \u00d7 all providers)",
               "description": "OpenAI Responses-API request shape (`input` instead of `messages`) against the native endpoint with model strings from all 6 providers. Bifrost's Responses-shape converter normalizes to BifrostChatRequest internally; the same converter must handle every backend.",
               "item": [
                 {
@@ -3295,8 +3295,8 @@
               ]
             },
             {
-              "name": "8.1.C OpenAI drop-in /openai/v1/chat/completions × non-OpenAI providers",
-              "description": "OpenAI ChatCompletion shape via the `/openai` drop-in prefix, routed to non-OpenAI backends via `provider/` model prefix. The OpenAI diagonal is already in §2 and 8.1.A; here we exercise the drop-in's converter against backends that need shape translation.",
+              "name": "8.1.C OpenAI drop-in /openai/v1/chat/completions \u00d7 non-OpenAI providers",
+              "description": "OpenAI ChatCompletion shape via the `/openai` drop-in prefix, routed to non-OpenAI backends via `provider/` model prefix. The OpenAI diagonal is already in \u00a72 and 8.1.A; here we exercise the drop-in's converter against backends that need shape translation.",
               "item": [
                 {
                   "name": "anthropic/claude-opus-4-7",
@@ -3665,7 +3665,7 @@
               ]
             },
             {
-              "name": "8.1.D OpenAI drop-in /openai/v1/responses × non-OpenAI providers",
+              "name": "8.1.D OpenAI drop-in /openai/v1/responses \u00d7 non-OpenAI providers",
               "description": "OpenAI Responses-API shape via `/openai` drop-in, routed to non-OpenAI backends. Responses-shape converter must round-trip through every provider's chat backend.",
               "item": [
                 {
@@ -3995,8 +3995,8 @@
               ]
             },
             {
-              "name": "8.1.E Anthropic drop-in /anthropic/v1/messages × non-Anthropic providers",
-              "description": "Anthropic Messages-API shape (requires `max_tokens`) routed to non-Anthropic backends. Tests Bifrost's Messages→BifrostChatRequest converter against every other provider.",
+              "name": "8.1.E Anthropic drop-in /anthropic/v1/messages \u00d7 non-Anthropic providers",
+              "description": "Anthropic Messages-API shape (requires `max_tokens`) routed to non-Anthropic backends. Tests Bifrost's Messages\u2192BifrostChatRequest converter against every other provider.",
               "item": [
                 {
                   "name": "openai/gpt-5",
@@ -4352,7 +4352,7 @@
               ]
             },
             {
-              "name": "8.1.F GenAI drop-in /genai/v1beta/models/{model}:generateContent × non-Gemini providers",
+              "name": "8.1.F GenAI drop-in /genai/v1beta/models/{model}:generateContent \u00d7 non-Gemini providers",
               "description": "Google GenAI generateContent shape (`contents` / `parts` body, model in URL path) routed to non-Gemini backends. The provider/model prefix is part of the path; Bifrost's GenAI router (`integrations/router.go`) parses it before invoking the backend.",
               "item": [
                 {
@@ -4648,8 +4648,8 @@
               ]
             },
             {
-              "name": "8.1.G Bedrock drop-in /bedrock/model/{modelId}/converse × non-Bedrock providers",
-              "description": "AWS Bedrock Converse API shape (`messages[].content[].text` body, model ID in the URL path) routed to non-Bedrock backends. The Converse route captures `{modelId}` as a single path segment, so a `provider/model` prefix must be URL-encoded (`%2F`) in the path — see `bedrockPreCallback` in `transports/bifrost-http/integrations/bedrock.go`.",
+              "name": "8.1.G Bedrock drop-in /bedrock/model/{modelId}/converse \u00d7 non-Bedrock providers",
+              "description": "AWS Bedrock Converse API shape (`messages[].content[].text` body, model ID in the URL path) routed to non-Bedrock backends. The Converse route captures `{modelId}` as a single path segment, so a `provider/model` prefix must be URL-encoded (`%2F`) in the path \u2014 see `bedrockPreCallback` in `transports/bifrost-http/integrations/bedrock.go`.",
               "item": [
                 {
                   "name": "openai/gpt-5",
@@ -5019,7 +5019,7 @@
           ],
           "item": [
             {
-              "name": "8.2.A Native /v1/chat/completions streaming × all providers",
+              "name": "8.2.A Native /v1/chat/completions streaming \u00d7 all providers",
               "description": "Streaming chat completions via the unified native endpoint, one model per provider.",
               "item": [
                 {
@@ -5241,7 +5241,7 @@
               ]
             },
             {
-              "name": "8.2.B Native /v1/responses streaming × all providers",
+              "name": "8.2.B Native /v1/responses streaming \u00d7 all providers",
               "description": "Streaming Responses-API via native endpoint.",
               "event": [
                 {
@@ -5524,7 +5524,7 @@
               ]
             },
             {
-              "name": "8.2.C OpenAI drop-in /openai/v1/chat/completions streaming × non-OpenAI providers",
+              "name": "8.2.C OpenAI drop-in /openai/v1/chat/completions streaming \u00d7 non-OpenAI providers",
               "description": "OpenAI streaming chat shape via drop-in, routed to non-OpenAI backends.",
               "item": [
                 {
@@ -5698,7 +5698,7 @@
               ]
             },
             {
-              "name": "8.2.D OpenAI drop-in /openai/v1/responses streaming × non-OpenAI providers",
+              "name": "8.2.D OpenAI drop-in /openai/v1/responses streaming \u00d7 non-OpenAI providers",
               "description": "OpenAI streaming Responses shape via drop-in, routed to non-OpenAI backends.",
               "item": [
                 {
@@ -5866,7 +5866,7 @@
               ]
             },
             {
-              "name": "8.2.E Anthropic drop-in /anthropic/v1/messages streaming × non-Anthropic providers",
+              "name": "8.2.E Anthropic drop-in /anthropic/v1/messages streaming \u00d7 non-Anthropic providers",
               "description": "Anthropic streaming Messages-API shape via drop-in, routed to non-Anthropic backends.",
               "item": [
                 {
@@ -6034,7 +6034,7 @@
               ]
             },
             {
-              "name": "8.2.F GenAI drop-in :streamGenerateContent × non-Gemini providers",
+              "name": "8.2.F GenAI drop-in :streamGenerateContent \u00d7 non-Gemini providers",
               "description": "Google GenAI streaming via `:streamGenerateContent?alt=sse`, routed to non-Gemini backends. Body unchanged from non-streaming generateContent; SSE is requested via the URL suffix + query.",
               "item": [
                 {
@@ -6215,7 +6215,7 @@
               ]
             },
             {
-              "name": "8.2.G Bedrock drop-in /bedrock/model/{modelId}/converse-stream streaming × non-Bedrock providers",
+              "name": "8.2.G Bedrock drop-in /bedrock/model/{modelId}/converse-stream streaming \u00d7 non-Bedrock providers",
               "description": "Streaming variant of 8.1.G. Same Converse-shaped body; URL suffix changes to `/converse-stream`. The folder-level test script asserts a streaming Content-Type and a recognized terminator.",
               "item": [
                 {
@@ -6392,10 +6392,10 @@
         },
         {
           "name": "8.3 Embeddings",
-          "description": "Embedding endpoints × providers. Anthropic returns NewUnsupportedOperationError for Embedding (core/providers/anthropic/anthropic.go:1878-1923) — those cells are tagged `[SKIP]` and skipped unless `include_skip=1`.\n\nResponse shapes (validated by extended top-level detector):\n- OpenAI: `{data: [{embedding: [...]}]}` → list-data branch\n- GenAI: `{embedding: {values: [...]}}` → genai-embedding branch\n- Bedrock Titan: `{embedding: [...]}` → bedrock-titan-embedding branch\n- Vertex: `{predictions: [{embeddings: {values}}]}` → vertex-predictions branch",
+          "description": "Embedding endpoints \u00d7 providers. Anthropic returns NewUnsupportedOperationError for Embedding (core/providers/anthropic/anthropic.go:1878-1923) \u2014 those cells are tagged `[SKIP]` and skipped unless `include_skip=1`.\n\nResponse shapes (validated by extended top-level detector):\n- OpenAI: `{data: [{embedding: [...]}]}` \u2192 list-data branch\n- GenAI: `{embedding: {values: [...]}}` \u2192 genai-embedding branch\n- Bedrock Titan: `{embedding: [...]}` \u2192 bedrock-titan-embedding branch\n- Vertex: `{predictions: [{embeddings: {values}}]}` \u2192 vertex-predictions branch",
           "item": [
             {
-              "name": "8.3.H Native /v1/embeddings × all providers",
+              "name": "8.3.H Native /v1/embeddings \u00d7 all providers",
               "description": "Native embeddings endpoint with model strings from every provider. OpenAI-shape request, but Bifrost routes to the model's actual provider.",
               "item": [
                 {
@@ -6557,7 +6557,7 @@
               ]
             },
             {
-              "name": "8.3.I OpenAI drop-in /openai/v1/embeddings × non-OpenAI providers",
+              "name": "8.3.I OpenAI drop-in /openai/v1/embeddings \u00d7 non-OpenAI providers",
               "description": "OpenAI Embeddings shape via drop-in, routed to non-OpenAI backends.",
               "item": [
                 {
@@ -6698,7 +6698,7 @@
               ]
             },
             {
-              "name": "8.3.J GenAI drop-in /genai/v1beta/models/{model}:embedContent × non-Gemini providers",
+              "name": "8.3.J GenAI drop-in /genai/v1beta/models/{model}:embedContent \u00d7 non-Gemini providers",
               "description": "Google GenAI embedContent shape (`content.parts`), model in URL path. Routed to non-Gemini embedding backends.",
               "item": [
                 {
@@ -6852,10 +6852,10 @@
         },
         {
           "name": "8.4 Audio (transcription + speech)",
-          "description": "Audio endpoints × providers. Most providers don't expose a dedicated audio endpoint through Bifrost — those cells are `[SKIP]`:\n- Anthropic: no audio (core/providers/anthropic/anthropic.go:1878-1923)\n- Vertex: no transcription (core/providers/vertex/vertex.go:1722-1729)\n- Bedrock: no transcription (core/providers/bedrock/bedrock.go:1936-1941); audio input rejected (core/providers/bedrock/utils.go:1058)\n- Gemini/Vertex TTS: no /v1/audio/speech equivalent\n\nTranscription tests require `tests/e2e/api/fixtures/sample.mp3` (small audio sample) at runtime — see Phase 7 verification.\n\nResponse shapes (validated by extended top-level detector):\n- Transcription JSON: `{text: \"...\"}` → audio-transcription branch\n- TTS binary: `audio/*` Content-Type → prelude's non-JSON early-return passes status-only check",
+          "description": "Audio endpoints \u00d7 providers. Most providers don't expose a dedicated audio endpoint through Bifrost \u2014 those cells are `[SKIP]`:\n- Anthropic: no audio (core/providers/anthropic/anthropic.go:1878-1923)\n- Vertex: no transcription (core/providers/vertex/vertex.go:1722-1729)\n- Bedrock: no transcription (core/providers/bedrock/bedrock.go:1936-1941); audio input rejected (core/providers/bedrock/utils.go:1058)\n- Gemini/Vertex TTS: no /v1/audio/speech equivalent\n\nTranscription tests require `tests/e2e/api/fixtures/sample.mp3` (small audio sample) at runtime \u2014 see Phase 7 verification.\n\nResponse shapes (validated by extended top-level detector):\n- Transcription JSON: `{text: \"...\"}` \u2192 audio-transcription branch\n- TTS binary: `audio/*` Content-Type \u2192 prelude's non-JSON early-return passes status-only check",
           "item": [
             {
-              "name": "8.4.K Native /v1/audio/transcriptions × providers",
+              "name": "8.4.K Native /v1/audio/transcriptions \u00d7 providers",
               "description": "Transcription endpoint with multipart formdata. Supported providers: OpenAI (Whisper, gpt-4o-mini-transcribe), Gemini (via generateContent under the hood), Azure (Whisper deployment).",
               "item": [
                 {
@@ -7053,7 +7053,7 @@
               ]
             },
             {
-              "name": "8.4.L OpenAI drop-in /openai/v1/audio/transcriptions × non-OpenAI providers",
+              "name": "8.4.L OpenAI drop-in /openai/v1/audio/transcriptions \u00d7 non-OpenAI providers",
               "description": "OpenAI Transcriptions shape via drop-in, routed to non-OpenAI transcription backends.",
               "item": [
                 {
@@ -7224,7 +7224,7 @@
               ]
             },
             {
-              "name": "8.4.M Native /v1/audio/speech × providers",
+              "name": "8.4.M Native /v1/audio/speech \u00d7 providers",
               "description": "Text-to-speech endpoint. Supported: OpenAI, Azure. Anthropic/Gemini/Vertex/Bedrock have no `/v1/audio/speech`-equivalent endpoint in Bifrost.",
               "item": [
                 {
@@ -7392,7 +7392,7 @@
               ]
             },
             {
-              "name": "8.4.N OpenAI drop-in /openai/v1/audio/speech × non-OpenAI providers",
+              "name": "8.4.N OpenAI drop-in /openai/v1/audio/speech \u00d7 non-OpenAI providers",
               "description": "OpenAI TTS shape via drop-in. Only Azure has a comparable backend.",
               "item": [
                 {
@@ -7541,10 +7541,10 @@
         },
         {
           "name": "8.5 Image generation",
-          "description": "Image generation endpoints × providers. Anthropic returns NewUnsupportedOperationError for ImageGeneration (core/providers/anthropic/anthropic.go:1878-1923) — those cells are `[SKIP]`.\n\nResponse shapes (validated by extended top-level detector):\n- OpenAI: `{data: [{url|b64_json}]}` → list-data branch\n- Vertex Imagen: `{predictions: [{bytesBase64Encoded}]}` → vertex-predictions branch\n- Bedrock Titan/Nova: `{images: [\"base64\"]}` → bedrock-images branch\n\nOmits /v1/images/edits — needs a binary PNG fixture; will be added later if needed.",
+          "description": "Image generation endpoints \u00d7 providers. Anthropic returns NewUnsupportedOperationError for ImageGeneration (core/providers/anthropic/anthropic.go:1878-1923) \u2014 those cells are `[SKIP]`.\n\nResponse shapes (validated by extended top-level detector):\n- OpenAI: `{data: [{url|b64_json}]}` \u2192 list-data branch\n- Vertex Imagen: `{predictions: [{bytesBase64Encoded}]}` \u2192 vertex-predictions branch\n- Bedrock Titan/Nova: `{images: [\"base64\"]}` \u2192 bedrock-images branch\n\nOmits /v1/images/edits \u2014 needs a binary PNG fixture; will be added later if needed.",
           "item": [
             {
-              "name": "8.5.O Native /v1/images/generations × providers",
+              "name": "8.5.O Native /v1/images/generations \u00d7 providers",
               "description": "Image generation endpoint with model strings from all providers. OpenAI request shape; Bifrost translates to backend-specific format internally.",
               "item": [
                 {
@@ -7712,7 +7712,7 @@
               ]
             },
             {
-              "name": "8.5.P OpenAI drop-in /openai/v1/images/generations × non-OpenAI providers",
+              "name": "8.5.P OpenAI drop-in /openai/v1/images/generations \u00d7 non-OpenAI providers",
               "description": "OpenAI image-generation shape via drop-in, routed to non-OpenAI backends.",
               "item": [
                 {
@@ -7861,14 +7861,14 @@
         },
         {
           "name": "8.6 Feature combinations",
-          "description": "Feature-specific cross-shape tests: tool calling, vision (image input), JSON / structured output, reasoning / thinking.\n\nEach feature is tested across multiple endpoint shapes with multiple model providers, proving Bifrost's converters preserve feature semantics across shape boundaries (e.g., OpenAI `tools` array → Anthropic `tools` shape when routed to Claude; Anthropic `tools` shape → Gemini `function_declarations` when routed to Gemini).\n\nResponse-shape assertions (`tool_calls` / `tool_use` / `functionCall`) are already in the top-level detector.",
+          "description": "Feature-specific cross-shape tests: tool calling, vision (image input), JSON / structured output, reasoning / thinking.\n\nEach feature is tested across multiple endpoint shapes with multiple model providers, proving Bifrost's converters preserve feature semantics across shape boundaries (e.g., OpenAI `tools` array \u2192 Anthropic `tools` shape when routed to Claude; Anthropic `tools` shape \u2192 Gemini `function_declarations` when routed to Gemini).\n\nResponse-shape assertions (`tool_calls` / `tool_use` / `functionCall`) are already in the top-level detector.",
           "item": [
             {
-              "name": "8.6.1 Tool calling × endpoint shapes × providers",
+              "name": "8.6.1 Tool calling \u00d7 endpoint shapes \u00d7 providers",
               "description": "Function-calling request. Each shape uses its native tool schema (OpenAI `tools[].function`, Anthropic `tools[].input_schema`, GenAI `tools[].function_declarations`, Bedrock `toolConfig.tools[].toolSpec`). The converter must translate to the backend's native tool shape and translate the response back.",
               "item": [
                 {
-                  "name": "8.6.1.A native chat → openai/gpt-4o-mini",
+                  "name": "8.6.1.A native chat \u2192 openai/gpt-4o-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7895,7 +7895,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.A native chat → deepseek/deepseek-v4-flash",
+                  "name": "8.6.1.A native chat \u2192 deepseek/deepseek-v4-flash",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7922,7 +7922,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.A native chat → anthropic/claude-haiku-4-5",
+                  "name": "8.6.1.A native chat \u2192 anthropic/claude-haiku-4-5",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7949,7 +7949,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.A native chat → gemini/gemini-2.5-flash",
+                  "name": "8.6.1.A native chat \u2192 gemini/gemini-2.5-flash",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7976,7 +7976,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.A native chat → bedrock/global.anthropic.claude-opus-4-7",
+                  "name": "8.6.1.A native chat \u2192 bedrock/global.anthropic.claude-opus-4-7",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8003,7 +8003,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.A native chat → bedrock/global.anthropic.claude-opus-4-7",
+                  "name": "8.6.1.A native chat \u2192 bedrock/global.anthropic.claude-opus-4-7",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8030,7 +8030,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.E /anthropic/v1/messages → openai/gpt-4o-mini",
+                  "name": "8.6.1.E /anthropic/v1/messages \u2192 openai/gpt-4o-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8057,7 +8057,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.E /anthropic/v1/messages → gemini/gemini-2.5-flash",
+                  "name": "8.6.1.E /anthropic/v1/messages \u2192 gemini/gemini-2.5-flash",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8084,7 +8084,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.E /anthropic/v1/messages → bedrock/us.amazon.nova-lite-v1:0",
+                  "name": "8.6.1.E /anthropic/v1/messages \u2192 bedrock/us.amazon.nova-lite-v1:0",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8111,7 +8111,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.E /anthropic/v1/messages → bedrock/us.amazon.nova-lite-v1:0",
+                  "name": "8.6.1.E /anthropic/v1/messages \u2192 bedrock/us.amazon.nova-lite-v1:0",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8138,7 +8138,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.F /genai → openai/gpt-4o-mini",
+                  "name": "8.6.1.F /genai \u2192 openai/gpt-4o-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8167,7 +8167,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.F /genai → anthropic/claude-haiku-4-5",
+                  "name": "8.6.1.F /genai \u2192 anthropic/claude-haiku-4-5",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8196,7 +8196,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.F /genai → bedrock/us.amazon.nova-lite-v1:0",
+                  "name": "8.6.1.F /genai \u2192 bedrock/us.amazon.nova-lite-v1:0",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8225,7 +8225,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.G /bedrock/model/{modelId}/converse → openai/gpt-4o-mini",
+                  "name": "8.6.1.G /bedrock/model/{modelId}/converse \u2192 openai/gpt-4o-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8253,7 +8253,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.G /bedrock/model/{modelId}/converse → anthropic/claude-haiku-4-5",
+                  "name": "8.6.1.G /bedrock/model/{modelId}/converse \u2192 anthropic/claude-haiku-4-5",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8281,7 +8281,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.G /bedrock/model/{modelId}/converse → gemini/gemini-2.5-flash",
+                  "name": "8.6.1.G /bedrock/model/{modelId}/converse \u2192 gemini/gemini-2.5-flash",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8309,7 +8309,7 @@
                   }
                 },
                 {
-                  "name": "8.6.1.G /bedrock/model/{modelId}/converse → azure/gpt-4o-mini",
+                  "name": "8.6.1.G /bedrock/model/{modelId}/converse \u2192 azure/gpt-4o-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8339,11 +8339,11 @@
               ]
             },
             {
-              "name": "8.6.2 Vision (image input) × endpoint shapes × providers",
-              "description": "Vision request with a 1×1 transparent PNG (base64 inline). Each shape uses its native image-content schema:\n- OpenAI: `content: [{type:\"image_url\", image_url:{url:\"data:image/png;base64,...\"}}]`\n- Anthropic: `content: [{type:\"image\", source:{type:\"base64\", media_type, data}}]`\n- GenAI: `parts: [{inline_data:{mime_type, data}}]`\n- Bedrock: `content: [{image:{format, source:{bytes}}}]`",
+              "name": "8.6.2 Vision (image input) \u00d7 endpoint shapes \u00d7 providers",
+              "description": "Vision request with a 1\u00d71 transparent PNG (base64 inline). Each shape uses its native image-content schema:\n- OpenAI: `content: [{type:\"image_url\", image_url:{url:\"data:image/png;base64,...\"}}]`\n- Anthropic: `content: [{type:\"image\", source:{type:\"base64\", media_type, data}}]`\n- GenAI: `parts: [{inline_data:{mime_type, data}}]`\n- Bedrock: `content: [{image:{format, source:{bytes}}}]`",
               "item": [
                 {
-                  "name": "8.6.2.A native chat → openai/gpt-4o-mini",
+                  "name": "8.6.2.A native chat \u2192 openai/gpt-4o-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8370,7 +8370,7 @@
                   }
                 },
                 {
-                  "name": "8.6.2.A native chat → anthropic/claude-haiku-4-5",
+                  "name": "8.6.2.A native chat \u2192 anthropic/claude-haiku-4-5",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8397,7 +8397,7 @@
                   }
                 },
                 {
-                  "name": "8.6.2.A native chat → gemini/gemini-2.5-flash",
+                  "name": "8.6.2.A native chat \u2192 gemini/gemini-2.5-flash",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8424,7 +8424,7 @@
                   }
                 },
                 {
-                  "name": "8.6.2.A native chat → bedrock/global.anthropic.claude-opus-4-7",
+                  "name": "8.6.2.A native chat \u2192 bedrock/global.anthropic.claude-opus-4-7",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8451,7 +8451,7 @@
                   }
                 },
                 {
-                  "name": "8.6.2.E /anthropic/v1/messages → openai/gpt-4o-mini",
+                  "name": "8.6.2.E /anthropic/v1/messages \u2192 openai/gpt-4o-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8478,7 +8478,7 @@
                   }
                 },
                 {
-                  "name": "8.6.2.E /anthropic/v1/messages → gemini/gemini-2.5-flash",
+                  "name": "8.6.2.E /anthropic/v1/messages \u2192 gemini/gemini-2.5-flash",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8505,7 +8505,7 @@
                   }
                 },
                 {
-                  "name": "8.6.2.F /genai → openai/gpt-4o-mini",
+                  "name": "8.6.2.F /genai \u2192 openai/gpt-4o-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8534,7 +8534,7 @@
                   }
                 },
                 {
-                  "name": "8.6.2.F /genai → anthropic/claude-haiku-4-5",
+                  "name": "8.6.2.F /genai \u2192 anthropic/claude-haiku-4-5",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8563,7 +8563,7 @@
                   }
                 },
                 {
-                  "name": "8.6.2.G /bedrock/model/{modelId}/converse → openai/gpt-4o-mini",
+                  "name": "8.6.2.G /bedrock/model/{modelId}/converse \u2192 openai/gpt-4o-mini",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8591,7 +8591,7 @@
                   }
                 },
                 {
-                  "name": "8.6.2.G /bedrock/model/{modelId}/converse → anthropic/claude-haiku-4-5",
+                  "name": "8.6.2.G /bedrock/model/{modelId}/converse \u2192 anthropic/claude-haiku-4-5",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8619,7 +8619,7 @@
                   }
                 },
                 {
-                  "name": "8.6.2.G /bedrock/model/{modelId}/converse → gemini/gemini-2.5-flash",
+                  "name": "8.6.2.G /bedrock/model/{modelId}/converse \u2192 gemini/gemini-2.5-flash",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8649,7 +8649,7 @@
               ]
             },
             {
-              "name": "8.6.3 JSON / structured output × providers",
+              "name": "8.6.3 JSON / structured output \u00d7 providers",
               "description": "OpenAI `response_format: {type: \"json_schema\", json_schema: {...}}` via native chat endpoint, routed to each provider's structured-output mechanism (Anthropic tool-use forcing, Gemini responseSchema, Bedrock tool-spec).",
               "item": [
                 {
@@ -8790,11 +8790,11 @@
               ]
             },
             {
-              "name": "8.6.4 Reasoning / thinking × providers",
+              "name": "8.6.4 Reasoning / thinking \u00d7 providers",
               "description": "Reasoning/thinking activation via the request field appropriate for the model's native provider:\n- OpenAI o-series: `reasoning_effort: \"low\"`\n- Anthropic: `thinking: {type: \"enabled\", budget_tokens: 1024}`\n- Gemini 2.5+: `thinkingConfig: {thinkingBudget: 1024}` (or via Bifrost's OpenAI-shape `reasoning_effort` translation)\n\nBifrost's converter maps each field to the backend's native reasoning parameter.",
               "item": [
                 {
-                  "name": "8.6.4.A native chat → openai/o3-mini (reasoning_effort)",
+                  "name": "8.6.4.A native chat \u2192 openai/o3-mini (reasoning_effort)",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8821,7 +8821,7 @@
                   }
                 },
                 {
-                  "name": "8.6.4.A native chat → deepseek/deepseek-v4-pro (reasoning_effort max)",
+                  "name": "8.6.4.A native chat \u2192 deepseek/deepseek-v4-pro (reasoning_effort max)",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8848,7 +8848,7 @@
                   }
                 },
                 {
-                  "name": "8.6.4.A native chat → anthropic/claude-opus-4-7 (thinking)",
+                  "name": "8.6.4.A native chat \u2192 anthropic/claude-opus-4-7 (thinking)",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8875,7 +8875,7 @@
                   }
                 },
                 {
-                  "name": "8.6.4.A native chat → anthropic/claude-opus-4-8 (thinking)",
+                  "name": "8.6.4.A native chat \u2192 anthropic/claude-opus-4-8 (thinking)",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8902,7 +8902,7 @@
                   }
                 },
                 {
-                  "name": "8.6.4.A native chat → gemini/gemini-2.5-flash (reasoning_effort translated)",
+                  "name": "8.6.4.A native chat \u2192 gemini/gemini-2.5-flash (reasoning_effort translated)",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8929,7 +8929,7 @@
                   }
                 },
                 {
-                  "name": "8.6.4.E /anthropic/v1/messages → openai/gpt-5 (thinking translated)",
+                  "name": "8.6.4.E /anthropic/v1/messages \u2192 openai/gpt-5 (thinking translated)",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8956,7 +8956,7 @@
                   }
                 },
                 {
-                  "name": "8.6.4.A native chat → vertex/moonshotai/kimi-k2-thinking-maas (reasoning_effort none → dropped)",
+                  "name": "8.6.4.A native chat \u2192 vertex/moonshotai/kimi-k2-thinking-maas (reasoning_effort none \u2192 dropped)",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -8983,7 +8983,7 @@
                   }
                 },
                 {
-                  "name": "8.6.4.A native chat → vertex/minimaxai/minimax-m2-maas (reasoning_effort none → dropped)",
+                  "name": "8.6.4.A native chat \u2192 vertex/minimaxai/minimax-m2-maas (reasoning_effort none \u2192 dropped)",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -9010,7 +9010,7 @@
                   }
                 },
                 {
-                  "name": "8.6.4.B native /v1/responses → vertex/moonshotai/kimi-k2-thinking-maas (reasoning none → dropped)",
+                  "name": "8.6.4.B native /v1/responses \u2192 vertex/moonshotai/kimi-k2-thinking-maas (reasoning none \u2192 dropped)",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -9039,7 +9039,7 @@
             },
             {
               "name": "8.6.5 xAI x_search (server-side tool)",
-              "description": "xAI-native x_search tool tests via the native /v1/responses endpoint.\n\nThe x_search tool is a server-side search tool exclusive to xAI (grok models). When invoked the model internally calls x_semantic_search and/or x_keyword_search, returning custom_tool_call output items. The final message output_text content block carries url_citation annotations pointing at the source tweets/posts.\n\nDocs: https://docs.x.ai/developers/tools/x-search\n\nCovered here:\n  8.6.5.A – basic x_search, no extra params → verifies custom_tool_call items + final message\n  8.6.5.B – x_search with allowed_x_handles filter → tool_choice=required, verifies sub-tool name\n  8.6.5.C – x_search with from_date/to_date → date-range filtering passes through\n  8.6.5.D – x_search with all optional params (exact bug-report repro)\n  8.6.5.E – x_search streaming → custom_tool_call_input events flow through the SSE stream\n  8.6.5.F – x_search with url_citation annotations → verifies annotations array in output_text block",
+              "description": "xAI-native x_search tool tests via the native /v1/responses endpoint.\n\nThe x_search tool is a server-side search tool exclusive to xAI (grok models). When invoked the model internally calls x_semantic_search and/or x_keyword_search, returning custom_tool_call output items. The final message output_text content block carries url_citation annotations pointing at the source tweets/posts.\n\nDocs: https://docs.x.ai/developers/tools/x-search\n\nCovered here:\n  8.6.5.A \u2013 basic x_search, no extra params \u2192 verifies custom_tool_call items + final message\n  8.6.5.B \u2013 x_search with allowed_x_handles filter \u2192 tool_choice=required, verifies sub-tool name\n  8.6.5.C \u2013 x_search with from_date/to_date \u2192 date-range filtering passes through\n  8.6.5.D \u2013 x_search with all optional params (exact bug-report repro)\n  8.6.5.E \u2013 x_search streaming \u2192 custom_tool_call_input events flow through the SSE stream\n  8.6.5.F \u2013 x_search with url_citation annotations \u2192 verifies annotations array in output_text block",
               "item": [
                 {
                   "name": "8.6.5.A x_search basic (no params)",
@@ -9052,7 +9052,7 @@
                           "pm.test('x_search: output contains at least one custom_tool_call', function () {",
                           "  var j = pm.response.json();",
                           "  var calls = (j.output || []).filter(function(o) { return o.type === 'custom_tool_call'; });",
-                          "  pm.expect(calls.length, 'expected ≥1 custom_tool_call in output').to.be.above(0);",
+                          "  pm.expect(calls.length, 'expected \u22651 custom_tool_call in output').to.be.above(0);",
                           "  calls.forEach(function(c) {",
                           "    pm.expect(c.name, 'sub-tool name must start with x_').to.match(/^x_/);",
                           "  });",
@@ -9103,7 +9103,7 @@
                           "pm.test('x_search handles: at least one custom_tool_call present', function () {",
                           "  var j = pm.response.json();",
                           "  var calls = (j.output || []).filter(function(o) { return o.type === 'custom_tool_call'; });",
-                          "  pm.expect(calls.length, 'tool_choice=required must produce ≥1 custom_tool_call').to.be.above(0);",
+                          "  pm.expect(calls.length, 'tool_choice=required must produce \u22651 custom_tool_call').to.be.above(0);",
                           "});"
                         ]
                       }
@@ -9144,7 +9144,7 @@
                           "pm.test('x_search date range: custom_tool_call present', function () {",
                           "  var j = pm.response.json();",
                           "  var calls = (j.output || []).filter(function(o) { return o.type === 'custom_tool_call'; });",
-                          "  pm.expect(calls.length, 'expected ≥1 custom_tool_call').to.be.above(0);",
+                          "  pm.expect(calls.length, 'expected \u22651 custom_tool_call').to.be.above(0);",
                           "});",
                           "pm.test('x_search date range: final message has content', function () {",
                           "  var j = pm.response.json();",
@@ -9191,7 +9191,7 @@
                           "  var j = pm.response.json();",
                           "  pm.expect(j.output, 'output should be a non-empty array').to.be.an('array').with.length.above(0);",
                           "  var calls = (j.output || []).filter(function(o) { return o.type === 'custom_tool_call'; });",
-                          "  pm.expect(calls.length, 'tool_choice=required must yield ≥1 custom_tool_call').to.be.above(0);",
+                          "  pm.expect(calls.length, 'tool_choice=required must yield \u22651 custom_tool_call').to.be.above(0);",
                           "});",
                           "pm.test('x_search all params: usage reports x_search_calls > 0', function () {",
                           "  var j = pm.response.json();",
@@ -9236,7 +9236,7 @@
                       "script": {
                         "type": "text/javascript",
                         "exec": [
-                          "// Streaming responses return text/event-stream — the collection-level content check skips those.",
+                          "// Streaming responses return text/event-stream \u2014 the collection-level content check skips those.",
                           "// We verify only that Bifrost emits a 200 and the SSE prefix.",
                           "pm.test('x_search stream: 200 with SSE content-type', function () {",
                           "  pm.expect(pm.response.code).to.equal(200);",
@@ -9520,7 +9520,7 @@
           }
         },
         {
-          "name": "POST /azure_passthrough/openai/deployments/{deployment}/chat/completions (no api-version — default injected)",
+          "name": "POST /azure_passthrough/openai/deployments/{deployment}/chat/completions (no api-version \u2014 default injected)",
           "request": {
             "method": "POST",
             "header": [
@@ -9550,7 +9550,7 @@
           }
         },
         {
-          "name": "POST /azure_passthrough/openai/v1/responses (no api-version — preview injected)",
+          "name": "POST /azure_passthrough/openai/v1/responses (no api-version \u2014 preview injected)",
           "request": {
             "method": "POST",
             "header": [
@@ -9578,7 +9578,7 @@
           }
         },
         {
-          "name": "POST /azure_passthrough/openai/deployments/gpt-4o-transcribe/audio/transcriptions (no api-version — default injected)",
+          "name": "POST /azure_passthrough/openai/deployments/gpt-4o-transcribe/audio/transcriptions (no api-version \u2014 default injected)",
           "request": {
             "method": "POST",
             "header": [],
@@ -10731,7 +10731,7 @@
               }
             },
             {
-              "name": "Code execution — python (code_execution_20250825)",
+              "name": "Code execution \u2014 python (code_execution_20250825)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -10787,7 +10787,7 @@
               ]
             },
             {
-              "name": "Code execution — bash sub-tool (bash_code_execution)",
+              "name": "Code execution \u2014 bash sub-tool (bash_code_execution)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -10843,7 +10843,7 @@
               ]
             },
             {
-              "name": "Code execution — text_editor (create / view / str_replace)",
+              "name": "Code execution \u2014 text_editor (create / view / str_replace)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -10906,7 +10906,7 @@
               ]
             },
             {
-              "name": "Code execution — streaming (SSE, well-formed blocks)",
+              "name": "Code execution \u2014 streaming (SSE, well-formed blocks)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -10965,7 +10965,7 @@
               ]
             },
             {
-              "name": "Code execution — version code_execution_20260120 (REPL persistence + PTC)",
+              "name": "Code execution \u2014 version code_execution_20260120 (REPL persistence + PTC)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -11021,7 +11021,7 @@
               ]
             },
             {
-              "name": "Code execution — version code_execution_20260521 (disclosed per-cell time limit)",
+              "name": "Code execution \u2014 version code_execution_20260521 (disclosed per-cell time limit)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -11077,7 +11077,7 @@
               ]
             },
             {
-              "name": "Code execution — programmatic tool calling (custom tool + allowed_callers)",
+              "name": "Code execution \u2014 programmatic tool calling (custom tool + allowed_callers)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -11272,7 +11272,7 @@
               }
             },
             {
-              "name": "guardrailConfig forwarded — converse (regression)",
+              "name": "guardrailConfig forwarded \u2014 converse (regression)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -11385,7 +11385,7 @@
               }
             },
             {
-              "name": "guardrailConfig forwarded — converse (regression)",
+              "name": "guardrailConfig forwarded \u2014 converse (regression)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -13084,10 +13084,10 @@
         },
         {
           "name": "MCP Tool Handling cross-cut",
-          "description": "Regression #3795: a provider-side `type:\"mcp\"` server tool in a Responses request must be silently dropped for providers without an MCP connector (Bedrock, Vertex), not rejected. Function tools survive the strip. Function-bearing rows force the surviving function tool via tool_choice and verify it is invoked (output function_call / streamed response.function_call_arguments). Lone-mcp rows exercise the all-tools-dropped edge case: zero tools left after the strip must still return a text answer with NO tool call. Server/MCP tool calls are NOT expected for Bedrock/Vertex Claude — that is correct. Covers native + /openai drop-in + streaming.",
+          "description": "Regression #3795: a provider-side `type:\"mcp\"` server tool in a Responses request must be silently dropped for providers without an MCP connector (Bedrock, Vertex), not rejected. Function tools survive the strip. Function-bearing rows force the surviving function tool via tool_choice and verify it is invoked (output function_call / streamed response.function_call_arguments). Lone-mcp rows exercise the all-tools-dropped edge case: zero tools left after the strip must still return a text answer with NO tool call. Server/MCP tool calls are NOT expected for Bedrock/Vertex Claude \u2014 that is correct. Covers native + /openai drop-in + streaming.",
           "item": [
             {
-              "name": "bedrock/global.anthropic.claude-opus-4-7 · lone server-mcp dropped",
+              "name": "bedrock/global.anthropic.claude-opus-4-7 \u00b7 lone server-mcp dropped",
               "event": [
                 {
                   "listen": "test",
@@ -13209,7 +13209,7 @@
               }
             },
             {
-              "name": "bedrock/global.anthropic.claude-opus-4-7 · server-mcp + function kept (forced call)",
+              "name": "bedrock/global.anthropic.claude-opus-4-7 \u00b7 server-mcp + function kept (forced call)",
               "event": [
                 {
                   "listen": "test",
@@ -13217,7 +13217,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -13282,7 +13282,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -13339,7 +13339,7 @@
               }
             },
             {
-              "name": "bedrock/global.anthropic.claude-opus-4-7 · 2 server-mcp + 2 function (#3795 shape, forced call)",
+              "name": "bedrock/global.anthropic.claude-opus-4-7 \u00b7 2 server-mcp + 2 function (#3795 shape, forced call)",
               "event": [
                 {
                   "listen": "test",
@@ -13347,7 +13347,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -13412,7 +13412,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -13469,7 +13469,7 @@
               }
             },
             {
-              "name": "bedrock/global.anthropic.claude-sonnet-4-6 · lone server-mcp dropped",
+              "name": "bedrock/global.anthropic.claude-sonnet-4-6 \u00b7 lone server-mcp dropped",
               "event": [
                 {
                   "listen": "test",
@@ -13591,7 +13591,7 @@
               }
             },
             {
-              "name": "bedrock/global.anthropic.claude-sonnet-4-6 · server-mcp + function kept (forced call)",
+              "name": "bedrock/global.anthropic.claude-sonnet-4-6 \u00b7 server-mcp + function kept (forced call)",
               "event": [
                 {
                   "listen": "test",
@@ -13599,7 +13599,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -13664,7 +13664,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -13721,7 +13721,7 @@
               }
             },
             {
-              "name": "bedrock/global.anthropic.claude-sonnet-4-6 · 2 server-mcp + 2 function (#3795 shape, forced call)",
+              "name": "bedrock/global.anthropic.claude-sonnet-4-6 \u00b7 2 server-mcp + 2 function (#3795 shape, forced call)",
               "event": [
                 {
                   "listen": "test",
@@ -13729,7 +13729,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -13794,7 +13794,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -13851,7 +13851,7 @@
               }
             },
             {
-              "name": "vertex/claude-opus-4-7 · lone server-mcp dropped",
+              "name": "vertex/claude-opus-4-7 \u00b7 lone server-mcp dropped",
               "event": [
                 {
                   "listen": "test",
@@ -13912,7 +13912,7 @@
               }
             },
             {
-              "name": "vertex/claude-opus-4-7 · server-mcp + function kept (forced call)",
+              "name": "vertex/claude-opus-4-7 \u00b7 server-mcp + function kept (forced call)",
               "event": [
                 {
                   "listen": "test",
@@ -13920,7 +13920,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -13977,7 +13977,7 @@
               }
             },
             {
-              "name": "vertex/claude-opus-4-7 · 2 server-mcp + 2 function (#3795 shape, forced call)",
+              "name": "vertex/claude-opus-4-7 \u00b7 2 server-mcp + 2 function (#3795 shape, forced call)",
               "event": [
                 {
                   "listen": "test",
@@ -13985,7 +13985,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -14042,7 +14042,7 @@
               }
             },
             {
-              "name": "vertex/claude-sonnet-4-6 · lone server-mcp dropped",
+              "name": "vertex/claude-sonnet-4-6 \u00b7 lone server-mcp dropped",
               "event": [
                 {
                   "listen": "test",
@@ -14103,7 +14103,7 @@
               }
             },
             {
-              "name": "vertex/claude-sonnet-4-6 · server-mcp + function kept (forced call)",
+              "name": "vertex/claude-sonnet-4-6 \u00b7 server-mcp + function kept (forced call)",
               "event": [
                 {
                   "listen": "test",
@@ -14111,7 +14111,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -14168,7 +14168,7 @@
               }
             },
             {
-              "name": "vertex/claude-sonnet-4-6 · 2 server-mcp + 2 function (#3795 shape, forced call)",
+              "name": "vertex/claude-sonnet-4-6 \u00b7 2 server-mcp + 2 function (#3795 shape, forced call)",
               "event": [
                 {
                   "listen": "test",
@@ -14176,7 +14176,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -14233,7 +14233,7 @@
               }
             },
             {
-              "name": "bedrock/global.anthropic.claude-opus-4-7 · /openai drop-in · forced function call",
+              "name": "bedrock/global.anthropic.claude-opus-4-7 \u00b7 /openai drop-in \u00b7 forced function call",
               "event": [
                 {
                   "listen": "test",
@@ -14241,7 +14241,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -14307,7 +14307,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -14365,7 +14365,7 @@
               }
             },
             {
-              "name": "vertex/claude-opus-4-7 · /openai drop-in · forced function call",
+              "name": "vertex/claude-opus-4-7 \u00b7 /openai drop-in \u00b7 forced function call",
               "event": [
                 {
                   "listen": "test",
@@ -14373,7 +14373,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -14431,7 +14431,7 @@
               }
             },
             {
-              "name": "bedrock/global.anthropic.claude-opus-4-7 · streaming · forced function call",
+              "name": "bedrock/global.anthropic.claude-opus-4-7 \u00b7 streaming \u00b7 forced function call",
               "event": [
                 {
                   "listen": "test",
@@ -14439,7 +14439,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -14504,7 +14504,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -14561,7 +14561,7 @@
               }
             },
             {
-              "name": "vertex/claude-opus-4-7 · streaming · forced function call",
+              "name": "vertex/claude-opus-4-7 \u00b7 streaming \u00b7 forced function call",
               "event": [
                 {
                   "listen": "test",
@@ -14569,7 +14569,7 @@
                     "type": "text/javascript",
                     "exec": [
                       "// #3795: the mcp SERVER tool is dropped for Bedrock/Vertex Claude (no MCP connector),",
-                      "// so a server/MCP tool call must NOT happen here — that is expected and fine.",
+                      "// so a server/MCP tool call must NOT happen here \u2014 that is expected and fine.",
                       "// We force the surviving FUNCTION tool via tool_choice and verify it is actually called.",
                       "var ct = (pm.response.headers.get('content-type') || '');",
                       "var raw = pm.response.text() || '';",
@@ -14626,7 +14626,7 @@
               }
             },
             {
-              "name": "bedrock/global.anthropic.claude-opus-4-7 · tool_choice pins absent fn + lone mcp dropped → reconciled, no 400 (PR #4573)",
+              "name": "bedrock/global.anthropic.claude-opus-4-7 \u00b7 tool_choice pins absent fn + lone mcp dropped \u2192 reconciled, no 400 (PR #4573)",
               "event": [
                 {
                   "listen": "test",
@@ -14682,7 +14682,7 @@
               }
             },
             {
-              "name": "bedrock/global.anthropic.claude-sonnet-4-6 · tool_choice pins absent fn + lone mcp dropped → reconciled, no 400 (PR #4573)",
+              "name": "bedrock/global.anthropic.claude-sonnet-4-6 \u00b7 tool_choice pins absent fn + lone mcp dropped \u2192 reconciled, no 400 (PR #4573)",
               "event": [
                 {
                   "listen": "test",
@@ -19147,7 +19147,7 @@
               }
             },
             {
-              "name": "Mid-conv system message (Opus 4.8) — system ends array",
+              "name": "Mid-conv system message (Opus 4.8) \u2014 system ends array",
               "request": {
                 "method": "POST",
                 "header": [
@@ -19182,7 +19182,7 @@
               }
             },
             {
-              "name": "Mid-conv system message (Opus 4.8) — system mid-history (before assistant)",
+              "name": "Mid-conv system message (Opus 4.8) \u2014 system mid-history (before assistant)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -21782,7 +21782,7 @@
               }
             },
             {
-              "name": "Bedrock via /v1: mid-conv system fallback (Opus 4.8 — merged to top-level system)",
+              "name": "Bedrock via /v1: mid-conv system fallback (Opus 4.8 \u2014 merged to top-level system)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -22058,7 +22058,7 @@
               }
             },
             {
-              "name": "Bedrock via /v1: mid-conv system fallback (Opus 4.8 — merged to top-level system)",
+              "name": "Bedrock via /v1: mid-conv system fallback (Opus 4.8 \u2014 merged to top-level system)",
               "request": {
                 "method": "POST",
                 "header": [
@@ -35507,7 +35507,7 @@
         },
         {
           "name": "Cross-Cut Round 29: Mid-Conversation System Message Matrix",
-          "description": "Verifies mid-conversation role:system handling across providers.\n- Anthropic + Opus 4.8: system emitted as role:\"system\" in messages array (native support, no beta header).\n- Bedrock + Vertex + Opus 4.7: system content merged into top-level system field (fallback — positional semantics lost, data preserved).\nPlacement rule: system must end the array OR be immediately followed by an assistant turn.",
+          "description": "Verifies mid-conversation role:system handling across providers.\n- Anthropic + Opus 4.8: system emitted as role:\"system\" in messages array (native support, no beta header).\n- Bedrock + Vertex + Opus 4.7: system content merged into top-level system field (fallback \u2014 positional semantics lost, data preserved).\nPlacement rule: system must end the array OR be immediately followed by an assistant turn.",
           "item": [
             {
               "name": "Cross-cut: anthropic/claude-opus-4-8 mid-conv system (ends array)",
@@ -36366,7 +36366,7 @@
               }
             },
             {
-              "name": "Cross-cut: anthropic/claude-opus-4-8 enabled thinking → adaptive (budget_tokens removed)",
+              "name": "Cross-cut: anthropic/claude-opus-4-8 enabled thinking \u2192 adaptive (budget_tokens removed)",
               "event": [
                 {
                   "listen": "test",
@@ -36404,7 +36404,7 @@
               }
             },
             {
-              "name": "Cross-cut: anthropic/claude-opus-4-8 disabled thinking → omitted (no 400)",
+              "name": "Cross-cut: anthropic/claude-opus-4-8 disabled thinking \u2192 omitted (no 400)",
               "event": [
                 {
                   "listen": "test",
@@ -36523,7 +36523,7 @@
           "name": "Cross-Cut Round 31: OpenAI Prompt Caching (prompt_cache_options / prompt_cache_breakpoint / cache_write_tokens)",
           "item": [
             {
-              "name": "31.1 gpt-5.6 new fields — non-streaming (prompt_cache_options + breakpoint + cache_write_tokens)",
+              "name": "31.1 gpt-5.6 new fields \u2014 non-streaming (prompt_cache_options + breakpoint + cache_write_tokens)",
               "item": [
                 {
                   "name": "pc sol nativechat non-streaming [write]",
@@ -37174,7 +37174,7 @@
               ]
             },
             {
-              "name": "31.2 gpt-5.6 new fields — streaming",
+              "name": "31.2 gpt-5.6 new fields \u2014 streaming",
               "item": [
                 {
                   "name": "pc sol nativechat streaming [write]",
@@ -37847,7 +37847,7 @@
               ]
             },
             {
-              "name": "31.3 legacy automatic caching — non-streaming (cached_tokens shape + cache hit)",
+              "name": "31.3 legacy automatic caching \u2014 non-streaming (cached_tokens shape + cache hit)",
               "item": [
                 {
                   "name": "pc gpt-5 nativechat non-streaming [write]",
@@ -38280,7 +38280,7 @@
               ]
             },
             {
-              "name": "31.4 legacy automatic caching — streaming",
+              "name": "31.4 legacy automatic caching \u2014 streaming",
               "item": [
                 {
                   "name": "pc gpt-4.1-mini nativechat streaming [write]",
@@ -39047,16 +39047,16 @@
       "description": "Integration drop-in requests (/openai, /anthropic, /genai, /bedrock, /cohere, /langchain, /litellm, /pydanticai, /cursor) whose model carried a known Bifrost provider prefix, with that prefix removed from the body \"model\" field and the /models/<provider>/ URL segment. Exercises provider inference when callers omit the provider prefix. Native /v1/* and *_passthrough routes are excluded. Run with: make run-provider-harness-no-prefix-test",
       "item": [
         {
-          "name": "8. Criss-Cross (endpoint × provider × modality matrix)",
-          "description": "Every Bifrost drop-in request shape × every model provider × every supported modality.\n\nBifrost's `ParseModelString` (core/schemas/utils.go) splits the `provider/model-name` prefix and dispatches to the right backend; per-shape converters in `transports/bifrost-http/integrations/` normalize the incoming payload to `BifrostChatRequest` (or the equivalent for embeddings/audio/images) regardless of which provider serves it.\n\nSub-folders:\n- 8.1 Text Chat (non-streaming) — rows A-G × providers\n- 8.2 Text Chat (streaming) — same matrix with stream:true / :streamGenerateContent / converse-stream\n- 8.3 Embeddings — rows H-J × providers\n- 8.4 Audio — transcriptions (K-L) + speech (M-N)\n- 8.5 Image generation / editing — rows O-Q\n- 8.6 Feature combinations — tool calling, vision, JSON/structured output, reasoning\n\nCells where the provider doesn't support the modality (e.g., Anthropic embeddings, Bedrock audio input — see core/providers/*/{anthropic.go:1878-1923, bedrock.go:1936-1941}) are tagged `[SKIP]` and skipped at runtime unless `include_skip=1`.",
+          "name": "8. Criss-Cross (endpoint \u00d7 provider \u00d7 modality matrix)",
+          "description": "Every Bifrost drop-in request shape \u00d7 every model provider \u00d7 every supported modality.\n\nBifrost's `ParseModelString` (core/schemas/utils.go) splits the `provider/model-name` prefix and dispatches to the right backend; per-shape converters in `transports/bifrost-http/integrations/` normalize the incoming payload to `BifrostChatRequest` (or the equivalent for embeddings/audio/images) regardless of which provider serves it.\n\nSub-folders:\n- 8.1 Text Chat (non-streaming) \u2014 rows A-G \u00d7 providers\n- 8.2 Text Chat (streaming) \u2014 same matrix with stream:true / :streamGenerateContent / converse-stream\n- 8.3 Embeddings \u2014 rows H-J \u00d7 providers\n- 8.4 Audio \u2014 transcriptions (K-L) + speech (M-N)\n- 8.5 Image generation / editing \u2014 rows O-Q\n- 8.6 Feature combinations \u2014 tool calling, vision, JSON/structured output, reasoning\n\nCells where the provider doesn't support the modality (e.g., Anthropic embeddings, Bedrock audio input \u2014 see core/providers/*/{anthropic.go:1878-1923, bedrock.go:1936-1941}) are tagged `[SKIP]` and skipped at runtime unless `include_skip=1`.",
           "item": [
             {
               "name": "8.1 Text Chat (non-streaming)",
-              "description": "Minimal `Hello` text-chat request across every endpoint shape × every model provider. Native /v1/chat/completions is the diagonal (provider/model strings only); rows B-G exercise the cross-shape conversion path (e.g., /anthropic/v1/messages with model=openai/gpt-5).",
+              "description": "Minimal `Hello` text-chat request across every endpoint shape \u00d7 every model provider. Native /v1/chat/completions is the diagonal (provider/model strings only); rows B-G exercise the cross-shape conversion path (e.g., /anthropic/v1/messages with model=openai/gpt-5).",
               "item": [
                 {
-                  "name": "8.1.C OpenAI drop-in /openai/v1/chat/completions × non-OpenAI providers",
-                  "description": "OpenAI ChatCompletion shape via the `/openai` drop-in prefix, routed to non-OpenAI backends via `provider/` model prefix. The OpenAI diagonal is already in §2 and 8.1.A; here we exercise the drop-in's converter against backends that need shape translation.",
+                  "name": "8.1.C OpenAI drop-in /openai/v1/chat/completions \u00d7 non-OpenAI providers",
+                  "description": "OpenAI ChatCompletion shape via the `/openai` drop-in prefix, routed to non-OpenAI backends via `provider/` model prefix. The OpenAI diagonal is already in \u00a72 and 8.1.A; here we exercise the drop-in's converter against backends that need shape translation.",
                   "item": [
                     {
                       "name": "anthropic/claude-opus-4-7",
@@ -39341,7 +39341,7 @@
                   ]
                 },
                 {
-                  "name": "8.1.D OpenAI drop-in /openai/v1/responses × non-OpenAI providers",
+                  "name": "8.1.D OpenAI drop-in /openai/v1/responses \u00d7 non-OpenAI providers",
                   "description": "OpenAI Responses-API shape via `/openai` drop-in, routed to non-OpenAI backends. Responses-shape converter must round-trip through every provider's chat backend.",
                   "item": [
                     {
@@ -39617,8 +39617,8 @@
                   ]
                 },
                 {
-                  "name": "8.1.E Anthropic drop-in /anthropic/v1/messages × non-Anthropic providers",
-                  "description": "Anthropic Messages-API shape (requires `max_tokens`) routed to non-Anthropic backends. Tests Bifrost's Messages→BifrostChatRequest converter against every other provider.",
+                  "name": "8.1.E Anthropic drop-in /anthropic/v1/messages \u00d7 non-Anthropic providers",
+                  "description": "Anthropic Messages-API shape (requires `max_tokens`) routed to non-Anthropic backends. Tests Bifrost's Messages\u2192BifrostChatRequest converter against every other provider.",
                   "item": [
                     {
                       "name": "openai/gpt-5",
@@ -39893,7 +39893,7 @@
                   ]
                 },
                 {
-                  "name": "8.1.F GenAI drop-in /genai/v1beta/models/{model}:generateContent × non-Gemini providers",
+                  "name": "8.1.F GenAI drop-in /genai/v1beta/models/{model}:generateContent \u00d7 non-Gemini providers",
                   "description": "Google GenAI generateContent shape (`contents` / `parts` body, model in URL path) routed to non-Gemini backends. The provider/model prefix is part of the path; Bifrost's GenAI router (`integrations/router.go`) parses it before invoking the backend.",
                   "item": [
                     {
@@ -40208,7 +40208,7 @@
               ],
               "item": [
                 {
-                  "name": "8.2.C OpenAI drop-in /openai/v1/chat/completions streaming × non-OpenAI providers",
+                  "name": "8.2.C OpenAI drop-in /openai/v1/chat/completions streaming \u00d7 non-OpenAI providers",
                   "description": "OpenAI streaming chat shape via drop-in, routed to non-OpenAI backends.",
                   "item": [
                     {
@@ -40354,7 +40354,7 @@
                   ]
                 },
                 {
-                  "name": "8.2.D OpenAI drop-in /openai/v1/responses streaming × non-OpenAI providers",
+                  "name": "8.2.D OpenAI drop-in /openai/v1/responses streaming \u00d7 non-OpenAI providers",
                   "description": "OpenAI streaming Responses shape via drop-in, routed to non-OpenAI backends.",
                   "item": [
                     {
@@ -40495,7 +40495,7 @@
                   ]
                 },
                 {
-                  "name": "8.2.E Anthropic drop-in /anthropic/v1/messages streaming × non-Anthropic providers",
+                  "name": "8.2.E Anthropic drop-in /anthropic/v1/messages streaming \u00d7 non-Anthropic providers",
                   "description": "Anthropic streaming Messages-API shape via drop-in, routed to non-Anthropic backends.",
                   "item": [
                     {
@@ -40636,7 +40636,7 @@
                   ]
                 },
                 {
-                  "name": "8.2.F GenAI drop-in :streamGenerateContent × non-Gemini providers",
+                  "name": "8.2.F GenAI drop-in :streamGenerateContent \u00d7 non-Gemini providers",
                   "description": "Google GenAI streaming via `:streamGenerateContent?alt=sse`, routed to non-Gemini backends. Body unchanged from non-streaming generateContent; SSE is requested via the URL suffix + query.",
                   "item": [
                     {
@@ -40815,10 +40815,10 @@
             },
             {
               "name": "8.3 Embeddings",
-              "description": "Embedding endpoints × providers. Anthropic returns NewUnsupportedOperationError for Embedding (core/providers/anthropic/anthropic.go:1878-1923) — those cells are tagged `[SKIP]` and skipped unless `include_skip=1`.\n\nResponse shapes (validated by extended top-level detector):\n- OpenAI: `{data: [{embedding: [...]}]}` → list-data branch\n- GenAI: `{embedding: {values: [...]}}` → genai-embedding branch\n- Bedrock Titan: `{embedding: [...]}` → bedrock-titan-embedding branch\n- Vertex: `{predictions: [{embeddings: {values}}]}` → vertex-predictions branch",
+              "description": "Embedding endpoints \u00d7 providers. Anthropic returns NewUnsupportedOperationError for Embedding (core/providers/anthropic/anthropic.go:1878-1923) \u2014 those cells are tagged `[SKIP]` and skipped unless `include_skip=1`.\n\nResponse shapes (validated by extended top-level detector):\n- OpenAI: `{data: [{embedding: [...]}]}` \u2192 list-data branch\n- GenAI: `{embedding: {values: [...]}}` \u2192 genai-embedding branch\n- Bedrock Titan: `{embedding: [...]}` \u2192 bedrock-titan-embedding branch\n- Vertex: `{predictions: [{embeddings: {values}}]}` \u2192 vertex-predictions branch",
               "item": [
                 {
-                  "name": "8.3.I OpenAI drop-in /openai/v1/embeddings × non-OpenAI providers",
+                  "name": "8.3.I OpenAI drop-in /openai/v1/embeddings \u00d7 non-OpenAI providers",
                   "description": "OpenAI Embeddings shape via drop-in, routed to non-OpenAI backends.",
                   "item": [
                     {
@@ -40959,7 +40959,7 @@
                   ]
                 },
                 {
-                  "name": "8.3.J GenAI drop-in /genai/v1beta/models/{model}:embedContent × non-Gemini providers",
+                  "name": "8.3.J GenAI drop-in /genai/v1beta/models/{model}:embedContent \u00d7 non-Gemini providers",
                   "description": "Google GenAI embedContent shape (`content.parts`), model in URL path. Routed to non-Gemini embedding backends.",
                   "item": [
                     {
@@ -41108,10 +41108,10 @@
             },
             {
               "name": "8.4 Audio (transcription + speech)",
-              "description": "Audio endpoints × providers. Most providers don't expose a dedicated audio endpoint through Bifrost — those cells are `[SKIP]`:\n- Anthropic: no audio (core/providers/anthropic/anthropic.go:1878-1923)\n- Vertex: no transcription (core/providers/vertex/vertex.go:1722-1729)\n- Bedrock: no transcription (core/providers/bedrock/bedrock.go:1936-1941); audio input rejected (core/providers/bedrock/utils.go:1058)\n- Gemini/Vertex TTS: no /v1/audio/speech equivalent\n\nTranscription tests require `tests/e2e/api/fixtures/sample.mp3` (small audio sample) at runtime — see Phase 7 verification.\n\nResponse shapes (validated by extended top-level detector):\n- Transcription JSON: `{text: \"...\"}` → audio-transcription branch\n- TTS binary: `audio/*` Content-Type → prelude's non-JSON early-return passes status-only check",
+              "description": "Audio endpoints \u00d7 providers. Most providers don't expose a dedicated audio endpoint through Bifrost \u2014 those cells are `[SKIP]`:\n- Anthropic: no audio (core/providers/anthropic/anthropic.go:1878-1923)\n- Vertex: no transcription (core/providers/vertex/vertex.go:1722-1729)\n- Bedrock: no transcription (core/providers/bedrock/bedrock.go:1936-1941); audio input rejected (core/providers/bedrock/utils.go:1058)\n- Gemini/Vertex TTS: no /v1/audio/speech equivalent\n\nTranscription tests require `tests/e2e/api/fixtures/sample.mp3` (small audio sample) at runtime \u2014 see Phase 7 verification.\n\nResponse shapes (validated by extended top-level detector):\n- Transcription JSON: `{text: \"...\"}` \u2192 audio-transcription branch\n- TTS binary: `audio/*` Content-Type \u2192 prelude's non-JSON early-return passes status-only check",
               "item": [
                 {
-                  "name": "8.4.N OpenAI drop-in /openai/v1/audio/speech × non-OpenAI providers",
+                  "name": "8.4.N OpenAI drop-in /openai/v1/audio/speech \u00d7 non-OpenAI providers",
                   "description": "OpenAI TTS shape via drop-in. Only Azure has a comparable backend.",
                   "item": [
                     {
@@ -41260,10 +41260,10 @@
             },
             {
               "name": "8.5 Image generation",
-              "description": "Image generation endpoints × providers. Anthropic returns NewUnsupportedOperationError for ImageGeneration (core/providers/anthropic/anthropic.go:1878-1923) — those cells are `[SKIP]`.\n\nResponse shapes (validated by extended top-level detector):\n- OpenAI: `{data: [{url|b64_json}]}` → list-data branch\n- Vertex Imagen: `{predictions: [{bytesBase64Encoded}]}` → vertex-predictions branch\n- Bedrock Titan/Nova: `{images: [\"base64\"]}` → bedrock-images branch\n\nOmits /v1/images/edits — needs a binary PNG fixture; will be added later if needed.",
+              "description": "Image generation endpoints \u00d7 providers. Anthropic returns NewUnsupportedOperationError for ImageGeneration (core/providers/anthropic/anthropic.go:1878-1923) \u2014 those cells are `[SKIP]`.\n\nResponse shapes (validated by extended top-level detector):\n- OpenAI: `{data: [{url|b64_json}]}` \u2192 list-data branch\n- Vertex Imagen: `{predictions: [{bytesBase64Encoded}]}` \u2192 vertex-predictions branch\n- Bedrock Titan/Nova: `{images: [\"base64\"]}` \u2192 bedrock-images branch\n\nOmits /v1/images/edits \u2014 needs a binary PNG fixture; will be added later if needed.",
               "item": [
                 {
-                  "name": "8.5.P OpenAI drop-in /openai/v1/images/generations × non-OpenAI providers",
+                  "name": "8.5.P OpenAI drop-in /openai/v1/images/generations \u00d7 non-OpenAI providers",
                   "description": "OpenAI image-generation shape via drop-in, routed to non-OpenAI backends.",
                   "item": [
                     {
@@ -41412,14 +41412,14 @@
             },
             {
               "name": "8.6 Feature combinations",
-              "description": "Feature-specific cross-shape tests: tool calling, vision (image input), JSON / structured output, reasoning / thinking.\n\nEach feature is tested across multiple endpoint shapes with multiple model providers, proving Bifrost's converters preserve feature semantics across shape boundaries (e.g., OpenAI `tools` array → Anthropic `tools` shape when routed to Claude; Anthropic `tools` shape → Gemini `function_declarations` when routed to Gemini).\n\nResponse-shape assertions (`tool_calls` / `tool_use` / `functionCall`) are already in the top-level detector.",
+              "description": "Feature-specific cross-shape tests: tool calling, vision (image input), JSON / structured output, reasoning / thinking.\n\nEach feature is tested across multiple endpoint shapes with multiple model providers, proving Bifrost's converters preserve feature semantics across shape boundaries (e.g., OpenAI `tools` array \u2192 Anthropic `tools` shape when routed to Claude; Anthropic `tools` shape \u2192 Gemini `function_declarations` when routed to Gemini).\n\nResponse-shape assertions (`tool_calls` / `tool_use` / `functionCall`) are already in the top-level detector.",
               "item": [
                 {
-                  "name": "8.6.1 Tool calling × endpoint shapes × providers",
+                  "name": "8.6.1 Tool calling \u00d7 endpoint shapes \u00d7 providers",
                   "description": "Function-calling request. Each shape uses its native tool schema (OpenAI `tools[].function`, Anthropic `tools[].input_schema`, GenAI `tools[].function_declarations`, Bedrock `toolConfig.tools[].toolSpec`). The converter must translate to the backend's native tool shape and translate the response back.",
                   "item": [
                     {
-                      "name": "8.6.1.E /anthropic/v1/messages → openai/gpt-4o-mini",
+                      "name": "8.6.1.E /anthropic/v1/messages \u2192 openai/gpt-4o-mini",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -41446,7 +41446,7 @@
                       }
                     },
                     {
-                      "name": "8.6.1.E /anthropic/v1/messages → gemini/gemini-2.5-flash",
+                      "name": "8.6.1.E /anthropic/v1/messages \u2192 gemini/gemini-2.5-flash",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -41473,7 +41473,7 @@
                       }
                     },
                     {
-                      "name": "8.6.1.E /anthropic/v1/messages → bedrock/us.amazon.nova-lite-v1:0",
+                      "name": "8.6.1.E /anthropic/v1/messages \u2192 bedrock/us.amazon.nova-lite-v1:0",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -41500,7 +41500,7 @@
                       }
                     },
                     {
-                      "name": "8.6.1.F /genai → openai/gpt-4o-mini",
+                      "name": "8.6.1.F /genai \u2192 openai/gpt-4o-mini",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -41528,7 +41528,7 @@
                       }
                     },
                     {
-                      "name": "8.6.1.F /genai → anthropic/claude-haiku-4-5",
+                      "name": "8.6.1.F /genai \u2192 anthropic/claude-haiku-4-5",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -41556,7 +41556,7 @@
                       }
                     },
                     {
-                      "name": "8.6.1.F /genai → bedrock/us.amazon.nova-lite-v1:0",
+                      "name": "8.6.1.F /genai \u2192 bedrock/us.amazon.nova-lite-v1:0",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -41586,11 +41586,11 @@
                   ]
                 },
                 {
-                  "name": "8.6.2 Vision (image input) × endpoint shapes × providers",
-                  "description": "Vision request with a 1×1 transparent PNG (base64 inline). Each shape uses its native image-content schema:\n- OpenAI: `content: [{type:\"image_url\", image_url:{url:\"data:image/png;base64,...\"}}]`\n- Anthropic: `content: [{type:\"image\", source:{type:\"base64\", media_type, data}}]`\n- GenAI: `parts: [{inline_data:{mime_type, data}}]`\n- Bedrock: `content: [{image:{format, source:{bytes}}}]`",
+                  "name": "8.6.2 Vision (image input) \u00d7 endpoint shapes \u00d7 providers",
+                  "description": "Vision request with a 1\u00d71 transparent PNG (base64 inline). Each shape uses its native image-content schema:\n- OpenAI: `content: [{type:\"image_url\", image_url:{url:\"data:image/png;base64,...\"}}]`\n- Anthropic: `content: [{type:\"image\", source:{type:\"base64\", media_type, data}}]`\n- GenAI: `parts: [{inline_data:{mime_type, data}}]`\n- Bedrock: `content: [{image:{format, source:{bytes}}}]`",
                   "item": [
                     {
-                      "name": "8.6.2.E /anthropic/v1/messages → openai/gpt-4o-mini",
+                      "name": "8.6.2.E /anthropic/v1/messages \u2192 openai/gpt-4o-mini",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -41617,7 +41617,7 @@
                       }
                     },
                     {
-                      "name": "8.6.2.E /anthropic/v1/messages → gemini/gemini-2.5-flash",
+                      "name": "8.6.2.E /anthropic/v1/messages \u2192 gemini/gemini-2.5-flash",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -41644,7 +41644,7 @@
                       }
                     },
                     {
-                      "name": "8.6.2.F /genai → openai/gpt-4o-mini",
+                      "name": "8.6.2.F /genai \u2192 openai/gpt-4o-mini",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -41672,7 +41672,7 @@
                       }
                     },
                     {
-                      "name": "8.6.2.F /genai → anthropic/claude-haiku-4-5",
+                      "name": "8.6.2.F /genai \u2192 anthropic/claude-haiku-4-5",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -41702,11 +41702,11 @@
                   ]
                 },
                 {
-                  "name": "8.6.4 Reasoning / thinking × providers",
+                  "name": "8.6.4 Reasoning / thinking \u00d7 providers",
                   "description": "Reasoning/thinking activation via the request field appropriate for the model's native provider:\n- OpenAI o-series: `reasoning_effort: \"low\"`\n- Anthropic: `thinking: {type: \"enabled\", budget_tokens: 1024}`\n- Gemini 2.5+: `thinkingConfig: {thinkingBudget: 1024}` (or via Bifrost's OpenAI-shape `reasoning_effort` translation)\n\nBifrost's converter maps each field to the backend's native reasoning parameter.",
                   "item": [
                     {
-                      "name": "8.6.4.E /anthropic/v1/messages → openai/gpt-5 (thinking translated)",
+                      "name": "8.6.4.E /anthropic/v1/messages \u2192 openai/gpt-5 (thinking translated)",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -41795,7 +41795,7 @@
       ]
     },
     {
-      "name": "15. Costing — Failed/Cancelled Requests",
+      "name": "15. Costing \u2014 Failed/Cancelled Requests",
       "description": "Asserts that a request which FAILED or was CANCELLED but still consumed provider tokens is billed (logs DB cost>0 && total_tokens>0). Each request pins a unique `x-request-id` and sets `x-bf-expect-cost: true`, which the newman-reporter-dbverify reporter uses to look up the log row and verify cost. Pre-fix these FAIL (cost is 0 on failed requests); post-fix they PASS. Streaming mid-flight cancellation is driven deterministically by runners/run-stream-cancellation.mjs (Postman cannot abort a stream mid-response).",
       "item": [
         {
@@ -43935,11 +43935,11 @@
       ]
     },
     {
-      "name": "22. Gemini web_search_options → googleSearch (PR #5139)",
+      "name": "22. Gemini web_search_options \u2192 googleSearch (PR #5139)",
       "description": "PR #5139: OpenAI `web_search_options` on /v1/chat/completions is mapped to a Gemini GoogleSearch tool, and Gemini groundingMetadata is converted back into OpenAI-compatible `url_citation` annotations (non-streaming and streaming, deduplicated via GeminiStreamState). Before the fix the option was silently dropped on Gemini routes: the request returned 200 with no grounding and no annotations, so a plain status assertion cannot pin this. These cases require url_citation annotations to be present.",
       "item": [
         {
-          "name": "gemini/gemini-2.5-flash web_search_options → url_citation annotations (non-streaming) - PR #5139",
+          "name": "gemini/gemini-2.5-flash web_search_options \u2192 url_citation annotations (non-streaming) - PR #5139",
           "request": {
             "method": "POST",
             "header": [
@@ -43991,7 +43991,7 @@
           ]
         },
         {
-          "name": "gemini/gemini-2.5-flash web_search_options → streamed url_citation annotations (SSE) - PR #5139",
+          "name": "gemini/gemini-2.5-flash web_search_options \u2192 streamed url_citation annotations (SSE) - PR #5139",
           "request": {
             "method": "POST",
             "header": [
@@ -44055,7 +44055,7 @@
     },
     {
       "name": "23. OpenAI Responses reasoning.effort max normalization (PR #5130)",
-      "description": "PR #5130: `normalizeOpenAIReasoningEffort` treats gpt-5.6 as natively supporting reasoning.effort \"max\"/\"xhigh\" (passed through unchanged), while earlier GPT-5.x models get \"max\" downgraded (gpt-5.2/5.5 → xhigh, others → high) instead of forwarding a value the upstream rejects. Also adds `reasoning.context` and `reasoning.mode` schema fields that are now serialized to OpenAI instead of being stripped. The response reasoning object echoes what OpenAI actually received, which is what these cases assert on.",
+      "description": "PR #5130: `normalizeOpenAIReasoningEffort` treats gpt-5.6 as natively supporting reasoning.effort \"max\"/\"xhigh\" (passed through unchanged), while earlier GPT-5.x models get \"max\" downgraded (gpt-5.2/5.5 \u2192 xhigh, others \u2192 high) instead of forwarding a value the upstream rejects. Also adds `reasoning.context` and `reasoning.mode` schema fields that are now serialized to OpenAI instead of being stripped. The response reasoning object echoes what OpenAI actually received, which is what these cases assert on.",
       "item": [
         {
           "name": "openai/gpt-5.6 native /v1/responses reasoning.effort=max passes through (echoed as max) - PR #5130",
@@ -44703,7 +44703,7 @@
       "description": "Pins the overloaded request-level `fallbacks` wire key on /anthropic/v1/messages.\nTwo unrelated features share the key and are disambiguated by element shape:\n  - array of STRINGS  (\"provider/model\") = Bifrost cross-provider gateway fallback.\n  - array of OBJECTS  ([{\"model\": \"...\"}]) = Anthropic native server-side fallback\n    (beta server-side-fallback-2026-06-01, refusal fallback).\n\nRegressions pinned:\n  1. Object-form fallbacks used to fail Bifrost-side unmarshalling with 'Invalid JSON'\n     because AnthropicMessageRequest.Fallbacks was typed []string. It is now a shape\n     tolerant union, so both forms parse.\n  2. Native (object) fallbacks are Anthropic-only. Forwarding them to Vertex, Bedrock,\n     Bedrock Mantle or Azure produced a live 400 'fallbacks: Extra inputs are not\n     permitted', because AddMissingBetaHeadersToContext correctly withholds the beta\n     header there while the field was still forwarded. Bifrost now strips native\n     entries fail-closed for providers whose ProviderFeatures.ServerSideFallback is\n     false. Note bedrock_mantle is NOT supported: it is Bedrock's native Anthropic\n     surface, but feature availability still follows Amazon Bedrock.\n  3. Bifrost string-form fallbacks must keep working and must never leak to a provider.\n\nBoth the Claude Code passthrough path (claude-cli User-Agent -> raw request body) and\nthe normalized path are covered, since the strip runs on the shared egress tail.\n\nNot covered here: the `fallback` content block and stop_reason 'refusal'. Those only\noccur when a safety classifier actually declines a request, which is non-deterministic\nand inappropriate to provoke in a live sweep; they are covered by Go unit tests in\ncore/providers/anthropic/serversidefallback_test.go.\n\nEvery row sends x-bf-send-back-raw-request and reads the request Bifrost sent: rows 1, 3, 4 and 5 carry no fallbacks field (row 2's Claude Code passthrough returns no raw_request), row 6 carries the object array as sent, and row 5 also shows the string form consumed by the gateway, which serves its string entry as Bifrost's own fallback when the primary model does not exist.",
       "item": [
         {
-          "name": "vertex/claude-opus-4-7 · native object fallbacks stripped for unsupported provider",
+          "name": "vertex/claude-opus-4-7 \u00b7 native object fallbacks stripped for unsupported provider",
           "request": {
             "method": "POST",
             "header": [
@@ -44763,7 +44763,7 @@
           ]
         },
         {
-          "name": "vertex/claude-opus-4-7 · native object fallbacks stripped on Claude Code passthrough (claude-cli UA)",
+          "name": "vertex/claude-opus-4-7 \u00b7 native object fallbacks stripped on Claude Code passthrough (claude-cli UA)",
           "request": {
             "method": "POST",
             "header": [
@@ -44817,7 +44817,7 @@
           ]
         },
         {
-          "name": "bedrock/global.anthropic.claude-opus-4-7 · native object fallbacks stripped for unsupported provider",
+          "name": "bedrock/global.anthropic.claude-opus-4-7 \u00b7 native object fallbacks stripped for unsupported provider",
           "request": {
             "method": "POST",
             "header": [
@@ -44877,7 +44877,7 @@
           ]
         },
         {
-          "name": "bedrock_mantle/anthropic.claude-opus-4-8 · native object fallbacks stripped (mantle is not supported)",
+          "name": "bedrock_mantle/anthropic.claude-opus-4-8 \u00b7 native object fallbacks stripped (mantle is not supported)",
           "request": {
             "method": "POST",
             "header": [
@@ -44937,7 +44937,7 @@
           ]
         },
         {
-          "name": "anthropic/claude-opus-4-7 · Bifrost string fallbacks are not leaked to the provider",
+          "name": "anthropic/claude-opus-4-7 \u00b7 Bifrost string fallbacks are not leaked to the provider",
           "request": {
             "method": "POST",
             "header": [
@@ -45014,7 +45014,7 @@
           ]
         },
         {
-          "name": "anthropic/claude-fable-5 · native object fallbacks forwarded with server-side-fallback beta",
+          "name": "anthropic/claude-fable-5 \u00b7 native object fallbacks forwarded with server-side-fallback beta",
           "request": {
             "method": "POST",
             "header": [
@@ -45081,7 +45081,7 @@
       "description": "Fallback credit (fallback-credit-2026-06-01; -2026-06-09 on the AWS surfaces) is a different feature from server-side fallback and has the INVERSE support matrix: the fallbacks parameter is Claude-API-only, while fallback_credit_token is supported nearly everywhere. A fallback entry also accepts output_config and speed, which were unmodelled and therefore dropped on the typed path.\n\nSCOPE NOTE: this folder covers only what a 2xx-asserting suite can observe. Proving that fallback_credit_token is FORWARDED needs a token the platform will evaluate, and an invalid one is rejected with a 400 by design - which the collection-level \"Status code is 2xx\" test treats as a failure. Forwarding, the per-provider beta gating and the AWS beta-date rewrite are therefore covered by unit tests in core/providers/anthropic instead. Response-side shapes (the fallback content block and its trigger, stop_details.fallback_credit_token / fallback_has_prefill_claim) are also unit-tested: reproducing them here would require provoking a safety classifier, which is non-deterministic and inappropriate for a shared suite.",
       "item": [
         {
-          "name": "anthropic/claude-opus-4-8 · count_tokens strips fallback_credit_token",
+          "name": "anthropic/claude-opus-4-8 \u00b7 count_tokens strips fallback_credit_token",
           "request": {
             "method": "POST",
             "header": [
@@ -45132,7 +45132,7 @@
           ]
         },
         {
-          "name": "anthropic/claude-fable-5 · fallback entry carries speed + output_config",
+          "name": "anthropic/claude-fable-5 \u00b7 fallback entry carries speed + output_config",
           "request": {
             "method": "POST",
             "header": [
@@ -45182,7 +45182,7 @@
           ]
         },
         {
-          "name": "anthropic/claude-fable-5 · fallback entry keys preserved on Claude Code passthrough (claude-cli UA)",
+          "name": "anthropic/claude-fable-5 \u00b7 fallback entry keys preserved on Claude Code passthrough (claude-cli UA)",
           "request": {
             "method": "POST",
             "header": [
@@ -45447,7 +45447,7 @@
     },
     {
       "name": "29. OpenAI Responses Lifecycle + Streaming Retrieve",
-      "description": "Pins the OpenAI Responses secondary-verb lifecycle on both the native /v1/responses/{id} routes and the /openai/v1 drop-in: retrieve, streaming retrieve (GET ?stream=true, newly added — BifrostResponsesRetrieveRequest.Stream -> ResponsesRetrieveStreamRequest -> provider.ResponsesRetrieveStream), input_items, and delete. Each chain creates a background + store + stream response (id parsed from the SSE create body, so streaming retrieve resumes an actually-streamed response), verifies the verbs against the captured id, and deletes it as cleanup. Cancel is omitted (it would abort the response the streaming retrieve replays).",
+      "description": "Pins the OpenAI Responses secondary-verb lifecycle on both the native /v1/responses/{id} routes and the /openai/v1 drop-in: retrieve, streaming retrieve (GET ?stream=true, newly added \u2014 BifrostResponsesRetrieveRequest.Stream -> ResponsesRetrieveStreamRequest -> provider.ResponsesRetrieveStream), input_items, and delete. Each chain creates a background + store + stream response (id parsed from the SSE create body, so streaming retrieve resumes an actually-streamed response), verifies the verbs against the captured id, and deletes it as cleanup. Cancel is omitted (it would abort the response the streaming retrieve replays).",
       "item": [
         {
           "name": "openai/gpt-4o-mini native lifecycle: create streamed background response",
@@ -47300,7 +47300,7 @@
     },
     {
       "name": "34. Gemini/Vertex countTokens full-prompt accounting (PR #5620)",
-      "description": "Regression: CountTokens unconditionally deleted systemInstruction, generationConfig and toolConfig from the\nrequest body for BOTH Gemini and Vertex, so :countTokens reported only the \"contents\" token count. Reported\ncase: a ~7.4k-token system prompt plus a tool declaration counted as 17 tokens on Vertex.\n\nThe two endpoints need opposite request shapes, which is why one strip broke both:\n  - Gemini (generativelanguage): CountTokensRequest accepts only \"contents\" and \"generateContentRequest\".\n    systemInstruction/tools/toolConfig/generationConfig are 400 \"Unknown name\" at the top level and must be\n    wrapped in the envelope. Top-level \"contents\"/\"model\" are then SILENTLY IGNORED, so the body must carry\n    the envelope and nothing beside it. Before the fix, \"tools\" was never stripped, so any tool-bearing\n    countTokens was a hard 400 rather than an undercount.\n  - Vertex (aiplatform): CountTokensRequest takes contents/systemInstruction/tools/generationConfig FLAT and\n    has no envelope. Only toolConfig (plus safetySettings/cachedContent/serviceTier/labels) is rejected.\n\nThe /genai ingress must therefore parse both shapes and emit whichever the resolved provider requires, and\nthe Bifrost-only \"fallbacks\" routing field must be honoured for routing yet stripped before the upstream call.\n\nAssertions are relative, not absolute: token counts drift across model versions, so each provider records a\ncontents-only baseline and every later case asserts the count exceeds it. A dropped field collapses the count\nback to the baseline, which is exactly what these cases catch. 400 is deliberately NOT in the infra guard —\nfor the tools/toolConfig/fallbacks cases a 400 IS the regression signature.",
+      "description": "Regression: CountTokens unconditionally deleted systemInstruction, generationConfig and toolConfig from the\nrequest body for BOTH Gemini and Vertex, so :countTokens reported only the \"contents\" token count. Reported\ncase: a ~7.4k-token system prompt plus a tool declaration counted as 17 tokens on Vertex.\n\nThe two endpoints need opposite request shapes, which is why one strip broke both:\n  - Gemini (generativelanguage): CountTokensRequest accepts only \"contents\" and \"generateContentRequest\".\n    systemInstruction/tools/toolConfig/generationConfig are 400 \"Unknown name\" at the top level and must be\n    wrapped in the envelope. Top-level \"contents\"/\"model\" are then SILENTLY IGNORED, so the body must carry\n    the envelope and nothing beside it. Before the fix, \"tools\" was never stripped, so any tool-bearing\n    countTokens was a hard 400 rather than an undercount.\n  - Vertex (aiplatform): CountTokensRequest takes contents/systemInstruction/tools/generationConfig FLAT and\n    has no envelope. Only toolConfig (plus safetySettings/cachedContent/serviceTier/labels) is rejected.\n\nThe /genai ingress must therefore parse both shapes and emit whichever the resolved provider requires, and\nthe Bifrost-only \"fallbacks\" routing field must be honoured for routing yet stripped before the upstream call.\n\nAssertions are relative, not absolute: token counts drift across model versions, so each provider records a\ncontents-only baseline and every later case asserts the count exceeds it. A dropped field collapses the count\nback to the baseline, which is exactly what these cases catch. 400 is deliberately NOT in the infra guard \u2014\nfor the tools/toolConfig/fallbacks cases a 400 IS the regression signature.",
       "item": [
         {
           "name": "34.1 GenAI Gemini countTokens contents-only baseline (gemini)",
@@ -49232,7 +49232,7 @@
       ]
     },
     {
-      "name": "39. Reasoning/Thinking Multi-Turn Replay — Criss-Cross Expansion",
+      "name": "39. Reasoning/Thinking Multi-Turn Replay \u2014 Criss-Cross Expansion",
       "description": "Expands multi-turn reasoning/thinking replay coverage across the criss-cross matrix, which was previously single-turn-only for every provider/shape combo in section 8.6.4. Unlike folder 38, every case here is expected to ALREADY PASS today - this is breadth/non-regression insurance, not a red-to-green bug pin, and a failure here means something else broke, not a #5186 regression. Group A covers the reverse direction (OpenAI-shaped /openai/v1/responses request served by an Anthropic model) which had zero coverage anywhere in the collection: Anthropic's wire has no signature field on the OpenAI side, so a Claude-origin signature never reaches the client and StripEmptyThinkingBlocks drops the resulting empty block before replay - this direction is not exposed to the same hard-failure OpenAI enforces, by the issue author's own account. Group B covers native /v1/chat/completions Anthropic-origin reasoning_details replay, fixed by the already-merged PR #4943 but never harness-covered until now.",
       "item": [
         {
@@ -49486,7 +49486,7 @@
     },
     {
       "name": "40. Bedrock Invoke Route Content-Block Cache Control (#5629)",
-      "description": "Follow-up to the review comment on invoke.go:808 (part of #5629's fix): cache_control was handled for system messages (parseSystemMessages) and tools (convertAnthropicTools) but not for ordinary message content blocks, nor for cache_control nested inside a tool_result's own content array. applyMessageContentCacheControl/injectContentBlockCachePoints (invoke.go) now translate both cases into Bedrock Converse's positional cachePoint sibling entries, and convertSingleBedrockMessageToBifrostMessages (responses.go) was extended to propagate a nested tool_result CachePoint to the function_call_output message's CacheControl. Cases run write/read pairs against the same prefix per model — turn 1 creates a cache entry, turn 2 must read from it with cache_read_input_tokens/cached_tokens exceeding the fresh (uncached) token count, proving the cache read is HIGH, not just present. Covers plain content-block and nested-tool_result cache_control across three Anthropic-family models on Bedrock (Haiku 4.5, Sonnet 4.6, Opus 4.7), a multi-tool-call turn (two independent tool_result blocks, cache_control on only one), and a cross-provider sanity pass through Bedrock Mantle (Opus 4.8) via the unified /v1/chat/completions route — Bedrock Mantle traffic never goes through the buggy BedrockInvokeRequest.UnmarshalJSON code path (it's parsed by Anthropic's own request types, which were already correct), so these Mantle cases confirm the same capability works there too rather than pinning a regression. Cases also include the streaming variant (POST .../invoke-with-response-stream, Haiku 4.5 only) for both the plain content-block and nested-tool_result scenarios, decoding the AWS event-stream \"bytes\" framing to assert on message_delta.usage — request parsing (BedrockInvokeRequest.UnmarshalJSON) is identical between /invoke and /invoke-with-response-stream (Stream is set externally by the route handler, not from the JSON body), so this pins that the fix composes correctly with the streaming response path too, not just non-streaming.",
+      "description": "Follow-up to the review comment on invoke.go:808 (part of #5629's fix): cache_control was handled for system messages (parseSystemMessages) and tools (convertAnthropicTools) but not for ordinary message content blocks, nor for cache_control nested inside a tool_result's own content array. applyMessageContentCacheControl/injectContentBlockCachePoints (invoke.go) now translate both cases into Bedrock Converse's positional cachePoint sibling entries, and convertSingleBedrockMessageToBifrostMessages (responses.go) was extended to propagate a nested tool_result CachePoint to the function_call_output message's CacheControl. Cases run write/read pairs against the same prefix per model \u2014 turn 1 creates a cache entry, turn 2 must read from it with cache_read_input_tokens/cached_tokens exceeding the fresh (uncached) token count, proving the cache read is HIGH, not just present. Covers plain content-block and nested-tool_result cache_control across three Anthropic-family models on Bedrock (Haiku 4.5, Sonnet 4.6, Opus 4.7), a multi-tool-call turn (two independent tool_result blocks, cache_control on only one), and a cross-provider sanity pass through Bedrock Mantle (Opus 4.8) via the unified /v1/chat/completions route \u2014 Bedrock Mantle traffic never goes through the buggy BedrockInvokeRequest.UnmarshalJSON code path (it's parsed by Anthropic's own request types, which were already correct), so these Mantle cases confirm the same capability works there too rather than pinning a regression. Cases also include the streaming variant (POST .../invoke-with-response-stream, Haiku 4.5 only) for both the plain content-block and nested-tool_result scenarios, decoding the AWS event-stream \"bytes\" framing to assert on message_delta.usage \u2014 request parsing (BedrockInvokeRequest.UnmarshalJSON) is identical between /invoke and /invoke-with-response-stream (Stream is set externally by the route handler, not from the JSON body), so this pins that the fix composes correctly with the streaming response path too, not just non-streaming.",
       "item": [
         {
           "name": "Bedrock invoke: cache_control on a plain message content block creates a cache entry (Haiku 4.5, turn 1) - #5629",
@@ -49559,7 +49559,7 @@
                   "  var cacheRead = usage.cache_read_input_tokens || 0;",
                   "  var fresh = usage.input_tokens || 0;",
                   "  pm.expect(cacheRead, 'usage=' + JSON.stringify(usage)).to.be.a('number').that.is.above(0);",
-                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH — greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
+                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH \u2014 greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -49664,7 +49664,7 @@
                   "  var cacheRead = usage.cache_read_input_tokens || 0;",
                   "  var fresh = usage.input_tokens || 0;",
                   "  pm.expect(cacheRead, 'usage=' + JSON.stringify(usage)).to.be.a('number').that.is.above(0);",
-                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH — greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
+                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH \u2014 greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -49769,7 +49769,7 @@
                   "  var cacheRead = usage.cache_read_input_tokens || 0;",
                   "  var fresh = usage.input_tokens || 0;",
                   "  pm.expect(cacheRead, 'usage=' + JSON.stringify(usage)).to.be.a('number').that.is.above(0);",
-                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH — greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
+                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH \u2014 greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -49874,7 +49874,7 @@
                   "  var cacheRead = usage.cache_read_input_tokens || 0;",
                   "  var fresh = usage.input_tokens || 0;",
                   "  pm.expect(cacheRead, 'usage=' + JSON.stringify(usage)).to.be.a('number').that.is.above(0);",
-                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH — greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
+                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH \u2014 greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -49979,7 +49979,7 @@
                   "  var cacheRead = usage.cache_read_input_tokens || 0;",
                   "  var fresh = usage.input_tokens || 0;",
                   "  pm.expect(cacheRead, 'usage=' + JSON.stringify(usage)).to.be.a('number').that.is.above(0);",
-                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH — greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
+                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH \u2014 greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -50084,7 +50084,7 @@
                   "  var cacheRead = usage.cache_read_input_tokens || 0;",
                   "  var fresh = usage.input_tokens || 0;",
                   "  pm.expect(cacheRead, 'usage=' + JSON.stringify(usage)).to.be.a('number').that.is.above(0);",
-                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH — greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
+                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH \u2014 greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -50189,7 +50189,7 @@
                   "  var cacheRead = usage.cache_read_input_tokens || 0;",
                   "  var fresh = usage.input_tokens || 0;",
                   "  pm.expect(cacheRead, 'usage=' + JSON.stringify(usage)).to.be.a('number').that.is.above(0);",
-                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH — greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
+                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH \u2014 greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -50518,7 +50518,7 @@
                   "  var cacheRead = usage.cache_read_input_tokens || 0;",
                   "  var fresh = usage.input_tokens || 0;",
                   "  pm.expect(cacheRead, 'usage=' + JSON.stringify(usage)).to.be.a('number').that.is.above(0);",
-                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH — greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
+                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH \u2014 greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -50639,7 +50639,7 @@
                   "  var cacheRead = usage.cache_read_input_tokens || 0;",
                   "  var fresh = usage.input_tokens || 0;",
                   "  pm.expect(cacheRead, 'usage=' + JSON.stringify(usage)).to.be.a('number').that.is.above(0);",
-                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH — greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
+                  "  pm.expect(cacheRead, 'expected cache_read_input_tokens (' + cacheRead + ') to be HIGH \u2014 greater than the fresh input tokens (' + fresh + '), usage=' + JSON.stringify(usage)).to.be.above(fresh);",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -50677,7 +50677,7 @@
     },
     {
       "name": "41. Cross-Provider Content-Block Cache Control & cachePoint (#5629)",
-      "description": "Extends folder 40's Bedrock-invoke coverage of the reviewer comment on invoke.go:808 across the other places Bifrost surfaces prompt caching. Bedrock Converse-native cases (/converse, /converse-stream) prove cachePoint on a plain content block and nested inside a toolResult's own content produce real cache hits when the client speaks Converse's native wire format directly (no cache_control translation involved — Converse-shaped input was already unaffected by the invoke-route fix per folder 40's regression guard; these cases pin the downstream caching pipeline itself, live, mirroring folder 40's model/streaming/multi-tool-call coverage). Azure gets one write/read pair proving automatic (marker-free) prefix caching, since Azure OpenAI shares OpenAI's caching mechanism exactly (no content-block/tool_result distinction applies there). Vertex-hosted Claude and native Anthropic (/anthropic/v1/messages) both get the same two scenarios as folder 40 (plain content-block and nested-tool_result cache_control) using their own genuine Anthropic-dialect wire format -- Vertex-Claude's usage surfaces through the unified /v1/chat/completions route in OpenAI-shape (prompt_tokens_details.cached_tokens), while native Anthropic returns its own snake_case usage fields directly. OpenAI itself is intentionally not duplicated here -- Cross-Cut Round 31 already has strong write/read prompt-caching coverage for it, and OpenAI's caching is fully automatic prefix-matching with no cache_control/cachePoint marker concept, so there's no content-block-specific angle to add. OpenAI itself is also covered here, structurally analogous to the other providers' two scenarios even though OpenAI's caching is fully automatic prefix-matching with no cache_control/cachePoint marker: one write/read pair primes/reads the cache from a large non-system content block (Round 31 and the existing 'system reuse' backlog case only exercise the system-message case), and a second pair does the same across a full tool-call turn whose tool result is the large prefix, the structural counterpart to every other provider's nested-tool_result scenario in this folder.",
+      "description": "Extends folder 40's Bedrock-invoke coverage of the reviewer comment on invoke.go:808 across the other places Bifrost surfaces prompt caching. Bedrock Converse-native cases (/converse, /converse-stream) prove cachePoint on a plain content block and nested inside a toolResult's own content produce real cache hits when the client speaks Converse's native wire format directly (no cache_control translation involved \u2014 Converse-shaped input was already unaffected by the invoke-route fix per folder 40's regression guard; these cases pin the downstream caching pipeline itself, live, mirroring folder 40's model/streaming/multi-tool-call coverage). Azure gets one write/read pair proving automatic (marker-free) prefix caching, since Azure OpenAI shares OpenAI's caching mechanism exactly (no content-block/tool_result distinction applies there). Vertex-hosted Claude and native Anthropic (/anthropic/v1/messages) both get the same two scenarios as folder 40 (plain content-block and nested-tool_result cache_control) using their own genuine Anthropic-dialect wire format -- Vertex-Claude's usage surfaces through the unified /v1/chat/completions route in OpenAI-shape (prompt_tokens_details.cached_tokens), while native Anthropic returns its own snake_case usage fields directly. OpenAI itself is intentionally not duplicated here -- Cross-Cut Round 31 already has strong write/read prompt-caching coverage for it, and OpenAI's caching is fully automatic prefix-matching with no cache_control/cachePoint marker concept, so there's no content-block-specific angle to add. OpenAI itself is also covered here, structurally analogous to the other providers' two scenarios even though OpenAI's caching is fully automatic prefix-matching with no cache_control/cachePoint marker: one write/read pair primes/reads the cache from a large non-system content block (Round 31 and the existing 'system reuse' backlog case only exercise the system-message case), and a second pair does the same across a full tool-call turn whose tool result is the large prefix, the structural counterpart to every other provider's nested-tool_result scenario in this folder.",
       "item": [
         {
           "name": "Bedrock converse: cachePoint on a plain message content block creates a cache entry (Haiku 4.5, turn 1)",
@@ -51485,7 +51485,7 @@
                   "var fresh = parseInt((rawText.match(/\"inputTokens\":(\\d+)/) || [])[1], 10) || 0;",
                   "pm.test('converse-stream turn 2 (Haiku 4.5): identical content-block prefix reads from cache instead of being rebilled in full (turn 2: reads from cache, high)', function () {",
                   "  pm.expect(cr, 'raw stream tail: ' + rawText.slice(-500)).to.be.above(0);",
-                  "  pm.expect(cr, 'expected cacheReadInputTokens (' + cr + ') to be HIGH — greater than fresh (' + fresh + ')').to.be.above(fresh);",
+                  "  pm.expect(cr, 'expected cacheReadInputTokens (' + cr + ') to be HIGH \u2014 greater than fresh (' + fresh + ')').to.be.above(fresh);",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -51590,7 +51590,7 @@
                   "var fresh = parseInt((rawText.match(/\"inputTokens\":(\\d+)/) || [])[1], 10) || 0;",
                   "pm.test('converse-stream turn 2 (Haiku 4.5): identical toolResult-nested-cachePoint prefix reads from cache instead of being rebilled in full (turn 2: reads from cache, high)', function () {",
                   "  pm.expect(cr, 'raw stream tail: ' + rawText.slice(-500)).to.be.above(0);",
-                  "  pm.expect(cr, 'expected cacheReadInputTokens (' + cr + ') to be HIGH — greater than fresh (' + fresh + ')').to.be.above(fresh);",
+                  "  pm.expect(cr, 'expected cacheReadInputTokens (' + cr + ') to be HIGH \u2014 greater than fresh (' + fresh + ')').to.be.above(fresh);",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -52695,7 +52695,7 @@
     },
     {
       "name": "44. Encrypted Reasoning Fail-Soft (unverifiable payload degrades instead of 400)",
-      "description": "Bifrost's encrypted-reasoning fail-soft (core/encryptedreasoning.go) detects an upstream refusal of a replayed\nreasoning payload, strips encrypted_content from the reasoning items, and retries once on the same key, so the\nturn degrades to a normal answer instead of failing. This fires whenever a conversation changes model family or\ncredential mid-flight (a routing rule or a fallback is enough) and the client replays the earlier provider’s\nreasoning verbatim.\n\nThe detector originally recognised only OpenAI’s wording (invalid_encrypted_content / \"could not be verified\").\nAnthropic refuses with \"messages.N.content.0: Invalid `data` in `redacted_thinking` block\" — HTTP 400 and no error\ncode — which fell through and reached the client as a hard 400.\n\nFIXTURE CONSTRAINT — do not \"normalise\" these bodies: the reasoning item must carry NO \"content\" key at all.\nBifrost’s own Responses output emits \"content\": [], and an empty-but-present array sends\nconvertBifrostReasoningToAnthropicThinking down its content-blocks branch, which emits nothing and silently drops\nencrypted_content. The request then succeeds without the upstream ever validating the payload — a silent false pass.\n\nA synthetic unverifiable blob is used rather than a captured one: the upstream rejects any payload it cannot\nverify identically, and this keeps each case self-contained (no capture chaining, one request each).",
+      "description": "Bifrost's encrypted-reasoning fail-soft (core/encryptedreasoning.go) detects an upstream refusal of a replayed\nreasoning payload, strips encrypted_content from the reasoning items, and retries once on the same key, so the\nturn degrades to a normal answer instead of failing. This fires whenever a conversation changes model family or\ncredential mid-flight (a routing rule or a fallback is enough) and the client replays the earlier provider\u2019s\nreasoning verbatim.\n\nThe detector originally recognised only OpenAI\u2019s wording (invalid_encrypted_content / \"could not be verified\").\nAnthropic refuses with \"messages.N.content.0: Invalid `data` in `redacted_thinking` block\" \u2014 HTTP 400 and no error\ncode \u2014 which fell through and reached the client as a hard 400.\n\nFIXTURE CONSTRAINT \u2014 do not \"normalise\" these bodies: the reasoning item must carry NO \"content\" key at all.\nBifrost\u2019s own Responses output emits \"content\": [], and an empty-but-present array sends\nconvertBifrostReasoningToAnthropicThinking down its content-blocks branch, which emits nothing and silently drops\nencrypted_content. The request then succeeds without the upstream ever validating the payload \u2014 a silent false pass.\n\nA synthetic unverifiable blob is used rather than a captured one: the upstream rejects any payload it cannot\nverify identically, and this keeps each case self-contained (no capture chaining, one request each).",
       "item": [
         {
           "name": "anthropic/claude-haiku-4-5 /openai/v1/responses unverifiable encrypted reasoning degrades - failsoft",
@@ -52929,7 +52929,7 @@
       ]
     },
     {
-      "name": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
+      "name": "46. Reasoning \u00d7 Tool-Call Multi-Turn Interleave (criss-cross)",
       "description": "Three-turn conversations that interleave reasoning with tool calls, replayed across every request shape.\n\nEach chain runs the same conversation: turn 1 reasons and calls `get_weather`; turn 2 replays that assistant turn (thinking/reasoning block intact) plus the tool result and asks for `get_flight_time`; turn 3 replays the whole history - two assistant turns of reasoning and up to two tool results - and asks for a final answer. What is under test is that Bifrost carries reasoning blocks and their signatures back to the provider unmodified through a tool round-trip, twice. Folders 19/20/38/39/42-45 each cover a single reasoning replay; none of them interleaves tool calls across three turns.\n\n`tool_choice` is left on auto for the Anthropic-family chains rather than forcing `get_weather`. Forced tool choice is rejected with manual extended thinking (`thinking.type: enabled`) and only supported under adaptive thinking (https://platform.claude.com/docs/en/build-with-claude/thinking-tool-workflows), and Bedrock adds its own constraints on the pairing - keeping tool_choice unset makes one conversation valid on every surface. Turn 1 asserts a tool call came back, so a model that ignores the prompt fails loudly instead of letting turns 2 and 3 skip silently.",
       "item": [
         {
@@ -131315,7 +131315,7 @@
     },
     {
       "name": "49. Gemini Server-Side Tool Invocations + thoughtSignature Fidelity (PR #6071)",
-      "description": "PR #6071 (server-side tool call support) with PR #6065/#6066 (tool combination).\n\nWhen toolConfig.includeServerSideToolInvocations is enabled, Gemini reports built-in tools it ran\nitself as toolCall/toolResponse part pairs instead of the older text + groundingMetadata shape.\nBefore PR #6071 those parts were silently dropped: the response still returned 200 with plausible\ntext, so no status assertion can pin this — the parts themselves have to be inspected. The\nthoughtSignature bytes riding on those parts matter independently: Gemini rejects a follow-up turn\nthat replays the assistant content without them.\n\nThe /genai surface reaches Gemini three different ways, which are three different code paths:\n  - bare model name (gemini-3.6-flash)      -> Gemini converter path\n  - vertex/ prefix (vertex/gemini-2.5-flash) -> Vertex converter path (never passes through)\n  - gemini/ prefix (gemini/gemini-3.6-flash) -> raw body passthrough (explicitGemini, genai.go)\nAll three are covered here, streaming and non-streaming, because they share no conversion code.\n\nCases:\n  1/2. Gemini converter, non-streaming and SSE: toolCall/toolResponse parts survive, stay id-paired,\n       and keep thoughtSignature.\n  3/4. Vertex converter on a PRE-Gemini-3 model (2.5), non-streaming and SSE: tool combination did\n       not exist before Gemini 3, and Vertex rejects the mix outright with 400 \"Multiple tools are\n       supported only when they are all search tools\". Bifrost must therefore still drop googleSearch\n       and keep the declarations there, so a 2xx with a functionCall is the pin.\n  5/6. Vertex converter on Gemini 3.6, non-streaming and SSE: the same request keeps BOTH tool kinds,\n       which is what PR #6066 set out to allow. Together with 3/4 this pins the version boundary in\n       both directions -- the original PR #6066 gate keyed on provider alone and 400d every 2.5 call.\n       These two are [PREVIEW]-tagged: gemini-3.6-flash is not published to every Vertex project/region\n       (it 404s as \"Publisher model ... was not found or your project does not have access to it\"), so a\n       default run pins only the 3/4 direction. Run with INCLUDE_PREVIEW=1 on a project that has the\n       model to close the boundary.\n  7.   Gemini raw passthrough: the same parts survive the non-converting path byte-for-byte.\n  8.   Multi-turn replay: the assistant turn captured in case 1 is sent back in contents. Gemini\n       validates thoughtSignature server-side, so a 2xx here proves the signatures round-tripped\n       intact. Skips itself if case 1 captured nothing.",
+      "description": "PR #6071 (server-side tool call support) with PR #6065/#6066 (tool combination).\n\nWhen toolConfig.includeServerSideToolInvocations is enabled, Gemini reports built-in tools it ran\nitself as toolCall/toolResponse part pairs instead of the older text + groundingMetadata shape.\nBefore PR #6071 those parts were silently dropped: the response still returned 200 with plausible\ntext, so no status assertion can pin this \u2014 the parts themselves have to be inspected. The\nthoughtSignature bytes riding on those parts matter independently: Gemini rejects a follow-up turn\nthat replays the assistant content without them.\n\nThe /genai surface reaches Gemini three different ways, which are three different code paths:\n  - bare model name (gemini-3.6-flash)      -> Gemini converter path\n  - vertex/ prefix (vertex/gemini-2.5-flash) -> Vertex converter path (never passes through)\n  - gemini/ prefix (gemini/gemini-3.6-flash) -> raw body passthrough (explicitGemini, genai.go)\nAll three are covered here, streaming and non-streaming, because they share no conversion code.\n\nCases:\n  1/2. Gemini converter, non-streaming and SSE: toolCall/toolResponse parts survive, stay id-paired,\n       and keep thoughtSignature.\n  3/4. Vertex converter on a PRE-Gemini-3 model (2.5), non-streaming and SSE: tool combination did\n       not exist before Gemini 3, and Vertex rejects the mix outright with 400 \"Multiple tools are\n       supported only when they are all search tools\". Bifrost must therefore still drop googleSearch\n       and keep the declarations there, so a 2xx with a functionCall is the pin.\n  5/6. Vertex converter on Gemini 3.6, non-streaming and SSE: the same request keeps BOTH tool kinds,\n       which is what PR #6066 set out to allow. Together with 3/4 this pins the version boundary in\n       both directions -- the original PR #6066 gate keyed on provider alone and 400d every 2.5 call.\n       These two are [PREVIEW]-tagged: gemini-3.6-flash is not published to every Vertex project/region\n       (it 404s as \"Publisher model ... was not found or your project does not have access to it\"), so a\n       default run pins only the 3/4 direction. Run with INCLUDE_PREVIEW=1 on a project that has the\n       model to close the boundary.\n  7.   Gemini raw passthrough: the same parts survive the non-converting path byte-for-byte.\n  8.   Multi-turn replay: the assistant turn captured in case 1 is sent back in contents. Gemini\n       validates thoughtSignature server-side, so a 2xx here proves the signatures round-tripped\n       intact. Skips itself if case 1 captured nothing.",
       "item": [
         {
           "name": "gemini-3.6-flash genai server-side toolCall parts + thoughtSignature survive conversion (/genai generateContent) - PR #6071",
@@ -183490,8 +183490,7 @@
               ]
             }
           }
-        }
-,
+        },
         {
           "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages per-message effort on a text-bearing system item stays native - per-message-effort",
           "event": [
@@ -183643,8 +183642,7 @@
               ]
             }
           }
-        }
-,
+        },
         {
           "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort on the first member of a system group stays native - per-message-effort",
           "event": [
@@ -183795,8 +183793,7 @@
               ]
             }
           }
-        }
-,
+        },
         {
           "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort without a client anthropic-beta header (gateway injects the beta) - per-message-effort",
           "event": [
@@ -187025,7 +187022,7 @@
     },
     {
       "name": "115. raw_request on the embedding success path (bedrock + vertex) (embedding-raw-request)",
-      "description": "Bedrock and Vertex embeddings reported `extra_fields.raw_request` on every error return but never on success. Both hand-roll their response unmarshal rather than calling `HandleProviderResponseCtx` — Bedrock because the response struct differs per model family (Titan / Cohere / Nova), Vertex because it differs per endpoint (`:predict` / `:embedContent`) — and when that was written only the response half was carried over. The result: with `x-bf-send-back-raw-request: true`, a failing embedding call returned the request bytes and a succeeding one silently dropped them.\n\nEvery other embedding path already did this — OpenAI (via the shared `HandleOpenAIEmbeddingRequest`), Cohere and Gemini all set it — so these two were the outliers, not the rule.\n\nThe fix is the established `providerUtils.ParseAndSetRawRequest` (56 call sites), which stores the body as a compacted `json.RawMessage` so the exact bytes and key order survive. 115.A1 asserts that ordering directly, since a decode through `map[string]interface{}` would sort the keys and that is precisely what the helper exists to avoid.\n\nThree Bedrock rows rather than one because Titan, Cohere and Nova unmarshal down three separate branches of the same switch and the capture sits after it — one family passing says nothing about the others. Each row also checks the reported body is the **converted provider envelope** (`inputText`, `taskType`, `texts[]`, `instances[]`), not the OpenAI-dialect request that arrived. Run with FEATURE=embedding-raw-request.",
+      "description": "Bedrock and Vertex embeddings reported `extra_fields.raw_request` on every error return but never on success. Both hand-roll their response unmarshal rather than calling `HandleProviderResponseCtx` \u2014 Bedrock because the response struct differs per model family (Titan / Cohere / Nova), Vertex because it differs per endpoint (`:predict` / `:embedContent`) \u2014 and when that was written only the response half was carried over. The result: with `x-bf-send-back-raw-request: true`, a failing embedding call returned the request bytes and a succeeding one silently dropped them.\n\nEvery other embedding path already did this \u2014 OpenAI (via the shared `HandleOpenAIEmbeddingRequest`), Cohere and Gemini all set it \u2014 so these two were the outliers, not the rule.\n\nThe fix is the established `providerUtils.ParseAndSetRawRequest` (56 call sites), which stores the body as a compacted `json.RawMessage` so the exact bytes and key order survive. 115.A1 asserts that ordering directly, since a decode through `map[string]interface{}` would sort the keys and that is precisely what the helper exists to avoid.\n\nThree Bedrock rows rather than one because Titan, Cohere and Nova unmarshal down three separate branches of the same switch and the capture sits after it \u2014 one family passing says nothing about the others. Each row also checks the reported body is the **converted provider envelope** (`inputText`, `taskType`, `texts[]`, `instances[]`), not the OpenAI-dialect request that arrived. Run with FEATURE=embedding-raw-request.",
       "item": [
         {
           "name": "115.A Bedrock embedding raw_request, across all three model families",
@@ -188786,26 +188783,30 @@
         {
           "name": "openai inference-auth-setup status exposes independent enforcement - PR #5767",
           "request": {
-            "auth": { "type": "noauth" },
+            "auth": {
+              "type": "noauth"
+            },
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/api/session/is-auth-enabled"
           },
-          "event": [{
-            "listen": "test",
-            "script": {
-              "type": "text/javascript",
-              "exec": [
-                "pm.test('inference-auth-setup reports independent auth states', function () {",
-                "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
-                "  var body = pm.response.json();",
-                "  pm.expect(body.is_auth_enabled).to.be.a('boolean');",
-                "  pm.expect(body.has_valid_token).to.be.a('boolean');",
-                "  pm.expect(body.inference_auth_enforced).to.be.a('boolean');",
-                "});"
-              ]
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('inference-auth-setup reports independent auth states', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.is_auth_enabled).to.be.a('boolean');",
+                  "  pm.expect(body.has_valid_token).to.be.a('boolean');",
+                  "  pm.expect(body.inference_auth_enforced).to.be.a('boolean');",
+                  "});"
+                ]
+              }
             }
-          }]
+          ]
         }
       ]
     },
@@ -189178,7 +189179,7 @@
       "description": "Management-endpoint checks with no live provider involved. POST /api/mcp/client must validate connection_type against the enum (http, sse, stdio) before anything else, and an unauthenticated (auth-bypassed) registration whose target hostname cannot be resolved must be refused rather than handed to the connect path. Both run against the harness profile, which has no admin auth configured. DELETE /api/mcp/client/<id> for an id no client has must answer 404, not 500.",
       "item": [
         {
-          "name": "POST /api/mcp/client · unknown connection_type is rejected with 400",
+          "name": "POST /api/mcp/client \u00b7 unknown connection_type is rejected with 400",
           "event": [
             {
               "listen": "test",
@@ -189222,7 +189223,7 @@
           }
         },
         {
-          "name": "POST /api/mcp/client · unresolvable target is refused with 403 (fail closed)",
+          "name": "POST /api/mcp/client \u00b7 unresolvable target is refused with 403 (fail closed)",
           "event": [
             {
               "listen": "test",
@@ -219950,7 +219951,7 @@
                   "    pm.test('turn 2\\u2019s trail: the rule matched, and governance skipped load balancing because the provider was set', function () {",
                   "      pm.expect(j, 'log ' + id2 + ' never settled').to.be.an('object');",
                   "      pm.expect(trail).to.include(\"Rule 'Harness rrb vk-rule \" + state.run + \"'\");",
-                  "      pm.expect(trail).to.include('→ matched');",
+                  "      pm.expect(trail).to.include('\u2192 matched');",
                   "      pm.expect(trail).to.include('Skipping load balancing for model gpt-4o-mini: provider ' + state.p_l1 + ' already set');",
                   "    });",
                   "    retarget();",
@@ -220989,7 +220990,7 @@
                   "      state.providers = state.providers.filter(function (p) { return p !== state.p_gone; });",
                   "      chat(state, 'gpt-4o-mini', { headers: withCase('deleted') }, function (res2, r2) {",
                   "        fallbackServed('a rule fallback whose provider was deleted is skipped, and the next one serves', res2, r2, state.p_b, state.p_dead);",
-                  "        pm.test('the deleted provider’s fallback is dropped before the chain is numbered: b serves as fallback 1', function () { pm.expect(res2 && res2.headers.get('x-bifrost-fallback-index')).to.eql('1'); });",
+                  "        pm.test('the deleted provider\u2019s fallback is dropped before the chain is numbered: b serves as fallback 1', function () { pm.expect(res2 && res2.headers.get('x-bifrost-fallback-index')).to.eql('1'); });",
                   "        cleanup(state);",
                   "      });",
                   "    });",
@@ -221979,8 +221980,8 @@
                   "      pm.expect(j, 'log ' + idChain + ' never settled').to.be.an('object');",
                   "      // Rules that do not match are listed too, so only the lines that say a rule matched count.",
                   "      var lines = trail.split('\\n');",
-                  "      var first = lines.findIndex(function (l) { return l.indexOf(\"Rule 'Harness rrb first \" + state.run + \"'\") >= 0 && l.indexOf('→ matched') >= 0; });",
-                  "      var last = lines.findIndex(function (l) { return l.indexOf(\"Rule 'Harness rrb last \" + state.run + \"'\") >= 0 && l.indexOf('→ matched') >= 0; });",
+                  "      var first = lines.findIndex(function (l) { return l.indexOf(\"Rule 'Harness rrb first \" + state.run + \"'\") >= 0 && l.indexOf('\u2192 matched') >= 0; });",
+                  "      var last = lines.findIndex(function (l) { return l.indexOf(\"Rule 'Harness rrb last \" + state.run + \"'\") >= 0 && l.indexOf('\u2192 matched') >= 0; });",
                   "      pm.expect(first, 'the chain rule matched: ' + trail.slice(0, 600)).to.be.above(-1);",
                   "      pm.expect(lines[first]).to.include('[chain_rule=true, continuing]');",
                   "      pm.expect(last, 'the last rule matched after the chain rule').to.be.above(first);",
@@ -227085,8 +227086,8 @@
                   "  });",
                   "  trailsOf(turns.map(function (t) { return t.id; }), function (ts) {",
                   "    var proposedOther = 0, agreed = 0;",
-                  "    // The session moves its provider first: each turn's trail reads \"Session stays on <bound> …; routing proposed",
-                  "    // <other> …\" when routing proposed the other provider, or \"Session stays on <bound> …, which routing also",
+                  "    // The session moves its provider first: each turn's trail reads \"Session stays on <bound> \u2026; routing proposed",
+                  "    // <other> \u2026\" when routing proposed the other provider, or \"Session stays on <bound> \u2026, which routing also",
                   "    // proposed\" when it agreed, and never both.",
                   "    pm.test('every turn\\u2019s trail says the session kept its provider, naming the other provider when routing proposed it and saying routing agreed otherwise', function () {",
                   "      ts.forEach(function (trail, k) {",
@@ -228141,7 +228142,7 @@
                   "    // The rule still names a, and the session moves its binding to a first; a is gone, so that attempt",
                   "    // fails and the fallback b serves. A binding the turn followed and did not serve on gives way to what served.",
                   "    turn(state.s2, 's2-2', function (res, r, trail, id) {",
-                  "      fallbackServed('session 2, turn 2: with a gone, the session’s a fails and b serves as the fallback', res, r, state.p_b, state.p_a);",
+                  "      fallbackServed('session 2, turn 2: with a gone, the session\u2019s a fails and b serves as the fallback', res, r, state.p_b, state.p_a);",
                   "      // The attempt on a is not logged (a is gone); the fallback's row, a child of the request, carries the trail.",
                   "      var tries = 0;",
                   "      (function child() {",
@@ -228152,7 +228153,7 @@
                   "          logRow(fb ? fb.id : 'missing', function (j) {",
                   "            var t2 = String((j || {}).routing_engine_logs || '');",
                   "            pm.test('session 2, turn 2: the rule and the binding both named a, so a was tried first', function () {",
-                  "              pm.expect(fb, 'the fallback’s log row').to.be.an('object');",
+                  "              pm.expect(fb, 'the fallback\u2019s log row').to.be.an('object');",
                   "              pm.expect(t2).to.include('provider=' + state.p_a + ', model=' + M);",
                   "              pm.expect(t2).to.include('Session stays on ' + state.p_a + '/' + M + ' for ' + M + ', which routing also proposed');",
                   "              pm.expect(t2).to.include('Primary ' + state.p_a + '/' + M + ' failed');",
@@ -238543,7 +238544,7 @@
                   "var text = pm.response.text();",
                   "var h = function (name) { return pm.response.headers.get(name); };",
                   "var reqId = pm.collectionVariables.get('mph1ReqId');",
-                  "pm.test('the route’s own provider served the passthrough', function () {",
+                  "pm.test('the route\u2019s own provider served the passthrough', function () {",
                   "  pm.expect(h('x-bifrost-provider'), text.slice(0, 400)).to.eql('openai');",
                   "  pm.expect(h('x-bifrost-routing-info-requested-provider'), text.slice(0, 400)).to.eql('openai');",
                   "});",
@@ -238603,12 +238604,12 @@
                 "exec": [
                   "var MISMATCH = 'provider does not match the passthrough route: expected openai';",
                   "var errorOf = function (res) { var j = {}; try { j = res.json() || {}; } catch (e) { j = {}; } return (j.error || {}).message; };",
-                  "pm.test('a standard provider other than the route’s is refused, and nothing is dispatched', function () {",
+                  "pm.test('a standard provider other than the route\u2019s is refused, and nothing is dispatched', function () {",
                   "  pm.expect(errorOf(pm.response), pm.response.text()).to.eql(MISMATCH);",
                   "  pm.expect(pm.response.headers.get('x-bifrost-provider'), pm.response.text()).to.equal(undefined);",
                   "});",
                   "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/openai_passthrough/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-model-provider': 'openai_pc_auto' }, body: { mode: 'raw', raw: JSON.stringify({\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":3}) } }, function (err, res) {",
-                  "  pm.test('a custom provider built on the route’s provider is refused too: the header must name the route’s provider exactly', function () {",
+                  "  pm.test('a custom provider built on the route\u2019s provider is refused too: the header must name the route\u2019s provider exactly', function () {",
                   "    pm.expect(res && res.code, err ? String(err) : res.text()).to.eql(400);",
                   "    pm.expect(errorOf(res), res.text()).to.eql(MISMATCH);",
                   "  });",
@@ -253992,7 +253993,7 @@
       "description": "Management-endpoint checks with no live provider involved. The MCP OAuth chain (discovery, dynamic client registration, token requests) dials through a public-only guard, so an OAuth-protected MCP server on localhost could not be added by anyone, not even an authenticated admin. Hosts on mcp_oauth_private_allowlist (config.json mcp.tool_manager_config.oauth_private_allowlist) are now reachable for MCP clients registered by an authenticated caller; link-local and metadata addresses stay blocked and clients registered with auth bypassed stay public-only. The harness profile allowlists localhost, 127.0.0.1 and ::1, and every row carries the setup token, so these rows run as an authenticated caller.\n\nPrerequisite: examples/mcps/oauth-demo-server listening on localhost:3003 (cd examples/mcps/oauth-demo-server && go run .). Nothing in the harness runners starts it, so the second row is [PREVIEW]-tagged: run FEATURE=\"mcp-oauth-private-allowlist\" INCLUDE_PREVIEW=1 once the server is up. The first row reads the allowlist back from the store; the second registers an OAuth MCP client against the demo server and expects the pending_oauth response carrying the demo server's authorize URL. The consent is never completed, so no MCP client row is created; the pending OAuth config it leaves behind is inert.",
       "item": [
         {
-          "name": "GET /api/config · mcp_oauth_private_allowlist from config.json reaches the store",
+          "name": "GET /api/config \u00b7 mcp_oauth_private_allowlist from config.json reaches the store",
           "event": [
             {
               "listen": "test",
@@ -254035,7 +254036,7 @@
           }
         },
         {
-          "name": "[PREVIEW] POST /api/mcp/client · OAuth MCP server on localhost returns an authorize URL",
+          "name": "[PREVIEW] POST /api/mcp/client \u00b7 OAuth MCP server on localhost returns an authorize URL",
           "event": [
             {
               "listen": "test",
@@ -276698,7 +276699,74 @@
       ]
     },
     {
-      "name": "262. Gemini 3/3.5 thinking level mapping, regional tool combinations, and split stream usage (PR #7829) (gemini-3-5-thinking-and-usage)",
+      "name": "262. Aggregate model listing completeness (#8759)",
+      "description": "Pins issue #8759. The unscoped GET /v1/models fans out to every provider and walks each provider's pages 1,000 rows at a time. The per-provider poll deadline used to cover the whole walk, and every page re-fetches the upstream catalog, so a large catalog timed out after its first page and the aggregate silently kept 1,000 rows with no next_page_token while ?provider=<name> returned everything. The case lists the unscoped aggregate, walks the provider-scoped listing through next_page_token, and asserts every scoped model id is in the aggregate. Hugging Face is the largest catalog in the integration profile; the invariant holds for every provider.",
+      "item": [
+        {
+          "name": "/v1/models - aggregate includes every row of the provider-scoped listing - huggingface - #8759",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var aggBody = pm.response.text() || '';",
+                  "pm.test('unscoped /v1/models answers 200 with every row and no continuation token', function () {",
+                  "  pm.expect(pm.response.code, 'aggregate listing failed: ' + aggBody.slice(0, 2000)).to.equal(200);",
+                  "  pm.expect(pm.response.json().next_page_token, 'unpaged aggregate returned a next_page_token').to.not.be.ok;",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var aggregate = {};",
+                  "(pm.response.json().data || []).forEach(function (m) { aggregate[m.id] = true; });",
+                  "var scoped = [];",
+                  "var pages = 0;",
+                  "function check(err) {",
+                  "  pm.test('aggregate includes every model of the full huggingface listing', function () {",
+                  "    pm.expect(err, 'scoped page walk failed').to.equal(null);",
+                  "    pm.expect(scoped.length, 'scoped huggingface listing returned no models').to.be.above(0);",
+                  "    var missing = scoped.filter(function (id) { return !aggregate[id]; });",
+                  "    pm.expect(missing.length, missing.length + ' of ' + scoped.length + ' huggingface models (' + pages + ' scoped pages) missing from the aggregate, e.g. ' + missing.slice(0, 10).join(', ')).to.equal(0);",
+                  "  });",
+                  "}",
+                  "function walk(token) {",
+                  "  var url = pm.variables.get('baseUrl') + '/v1/models?provider=huggingface&page_size=1000' + (token ? '&page_token=' + encodeURIComponent(token) : '');",
+                  "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
+                  "    if (err) { return check('request error: ' + err); }",
+                  "    if (res.code !== 200) { return check('scoped page ' + (pages + 1) + ' returned ' + res.code + ': ' + res.text().slice(0, 2000)); }",
+                  "    pages++;",
+                  "    var body = res.json();",
+                  "    (body.data || []).forEach(function (m) { scoped.push(m.id); });",
+                  "    if (body.next_page_token) {",
+                  "      if (pages < 20) { return walk(body.next_page_token); }",
+                  "      return check('scoped listing still had a next_page_token after ' + pages + ' pages; raise the cap or page_size');",
+                  "    }",
+                  "    check(null);",
+                  "  });",
+                  "}",
+                  "walk('');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "263. Gemini 3/3.5 thinking level mapping, regional tool combinations, and split stream usage (PR #7829) (gemini-3-5-thinking-and-usage)",
       "description": "Regression pins for PR #7829: (1) cross-provider reasoning parameters (e.g. Anthropic thinking.budget_tokens or Responses reasoning) on Gemini 3/3.5 models map to generationConfig.thinkingConfig.thinkingLevel instead of thinkingBudget and respect reasoning summary/display suppression; (2) regional Vertex Gemini 3+ models (e.g. au.gemini-3.5-flash) allow combining function declarations with Google Search; (3) Gemini streaming chat completions preserve both finish_reason and usage when delivered across split SSE chunks. Run with FEATURE=\"gemini-3-5-thinking-and-usage\".",
       "item": [
         {
