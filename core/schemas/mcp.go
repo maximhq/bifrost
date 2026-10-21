@@ -42,8 +42,8 @@ var (
 	ErrExchangeSubjectTokenMissing = errors.New("no caller identity-provider token available to exchange")
 	// ErrStoredSignInExpired means a request that qualified for the
 	// stored-session fallback found no usable stored sign-in: the user has
-	// none left, or the identity provider no longer accepts its refresh
-	// token. Only signing in to Bifrost again produces a new one.
+	// none left, or it can no longer be renewed. Only signing in to Bifrost
+	// again produces a new one.
 	ErrStoredSignInExpired = errors.New("stored identity-provider sign-in has expired")
 	// ErrMCPReconnectNotApplicable signals that the reconnect operation is not
 	// meaningful for this client type — e.g. per-user OAuth clients, where
