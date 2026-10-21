@@ -57,14 +57,11 @@ func resolveGenericProvider(client *bifrost.Bifrost, name string) (schemas.Model
 	return provider, gp, true
 }
 
-// extractGenericModel reads the model a JSON body names at modelPath (default "model"). It is
-// lenient on purpose: a non-LLM API has no model, and a body that is not JSON names none.
+// extractGenericModel reads the model a JSON body names at modelPath; an empty path reads none.
+// It is lenient on purpose: a non-LLM API has no model, and a body that is not JSON names none.
 func extractGenericModel(body []byte, contentType, modelPath string) string {
-	if len(body) == 0 || !looksLikeJSON(contentType, body) {
+	if modelPath == "" || len(body) == 0 || !looksLikeJSON(contentType, body) {
 		return ""
-	}
-	if modelPath == "" {
-		modelPath = "model"
 	}
 	if v := gjson.GetBytes(body, modelPath); v.Type == gjson.String {
 		return strings.TrimSpace(v.Str)
@@ -77,11 +74,13 @@ func genericBodyStreams(body []byte, contentType string) bool {
 	return len(body) > 0 && looksLikeJSON(contentType, body) && gjson.GetBytes(body, "stream").Type == gjson.True
 }
 
+// looksLikeJSON accepts any JSON-derived media type (application/json, +json suffixes,
+// application/x-amz-json-1.1) and sniffs the body when none is declared.
 func looksLikeJSON(contentType string, body []byte) bool {
 	mediaType, _, _ := strings.Cut(contentType, ";")
 	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
 	if mediaType != "" {
-		return isJSONMediaType(mediaType)
+		return strings.Contains(mediaType, "json")
 	}
 	return gjson.ValidBytes(body)
 }
@@ -124,12 +123,7 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 	safeHeaders, _ := collectPassthroughHeaders(ctx)
 	body := ctx.Request.Body()
 	contentType := string(ctx.Request.Header.ContentType())
-	cfg := gp.GenericConfig()
-	modelPath := ""
-	if cfg != nil && cfg.Usage != nil {
-		modelPath = cfg.Usage.ModelPath
-	}
-	model := extractGenericModel(body, contentType, modelPath)
+	model := extractGenericModel(body, contentType, gp.ModelPath(method, path))
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	passthroughReq := &schemas.BifrostPassthroughRequest{

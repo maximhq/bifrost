@@ -34,7 +34,9 @@ func (provider *GenericProvider) authHeader() string {
 // configured key is the only credential upstream. It is a no-op when the parameter is absent.
 func (provider *GenericProvider) stripCallerQueryCredential(rawQuery string) string {
 	param := provider.authQuery()
-	if param == "" || rawQuery == "" || !strings.Contains(rawQuery, param) {
+	// Cheap gate: the parameter name appears literally, or something is percent-encoded and may
+	// spell it. Everything else is left untouched without a parse.
+	if param == "" || rawQuery == "" || (!strings.Contains(rawQuery, param) && !strings.Contains(rawQuery, "%")) {
 		return rawQuery
 	}
 	values, err := url.ParseQuery(rawQuery)

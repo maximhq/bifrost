@@ -407,7 +407,7 @@ func testHostPinning(t *testing.T) {
 
 func testNon2xxReturnsNilUsage(t *testing.T) {
 	up := jsonUpstream(t, http.StatusTooManyRequests, `{"error":"slow down","usage":{"total_tokens":5}}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{CostPerRequest: 0.01}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)}})
 
 	resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/search", "", `{}`, nil))
 	require.Nil(t, bifrostErr, "upstream errors are relayed, not converted")
@@ -418,7 +418,7 @@ func testNon2xxReturnsNilUsage(t *testing.T) {
 func testNonBillableRoute(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{"status":"done"}`)
 	provider := newProvider(t, up, &schemas.GenericProviderConfig{
-		Usage:  &schemas.GenericUsageConfig{CostPerRequest: 0.01},
+		Usage:  &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)},
 		Routes: []schemas.GenericRouteConfig{{Method: "GET", Path: "/jobs/*", Billable: schemas.Ptr(false)}},
 	})
 
@@ -431,6 +431,10 @@ func testNonBillableRoute(t *testing.T) {
 	require.NotNil(t, resp.PassthroughUsage)
 	require.NotNil(t, resp.PassthroughUsage.Cost)
 	assert.InDelta(t, 0.01, resp.PassthroughUsage.Cost.TotalCost, 1e-9, "the provider fee applies to routes without an override")
+
+	resp, bifrostErr = provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodGet, "/status", "", "", nil))
+	require.Nil(t, bifrostErr)
+	assert.Nil(t, resp.PassthroughUsage, "an unrouted GET is not counted")
 }
 
 func testResponseTooLarge(t *testing.T) {
@@ -454,7 +458,7 @@ func testStreamSSEObservesUsage(t *testing.T) {
 		_, _ = w.Write([]byte("data: {\"delta\":\"lo\",\"usage\":{\"input_tokens\":2,\"output_tokens\":5}}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	})
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{CostPerRequest: 0.002}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.002)}})
 
 	ch, bifrostErr := provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("k"), relayRequest(http.MethodPost, "/chat/stream", "", `{"stream":true}`, nil))
 	require.Nil(t, bifrostErr)
@@ -475,7 +479,7 @@ func testStreamNonSSEUsesDefaultUsage(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ID3\x00\x00binary"))
 	})
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{CostPerRequest: 0.5}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.5)}})
 
 	ch, bifrostErr := provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("k"), relayRequest(http.MethodPost, "/tts/stream", "", `{"text":"hi"}`, nil))
 	require.Nil(t, bifrostErr)

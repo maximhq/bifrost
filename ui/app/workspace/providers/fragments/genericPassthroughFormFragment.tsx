@@ -55,14 +55,16 @@ function toFormValues(cfg: GenericProviderConfig | undefined): FormValues {
 		},
 		usage: { ...emptyUsage, ...(cfg?.usage ?? {}) },
 		streaming: { paths: cfg?.streaming?.paths ?? [], detect_from_accept_header: cfg?.streaming?.detect_from_accept_header ?? false },
-		routes: (cfg?.routes ?? []).map((r) => ({ ...r, usage: { ...emptyUsage, ...(r.usage ?? {}) } })),
+		routes: (cfg?.routes ?? []).map((r) => ({ ...r, usage: { ...emptyUsage, cost_per_request: undefined, ...(r.usage ?? {}) } })),
 		strict_routes: cfg?.strict_routes ?? false,
 	};
 }
 
 // Empty strings are form conveniences, not config: strip them so the stored block only carries
 // what the operator set, and a usage block with nothing in it is dropped altogether.
-function cleanUsage(usage: FormValues["usage"]) {
+// keepZeroFee is set for route usage: a route's explicit 0 waives the provider fee and must be
+// sent, while the provider-level field treats 0 as "no fee" and is dropped.
+function cleanUsage(usage: FormValues["usage"], keepZeroFee = false) {
 	if (!usage) return undefined;
 	const out: NonNullable<GenericProviderConfig["usage"]> = {};
 	if (usage.model_path) out.model_path = usage.model_path;
@@ -70,7 +72,7 @@ function cleanUsage(usage: FormValues["usage"]) {
 	if (usage.output_tokens_path) out.output_tokens_path = usage.output_tokens_path;
 	if (usage.total_tokens_path) out.total_tokens_path = usage.total_tokens_path;
 	if (usage.cost_path) out.cost_path = usage.cost_path;
-	if (usage.cost_per_request && usage.cost_per_request > 0) out.cost_per_request = usage.cost_per_request;
+	if (usage.cost_per_request !== undefined && (keepZeroFee || usage.cost_per_request > 0)) out.cost_per_request = usage.cost_per_request;
 	if (usage.disable_optimistic_parsing) out.disable_optimistic_parsing = true;
 	return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -100,7 +102,7 @@ function toConfig(values: FormValues): GenericProviderConfig {
 			path: r.path,
 			billable: r.billable === false ? false : undefined,
 			stream: r.stream,
-			usage: cleanUsage(r.usage),
+			usage: cleanUsage(r.usage, true),
 		}));
 	}
 	if (values.strict_routes) cfg.strict_routes = true;
@@ -418,7 +420,15 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 							size="sm"
 							disabled={disabled}
 							data-testid="generic-route-add-btn"
-							onClick={() => routes.append({ method: "POST", path: "/", billable: true, stream: undefined, usage: { ...emptyUsage } })}
+							onClick={() =>
+								routes.append({
+									method: "POST",
+									path: "/",
+									billable: true,
+									stream: undefined,
+									usage: { ...emptyUsage, cost_per_request: undefined },
+								})
+							}
 						>
 							Add route
 						</Button>
@@ -522,11 +532,11 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 													type="number"
 													step="any"
 													min={0}
-													placeholder="Cost per request override (USD)"
+													placeholder="Cost per request override (USD); empty inherits, 0 waives the fee"
 													data-testid={`generic-route-cost-per-request-input-${index}`}
 													disabled={disabled}
-													value={field.value ?? 0}
-													onChange={(e) => field.onChange(e.target.value === "" ? 0 : Number(e.target.value))}
+													value={field.value ?? ""}
+													onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
 												/>
 											</FormControl>
 										</FormItem>

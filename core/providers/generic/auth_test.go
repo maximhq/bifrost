@@ -50,6 +50,7 @@ func TestQueryCredentialHandling(t *testing.T) {
 	assert.Equal(t, "q=1", provider.stripCallerQueryCredential("q=1"), "untouched when the parameter is absent")
 	assert.Equal(t, "q=1", provider.stripCallerQueryCredential("api_key=caller&q=1"))
 	assert.Equal(t, "", provider.stripCallerQueryCredential("api_key=caller"))
+	assert.Equal(t, "q=1", provider.stripCallerQueryCredential("api%5Fkey=caller&q=1"), "a percent-encoded name is still the credential")
 	assert.Equal(t, "api_key=s+e%26c", provider.appendAuthQuery("", key))
 	assert.Equal(t, "q=1&api_key=s+e%26c", provider.appendAuthQuery("q=1", key))
 

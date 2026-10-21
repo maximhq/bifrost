@@ -512,3 +512,17 @@ func TestPassthroughLogKeepsGenericRelayRaw(t *testing.T) {
 	require.Equal(t, "/search", params["path"])
 	require.Nil(t, params["parsed_type"])
 }
+
+// TestPassthroughLogStoresAWSJSONBody pins that an AWS JSON body (application/x-amz-json-1.1, what
+// Textract and Translate speak) is stored like any JSON body.
+func TestPassthroughLogStoresAWSJSONBody(t *testing.T) {
+	row := runPassthroughCall(t, &Config{}, "req-pt-awsjson", passthroughCall{
+		contentType: "application/x-amz-json-1.1",
+		provider:    "textract", path: "/",
+		requestBody: `{"Document":{"Bytes":"aGk="}}`, status: 200, responseBody: `{"Blocks":[]}`,
+	}, func(ctx *schemas.BifrostContext) {
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Generic)
+	}, nil)
+	require.Equal(t, `{"Document":{"Bytes":"aGk="}}`, row.PassthroughRequestBody)
+	require.Equal(t, string(schemas.PassthroughRequest), row.Object)
+}

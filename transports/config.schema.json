@@ -13409,7 +13409,7 @@
     },
     "generic_usage_config": {
       "type": "object",
-      "description": "Maps a relayed request/response onto usage and cost with gjson paths. Fields left empty keep the optimistic defaults (request model, response usage.prompt_tokens|input_tokens, usage.completion_tokens|output_tokens, usage.total_tokens, usage.cost|cost). Naming any token path turns the optimistic token lookup off",
+      "description": "Maps a relayed request/response onto usage and cost with gjson paths. Fields left empty keep the optimistic defaults (request model, response usage.prompt_tokens|input_tokens, usage.completion_tokens|output_tokens, usage.total_tokens, usage.cost). Naming any token path turns the optimistic token lookup off. Negative numbers are ignored",
       "properties": {
         "model_path": {
           "type": "string",
@@ -13434,7 +13434,7 @@
         "cost_per_request": {
           "type": "number",
           "minimum": 0,
-          "description": "Flat USD fee added to every billable call"
+          "description": "Flat USD fee added to every billable call; on a route, 0 waives the provider fee"
         },
         "disable_optimistic_parsing": {
           "type": "boolean",
@@ -13482,7 +13482,7 @@
         },
         "billable": {
           "type": "boolean",
-          "description": "false relays the call without counting or charging it (default true)"
+          "description": "false relays the call without counting or charging it. Without a route, POST/PUT/PATCH/DELETE are billable and GET/HEAD are not"
         },
         "stream": {
           "type": "boolean",

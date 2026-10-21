@@ -52,7 +52,7 @@ type GenericUsageConfig struct {
 	OutputTokensPath         string  `json:"output_tokens_path,omitempty"` // response body path for output tokens
 	TotalTokensPath          string  `json:"total_tokens_path,omitempty"`  // response body path for total tokens
 	CostPath                 string  `json:"cost_path,omitempty"`          // response body path for a provider-reported cost (arrays are summed)
-	CostPerRequest           float64 `json:"cost_per_request,omitempty"`   // flat USD fee added to every billable call
+	CostPerRequest           *float64 `json:"cost_per_request,omitempty"`   // flat USD fee added to every billable call; a route may set 0 to waive the provider fee
 	DisableOptimisticParsing bool    `json:"disable_optimistic_parsing"`   // only the configured paths are read
 }
 
@@ -148,7 +148,7 @@ func (u *GenericUsageConfig) validate(field string) error {
 	if u == nil {
 		return nil
 	}
-	if u.CostPerRequest < 0 {
+	if u.CostPerRequest != nil && *u.CostPerRequest < 0 {
 		return fmt.Errorf("%s.cost_per_request must not be negative", field)
 	}
 	return nil
@@ -187,6 +187,9 @@ func (c *GenericProviderConfig) Clone() *GenericProviderConfig {
 	}
 	if c.Usage != nil {
 		usage := *c.Usage
+		if c.Usage.CostPerRequest != nil {
+			usage.CostPerRequest = Ptr(*c.Usage.CostPerRequest)
+		}
 		out.Usage = &usage
 	}
 	if c.Streaming != nil {
@@ -206,6 +209,9 @@ func (c *GenericProviderConfig) Clone() *GenericProviderConfig {
 			}
 			if route.Usage != nil {
 				usage := *route.Usage
+				if route.Usage.CostPerRequest != nil {
+					usage.CostPerRequest = Ptr(*route.Usage.CostPerRequest)
+				}
 				out.Routes[i].Usage = &usage
 			}
 		}

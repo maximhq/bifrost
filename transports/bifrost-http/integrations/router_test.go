@@ -2185,6 +2185,7 @@ func (a genericPassthroughTestAccount) GetConfigForProvider(p schemas.ModelProvi
 				Auth:      schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "x-api-key"},
 				Usage:     &schemas.GenericUsageConfig{ModelPath: "engine"},
 				Streaming: &schemas.GenericStreamingConfig{Paths: []string{"/live/**"}},
+				Routes:    []schemas.GenericRouteConfig{{Method: "POST", Path: "/named", Usage: &schemas.GenericUsageConfig{ModelPath: "name"}}},
 			},
 		}
 	case "strict":
@@ -2352,15 +2353,37 @@ func TestGenericPassthroughStrictRoutes(t *testing.T) {
 }
 
 func TestExtractGenericModel(t *testing.T) {
-	assert.Equal(t, "gpt-4o", extractGenericModel([]byte(`{"model":"gpt-4o"}`), "application/json", ""))
+	assert.Equal(t, "gpt-4o", extractGenericModel([]byte(`{"model":"gpt-4o"}`), "application/json", "model"))
 	assert.Equal(t, "fast", extractGenericModel([]byte(`{"engine":"fast"}`), "application/json", "engine"))
-	assert.Equal(t, "", extractGenericModel([]byte(`{"model":7}`), "application/json", ""), "a non-string model is no model, not an error")
-	assert.Equal(t, "", extractGenericModel([]byte(`{"model":"x"}`), "text/plain", ""), "a declared non-JSON body is not read")
-	assert.Equal(t, "x", extractGenericModel([]byte(`{"model":"x"}`), "", ""), "no content type sniffs JSON")
-	assert.Equal(t, "", extractGenericModel(nil, "application/json", ""))
+	assert.Equal(t, "", extractGenericModel([]byte(`{"model":7}`), "application/json", "model"), "a non-string model is no model, not an error")
+	assert.Equal(t, "", extractGenericModel([]byte(`{"model":"x"}`), "text/plain", "model"), "a declared non-JSON body is not read")
+	assert.Equal(t, "x", extractGenericModel([]byte(`{"model":"x"}`), "", "model"), "no content type sniffs JSON")
+	assert.Equal(t, "x", extractGenericModel([]byte(`{"model":"x"}`), "application/x-amz-json-1.1", "model"), "AWS JSON is JSON")
+	assert.Equal(t, "", extractGenericModel([]byte(`{"model":"x"}`), "application/json", ""), "an empty path reads no model")
+	assert.Equal(t, "", extractGenericModel(nil, "application/json", "model"))
 	assert.True(t, genericBodyStreams([]byte(`{"stream":true}`), "application/json"))
 	assert.False(t, genericBodyStreams([]byte(`{"stream":"true"}`), "application/json"))
 }
+
+// The model a request names is read at the route's model_path when the route has one, else at the
+// provider's, so governance and the log row see the field the operator pointed at.
+func TestGenericPassthroughRouteModelPath(t *testing.T) {
+	r, takeHits := newGenericPassthroughFixture(t)
+	_ = r
+	takeHits()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: genericPassthroughTestAccount{baseURL: "http://127.0.0.1:1"},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	_, gp, ok := resolveGenericProvider(client, "echo")
+	require.True(t, ok)
+	assert.Equal(t, "name", gp.ModelPath("POST", "/named"))
+	assert.Equal(t, "engine", gp.ModelPath("POST", "/search"))
+	assert.Equal(t, "engine", gp.ModelPath("GET", "/named"), "the route is method-specific")
+}
+
 func BenchmarkHandleGenericPassthrough(b *testing.B) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -24,13 +24,28 @@ func TestExtractUsageOptimisticDefaults(t *testing.T) {
 		require.NotNil(t, usage.LLMUsage)
 		assert.Equal(t, 7, usage.LLMUsage.TotalTokens)
 	})
-	t.Run("cost in usage or at the top level", func(t *testing.T) {
+	t.Run("cost only from the usage block", func(t *testing.T) {
 		usage := extractUsage(u, "application/json", []byte(`{"usage":{"cost":0.25}}`))
 		require.NotNil(t, usage.Cost)
 		assert.InDelta(t, 0.25, usage.Cost.TotalCost, 1e-9)
-		usage = extractUsage(u, "application/json", []byte(`{"cost":1.5}`))
+		usage = extractUsage(u, "application/json", []byte(`{"cost":1499.99}`))
+		assert.Nil(t, usage.Cost, "a root cost is as likely a product price as a bill; it is never read by default")
+	})
+	t.Run("negative numbers are not measurements", func(t *testing.T) {
+		usage := extractUsage(u, "application/json", []byte(`{"usage":{"prompt_tokens":-1000000,"completion_tokens":4,"cost":-5}}`))
+		require.NotNil(t, usage.LLMUsage)
+		assert.Equal(t, 0, usage.LLMUsage.PromptTokens)
+		assert.Equal(t, 4, usage.LLMUsage.TotalTokens)
+		assert.Nil(t, usage.Cost)
+		fee := resolveUsage(&schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)}, nil)
+		usage = extractUsage(fee, "application/json", []byte(`{"usage":{"cost":-5}}`))
 		require.NotNil(t, usage.Cost)
-		assert.InDelta(t, 1.5, usage.Cost.TotalCost, 1e-9)
+		assert.InDelta(t, 0.01, usage.Cost.TotalCost, 1e-9, "a negative upstream cost cannot cancel the flat fee")
+	})
+	t.Run("aws json media type is json", func(t *testing.T) {
+		usage := extractUsage(u, "application/x-amz-json-1.1", []byte(`{"usage":{"total_tokens":3}}`))
+		require.NotNil(t, usage.LLMUsage)
+		assert.Equal(t, 3, usage.LLMUsage.TotalTokens)
 	})
 	t.Run("nothing found is still a non-nil usage", func(t *testing.T) {
 		usage := extractUsage(u, "application/json", []byte(`{"results":[]}`))
@@ -58,7 +73,7 @@ func TestExtractUsageConfiguredPaths(t *testing.T) {
 		InputTokensPath:  "meta.in",
 		OutputTokensPath: "meta.out",
 		CostPath:         "data.#.cost",
-		CostPerRequest:   0.01,
+		CostPerRequest:   schemas.Ptr(0.01),
 	}, nil)
 	usage := extractUsage(u, "application/json", []byte(`{"meta":{"in":2,"out":3},"data":[{"cost":0.1},{"cost":0.2},{"cost":"n/a"}],"usage":{"total_tokens":99}}`))
 	require.NotNil(t, usage.LLMUsage)
@@ -73,7 +88,7 @@ func TestExtractUsageConfiguredPaths(t *testing.T) {
 }
 
 func TestExtractUsageDisableOptimistic(t *testing.T) {
-	u := resolveUsage(&schemas.GenericUsageConfig{DisableOptimisticParsing: true, CostPerRequest: 0.004}, nil)
+	u := resolveUsage(&schemas.GenericUsageConfig{DisableOptimisticParsing: true, CostPerRequest: schemas.Ptr(0.004)}, nil)
 	usage := extractUsage(u, "application/json", []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"cost":5}`))
 	assert.Nil(t, usage.LLMUsage)
 	require.NotNil(t, usage.Cost)
@@ -81,8 +96,8 @@ func TestExtractUsageDisableOptimistic(t *testing.T) {
 }
 
 func TestResolveUsageRouteOverride(t *testing.T) {
-	base := &schemas.GenericUsageConfig{ModelPath: "model", CostPath: "cost", CostPerRequest: 0.01}
-	override := &schemas.GenericUsageConfig{CostPerRequest: 0.05, TotalTokensPath: "tokens"}
+	base := &schemas.GenericUsageConfig{ModelPath: "model", CostPath: "cost", CostPerRequest: schemas.Ptr(0.01)}
+	override := &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.05), TotalTokensPath: "tokens"}
 	u := resolveUsage(base, override)
 	assert.Equal(t, "model", u.modelPath, "untouched fields come from the provider")
 	assert.Equal(t, "cost", u.costPath)
@@ -92,20 +107,43 @@ func TestResolveUsageRouteOverride(t *testing.T) {
 }
 
 func TestStreamUsageObservers(t *testing.T) {
-	u := resolveUsage(&schemas.GenericUsageConfig{CostPerRequest: 0.01}, nil)
+	u := resolveUsage(&schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)}, nil)
 	assert.False(t, u.hasUsageEvent([]byte(`{"delta":"x"}`)))
 	assert.True(t, u.hasUsageEvent([]byte(`{"usage":{"total_tokens":1}}`)))
-	assert.True(t, u.hasUsageEvent([]byte(`{"cost":0.2}`)))
+	assert.True(t, u.hasUsageEvent([]byte(`{"usage":{"output_tokens":5}}`)), "an output-only event is worth parsing")
+	assert.True(t, u.hasUsageEvent([]byte(`{"usage":{"cost":0.2}}`)))
+	assert.False(t, u.hasUsageEvent([]byte(`{"cost":0.2}`)), "a root cost is not a usage field")
 
-	assert.Nil(t, u.observeUsage([]byte(`{"delta":"x"}`)), "a content-only event never clears what was seen")
-	observed := u.observeUsage([]byte(`{"usage":{"total_tokens":4}}`))
-	require.NotNil(t, observed)
-	assert.Equal(t, 4, observed.LLMUsage.TotalTokens)
-	assert.InDelta(t, 0.01, observed.Cost.TotalCost, 1e-9)
+	observe := u.streamObserver()
+	assert.Nil(t, observe([]byte(`{"delta":"x"}`)), "a content-only event reports nothing and clears nothing")
+
+	// The Anthropic shape: input tokens on the first event, output tokens on the last.
+	first := observe([]byte(`{"usage":{"input_tokens":12}}`))
+	require.NotNil(t, first)
+	assert.Equal(t, 12, first.LLMUsage.TotalTokens)
+	assert.Nil(t, observe([]byte(`{"delta":"more"}`)))
+	last := observe([]byte(`{"usage":{"output_tokens":5}}`))
+	require.NotNil(t, last)
+	assert.Equal(t, 12, last.LLMUsage.PromptTokens)
+	assert.Equal(t, 5, last.LLMUsage.CompletionTokens)
+	assert.Equal(t, 17, last.LLMUsage.TotalTokens, "fields merge across events")
+	assert.InDelta(t, 0.01, last.Cost.TotalCost, 1e-9)
+
+	// A later total wins over the derived sum.
+	withTotal := observe([]byte(`{"usage":{"total_tokens":20}}`))
+	require.NotNil(t, withTotal)
+	assert.Equal(t, 20, withTotal.LLMUsage.TotalTokens)
 
 	fallback := u.defaultUsage()
 	require.NotNil(t, fallback)
 	assert.Nil(t, fallback.LLMUsage)
 	assert.InDelta(t, 0.01, fallback.Cost.TotalCost, 1e-9)
 	assert.Nil(t, resolveUsage(nil, nil).defaultUsage().Cost, "no fee means an empty usage")
+}
+
+func TestEffectiveModelPath(t *testing.T) {
+	assert.Equal(t, "model", resolveUsage(nil, nil).effectiveModelPath())
+	assert.Equal(t, "engine", resolveUsage(&schemas.GenericUsageConfig{ModelPath: "engine"}, nil).effectiveModelPath())
+	assert.Equal(t, "", resolveUsage(&schemas.GenericUsageConfig{DisableOptimisticParsing: true}, nil).effectiveModelPath(), "no optimistic parsing means no default model lookup")
+	assert.Equal(t, "name", resolveUsage(&schemas.GenericUsageConfig{DisableOptimisticParsing: true}, &schemas.GenericUsageConfig{ModelPath: "name"}).effectiveModelPath())
 }

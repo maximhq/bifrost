@@ -121,6 +121,7 @@ curl -X POST http://localhost:8080/api/providers/tavily/keys \
 - `bearer` sends `Authorization: Bearer <key>`; `basic` sends `Authorization: Basic base64(<key>)` where the key value is `user:password`.
 - `aws_sigv4` signs the request with the key's `bedrock_key_config` credentials (static keys, an assumed role, or the default AWS credential chain when the key holds none). Caller signature headers (`x-amz-date`, `x-amz-security-token`, `x-amz-content-sha256`, ...) are dropped before signing; operation headers such as `X-Amz-Target` are kept.
 - `none` injects nothing. A provider with `is_key_less: true` must use it.
+- With `aws_sigv4`, a key that carries no credentials signs with the gateway's own AWS credential chain (instance role, environment, shared config), the same way Bedrock keys do. The caller chooses the operation through headers such as `X-Amz-Target`, so that role's permissions on the service are what every virtual key holder can exercise. Give such providers a dedicated key with scoped credentials or a role ARN.
 - Every auth type except `none` and `aws_sigv4` requires the key to have a value.
 
 ### `usage`
@@ -132,12 +133,14 @@ Paths are [gjson](https://github.com/tidwall/gjson) paths. Tokens and cost are r
 | `model_path` | Request body path for the model name (default `model`). Used for governance model restrictions and the log row |
 | `input_tokens_path`, `output_tokens_path`, `total_tokens_path` | Response body paths for tokens |
 | `cost_path` | Response body path for a provider-reported USD cost; an array of numbers is summed |
-| `cost_per_request` | Flat USD fee added to every billable call |
+| `cost_per_request` | Flat USD fee added to every billable call. A route may set `0` to waive the provider fee |
 | `disable_optimistic_parsing` | Read only the configured paths |
 
-**Optimistic defaults.** With no mapping, Bifrost reads the shapes most APIs borrow: request `model`; response `usage.prompt_tokens` or `usage.input_tokens`, `usage.completion_tokens` or `usage.output_tokens`, `usage.total_tokens`; cost `usage.cost` then `cost`. Naming any token path turns the optimistic token lookup off, so a half-mapped response is never topped up from a block you did not map. The response is only scanned when its `Content-Type` is JSON.
+**Optimistic defaults.** With no mapping, Bifrost reads the shapes most APIs borrow: request `model`; response `usage.prompt_tokens` or `usage.input_tokens`, `usage.completion_tokens` or `usage.output_tokens`, `usage.total_tokens`; cost `usage.cost`. A root-level `cost` is never read by default, since on many APIs it is a product price rather than a bill. Naming any token path turns the optimistic token lookup off, so a half-mapped response is never topped up from a block you did not map. `disable_optimistic_parsing` also stops the default `model` lookup. Negative numbers are ignored. Bodies are scanned when their `Content-Type` is any JSON media type, including `application/x-amz-json-1.1`.
 
-**What gets charged.** Every successful (2xx) call on a billable route reports usage, even when nothing could be read from the response, so it counts as one request against rate limits. Cost is `extracted cost + cost_per_request`; budgets are charged when that is above zero. Non-2xx responses and non-billable routes report nothing.
+**What gets charged.** Every successful (2xx) call on a billable route reports usage, even when nothing could be read from the response, so it counts as one request against rate limits. Cost is `extracted cost + cost_per_request`; budgets are charged when that is above zero. Non-2xx responses and non-billable routes report nothing. Without a matching route, `GET` and `HEAD` are not billable (they are usually polls and listings); add a route with `billable: true` to count them.
+
+**Streams.** Usage fields accumulate across SSE events, so an API that reports input tokens on its first event and output tokens on its last is billed for both.
 
 ### `streaming`
 
@@ -197,6 +200,7 @@ Only custom providers with the generic base type are served by `/passthrough/{pr
 
 - **Virtual keys** scope access by provider name, so a key may allow `tavily` and not `textract`. Budgets and rate limits attach per provider as for any other.
 - A virtual key that **restricts models** refuses a passthrough call that names no model. Non-LLM APIs rarely do, so allow `*` on generic providers, or map `usage.model_path` to a request field that should act as the model.
+- The model is **read from the caller's body**, as on every passthrough route: a caller can name any value there. Treat model restrictions on generic providers as routing hints, not access control; provider-level allowlists on the virtual key are the access control.
 - **Logs** keep a generic relay as a `passthrough` row with the raw JSON request and response bodies. Multipart bodies are summarized; other content types are not stored. Tokens and cost read through the usage mapping appear on the row.
 
 ---
@@ -206,4 +210,6 @@ Only custom providers with the generic base type are served by `/passthrough/{pr
 - The upstream host is pinned: a path that would change the authority (`//host`, `@host`, a scheme) is refused before dispatch.
 - Caller `authorization`, `api-key`, `x-api-key`, `x-goog-api-key`, cookies and every `x-bf-*` header are dropped; the header or query parameter named by `auth` is replaced with the configured key.
 - `base_url` is validated like any provider URL (`allow_private_network` governs private targets).
+- Redirects are never followed: a 3xx from the upstream is returned to the caller as is, so the injected key never reaches a host the upstream named.
+- Transport errors name the upstream host and path but never the query string, which for query auth carries the key.
 - The buffered relay caps a response at 64 MiB; use a streaming route for anything larger.

@@ -34,9 +34,9 @@ func TestRouteGlobMatch(t *testing.T) {
 
 func TestMatchRouteFirstWins(t *testing.T) {
 	cfg := &schemas.GenericProviderConfig{
-		Usage: &schemas.GenericUsageConfig{CostPerRequest: 0.01},
+		Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)},
 		Routes: []schemas.GenericRouteConfig{
-			{Method: "post", Path: "/search", Usage: &schemas.GenericUsageConfig{CostPerRequest: 0.02}},
+			{Method: "post", Path: "/search", Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.02)}},
 			{Method: "POST", Path: "/**", Billable: schemas.Ptr(false)},
 			{Method: "GET", Path: "/jobs/*", Stream: schemas.Ptr(true)},
 		},
@@ -64,6 +64,34 @@ func TestMatchRouteFirstWins(t *testing.T) {
 	assert.Nil(t, matched)
 	assert.True(t, billable, "no route means the provider defaults, billable")
 	assert.InDelta(t, 0.01, usage.costPerRequest, 1e-9)
+
+	_, billable, matched = provider.resolve("GET", "/x")
+	assert.Nil(t, matched)
+	assert.False(t, billable, "an unrouted GET is a poll or a listing: not counted")
+	_, billable, _ = provider.resolve("HEAD", "/x")
+	assert.False(t, billable)
+	_, billable, _ = provider.resolve("GET", "/jobs/9")
+	assert.True(t, billable, "a route makes any method billable")
+}
+
+// A route may waive the provider's flat fee by setting cost_per_request to 0, and may name its
+// own model path.
+func TestRouteOverridesZeroFeeAndModelPath(t *testing.T) {
+	cfg := &schemas.GenericProviderConfig{
+		Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.05), ModelPath: "engine"},
+		Routes: []schemas.GenericRouteConfig{
+			{Method: "POST", Path: "/free", Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.0)}},
+			{Method: "POST", Path: "/named", Usage: &schemas.GenericUsageConfig{ModelPath: "name"}},
+		},
+	}
+	provider := &GenericProvider{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(cfg.Usage, nil)}
+	usage, billable, _ := provider.resolve("POST", "/free")
+	assert.True(t, billable)
+	assert.InDelta(t, 0.0, usage.costPerRequest, 1e-9, "an explicit 0 waives the provider fee")
+	assert.Nil(t, usage.defaultUsage().Cost)
+	assert.Equal(t, "name", provider.ModelPath("POST", "/named"))
+	assert.Equal(t, "engine", provider.ModelPath("POST", "/other"), "unrouted operations use the provider mapping")
+	assert.Equal(t, "model", (&GenericProvider{cfg: &schemas.GenericProviderConfig{}, usage: resolveUsage(nil, nil)}).ModelPath("POST", "/x"))
 }
 
 // strict_routes turns the routes list into an allowlist: anything it does not name is refused.

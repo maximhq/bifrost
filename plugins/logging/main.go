@@ -3827,7 +3827,8 @@ func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *sch
 		if len(req.PassthroughRequest.Body) > 0 {
 			rawCT := req.PassthroughRequest.SafeHeaders["content-type"]
 			ct := strings.ToLower(rawCT)
-			if strings.Contains(ct, "application/json") {
+			if strings.Contains(ct, "json") {
+				// application/json, +json suffixes and application/x-amz-json-1.1 alike.
 				initialData.PassthroughRequestBody = string(req.PassthroughRequest.Body)
 			} else if strings.HasPrefix(ct, "multipart/form-data") {
 				// Uploads (audio, images) are logged as their form fields plus the name and size of

@@ -31,6 +31,9 @@ type PassthroughProvider interface {
 	// RouteAllowed reports whether an operation may be relayed: always, unless strict_routes is on
 	// and no routes[] entry matches it.
 	RouteAllowed(method, path string) bool
+	// ModelPath is the request body path the model is read from for this operation, or "" when
+	// no model should be read.
+	ModelPath(method, path string) string
 }
 
 // GenericProvider relays raw HTTP requests to one configured upstream.
@@ -144,12 +147,21 @@ func isEventStream(contentType string) bool {
 }
 
 // resolve returns the usage mapping and billing flag for a request: the matching route's, or the
-// provider defaults (billable).
+// provider defaults. Without a route, GET and HEAD are not billable: on most APIs they are status
+// polls and listings, and charging a poll would spend a caller's allowance on nothing. A route can
+// turn that around either way.
 func (provider *GenericProvider) resolve(method, path string) (resolvedUsage, bool, *compiledRoute) {
 	if route := provider.matchRoute(method, path); route != nil {
 		return route.usage, route.billable, route
 	}
-	return provider.usage, true, nil
+	billable := !strings.EqualFold(method, http.MethodGet) && !strings.EqualFold(method, http.MethodHead)
+	return provider.usage, billable, nil
+}
+
+// ModelPath implements PassthroughProvider.
+func (provider *GenericProvider) ModelPath(method, path string) string {
+	usage, _, _ := provider.resolve(method, path)
+	return usage.effectiveModelPath()
 }
 
 // buildRequest turns a passthrough request into the upstream net/http request: host-pinned URL,
@@ -287,7 +299,7 @@ func (provider *GenericProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 		params.DefaultUsage = usageMapping.defaultUsage()
 		if !params.SkipFraming {
 			params.HasUsage = usageMapping.hasUsageEvent
-			params.Observe = usageMapping.observeUsage
+			params.Observe = usageMapping.streamObserver()
 		}
 	}
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)

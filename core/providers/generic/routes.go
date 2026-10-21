@@ -84,8 +84,8 @@ func resolveUsage(base *schemas.GenericUsageConfig, override *schemas.GenericUsa
 		if u.CostPath != "" {
 			out.costPath = u.CostPath
 		}
-		if u.CostPerRequest > 0 {
-			out.costPerRequest = u.CostPerRequest
+		if u.CostPerRequest != nil {
+			out.costPerRequest = *u.CostPerRequest
 		}
 		if u.DisableOptimisticParsing {
 			out.optimistic = false
