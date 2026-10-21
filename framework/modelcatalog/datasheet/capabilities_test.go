@@ -247,6 +247,32 @@ func TestExtractSupportedParams_StopSpellings(t *testing.T) {
 	}
 }
 
+// TestExtractSupportedParams_NoModelParameters guards datasheet rows that
+// declare capability flags but no model_parameters list (e.g.
+// apac.anthropic.claude-sonnet-4-6 in the 2026-10-20 datasheet). Such a row
+// must not shrink the allowlist to flags alone: compat's should_drop_params
+// would strip max_tokens/temperature/top_p and the provider would silently
+// substitute its own defaults. An undisclosed list means "unknown", not
+// "unsupported".
+func TestExtractSupportedParams_NoModelParameters(t *testing.T) {
+	got := extractSupportedParams(&schemas.ModelCapabilities{
+		SupportsFunctionCalling: capabilityBoolPtr(true),
+	})
+	for _, want := range []string{"temperature", "top_p", "stop", "max_tokens", "max_completion_tokens", "max_output_tokens", "tools"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("expected supported params to contain %q for a row without model_parameters, got %v", want, got)
+		}
+	}
+
+	// A row that does list model_parameters keeps its declared surface.
+	declared := extractSupportedParams(&schemas.ModelCapabilities{
+		ModelParameters: []schemas.ModelParameterDescriptor{{ID: "temperature"}},
+	})
+	if slices.Contains(declared, "top_p") {
+		t.Errorf("expected top_p to stay undeclared for a row with a model_parameters list, got %v", declared)
+	}
+}
+
 // TestExtractSupportedParams_WebSearch guards the two web-search keys: the
 // model_parameters "web_search" id and the supports_web_search flag must each
 // yield both web_search (responses-path tool) and web_search_options (chat-path
