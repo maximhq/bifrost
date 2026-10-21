@@ -155,7 +155,54 @@ func TestGeneric(t *testing.T) {
 		t.Run("RedirectsAreReturnedNotFollowed", testRedirectsAreReturnedNotFollowed)
 		t.Run("TransportErrorRedactsQueryCredential", testTransportErrorRedactsQueryCredential)
 		t.Run("UnitPricingEndToEnd", testUnitPricingEndToEnd)
+		t.Run("IgnoreProviderCostKeepsOperatorFees", testIgnoreProviderCostKeepsOperatorFees)
 	})
+}
+
+// ignore_provider_cost drops what the upstream reports and nothing else: the operator's flat fee
+// and unit pricing are not provider-reported and keep applying, on both relay paths.
+func testIgnoreProviderCostKeepsOperatorFees(t *testing.T) {
+	cfg := &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{
+		CostPath: "usage.cost", CostPerRequest: schemas.Ptr(0.01), UnitsPath: "pages", CostPerUnit: schemas.Ptr(0.002),
+	}}
+	build := func(up *upstream) *GenericProvider {
+		provider, err := NewGenericProvider(&schemas.ProviderConfig{
+			NetworkConfig:        schemas.NetworkConfig{BaseURL: up.server.URL, DefaultRequestTimeoutInSeconds: 5},
+			IgnoreProviderCost:   true,
+			CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: cfg},
+		}, &testLogger{})
+		require.NoError(t, err)
+		return provider
+	}
+
+	up := jsonUpstream(t, http.StatusOK, `{"pages":3,"usage":{"cost":99}}`)
+	resp, bifrostErr := build(up).Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/scan", "", `{}`, nil))
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, resp.PassthroughUsage)
+	require.NotNil(t, resp.PassthroughUsage.Cost)
+	assert.InDelta(t, 0.01+3*0.002, resp.PassthroughUsage.Cost.TotalCost, 1e-9, "the upstream's 99 is ignored, the fee and units are not")
+
+	sse := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"pages\":2,\"usage\":{\"cost\":99}}\n\n"))
+	})
+	ch, bifrostErr := build(sse).PassthroughStream(testCtx(t), noHooks, nil, bearerKey("k"), relayRequest(http.MethodPost, "/scan/stream", "", `{}`, nil))
+	require.Nil(t, bifrostErr)
+	_, usage := drainStream(t, ch)
+	require.NotNil(t, usage)
+	require.NotNil(t, usage.Cost)
+	assert.InDelta(t, 0.01+2*0.002, usage.Cost.TotalCost, 1e-9)
+
+	// Without the flag the upstream cost is read as before.
+	trusting, err := NewGenericProvider(&schemas.ProviderConfig{
+		NetworkConfig:        schemas.NetworkConfig{BaseURL: up.server.URL, DefaultRequestTimeoutInSeconds: 5},
+		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: cfg},
+	}, &testLogger{})
+	require.NoError(t, err)
+	resp, bifrostErr = trusting.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/scan", "", `{}`, nil))
+	require.Nil(t, bifrostErr)
+	assert.InDelta(t, 99+0.01+3*0.002, resp.PassthroughUsage.Cost.TotalCost, 1e-9)
 }
 
 // Per-unit pricing through the relay: a Textract-shaped response priced per page, a

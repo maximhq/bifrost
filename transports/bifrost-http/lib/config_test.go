@@ -25906,3 +25906,35 @@ func TestGenericKeyValueRequired(t *testing.T) {
 		assert.False(t, GenericKeyValueRequired(&schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: authType}}}), string(authType))
 	}
 }
+
+// TestIgnoresProviderCostInCatalog pins that a generic relay stays off the pricing engine's
+// ignore list: its reported cost is the operator's own fee and unit pricing, and the relay honours
+// ignore_provider_cost itself by not reading the upstream cost_path.
+func TestIgnoresProviderCostInCatalog(t *testing.T) {
+	assert.False(t, IgnoresProviderCostInCatalog(configstore.ProviderConfig{}))
+	assert.True(t, IgnoresProviderCostInCatalog(configstore.ProviderConfig{IgnoreProviderCost: true}))
+	assert.True(t, IgnoresProviderCostInCatalog(configstore.ProviderConfig{IgnoreProviderCost: true, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}}))
+	assert.False(t, IgnoresProviderCostInCatalog(configstore.ProviderConfig{IgnoreProviderCost: true, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic}}))
+}
+
+// TestValidateGenericKeys pins the config.json rule: an injecting auth type needs a key value,
+// an env reference counts as one, and none/aws_sigv4 keys may be empty.
+func TestValidateGenericKeys(t *testing.T) {
+	generic := func(authType schemas.GenericAuthType, keys ...schemas.Key) configstore.ProviderConfig {
+		return configstore.ProviderConfig{
+			Keys: keys,
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{
+				Auth: schemas.GenericAuthConfig{Type: authType, HeaderName: "x-api-key", AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}},
+			}},
+		}
+	}
+	err := ValidateGenericKeys(generic(schemas.GenericAuthBearer, schemas.Key{Name: "k1"}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `key "k1" has no value`)
+	require.Error(t, ValidateGenericKeys(generic(schemas.GenericAuthHeader, schemas.Key{Name: "k1", Value: *schemas.NewSecretVar("")})))
+	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthBearer, schemas.Key{Name: "k1", Value: *schemas.NewSecretVar("env.TAVILY_KEY")})), "an env reference is a value")
+	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthBearer, schemas.Key{Name: "k1", Value: *schemas.NewSecretVar("tvly-x")})))
+	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthNone, schemas.Key{Name: "k1"})))
+	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthAWSSigV4, schemas.Key{Name: "aws"})))
+	require.NoError(t, ValidateGenericKeys(configstore.ProviderConfig{Keys: []schemas.Key{{Name: "k1"}}, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}}), "other base types are untouched")
+}

@@ -776,3 +776,13 @@ func TestAccounting_CostOnlyPassthroughCountsAsRequest(t *testing.T) {
 	assert.Equal(t, int64(1), rateLimit.RequestCurrentUsage, "a fee-only relay is one request")
 	assert.Equal(t, int64(0), rateLimit.TokenCurrentUsage, "and spends no tokens")
 }
+
+// A generic relay resolves the model through the operator's mapping and marks the request; the
+// governance body scan must not then treat a root "model" field as a model.
+func TestPassthroughBodyModelsSkipResolvedRequests(t *testing.T) {
+	body := []byte(`{"model":"pro","query":"x"}`)
+	scanned := passthroughBodyModels(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: body}})
+	assert.Equal(t, []string{"pro"}, scanned, "an ordinary passthrough body is scanned")
+	resolved := passthroughBodyModels(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: body, ModelResolved: true}})
+	assert.Empty(t, resolved, "a resolved request is not rescanned")
+}

@@ -44,8 +44,12 @@ func (u resolvedUsage) tokenPaths(configured string, optimistic []string) []stri
 	return nil
 }
 
-// costPaths returns the configured cost path or the optimistic candidates.
+// costPaths returns the configured cost path or the optimistic candidates, or nothing when the
+// provider ignores upstream-reported cost.
 func (u resolvedUsage) costPaths() []string {
+	if u.ignoreUpstreamCost {
+		return nil
+	}
 	if u.costPath != "" {
 		return []string{u.costPath}
 	}

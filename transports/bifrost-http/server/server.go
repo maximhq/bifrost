@@ -1214,7 +1214,7 @@ func (s *BifrostHTTPServer) syncIgnoreProviderCost(provider schemas.ModelProvide
 		return
 	}
 	pc, err := s.Config.GetProviderConfigRaw(provider)
-	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, err == nil && pc != nil && pc.IgnoreProviderCost)
+	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, err == nil && pc != nil && lib.IgnoresProviderCostInCatalog(*pc))
 }
 
 // RemoveProvider removes a provider from the in-memory store
@@ -3410,7 +3410,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		var ignoreProviderCost, keyless []schemas.ModelProvider
 		for provider, providerConfig := range s.Config.Providers {
 			snapshot[provider] = providerConfig.Keys
-			if providerConfig.IgnoreProviderCost {
+			if lib.IgnoresProviderCostInCatalog(providerConfig) {
 				ignoreProviderCost = append(ignoreProviderCost, provider)
 			}
 			if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {

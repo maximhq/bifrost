@@ -1943,6 +1943,9 @@ func processProvider(
 	if err := providerCfgInFile.Passthrough.Validate(); err != nil {
 		return fmt.Errorf("invalid passthrough for provider %s: %w", provider, err)
 	}
+	if err := ValidateGenericKeys(providerCfgInFile); err != nil {
+		return fmt.Errorf("provider %s: %w", provider, err)
+	}
 
 	baseProvider := provider
 	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
@@ -9798,6 +9801,32 @@ func validateGenericCustomProvider(config configstore.ProviderConfig, cpc *schem
 	allowed.Passthrough, allowed.PassthroughStream = false, false
 	if allowed != (schemas.AllowedRequests{}) {
 		return fmt.Errorf("custom provider validation failed: generic providers only serve passthrough and passthrough_stream")
+	}
+	return nil
+}
+
+// IgnoresProviderCostInCatalog reports whether the pricing engine should discard the cost a
+// provider reports on its responses. A generic relay is left out: its reported cost is the
+// operator's own flat fee and unit pricing, and the relay honours ignore_provider_cost itself by
+// not reading the upstream cost_path.
+func IgnoresProviderCostInCatalog(cfg configstore.ProviderConfig) bool {
+	if !cfg.IgnoreProviderCost {
+		return false
+	}
+	return cfg.CustomProviderConfig == nil || cfg.CustomProviderConfig.BaseProviderType != schemas.Generic
+}
+
+// ValidateGenericKeys applies the same rule the key API enforces to keys declared in config.json:
+// a generic provider whose auth type injects the key value refuses a key without one, so the
+// relay never sends an unauthenticated request and reports a 401 nobody can explain.
+func ValidateGenericKeys(cfg configstore.ProviderConfig) error {
+	if !GenericKeyValueRequired(cfg.CustomProviderConfig) {
+		return nil
+	}
+	for _, key := range cfg.Keys {
+		if !key.Value.IsSet() {
+			return fmt.Errorf("key %q has no value, which generic auth type %q injects on every request", key.Name, cfg.CustomProviderConfig.GenericConfig.Auth.Type)
+		}
 	}
 	return nil
 }

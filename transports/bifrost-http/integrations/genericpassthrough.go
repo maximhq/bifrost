@@ -127,13 +127,14 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	passthroughReq := &schemas.BifrostPassthroughRequest{
-		Method:      method,
-		Path:        path,
-		RawQuery:    string(ctx.URI().QueryString()),
-		Body:        body,
-		SafeHeaders: safeHeaders,
-		Provider:    provider,
-		Model:       model,
+		Method:        method,
+		Path:          path,
+		RawQuery:      string(ctx.URI().QueryString()),
+		Body:          body,
+		SafeHeaders:   safeHeaders,
+		Provider:      provider,
+		Model:         model,
+		ModelResolved: true,
 	}
 
 	accept := string(ctx.Request.Header.Peek("Accept"))

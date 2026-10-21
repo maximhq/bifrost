@@ -83,6 +83,16 @@ func NewGenericProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	// This matches the fasthttp passthroughs, whose Do never follows redirects.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
+	// ignore_provider_cost means "do not trust what the upstream reports": the cost_path is dropped
+	// while the operator's own flat fee and unit pricing still apply. The transport keeps generic
+	// providers off the pricing engine's ignore list so that number is not thrown away there.
+	usage := resolveUsage(cfg.Usage, nil)
+	usage.ignoreUpstreamCost = config.IgnoreProviderCost
+	routes := compileRoutes(cfg)
+	for i := range routes {
+		routes[i].usage.ignoreUpstreamCost = config.IgnoreProviderCost
+	}
+
 	return &GenericProvider{
 		logger:               logger,
 		client:               client,
@@ -90,8 +100,8 @@ func NewGenericProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		networkConfig:        config.NetworkConfig,
 		customProviderConfig: config.CustomProviderConfig,
 		cfg:                  cfg,
-		usage:                resolveUsage(cfg.Usage, nil),
-		routes:               compileRoutes(cfg),
+		usage:                usage,
+		routes:               routes,
 		streamGlobs:          compileStreamGlobs(cfg),
 		sendBackRawRequest:   config.SendBackRawRequest,
 		sendBackRawResponse:  config.SendBackRawResponse,

@@ -20,6 +20,9 @@ type resolvedUsage struct {
 	unitsMeasure     schemas.GenericUnitsMeasure
 	costPerUnit      float64
 	optimistic       bool
+	// ignoreUpstreamCost drops the cost_path (and the optimistic usage.cost) while the flat fee and
+	// unit pricing, which the operator configured, still apply. Set from ignore_provider_cost.
+	ignoreUpstreamCost bool
 }
 
 // compiledRoute is one routes[] entry with its glob split once at construction.
