@@ -1881,7 +1881,10 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 												<AlertTriangle className="h-4 w-4" />
 												<AlertDescription>
 													This key&apos;s providers, budgets and rate limit came from its owner&apos;s access profile, and it has none of
-													its own. Configure it below, or it will refuse requests once it is unassigned.
+													its own.{" "}
+													{form.watch("entityType") === "user"
+														? "If the user you assign it to has an access profile, that profile takes the key over and it keeps working; otherwise configure it below, or it will refuse requests."
+														: "Configure it below, or it will refuse requests once it is unassigned."}
 												</AlertDescription>
 											</Alert>
 										)}

@@ -15,8 +15,9 @@ import { VirtualKeyListItem } from "@/components/virtualKeyListItem";
 import { useGetVirtualKeysQuery, useLazyGetVirtualKeyQuery } from "@/lib/store";
 import VirtualMcpAccessProfiles from "@enterprise/components/virtual-mcps/virtualMcpAccessProfiles";
 import { Plus } from "lucide-react";
-import { useState } from "react";
-import { type VirtualKeyOwner, virtualKeyOwner } from "./virtualMcpAccessTab.utils";
+import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { type VirtualKeyOwner, resolvePickedVirtualKey } from "./virtualMcpAccessTab.utils";
 
 interface VirtualMCPAccessTabProps {
 	vmcpId: number;
@@ -33,14 +34,20 @@ interface VirtualMCPAccessTabProps {
 export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate, active, stagedCreate = false }: VirtualMCPAccessTabProps) {
 	// A user's access-profile managed key derives its MCP access from that profile, so it cannot be
 	// assigned directly here (the API rejects it too). A key a team, business unit or customer owns can
-	// be, after a confirmation that names its owner.
+	// be, and so can one assigned to a user, after a confirmation that names who it belongs to.
 	const { data, isLoading, isError, refetch } = useGetVirtualKeysQuery(
 		{ limit: 1000, exclude_access_profile_managed_virtual: true },
 		{ skip: !active || (isCreate && !stagedCreate) },
 	);
 	const [fetchVirtualKey] = useLazyGetVirtualKeyQuery();
-	// A picked key that belongs to another team, business unit or customer, waiting on the confirmation.
+	// A picked key that belongs to a team, business unit, customer or user, waiting on the confirmation.
 	const [pendingOwnedVk, setPendingOwnedVk] = useState<{ id: string; name: string; owner: VirtualKeyOwner } | null>(null);
+	// The assignments as of the latest render. A pick that waits on a lookup adds to these, not to the
+	// list it saw when it started, so a key picked meanwhile is not dropped.
+	const latestValue = useRef(value);
+	useEffect(() => {
+		latestValue.current = value;
+	}, [value]);
 
 	if (isCreate && !stagedCreate) {
 		return (
@@ -64,23 +71,28 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 	// Names/secrets for the assigned rows below; the searchable picker fetches its own results.
 	const vkById = new Map((data?.virtual_keys ?? []).map((v) => [v.id, v]));
 
-	const addVk = (vkId: string) => onChange([...value, vkId]);
-	const removeVk = (vkId: string) => onChange(value.filter((id) => id !== vkId));
+	const addVk = (vkId: string) => {
+		if (latestValue.current.includes(vkId)) return;
+		latestValue.current = [...latestValue.current, vkId];
+		onChange(latestValue.current);
+	};
+	const removeVk = (vkId: string) => {
+		latestValue.current = latestValue.current.filter((id) => id !== vkId);
+		onChange(latestValue.current);
+	};
 
 	// The list above holds the first 1000 keys; a key past it is read on its own to find its owner. A
-	// failed read skips the confirmation rather than blocking the assignment, since it only informs.
+	// failed read assigns nothing: whose key it is is unknown, and the confirmation exists for exactly
+	// a key someone else owns.
 	const selectVk = async (vkId: string, label: string) => {
-		let vk = vkById.get(vkId);
-		if (!vk) {
-			try {
-				vk = (await fetchVirtualKey(vkId, true).unwrap()).virtual_key;
-			} catch {
-				vk = undefined;
-			}
+		const listed = vkById.get(vkId);
+		const picked = await resolvePickedVirtualKey(listed, async () => (await fetchVirtualKey(vkId, true).unwrap()).virtual_key);
+		if (picked.outcome === "lookupFailed") {
+			toast.error(`Could not check who owns "${label}", so it was not assigned. Try again.`);
+			return;
 		}
-		const owner = virtualKeyOwner(vk);
-		if (owner) {
-			setPendingOwnedVk({ id: vkId, name: vk?.name || label, owner });
+		if (picked.outcome === "owned") {
+			setPendingOwnedVk({ id: vkId, name: listed?.name || label, owner: picked.owner });
 			return;
 		}
 		addVk(vkId);
@@ -135,7 +147,7 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 
 			{!stagedCreate && <VirtualMcpAccessProfiles vmcpId={vmcpId} active={active} />}
 
-			{/* Granting MCP access to a key another team, business unit or customer owns is confirmed. */}
+			{/* Granting MCP access to a key that belongs to a team, business unit, customer or user is confirmed. */}
 			<AlertDialog
 				open={!!pendingOwnedVk}
 				onOpenChange={(next) => {
