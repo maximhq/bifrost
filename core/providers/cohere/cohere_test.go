@@ -166,3 +166,23 @@ func TestToCohereResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkCohereChatStreamMessageEnd(b *testing.B) {
+	event := cohere.CohereStreamEvent{
+		Type: cohere.StreamEventMessageEnd,
+		Delta: &cohere.CohereStreamDelta{
+			FinishReason: schemas.Ptr(cohere.FinishReasonComplete),
+			Usage: &cohere.CohereUsage{
+				Tokens: &cohere.CohereTokenUsage{
+					InputTokens:  schemas.Ptr(120),
+					OutputTokens: schemas.Ptr(30),
+				},
+				CachedTokens: schemas.Ptr(96),
+			},
+		},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _, _ = event.ToBifrostChatCompletionStream()
+	}
+}
