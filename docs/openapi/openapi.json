@@ -150,6 +150,10 @@
       "description": "PydanticAI compatible endpoints with multi-provider support (/pydanticai/*)"
     },
     {
+      "name": "Generic Passthrough Integration",
+      "description": "Raw relay to custom providers whose base type is generic, for non-LLM APIs (/passthrough/{provider}/*)"
+    },
+    {
       "name": "Health",
       "description": "Health check endpoints"
     },
@@ -28618,6 +28622,128 @@
             "ApiKeyAuth": []
           }
         ]
+      }
+    },
+    "/passthrough/{provider}/{path}": {
+      "parameters": [
+        {
+          "name": "provider",
+          "in": "path",
+          "required": true,
+          "description": "Name of a custom provider whose `base_provider_type` is `generic`.",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "path",
+          "in": "path",
+          "required": true,
+          "description": "Upstream path appended to the provider's `network_config.base_url`. The query string is forwarded unchanged.",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "genericPassthroughPost",
+        "summary": "Relay a request to a generic (non-LLM) provider",
+        "description": "Relays the request byte for byte to the generic provider named in the path. Bifrost strips\ncaller credentials, injects the key it selects from the provider's key pool per the provider's\n`generic_config.auth`, pins the upstream host to the provider's base URL, and returns the\nupstream status, headers and body unchanged. Every call runs the plugin pipeline, is logged\nwith its raw bodies, and reports usage so governance counts it and charges `cost_per_request`\nand any cost the usage mapping extracts.\n\n`GET`, `PUT`, `PATCH`, `DELETE` and `HEAD` are relayed the same way. A request is served by the\nstreaming relay when the matching route says so, a `generic_config.streaming.paths` glob\nmatches, `Accept: text/event-stream` is sent (when enabled), the JSON body carries\n`\"stream\": true`, or the path contains `stream`.\n\nWith `strict_routes` on, an operation that matches no `routes[]` entry is refused with `404`\nbefore anything is forwarded.\n",
+        "tags": [
+          "Generic Passthrough Integration"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "description": "Forwarded unchanged. For JSON bodies the model is read from `generic_config.usage.model_path` (default `model`) for governance.",
+          "content": {
+            "*/*": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The upstream response, relayed unchanged. Bifrost adds `x-bifrost-provider`, `x-bifrost-request-id` and `x-bifrost-passthrough-path`.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "genericPassthroughGet",
+        "summary": "Relay a GET request to a generic provider",
+        "description": "Same relay as the POST form; the query string is forwarded unchanged.",
+        "tags": [
+          "Generic Passthrough Integration"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The upstream response, relayed unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/cohere/v1/tokenize": {
@@ -127646,6 +127772,165 @@
                 "additionalProperties": {
                   "type": "string"
                 }
+              },
+              "generic_config": {
+                "type": "object",
+                "description": "Relay settings for a custom provider whose base_provider_type is generic: a raw HTTP passthrough to a non-LLM API reached at /passthrough/{provider}/{path}.",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "description": "How the selected key is presented to the upstream",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "bearer",
+                          "header",
+                          "query",
+                          "basic",
+                          "aws_sigv4",
+                          "none"
+                        ]
+                      },
+                      "header_name": {
+                        "type": "string",
+                        "description": "Header that carries the key (type header)"
+                      },
+                      "query_param": {
+                        "type": "string",
+                        "description": "Query parameter that carries the key (type query)"
+                      },
+                      "value_prefix": {
+                        "type": "string",
+                        "description": "Literal prefix before the key value (type header)"
+                      },
+                      "aws": {
+                        "type": "object",
+                        "description": "SigV4 settings (type aws_sigv4); keys carry credentials in bedrock_key_config",
+                        "properties": {
+                          "service": {
+                            "type": "string",
+                            "description": "SigV4 signing name, e.g. textract"
+                          },
+                          "region": {
+                            "type": "string",
+                            "description": "Falls back to the key's bedrock_key_config.region"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "usage": {
+                    "type": "object",
+                    "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                    "properties": {
+                      "model_path": {
+                        "type": "string"
+                      },
+                      "input_tokens_path": {
+                        "type": "string"
+                      },
+                      "output_tokens_path": {
+                        "type": "string"
+                      },
+                      "total_tokens_path": {
+                        "type": "string"
+                      },
+                      "cost_path": {
+                        "type": "string"
+                      },
+                      "cost_per_request": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "disable_optimistic_parsing": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "streaming": {
+                    "type": "object",
+                    "properties": {
+                      "paths": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Rooted segment globs that always stream, e.g. /v1/stream/**"
+                      },
+                      "detect_from_accept_header": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "routes": {
+                    "type": "array",
+                    "description": "Per-route overrides; the first matching route wins",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "method",
+                        "path"
+                      ],
+                      "properties": {
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "GET",
+                            "POST",
+                            "PUT",
+                            "PATCH",
+                            "DELETE",
+                            "HEAD"
+                          ]
+                        },
+                        "path": {
+                          "type": "string",
+                          "description": "Rooted segment glob; a trailing /** matches the prefix and everything below"
+                        },
+                        "billable": {
+                          "type": "boolean",
+                          "description": "false relays the call without counting or charging it"
+                        },
+                        "stream": {
+                          "type": "boolean"
+                        },
+                        "usage": {
+                          "type": "object",
+                          "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                          "properties": {
+                            "model_path": {
+                              "type": "string"
+                            },
+                            "input_tokens_path": {
+                              "type": "string"
+                            },
+                            "output_tokens_path": {
+                              "type": "string"
+                            },
+                            "total_tokens_path": {
+                              "type": "string"
+                            },
+                            "cost_path": {
+                              "type": "string"
+                            },
+                            "cost_per_request": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "disable_optimistic_parsing": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "strict_routes": {
+                    "type": "boolean",
+                    "description": "Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist"
+                  }
+                }
               }
             }
           },
@@ -127920,6 +128205,165 @@
                 "additionalProperties": {
                   "type": "string"
                 }
+              },
+              "generic_config": {
+                "type": "object",
+                "description": "Relay settings for a custom provider whose base_provider_type is generic: a raw HTTP passthrough to a non-LLM API reached at /passthrough/{provider}/{path}.",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "description": "How the selected key is presented to the upstream",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "bearer",
+                          "header",
+                          "query",
+                          "basic",
+                          "aws_sigv4",
+                          "none"
+                        ]
+                      },
+                      "header_name": {
+                        "type": "string",
+                        "description": "Header that carries the key (type header)"
+                      },
+                      "query_param": {
+                        "type": "string",
+                        "description": "Query parameter that carries the key (type query)"
+                      },
+                      "value_prefix": {
+                        "type": "string",
+                        "description": "Literal prefix before the key value (type header)"
+                      },
+                      "aws": {
+                        "type": "object",
+                        "description": "SigV4 settings (type aws_sigv4); keys carry credentials in bedrock_key_config",
+                        "properties": {
+                          "service": {
+                            "type": "string",
+                            "description": "SigV4 signing name, e.g. textract"
+                          },
+                          "region": {
+                            "type": "string",
+                            "description": "Falls back to the key's bedrock_key_config.region"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "usage": {
+                    "type": "object",
+                    "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                    "properties": {
+                      "model_path": {
+                        "type": "string"
+                      },
+                      "input_tokens_path": {
+                        "type": "string"
+                      },
+                      "output_tokens_path": {
+                        "type": "string"
+                      },
+                      "total_tokens_path": {
+                        "type": "string"
+                      },
+                      "cost_path": {
+                        "type": "string"
+                      },
+                      "cost_per_request": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "disable_optimistic_parsing": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "streaming": {
+                    "type": "object",
+                    "properties": {
+                      "paths": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Rooted segment globs that always stream, e.g. /v1/stream/**"
+                      },
+                      "detect_from_accept_header": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "routes": {
+                    "type": "array",
+                    "description": "Per-route overrides; the first matching route wins",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "method",
+                        "path"
+                      ],
+                      "properties": {
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "GET",
+                            "POST",
+                            "PUT",
+                            "PATCH",
+                            "DELETE",
+                            "HEAD"
+                          ]
+                        },
+                        "path": {
+                          "type": "string",
+                          "description": "Rooted segment glob; a trailing /** matches the prefix and everything below"
+                        },
+                        "billable": {
+                          "type": "boolean",
+                          "description": "false relays the call without counting or charging it"
+                        },
+                        "stream": {
+                          "type": "boolean"
+                        },
+                        "usage": {
+                          "type": "object",
+                          "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                          "properties": {
+                            "model_path": {
+                              "type": "string"
+                            },
+                            "input_tokens_path": {
+                              "type": "string"
+                            },
+                            "output_tokens_path": {
+                              "type": "string"
+                            },
+                            "total_tokens_path": {
+                              "type": "string"
+                            },
+                            "cost_path": {
+                              "type": "string"
+                            },
+                            "cost_per_request": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "disable_optimistic_parsing": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "strict_routes": {
+                    "type": "boolean",
+                    "description": "Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist"
+                  }
+                }
               }
             }
           },
@@ -128151,6 +128595,165 @@
                 "type": "object",
                 "additionalProperties": {
                   "type": "string"
+                }
+              },
+              "generic_config": {
+                "type": "object",
+                "description": "Relay settings for a custom provider whose base_provider_type is generic: a raw HTTP passthrough to a non-LLM API reached at /passthrough/{provider}/{path}.",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "description": "How the selected key is presented to the upstream",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "bearer",
+                          "header",
+                          "query",
+                          "basic",
+                          "aws_sigv4",
+                          "none"
+                        ]
+                      },
+                      "header_name": {
+                        "type": "string",
+                        "description": "Header that carries the key (type header)"
+                      },
+                      "query_param": {
+                        "type": "string",
+                        "description": "Query parameter that carries the key (type query)"
+                      },
+                      "value_prefix": {
+                        "type": "string",
+                        "description": "Literal prefix before the key value (type header)"
+                      },
+                      "aws": {
+                        "type": "object",
+                        "description": "SigV4 settings (type aws_sigv4); keys carry credentials in bedrock_key_config",
+                        "properties": {
+                          "service": {
+                            "type": "string",
+                            "description": "SigV4 signing name, e.g. textract"
+                          },
+                          "region": {
+                            "type": "string",
+                            "description": "Falls back to the key's bedrock_key_config.region"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "usage": {
+                    "type": "object",
+                    "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                    "properties": {
+                      "model_path": {
+                        "type": "string"
+                      },
+                      "input_tokens_path": {
+                        "type": "string"
+                      },
+                      "output_tokens_path": {
+                        "type": "string"
+                      },
+                      "total_tokens_path": {
+                        "type": "string"
+                      },
+                      "cost_path": {
+                        "type": "string"
+                      },
+                      "cost_per_request": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "disable_optimistic_parsing": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "streaming": {
+                    "type": "object",
+                    "properties": {
+                      "paths": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Rooted segment globs that always stream, e.g. /v1/stream/**"
+                      },
+                      "detect_from_accept_header": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "routes": {
+                    "type": "array",
+                    "description": "Per-route overrides; the first matching route wins",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "method",
+                        "path"
+                      ],
+                      "properties": {
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "GET",
+                            "POST",
+                            "PUT",
+                            "PATCH",
+                            "DELETE",
+                            "HEAD"
+                          ]
+                        },
+                        "path": {
+                          "type": "string",
+                          "description": "Rooted segment glob; a trailing /** matches the prefix and everything below"
+                        },
+                        "billable": {
+                          "type": "boolean",
+                          "description": "false relays the call without counting or charging it"
+                        },
+                        "stream": {
+                          "type": "boolean"
+                        },
+                        "usage": {
+                          "type": "object",
+                          "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                          "properties": {
+                            "model_path": {
+                              "type": "string"
+                            },
+                            "input_tokens_path": {
+                              "type": "string"
+                            },
+                            "output_tokens_path": {
+                              "type": "string"
+                            },
+                            "total_tokens_path": {
+                              "type": "string"
+                            },
+                            "cost_path": {
+                              "type": "string"
+                            },
+                            "cost_per_request": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "disable_optimistic_parsing": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "strict_routes": {
+                    "type": "boolean",
+                    "description": "Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist"
+                  }
                 }
               }
             }

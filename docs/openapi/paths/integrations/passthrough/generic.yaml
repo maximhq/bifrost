@@ -1,0 +1,78 @@
+# Generic Passthrough - /passthrough/{provider}/{path}
+
+generic:
+  parameters:
+    - name: provider
+      in: path
+      required: true
+      description: Name of a custom provider whose `base_provider_type` is `generic`.
+      schema:
+        type: string
+    - name: path
+      in: path
+      required: true
+      description: Upstream path appended to the provider's `network_config.base_url`. The query string is forwarded unchanged.
+      schema:
+        type: string
+  post:
+    operationId: genericPassthroughPost
+    summary: Relay a request to a generic (non-LLM) provider
+    description: |
+      Relays the request byte for byte to the generic provider named in the path. Bifrost strips
+      caller credentials, injects the key it selects from the provider's key pool per the provider's
+      `generic_config.auth`, pins the upstream host to the provider's base URL, and returns the
+      upstream status, headers and body unchanged. Every call runs the plugin pipeline, is logged
+      with its raw bodies, and reports usage so governance counts it and charges `cost_per_request`
+      and any cost the usage mapping extracts.
+
+      `GET`, `PUT`, `PATCH`, `DELETE` and `HEAD` are relayed the same way. A request is served by the
+      streaming relay when the matching route says so, a `generic_config.streaming.paths` glob
+      matches, `Accept: text/event-stream` is sent (when enabled), the JSON body carries
+      `"stream": true`, or the path contains `stream`.
+
+      With `strict_routes` on, an operation that matches no `routes[]` entry is refused with `404`
+      before anything is forwarded.
+    tags:
+      - Generic Passthrough Integration
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+    requestBody:
+      required: false
+      description: Forwarded unchanged. For JSON bodies the model is read from `generic_config.usage.model_path` (default `model`) for governance.
+      content:
+        '*/*':
+          schema:
+            type: string
+            format: binary
+    responses:
+      '200':
+        description: The upstream response, relayed unchanged. Bifrost adds `x-bifrost-provider`, `x-bifrost-request-id` and `x-bifrost-passthrough-path`.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../../openapi.yaml#/components/responses/NotFound'
+  get:
+    operationId: genericPassthroughGet
+    summary: Relay a GET request to a generic provider
+    description: Same relay as the POST form; the query string is forwarded unchanged.
+    tags:
+      - Generic Passthrough Integration
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+    responses:
+      '200':
+        description: The upstream response, relayed unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '404':
+        $ref: '../../../openapi.yaml#/components/responses/NotFound'

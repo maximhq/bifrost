@@ -527,6 +527,70 @@ test.describe("Providers", () => {
       await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("Off");
     });
 
+    test("should create a generic passthrough provider with header auth and see the Passthrough tab", async ({
+      providersPage,
+      providerSettingsPage,
+      page,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-generic-${Date.now()}`,
+        baseProviderType: "generic",
+        baseUrl: "https://api.tavily.com",
+        genericAuthType: "header",
+        genericAuthHeaderName: "x-api-key",
+      });
+
+      // Track for cleanup
+      createdProviders.push(providerData.name);
+
+      await providersPage.fillCustomProviderForm(providerData);
+
+      // A generic relay has no typed operations: the allowed-requests grid is not offered and
+      // the upstream auth section is.
+      await expect(providersPage.genericAuthSection).toBeVisible();
+      await expect(page.getByTestId("allowed-request-switch-chat_completion")).toHaveCount(0);
+
+      await providersPage.saveCustomProvider();
+
+      const providerItem = providersPage.getProviderItem(providerData.name);
+      await expect(providerItem).toBeVisible({ timeout: 15000 });
+
+      // The stored config carries the generic base, the auth mapping, and allows only passthrough.
+      const response = await page.request.get(`/api/providers/${providerData.name}`);
+      expect(response.ok(), await response.text()).toBe(true);
+      const saved = (await response.json()) as {
+        custom_provider_config?: {
+          base_provider_type?: string;
+          allowed_requests?: { passthrough?: boolean; passthrough_stream?: boolean; chat_completion?: boolean };
+          generic_config?: { auth?: { type?: string; header_name?: string } };
+        };
+      };
+      expect(saved.custom_provider_config?.base_provider_type).toBe("generic");
+      expect(saved.custom_provider_config?.allowed_requests?.passthrough).toBe(true);
+      expect(saved.custom_provider_config?.allowed_requests?.passthrough_stream).toBe(true);
+      expect(saved.custom_provider_config?.allowed_requests?.chat_completion).toBeFalsy();
+      expect(saved.custom_provider_config?.generic_config?.auth?.type).toBe("header");
+      expect(saved.custom_provider_config?.generic_config?.auth?.header_name).toBe("x-api-key");
+
+      // The config sheet offers the Passthrough tab in place of API Structure.
+      await providersPage.selectProvider(providerData.name);
+      await providerSettingsPage.selectConfigTab("generic");
+      await expect(page.getByTestId("generic-passthrough-form")).toBeVisible();
+      await expect(page.getByTestId("provider-tab-api-structure")).toHaveCount(0);
+
+      // Adding a route and saving round-trips through the update API.
+      await page.getByTestId("generic-route-add-btn").click();
+      await page.getByTestId("generic-route-path-input-0").fill("/search");
+      await page.getByTestId("generic-passthrough-save-btn").click();
+      await expect
+        .poll(async () => {
+          const r = await page.request.get(`/api/providers/${providerData.name}`);
+          const j = (await r.json()) as { custom_provider_config?: { generic_config?: { routes?: { method: string; path: string }[] } } };
+          return j.custom_provider_config?.generic_config?.routes?.[0]?.path;
+        }, { timeout: 10000 })
+        .toBe("/search");
+    });
+
     test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({
       providersPage,
       request,

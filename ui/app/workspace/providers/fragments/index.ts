@@ -3,6 +3,7 @@ export { BetaHeadersFormFragment } from "./betaHeadersFormFragment";
 export { ApiKeyFormFragment } from "./apiKeysFormFragment";
 export { ApiStructureFormFragment } from "./apiStructureFormFragment";
 export { DebuggingFormFragment } from "./debuggingFormFragment";
+export { GenericPassthroughFormFragment } from "./genericPassthroughFormFragment";
 export { GovernanceFormFragment } from "./governanceFormFragment";
 export { InjectedToolsFormFragment } from "./injectedToolsFormFragment";
 export { OpenAIConfigFormFragment } from "./openaiConfigFormFragment";

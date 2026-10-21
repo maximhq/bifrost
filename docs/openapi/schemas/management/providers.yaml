@@ -477,6 +477,98 @@ CustomProviderConfig:
       type: object
       additionalProperties:
         type: string
+    generic_config:
+      $ref: '#/GenericProviderConfig'
+
+GenericProviderConfig:
+  type: object
+  description: >-
+    Relay settings for a custom provider whose base_provider_type is generic: a raw HTTP
+    passthrough to a non-LLM API reached at /passthrough/{provider}/{path}.
+  properties:
+    auth:
+      type: object
+      description: How the selected key is presented to the upstream
+      properties:
+        type:
+          type: string
+          enum: [bearer, header, query, basic, aws_sigv4, none]
+        header_name:
+          type: string
+          description: Header that carries the key (type header)
+        query_param:
+          type: string
+          description: Query parameter that carries the key (type query)
+        value_prefix:
+          type: string
+          description: Literal prefix before the key value (type header)
+        aws:
+          type: object
+          description: SigV4 settings (type aws_sigv4); keys carry credentials in bedrock_key_config
+          properties:
+            service:
+              type: string
+              description: SigV4 signing name, e.g. textract
+            region:
+              type: string
+              description: Falls back to the key's bedrock_key_config.region
+    usage:
+      $ref: '#/GenericUsageConfig'
+    streaming:
+      type: object
+      properties:
+        paths:
+          type: array
+          items:
+            type: string
+          description: Rooted segment globs that always stream, e.g. /v1/stream/**
+        detect_from_accept_header:
+          type: boolean
+    routes:
+      type: array
+      description: Per-route overrides; the first matching route wins
+      items:
+        type: object
+        required: [method, path]
+        properties:
+          method:
+            type: string
+            enum: [GET, POST, PUT, PATCH, DELETE, HEAD]
+          path:
+            type: string
+            description: Rooted segment glob; a trailing /** matches the prefix and everything below
+          billable:
+            type: boolean
+            description: false relays the call without counting or charging it
+          stream:
+            type: boolean
+          usage:
+            $ref: '#/GenericUsageConfig'
+    strict_routes:
+      type: boolean
+      description: Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist
+
+GenericUsageConfig:
+  type: object
+  description: >-
+    gjson paths that map a relayed request/response onto usage and cost. Empty fields keep
+    the optimistic defaults; naming any token path turns the optimistic token lookup off.
+  properties:
+    model_path:
+      type: string
+    input_tokens_path:
+      type: string
+    output_tokens_path:
+      type: string
+    total_tokens_path:
+      type: string
+    cost_path:
+      type: string
+    cost_per_request:
+      type: number
+      minimum: 0
+    disable_optimistic_parsing:
+      type: boolean
 
 ProviderResponse:
   type: object

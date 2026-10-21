@@ -4,7 +4,7 @@ import { Form } from "@/components/ui/form";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage } from "@/lib/store";
 import { useCreateProviderKeyMutation, useGetProviderKeysQuery, useUpdateProviderKeyMutation } from "@/lib/store/apis/providersApi";
-import { ModelProvider } from "@/lib/types/config";
+import { KnownProvider, ModelProvider } from "@/lib/types/config";
 import { modelProviderKeySchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -16,6 +16,18 @@ import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { ApiKeyFormFragment } from "../fragments";
 import { applyAuthMethod } from "./providerKeyForm.utils";
+// keyFormBaseProviderType picks the credential UI for a key. A generic relay that signs with
+// AWS SigV4 holds its credentials in bedrock_key_config, so it borrows the Bedrock credential
+// fields; every other generic auth type carries a plain key value.
+export function keyFormBaseProviderType(provider: ModelProvider): KnownProvider | undefined {
+	const cpc = provider.custom_provider_config;
+	if (!cpc) return undefined;
+	if (cpc.base_provider_type === "generic") {
+		return cpc.generic_config?.auth?.type === "aws_sigv4" ? "bedrock" : undefined;
+	}
+	return cpc.base_provider_type;
+}
+
 interface Props {
 	provider: ModelProvider;
 	keyId: string | null;
@@ -120,7 +132,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 					<ApiKeyFormFragment
 						control={form.control}
 						providerName={provider.name}
-						baseProviderType={provider.custom_provider_config?.base_provider_type}
+						baseProviderType={keyFormBaseProviderType(provider)}
 						form={form}
 					/>
 					{isEditing && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}

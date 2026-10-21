@@ -7,7 +7,17 @@ import { SecretVar } from "./schemas";
 export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Base provider names - all supported base providers
-export const BaseProviderNames = ["openai", "anthropic", "cohere", "gemini", "bedrock", "replicate", "fireworks", "typesafe"] as const;
+export const BaseProviderNames = [
+	"openai",
+	"anthropic",
+	"cohere",
+	"gemini",
+	"bedrock",
+	"replicate",
+	"fireworks",
+	"typesafe",
+	"generic",
+] as const;
 
 export type BaseProvider = (typeof BaseProviderNames)[number];
 
@@ -548,14 +558,78 @@ export interface AllowedRequests {
 	live?: boolean;
 }
 
+// GenericAuthType matching Go's schemas.GenericAuthType: how a generic relay presents its key.
+export type GenericAuthType = "bearer" | "header" | "query" | "basic" | "aws_sigv4" | "none";
+
+export const GenericAuthTypes: GenericAuthType[] = ["bearer", "header", "query", "basic", "aws_sigv4", "none"];
+
+export const GenericAuthTypeLabels: Record<GenericAuthType, string> = {
+	bearer: "Bearer token (Authorization: Bearer <key>)",
+	header: "Custom header",
+	query: "Query parameter",
+	basic: "HTTP basic (key is user:password)",
+	aws_sigv4: "AWS Signature V4",
+	none: "None (keyless)",
+};
+
+// GenericAuthConfig matching Go's schemas.GenericAuthConfig
+export interface GenericAuthConfig {
+	type: GenericAuthType;
+	header_name?: string;
+	query_param?: string;
+	value_prefix?: string;
+	aws?: { service: string; region?: string };
+}
+
+// GenericUsageConfig matching Go's schemas.GenericUsageConfig (gjson paths)
+export interface GenericUsageConfig {
+	model_path?: string;
+	input_tokens_path?: string;
+	output_tokens_path?: string;
+	total_tokens_path?: string;
+	cost_path?: string;
+	cost_per_request?: number;
+	disable_optimistic_parsing?: boolean;
+}
+
+// GenericStreamingConfig matching Go's schemas.GenericStreamingConfig
+export interface GenericStreamingConfig {
+	paths?: string[];
+	detect_from_accept_header?: boolean;
+}
+
+export type GenericRouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
+
+export const GenericRouteMethods: GenericRouteMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
+
+// GenericRouteConfig matching Go's schemas.GenericRouteConfig
+export interface GenericRouteConfig {
+	method: GenericRouteMethod;
+	path: string;
+	billable?: boolean;
+	stream?: boolean;
+	usage?: GenericUsageConfig;
+}
+
+// GenericProviderConfig matching Go's schemas.GenericProviderConfig: relay settings for a custom
+// provider whose base type is generic.
+export interface GenericProviderConfig {
+	auth: GenericAuthConfig;
+	usage?: GenericUsageConfig;
+	streaming?: GenericStreamingConfig;
+	routes?: GenericRouteConfig[];
+	strict_routes?: boolean;
+}
+
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig
 export interface CustomProviderConfig {
-	base_provider_type: KnownProvider;
+	base_provider_type: KnownProvider | "generic";
 	is_key_less?: boolean;
 	does_not_send_done_marker?: boolean;
 	wait_for_usage?: boolean;
 	allowed_requests?: AllowedRequests;
 	request_path_overrides?: Record<string, string>;
+	generic_config?: GenericProviderConfig;
 }
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
