@@ -248,16 +248,16 @@
           "name": "anthropic/claude-sonnet-4-5 /openai/v1/responses turn 3: full interleaved history replays cleanly"
         },
         {
-          "folder": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102)",
-          "name": "openai/gpt-4o-mini compat chat->responses: replayed tool call accepted (non-streaming) - #5101"
+          "folder": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102) (chat-responses-tool-replay)",
+          "name": "bedrock_mantle/openai.gpt-5.6-luna compat chat->responses: replayed tool call accepted (non-streaming) - chat-responses-tool-replay"
         },
         {
-          "folder": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102)",
-          "name": "openai/gpt-4o-mini compat chat->responses: replayed tool call accepted (streaming) - #5101"
+          "folder": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102) (chat-responses-tool-replay)",
+          "name": "bedrock_mantle/openai.gpt-5.6-luna compat chat->responses: replayed tool call accepted (streaming) - chat-responses-tool-replay"
         },
         {
-          "folder": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102)",
-          "name": "openai/gpt-4o-mini native /v1/responses: role-bearing function_call input item accepted - #5101"
+          "folder": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102) (chat-responses-tool-replay)",
+          "name": "openai/gpt-4o-mini native /v1/responses: role-bearing function_call input item accepted - chat-responses-tool-replay"
         }
       ]
     },
