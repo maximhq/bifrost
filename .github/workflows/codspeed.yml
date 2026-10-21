@@ -33,6 +33,8 @@ concurrency:
 
 jobs:
   benchmarks:
+    # GitHub holds this job before allocating a runner until an admin approves.
+    environment: ${{ (github.event_name == 'schedule' || (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2.0.0'))) && 'ci-trusted-branch' || 'pr-testing' }}
     name: Benchmarks (${{ matrix.name }})
     # CodSpeed's managed bare-metal runner for walltime benchmarks.
     # https://codspeed.io/docs/benchmarks/go

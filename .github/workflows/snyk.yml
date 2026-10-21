@@ -11,6 +11,8 @@ permissions:
 
 jobs:
   snyk-open-source:
+    # GitHub holds this job before allocating a runner until an admin approves.
+    environment: ${{ (github.event_name == 'schedule' || (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2.0.0'))) && 'ci-trusted-branch' || 'pr-testing' }}
     name: Snyk Open Source (deps)
     runs-on: ubuntu-latest
     steps:
@@ -85,6 +87,8 @@ jobs:
           sarif_file: snyk.sarif
 
   snyk-code:
+    # GitHub holds this job before allocating a runner until an admin approves.
+    environment: ${{ (github.event_name == 'schedule' || (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2.0.0'))) && 'ci-trusted-branch' || 'pr-testing' }}
     name: Snyk Code (SAST)
     runs-on: ubuntu-latest
     steps:

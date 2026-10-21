@@ -14,6 +14,8 @@ permissions:
 
 jobs:
   dependency-review:
+    # GitHub holds this job before allocating a runner until an admin approves.
+    environment: pr-testing
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner

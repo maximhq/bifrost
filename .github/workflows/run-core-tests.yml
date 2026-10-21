@@ -13,6 +13,8 @@ permissions:
 
 jobs:
   authorize:
+    # GitHub holds this job before allocating a runner until an admin approves.
+    environment: pr-testing
     runs-on: ubuntu-latest
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -34,6 +36,8 @@ jobs:
           esac
 
   run-core-tests:
+    # GitHub holds this job before allocating a runner until an admin approves.
+    environment: pr-testing
     needs: authorize
     runs-on: ubuntu-latest
     timeout-minutes: 360

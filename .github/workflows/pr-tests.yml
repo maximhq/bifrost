@@ -20,6 +20,8 @@ permissions:
 jobs:
   # Check if pipeline should be skipped based on first line of commit message
   check-skip:
+    # GitHub holds this job before allocating a runner until an admin approves.
+    environment: pr-testing
     runs-on: ubuntu-latest
     permissions:
       contents: read

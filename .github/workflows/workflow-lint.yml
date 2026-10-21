@@ -15,6 +15,8 @@ permissions:
 
 jobs:
   check-egress-allowlist:
+    # GitHub holds this job before allocating a runner until an admin approves.
+    environment: ${{ (github.event_name == 'schedule' || (github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2.0.0'))) && 'ci-trusted-branch' || 'pr-testing' }}
     name: Supply chain policy
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -55,6 +57,9 @@ jobs:
 
       - name: Test download verification
         run: node --test .github/tests/download.test.mjs
+
+      - name: Check PR approval coverage
+        run: bash .github/workflows/scripts/run-security-tool.sh prapproval
 
       - name: Check release security policy
         run: bash .github/workflows/scripts/run-security-tool.sh workflowpolicy "$GITHUB_WORKSPACE/.github/workflows"
