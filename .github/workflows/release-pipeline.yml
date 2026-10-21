@@ -78,7 +78,7 @@ jobs:
       - name: Validate admin permission for skip_tests
         id: skip_tests
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.skip_tests }}" == "true" ]]; then
             PERMISSION=$(gh api repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission --jq '.permission')
@@ -2650,12 +2650,20 @@ jobs:
             nodejs.org:443
             release-assets.githubusercontent.com:443
 
+      - name: Mint a one-hour release token
+        id: release-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ steps.release-token.outputs.token }}
 
       - name: Verify release source identity
         run: bash .github/workflows/scripts/verify-release-source.sh
@@ -2678,7 +2686,7 @@ jobs:
       - name: Release core
         id: release
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
           MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
           MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -2770,12 +2778,20 @@ jobs:
             storage.googleapis.com:443
             sum.golang.org:443
 
+      - name: Mint a one-hour release token
+        id: release-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ steps.release-token.outputs.token }}
 
       - name: Verify release source identity
         run: bash .github/workflows/scripts/verify-release-source.sh
@@ -2808,7 +2824,7 @@ jobs:
       - name: Release framework
         id: release
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
           MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
           MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -2906,12 +2922,20 @@ jobs:
             storage.googleapis.com:443
             sum.golang.org:443
 
+      - name: Mint a one-hour release token
+        id: release-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ steps.release-token.outputs.token }}
 
       - name: Verify release source identity
         run: bash .github/workflows/scripts/verify-release-source.sh
@@ -2954,7 +2978,7 @@ jobs:
       - name: Release all changed plugins
         id: release
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
           MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
           MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -3052,12 +3076,20 @@ jobs:
             storage.googleapis.com:443
             sum.golang.org:443
 
+      - name: Mint a one-hour release token
+        id: release-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ steps.release-token.outputs.token }}
 
       - name: Verify release source identity
         run: bash .github/workflows/scripts/verify-release-source.sh
@@ -3080,7 +3112,7 @@ jobs:
       - name: Prep bifrost-http release
         id: prep
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
         run: ./.github/workflows/scripts/release-bifrost-http-prep.sh "${{ needs.detect-changes.outputs.transport-version }}"
 
   # Build darwin, windows, linux/amd64 binaries and upload to R2
@@ -3122,7 +3154,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN }}
+          persist-credentials: false
 
       - name: Verify release source identity
         run: bash .github/workflows/scripts/verify-release-source.sh
@@ -3205,7 +3237,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN }}
+          persist-credentials: false
 
       - name: Verify release source identity
         run: bash .github/workflows/scripts/verify-release-source.sh
@@ -3277,12 +3309,20 @@ jobs:
             uploads.github.com:443
             pypi.org:443
 
+      - name: Mint a one-hour release token
+        id: release-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ steps.release-token.outputs.token }}
 
       - name: Verify release source identity
         run: bash .github/workflows/scripts/verify-release-source.sh
@@ -3314,7 +3354,7 @@ jobs:
       - name: Finalize bifrost-http release
         id: release
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: ./.github/workflows/scripts/release-bifrost-http-finalize.sh "${{ needs.detect-changes.outputs.transport-version }}"
@@ -3393,7 +3433,7 @@ jobs:
         id: verify
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           ./.github/workflows/scripts/verify-bifrost-http-release.sh "${{ needs.detect-changes.outputs.transport-version }}" "${{ needs.detect-changes.outputs.bifrost-http-needs-release }}"
           echo "verified=true" >> $GITHUB_OUTPUT
@@ -3521,7 +3561,7 @@ jobs:
         id: verify
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           ./.github/workflows/scripts/verify-bifrost-http-release.sh "${{ needs.detect-changes.outputs.transport-version }}" "${{ needs.detect-changes.outputs.bifrost-http-needs-release }}"
           echo "verified=true" >> $GITHUB_OUTPUT
@@ -3703,7 +3743,7 @@ jobs:
         id: verify
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           ./.github/workflows/scripts/verify-bifrost-http-release.sh "${{ needs.detect-changes.outputs.transport-version }}" "${{ needs.detect-changes.outputs.bifrost-http-needs-release }}"
           echo "verified=true" >> $GITHUB_OUTPUT
@@ -3835,7 +3875,7 @@ jobs:
         id: verify
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           ./.github/workflows/scripts/verify-bifrost-http-release.sh "${{ needs.detect-changes.outputs.transport-version }}" "${{ needs.detect-changes.outputs.bifrost-http-needs-release }}"
           echo "verified=true" >> $GITHUB_OUTPUT
@@ -3982,14 +4022,23 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            api.github.com:443
             github.com:443
+
+      - name: Mint a one-hour release token
+        id: release-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ steps.release-token.outputs.token }}
 
       - name: Verify release source identity
         run: bash .github/workflows/scripts/verify-release-source.sh

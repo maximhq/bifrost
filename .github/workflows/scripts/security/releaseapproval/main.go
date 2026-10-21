@@ -16,6 +16,8 @@ import (
 
 const adminTeamID int64 = 16787162
 const repository = "repos/maximhq/bifrost"
+const releaseAppSlug = "bifrost-release"
+const adminTeamSlug = "bifrost-admin"
 
 var releaseBranches = []string{"main", "v2.0.0"}
 
@@ -23,11 +25,21 @@ var releaseBranches = []string{"main", "v2.0.0"}
 // red live-provider or memory run, which feeds the release gate, so they need the same reviewers.
 var approvalEnvironments = []string{"oss-release-approval", "oss-npm-release", "oss-native-release", "flaky-test-override", "memory-regression-override"}
 var lockedEnvironments = []string{"oss-release", "oss-release-approval", "oss-npm-release", "oss-native-release", "oss-test-reports", "flaky-test-override", "memory-regression-override"}
-var repositoryLevelForbidden = []string{"DOCKER_PASSWORD", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_REPORTS_ACCESS_KEY_ID", "R2_REPORTS_SECRET_ACCESS_KEY"}
+var repositoryLevelForbidden = []string{"DOCKER_PASSWORD", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_REPORTS_ACCESS_KEY_ID", "R2_REPORTS_SECRET_ACCESS_KEY", "GH_TOKEN", "NPM_TOKEN", "RELEASE_APP_CLIENT_ID", "RELEASE_APP_PRIVATE_KEY"}
 var releaseEnvironmentSecrets = map[string][]string{
-	"oss-release":        {"DOCKER_PASSWORD", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"},
+	"oss-release":        {"DOCKER_PASSWORD", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "RELEASE_APP_CLIENT_ID", "RELEASE_APP_PRIVATE_KEY"},
 	"oss-native-release": {"R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"},
 	"oss-test-reports":   {"R2_REPORTS_ACCESS_KEY_ID", "R2_REPORTS_SECRET_ACCESS_KEY"},
+}
+
+// expectedRulesets pins the refs and rule types each ruleset must carry; the app is the only bypass actor.
+var expectedRulesets = map[string]struct {
+	target  string
+	include []string
+	rules   []string
+}{
+	"release-branches": {"branch", []string{"refs/heads/main", "refs/heads/v2.0.0"}, []string{"deletion", "non_fast_forward", "pull_request", "required_status_checks"}},
+	"release-tags":     {"tag", []string{"refs/tags/core/**", "refs/tags/framework/**", "refs/tags/plugins/**", "refs/tags/transports/**"}, []string{"creation", "deletion", "update"}},
 }
 
 // reviewer identifies immutable GitHub team or user IDs, not mutable display names.
@@ -166,6 +178,131 @@ func checkSecretNames(scope string, names, forbidden, required []string) []strin
 	return failures
 }
 
+// ruleset models the fields shared by the committed POST body and the live GET response.
+type ruleset struct {
+	Name         string `json:"name"`
+	Target       string `json:"target"`
+	Enforcement  string `json:"enforcement"`
+	BypassActors []struct {
+		ActorID    int64  `json:"actor_id"`
+		ActorType  string `json:"actor_type"`
+		BypassMode string `json:"bypass_mode"`
+	} `json:"bypass_actors"`
+	Conditions struct {
+		RefName struct {
+			Include []string `json:"include"`
+			Exclude []string `json:"exclude"`
+		} `json:"ref_name"`
+	} `json:"conditions"`
+	Rules []struct {
+		Type       string         `json:"type"`
+		Parameters map[string]any `json:"parameters"`
+	} `json:"rules"`
+}
+
+// checkRuleset requires active enforcement, the exact refs, every rule, and only the release app as bypass.
+func checkRuleset(r ruleset, remote bool) []string {
+	expected, ok := expectedRulesets[r.Name]
+	if !ok {
+		return []string{"unexpected ruleset " + r.Name}
+	}
+	var failures []string
+	if r.Target != expected.target {
+		failures = append(failures, r.Name+" must target "+expected.target)
+	}
+	if r.Enforcement != "active" {
+		failures = append(failures, r.Name+" must be actively enforced")
+	}
+	include := slices.Clone(r.Conditions.RefName.Include)
+	sort.Strings(include)
+	if !slices.Equal(include, expected.include) || len(r.Conditions.RefName.Exclude) != 0 {
+		failures = append(failures, fmt.Sprintf("%s must cover exactly %v", r.Name, expected.include))
+	}
+	if len(r.BypassActors) != 1 || r.BypassActors[0].ActorType != "Integration" || r.BypassActors[0].BypassMode != "always" || (remote && r.BypassActors[0].ActorID <= 0) {
+		failures = append(failures, r.Name+" may be bypassed only by the release app")
+	}
+	parameters := map[string]map[string]any{}
+	for _, rule := range r.Rules {
+		parameters[rule.Type] = rule.Parameters
+	}
+	for _, rule := range expected.rules {
+		if _, ok := parameters[rule]; !ok {
+			failures = append(failures, r.Name+" must include rule "+rule)
+		}
+	}
+	if p, ok := parameters["pull_request"]; ok {
+		count, _ := p["required_approving_review_count"].(float64)
+		if count < 2 || p["require_code_owner_review"] != true || p["require_last_push_approval"] != true || p["dismiss_stale_reviews_on_push"] != true {
+			failures = append(failures, r.Name+" must require two reviews, code owners, last-push approval, and stale dismissal")
+		}
+	}
+	return failures
+}
+
+// classicProtection models the legacy branch protection fields that still grant a human bypass.
+type classicProtection struct {
+	EnforceAdmins struct {
+		Enabled bool `json:"enabled"`
+	} `json:"enforce_admins"`
+	AllowForcePushes struct {
+		Enabled bool `json:"enabled"`
+	} `json:"allow_force_pushes"`
+	RequiredPullRequestReviews struct {
+		Bypass struct {
+			Users []any `json:"users"`
+			Teams []any `json:"teams"`
+			Apps  []struct {
+				Slug string `json:"slug"`
+			} `json:"apps"`
+		} `json:"bypass_pull_request_allowances"`
+	} `json:"required_pull_request_reviews"`
+	Restrictions *struct {
+		Users []any `json:"users"`
+		Teams []struct {
+			Slug string `json:"slug"`
+		} `json:"teams"`
+		Apps []struct {
+			Slug string `json:"slug"`
+		} `json:"apps"`
+	} `json:"restrictions"`
+}
+
+// checkClassic accepts legacy protection only when it mirrors the ruleset: no human bypass, and the
+// release app allowed through, since classic is evaluated independently and would otherwise block it.
+func checkClassic(branch string, p classicProtection) []string {
+	var failures []string
+	if !p.EnforceAdmins.Enabled {
+		failures = append(failures, branch+" classic protection must apply to administrators")
+	}
+	if p.AllowForcePushes.Enabled {
+		failures = append(failures, branch+" classic protection must not allow force pushes")
+	}
+	bypass := p.RequiredPullRequestReviews.Bypass
+	if len(bypass.Users)+len(bypass.Teams) != 0 {
+		failures = append(failures, branch+" classic protection must not let any user or team bypass review")
+	}
+	if len(bypass.Apps) != 1 || bypass.Apps[0].Slug != releaseAppSlug {
+		failures = append(failures, branch+" classic protection must let exactly the "+releaseAppSlug+" app bypass review, or the app cannot push release commits")
+	}
+	// "Restrict who can push" is a separate gate that applies to administrators once
+	// enforce_admins is on; it must name the app (or it blocks every release commit) and
+	// the admin team (or nobody can merge a pull request), and never an individual.
+	if r := p.Restrictions; r != nil {
+		if len(r.Users) != 0 {
+			failures = append(failures, branch+" push restriction must not name individual users")
+		}
+		if len(r.Apps) != 1 || r.Apps[0].Slug != releaseAppSlug {
+			failures = append(failures, branch+" push restriction must allow exactly the "+releaseAppSlug+" app")
+		}
+		for _, team := range r.Teams {
+			if team.Slug != adminTeamSlug {
+				failures = append(failures, branch+" push restriction must not allow team "+team.Slug)
+			}
+		}
+	}
+	return failures
+}
+
 // readJSON decodes a committed configuration file.
 func readJSON(path string, target any) error {
 	data, err := os.ReadFile(path)
@@ -193,7 +330,18 @@ func committed(root string) ([]string, error) {
 	if err := readJSON(filepath.Join(root, "release-branch-policies.json"), &policies); err != nil {
 		return nil, err
 	}
-	return append(failures, checkBranches("release-branch-policies.json", policies)...), nil
+	failures = append(failures, checkBranches("release-branch-policies.json", policies)...)
+	for name := range expectedRulesets {
+		var r ruleset
+		if err := readJSON(filepath.Join(root, name+"-ruleset.json"), &r); err != nil {
+			return nil, err
+		}
+		if r.Name != name {
+			failures = append(failures, name+"-ruleset.json names a different ruleset")
+		}
+		failures = append(failures, checkRuleset(r, false)...)
+	}
+	return failures, nil
 }
 
 // secretNames lists names only; values are never readable through the API.
@@ -211,6 +359,47 @@ func secretNames(endpoint string) ([]string, error) {
 		names = append(names, secret.Name)
 	}
 	return names, nil
+}
+
+// liveRulesets requires both rulesets to exist and reads each by immutable ID.
+func liveRulesets() ([]string, error) {
+	var listing []struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := ghapi.Read(repository+"/rulesets?per_page=100", &listing); err != nil {
+		return nil, err
+	}
+	var failures []string
+	for name := range expectedRulesets {
+		index := slices.IndexFunc(listing, func(r struct {
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
+		}) bool {
+			return r.Name == name
+		})
+		if index < 0 {
+			failures = append(failures, "ruleset "+name+" is not configured")
+			continue
+		}
+		var r ruleset
+		if err := ghapi.Read(fmt.Sprintf("%s/rulesets/%d", repository, listing[index].ID), &r); err != nil {
+			return nil, err
+		}
+		failures = append(failures, checkRuleset(r, true)...)
+	}
+	for _, branch := range releaseBranches {
+		var p classicProtection
+		err := ghapi.Read(repository+"/branches/"+branch+"/protection", &p)
+		if errors.Is(err, ghapi.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		failures = append(failures, checkClassic(branch, p)...)
+	}
+	return failures, nil
 }
 
 // live reads the server state without modifying it.
@@ -247,7 +436,11 @@ func live() ([]string, error) {
 		}
 		failures = append(failures, checkSecretNames(name+" secrets", names, nil, required)...)
 	}
-	return failures, nil
+	more, err := liveRulesets()
+	if err != nil {
+		return nil, err
+	}
+	return append(failures, more...), nil
 }
 
 // run always checks the committed files and optionally the live settings.

@@ -250,6 +250,8 @@ jobs:
     needs: [check-version, release-cli]
     if: needs.check-version.outputs.tag_exists == 'false' && needs.release-cli.result == 'success'
     runs-on: ubuntu-latest
+    # Mints the app token from the branch-locked release environment.
+    environment: oss-release
     permissions:
       contents: write
     steps:
@@ -258,12 +260,20 @@ jobs:
         with:
           egress-policy: audit
 
+      - name: Mint a one-hour release token
+        id: release-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ steps.release-token.outputs.token }}
 
       - name: Verify release source identity
         run: bash .github/workflows/scripts/verify-release-source.sh

@@ -54,7 +54,10 @@ func addressAllowed(ip net.IP) bool {
 }
 
 // publishSecret names every credential that can write a release artifact or sign in to a registry.
-var publishSecret = regexp.MustCompile(`secrets\.(DOCKER_PASSWORD|R2_ACCESS_KEY_ID|R2_SECRET_ACCESS_KEY|R2_REPORTS_ACCESS_KEY_ID|R2_REPORTS_SECRET_ACCESS_KEY)`)
+var publishSecret = regexp.MustCompile(`secrets\.(DOCKER_PASSWORD|R2_ACCESS_KEY_ID|R2_SECRET_ACCESS_KEY|R2_REPORTS_ACCESS_KEY_ID|R2_REPORTS_SECRET_ACCESS_KEY|RELEASE_APP_CLIENT_ID|RELEASE_APP_PRIVATE_KEY)`)
+
+// accountToken names long-lived personal credentials; release writes mint a GitHub App token instead.
+var accountToken = regexp.MustCompile(`secrets\.(GH_TOKEN|NPM_TOKEN)\b`)
 
 // releaseEnvironments are branch-locked server side, so a feature branch cannot reach their secrets.
 var releaseEnvironments = []string{"oss-release", "oss-native-release", "oss-test-reports"}
@@ -96,6 +99,9 @@ func check(document workflows.Workflow, filename string) []string {
 		}
 		if filename == "release-pipeline.yml" && strings.HasPrefix(name, "test-") && regexp.MustCompile(`secrets\.R2_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)`).Match(body) {
 			failures = append(failures, name+": tests must not receive release storage credentials")
+		}
+		if accountToken.Match(body) {
+			failures = append(failures, name+": personal tokens are not release credentials; mint a GitHub App token")
 		}
 		if publishSecret.Match(body) && !slices.Contains(releaseEnvironments, environment) {
 			failures = append(failures, name+": publish credentials require a branch-locked release environment")
