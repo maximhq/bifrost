@@ -231,7 +231,21 @@ var (
 	cacheControlScopeKeyToken = []byte(`"scope"`)
 	// fallbackBlockTypeToken is how the server-side fallback block type value is spelled.
 	fallbackBlockTypeToken = []byte(`"` + string(AnthropicContentBlockTypeFallback) + `"`)
+	// toolAdditionTypeToken and toolRemovalTypeToken are the tail of the tool-change block type
+	// values through the closing quote. They skip the leading "tool": a needle starting on '_'
+	// scans ~2.7x faster than one starting on '"', which is on nearly every JSON byte pair.
+	toolAdditionTypeToken = []byte(`_addition"`)
+	toolRemovalTypeToken  = []byte(`_removal"`)
 )
+
+// mayCarryToolChangeBlocks is a conservative byte prefilter for tool_addition / tool_removal
+// blocks, in a message's content or in a compaction block's tool_changes. A body with neither
+// token has nothing to strip and skips the message walk; a body that matches by coincidence
+// (any string ending in "_addition") just falls through to the walk. A type spelled with a
+// unicode escape for the underscore is not matched and reaches the provider as sent.
+func mayCarryToolChangeBlocks(jsonBody []byte) bool {
+	return bytes.Contains(jsonBody, toolAdditionTypeToken) || bytes.Contains(jsonBody, toolRemovalTypeToken)
+}
 
 // mayCarryPerMessageOutputConfig is a conservative byte prefilter for messages[].output_config.
 // A JSON key is written with unescaped quotes, and inside a string value those quotes are
@@ -730,6 +744,77 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 				}
 				if jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path); err != nil {
 					return nil, fmt.Errorf("strip raw %s: %w", path, err)
+				}
+			}
+		}
+	}
+
+	// tool_addition / tool_removal blocks — mid-conversation tool changes (beta
+	// mid-conversation-tool-changes). Claude Code sends them in role:"system" messages, and a
+	// surface without the beta rejects the unknown content block (Vertex: "Input tag
+	// 'tool_addition' found using 'type' does not match any of the expected tags"). They are
+	// removed, as is a replayed compaction block's tool_changes; the text next to them stays,
+	// and a message left with no content is dropped whole rather than sent empty.
+	//
+	// The typed path needs no twin: inlineMidConversationSystem keeps only the text blocks.
+	if !features.MidConvToolChanges && mayCarryToolChangeBlocks(jsonBody) {
+		if msgs := providerUtils.GetJSONField(jsonBody, "messages"); msgs.IsArray() {
+			type edit struct {
+				index   int
+				content []byte // rewritten content array; nil drops the message
+			}
+			var edits []edit
+			mi := -1
+			msgs.ForEach(func(_, msg gjson.Result) bool {
+				mi++
+				content := msg.Get("content")
+				if !content.IsArray() {
+					return true
+				}
+				changed := false
+				var kept []string
+				content.ForEach(func(_, block gjson.Result) bool {
+					blockType := AnthropicContentBlockType(block.Get("type").String())
+					if isToolChangeBlock(blockType) {
+						changed = true
+						return true
+					}
+					raw := block.Raw
+					if blockType == AnthropicContentBlockTypeCompaction && block.Get("tool_changes").Exists() {
+						var delErr error
+						if raw, delErr = sjson.Delete(raw, "tool_changes"); delErr != nil {
+							err = delErr
+							return false
+						}
+						changed = true
+					}
+					kept = append(kept, raw)
+					return true
+				})
+				if err != nil {
+					return false
+				}
+				if changed {
+					e := edit{index: mi}
+					if len(kept) > 0 {
+						e.content = []byte("[" + strings.Join(kept, ",") + "]")
+					}
+					edits = append(edits, e)
+				}
+				return true
+			})
+			if err != nil {
+				return nil, fmt.Errorf("strip raw tool-change blocks: %w", err)
+			}
+			// Last first: dropping a whole message shifts every later index.
+			for j := len(edits) - 1; j >= 0; j-- {
+				if edits[j].content == nil {
+					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, fmt.Sprintf("messages.%d", edits[j].index))
+				} else {
+					jsonBody, err = sjson.SetRawBytes(jsonBody, fmt.Sprintf("messages.%d.content", edits[j].index), edits[j].content)
+				}
+				if err != nil {
+					return nil, fmt.Errorf("strip raw tool-change blocks: %w", err)
 				}
 			}
 		}

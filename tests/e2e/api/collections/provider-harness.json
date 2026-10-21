@@ -280164,6 +280164,320 @@
           }
         }
       ]
+    },
+    {
+      "name": "265. Vertex rejects mid-conversation tool_addition / tool_removal blocks on the Claude Code raw passthrough (vertex-tool-changes)",
+      "description": "Claude Code puts tool_addition / tool_removal blocks (beta mid-conversation-tool-changes-2026-07-01, by-value definitions under inline-tools-2026-09-15) inside role:\"system\" messages in messages[]. The /anthropic/v1/messages route forwards a claude-cli request as raw bytes, and StripUnsupportedFieldsFromRawBody did not touch these blocks, so a surface without the beta received them while the beta header itself was dropped (ProviderFeatures.MidConvToolChanges is false for Vertex). Vertex rejects the unknown content block: \"messages.1.content.1: Input tag 'tool_addition' found using 'type' does not match any of the expected tags\" (seen in production on Opus 5.5 and Sonnet 5.5; the same request works against Anthropic direct). StripUnsupportedFieldsFromRawBody now removes tool_addition / tool_removal blocks (and a replayed compaction block's tool_changes) wherever the surface lacks the beta, keeps the text next to them, and drops a system message left with no content.\n\nCases: (1) vertex/claude-opus-5-5 and (2) vertex/claude-sonnet-5-5 on /anthropic/v1/messages with a claude-cli UA and a system item holding text + an inline tool_addition -> 200 with text (pre-fix: 400 naming tool_addition); (3) the same request streaming -> 200 SSE ending in message_stop with no error event; (4) a tool-change-only system item (tool_removal by reference) -> 200, the item dropped whole; (5) the neutral /v1/responses route with no anthropic-beta header: the typed conversion already inlines the system item as a <system-reminder> user turn and drops the tool block, so this row is green before and after and pins that the raw-path strip did not change the typed route. Not covered here: Bedrock InvokeModel and Azure share the same gate (MidConvToolChanges is false for both) and are unit-tested at the function level; Anthropic direct and Bedrock Mantle keep the blocks (folder 197).",
+      "item": [
+        {
+          "name": "vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough system item with text + tool_addition - tool-change block stripped for Vertex - vertex-tool-changes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex has no mid-conversation tool changes and rejected the block with 'Input tag tool_addition found using type does not match any of the expected tags'; StripUnsupportedFieldsFromRawBody now removes it.",
+                  "pm.test('vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough system item with text + tool_addition - tool-change block stripped for Vertex - vertex-tool-changes: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_addition'\");",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_removal'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Answer in lowercase.\"\n        },\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"name\": \"get_weather\",\n              \"description\": \"Get the current weather for a city.\",\n              \"input_schema\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"city\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-5-5 /anthropic/v1/messages Claude Code passthrough system item with text + tool_addition - tool-change block stripped for Vertex - vertex-tool-changes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex has no mid-conversation tool changes and rejected the block with 'Input tag tool_addition found using type does not match any of the expected tags'; StripUnsupportedFieldsFromRawBody now removes it.",
+                  "pm.test('vertex/claude-sonnet-5-5 /anthropic/v1/messages Claude Code passthrough system item with text + tool_addition - tool-change block stripped for Vertex - vertex-tool-changes: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_addition'\");",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_removal'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Answer in lowercase.\"\n        },\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"name\": \"get_weather\",\n              \"description\": \"Get the current weather for a city.\",\n              \"input_schema\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"city\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough stream system item with text + tool_addition completes - vertex-tool-changes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "",
+                  "// Same raw passthrough as the unary row, over SSE: a rejected block would surface as a non-200 or an error event.",
+                  "pm.test('vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough stream system item with text + tool_addition completes - vertex-tool-changes: stream completes without an error event', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_addition'\");",
+                  "  pm.expect(txt, 'stream carried an error event: ' + txt.slice(0, 400)).to.not.include('event: error');",
+                  "  pm.expect(txt, 'stream never reached message_stop: ' + txt.slice(0, 400)).to.include('message_stop');",
+                  "  pm.expect(txt, 'no text delta in the stream: ' + txt.slice(0, 400)).to.include('content_block_delta');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Answer in lowercase.\"\n        },\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"name\": \"get_weather\",\n              \"description\": \"Get the current weather for a city.\",\n              \"input_schema\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"city\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough tool-change-only system item (tool_removal) is dropped whole - vertex-tool-changes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex has no mid-conversation tool changes and rejected the block with 'Input tag tool_addition found using type does not match any of the expected tags'; StripUnsupportedFieldsFromRawBody now removes it. A system item holding only the tool block is left with no content, so it is dropped whole rather than sent empty.",
+                  "pm.test('vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough tool-change-only system item (tool_removal) is dropped whole - vertex-tool-changes: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_addition'\");",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_removal'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_removal\",\n          \"tool\": {\n            \"type\": \"tool_reference\",\n            \"name\": \"get_weather\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 /v1/responses system input with text + tool_addition is inlined as text (typed route unchanged) - vertex-tool-changes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// /v1/responses reaches Vertex through the typed conversion: the mid-conversation system item has no native placement there,",
+                  "// so it is inlined as a <system-reminder> user turn and the tool block is dropped. Green before and after the raw-path strip.",
+                  "pm.test('vertex/claude-opus-5-5 /v1/responses system input with text + tool_addition is inlined as text (typed route unchanged) - vertex-tool-changes: accepted (200 completed with text)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_addition'\");",
+                  "  pm.expect(body.status, 'response status: ' + txt.slice(0, 300)).to.eql('completed');",
+                  "  var output = Array.isArray(body.output) ? body.output : [];",
+                  "  var hasText = output.some(function (o) { return o && Array.isArray(o.content) && o.content.some(function (c) { return c && c.type === 'output_text' && c.text; }); });",
+                  "  pm.expect(hasText, 'expected an output_text block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_output_tokens\": 512,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in lowercase.\"\n        },\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"type\": \"function\",\n              \"name\": \"get_weather\",\n              \"description\": \"Get the current weather for a city.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"city\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
