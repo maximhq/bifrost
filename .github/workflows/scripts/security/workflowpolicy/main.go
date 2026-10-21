@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/securitytools/internal/workflows"
@@ -52,6 +53,19 @@ func addressAllowed(ip net.IP) bool {
 	return false
 }
 
+// publishSecret names every credential that can write a release artifact or sign in to a registry.
+var publishSecret = regexp.MustCompile(`secrets\.(DOCKER_PASSWORD|R2_ACCESS_KEY_ID|R2_SECRET_ACCESS_KEY|R2_REPORTS_ACCESS_KEY_ID|R2_REPORTS_SECRET_ACCESS_KEY)`)
+
+// releaseEnvironments are branch-locked server side, so a feature branch cannot reach their secrets.
+var releaseEnvironments = []string{"oss-release", "oss-native-release", "oss-test-reports"}
+
+const releaseGate = "approve-release"
+const releaseGateEnvironment = "oss-release-approval"
+
+// releaseGatePrefix is required verbatim at the start of every publisher's condition, so the
+// gate result cannot be disjoined away or negated further along the expression.
+const releaseGatePrefix = "always() && needs." + releaseGate + ".result == 'success' && "
+
 // check returns every policy violation without executing workflow contents.
 func check(document workflows.Workflow, filename string) []string {
 	var failures []string
@@ -67,14 +81,34 @@ func check(document workflows.Workflow, filename string) []string {
 	if document.Permissions != "read-all" && (!ok || (workflows.String(permissions, "contents") != "" && workflows.String(permissions, "contents") != "read" && workflows.String(permissions, "contents") != "none")) {
 		failures = append(failures, "workflow must not default to repository write access")
 	}
+	if _, found := document.Jobs[releaseGate]; filename == "release-pipeline.yml" && !found {
+		failures = append(failures, releaseGate+": human gate missing from the release pipeline")
+	}
 	for name, job := range document.Jobs {
-		if filename == "network-security-validation.yml" && job.Environment != "pr-testing" {
+		body, err := yaml.Marshal(job)
+		if err != nil {
+			failures = append(failures, name+": unreadable job body")
+			continue
+		}
+		environment := workflows.EnvironmentName(job)
+		if filename == "network-security-validation.yml" && environment != "pr-testing" {
 			failures = append(failures, name+": live network diagnostics require admin approval")
 		}
-		if filename == "release-pipeline.yml" && strings.HasPrefix(name, "test-") {
-			body, err := yaml.Marshal(job)
-			if err != nil || regexp.MustCompile(`secrets\.R2_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)`).Match(body) {
-				failures = append(failures, name+": tests must not receive release storage credentials")
+		if filename == "release-pipeline.yml" && strings.HasPrefix(name, "test-") && regexp.MustCompile(`secrets\.R2_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)`).Match(body) {
+			failures = append(failures, name+": tests must not receive release storage credentials")
+		}
+		if publishSecret.Match(body) && !slices.Contains(releaseEnvironments, environment) {
+			failures = append(failures, name+": publish credentials require a branch-locked release environment")
+		}
+		if filename == "release-pipeline.yml" && environment == "oss-release" && (!slices.Contains(workflows.Needs(job), releaseGate) || !strings.HasPrefix(job.If, releaseGatePrefix)) {
+			failures = append(failures, name+": oss-release publishers must wait for "+releaseGate)
+		}
+		if filename == "release-pipeline.yml" && name == releaseGate {
+			if environment != releaseGateEnvironment {
+				failures = append(failures, name+": must use the "+releaseGateEnvironment+" environment")
+			}
+			if strings.Contains(string(body), "secrets.") || strings.Contains(string(body), "actions/checkout@") {
+				failures = append(failures, name+": must hold no secrets and check out nothing")
 			}
 		}
 		references := append([]workflows.Step{{Uses: job.Uses}}, job.Steps...)

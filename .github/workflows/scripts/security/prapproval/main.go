@@ -2,14 +2,13 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 
+	"github.com/maximhq/bifrost/securitytools/internal/ghapi"
 	"github.com/maximhq/bifrost/securitytools/internal/workflows"
 )
 
@@ -113,30 +112,17 @@ func checkEnvironment(environment environmentSettings) []string {
 	return failures
 }
 
-// readAPI makes authenticated read-only calls and never prints tokens or response bodies.
-func readAPI(endpoint string, target any, repositoryMedia bool) error {
-	args := []string{"api", endpoint}
-	if repositoryMedia {
-		args = append(args, "-H", "Accept: application/vnd.github.v3.repository+json")
-	}
-	data, err := exec.Command("gh", args...).Output()
-	if err != nil {
-		return fmt.Errorf("could not read %s: %w", endpoint, err)
-	}
-	return json.Unmarshal(data, target)
-}
-
 // liveSettings verifies that the YAML environment references actually require admins.
 func liveSettings() ([]string, error) {
 	var environment environmentSettings
-	if err := readAPI("repos/maximhq/bifrost/environments/pr-testing", &environment, false); err != nil {
+	if err := ghapi.Read("repos/maximhq/bifrost/environments/pr-testing", &environment); err != nil {
 		return nil, err
 	}
 	failures := checkEnvironment(environment)
 	var policy struct {
 		ApprovalPolicy string `json:"approval_policy"`
 	}
-	if err := readAPI("repos/maximhq/bifrost/actions/permissions/fork-pr-contributor-approval", &policy, false); err != nil {
+	if err := ghapi.Read("repos/maximhq/bifrost/actions/permissions/fork-pr-contributor-approval", &policy); err != nil {
 		return nil, err
 	}
 	if policy.ApprovalPolicy != "all_external_contributors" {
@@ -147,7 +133,7 @@ func liveSettings() ([]string, error) {
 			Admin bool `json:"admin"`
 		} `json:"permissions"`
 	}
-	if err := readAPI("orgs/maximhq/teams/bifrost-admin/repos/maximhq/bifrost", &team, true); err != nil {
+	if err := ghapi.Read("orgs/maximhq/teams/bifrost-admin/repos/maximhq/bifrost", &team, "Accept: application/vnd.github.v3.repository+json"); err != nil {
 		return nil, err
 	}
 	if !team.Permissions.Admin {
@@ -167,7 +153,7 @@ func liveInventory(paths []string) ([]string, error) {
 		var inventory struct {
 			Workflows []struct{ Name, Path, State string } `json:"workflows"`
 		}
-		if err := readAPI(fmt.Sprintf("repos/maximhq/bifrost/actions/workflows?per_page=100&page=%d", page), &inventory, false); err != nil {
+		if err := ghapi.Read(fmt.Sprintf("repos/maximhq/bifrost/actions/workflows?per_page=100&page=%d", page), &inventory); err != nil {
 			return nil, err
 		}
 		for _, workflow := range inventory.Workflows {

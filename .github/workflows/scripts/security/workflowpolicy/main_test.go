@@ -92,6 +92,108 @@ func fixture(uses string) workflows.Workflow {
 	return workflows.Workflow{On: "pull_request", Permissions: map[string]any{"contents": "read"}, Jobs: map[string]workflows.Job{"test": {Steps: []workflows.Step{{Uses: uses}}}}}
 }
 
+// releaseFixture models a correctly gated publisher behind the human approval job.
+func releaseFixture() workflows.Workflow {
+	hardened := workflows.Step{Uses: "step-security/harden-runner@" + strings.Repeat("a", 40), With: map[string]any{"egress-policy": "block"}}
+	gate := workflows.Job{Steps: []workflows.Step{hardened, {Run: "echo approved"}}, Environment: map[string]any{"name": "oss-release-approval"}}
+	publisher := workflows.Job{
+		Needs:       []any{"approve-release", "detect-changes"},
+		If:          "always() && needs.approve-release.result == 'success' && needs.detect-changes.result == 'success'",
+		Environment: "oss-release",
+		Steps:       []workflows.Step{hardened, {Uses: "actions/checkout@" + strings.Repeat("a", 40)}},
+		Other:       map[string]any{"env": map[string]any{"DOCKER_PASSWORD": "${{ secrets.DOCKER_PASSWORD }}"}},
+	}
+	return workflows.Workflow{On: map[string]any{"push": map[string]any{"branches": []any{"main"}}}, Permissions: map[string]any{"contents": "read"}, Jobs: map[string]workflows.Job{"approve-release": gate, "docker-publish": publisher}}
+}
+
+// TestPublishersWaitForTheHumanGate rejects every way of detaching a credential from approval.
+func TestPublishersWaitForTheHumanGate(t *testing.T) {
+	if failures := check(releaseFixture(), "release-pipeline.yml"); len(failures) != 0 {
+		t.Fatal(failures)
+	}
+	for name, mutate := range map[string]func(*workflows.Workflow){
+		"gate removed": func(d *workflows.Workflow) { delete(d.Jobs, "approve-release") },
+		"needs dropped": func(d *workflows.Workflow) {
+			j := d.Jobs["docker-publish"]
+			j.Needs = []any{"detect-changes"}
+			d.Jobs["docker-publish"] = j
+		},
+		"gate disjoined": func(d *workflows.Workflow) {
+			j := d.Jobs["docker-publish"]
+			j.If = "always() || needs.approve-release.result == 'success'"
+			d.Jobs["docker-publish"] = j
+		},
+		"gate negated": func(d *workflows.Workflow) {
+			j := d.Jobs["docker-publish"]
+			j.If = "always() && !(needs.approve-release.result == 'success') && x"
+			d.Jobs["docker-publish"] = j
+		},
+		"gate not first": func(d *workflows.Workflow) {
+			j := d.Jobs["docker-publish"]
+			j.If = "always() && x == 'y' && needs.approve-release.result == 'success' && z"
+			d.Jobs["docker-publish"] = j
+		},
+		"reports key unlocked": func(d *workflows.Workflow) {
+			j := d.Jobs["docker-publish"]
+			j.Environment = nil
+			j.Other = map[string]any{"env": map[string]any{"K": "${{ secrets.R2_REPORTS_SECRET_ACCESS_KEY }}"}}
+			d.Jobs["docker-publish"] = j
+		},
+		"condition dropped": func(d *workflows.Workflow) {
+			j := d.Jobs["docker-publish"]
+			j.If = "always()"
+			d.Jobs["docker-publish"] = j
+		},
+		"environment dropped": func(d *workflows.Workflow) {
+			j := d.Jobs["docker-publish"]
+			j.Environment = nil
+			d.Jobs["docker-publish"] = j
+		},
+		"wrong environment": func(d *workflows.Workflow) {
+			j := d.Jobs["docker-publish"]
+			j.Environment = "pr-testing"
+			d.Jobs["docker-publish"] = j
+		},
+		"gate on other env": func(d *workflows.Workflow) {
+			j := d.Jobs["approve-release"]
+			j.Environment = "oss-release"
+			d.Jobs["approve-release"] = j
+		},
+		"gate holds a secret": func(d *workflows.Workflow) {
+			j := d.Jobs["approve-release"]
+			j.Other = map[string]any{"env": map[string]any{"T": "${{ secrets.T }}"}}
+			d.Jobs["approve-release"] = j
+		},
+		"gate checks out code": func(d *workflows.Workflow) {
+			j := d.Jobs["approve-release"]
+			j.Steps = append(j.Steps, workflows.Step{Uses: "actions/checkout@" + strings.Repeat("a", 40)})
+			d.Jobs["approve-release"] = j
+		},
+	} {
+		d := releaseFixture()
+		mutate(&d)
+		if len(check(d, "release-pipeline.yml")) == 0 {
+			t.Errorf("accepted %s", name)
+		}
+	}
+}
+
+// TestPublishSecretsNeedReleaseEnvironmentEverywhere applies to every workflow, not only the pipeline.
+func TestPublishSecretsNeedReleaseEnvironmentEverywhere(t *testing.T) {
+	d := fixture("step-security/harden-runner@" + strings.Repeat("a", 40))
+	job := d.Jobs["test"]
+	job.Other = map[string]any{"env": map[string]any{"R2_SECRET_ACCESS_KEY": "${{ secrets.R2_SECRET_ACCESS_KEY }}"}}
+	d.Jobs["test"] = job
+	if len(check(d, "release-cli.yml")) == 0 {
+		t.Fatal("accepted a publish credential outside a release environment")
+	}
+	job.Environment = "oss-native-release"
+	d.Jobs["test"] = job
+	if failures := check(d, "release-cli.yml"); len(failures) != 0 {
+		t.Fatal(failures)
+	}
+}
+
 // TestActionPinning rejects mutable references and truncated hashes.
 func TestActionPinning(t *testing.T) {
 	for _, reference := range []string{"actions/checkout@v6", "docker://alpine:latest", "org/action@" + strings.Repeat("a", 39)} {

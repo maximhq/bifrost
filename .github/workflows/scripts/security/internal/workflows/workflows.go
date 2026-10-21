@@ -21,9 +21,38 @@ type Workflow struct {
 // Job includes both executable steps and reusable workflow references.
 type Job struct {
 	Uses        string         `yaml:"uses"`
+	Needs       any            `yaml:"needs"`
+	If          string         `yaml:"if"`
 	Steps       []Step         `yaml:"steps"`
 	Environment any            `yaml:"environment"`
 	Other       map[string]any `yaml:",inline"`
+}
+
+// EnvironmentName reads both the scalar and the name/url mapping forms.
+func EnvironmentName(job Job) string {
+	if mapping, ok := job.Environment.(map[string]any); ok {
+		return String(mapping, "name")
+	}
+	if job.Environment == nil {
+		return ""
+	}
+	return fmt.Sprint(job.Environment)
+}
+
+// Needs reads both the scalar and the list forms of job dependencies.
+func Needs(job Job) []string {
+	switch v := job.Needs.(type) {
+	case string:
+		return []string{v}
+	case []any:
+		result := make([]string, 0, len(v))
+		for _, need := range v {
+			result = append(result, fmt.Sprint(need))
+		}
+		return result
+	default:
+		return nil
+	}
 }
 
 // Step captures action references, commands, and runner policy inputs.
