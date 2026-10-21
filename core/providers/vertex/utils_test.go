@@ -1216,8 +1216,6 @@ func TestVertexPassthroughStreamReusesCompletedTLSConnection(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, body)
 		w.(http.Flusher).Flush()
-		// The semantic event and HTTP terminator can arrive separately.
-		time.Sleep(time.Millisecond)
 	})
 	var dials atomic.Int32
 	dial := provider.streamingClient.Dial
