@@ -321,14 +321,15 @@ func (s *Service) costFuncFor(config *schemas.WarpConfig) CostFunc {
 		return nil
 	}
 	return func(usage *schemas.BifrostLLMUsage) float64 {
-		// ResponsesRequest, because that is what the agent calls. The catalog
+		// ResponsesStreamRequest, because that is what the agent calls (see
+		// StreamedResponses); it prices on the responses rate card. The catalog
 		// keeps separate chat and responses rates and only falls back when the
 		// requested mode is absent, so naming the wrong one silently prices the
 		// turn off the other rate card.
 		// costProviderFor, not config.Provider: a provider-qualified model routes
 		// by its own prefix, and pricing must follow routing or the turn is
 		// priced off the wrong rate card.
-		return s.catalog.CalculateCostForUsage(usage, costProviderFor(config), catalogModel(config.Model), schemas.ResponsesRequest, nil)
+		return s.catalog.CalculateCostForUsage(usage, costProviderFor(config), catalogModel(config.Model), schemas.ResponsesStreamRequest, nil)
 	}
 }
 
