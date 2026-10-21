@@ -1981,6 +1981,33 @@ func TestDrainStderrNilPipe(t *testing.T) {
 	}
 }
 
+func TestCreateSTDIOConnectionRejectsEmptyCommand(t *testing.T) {
+	t.Parallel()
+
+	m := &MCPManager{logger: defaultLogger}
+	blank := "  "
+	cases := map[string]struct {
+		command   string
+		overrides *schemas.BifrostMCPConnectRequest
+	}{
+		"empty config command":   {command: ""},
+		"blank override command": {command: "echo", overrides: &schemas.BifrostMCPConnectRequest{StdioCommand: &blank}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			config := &schemas.MCPClientConfig{
+				Name:           "empty-cmd",
+				ConnectionType: schemas.MCPConnectionTypeSTDIO,
+				StdioConfig:    &schemas.MCPStdioConfig{Command: tc.command},
+			}
+			cli, _, err := m.createSTDIOConnection(context.Background(), config, tc.overrides)
+			require.Error(t, err)
+			require.Nil(t, cli)
+			require.Contains(t, err.Error(), "stdio command is empty")
+		})
+	}
+}
+
 func TestDrainStderrIgnoresNonSTDIOConfig(t *testing.T) {
 	t.Parallel()
 

@@ -3515,6 +3515,11 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 			args = overrides.StdioArgs
 		}
 	}
+	// mcp-go's Start silently spawns nothing for an empty command, leaving a
+	// client with no subprocess or pipes.
+	if strings.TrimSpace(cmd) == "" {
+		return nil, nil, fmt.Errorf("stdio command is empty for MCP client %s", config.Name)
+	}
 
 	cmdString := fmt.Sprintf("%s %s", cmd, strings.Join(args, " "))
 
