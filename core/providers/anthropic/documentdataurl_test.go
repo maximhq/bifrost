@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -49,7 +50,8 @@ func TestEmptyTextDocumentPreservesSource(t *testing.T) {
 	if err := sonic.Unmarshal([]byte(`{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"Some text."},"citations":{"enabled":true}},{"type":"document","source":{"type":"text","media_type":"text/plain","data":""},"citations":{"enabled":true}},{"type":"text","text":"Say ok."}]}]}`), &request); err != nil {
 		t.Fatal(err)
 	}
-	rebuilt, err := ToAnthropicResponsesRequest(nil, request.ToBifrostResponsesRequest(nil))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	rebuilt, err := ToAnthropicResponsesRequest(ctx, request.ToBifrostResponsesRequest(ctx))
 	if err != nil {
 		t.Fatal(err)
 	}
