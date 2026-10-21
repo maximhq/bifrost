@@ -843,6 +843,7 @@ func (m *ToolsManager) executeToolInternal(
 	toolCallStart := time.Now()
 	var toolResponse *mcp.CallToolResult
 	attempted := false
+	var lastCallErr error
 	callErr := ExecuteWithRetry(
 		toolCtx,
 		func() error {
@@ -856,12 +857,15 @@ func (m *ToolsManager) executeToolInternal(
 				}
 				replayAllowed = toolCallReplayAllowed(current, executionConfig, toolName)
 				if !replayAllowed {
-					return errors.New("tool replay no longer authorized")
+					// Preserve the real failure; the retry predicate sees the
+					// revoked authorization and stops without another call.
+					return lastCallErr
 				}
 			}
 			attempted = true
 			var err error
 			toolResponse, err = clientConn.CallTool(toolCtx, callRequest)
+			lastCallErr = err
 			return err
 		},
 		retryConfig,

@@ -833,6 +833,9 @@ func TestMCPToolReplaySafety_RechecksDuringBackoff(t *testing.T) {
 	case err := <-done:
 		f.report(t, nil, err)
 		require.NotNil(t, err)
+		require.Contains(t, err.GetErrorString(), "request failed with status 503")
+		require.Contains(t, err.GetErrorString(), "upstream response unavailable after commit")
+		require.NotContains(t, err.GetErrorString(), "tool replay no longer authorized")
 		require.Contains(t, err.GetErrorString(), "may have succeeded")
 	case <-time.After(3 * time.Second):
 		t.Fatal("execution did not finish")
