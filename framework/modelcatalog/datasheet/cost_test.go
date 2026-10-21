@@ -1527,7 +1527,11 @@ func TestComputeEmbeddingCost_ZeroUsageStaysUnpriced(t *testing.T) {
 		InputCostPerToken:  bifrost.Ptr(0.0000001),
 		OutputCostPerToken: bifrost.Ptr(0.0),
 	}
-	assert.Equal(t, 0.0, computeEmbeddingCostTotal(&p, &schemas.BifrostLLMUsage{}, serviceTier{}))
+	// The dispatcher uses a nil cost to distinguish "no token pricing applied"
+	// (absent usage) from a real zero — assert the nil path directly rather than
+	// the flattened total, which would also pass on a wrong non-nil cost object.
+	cost := computeEmbeddingCost(&p, &schemas.BifrostLLMUsage{}, serviceTier{})
+	assert.Nil(t, cost)
 }
 
 // =========================================================================
