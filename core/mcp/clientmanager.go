@@ -3566,7 +3566,8 @@ const stderrQueueSize = 256
 // ends the goroutines.
 func drainStderr(cli *client.Client, config *schemas.MCPClientConfig) {
 	stderr, ok := client.GetStderr(cli)
-	if !ok {
+	if !ok || stderr == nil {
+		// nil when the transport spawned no subprocess (empty command).
 		return
 	}
 	var handler func(line string)
@@ -3589,7 +3590,9 @@ func drainStderr(cli *client.Client, config *schemas.MCPClientConfig) {
 		r := bufio.NewReaderSize(stderr, maxStderrLineBytes)
 		for {
 			line, err := readStderrLine(r)
-			if line != "" {
+			// Forward every complete line, including blank ones; at EOF only a
+			// non-empty trailing partial line is forwarded.
+			if err == nil || line != "" {
 				select {
 				case lines <- line:
 				default: // queue full: drop rather than block the reader

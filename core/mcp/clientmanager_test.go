@@ -1942,6 +1942,45 @@ func TestDrainStderrForwardsLinesToHandler(t *testing.T) {
 	require.Equal(t, []string{"first", "second"}, collector.snapshot())
 }
 
+func TestDrainStderrForwardsBlankLines(t *testing.T) {
+	t.Parallel()
+
+	cli := startedStdioClient(t, "sh", "-c", `echo first >&2; echo >&2; echo third >&2`)
+
+	var collector lineCollector
+	config := &schemas.MCPClientConfig{
+		ConnectionType: schemas.MCPConnectionTypeSTDIO,
+		StdioConfig:    &schemas.MCPStdioConfig{StderrHandler: collector.handle},
+	}
+	drainStderr(cli, config)
+
+	require.Eventually(t, func() bool {
+		return len(collector.snapshot()) == 3
+	}, 5*time.Second, 10*time.Millisecond)
+
+	require.Equal(t, []string{"first", "", "third"}, collector.snapshot())
+}
+
+// TestDrainStderrNilPipe covers a stdio transport that never spawned a
+// subprocess (empty command): GetStderr reports ok with a nil reader, which
+// drainStderr must skip rather than read from in a background goroutine.
+func TestDrainStderrNilPipe(t *testing.T) {
+	t.Parallel()
+
+	cli := client.NewClient(transport.NewStdio("", nil))
+	stderr, ok := client.GetStderr(cli)
+	require.True(t, ok)
+	require.Nil(t, stderr)
+
+	for _, handler := range []func(string){nil, func(string) {}} {
+		config := &schemas.MCPClientConfig{
+			ConnectionType: schemas.MCPConnectionTypeSTDIO,
+			StdioConfig:    &schemas.MCPStdioConfig{StderrHandler: handler},
+		}
+		require.NotPanics(t, func() { drainStderr(cli, config) })
+	}
+}
+
 func TestDrainStderrIgnoresNonSTDIOConfig(t *testing.T) {
 	t.Parallel()
 
