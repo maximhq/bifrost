@@ -15,7 +15,10 @@ type TableFrameworkConfig struct {
 	// LiveModelsSyncInterval is how often each provider's list-models response
 	// is re-fetched in the background, in seconds. 0 disables the refresher.
 	LiveModelsSyncInterval *int64 `gorm:"" json:"live_models_sync_interval"`
-	ConfigHash             string `gorm:"type:text" json:"config_hash"`
+	// OpenAPIURL is the OpenAPI spec /v1/mcp builds its tools from: an http(s) URL
+	// or a path under the app dir. Empty/nil falls back to the build's default spec.
+	OpenAPIURL *string `gorm:"column:openapi_url;type:text" json:"openapi_url"`
+	ConfigHash string  `gorm:"type:text" json:"config_hash"`
 }
 
 // TableName sets the table name for each model

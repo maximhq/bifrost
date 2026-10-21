@@ -1995,6 +1995,7 @@
     "read_buffer_size": 65536
   },
   "client": {
+    "bifrost_url": "http://localhost:8080",
     "allow_per_request_raw_override": true,
     "allow_direct_keys": true,
     "drop_excess_requests": false,

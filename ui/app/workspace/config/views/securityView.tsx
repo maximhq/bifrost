@@ -156,6 +156,7 @@ export default function SecurityView() {
 		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
 		const enforceVKObjectOwnershipChanged =
 			(localConfig.enforce_vk_object_ownership ?? true) !== (config.enforce_vk_object_ownership ?? true);
+		const bifrostMCPAllowWritesChanged = (localConfig.bifrost_mcp_allow_writes ?? true) !== (config.bifrost_mcp_allow_writes ?? true);
 		const skipAccessProfileUserVirtualKeyCreationChanged =
 			IS_ENTERPRISE &&
 			(localConfig.skip_access_profile_user_virtual_key_creation ?? false) !==
@@ -179,6 +180,7 @@ export default function SecurityView() {
 			allowDirectKeysChanged ||
 			deleteExpiredVirtualKeysChanged ||
 			enforceVKObjectOwnershipChanged ||
+			bifrostMCPAllowWritesChanged ||
 			skipAccessProfileUserVirtualKeyCreationChanged ||
 			skipAccessProfileUserVirtualKeyDeletionChanged ||
 			dualCredentialConflictBehaviorChanged ||
@@ -666,6 +668,23 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("enforce_vk_object_ownership", checked)}
 					/>
 				</div>
+				{/* Bifrost MCP: whether /v1/mcp serves non-GET /api operations as tools */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="bifrost-mcp-allow-writes" className="text-sm font-medium">
+							{t("security.bifrostMcpAllowWrites")}
+						</label>
+						<p className="text-muted-foreground text-sm">
+							<Trans t={t} i18nKey="security.bifrostMcpAllowWritesHelp" components={{ code0: <code className="text-xs" /> }} />
+						</p>
+					</div>
+					<Switch
+						id="bifrost-mcp-allow-writes"
+						data-testid="security-bifrost-mcp-allow-writes-switch"
+						checked={localConfig.bifrost_mcp_allow_writes ?? true}
+						onCheckedChange={(checked) => handleConfigChange("bifrost_mcp_allow_writes", checked)}
+					/>
+				</div>
 				{/* Access profiles creating and deleting users' virtual keys, each switched separately */}
 				{IS_ENTERPRISE && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
@@ -731,9 +750,7 @@ export default function SecurityView() {
 						!secretVarEquals(localConfig.oauth2_server_config?.issuer_url, config?.oauth2_server_config?.issuer_url) && (
 							<Alert variant="warning" data-testid="oauth2-issuer-url-change-warning">
 								<AlertTriangle className="size-4" />
-								<AlertDescription>
-									{t("security.issuerChangeWarning")}
-								</AlertDescription>
+								<AlertDescription>{t("security.issuerChangeWarning")}</AlertDescription>
 							</Alert>
 						)}
 				</div>

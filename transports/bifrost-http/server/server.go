@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -296,7 +299,10 @@ type BifrostHTTPServer struct {
 	RSSFeedsHandler      *handlers.RSSFeedsHandler
 	WarpHandler          *handlers.WarpHandler
 	MCPServerHandler     *handlers.MCPServerHandler
-	BifrostMCP           *handlers.BifrostMCP // /api as MCP tools on /v1/mcp; its server loads after boot
+	BifrostMCP           *handlers.BifrostMCP          // the gateway's API as MCP tools on /v1/mcp; its server loads after boot
+	BifrostMCPToolAccess handlers.BifrostMCPToolAccess // set before StartBifrostMCP to shape tools/list per caller
+	bifrostMCPExec       *handlers.BifrostMCPExecutor
+	defaultOpenAPIURL    string // the build's default spec, used while the framework config's openapi_url is unset
 	AgentGatewayHandler  *handlers.AgentGatewayHandler
 	devPprofHandler      *handlers.DevPprofHandler
 	skillsServingHandler *handlers.SkillsServingHandler
@@ -1688,6 +1694,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	if s.LogsCleaner != nil {
 		s.LogsCleaner.UpdateRetentionDays(config.LogRetentionDays)
 	}
+	s.reloadBifrostMCP(ctx)
 	// This path also serves cluster peers, so one node's allowlist edit
 	// reaches every node's OAuth client.
 	if err := lib.ApplyMCPOAuthPrivateAllowlist(config.MCPOAuthPrivateAllowlist); err != nil {
@@ -1847,7 +1854,13 @@ func (s *BifrostHTTPServer) reloadObservabilityPlugins() {
 
 // ReloadPricingManager reloads the pricing manager
 func (s *BifrostHTTPServer) UpdateSyncConfig(ctx context.Context) error {
-	if s.Config == nil || s.Config.ModelCatalog == nil {
+	if s.Config == nil {
+		return fmt.Errorf("config not found")
+	}
+	// openapi_url lives in the framework config, so a save that changed it
+	// rebuilds /v1/mcp here; the rebuild is a no-op when nothing it reads changed.
+	s.reloadBifrostMCP(ctx)
+	if s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
 	// Snapshot the pricing pointer and release the read lock before restarting
@@ -3920,6 +3933,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	}
 
 	// Register routes
+	// /v1/mcp takes the /api chain. Copied now: apiMiddlewares and
+	// inferenceMiddlewares grow from the same commonMiddlewares array, so an append
+	// to the inference chain below can overwrite an /api entry that fit in its
+	// spare capacity (AuthBypassedMiddleware, without a config store).
+	bifrostMCPMiddlewares := slices.Clone(apiMiddlewares)
 	err = s.RegisterAPIRoutes(s.Ctx, s, apiMiddlewares...)
 	if err != nil {
 		s.CloseAgentGateway()
@@ -4030,12 +4048,86 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		// Explain an oversized body (413 naming the configured limit) instead of fasthttp's generic 400.
 		ErrorHandler: lib.RequestErrorHandler(maxRequestBodySizeMB, logger.Warn),
 	}
+	s.StartBifrostMCP(s.Ctx, handlers.DefaultOpenAPIURL, s.Server.Handler, s.Server.MaxRequestBodySize, s.Server.ReadBufferSize, bifrostMCPMiddlewares...)
 	startSkillsOrphanCleanupWorker(s.Ctx, s.Config, nil)
 	// Keep the live model catalog current after boot. Without this, a model an
 	// upstream starts serving mid-uptime stays invisible until a restart or a
 	// key edit, since nothing else re-fetches list-models.
 	s.RestartLiveModelRefresher(s.Ctx)
 	return nil
+}
+
+// StartBifrostMCP serves Bifrost's HTTP API as MCP tools on /v1/mcp. Tool calls
+// are served in process through rootHandler, the handler s.Server runs, so each
+// call takes the same middleware chain as a request from the network; the build
+// passes its own because enterprise wraps the router differently. middlewares is
+// the gateway's /api auth chain, so /v1/mcp takes the same credentials /api does.
+// defaultSpecURL is the build's spec (handlers.DefaultOpenAPIURL, or another a
+// build passes), read while the framework config's openapi_url is unset; only
+// operations s.Router routes are served, so a plugin's routes and an enterprise
+// build's operations appear only where they are registered. The spec loads in the
+// background, and /v1/mcp answers 503 until it has. Call it once, after every route
+// is registered and before the server starts.
+func (s *BifrostHTTPServer) StartBifrostMCP(ctx context.Context, defaultSpecURL string, rootHandler fasthttp.RequestHandler, maxRequestBodySize, readBufferSize int, middlewares ...schemas.BifrostHTTPMiddleware) {
+	specFactory := s.HTTPClientFactory
+	if specFactory == nil {
+		specFactory = s.Config.HTTPClientFactory
+	}
+	if specFactory == nil {
+		specFactory = network.DefaultHTTPClientFactory()
+	}
+	var specClient *http.Client
+	if specFactory != nil {
+		specClient = specFactory.GetHTTPClient(network.ClientPurposeAPI)
+	} else {
+		specClient = &http.Client{}
+	}
+	s.defaultOpenAPIURL = defaultSpecURL
+	s.bifrostMCPExec = handlers.NewBifrostMCPExecutor(rootHandler, maxRequestBodySize, readBufferSize)
+	s.BifrostMCP = handlers.NewBifrostMCP(s.bifrostMCPOptions(handlers.BifrostMCPOptions{
+		AppDir:     s.Config.ConfigDir(), // the directory Bootstrap loaded from, which -app-dir only overrides
+		Served:     handlers.BifrostMCPServedRoutes(s.Router.List()),
+		SpecClient: specClient,
+		ExecClient: s.bifrostMCPExec.Client,
+		ToolAccess: s.BifrostMCPToolAccess,
+	}))
+	handlers.NewBifrostMCPHandler(s.BifrostMCP).RegisterRoutes(s.Router, middlewares...)
+	s.BifrostMCP.Start(ctx)
+}
+
+// bifrostMCPOptions fills the settings-driven Bifrost MCP options into base from the
+// current config: the spec (the framework config's openapi_url, else the build's default),
+// whether /api writes are served, and the base tool calls address: bifrost_url's
+// origin, and calls arrive as if through it. Without bifrost_url there is no
+// base and the Bifrost MCP does not load (ErrBifrostMCPNoBifrostURL): the
+// caller's Host header is never used in its place.
+func (s *BifrostHTTPServer) bifrostMCPOptions(base handlers.BifrostMCPOptions) handlers.BifrostMCPOptions {
+	base.SpecURL = s.Config.GetOpenAPIURL(s.defaultOpenAPIURL)
+	base.AllowWrites = s.Config.GetBifrostMCPAllowWrites()
+	base.BaseURL, base.BaseIsEdge = "", false
+	if public := s.Config.GetBifrostURL(); public != "" {
+		if parsed, err := url.Parse(public); err == nil && parsed.Host != "" {
+			base.BaseURL, base.BaseIsEdge = parsed.Scheme+"://"+parsed.Host, true
+		}
+	}
+	return base
+}
+
+// reloadBifrostMCP rebuilds the Bifrost MCP when a config save changed its spec,
+// writes switch or Bifrost URL. A failed rebuild keeps the server it had and is
+// logged; the saved config stands, and the next save or restart tries again.
+func (s *BifrostHTTPServer) reloadBifrostMCP(ctx context.Context) {
+	if s.BifrostMCP == nil {
+		return
+	}
+	current := s.BifrostMCP.Options()
+	next := s.bifrostMCPOptions(current)
+	if next.SpecURL == current.SpecURL && next.AllowWrites == current.AllowWrites && next.BaseURL == current.BaseURL && next.BaseIsEdge == current.BaseIsEdge {
+		return
+	}
+	if err := s.BifrostMCP.Reload(ctx, next); err != nil {
+		logger.Warn("[Bifrost MCP] settings changed but the rebuild failed (a change that serves less unloads the previous server; any other keeps it): %v", err)
+	}
 }
 
 func (s *BifrostHTTPServer) CloseAgentGateway() {
@@ -4095,6 +4187,11 @@ func (s *BifrostHTTPServer) Start() error {
 			logger.Error("error during graceful shutdown: %v", err)
 		} else {
 			logger.Info("server gracefully shutdown")
+		}
+		// After the server: an in-flight /v1/mcp call finishes its /api hop first.
+		// Bounded by the shutdown timeout, so a stuck /api handler cannot hold it.
+		if err := s.bifrostMCPExec.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("error closing the Bifrost MCP executor: %v", err)
 		}
 		// Cancelling main context
 		if s.cancel != nil {

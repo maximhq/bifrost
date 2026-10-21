@@ -111,6 +111,8 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `mcp_tool_sync_interval` | integer | `10` | Tool sync interval in minutes (`0` = default of 10 minutes) |
 | `mcp_disable_auto_tool_inject` | boolean | `false` | Disable automatic MCP tool injection |
 | `mcp_openapi_max_spec_mb` | integer | `0` | Size limit in MiB on an OpenAPI MCP server's spec (`0` = default of 32, maximum 256). A pasted or uploaded spec is sent inside a JSON request body, so it is also capped by `max_request_body_size_mb`: to accept a larger one, set that above the spec size with headroom for JSON escaping, and restart the server, since the body limit is read at startup. A request that sends only `spec_url` is not subject to that cap, since the server fetches the document itself; the dashboard, however, saves a URL import as the inline document its preview fetched, so a URL import larger than `max_request_body_size_mb` fails there |
+| `bifrost_url` | string or secret reference | - | The gateway's public base URL (scheme, host and base path) as clients reach it through your proxy. Required for `/v1/mcp` and Warp's configuration tools: their tool calls arrive as if through it, so the URLs their routes build use it. Unset disables both; the `Host` the client sent is never used instead |
+| `bifrost_mcp_allow_writes` | boolean | `true` | Whether `/v1/mcp` serves the non-GET `/api` operations as tools. Routes outside `/api` (inference, batch, files) are served either way, and every call is authorized by the caller's own credential |
 | `async_job_result_ttl` | integer | `3600` | TTL for async job results in seconds |
 | `disable_db_pings_in_health` | boolean | `false` | Exclude DB connectivity from `/health` |
 | `routing_chain_max_depth` | integer | `10` | Max routing rule chain evaluation depth |
@@ -408,6 +410,7 @@ Controls model pricing catalog sync and background model discovery:
 | `pricing.pricing_url` | LiteLLM catalog | URL of a model pricing JSON file |
 | `pricing.pricing_sync_interval` | `86400` | Sync interval in seconds (minimum: `3600`) |
 | `pricing.live_models_sync_interval` | `3600` | How often each provider's model list is re-fetched, in seconds. `0` disables it (minimum when enabled: `60`) |
+| `pricing.openapi_url` | Unset | OpenAPI spec `/v1/mcp` builds its tools from: an http(s) URL, or a path relative to the app directory for air-gapped installs (absolute paths and paths leaving it are refused). Unset reads dev's `docs/openapi/openapi-oss.json`. Saving a new value rebuilds `/v1/mcp`. If the new spec cannot be loaded, the previous tools stay in service and the new spec is tried again on a later settings save or on restart. A save that also turns off `client.bifrost_mcp_allow_writes` or clears `client.bifrost_url` applies that change first, against the spec already in use: turning writes off can leave a read-only server on the previous spec running, so `/v1/mcp` keeps answering and does not move to the new spec on its own. Only when that first rebuild fails are the previous tools unloaded, `/v1/mcp` answers `503`, and the load is retried in the background |
 
 ### Background model discovery
 
@@ -609,7 +612,7 @@ HTTP server settings. Every field is deploy-time only: Bifrost reads them once a
 - The first segment must not match a Bifrost route (such as `api`, `v1`, `openai` or `health`), a dashboard page root (`workspace`, `login`, `oauth`, `agent`, `pprof`) or a top-level dashboard file path (such as `assets` or `images`). Bifrost refuses to start otherwise.
 - Passing `-base-path /` (or `BIFROST_BASE_PATH=/`) forces the domain root even when `config.json` sets a prefix.
 - Requests are accepted with or without the prefix, so health checks and probes can stay on `/health`.
-- Public URLs you set explicitly, such as `client.mcp_external_client_url`, `client.a2a_external_client_url`, `client.skills_external_client_url` and `client.oauth2_server_config.issuer_url`, must include the prefix themselves.
+- Public URLs you set explicitly, such as `client.bifrost_url`, `client.mcp_external_client_url`, `client.a2a_external_client_url`, `client.skills_external_client_url` and `client.oauth2_server_config.issuer_url`, must include the prefix themselves.
 - OAuth discovery for an issuer with a prefix lives at the host root (`https://example.com/.well-known/oauth-authorization-server/bifrost`, per RFC 8414), so the proxy must also forward `/.well-known/` to Bifrost.
 
 ---

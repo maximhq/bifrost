@@ -9,6 +9,7 @@ import (
 	"hash"
 	"math"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -121,6 +122,8 @@ type ClientConfig struct {
 	MCPMaxInstructionsPerClient             int                                   `json:"mcp_max_instructions_per_client"`               // Byte bound on one server's forwarded instructions; 0 is the default
 	MCPMaxInstructionsTotal                 int                                   `json:"mcp_max_instructions_total"`                    // Byte bound on the whole forwarded aggregate; 0 is the default
 	MCPOpenAPIMaxSpecMB                     int                                   `json:"mcp_openapi_max_spec_mb"`                       // Size limit on an openapi MCP client's spec in MiB; 0 is the default (32)
+	BifrostURL                              *schemas.SecretVar                    `json:"bifrost_url,omitempty"`                         // The gateway's public base URL; /v1/mcp tool calls address it. Supports env var syntax ("env.MY_VAR")
+	BifrostMCPAllowWrites                   *bool                                 `json:"bifrost_mcp_allow_writes,omitempty"`            // Whether /v1/mcp serves non-GET /api tools; nil is true
 	MCPCodeModeLimits                       *schemas.MCPCodeModeLimits            `json:"mcp_code_mode_limits,omitempty"`                // Per-execution code mode limits; nil or zero fields use the defaults
 	MCPOAuthPrivateAllowlist                []string                              `json:"mcp_oauth_private_allowlist,omitempty"`         // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
 	A2APrivateAllowlist                     []string                              `json:"a2a_private_allowlist,omitempty"`               // Private hosts, IPs and CIDRs the Agent Gateway may reach for clients registered with admin auth
@@ -583,6 +586,16 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			hash.Write([]byte("a2aExternalClientURL:val:" + c.A2AExternalClientURL.GetValue()))
 		}
 	}
+	if c.BifrostURL != nil {
+		if c.BifrostURL.IsFromSecret() {
+			hash.Write([]byte("bifrostURL:ref:" + c.BifrostURL.GetRawRef()))
+		} else if v := c.BifrostURL.GetValue(); v != "" {
+			hash.Write([]byte("bifrostURL:val:" + v))
+		}
+	}
+	if c.BifrostMCPAllowWrites != nil {
+		hash.Write([]byte("bifrostMCPAllowWrites:" + strconv.FormatBool(*c.BifrostMCPAllowWrites)))
+	}
 
 	// Only hash non-default values to avoid legacy config hash churn on upgrade —
 	// existing configs carry an empty auth mode and a nil OAuth2 server config.
@@ -675,6 +688,9 @@ func (c *ClientConfig) Redacted() ClientConfig {
 	}
 	if c.A2AExternalClientURL != nil && c.A2AExternalClientURL.IsFromSecret() {
 		out.A2AExternalClientURL = c.A2AExternalClientURL.Redacted()
+	}
+	if c.BifrostURL != nil && c.BifrostURL.IsFromSecret() {
+		out.BifrostURL = c.BifrostURL.Redacted()
 	}
 	return out
 }
@@ -2846,7 +2862,7 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 
 // frameworkConfigHashPayload holds the config.json-sourced fields used for hashing.
 //
-// LiveModelsSyncInterval carries omitempty deliberately: a nil pointer must
+// LiveModelsSyncInterval and OpenAPIURL carry omitempty deliberately: a nil pointer must
 // marshal to exactly the bytes this struct produced before the field existed,
 // so hashes already persisted in framework_configs stay valid and no upgraded
 // deployment sees a spurious "file changed" override on first boot.
@@ -2855,6 +2871,7 @@ type frameworkConfigHashPayload struct {
 	ModelParametersURL     *string `json:"model_parameters_url"`
 	PricingSyncInterval    *int64  `json:"pricing_sync_interval"`
 	LiveModelsSyncInterval *int64  `json:"live_models_sync_interval,omitempty"`
+	OpenAPIURL             *string `json:"openapi_url,omitempty"`
 }
 
 type frameworkConfigHashPayloadWithMCP struct {
@@ -2864,6 +2881,7 @@ type frameworkConfigHashPayloadWithMCP struct {
 	MCPLibraryURL          *string `json:"mcp_library_url"`
 	MCPLibrarySyncInterval *int64  `json:"mcp_library_sync_interval"`
 	LiveModelsSyncInterval *int64  `json:"live_models_sync_interval,omitempty"`
+	OpenAPIURL             *string `json:"openapi_url,omitempty"`
 }
 
 // FrameworkConfigHashOptions adds optional framework config fields to the
@@ -2873,6 +2891,7 @@ type FrameworkConfigHashOptions struct {
 	MCPLibraryURL          *string
 	MCPLibrarySyncInterval *int64
 	LiveModelsSyncInterval *int64
+	OpenAPIURL             *string
 }
 
 // GenerateFrameworkConfigHash generates a SHA256 hash for a framework config.
@@ -2890,6 +2909,7 @@ func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string,
 				ModelParametersURL:     modelParametersURL,
 				PricingSyncInterval:    pricingSyncInterval,
 				LiveModelsSyncInterval: opts[0].LiveModelsSyncInterval,
+				OpenAPIURL:             opts[0].OpenAPIURL,
 			})
 		} else {
 			data, err = sonic.Marshal(frameworkConfigHashPayloadWithMCP{
@@ -2899,6 +2919,7 @@ func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string,
 				MCPLibraryURL:          opts[0].MCPLibraryURL,
 				MCPLibrarySyncInterval: opts[0].MCPLibrarySyncInterval,
 				LiveModelsSyncInterval: opts[0].LiveModelsSyncInterval,
+				OpenAPIURL:             opts[0].OpenAPIURL,
 			})
 		}
 	} else {
@@ -2941,11 +2962,51 @@ type GovernanceConfig struct {
 	ComplexityAnalyzerConfig *ComplexityAnalyzerConfig     `json:"complexity_analyzer_config,omitempty"`
 }
 
+// MaxOpenAPIURLLength bounds the framework config's openapi_url, matching config.schema.json.
+const MaxOpenAPIURLLength = 2048
+
+// ValidateOpenAPIURL accepts an empty setting (the build's default spec), an
+// absolute http(s) URL, or a relative path that stays inside the app directory. An
+// absolute path is refused: the setting is writable over the API, and a spec file
+// belongs beside config.json.
+func ValidateOpenAPIURL(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if len(value) > MaxOpenAPIURLLength {
+		return fmt.Errorf("must be at most %d characters", MaxOpenAPIURLLength)
+	}
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Hostname() == "" {
+			return fmt.Errorf("must be an absolute http(s) URL or a path relative to the app directory")
+		}
+		return nil
+	}
+	if strings.Contains(value, "://") {
+		return fmt.Errorf("must be an http(s) URL or a path relative to the app directory")
+	}
+	clean := filepath.Clean(filepath.FromSlash(value))
+	if filepath.IsAbs(clean) || strings.HasPrefix(value, "/") || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("must be a path relative to the app directory that stays inside it")
+	}
+	return nil
+}
+
+// MaxPublicURLLength is the longest public URL a setting accepts: bifrost_url
+// and the MCP, Skills and A2A external client URLs are stored in varchar(512)
+// columns, so a longer value would be accepted and then fail to save.
+const MaxPublicURLLength = 512
+
 // ValidatePublicBaseURL accepts an empty setting or a public HTTP base URL without private URL components.
 // Errors omit the value because it may contain credentials resolved from a secret reference.
 func ValidatePublicBaseURL(value string) error {
 	if value == "" {
 		return nil
+	}
+	if len(value) > MaxPublicURLLength {
+		return fmt.Errorf("must be at most %d characters", MaxPublicURLLength)
 	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {

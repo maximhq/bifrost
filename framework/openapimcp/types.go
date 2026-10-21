@@ -197,6 +197,7 @@ type ServerOptions struct {
 	Headers          HeaderResolver
 	MaxResponseBytes int
 	Logger           schemas.Logger
+	ToolFilter       func(ctx context.Context, tools []mcp.Tool) []mcp.Tool // optional; see mcp-go's server.WithToolFilter
 }
 
 // PreviewResult is the API-facing summary of a parsed spec.

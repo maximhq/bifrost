@@ -376,6 +376,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("a2a_external_client_url %v", err))
 		return
 	}
+	if err := configstore.ValidatePublicBaseURL(payload.ClientConfig.BifrostURL.GetValue()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("bifrost_url %v", err))
+		return
+	}
+	if payload.FrameworkConfig.OpenAPIURL != nil {
+		if err := configstore.ValidateOpenAPIURL(*payload.FrameworkConfig.OpenAPIURL); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("openapi_url %v", err))
+			return
+		}
+	}
 
 	// enforce_vk_object_ownership is a plain bool that defaults to true, so a JSON null would
 	// decode as true and silently re-enable ownership. Refuse it; omit the field to keep the stored value.
@@ -960,6 +970,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if _, present := clientConfigFields["a2a_external_client_url"]; present {
 		updatedConfig.A2AExternalClientURL = payload.ClientConfig.A2AExternalClientURL
 	}
+	// Copied only when sent, so a partial save keeps them; an empty value or null resets
+	// each to its default. The reload that follows the save rebuilds /v1/mcp.
+	if _, present := clientConfigFields["bifrost_url"]; present {
+		updatedConfig.BifrostURL = payload.ClientConfig.BifrostURL
+	}
+	if _, present := clientConfigFields["bifrost_mcp_allow_writes"]; present {
+		updatedConfig.BifrostMCPAllowWrites = payload.ClientConfig.BifrostMCPAllowWrites
+	}
 
 	// Only update each field when explicitly provided so partial /api/config
 	// payloads do not clear stored values (matches the MCP field handling above).
@@ -1140,6 +1158,22 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			shouldReloadFrameworkConfig = true
 		}
 	}
+	// openapi_url is copied only when sent; empty clears it back to the build's
+	// default spec. Validated up front; the reload below rebuilds /v1/mcp.
+	if payload.FrameworkConfig.OpenAPIURL != nil {
+		var next *string
+		if trimmed := strings.TrimSpace(*payload.FrameworkConfig.OpenAPIURL); trimmed != "" {
+			next = &trimmed
+		}
+		stored := ""
+		if frameworkConfig.OpenAPIURL != nil {
+			stored = strings.TrimSpace(*frameworkConfig.OpenAPIURL)
+		}
+		if (next == nil && stored != "") || (next != nil && *next != stored) {
+			frameworkConfig.OpenAPIURL = next
+			shouldReloadFrameworkConfig = true
+		}
+	}
 	// Reload config if required
 	if shouldReloadFrameworkConfig {
 		var syncSeconds int64
@@ -1156,6 +1190,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				MCPLibraryURL:          frameworkConfig.MCPLibraryURL,
 				MCPLibrarySyncInterval: frameworkConfig.MCPLibrarySyncInterval,
 				LiveModelsSyncInterval: frameworkConfig.LiveModelsSyncInterval,
+				OpenAPIURL:             frameworkConfig.OpenAPIURL,
 			},
 		}
 		// Persist first so a failed store write leaves the runtime config

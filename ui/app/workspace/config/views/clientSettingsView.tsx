@@ -4,12 +4,15 @@ import PageTitle from "@/components/pageTitle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useGetCoreConfigQuery, useGetDroppedRequestsQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig, DefaultGlobalHeaderFilterConfig, GlobalHeaderFilterConfig } from "@/lib/types/config";
+import { bifrostUrlSchema, openAPIUrlSchema, SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
+import { secretVarEquals } from "@/lib/utils/secretVarForm";
 import LargePayloadSettingsFragment from "@enterprise/components/large-payload/largePayloadSettingsFragment";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetLargePayloadConfigQuery, useUpdateLargePayloadConfigMutation } from "@enterprise/lib/store/apis/largePayloadApi";
@@ -79,6 +82,9 @@ export default function ClientSettingsView() {
 	const config = bifrostConfig?.client_config;
 	const [updateCoreConfig, { isLoading: isSavingCoreConfig }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
+	// openapi_url lives in the framework config; it is edited here with the client config.
+	const storedOpenAPIURL = bifrostConfig?.framework_config?.openapi_url ?? "";
+	const [openAPIURL, setOpenAPIURL] = useState(storedOpenAPIURL);
 
 	// Large payload config state
 	const { data: serverLargePayloadConfig, isLoading: isLargePayloadConfigLoading } = useGetLargePayloadConfigQuery();
@@ -104,6 +110,10 @@ export default function ClientSettingsView() {
 	}, [config]);
 
 	useEffect(() => {
+		setOpenAPIURL(storedOpenAPIURL);
+	}, [storedOpenAPIURL]);
+
+	useEffect(() => {
 		if (serverLargePayloadConfig) {
 			setLocalLargePayloadConfig(serverLargePayloadConfig);
 		}
@@ -117,9 +127,11 @@ export default function ClientSettingsView() {
 			localConfig.dump_errors_in_console_logs !== config.dump_errors_in_console_logs ||
 			localConfig.async_job_result_ttl !== config.async_job_result_ttl ||
 			(localConfig.extra_fields_placement ?? "body") !== (config.extra_fields_placement ?? "body") ||
+			!secretVarEquals(localConfig.bifrost_url, config.bifrost_url) ||
+			openAPIURL.trim() !== storedOpenAPIURL ||
 			!headerFilterConfigEqual(localConfig.header_filter_config, config.header_filter_config)
 		);
-	}, [config, localConfig]);
+	}, [config, localConfig, openAPIURL, storedOpenAPIURL]);
 
 	const hasLargePayloadChanges = useMemo(() => {
 		const baseline = serverLargePayloadConfig ?? DefaultLargePayloadConfig;
@@ -139,6 +151,13 @@ export default function ClientSettingsView() {
 
 	const hasSecurityHeaderError = invalidSecurityHeaders.length > 0;
 
+	// Checked on every render, not memoized, so a message follows a language switch.
+	const bifrostURLCheck = localConfig.bifrost_url ? bifrostUrlSchema.safeParse(localConfig.bifrost_url) : undefined;
+	const bifrostURLError = bifrostURLCheck && !bifrostURLCheck.success ? bifrostURLCheck.error.issues[0]?.message : undefined;
+	const openAPIURLCheck = openAPIUrlSchema.safeParse(openAPIURL);
+	const openAPIURLError = openAPIURLCheck.success ? undefined : openAPIURLCheck.error.issues[0]?.message;
+	const hasURLError = !!bifrostURLError || !!openAPIURLError;
+
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean | number | string[] | GlobalHeaderFilterConfig) => {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
@@ -150,6 +169,10 @@ export default function ClientSettingsView() {
 	const handleSave = useCallback(async () => {
 		// Defense in depth - don't save if security headers are present
 		if (hasSecurityHeaderError) {
+			return;
+		}
+		// The errors are shown beside their inputs.
+		if (hasURLError) {
 			return;
 		}
 
@@ -198,6 +221,7 @@ export default function ClientSettingsView() {
 				await updateCoreConfig({
 					...bifrostConfig!,
 					client_config: cleanedConfig,
+					framework_config: { ...bifrostConfig.framework_config, openapi_url: openAPIURL.trim() },
 				}).unwrap();
 				coreConfigSaved = true;
 			} catch (error) {
@@ -233,10 +257,12 @@ export default function ClientSettingsView() {
 	}, [
 		bifrostConfig,
 		hasSecurityHeaderError,
+		hasURLError,
 		hasCoreConfigChanges,
 		hasLargePayloadChanges,
 		localConfig,
 		localLargePayloadConfig,
+		openAPIURL,
 		t,
 		updateCoreConfig,
 		updateLargePayloadConfig,
@@ -443,6 +469,56 @@ export default function ClientSettingsView() {
 						data-testid="client-settings-async-job-result-ttl-input"
 					/>
 				</div>
+			</div>
+
+			{/* Bifrost URL */}
+			<div className="space-y-2 rounded-sm border p-4" data-testid="client-settings-bifrost-url">
+				<label htmlFor="bifrost-url" className="text-sm font-medium">
+					{t("clientSettings.bifrostUrl")}
+				</label>
+				<p className="text-muted-foreground text-sm">
+					<Trans t={t} i18nKey="clientSettings.bifrostUrlHelp" components={{ code0: <code className="text-xs" /> }} />
+				</p>
+				<SecretVarInput
+					id="bifrost-url"
+					data-testid="client-settings-bifrost-url-input"
+					placeholder={t("clientSettings.bifrostUrlPlaceholder")}
+					value={localConfig.bifrost_url}
+					onChange={(value: SecretVar) => setLocalConfig((prev) => ({ ...prev, bifrost_url: value }))}
+					disabled={!hasSettingsUpdateAccess}
+					aria-invalid={!!bifrostURLError}
+					aria-describedby={bifrostURLError ? "bifrost-url-error" : undefined}
+				/>
+				{bifrostURLError && (
+					<p id="bifrost-url-error" className="text-destructive text-sm" data-testid="client-settings-bifrost-url-error">
+						{bifrostURLError}
+					</p>
+				)}
+			</div>
+
+			{/* OpenAPI URL: the spec /v1/mcp builds its tools from (framework config) */}
+			<div className="space-y-2 rounded-sm border p-4" data-testid="client-settings-openapi-url">
+				<label htmlFor="openapi-url" className="text-sm font-medium">
+					{t("clientSettings.openapiUrl")}
+				</label>
+				<p className="text-muted-foreground text-sm">
+					<Trans t={t} i18nKey="clientSettings.openapiUrlHelp" components={{ code0: <code className="text-xs" /> }} />
+				</p>
+				<Input
+					id="openapi-url"
+					data-testid="client-settings-openapi-url-input"
+					placeholder={t("clientSettings.openapiUrlPlaceholder")}
+					value={openAPIURL}
+					onChange={(e) => setOpenAPIURL(e.target.value)}
+					disabled={!hasSettingsUpdateAccess}
+					aria-invalid={!!openAPIURLError}
+					aria-describedby={openAPIURLError ? "openapi-url-error" : undefined}
+				/>
+				{openAPIURLError && (
+					<p id="openapi-url-error" className="text-destructive text-sm" data-testid="client-settings-openapi-url-error">
+						{openAPIURLError}
+					</p>
+				)}
 			</div>
 
 			<UserAgentMappingsView disabled={isLoading || !hasSettingsUpdateAccess} />
@@ -689,7 +765,11 @@ export default function ClientSettingsView() {
 						</TooltipContent>
 					</Tooltip>
 				) : (
-					<Button onClick={handleSave} disabled={!hasChanges || isLoading || isQueriesLoading || !hasSettingsUpdateAccess}>
+					<Button
+						onClick={handleSave}
+						disabled={!hasChanges || hasURLError || isLoading || isQueriesLoading || !hasSettingsUpdateAccess}
+						data-testid="client-settings-save-btn"
+					>
 						{isLoading ? t("saving") : t("saveChanges")}
 					</Button>
 				)}
