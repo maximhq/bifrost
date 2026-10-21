@@ -4,9 +4,11 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/exa"
@@ -257,6 +259,36 @@ func TestFetch_TurnsAFailedPageIntoAnError(t *testing.T) {
 	}
 	if bifrostErr.Type == nil || *bifrostErr.Type != "CRAWL_NOT_FOUND" {
 		t.Fatalf("type = %v, want Exa's tag", bifrostErr.Type)
+	}
+}
+
+// The page's own status is evidence about the page, not about Exa. Only a missing page is a
+// 404 here; a page that answered 401 or 429 upstream must not read as an Exa credential or
+// rate-limit failure, so it is a 502 with the page status kept in the message.
+func TestFetch_PageStatusIsNotTheProviderStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		pageStatus int
+		want       int
+	}{
+		{"not found", http.StatusNotFound, http.StatusNotFound},
+		{"gone", http.StatusGone, http.StatusNotFound},
+		{"unauthorized upstream", http.StatusUnauthorized, http.StatusBadGateway},
+		{"rate limited upstream", http.StatusTooManyRequests, http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"results":[],"statuses":[{"id":"https://example.com/page","status":"error","error":{"tag":"CRAWL_FAILED","httpStatusCode":%d}}],"costDollars":{"total":0}}`, tc.pageStatus)
+			provider := newTestExaProvider(t, newExaServer(t, http.StatusOK, body, false, nil).URL)
+
+			_, bifrostErr := provider.Fetch(newCtx(), testKey, &schemas.BifrostFetchRequest{Provider: schemas.Exa, URL: "https://example.com/page"})
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.want {
+				t.Fatalf("error = %+v, want a %d", bifrostErr, tc.want)
+			}
+			wantStatus := fmt.Sprintf("(page status %d)", tc.pageStatus)
+			if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, wantStatus) {
+				t.Fatalf("message = %+v, want it to carry %q", bifrostErr.Error, wantStatus)
+			}
+		})
 	}
 }
 

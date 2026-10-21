@@ -1,3 +1,4 @@
+- [fix]: a crawled page Exa could not read stays a failed Fetch, keeping the page's own status in the message instead of surfacing as an Exa credential or rate-limit failure [@jimaldon](https://github.com/jimaldon)
 - [feat]: Exa provider for Search (`/search`) and Fetch (`/contents`), priced at Exa's reported cost [@Radiergummi](https://github.com/Radiergummi)
 - [fix]: decode DeepSeek tools responses into an owned body, including compressed ones [@Radiergummi](https://github.com/Radiergummi)
 - [feat]: Search takes one provider-neutral request and result shape [@Radiergummi](https://github.com/Radiergummi)

@@ -23,8 +23,8 @@ DeepSeek is a provider with a dedicated Bifrost provider implementation. By defa
 | Responses API | ✅ | ✅ | `/chat/completions` (via Chat Completions fallback) | `/anthropic/v1/messages` |
 | Text Completions | ✅ | ✅ | `/beta/completions` | `/beta/completions` (unaffected) |
 | List Models | ✅ | - | `/models` | `/models` (unaffected) |
-| Web Search | ✅ | - | `/tools/search` | `/tools/search` (unaffected) |
-| Page Fetch | ✅ | - | `/tools/fetch` | `/tools/fetch` (unaffected) |
+| Web Search | ✅ | - | `/v1/tools/search` | `/v1/tools/search` (unaffected) |
+| Page Fetch | ✅ | - | `/v1/tools/fetch` | `/v1/tools/fetch` (unaffected) |
 | Embeddings | ❌ | ❌ | - | - |
 | Image Generation | ❌ | ❌ | - | - |
 | Speech (TTS) | ❌ | ❌ | - | - |
@@ -84,8 +84,10 @@ Search and Fetch are billed at a flat **$0.75 per 1,000 successful requests** ea
 counted per request rather than per result, with nothing billed on failure or an empty
 result set. Bifrost reports that cost on each response, so it appears in logs and
 governance budgets without a model catalog entry. Search and Fetch are rate limited
-**separately at 5 QPS per DeepSeek account, across all keys**; a `429` means that cap was
-hit, and a `402` means the account needs a top-up rather than a retry.
+**separately at 5 QPS per DeepSeek account, across all keys**, and Fetch also answers a `429`
+when it exceeds a target domain's own QPS limit, so a `429` on either route means the caller
+was throttled upstream — by the account cap, or on Fetch by that domain — and a `402` means
+the account needs a top-up rather than a retry.
 </Pricing>
 
 ## Setup & Configuration

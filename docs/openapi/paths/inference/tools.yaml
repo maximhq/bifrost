@@ -7,8 +7,10 @@ tools-search:
       for every provider.
 
       This is a web call, not an inference call: it carries no model upstream and is priced
-      per request from the cost the provider reports. Omit `model` and the gateway routes to
-      DeepSeek; a `model` is accepted only as a routing handle for virtual-key allowlists.
+      per request. The charge is the cost the provider reports when it reports one, and the
+      model catalog's per-request price otherwise; a search that returns no results is free.
+      Omit `model` and the gateway routes to DeepSeek; a `model` is accepted only as a
+      routing handle for virtual-key allowlists.
     tags:
     - Web Tools
     requestBody:
@@ -52,12 +54,14 @@ tools-fetch:
     operationId: fetchPage
     summary: Fetch a page as Markdown
     description: |
-      Retrieves a single page through DeepSeek's Fetch API and returns its content as
-      Markdown. Billed at a flat rate per successful request.
+      Retrieves a single page through the routed provider and returns its content as
+      Markdown. Priced per request from the cost the provider reports when it reports one,
+      and from the model catalog otherwise. Omit `model` to route to DeepSeek; a `model` is
+      accepted only as a routing handle for virtual-key allowlists.
 
-      The page is read by DeepSeek's servers, not by Bifrost, so the gateway's
-      private-network safeguards do not apply. A URL rejected by DeepSeek's security policy
-      surfaces as a 403.
+      The page is read by the provider's servers, not by Bifrost, so the gateway's
+      private-network safeguards do not apply. A URL rejected by the provider's security
+      policy surfaces as a 403.
     tags:
     - Web Tools
     requestBody:
@@ -96,7 +100,8 @@ tools-fetch:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '429':
-        description: The 5 QPS per-account fetch limit was exceeded.
+        description: The provider's rate limit was exceeded. DeepSeek answers 429 for its
+          5 QPS per-account Fetch cap and for a target domain's own limit.
         content:
           application/json:
             schema:

@@ -2,6 +2,7 @@ package exa
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -128,15 +129,22 @@ func (provider *ExaProvider) Fetch(ctx *schemas.BifrostContext, key schemas.Key,
 		if status.Status != "error" {
 			continue
 		}
-		statusCode, tag := fasthttp.StatusBadGateway, "unknown"
+		// Exa answers 200 and reports the page's own failure in statuses, so the page's status
+		// is not this call's status: a page that answered 401 or 429 upstream says nothing
+		// about Exa credentials or rate limits. It stays in the message, only a missing page
+		// maps to 404, and everything else is a bad gateway.
+		statusCode, tag, pageStatus := fasthttp.StatusBadGateway, "unknown", ""
 		if status.Error != nil {
 			tag = status.Error.Tag
-			if status.Error.HTTPStatusCode != nil {
-				statusCode = *status.Error.HTTPStatusCode
+			if code := status.Error.HTTPStatusCode; code != nil {
+				pageStatus = " (page status " + strconv.Itoa(*code) + ")"
+				if *code == fasthttp.StatusNotFound || *code == fasthttp.StatusGone {
+					statusCode = fasthttp.StatusNotFound
+				}
 			}
 		}
 		return nil, providerUtils.SetErrorLatency(
-			providerUtils.NewProviderAPIError("exa could not fetch "+status.ID+": "+tag, nil, statusCode, schemas.Ptr(tag), nil),
+			providerUtils.NewProviderAPIError("exa could not fetch "+status.ID+": "+tag+pageStatus, nil, statusCode, schemas.Ptr(tag), nil),
 			latency,
 		)
 	}
