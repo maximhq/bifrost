@@ -25,6 +25,12 @@ ARM64_DIGEST=$(docker manifest inspect "${IMAGE}:v${VERSION}-arm64" | jq -er '.m
 echo "AMD64 digest: ${AMD64_DIGEST}"
 echo "ARM64 digest: ${ARM64_DIGEST}"
 
+# The workflow attests these inner platform manifests as well as the index it
+# builds from them, so a pull by platform digest verifies too.
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  printf 'amd64-digest=%s\narm64-digest=%s\n' "${AMD64_DIGEST}" "${ARM64_DIGEST}" >> "$GITHUB_OUTPUT"
+fi
+
 # Create manifest for versioned tag using digests
 docker manifest create \
     "${IMAGE}:v${VERSION}" \

@@ -203,6 +203,48 @@ func TestPersonalTokensAreRejected(t *testing.T) {
 	}
 }
 
+// TestRegistryPushesCarryProvenance rejects an image push without a signed digest attestation.
+func TestRegistryPushesCarryProvenance(t *testing.T) {
+	d := releaseFixture()
+	job := d.Jobs["docker-publish"]
+	job.Steps = append(job.Steps, workflows.Step{Uses: "step-security/docker-login-action@" + strings.Repeat("a", 40)})
+	d.Jobs["docker-publish"] = job
+	if failures := check(d, "release-pipeline.yml"); len(failures) != 0 {
+		t.Fatal("a login alone is not a push:", failures)
+	}
+	for name, step := range map[string]workflows.Step{
+		"build-push action": {Uses: "step-security/docker-build-push-action@" + strings.Repeat("a", 40), With: map[string]any{"push": true}},
+		"docker push":       {Run: "docker push docker.io/maximhq/bifrost:v1"},
+		"manifest push":     {Run: "./scripts/manifest.sh && docker manifest push x"},
+		"buildx --push":     {Run: "docker buildx build --platform linux/amd64 --push -t x ."},
+		"imagetools mirror": {Run: "docker buildx imagetools create --tag ghcr.io/x/y:1 docker.io/x/y:1"},
+		"helm push":         {Run: "helm push chart.tgz oci://ghcr.io/maximhq/helm-charts"},
+	} {
+		d := releaseFixture()
+		job := d.Jobs["docker-publish"]
+		job.Steps = append(job.Steps, step)
+		d.Jobs["docker-publish"] = job
+		if len(check(d, "helm-release.yml")) == 0 {
+			t.Errorf("accepted %s without provenance", name)
+		}
+	}
+	job.Steps = append(job.Steps, workflows.Step{Run: "docker push docker.io/maximhq/bifrost:v1"})
+	d.Jobs["docker-publish"] = job
+	if len(check(d, "release-pipeline.yml")) == 0 {
+		t.Fatal("accepted a registry push without provenance")
+	}
+	job.Steps = append(job.Steps, workflows.Step{Uses: "actions/attest-build-provenance@" + strings.Repeat("a", 40), With: map[string]any{"subject-path": "dist/release.json"}})
+	d.Jobs["docker-publish"] = job
+	if len(check(d, "release-pipeline.yml")) == 0 {
+		t.Fatal("accepted an attestation that does not name the pushed digest")
+	}
+	job.Steps[len(job.Steps)-1].With = map[string]any{"subject-name": "index.docker.io/maximhq/bifrost", "subject-digest": "${{ steps.build.outputs.digest }}"}
+	d.Jobs["docker-publish"] = job
+	if failures := check(d, "release-pipeline.yml"); len(failures) != 0 {
+		t.Fatal(failures)
+	}
+}
+
 // TestPublishSecretsNeedReleaseEnvironmentEverywhere applies to every workflow, not only the pipeline.
 func TestPublishSecretsNeedReleaseEnvironmentEverywhere(t *testing.T) {
 	d := fixture("step-security/harden-runner@" + strings.Repeat("a", 40))

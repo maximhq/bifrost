@@ -19,6 +19,12 @@ IMAGE="${REGISTRY}/${ACCOUNT}/${IMAGE_NAME}"
 AMD64_DIGEST=$(docker manifest inspect "${IMAGE}:v${VERSION}-ubi9-amd64" | jq -er '.manifests[] | select(.platform.architecture == "amd64") | .digest')
 ARM64_DIGEST=$(docker manifest inspect "${IMAGE}:v${VERSION}-ubi9-arm64" | jq -er '.manifests[] | select(.platform.architecture == "arm64") | .digest')
 
+# The workflow attests these inner platform manifests as well as the index it
+# builds from them, so a pull by platform digest verifies too.
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  printf 'amd64-digest=%s\narm64-digest=%s\n' "${AMD64_DIGEST}" "${ARM64_DIGEST}" >> "$GITHUB_OUTPUT"
+fi
+
 echo "UBI9 AMD64 digest: ${AMD64_DIGEST}"
 echo "UBI9 ARM64 digest: ${ARM64_DIGEST}"
 

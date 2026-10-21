@@ -3393,6 +3393,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: oss-release
     permissions:
+      id-token: write
+      attestations: write
       contents: write
       packages: write
     env:
@@ -3405,6 +3407,11 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
             auth.docker.io:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
@@ -3467,6 +3474,7 @@ jobs:
           echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push AMD64 Docker image
+        id: build
         uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
         with:
           context: .
@@ -3476,6 +3484,15 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/amd64
+
+      # Signed SLSA provenance for the exact digest just pushed, recorded in the
+      # repository attestation store. Verify any pull with:
+      #   gh attestation verify oci://index.docker.io/maximhq/bifrost:<tag> --owner maximhq
+      - name: Attest the pushed image digest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
 
       # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
       # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
@@ -3521,6 +3538,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     environment: oss-release
     permissions:
+      id-token: write
+      attestations: write
       contents: write
       packages: write
     env:
@@ -3533,6 +3552,11 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
             auth.docker.io:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
@@ -3595,6 +3619,7 @@ jobs:
           echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push ARM64 Docker image
+        id: build
         uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
         with:
           context: .
@@ -3604,6 +3629,15 @@ jobs:
             VERSION=${{ needs.detect-changes.outputs.transport-version }}
           tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/arm64
+
+      # Signed SLSA provenance for the exact digest just pushed, recorded in the
+      # repository attestation store. Verify any pull with:
+      #   gh attestation verify oci://index.docker.io/maximhq/bifrost:<tag> --owner maximhq
+      - name: Attest the pushed image digest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
 
       # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
       # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
@@ -3622,6 +3656,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: oss-release
     permissions:
+      id-token: write
+      attestations: write
       contents: read
       packages: write
     env:
@@ -3634,6 +3670,11 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
             auth.docker.io:443
             ghcr.io:443
             github.com:443
@@ -3664,8 +3705,37 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and push multi-arch manifest
+        id: platforms
         run: |
           ./.github/workflows/scripts/create-docker-manifest.sh "${{ needs.detect-changes.outputs.transport-version }}"
+
+      - name: Attest the amd64 platform manifest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.platforms.outputs.amd64-digest }}
+
+      - name: Attest the arm64 platform manifest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.platforms.outputs.arm64-digest }}
+
+      - name: Resolve the multi-arch manifest digest
+        id: manifest
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}
+          VERSION: ${{ needs.detect-changes.outputs.transport-version }}
+        run: |
+          DIGEST="$(docker buildx imagetools inspect "${IMAGE}:v${VERSION}" --format '{{.Manifest.Digest}}')"
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::could not resolve the manifest digest"; exit 1; }
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the multi-arch manifest digest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
 
   # Docker build UBI9 amd64
   docker-build-ubi9-amd64:
@@ -3701,6 +3771,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: oss-release
     permissions:
+      id-token: write
+      attestations: write
       contents: write
       packages: write
     env:
@@ -3713,6 +3785,11 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
             auth.docker.io:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
@@ -3777,6 +3854,7 @@ jobs:
           echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push UBI9 AMD64 Docker image
+        id: build
         uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
         with:
           context: .
@@ -3788,6 +3866,15 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha,scope=docker-ubi9-amd64
           cache-to: type=gha,mode=max,scope=docker-ubi9-amd64
+
+      # Signed SLSA provenance for the exact digest just pushed, recorded in the
+      # repository attestation store. Verify any pull with:
+      #   gh attestation verify oci://index.docker.io/maximhq/bifrost:<tag> --owner maximhq
+      - name: Attest the pushed image digest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
 
       # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
       # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
@@ -3833,6 +3920,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     environment: oss-release
     permissions:
+      id-token: write
+      attestations: write
       contents: write
       packages: write
     env:
@@ -3845,6 +3934,11 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
             auth.docker.io:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
@@ -3909,6 +4003,7 @@ jobs:
           echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push UBI9 ARM64 Docker image
+        id: build
         uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
         with:
           context: .
@@ -3920,6 +4015,15 @@ jobs:
           platforms: linux/arm64
           cache-from: type=gha,scope=docker-ubi9-arm64
           cache-to: type=gha,mode=max,scope=docker-ubi9-arm64
+
+      # Signed SLSA provenance for the exact digest just pushed, recorded in the
+      # repository attestation store. Verify any pull with:
+      #   gh attestation verify oci://index.docker.io/maximhq/bifrost:<tag> --owner maximhq
+      - name: Attest the pushed image digest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
 
       # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
       # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
@@ -3938,6 +4042,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: oss-release
     permissions:
+      id-token: write
+      attestations: write
       contents: read
       packages: write
     env:
@@ -3950,6 +4056,11 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
             auth.docker.io:443
             ghcr.io:443
             github.com:443
@@ -3980,8 +4091,37 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and push UBI9 multi-arch manifest
+        id: platforms
         run: |
           ./.github/workflows/scripts/create-docker-manifest-ubi9.sh "${{ needs.detect-changes.outputs.transport-version }}"
+
+      - name: Attest the amd64 platform manifest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.platforms.outputs.amd64-digest }}
+
+      - name: Attest the arm64 platform manifest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.platforms.outputs.arm64-digest }}
+
+      - name: Resolve the multi-arch manifest digest
+        id: manifest
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}
+          VERSION: ${{ needs.detect-changes.outputs.transport-version }}
+        run: |
+          DIGEST="$(docker buildx imagetools inspect "${IMAGE}:v${VERSION}-ubi9" --format '{{.Manifest.Digest}}')"
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::could not resolve the manifest digest"; exit 1; }
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the multi-arch manifest digest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
 
   # Push Mintlify changelog
   push-mintlify-changelog:
