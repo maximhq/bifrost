@@ -20,6 +20,8 @@ jobs:
     permissions:
       contents: write
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -28,6 +30,10 @@ jobs:
           allowed-endpoints: >
             api.github.com:443
             auth.docker.io:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            tuf-repo.github.com:443
             get.helm.sh:443
             ghcr.io:443
             github.com:443
@@ -158,11 +164,33 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Attest the released chart archive
+        if: steps.check-release.outputs.exists == 'false'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: helm-charts/bifrost-${{ steps.chart-version.outputs.version }}.tgz
+
       - name: Push Helm chart as OCI artifact to GHCR
+        id: chart-push
         if: steps.check-release.outputs.exists == 'false'
         continue-on-error: true
+        env:
+          CHART: helm-charts/bifrost-${{ steps.chart-version.outputs.version }}.tgz
         run: |
-          helm push helm-charts/bifrost-${{ steps.chart-version.outputs.version }}.tgz oci://ghcr.io/maximhq/helm-charts
+          set -o pipefail
+          helm push "$CHART" oci://ghcr.io/maximhq/helm-charts 2>&1 | tee "$RUNNER_TEMP/helm-push.log"
+          digest="$(sed -n 's/^Digest: //p' "$RUNNER_TEMP/helm-push.log" | tr -d '[:space:]')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::helm push printed no digest"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      # Signed provenance for the OCI chart, verifiable with:
+      #   gh attestation verify oci://ghcr.io/maximhq/helm-charts/bifrost:<version> --owner maximhq
+      - name: Attest the pushed chart digest
+        if: steps.chart-push.outputs.digest != ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/maximhq/helm-charts/bifrost
+          subject-digest: ${{ steps.chart-push.outputs.digest }}
 
       # - name: Push Helm chart as OCI artifact to Docker Hub
       #   if: steps.check-release.outputs.exists == 'false'

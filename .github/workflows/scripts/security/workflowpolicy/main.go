@@ -109,6 +109,9 @@ func check(document workflows.Workflow, filename string) []string {
 		if filename == "release-pipeline.yml" && environment == "oss-release" && (!slices.Contains(workflows.Needs(job), releaseGate) || !strings.HasPrefix(job.If, releaseGatePrefix)) {
 			failures = append(failures, name+": oss-release publishers must wait for "+releaseGate)
 		}
+		if pushesImages(job) && !attests(job) {
+			failures = append(failures, name+": every pushed registry artifact must carry signed provenance")
+		}
 		if filename == "release-pipeline.yml" && name == releaseGate {
 			if environment != releaseGateEnvironment {
 				failures = append(failures, name+": must use the "+releaseGateEnvironment+" environment")
@@ -166,6 +169,32 @@ func check(document workflows.Workflow, filename string) []string {
 		}
 	}
 	return failures
+}
+
+// registryPush matches shell steps that publish to a registry, whichever tool they use.
+var registryPush = regexp.MustCompile(`(?m)\b(docker (push|manifest push)|buildx (build|imagetools create)\b[^\n]*--push|imagetools create|helm push|oras push|crane (push|copy))\b`)
+
+// pushesImages is true for any job that publishes an image, manifest, or chart to a registry.
+func pushesImages(job workflows.Job) bool {
+	for _, step := range job.Steps {
+		if strings.Contains(step.Uses, "docker-build-push-action@") && workflows.String(step.With, "push") == "true" {
+			return true
+		}
+		if registryPush.MatchString(step.Run) {
+			return true
+		}
+	}
+	return false
+}
+
+// attests is true when the job records signed provenance for what it pushed.
+func attests(job workflows.Job) bool {
+	for _, step := range job.Steps {
+		if strings.HasPrefix(step.Uses, "actions/attest-build-provenance@") && workflows.String(step.With, "subject-digest") != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // run scans the full workflow directory and reports all violations together.
