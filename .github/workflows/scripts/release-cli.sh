@@ -23,15 +23,9 @@ TAG_NAME="cli/v${VERSION}"
 
 echo "🚀 Releasing bifrost CLI v$VERSION..."
 
-# Validate CLI build
-echo "🔨 Validating CLI build..."
-COMMIT="${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || echo 'unknown')}"
-(cd "$REPO_ROOT/cli" && go build -ldflags "-X main.version=v${VERSION} -X main.commit=${COMMIT}" ./...)
-echo "✅ CLI build validation successful"
-
-# Build CLI executables
-echo "🔨 Building executables..."
-bash "$SCRIPT_DIR/build-cli-executables.sh" "$VERSION"
+# The publisher consumes only the independently rebuilt, verified inventory.
+bash "$SCRIPT_DIR/verify-release-source.sh"
+bash "$SCRIPT_DIR/run-security-tool.sh" releaseartifacts verify "$REPO_ROOT/dist" cli "$VERSION" "$GITHUB_SHA"
 
 # --- Preflight checks (no side effects) ---
 
@@ -81,6 +75,13 @@ if [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
   exit 1
 fi
 
+if git rev-parse -q --verify "refs/tags/$TAG_NAME" >/dev/null; then
+  if [[ "$(git rev-parse "$TAG_NAME^{commit}")" != "$GITHUB_SHA" ]]; then
+    echo "Existing release tag points at a different source commit" >&2
+    exit 1
+  fi
+fi
+
 # --- Publish steps (all checks passed) ---
 
 # Configure and upload to R2
@@ -94,7 +95,7 @@ if git rev-parse -q --verify "refs/tags/$TAG_NAME" >/dev/null; then
 else
   echo "🏷️ Creating tag: $TAG_NAME"
   git tag "$TAG_NAME" -m "Release CLI v$VERSION" -m "$CHANGELOG_BODY"
-  git push origin "$TAG_NAME"
+  git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push origin "$TAG_NAME"
 fi
 
 # Create GitHub release
@@ -114,7 +115,7 @@ $CHANGELOG_BODY
 
 #### Binary Download
 \`\`\`bash
-npx @maximhq/bifrost --cli-version v$VERSION
+npx @maximhq/bifrost-cli --cli-version v$VERSION
 \`\`\`
 
 ---

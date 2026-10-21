@@ -45,7 +45,7 @@ for platform in "${platforms[@]}"; do
 
   # CLI has no CGO dependencies, so we can cross-compile without cross-compilers
   env GOWORK=off CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-    go build -trimpath \
+    go build -mod=readonly -trimpath \
     -ldflags "-s -w -buildid= -X main.version=v${VERSION} -X main.commit=${COMMIT}" \
     -o "$PROJECT_ROOT/dist/$GOOS/$GOARCH/$output_name" .
 
