@@ -277014,57 +277014,6 @@
               ]
             }
           ]
-        },
-        {
-          "name": "263.3 Count tokens (/v1/responses/input_tokens)",
-          "description": "Token counting routes to Tencent's Anthropic-compatible /v1/messages/count_tokens endpoint and returns input_tokens.",
-          "item": [
-            {
-              "name": "tencent/deepseek-v4-flash count tokens",
-              "request": {
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "body": {
-                  "mode": "raw",
-                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-flash\",\n  \"input\": \"Count my tokens\"\n}"
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/v1/responses/input_tokens",
-                  "host": [
-                    "{{baseUrl}}"
-                  ],
-                  "path": [
-                    "v1",
-                    "responses",
-                    "input_tokens"
-                  ]
-                }
-              },
-              "event": [
-                {
-                  "listen": "test",
-                  "script": {
-                    "type": "text/javascript",
-                    "exec": [
-                      "pm.test('tencent: count tokens succeeds', function () {",
-                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
-                      "});",
-                      "pm.test('tencent: returns input_tokens', function () {",
-                      "  var body = pm.response.json();",
-                      "  pm.expect(body.input_tokens, 'input_tokens: ' + JSON.stringify(body)).to.be.a('number').and.be.above(0);",
-                      "});"
-                    ]
-                  }
-                }
-              ]
-            }
-          ]
-
         }
       ]
     }

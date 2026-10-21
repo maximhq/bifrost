@@ -23,7 +23,7 @@ Tencent TokenHub is a **dual-protocol provider**: it exposes an OpenAI-compatibl
 | Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
 | Chat Completions (Anthropic mode) | ✅ | ✅ | `/v1/messages` |
 | Responses API | ✅ | ✅ | `/v1/chat/completions`, `/v1/messages` |
-| Count Tokens | ✅ | - | `/v1/messages/count_tokens` |
+| Count Tokens | ❌ | - | - |
 | List Models | ✅ | - | `/v1/models` |
 | Text Completions | ❌ | ❌ | - |
 | Embeddings | ❌ | ❌ | - |
@@ -157,7 +157,7 @@ Streaming Responses requests follow the same routing.
 
 # 3. Count Tokens
 
-Token counting uses Tencent TokenHub's Anthropic-compatible `/v1/messages/count_tokens` endpoint. This is available regardless of the key's chat routing mode.
+Tencent TokenHub does not serve an Anthropic-compatible `/v1/messages/count_tokens` endpoint; the path returns a plain 404 on the same host that serves `/v1/messages`. Token counting is therefore unsupported.
 
 ---
 

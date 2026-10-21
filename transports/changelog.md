@@ -1,6 +1,6 @@
 ## ✨ Features
 
-- **Tencent TokenHub Provider** - `tencent` (Tencent TokenHub) is registered as a provider key and base provider type in `config.schema.json` and serves OpenAI-compatible chat, streaming, tool calls, Responses and token counting, with optional Anthropic-compatible `/v1/messages` routing (#7124)
+- **Tencent TokenHub Provider** - `tencent` (Tencent TokenHub) is registered as a provider key and base provider type in `config.schema.json` and serves OpenAI-compatible chat, streaming, tool calls and Responses, with optional Anthropic-compatible `/v1/messages` routing (#7124)
 
 ## 🔒 Security
 

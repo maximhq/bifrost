@@ -1042,7 +1042,7 @@
       "text_completion": false,
       "responses": true,
       "responses_with_tools": true,
-      "count_tokens": true,
+      "count_tokens": false,
       "embedding": false,
       "speech": false,
       "transcription": false,
