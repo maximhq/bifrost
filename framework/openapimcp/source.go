@@ -15,8 +15,30 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ErrSpecTooLarge is returned when a spec exceeds MaxSpecBytes.
-var ErrSpecTooLarge = fmt.Errorf("openapi spec exceeds %d bytes", MaxSpecBytes)
+// ErrSpecTooLarge is returned when a spec exceeds its size limit: MaxSpecBytes,
+// or the limit the caller passed to a *Limit variant. errors.Is matches it
+// whatever the limit was.
+var ErrSpecTooLarge error = specTooLargeError{limit: MaxSpecBytes}
+
+// specTooLargeError names the limit a spec exceeded.
+type specTooLargeError struct{ limit int }
+
+func (e specTooLargeError) Error() string {
+	return fmt.Sprintf("openapi spec exceeds %d bytes", e.limit)
+}
+
+func (e specTooLargeError) Is(target error) bool {
+	_, ok := target.(specTooLargeError)
+	return ok
+}
+
+// specLimit resolves a caller's size limit, 0 or less taking MaxSpecBytes.
+func specLimit(maxBytes int) int {
+	if maxBytes <= 0 {
+		return MaxSpecBytes
+	}
+	return maxBytes
+}
 
 // ErrSpecURLInvalid marks a spec_url that cannot be fetched no matter how often
 // it is retried (wrong scheme, malformed URL).
@@ -27,11 +49,17 @@ const defaultFetchTimeout = 15 * time.Second
 
 // LoadBytes accepts a spec supplied as text (paste, upload, inline config).
 func LoadBytes(data []byte) ([]byte, error) {
+	return LoadBytesLimit(data, 0)
+}
+
+// LoadBytesLimit is LoadBytes with a size limit (0 = MaxSpecBytes).
+func LoadBytesLimit(data []byte, maxBytes int) ([]byte, error) {
+	limit := specLimit(maxBytes)
 	if len(strings.TrimSpace(string(data))) == 0 {
 		return nil, errors.New("openapi spec is empty")
 	}
-	if len(data) > MaxSpecBytes {
-		return nil, ErrSpecTooLarge
+	if len(data) > limit {
+		return nil, specTooLargeError{limit: limit}
 	}
 	return data, nil
 }
@@ -42,6 +70,12 @@ func LoadBytes(data []byte) ([]byte, error) {
 // and the read itself is capped, so a special file or one that grows after the
 // size check cannot block or exhaust memory.
 func LoadFile(path, baseDir string) ([]byte, error) {
+	return LoadFileLimit(path, baseDir, 0)
+}
+
+// LoadFileLimit is LoadFile with a size limit (0 = MaxSpecBytes).
+func LoadFileLimit(path, baseDir string, maxBytes int) ([]byte, error) {
+	limit := specLimit(maxBytes)
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, errors.New("spec_file is empty")
@@ -81,22 +115,19 @@ func LoadFile(path, baseDir string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("spec_file %q is not a regular file", path)
 	}
-	if info.Size() > MaxSpecBytes {
-		return nil, ErrSpecTooLarge
+	if info.Size() > int64(limit) {
+		return nil, specTooLargeError{limit: limit}
 	}
 	f, err := os.Open(full)
 	if err != nil {
 		return nil, fmt.Errorf("spec_file %q: %w", path, err)
 	}
 	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, int64(MaxSpecBytes)+1))
+	data, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
 	if err != nil {
 		return nil, fmt.Errorf("spec_file %q: %w", path, err)
 	}
-	if len(data) > MaxSpecBytes {
-		return nil, ErrSpecTooLarge
-	}
-	return LoadBytes(data)
+	return LoadBytesLimit(data, limit)
 }
 
 // withinDir reports whether path is dir or lies under it.
@@ -111,6 +142,12 @@ func withinDir(dir, path string) bool {
 // returns the document's final URL after redirects, which is what relative
 // servers resolve against.
 func LoadURL(ctx context.Context, client *http.Client, specURL string) ([]byte, string, error) {
+	return LoadURLLimit(ctx, client, specURL, 0)
+}
+
+// LoadURLLimit is LoadURL with a size limit (0 = MaxSpecBytes).
+func LoadURLLimit(ctx context.Context, client *http.Client, specURL string, maxBytes int) ([]byte, string, error) {
+	limit := specLimit(maxBytes)
 	specURL = strings.TrimSpace(specURL)
 	if specURL == "" {
 		return nil, "", errors.New("spec_url is empty")
@@ -146,18 +183,15 @@ func LoadURL(ctx context.Context, client *http.Client, specURL string) ([]byte, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, "", fmt.Errorf("fetching spec_url: upstream returned HTTP %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(MaxSpecBytes)+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return nil, "", fmt.Errorf("reading spec_url body: %w", err)
-	}
-	if len(data) > MaxSpecBytes {
-		return nil, "", ErrSpecTooLarge
 	}
 	finalURL := specURL
 	if resp.Request != nil && resp.Request.URL != nil {
 		finalURL = resp.Request.URL.String()
 	}
-	data, err = LoadBytes(data)
+	data, err = LoadBytesLimit(data, limit)
 	return data, finalURL, err
 }
 
@@ -167,6 +201,12 @@ func LoadURL(ctx context.Context, client *http.Client, specURL string) ([]byte, 
 // and the URL relative servers resolve against: the fetched document's final
 // URL, or spec_url as given for the other sources.
 func ResolveSpec(ctx context.Context, cfg *schemas.MCPOpenAPIConfig, client *http.Client, baseDir string) ([]byte, string, string, error) {
+	return ResolveSpecLimit(ctx, cfg, client, baseDir, 0)
+}
+
+// ResolveSpecLimit is ResolveSpec with a size limit (0 = MaxSpecBytes) applied
+// to whichever source supplies the spec.
+func ResolveSpecLimit(ctx context.Context, cfg *schemas.MCPOpenAPIConfig, client *http.Client, baseDir string, maxBytes int) ([]byte, string, string, error) {
 	if cfg == nil {
 		return nil, "", "", errors.New("openapi_config is nil")
 	}
@@ -175,15 +215,15 @@ func ResolveSpec(ctx context.Context, cfg *schemas.MCPOpenAPIConfig, client *htt
 		specURL = strings.TrimSpace(*cfg.SpecURL)
 	}
 	if strings.TrimSpace(cfg.Spec) != "" {
-		data, err := LoadBytes([]byte(cfg.Spec))
+		data, err := LoadBytesLimit([]byte(cfg.Spec), maxBytes)
 		return data, "inline", specURL, err
 	}
 	if cfg.SpecFile != nil && strings.TrimSpace(*cfg.SpecFile) != "" {
-		data, err := LoadFile(*cfg.SpecFile, baseDir)
+		data, err := LoadFileLimit(*cfg.SpecFile, baseDir, maxBytes)
 		return data, "file", specURL, err
 	}
 	if specURL != "" {
-		data, finalURL, err := LoadURL(ctx, client, specURL)
+		data, finalURL, err := LoadURLLimit(ctx, client, specURL, maxBytes)
 		return data, "url", finalURL, err
 	}
 	return nil, "", "", errors.New("openapi_config has no spec, spec_file or spec_url")

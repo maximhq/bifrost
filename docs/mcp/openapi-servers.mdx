@@ -16,7 +16,7 @@ Most APIs you want an agent to use have an OpenAPI (or Swagger) document but no 
 The result is a regular MCP client in Bifrost. Everything that applies to other servers applies here too: tool filtering and auto-execute, pricing, virtual-key access, [code mode](/mcp/code-mode), the hosted `/mcp/<slug>` endpoint, and tool sync.
 
 <Info>
-Supported documents: **Swagger 2.0**, **OpenAPI 3.0**, **3.1** and **3.2**, as JSON or YAML, up to 5 MiB. Newer 3.x minor versions are parsed as 3.2 with a warning.
+Supported documents: **Swagger 2.0**, **OpenAPI 3.0**, **3.1** and **3.2**, as JSON or YAML, up to 32 MiB by default. Raise or lower the limit with **Max OpenAPI Spec Size** under **Settings > MCP Gateway**, or `client.mcp_openapi_max_spec_mb` in `config.json`. Newer 3.x minor versions are parsed as 3.2 with a warning.
 </Info>
 
 ## How operations become tools

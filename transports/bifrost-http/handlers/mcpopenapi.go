@@ -20,8 +20,20 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// openAPISpecFetchTimeout bounds a spec_url download made on a caller's behalf.
+// openAPISpecFetchTimeout bounds a spec_url download made on a caller's behalf
+// at the default size limit.
 const openAPISpecFetchTimeout = 15 * time.Second
+
+// openAPISpecFetchTimeoutFor scales openAPISpecFetchTimeout with the configured
+// size limit (0 = openapimcp's default), so a raised limit is not cut off by a
+// deadline sized for the default: 15s per 32 MiB, 2 minutes at the 256 MiB maximum.
+func openAPISpecFetchTimeoutFor(maxSpecBytes int) time.Duration {
+	steps := (maxSpecBytes + openapimcp.MaxSpecBytes - 1) / openapimcp.MaxSpecBytes
+	if steps < 1 {
+		steps = 1
+	}
+	return time.Duration(steps) * openAPISpecFetchTimeout
+}
 
 // MCPOpenAPIPreviewRequest is the body of POST /api/mcp/openapi/preview.
 type MCPOpenAPIPreviewRequest struct {
@@ -58,18 +70,19 @@ func (h *MCPHandler) previewOpenAPISpec(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "spec or spec_url is required")
 		return
 	}
+	maxSpecBytes := h.store.MCPOpenAPIMaxSpecBytes()
 	var data []byte
 	fetched := false
 	if spec != "" {
 		var err error
-		if data, err = openapimcp.LoadBytes([]byte(spec)); err != nil {
+		if data, err = openapimcp.LoadBytesLimit([]byte(spec), maxSpecBytes); err != nil {
 			SendError(ctx, openAPISpecErrorStatus(err), fmt.Sprintf("Invalid OpenAPI spec: %v", err))
 			return
 		}
 	} else {
 		var status int
 		var err error
-		if data, specURL, status, err = fetchOpenAPISpecForCaller(ctx, specURL); err != nil {
+		if data, specURL, status, err = fetchOpenAPISpecForCaller(ctx, specURL, maxSpecBytes); err != nil {
 			SendError(ctx, status, err.Error())
 			return
 		}
@@ -79,7 +92,7 @@ func (h *MCPHandler) previewOpenAPISpec(ctx *fasthttp.RequestCtx) {
 	if b := strings.TrimSpace(req.BaseURL); b != "" {
 		baseOverride = &b
 	}
-	result, _, err := openapimcp.Preview(data, openapimcp.ParseOptions{SpecURL: specURL}, openapimcp.SynthesizeOptions{ClientName: strings.TrimSpace(req.ClientName), IncludeDeprecated: req.IncludeDeprecated}, baseOverride)
+	result, _, err := openapimcp.Preview(data, openapimcp.ParseOptions{SpecURL: specURL, MaxBytes: maxSpecBytes}, openapimcp.SynthesizeOptions{ClientName: strings.TrimSpace(req.ClientName), IncludeDeprecated: req.IncludeDeprecated}, baseOverride)
 	if err != nil {
 		SendError(ctx, openAPISpecErrorStatus(err), fmt.Sprintf("Invalid OpenAPI spec: %v", err))
 		return
@@ -138,21 +151,23 @@ var (
 // download itself goes through the strict SSRF-safe client; an authenticated
 // admin may point at private hosts. Returns the document's final URL after
 // redirects (what relative servers resolve against) and, on error, the HTTP
-// status to answer with.
-func fetchOpenAPISpecForCaller(ctx *fasthttp.RequestCtx, specURL string) ([]byte, string, int, error) {
+// status to answer with. maxSpecBytes is the configured size limit (0 = openapimcp's).
+func fetchOpenAPISpecForCaller(ctx *fasthttp.RequestCtx, specURL string, maxSpecBytes int) ([]byte, string, int, error) {
 	authBypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	timeout := openAPISpecFetchTimeoutFor(maxSpecBytes)
 	var client *http.Client
 	if authBypassed {
 		if msg, refused := privateTargetRefusal(specURL); refused {
 			return nil, "", fasthttp.StatusForbidden, errors.New(msg)
 		}
-		client = newUnauthenticatedSpecClient(openAPISpecFetchTimeout)
+		client = newUnauthenticatedSpecClient(timeout)
 	} else {
-		client = newAuthenticatedSpecClient(openAPISpecFetchTimeout)
+		client = newAuthenticatedSpecClient(timeout)
 	}
-	fetchCtx, cancel := context.WithTimeout(context.Background(), openAPISpecFetchTimeout)
+	// Derived from the request context, so a server shutdown cancels the download.
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	data, finalURL, err := openapimcp.LoadURL(fetchCtx, client, specURL)
+	data, finalURL, err := openapimcp.LoadURLLimit(fetchCtx, client, specURL, maxSpecBytes)
 	if err != nil {
 		return nil, "", openAPISpecErrorStatus(err), fmt.Errorf("could not load spec_url: %w", err)
 	}
@@ -215,8 +230,9 @@ func perUserHeaderCredentialConflict(schemes map[string]openapimcp.SecuritySchem
 // inlines a spec_url document so the stored row carries the spec, resolves the
 // upstream base URL (subject to the public-target rule for unauthenticated
 // callers), and synthesizes the tool set. status is 0 on success. It writes
-// into cfg, so callers pass a block they own, never the live one.
-func prepareOpenAPIConfig(ctx *fasthttp.RequestCtx, clientName string, cfg *schemas.MCPOpenAPIConfig) (*preparedOpenAPIClient, int, string) {
+// into cfg, so callers pass a block they own, never the live one. maxSpecBytes
+// is the configured size limit (0 = openapimcp's).
+func prepareOpenAPIConfig(ctx *fasthttp.RequestCtx, clientName string, cfg *schemas.MCPOpenAPIConfig, maxSpecBytes int) (*preparedOpenAPIClient, int, string) {
 	if cfg == nil {
 		return nil, fasthttp.StatusBadRequest, "openapi_config is required for connection_type 'openapi'"
 	}
@@ -230,13 +246,13 @@ func prepareOpenAPIConfig(ctx *fasthttp.RequestCtx, clientName string, cfg *sche
 	var data []byte
 	if strings.TrimSpace(cfg.Spec) != "" {
 		var err error
-		if data, err = openapimcp.LoadBytes([]byte(cfg.Spec)); err != nil {
+		if data, err = openapimcp.LoadBytesLimit([]byte(cfg.Spec), maxSpecBytes); err != nil {
 			return nil, openAPISpecErrorStatus(err), fmt.Sprintf("Invalid openapi_config.spec: %v", err)
 		}
 	} else if specURL != "" {
 		var status int
 		var err error
-		if data, specURL, status, err = fetchOpenAPISpecForCaller(ctx, specURL); err != nil {
+		if data, specURL, status, err = fetchOpenAPISpecForCaller(ctx, specURL, maxSpecBytes); err != nil {
 			return nil, status, err.Error()
 		}
 		// The document is stored inline; its final URL (after redirects) is
@@ -256,7 +272,7 @@ func prepareOpenAPIConfig(ctx *fasthttp.RequestCtx, clientName string, cfg *sche
 			baseOverride = &trimmed
 		}
 	}
-	result, syn, err := openapimcp.Preview(data, openapimcp.ParseOptions{SpecURL: specURL}, openapimcp.SynthesizeOptions{ClientName: clientName, IncludeDeprecated: cfg.IncludeDeprecated}, baseOverride)
+	result, syn, err := openapimcp.Preview(data, openapimcp.ParseOptions{SpecURL: specURL, MaxBytes: maxSpecBytes}, openapimcp.SynthesizeOptions{ClientName: clientName, IncludeDeprecated: cfg.IncludeDeprecated}, baseOverride)
 	if err != nil {
 		return nil, openAPISpecErrorStatus(err), fmt.Sprintf("Invalid openapi_config.spec: %v", err)
 	}

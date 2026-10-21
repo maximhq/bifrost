@@ -1273,6 +1273,7 @@
 			"urlHelp": "Bifrost recupera il documento una volta e lo archivia con il server; l'URL viene conservato come origine.",
 			"chooseFile": "Scegli file",
 			"uploadHelp": "JSON o YAML, fino a {{size}}. Il file viene letto nel browser e archiviato con il server.",
+			"uploadHelpNoLimit": "JSON o YAML. Il file viene letto nel browser e archiviato con il server.",
 			"parsing": "Analisi del documento…",
 			"staleNotice": "L'URL o il nome del server è cambiato dopo il recupero del documento. Recuperalo di nuovo per aggiornare le operazioni qui sotto."
 		},

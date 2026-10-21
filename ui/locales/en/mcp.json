@@ -1273,6 +1273,7 @@
 			"urlHelp": "Bifrost fetches the document once and stores it with the server; the URL is kept as its source.",
 			"chooseFile": "Choose file",
 			"uploadHelp": "JSON or YAML, up to {{size}}. The file is read in your browser and stored with the server.",
+			"uploadHelpNoLimit": "JSON or YAML. The file is read in your browser and stored with the server.",
 			"parsing": "Parsing the document…",
 			"staleNotice": "The URL or server name changed since the document was fetched. Fetch it again to refresh the operations below."
 		},

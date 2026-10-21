@@ -1273,6 +1273,7 @@
 			"urlHelp": "O Bifrost obtém o documento uma vez e guarda-o com o servidor; o URL é mantido como a sua origem.",
 			"chooseFile": "Escolher ficheiro",
 			"uploadHelp": "JSON ou YAML, até {{size}}. O ficheiro é lido no seu navegador e guardado com o servidor.",
+			"uploadHelpNoLimit": "JSON ou YAML. O ficheiro é lido no seu navegador e guardado com o servidor.",
 			"parsing": "A analisar o documento…",
 			"staleNotice": "O URL ou o nome do servidor mudou desde que o documento foi obtido. Obtenha-o novamente para atualizar as operações abaixo."
 		},

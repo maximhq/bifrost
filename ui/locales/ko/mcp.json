@@ -1273,6 +1273,7 @@
 			"urlHelp": "Bifrost는 문서를 한 번 가져와 서버와 함께 저장하며, URL은 출처로 보관돼요.",
 			"chooseFile": "파일 선택",
 			"uploadHelp": "JSON 또는 YAML, 최대 {{size}}. 파일은 브라우저에서 읽어 서버와 함께 저장돼요.",
+			"uploadHelpNoLimit": "JSON 또는 YAML. 파일은 브라우저에서 읽어 서버와 함께 저장돼요.",
 			"parsing": "문서를 파싱하는 중…",
 			"staleNotice": "문서를 가져온 이후 URL 또는 서버 이름이 변경되었어요. 아래 작업을 새로 고치려면 다시 가져오세요."
 		},

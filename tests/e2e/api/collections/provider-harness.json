@@ -264411,7 +264411,7 @@
       "description": "Management-plane regression for connection_type \"openapi\": POST /api/mcp/openapi/preview parses Swagger 2.0 and OpenAPI 3.0/3.1/3.2 documents into the same tool set, POST /api/mcp/client registers a client whose MCP server is synthesized from the document (tools carry the <client>-<tool> prefix, the stored document is not echoed by GET /api/mcp/clients), and the create path refuses auth types the synthesized server cannot honor and tool names the document does not define. The upstream is the public Swagger Petstore because the harness profile has no admin auth configured, which confines registrations to public targets; no tool is called. The openai keyword in case names is only a harness filter label.",
       "item": [
         {
-          "name": "openai mcp-openapi-spec preview of an OpenAPI 3.0 petstore yields listPets/createPet/getPetById",
+          "name": "mcp-openapi-spec preview of an OpenAPI 3.0 petstore yields listPets/createPet/getPetById",
           "event": [
             {
               "listen": "test",
@@ -264468,7 +264468,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec preview of a spec with only operation-level servers needs no base url",
+          "name": "mcp-openapi-spec preview of a spec with only operation-level servers needs no base url",
           "event": [
             {
               "listen": "test",
@@ -264522,7 +264522,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec preview of a Swagger 2.0 petstore yields the same tools",
+          "name": "mcp-openapi-spec preview of a Swagger 2.0 petstore yields the same tools",
           "event": [
             {
               "listen": "test",
@@ -264574,7 +264574,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec preview of an OpenAPI 3.1 petstore normalizes null type arrays",
+          "name": "mcp-openapi-spec preview of an OpenAPI 3.1 petstore normalizes null type arrays",
           "event": [
             {
               "listen": "test",
@@ -264629,7 +264629,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec preview of an OpenAPI 3.2 petstore resolves $self and the query method",
+          "name": "mcp-openapi-spec preview of an OpenAPI 3.2 petstore resolves $self and the query method",
           "event": [
             {
               "listen": "test",
@@ -264686,7 +264686,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec preview gives every argument a name clients accept: a user spec's metadata_<key> and filter[status] are renamed, not reinterpreted - #9460",
+          "name": "mcp-openapi-spec preview gives every argument a name clients accept: a user spec's metadata_<key> and filter[status] are renamed, not reinterpreted - #9460",
           "event": [
             {
               "listen": "test",
@@ -264746,7 +264746,7 @@
           "response": []
         },
         {
-          "name": "openai mcp-openapi-spec wire names: create a client whose listLogs calls the local echo upstream - #9460",
+          "name": "mcp-openapi-spec wire names: create a client whose listLogs calls the local echo upstream - #9460",
           "event": [
             {
               "listen": "prerequest",
@@ -264820,7 +264820,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec wire names: executing listLogs sends metadata_<key> and filter[status] upstream under their spec names, not the renamed argument names - #9460",
+          "name": "mcp-openapi-spec wire names: executing listLogs sends metadata_<key> and filter[status] upstream under their spec names, not the renamed argument names - #9460",
           "event": [
             {
               "listen": "test",
@@ -264875,7 +264875,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec wire names: cleanup deletes the client - #9460",
+          "name": "mcp-openapi-spec wire names: cleanup deletes the client - #9460",
           "event": [
             {
               "listen": "test",
@@ -264909,7 +264909,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] openai mcp-openapi-spec preview of a non-OpenAPI document is a 400",
+          "name": "[EXPECT-400] mcp-openapi-spec preview of a non-OpenAPI document is a 400",
           "event": [
             {
               "listen": "test",
@@ -264951,7 +264951,102 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec create registers a client synthesized from the document",
+          "name": "mcp-openapi-spec preview of a spec_url above 5 MiB is parsed under the 32 MiB default",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Bifrost's own spec at an immutable release tag is 5.06 MiB: above the old 5 MiB limit (413), under the 32 MiB default.",
+                  "pm.test('openapi preview of a 5.06 MiB spec is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 2000)).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the whole document was read', function () {",
+                  "  pm.expect(body.spec_size, 'spec_size').to.be.above(5 * 1024 * 1024);",
+                  "});",
+                  "pm.test('its operations become tools', function () {",
+                  "  pm.expect(body.tool_count, 'tool_count').to.be.above(100);",
+                  "  var names = (body.tools || []).map(function (t) { return t.name; });",
+                  "  pm.expect(names, 'tool names').to.include('listProviders');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"spec_url\": \"https://raw.githubusercontent.com/maximhq/bifrost/refs/tags/transports/v2.3.1/docs/openapi/openapi.json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] mcp-openapi-spec PUT /api/config rejects a null mcp_openapi_max_spec_mb",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// null would decode as 0 and silently reset the limit; it is refused before any state changes, and an explicit 0 is the reset.",
+                  "pm.test('mcp-openapi-spec null mcp_openapi_max_spec_mb: PUT /api/config answers 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('mcp-openapi-spec null mcp_openapi_max_spec_mb: the error names the field', function () {",
+                  "  pm.expect(txt, 'failed: ' + txt.slice(0, 400)).to.include('mcp_openapi_max_spec_mb');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"log_retention_days\": 7, \"mcp_openapi_max_spec_mb\": null}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mcp-openapi-spec create registers a client synthesized from the document",
           "event": [
             {
               "listen": "prerequest",
@@ -265025,7 +265120,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec list shows the prefixed tools and omits the document",
+          "name": "mcp-openapi-spec list shows the prefixed tools and omits the document",
           "event": [
             {
               "listen": "test",
@@ -265082,7 +265177,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec stored document is served on demand",
+          "name": "mcp-openapi-spec stored document is served on demand",
           "event": [
             {
               "listen": "test",
@@ -265116,7 +265211,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec cleanup deletes the client",
+          "name": "mcp-openapi-spec cleanup deletes the client",
           "event": [
             {
               "listen": "test",
@@ -265148,7 +265243,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] openai mcp-openapi-spec create with auth_type oauth is refused",
+          "name": "[EXPECT-400] mcp-openapi-spec create with auth_type oauth is refused",
           "event": [
             {
               "listen": "test",
@@ -265200,7 +265295,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] openai mcp-openapi-spec create with a tool the document does not define is refused",
+          "name": "[EXPECT-400] mcp-openapi-spec create with a tool the document does not define is refused",
           "event": [
             {
               "listen": "test",
@@ -265252,7 +265347,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec create a per-user-headers client synthesized from the document",
+          "name": "mcp-openapi-spec create a per-user-headers client synthesized from the document",
           "event": [
             {
               "listen": "prerequest",
@@ -265326,7 +265421,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] openai mcp-openapi-spec verify-headers is refused for an openapi client",
+          "name": "[EXPECT-400] mcp-openapi-spec verify-headers is refused for an openapi client",
           "event": [
             {
               "listen": "test",
@@ -265369,7 +265464,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec cleanup deletes the per-user-headers client",
+          "name": "mcp-openapi-spec cleanup deletes the per-user-headers client",
           "event": [
             {
               "listen": "test",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/mcp_headers"
+	"github.com/maximhq/bifrost/framework/openapimcp"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -264,12 +266,41 @@ func TestPreviewOpenAPISpec_Errors(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
 	assert.Contains(t, body, "top level must be a mapping")
 
-	huge, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: "{" + strings.Repeat(" ", 5<<20) + "}"})
+	huge, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: "{" + strings.Repeat(" ", openapimcp.MaxSpecBytes) + "}"})
 	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(huge), "", false)
 	assert.Equal(t, fasthttp.StatusRequestEntityTooLarge, status, body)
 
 	status, _ = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, `not json`, "", false)
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
+}
+
+// client_config.mcp_openapi_max_spec_mb is read on every request: lowering it refuses a spec the
+// default admits, on preview and on create, and 0 restores the default.
+func TestOpenAPISpec_ConfiguredMaxSpecSize(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	// Padded inside the object: the handlers trim surrounding whitespace before measuring.
+	padded := "{" + strings.Repeat(" ", 1<<20) + strings.TrimPrefix(strings.TrimSpace(petstoreSpecJSON), "{")
+	preview, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: padded})
+	create, _ := json.Marshal(map[string]any{
+		"name": "petstore_sized", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"*"},
+		"openapi_config":   map[string]any{"spec": padded},
+	})
+
+	h.store.ClientConfig.MCPOpenAPIMaxSpecMB = 1
+	status, body := doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(preview), "", false)
+	assert.Equal(t, fasthttp.StatusRequestEntityTooLarge, status, body)
+	assert.Contains(t, body, fmt.Sprintf("exceeds %d bytes", 1<<20))
+	status, body = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(create), "", false)
+	assert.Equal(t, fasthttp.StatusRequestEntityTooLarge, status, body)
+	assert.Empty(t, mgr.added)
+
+	h.store.ClientConfig.MCPOpenAPIMaxSpecMB = 0
+	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(preview), "", false)
+	assert.Equal(t, fasthttp.StatusOK, status, body)
+	status, body = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(create), "", false)
+	assert.Equal(t, fasthttp.StatusOK, status, body)
+	assert.Len(t, mgr.added, 1)
 }
 
 func TestAddMCPClient_OpenAPI_CreatesClientFromSpec(t *testing.T) {
@@ -1098,4 +1129,43 @@ func TestMergeOpenAPIConfigUpdate_MaskedBaseURLKeepsStored(t *testing.T) {
 	other := "https://other.example.com"
 	merged = mergeOpenAPIConfigUpdate(existing, &schemas.MCPOpenAPIConfig{BaseURL: &other}, openAPIOptionFields{})
 	assert.Equal(t, other, *merged.BaseURL)
+}
+
+// TestOpenAPISpecFetchTimeoutFor: the spec_url deadline grows with the size
+// limit (15s per 32 MiB), so a raised limit can actually be downloaded, and
+// stays bounded at the 256 MiB maximum.
+func TestOpenAPISpecFetchTimeoutFor(t *testing.T) {
+	assert.Equal(t, 15*time.Second, openAPISpecFetchTimeoutFor(0))
+	assert.Equal(t, 15*time.Second, openAPISpecFetchTimeoutFor(1<<20))
+	assert.Equal(t, 15*time.Second, openAPISpecFetchTimeoutFor(32<<20))
+	assert.Equal(t, 30*time.Second, openAPISpecFetchTimeoutFor(33<<20))
+	assert.Equal(t, 2*time.Minute, openAPISpecFetchTimeoutFor(configstore.MaxMCPOpenAPISpecMB<<20))
+}
+
+// TestFetchOpenAPISpecForCallerDerivesFromRequestContext: the download's
+// context is derived from the request's, so a server shutdown (which closes
+// the RequestCtx's Done) cancels it, and it still carries the size-scaled
+// deadline.
+func TestFetchOpenAPISpecForCallerDerivesFromRequestContext(t *testing.T) {
+	private := newAuthenticatedSpecClient
+	t.Cleanup(func() { newAuthenticatedSpecClient = private })
+	type markerKey struct{}
+	var sawMarker any
+	var deadline time.Duration
+	newAuthenticatedSpecClient = func(timeout time.Duration) *http.Client {
+		return &http.Client{Timeout: timeout, Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			sawMarker = r.Context().Value(markerKey{})
+			if d, ok := r.Context().Deadline(); ok {
+				deadline = time.Until(d)
+			}
+			return nil, errors.New("not dialed in tests")
+		})}
+	}
+	ctx := initCtx(&fasthttp.Request{})
+	ctx.SetUserValue(markerKey{}, "request")
+	_, _, _, err := fetchOpenAPISpecForCaller(ctx, "https://1.1.1.1/openapi.json", 64<<20)
+	require.Error(t, err)
+	assert.Equal(t, "request", sawMarker, "the fetch context must be derived from the request context")
+	assert.Greater(t, deadline, 15*time.Second, "the size-scaled deadline still applies")
+	assert.LessOrEqual(t, deadline, 30*time.Second)
 }
