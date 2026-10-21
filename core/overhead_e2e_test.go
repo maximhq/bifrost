@@ -112,6 +112,110 @@ func mockAccountFor(baseURL string) *MockAccount {
 
 const testChatModel = "gpt-4o-mini"
 
+// A semantic terminal event must close the stream even when the upstream has
+// not ended its HTTP body. The EOF control distinguishes terminal detection
+// from a cleanup path that waits to drain the rest of the response.
+func TestPassthroughStreamCompletionDoesNotWaitForUpstreamEOF(t *testing.T) {
+	const model = "gemini-2.5-flash"
+	const body = "data: " + `{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"index":0}]}` + "\n\n" +
+		"data: " + `{"candidates":[{"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"totalTokenCount":6}}` + "\n\n"
+
+	for _, upstreamEOF := range []bool{true, false} {
+		t.Run(fmt.Sprintf("upstreamEOF=%t", upstreamEOF), func(t *testing.T) {
+			releaseUpstream := make(chan struct{})
+			release := sync.OnceFunc(func() { close(releaseUpstream) })
+			// Always release the mock body before cleanup waits for server/worker
+			// shutdown, including when the closure assertion fails.
+			defer release()
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1beta/models/"+model+":streamGenerateContent" ||
+					r.URL.RawQuery != "alt=sse" || r.Header.Get("x-goog-api-key") != "test-key" {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				if _, err := w.Write([]byte(body)); err != nil {
+					return
+				}
+				w.(http.Flusher).Flush()
+				if !upstreamEOF {
+					<-releaseUpstream
+				}
+			}))
+			t.Cleanup(upstream.Close)
+
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.Gemini, 1, 10, upstream.URL)
+			account.SetKeysForProvider(schemas.Gemini, []schemas.Key{{
+				ID: "terminal-test-key", Value: *schemas.NewSecretVar("test-key"),
+				Models: schemas.WhiteList{model}, Weight: 1,
+			}})
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account: account, Logger: NewDefaultLogger(schemas.LogLevelError),
+			})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			t.Cleanup(ctx.Cancel)
+			stream, bifrostErr := client.PassthroughStream(ctx, schemas.Gemini, &schemas.BifrostPassthroughRequest{
+				Model: model, Method: http.MethodPost,
+				Path: "/v1beta/models/" + model + ":streamGenerateContent", RawQuery: "alt=sse",
+				Body: []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`),
+			})
+			if bifrostErr != nil {
+				t.Fatalf("PassthroughStream: %v", bifrostErr)
+			}
+
+			var forwarded []byte
+			finalSeen := false
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			for !finalSeen {
+				select {
+				case chunk, ok := <-stream:
+					if !ok {
+						t.Fatal("stream closed without terminal usage")
+					}
+					if chunk == nil || chunk.BifrostError != nil || chunk.BifrostPassthroughResponse == nil {
+						t.Fatalf("unexpected chunk: %+v", chunk)
+					}
+					resp := chunk.BifrostPassthroughResponse
+					if resp.StatusCode != http.StatusOK {
+						t.Fatalf("unexpected upstream status: %d", resp.StatusCode)
+					}
+					forwarded = append(forwarded, resp.Body...)
+					if usage := resp.PassthroughUsage; usage != nil {
+						if usage.LLMUsage == nil || usage.LLMUsage.TotalTokens != 6 {
+							t.Fatalf("unexpected terminal usage: %+v", usage)
+						}
+						finalSeen = true
+					}
+				case <-timer.C:
+					t.Fatal("no terminal usage received")
+				}
+			}
+			if string(forwarded) != body {
+				t.Fatalf("forwarded bytes differ: got %q, want %q", forwarded, body)
+			}
+
+			timer.Reset(time.Second)
+			select {
+			case chunk, ok := <-stream:
+				if ok {
+					t.Fatalf("unexpected chunk after terminal usage: %+v", chunk)
+				}
+			case <-timer.C:
+				t.Fatalf("stream did not close after terminal usage (upstreamEOF=%t, cleanupClaim=%v, exhausted=%v, parked=%v)",
+					upstreamEOF, ctx.Value(schemas.BifrostContextKeyConnectionClosed),
+					ctx.Value(schemas.BifrostContextKeyStreamBodyExhausted),
+					ctx.Value(schemas.BifrostContextKeyStreamParkedAfterFinish))
+			}
+		})
+	}
+}
+
 func chatRequest() *schemas.BifrostChatRequest {
 	return &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,

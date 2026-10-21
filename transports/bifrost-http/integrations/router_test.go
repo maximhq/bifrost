@@ -1119,18 +1119,26 @@ func (c *cancelRecorder) requireCancelled(t *testing.T, msg string) {
 	}
 }
 
-// passthroughTestAccount configures a single Anthropic provider whose BaseURL points at a
-// local test upstream, so passthrough tests can observe exactly what (if anything) reaches it.
+// passthroughTestAccount configures one provider (Anthropic by default) at a
+// local upstream, so tests can observe exactly what (if anything) reaches it.
 type passthroughTestAccount struct {
-	baseURL string
+	baseURL  string
+	provider schemas.ModelProvider
+}
+
+func (a passthroughTestAccount) providerKey() schemas.ModelProvider {
+	if a.provider != "" {
+		return a.provider
+	}
+	return schemas.Anthropic
 }
 
 func (a passthroughTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{schemas.Anthropic}, nil
+	return []schemas.ModelProvider{a.providerKey()}, nil
 }
 
 func (a passthroughTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
-	if p != schemas.Anthropic {
+	if p != a.providerKey() {
 		return nil, nil
 	}
 	return []schemas.Key{{
@@ -1142,7 +1150,7 @@ func (a passthroughTestAccount) GetKeysForProvider(_ context.Context, p schemas.
 }
 
 func (a passthroughTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
-	if p != schemas.Anthropic {
+	if p != a.providerKey() {
 		return nil, fmt.Errorf("unsupported provider %s", p)
 	}
 	nc := schemas.DefaultNetworkConfig
@@ -1151,6 +1159,217 @@ func (a passthroughTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*
 		NetworkConfig:            nc,
 		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 	}, nil
+}
+
+type passthroughStreamReceipt struct {
+	mu          sync.Mutex
+	pre, final  int
+	totalTokens int
+}
+
+func (*passthroughStreamReceipt) GetName() string { return "passthrough-stream-receipt" }
+func (*passthroughStreamReceipt) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *passthroughStreamReceipt) PreLLMHook(_ *schemas.BifrostContext, request *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.mu.Lock()
+	p.pre++
+	p.mu.Unlock()
+	return request, nil, nil
+}
+func (p *passthroughStreamReceipt) PostLLMHook(ctx *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
+		p.mu.Lock()
+		p.final++
+		if response != nil && response.PassthroughResponse != nil {
+			usage := response.PassthroughResponse.PassthroughUsage
+			if usage != nil && usage.LLMUsage != nil {
+				p.totalTokens = usage.LLMUsage.TotalTokens
+			}
+		}
+		p.mu.Unlock()
+	}
+	return response, err, nil
+}
+func (*passthroughStreamReceipt) Cleanup() error { return nil }
+
+// Real sockets on both sides of the registered HTTP route; unlike a direct
+// handler invocation this observes downstream EOF and client disconnects.
+func newPassthroughHTTPFixture(t testing.TB, upstreamHandler http.HandlerFunc) (string, *passthroughStreamReceipt) {
+	t.Helper()
+	upstream := httptest.NewServer(upstreamHandler)
+	t.Cleanup(upstream.Close)
+	receipt := &passthroughStreamReceipt{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughTestAccount{baseURL: upstream.URL, provider: schemas.Gemini},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError), LLMPlugins: []schemas.LLMPlugin{receipt},
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	routes := router.New()
+	NewGenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(routes)
+	server := &fasthttp.Server{Handler: routes.Handler}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		require.NoError(t, server.Shutdown())
+		require.NoError(t, <-served)
+	})
+	return "http://" + listener.Addr().String(), receipt
+}
+
+func TestGenAIPassthroughHTTPStreamTerminalLifecycle(t *testing.T) {
+	const path = "/genai_passthrough/v1beta/models/gemini-2.5-flash:streamGenerateContent"
+	const requestBody = `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`
+	plain := `{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"index":0}]}`
+	usage := `{"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1,"totalTokenCount":6}}`
+	terminal := `{"candidates":[{"finish\u0052eason":"STOP"}]}`
+	for _, tc := range []struct {
+		name, body, query, contentType string
+	}{
+		{"lf", "data: " + plain + "\n\ndata: " + usage + "\n\ndata: " + terminal + "\n\n", "alt=sse", "text/event-stream"},
+		{"crlf", "data: " + plain + "\r\n\r\ndata: " + usage + "\r\n\r\ndata: " + terminal + "\r\n\r\n", "alt=sse", "text/event-stream"},
+		{"json-array", "[" + plain + "," + usage + "," + terminal + "]", "alt=json", "application/json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			releaseUpstream := make(chan struct{})
+			defer close(releaseUpstream)
+			baseURL, receipt := newPassthroughHTTPFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				gotBody, err := io.ReadAll(r.Body)
+				if err != nil || string(gotBody) != requestBody || r.Method != http.MethodPost || r.URL.RawQuery != tc.query ||
+					r.URL.Path != "/models/gemini-2.5-flash:streamGenerateContent" || r.Header.Get("x-goog-api-key") != "sk-ant-test-operator-key" {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", tc.contentType)
+				// Split marker names and framing across actual upstream writes.
+				for offset := 0; offset < len(tc.body); offset += 7 {
+					if _, err := io.WriteString(w, tc.body[offset:min(offset+7, len(tc.body))]); err != nil {
+						return
+					}
+					w.(http.Flusher).Flush()
+				}
+				<-releaseUpstream // No upstream EOF until after the client completes.
+			})
+			client := &http.Client{Timeout: 5 * time.Second}
+			t.Cleanup(client.CloseIdleConnections)
+			response, err := client.Post(baseURL+path+"?"+tc.query, "application/json", strings.NewReader(requestBody))
+			require.NoError(t, err)
+			defer response.Body.Close()
+			got, err := io.ReadAll(response.Body)
+			require.NoError(t, err, "downstream must not wait for upstream EOF")
+			require.Equal(t, http.StatusOK, response.StatusCode, "body: %s", got)
+			require.Equal(t, tc.contentType, response.Header.Get("Content-Type"))
+			require.Equal(t, tc.body, string(got))
+			receipt.mu.Lock()
+			defer receipt.mu.Unlock()
+			require.Equal(t, 1, receipt.pre)
+			require.Equal(t, 1, receipt.final)
+			require.Equal(t, 6, receipt.totalTokens)
+		})
+	}
+}
+
+func TestGenAIPassthroughHTTPConcurrentStreams(t *testing.T) {
+	baseURL, receipt := newPassthroughHTTPFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		request, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		id := providerUtils.GetJSONField(request, "contents.0.parts.0.text").String()
+		encoded, err := schemas.MarshalSorted(id)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":%s}]}}]}\n\n", encoded)
+		io.WriteString(w, "data: {\"candidates\":[{\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":1,\"totalTokenCount\":6}}\n\n")
+	})
+	client := &http.Client{Timeout: 5 * time.Second}
+	t.Cleanup(client.CloseIdleConnections)
+	var workers sync.WaitGroup
+	errors := make(chan error, 4)
+	for i := range 4 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			id := fmt.Sprintf("client-%d", i)
+			body := fmt.Sprintf(`{"contents":[{"role":"user","parts":[{"text":%q}]}]}`, id)
+			response, err := client.Post(baseURL+"/genai_passthrough/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse", "application/json", strings.NewReader(body))
+			if err != nil {
+				errors <- err
+				return
+			}
+			got, err := io.ReadAll(response.Body)
+			closeErr := response.Body.Close()
+			want := fmt.Sprintf("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":%q}]}}]}\n\n", id) +
+				"data: {\"candidates\":[{\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":1,\"totalTokenCount\":6}}\n\n"
+			if err != nil || closeErr != nil || response.StatusCode != 200 || string(got) != want {
+				errors <- fmt.Errorf("%s: status %d, body %q, read %v, close %v", id, response.StatusCode, got, err, closeErr)
+			}
+		}()
+	}
+	workers.Wait()
+	close(errors)
+	for err := range errors {
+		t.Error(err)
+	}
+	receipt.mu.Lock()
+	defer receipt.mu.Unlock()
+	require.Equal(t, 4, receipt.pre)
+	require.Equal(t, 4, receipt.final)
+}
+
+func TestGenAIPassthroughHTTPDisconnectCancelsUpstream(t *testing.T) {
+	next := make(chan struct{})
+	defer close(next)
+	releaseUpstream := make(chan struct{})
+	defer close(releaseUpstream)
+	cancelled := make(chan struct{})
+	baseURL, _ := newPassthroughHTTPFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		// net/http starts its disconnect reader after the request body reaches
+		// EOF. Leaving it unread would make Context.Done a fixture artifact.
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if _, err := io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}]}\n\n"); err != nil {
+			return
+		}
+		w.(http.Flusher).Flush()
+		<-next
+		// Gemini has no downstream heartbeat. Send more data to exercise the
+		// existing reactive disconnect path instead of asserting idle detection.
+		for range 16 {
+			if _, err := io.WriteString(w, "data: {\"text\":\""+strings.Repeat("x", 8192)+"\"}\n\n"); err != nil {
+				break
+			}
+			w.(http.Flusher).Flush()
+		}
+		select {
+		case <-r.Context().Done():
+			close(cancelled)
+		case <-releaseUpstream: // Bound fixture cleanup even if cancellation regresses.
+		}
+	})
+	client := &http.Client{Timeout: 5 * time.Second}
+	t.Cleanup(client.CloseIdleConnections)
+	response, err := client.Post(baseURL+"/genai_passthrough/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse", "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	_, err = bufio.NewReader(response.Body).ReadString('\n')
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	next <- struct{}{}
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("client disconnect did not cancel the upstream")
+	}
 }
 
 type passthroughUpstreamHit struct {
