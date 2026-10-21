@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,8 +14,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/openapimcp"
+	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/fasthttputil"
 )
 
 // The management MCP serves Bifrost's own /api surface as MCP tools on /v1/mcp.
@@ -47,6 +55,8 @@ const (
 	managementMCPRetryInitial   = 5 * time.Second
 	managementMCPRetryMax       = 5 * time.Minute
 	managementMCPUnavailableMsg = "management MCP spec unavailable"
+	// managementMCPCallTimeout bounds one tool call's trip through /api.
+	managementMCPCallTimeout = 2 * time.Minute
 )
 
 // ManagementMCPEdition is the build the management MCP serves: it decides which
@@ -91,7 +101,6 @@ type ManagementMCPOptions struct {
 	Served      func(method, path string) bool // nil serves every operation; else only those it accepts
 	SpecClient  *http.Client                   // fetches a URL spec; carries the proxy policy
 	ExecClient  *http.Client                   // serves tool calls through the /api chain
-	Headers     openapimcp.HeaderResolver
 }
 
 // ManagementMCP holds the management MCP server, which becomes available once
@@ -267,7 +276,7 @@ func buildManagementMCPServer(data []byte, specURL string, opts ManagementMCPOpt
 		BaseURL:         managementMCPBaseURL,
 		BaseURLExplicit: true,
 		HTTPClient:      opts.ExecClient,
-		Headers:         opts.Headers,
+		Headers:         managementMCPCallerHeaders,
 		Logger:          logger,
 	})
 	if err != nil {
@@ -312,6 +321,26 @@ func curateManagementOperations(ops []openapimcp.Operation, opts ManagementMCPOp
 	return kept, unrouted, unknown
 }
 
+// managementMCPPathParam matches a path parameter in either a spec path
+// ({vk_id}) or a router template ({id}, {filepath:*}, {id?}, {id:[0-9]+}).
+var managementMCPPathParam = regexp.MustCompile(`\{[^}]*\}`)
+
+// ManagementMCPServedRoutes returns a Served filter for the routes a router
+// registers (fasthttp/router's List: method to path templates). Templates are
+// copied, so later registrations do not race with it; parameter names are
+// ignored, so /api/x/{id} serves the spec's /api/x/{x_id}.
+func ManagementMCPServedRoutes(routes map[string][]string) func(method, path string) bool {
+	served := make(map[string]bool)
+	for method, paths := range routes {
+		for _, path := range paths {
+			served[method+" "+managementMCPPathParam.ReplaceAllString(path, "{}")] = true
+		}
+	}
+	return func(method, path string) bool {
+		return served[method+" "+managementMCPPathParam.ReplaceAllString(path, "{}")]
+	}
+}
+
 // managementMCPEnterpriseOnly reports whether the spec marks op enterprise-only.
 func managementMCPEnterpriseOnly(op openapimcp.Operation) bool {
 	mint, _ := op.Extensions["x-mint"].(map[string]any)
@@ -343,4 +372,174 @@ func enabledWord(on bool) string {
 		return "enabled"
 	}
 	return "disabled"
+}
+
+// managementMCPForwardedHeaders are the caller's headers a tool call carries into
+// /api: its credential, and what a direct /api call would also have said about
+// where it came from. /api decides what the credential may do. Cookies are never
+// forwarded, so a web page cannot ride an admin's browser session through /v1/mcp.
+var managementMCPForwardedHeaders = []string{
+	"Authorization", SetupTokenHeader,
+	"X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Real-IP", "User-Agent",
+}
+
+type managementMCPCallerKey struct{}
+
+// managementMCPCaller is who a tool call acts for: the headers forwarded into
+// /api, plus the Host and peer address the caller reached the gateway with, so
+// handlers that build URLs from the request and logs that record the peer see
+// the same values a direct call would.
+type managementMCPCaller struct {
+	headers http.Header
+	host    string
+	remote  net.Addr
+}
+
+// WithManagementMCPCaller records on ctx who the management MCP's tool calls act
+// for. The /v1/mcp handler sets it from the inbound request; an in-process
+// client (Warp) sets it from its own caller's request.
+func WithManagementMCPCaller(ctx context.Context, req *fasthttp.Request, remote net.Addr) context.Context {
+	caller := managementMCPCaller{headers: http.Header{}, host: string(req.Header.Host()), remote: remote}
+	for _, name := range managementMCPForwardedHeaders {
+		if v := req.Header.Peek(name); len(v) > 0 {
+			caller.headers.Set(name, string(v))
+		}
+	}
+	return context.WithValue(ctx, managementMCPCallerKey{}, caller)
+}
+
+// managementMCPCallerHeaders is the HeaderResolver of the management MCP: the
+// forwarded headers of the caller on ctx, none when there is no caller.
+func managementMCPCallerHeaders(ctx context.Context) (http.Header, error) {
+	caller, _ := ctx.Value(managementMCPCallerKey{}).(managementMCPCaller)
+	return caller.headers.Clone(), nil
+}
+
+// ManagementMCPExecutor serves tool calls in process: an in-memory listener in
+// front of the server's root handler, so each call runs the same middleware
+// chain (auth, RBAC, audit) as a request arriving from the network.
+type ManagementMCPExecutor struct {
+	Client   *http.Client
+	listener *fasthttputil.InmemoryListener
+	server   *fasthttp.Server
+}
+
+// NewManagementMCPExecutor starts serving handler on an in-memory listener.
+// Close stops it.
+func NewManagementMCPExecutor(handler fasthttp.RequestHandler, maxRequestBodySize int) *ManagementMCPExecutor {
+	ln := fasthttputil.NewInmemoryListener()
+	srv := &fasthttp.Server{Handler: handler, MaxRequestBodySize: maxRequestBodySize}
+	go func() {
+		if err := srv.Serve(ln); err != nil {
+			logger.Warn("[Management MCP] in-process listener stopped: %v", err)
+		}
+	}()
+	transport := &http.Transport{
+		// One connection per call: its local address is the caller's peer
+		// address, which a pooled connection would carry over to the next call.
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			caller, _ := ctx.Value(managementMCPCallerKey{}).(managementMCPCaller)
+			if caller.remote != nil {
+				return ln.DialWithLocalAddr(caller.remote)
+			}
+			return ln.Dial()
+		},
+	}
+	return &ManagementMCPExecutor{
+		Client:   &http.Client{Transport: managementMCPTransport{next: transport}, Timeout: managementMCPCallTimeout},
+		listener: ln,
+		server:   srv,
+	}
+}
+
+// Close stops the in-process listener.
+func (e *ManagementMCPExecutor) Close() error {
+	if e == nil {
+		return nil
+	}
+	err := e.server.Shutdown()
+	if cerr := e.listener.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// managementMCPTransport gives each call the caller's Host and drops any Cookie
+// header, whatever put it there: a call never carries a browser session.
+type managementMCPTransport struct{ next http.RoundTripper }
+
+func (t managementMCPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Del("Cookie")
+	if caller, _ := req.Context().Value(managementMCPCallerKey{}).(managementMCPCaller); caller.host != "" {
+		req.Host = caller.host
+	}
+	return t.next.RoundTrip(req)
+}
+
+// ManagementMCPHandler serves the management MCP on /v1/mcp.
+type ManagementMCPHandler struct {
+	mcp *ManagementMCP
+}
+
+// NewManagementMCPHandler returns the /v1/mcp handler for m.
+func NewManagementMCPHandler(m *ManagementMCP) *ManagementMCPHandler {
+	return &ManagementMCPHandler{mcp: m}
+}
+
+// RegisterRoutes registers /v1/mcp. It takes no auth middleware: initialize and
+// tools/list describe the public spec, and every tools/call is authenticated by
+// /api with the caller's forwarded credential.
+func (h *ManagementMCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	r.POST("/v1/mcp", lib.ChainMiddlewares(h.handlePost, middlewares...))
+	// Streamable HTTP lets a server refuse the SSE stream; POST carries every
+	// call. Registered explicitly, or the dashboard's catch-all would answer.
+	r.GET("/v1/mcp", lib.ChainMiddlewares(h.handleGet, middlewares...))
+}
+
+func (h *ManagementMCPHandler) handlePost(ctx *fasthttp.RequestCtx) {
+	if managementMCPVirtualKey(&ctx.Request) {
+		SendError(ctx, fasthttp.StatusUnauthorized, managementMCPVirtualKeyMsg)
+		return
+	}
+	srv := h.mcp.Server()
+	if srv == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, managementMCPUnavailableMsg)
+		return
+	}
+	callCtx := WithManagementMCPCaller(ctx, &ctx.Request, ctx.RemoteAddr())
+	response := srv.HandleMessage(callCtx, ctx.PostBody())
+	if response == nil {
+		ctx.SetStatusCode(fasthttp.StatusAccepted)
+		return
+	}
+	body, err := sonic.Marshal(response)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to encode response: %v", err))
+		return
+	}
+	ctx.SetContentType("application/json")
+	ctx.SetBody(body)
+}
+
+const managementMCPVirtualKeyMsg = "/v1/mcp takes a management credential (the admin login, the setup token, or an API key), not a virtual key"
+
+// managementMCPVirtualKey reports whether the request authenticates with a
+// virtual key. /api would refuse one with a bare 401 on the first tool call, so
+// /v1/mcp says why before anything runs.
+func managementMCPVirtualKey(req *fasthttp.Request) bool {
+	if len(req.Header.Peek(string(schemas.BifrostContextKeyVirtualKey))) > 0 {
+		return true
+	}
+	auth := string(req.Header.Peek("Authorization"))
+	if len(auth) > 7 && strings.EqualFold(auth[:7], "bearer ") {
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(auth[7:])), governance.VirtualKeyPrefix)
+	}
+	return false
+}
+
+func (h *ManagementMCPHandler) handleGet(ctx *fasthttp.RequestCtx) {
+	ctx.Response.Header.Set("Allow", fasthttp.MethodPost)
+	SendError(ctx, fasthttp.StatusMethodNotAllowed, "/v1/mcp serves JSON-RPC over POST; it has no SSE stream")
 }

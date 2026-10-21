@@ -279360,6 +279360,318 @@
           }
         }
       ]
+    },
+    {
+      "name": "266. Management MCP on /v1/mcp (management-mcp)",
+      "description": "Bifrost's own /api served as MCP tools on /v1/mcp. initialize and tools/list describe the published spec; every /api operation is a tool except deprecated ones and the credential, browser-flow, streaming and binary-download operations; writes are off by default. A tools/call re-enters /api in process with the caller's forwarded credential (here the python profile's setup token), so /api authenticates it: no credential is a 401 in the tool result, a virtual key is refused by /v1/mcp with a 401, and GET has no SSE stream. The openai keyword in case names is only a harness filter label.",
+      "item": [
+        {
+          "name": "openai management-mcp initialize answers with the server's tool capability",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The management MCP loads its spec in the background after boot and answers 503 until it has.",
+                  "// Poll tools/list (carrying the setup token, as every row does) until it stops answering 503.",
+                  "var __token = pm.variables.get('setupToken');",
+                  "function __poll(attempt) {",
+                  "  pm.sendRequest({",
+                  "    url: pm.variables.replaceIn('{{baseUrl}}') + '/v1/mcp', method: 'POST',",
+                  "    header: { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': __token || '' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/list' }) }",
+                  "  }, function (err, res) {",
+                  "    if ((err || res.code === 503) && attempt < 30) { setTimeout(function () { __poll(attempt + 1); }, 1000); }",
+                  "  });",
+                  "}",
+                  "__poll(0);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('initialize is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the server advertises tools', function () {",
+                  "  pm.expect(body.result, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.result.capabilities.tools, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.result.serverInfo.name, pm.response.text()).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": {},\n    \"clientInfo\": {\n      \"name\": \"provider-harness\",\n      \"version\": \"1\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai management-mcp tools/list exposes /api operations and withholds the denied ones",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tools/list is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var tools = (pm.response.json().result || {}).tools || [];",
+                  "var byName = {}; tools.forEach(function (t) { byName[t.name] = t; });",
+                  "pm.test('/api operations are tools named after their operationId', function () {",
+                  "  pm.expect(Object.keys(byName), 'tool names').to.include.members(['listProviders', 'getVersion', 'listVirtualKeys']);",
+                  "});",
+                  "pm.test('credential, browser-flow and streaming operations are not tools', function () {",
+                  "  ['login', 'startSetupSession', 'handleOAuthCallback', 'warpSession'].forEach(function (n) { pm.expect(byName, n).to.not.have.property(n); });",
+                  "});",
+                  "pm.test('reads are annotated read-only and closed-world', function () {",
+                  "  pm.expect(byName.listProviders.annotations.readOnlyHint, 'readOnlyHint').to.eql(true);",
+                  "  pm.expect(byName.listProviders.annotations.openWorldHint, 'openWorldHint').to.eql(false);",
+                  "});",
+                  "pm.test('writes are off by default, so only reads are served', function () {",
+                  "  var writes = tools.filter(function (t) { return t.annotations.readOnlyHint !== true; }).map(function (t) { return t.name; });",
+                  "  pm.expect(writes, 'non-read-only tools').to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2,\n  \"method\": \"tools/list\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai management-mcp tools/call runs listProviders through /api with the caller's setup token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tools/call is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var result = pm.response.json().result || {};",
+                  "pm.test('the call succeeded', function () {",
+                  "  pm.expect(result.isError, pm.response.text()).to.not.eql(true);",
+                  "});",
+                  "pm.test('the result is the /api/providers body', function () {",
+                  "  var payload = JSON.parse(result.content[0].text);",
+                  "  pm.expect(payload.providers, pm.response.text()).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 3,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"listProviders\",\n    \"arguments\": {}\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai management-mcp tools/call without a credential carries /api's 401 back as a tool error",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No credential: drop the setup token the collection adds to every row.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the JSON-RPC exchange is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var result = pm.response.json().result || {};",
+                  "pm.test('the tool result is /api refusing the call with a 401', function () {",
+                  "  pm.expect(result.isError, pm.response.text()).to.eql(true);",
+                  "  pm.expect(result.content[0].text.indexOf('HTTP 401'), pm.response.text()).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 4,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"listProviders\",\n    \"arguments\": {}\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openai management-mcp a virtual key is refused by /v1/mcp itself",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a virtual key is a 401', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(401);",
+                  "});",
+                  "pm.test('the refusal says why', function () {",
+                  "  pm.expect(pm.response.text()).to.include('not a virtual key');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-bf-provider-harness-not-a-management-key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 5,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"listProviders\",\n    \"arguments\": {}\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-405] openai management-mcp GET /v1/mcp has no SSE stream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET is a 405', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(405);",
+                  "});",
+                  "pm.test('Allow names POST', function () {",
+                  "  pm.expect(pm.response.headers.get('Allow'), pm.response.text()).to.eql('POST');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
