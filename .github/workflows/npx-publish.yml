@@ -36,6 +36,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify release source identity
+        run: bash .github/workflows/scripts/verify-release-source.sh
+
       - name: Check if pipeline should be skipped
         id: check        
         run: |
@@ -66,6 +69,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Verify release source identity
+        run: bash .github/workflows/scripts/verify-release-source.sh
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -189,6 +195,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Verify release source identity
+        run: bash .github/workflows/scripts/verify-release-source.sh
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

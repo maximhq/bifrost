@@ -59,4 +59,5 @@ jobs:
       - name: Test release security controls
         run: |
           bash .github/tests/configure-r2.test.sh
+          bash .github/tests/release-source.test.sh
           bash .github/workflows/scripts/run-security-tool.sh test

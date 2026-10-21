@@ -43,6 +43,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Verify release source identity
+        run: bash .github/workflows/scripts/verify-release-source.sh
+
       - name: Configure Git
         run: |
           git config user.name "$GITHUB_ACTOR"
