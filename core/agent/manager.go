@@ -71,6 +71,9 @@ func (e *upstreamHTTPStatusError) Error() string {
 // card resolved earlier, so these statuses are treated as a signal to rebuild the
 // client generation rather than as a permanent request failure.
 func staleInterfaceHint(err error) bool {
+	if err == nil || isNonEndpointFailure(err) {
+		return false
+	}
 	var statusErr *upstreamHTTPStatusError
 	if !errors.As(err, &statusErr) {
 		return false
@@ -2638,13 +2641,36 @@ func grpcFailureCode(err error) (codes.Code, bool) {
 	return grpcStatus.Code(), true
 }
 
+// nonEndpointFailure preserves a local error without attributing it to the
+// upstream candidate used by the enclosing forwarding operation.
+type nonEndpointFailure struct {
+	err error
+}
+
+func (e *nonEndpointFailure) Error() string { return e.err.Error() }
+func (e *nonEndpointFailure) Unwrap() error { return e.err }
+
+func isNonEndpointFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var local *nonEndpointFailure
+	return errors.As(err, &local)
+}
+
 func retryableEndpointFailure(err error) bool {
+	if isNonEndpointFailure(err) {
+		return false
+	}
 	grpcCode, isGRPC := grpcFailureCode(err)
 	return provesNoDelivery(err) || staleInterfaceHint(err) || errors.Is(err, a2a.ErrMethodNotFound) || isGRPC && grpcCode == codes.Unimplemented
 }
 
 func interfaceFailure(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if isNonEndpointFailure(err) {
 		return false
 	}
 	if errors.Is(err, a2a.ErrMethodNotFound) {

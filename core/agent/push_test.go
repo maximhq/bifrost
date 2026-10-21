@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -297,6 +298,8 @@ type memoryPushStore struct {
 	configs    map[string]schemas.AgentPushConfig
 	deliveries map[string]schemas.AgentPushDelivery
 	claims     map[string]memoryPushClaim
+	readErr    error
+	readCalls  int
 }
 
 func newMemoryPushStore() *memoryPushStore {
@@ -335,6 +338,10 @@ func (s *memoryPushStore) BindAgentPushConfigTask(_ context.Context, agentName, 
 func (s *memoryPushStore) GetAgentPushConfig(_ context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error) {
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
+	s.readCalls++
+	if s.readErr != nil {
+		return nil, s.readErr
+	}
 	if config, ok := s.configs[pushConfigKey(agentName, taskID, configID)]; ok {
 		return &config, nil
 	}
@@ -356,6 +363,10 @@ func (s *memoryPushStore) GetAgentPushConfigByIngressTokenHash(_ context.Context
 func (s *memoryPushStore) ListAgentPushConfigs(_ context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error) {
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
+	s.readCalls++
+	if s.readErr != nil {
+		return nil, s.readErr
+	}
 	var result []schemas.AgentPushConfig
 	for _, config := range s.configs {
 		if config.AgentName == agentName && config.TaskID == taskID {
@@ -579,6 +590,8 @@ type pushUpstreamClient struct {
 	mu      sync.Mutex
 	created []*a2a.PushConfig
 	deleted []*a2a.DeleteTaskPushConfigRequest
+	readErr error
+	reads   int
 }
 
 func (c *pushUpstreamClient) CreateTaskPushConfig(_ context.Context, config *a2a.PushConfig) (*a2a.PushConfig, error) {
@@ -599,6 +612,10 @@ func (c *pushUpstreamClient) DeleteTaskPushConfig(_ context.Context, req *a2a.De
 func (c *pushUpstreamClient) GetTaskPushConfig(_ context.Context, req *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reads++
+	if c.readErr != nil {
+		return nil, c.readErr
+	}
 	for _, config := range c.created {
 		if config.TaskID == req.TaskID && config.ID == req.ID {
 			return config, nil
@@ -610,6 +627,10 @@ func (c *pushUpstreamClient) GetTaskPushConfig(_ context.Context, req *a2a.GetTa
 func (c *pushUpstreamClient) ListTaskPushConfigs(_ context.Context, req *a2a.ListTaskPushConfigRequest) ([]*a2a.PushConfig, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.reads++
+	if c.readErr != nil {
+		return nil, c.readErr
+	}
 	return c.created, nil
 }
 
@@ -638,6 +659,91 @@ func pushGateway(t testing.TB) (*Manager, *proxyRequestHandler, *memoryPushStore
 	require.NoError(t, runtime.replaceGeneration(newClientGeneration(&a2a.AgentCard{}, client, string(a2a.TransportProtocolJSONRPC))))
 	m.runtimes.store("fixture", runtime)
 	return m, &proxyRequestHandler{runtime: runtime, manager: m, config: runtime.config}, store, client
+}
+
+func TestPushReadStoreFailureDoesNotFailOver(t *testing.T) {
+	databaseDialError := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("config database unavailable")}
+	for _, operation := range []string{"get", "list"} {
+		for _, databaseError := range []error{databaseDialError, fmt.Errorf("database read: %w", databaseDialError), io.EOF} {
+			t.Run(operation+"/"+databaseError.Error(), func(t *testing.T) {
+				config := &a2a.PushConfig{TaskID: "task-1", ID: "cfg-1", URL: "https://gateway.example/ingress"}
+				first := &pushUpstreamClient{created: []*a2a.PushConfig{config}}
+				second := &pushUpstreamClient{created: []*a2a.PushConfig{config}}
+				manager, handler, generation := failoverHandler(t, first, second)
+				store := newMemoryPushStore()
+				store.readErr = databaseError
+				manager.pushStore = store
+				read := func() error {
+					if operation == "get" {
+						result, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{TaskID: config.TaskID, ID: config.ID})
+						if err != nil {
+							require.Nil(t, result)
+						}
+						return err
+					}
+					result, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{TaskID: config.TaskID})
+					if err != nil {
+						require.Nil(t, result)
+					}
+					return err
+				}
+				err := read()
+				require.ErrorIs(t, err, databaseError)
+				require.Equal(t, databaseError.Error(), err.Error())
+				if errors.Is(databaseError, databaseDialError) {
+					var networkError *net.OpError
+					require.ErrorAs(t, err, &networkError)
+					require.Same(t, databaseDialError, networkError)
+				}
+				require.Equal(t, 1, first.reads, "authorize once against the healthy upstream")
+				require.Zero(t, second.reads, "database errors must not replay authorization")
+				require.Equal(t, 1, store.readCalls)
+				require.Zero(t, generation.active, "database errors must not advance the upstream candidate")
+				store.readErr = nil
+				require.NoError(t, store.SaveAgentPushConfig(context.Background(), &schemas.AgentPushConfig{AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", URL: "https://callback.example/events"}))
+				require.NoError(t, read(), "a recovered database should still use the first candidate")
+				require.Equal(t, 2, first.reads)
+				require.Zero(t, second.reads)
+			})
+		}
+	}
+}
+
+func TestPushReadUpstreamFailureStillFailsOver(t *testing.T) {
+	for _, operation := range []string{"get", "list"} {
+		t.Run(operation, func(t *testing.T) {
+			config := &a2a.PushConfig{TaskID: "task-1", ID: "cfg-1", URL: "https://gateway.example/ingress"}
+			first := &pushUpstreamClient{readErr: dialFailure()}
+			second := &pushUpstreamClient{created: []*a2a.PushConfig{config}}
+			manager, handler, generation := failoverHandler(t, first, second)
+			store := newMemoryPushStore()
+			manager.pushStore = store
+			require.NoError(t, store.SaveAgentPushConfig(context.Background(), &schemas.AgentPushConfig{AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", URL: "https://callback.example/events"}))
+			if operation == "get" {
+				result, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{TaskID: config.TaskID, ID: config.ID})
+				require.NoError(t, err)
+				require.Equal(t, "https://callback.example/events", result.URL)
+			} else {
+				result, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{TaskID: config.TaskID})
+				require.NoError(t, err)
+				require.Len(t, result.Configs, 1)
+			}
+			require.Equal(t, 1, first.reads)
+			require.Equal(t, 1, second.reads)
+			require.Equal(t, 1, store.readCalls)
+			require.Equal(t, 1, generation.active)
+		})
+	}
+}
+
+func TestPushReadMissingLocalConfigKeepsNotFound(t *testing.T) {
+	_, handler, _, client := pushGateway(t)
+	client.created = []*a2a.PushConfig{{TaskID: "task-1", ID: "cfg-1"}}
+	_, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"})
+	require.True(t, err == push.ErrPushConfigNotFound, "keep the existing not-found sentinel unchanged")
+	result, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{TaskID: "task-1"})
+	require.NoError(t, err)
+	require.Empty(t, result.Configs)
 }
 
 type pushAuthorizationExecutor struct{}

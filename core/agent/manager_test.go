@@ -1449,6 +1449,37 @@ func dialFailure() error {
 	return &url.Error{Op: "Post", URL: "http://upstream", Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}}
 }
 
+func TestNonEndpointFailurePreservesCauseAndSkipsClassification(t *testing.T) {
+	for _, cause := range []error{
+		dialFailure(),
+		io.EOF,
+		io.ErrUnexpectedEOF,
+		&upstreamHTTPStatusError{StatusCode: http.StatusGone, Status: http.StatusText(http.StatusGone)},
+		status.Error(codes.Unimplemented, "local service unavailable"),
+		status.Error(codes.Unavailable, "local service unavailable"),
+		a2a.ErrMethodNotFound,
+	} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			require.True(t, interfaceFailure(cause), "the unmarked upstream failure must retain its classification")
+			local := &nonEndpointFailure{err: cause}
+			require.Equal(t, cause.Error(), local.Error())
+			require.True(t, local.Unwrap() == cause)
+			for _, err := range []error{local, fmt.Errorf("database read: %w", local)} {
+				require.ErrorIs(t, err, cause)
+				require.True(t, isNonEndpointFailure(err))
+				require.False(t, retryableEndpointFailure(err))
+				require.False(t, interfaceFailure(err))
+				require.False(t, staleInterfaceHint(err))
+			}
+		})
+	}
+	for _, err := range []error{nil, a2a.ErrTaskNotFound, context.Canceled, context.DeadlineExceeded} {
+		require.False(t, isNonEndpointFailure(err))
+		require.False(t, interfaceFailure(err))
+		require.False(t, staleInterfaceHint(err))
+	}
+}
+
 // A traced unary forward must open internal a2a.prepare (client acquire +
 // upstream context build) and a2a.encode (describe + payload re-encode) phase
 // spans so the overhead breakdown attributes gateway work to named buckets.

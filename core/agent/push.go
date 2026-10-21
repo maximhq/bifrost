@@ -472,7 +472,7 @@ func (h *proxyRequestHandler) GetTaskPushConfig(ctx context.Context, req *a2a.Ge
 		stored, err := m.pushStore.GetAgentPushConfig(ctx, h.config.name, string(req.TaskID), req.ID)
 		endPhaseSpan(phase)
 		if err != nil {
-			return nil, err
+			return nil, &nonEndpointFailure{err: err}
 		}
 		if stored == nil {
 			return nil, push.ErrPushConfigNotFound
@@ -517,7 +517,7 @@ func (h *proxyRequestHandler) ListTaskPushConfigs(ctx context.Context, req *a2a.
 		stored, err := m.pushStore.ListAgentPushConfigs(ctx, h.config.name, string(req.TaskID))
 		endPhaseSpan(phase)
 		if err != nil {
-			return nil, err
+			return nil, &nonEndpointFailure{err: err}
 		}
 		configs := make([]*a2a.PushConfig, 0, len(stored))
 		for i := range stored {
