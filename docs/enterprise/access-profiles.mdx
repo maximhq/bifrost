@@ -86,6 +86,8 @@ To manage user keys yourself, two settings under **Settings > Security** take ea
 
 Keys the user already owns, or that you add for them, are still governed and locked by their profiles while they hold one. Deleting the user still deletes their keys.
 
+A user with a profile but no key is still governed by the profile: requests they make through sign-in (SSO, the desktop agent, user-mode MCP) are checked against it and count toward its budgets and rate limits. The virtual key lookup for credential helpers returns only the user's own keys, and none at all for such a user; a profile holder is never handed a team's key. Turning **Don't Create User Virtual Keys for Access Profiles** off later doesn't issue keys to users who already hold a profile, so add those keys yourself.
+
 ---
 
 ## Profiles on teams, business units, and customers

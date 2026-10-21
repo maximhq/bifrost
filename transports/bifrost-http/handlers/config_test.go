@@ -578,6 +578,20 @@ func TestUpdateConfig_SkipAccessProfileUserVirtualKeyLifecyclePresence(t *testin
 	put(`{"client_config":{"log_retention_days":8,"skip_access_profile_user_virtual_key_creation":true,"skip_access_profile_user_virtual_key_deletion":true}}`)
 	creation, deletion = stored()
 	assert.True(t, creation && deletion)
+
+	// null would decode as false and pass the presence check, silently handing user key creation or
+	// deletion back to access profiles, so it is refused before anything changes.
+	for _, body := range []string{
+		`{"client_config":{"log_retention_days":8,"skip_access_profile_user_virtual_key_creation":null}}`,
+		`{"client_config":{"log_retention_days":8,"skip_access_profile_user_virtual_key_deletion":null}}`,
+	} {
+		refused := putConfigCtx(body)
+		h.updateConfig(refused)
+		assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), "%s: %s", body, refused.Response.Body())
+		creation, deletion = stored()
+		assert.True(t, creation && deletion, "%s left the stored values unchanged", body)
+		assert.True(t, cfg.ClientConfig.SkipAccessProfileUserVirtualKeyCreation && cfg.ClientConfig.SkipAccessProfileUserVirtualKeyDeletion, "%s left the live values unchanged", body)
+	}
 }
 
 // extra_fields_placement is copied only when sent, so a partial save keeps the stored value,

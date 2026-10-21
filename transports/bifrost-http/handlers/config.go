@@ -381,6 +381,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "enforce_vk_object_ownership must be true or false")
 		return
 	}
+	// The access-profile user key settings are plain bools that default to false, so a JSON null would
+	// decode as false and silently hand user key creation or deletion back to access profiles. Refuse
+	// it; omit the field to keep the stored value.
+	for _, field := range []string{"skip_access_profile_user_virtual_key_creation", "skip_access_profile_user_virtual_key_deletion"} {
+		if raw, present := clientConfigFields[field]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			SendError(ctx, fasthttp.StatusBadRequest, field+" must be true or false")
+			return
+		}
+	}
 
 	// vk_rotation_cooldown bounds: negative is meaningless, and anything past 30
 	// days keeps a retired credential alive long enough to defeat the rotation.

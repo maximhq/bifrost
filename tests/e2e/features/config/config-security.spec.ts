@@ -355,6 +355,29 @@ test.describe("Security Settings", () => {
       expect(await configSettingsPage.getSwitchState(switchOf(configSettingsPage))).toBe(!initial);
       expect((await coreConfigApi.get(request)).client_config[field] ?? false).toBe(!initial);
     });
+
+    test(`should save the access profile user virtual key ${name} switch without changing the other`, async ({
+      configSettingsPage,
+      request,
+    }) => {
+      // The two halves of the lifecycle are separate settings; saving one must not carry the other.
+      await configSettingsPage.dismissOnboardingWidget();
+      const skip = switchOf(configSettingsPage);
+      if (!(await skip.isVisible().catch(() => false))) {
+        test.skip(true, `Access profile user virtual key ${name} switch not available`);
+        return;
+      }
+      const otherSwitchOf = (p: ConfigSettingsPage) =>
+        name === "creation" ? p.skipAccessProfileUserVirtualKeyDeletionSwitch : p.skipAccessProfileUserVirtualKeyCreationSwitch;
+      const otherField = name === "creation" ? "skip_access_profile_user_virtual_key_deletion" : "skip_access_profile_user_virtual_key_creation";
+      const otherInitial = await configSettingsPage.getSwitchState(otherSwitchOf(configSettingsPage));
+
+      await skip.click();
+      await configSettingsPage.saveSettings();
+      await configSettingsPage.goto("security");
+      expect(await configSettingsPage.getSwitchState(otherSwitchOf(configSettingsPage))).toBe(otherInitial);
+      expect((await coreConfigApi.get(request)).client_config[otherField] ?? false).toBe(otherInitial);
+    });
   }
 
   test("should display required headers textarea", async ({
