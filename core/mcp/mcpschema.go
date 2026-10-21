@@ -33,7 +33,7 @@ func canonicalMCPSchema(raw json.RawMessage) (json.RawMessage, error) {
 	default:
 		return nil, fmt.Errorf("MCP schema must be an object or boolean")
 	}
-	return schemas.MarshalSorted(schema)
+	return schemas.MarshalExactCanonicalJSON(schema)
 }
 
 func (t *discoveredMCPTool) UnmarshalJSON(data []byte) error {
@@ -42,6 +42,22 @@ func (t *discoveredMCPTool) UnmarshalJSON(data []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
+	}
+	// Keep the complete JSON-RPC tool definition alongside the existing raw
+	// schema captures. Decode with UseNumber and normalize map ordering so the
+	// carrier remains stable for hashing without dropping nulls or extensions.
+	fullDecoder := json.NewDecoder(bytes.NewReader(data))
+	fullDecoder.UseNumber()
+	var fullDefinition any
+	if err := fullDecoder.Decode(&fullDefinition); err != nil {
+		return err
+	}
+	if _, ok := fullDefinition.(map[string]any); !ok {
+		return fmt.Errorf("MCP tool definition must be a JSON object")
+	}
+	rawToolJSON, err := schemas.MarshalExactCanonicalJSON(fullDefinition)
+	if err != nil {
+		return fmt.Errorf("preserve full MCP tool definition: %w", err)
 	}
 	input, output := fields["inputSchema"], fields["outputSchema"]
 	delete(fields, "inputSchema")
@@ -54,6 +70,7 @@ func (t *discoveredMCPTool) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(rest, &t.Tool); err != nil {
 		return err
 	}
+	t.RawToolJSON = append(json.RawMessage(nil), rawToolJSON...)
 	t.RawInputSchema, err = canonicalMCPSchema(input)
 	if err != nil {
 		return fmt.Errorf("input schema: %w", err)

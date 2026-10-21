@@ -19,6 +19,12 @@ TOOLS = [
     {"name": "untyped_schema", "description": "Schema projection fixture", "inputSchema": {"properties": {"value": {"type": "string"}}}},
 ]
 
+# Synthetic whole-tool metadata, deliberately outside the typed SDK projection.
+TOOLS[0].update({"title": "Whole tool fixture", "_meta": {"source": "synthetic"},
+                 "x-tool-extension": {"nested": [None, {"exact": 9007199254740993}]},
+                 "annotations": {"readOnlyHint": True, "x-unknown-hint": None}})
+TOOLS[2]["title"] = None
+
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))

@@ -36,13 +36,21 @@ func computeToolsHash(tools map[string]schemas.ChatTool, toolNameMapping map[str
 	// Provider JSON deliberately omits MCP metadata. Hash it explicitly so a
 	// schema-only or annotation-only change still rebuilds the downstream server.
 	type hashTool struct {
-		Tool        schemas.ChatTool            `json:"tool"`
-		Schema      *schemas.MCPToolSchema      `json:"schema,omitempty"`
-		Annotations *schemas.MCPToolAnnotations `json:"annotations,omitempty"`
+		Tool                            schemas.ChatTool            `json:"tool"`
+		Schema                          *schemas.MCPToolSchema      `json:"schema,omitempty"`
+		Annotations                     *schemas.MCPToolAnnotations `json:"annotations,omitempty"`
+		SDKRawToolJSON                  json.RawMessage             `json:"sdkRawToolJSON,omitempty"`
+		SDKRawToolProjectionFingerprint string                      `json:"sdkRawToolProjectionFingerprint,omitempty"`
 	}
 	content := make(map[string]hashTool, len(tools))
 	for name, tool := range tools {
-		content[name] = hashTool{tool, tool.MCPToolSchema, tool.Annotations}
+		content[name] = hashTool{
+			Tool:                            tool,
+			Schema:                          tool.MCPToolSchema,
+			Annotations:                     tool.Annotations,
+			SDKRawToolJSON:                  tool.SDKRawToolJSON,
+			SDKRawToolProjectionFingerprint: tool.SDKRawToolProjectionFingerprint,
+		}
 	}
 	if data, err := schemas.MarshalSorted(content); err == nil {
 		h.Write(data)
@@ -1053,7 +1061,7 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		}
 	}
 
-	return schemas.ChatTool{
+	tool := schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{
 			Name:        mcpTool.Name,
@@ -1068,6 +1076,13 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		Annotations:   annotations,
 		MCPToolSchema: metadata,
 	}
+	if mcpTool.RawToolJSON != nil {
+		tool.SDKRawToolJSON = append(json.RawMessage(nil), mcpTool.RawToolJSON...)
+		// Function.Name is deliberately excluded so existing namespacing and
+		// renaming remain authoritative at the native emitter.
+		tool.SDKRawToolProjectionFingerprint = schemas.SDKRawToolProjectionFingerprint(tool)
+	}
+	return tool
 }
 
 // extractTextFromMCPResponse extracts text content from an MCP tool response.

@@ -418,6 +418,38 @@ func TestMCPSchemaPreservationBooleanSchemas(t *testing.T) {
 	}
 }
 
+func TestMCPSchemaPreservationKeepsWholeToolDefinition(t *testing.T) {
+	raw := []byte(`{"name":"whole","title":null,"_meta":{"nested":[null,{"large":9007199254740993}],"presentNull":null},"inputSchema":{"type":"object","maximum":9007199254740993},"annotations":{"readOnlyHint":true,"x-unknown":{"nested":{"null":null,"large":9007199254740993}}}}`)
+	var upstream discoveredMCPTool
+	require.NoError(t, json.Unmarshal(raw, &upstream))
+	tool := convertMCPToolToBifrostSchema(&upstream.Tool, defaultLogger)
+	require.NotEmpty(t, tool.SDKRawToolJSON)
+	require.JSONEq(t, string(raw), string(tool.SDKRawToolJSON))
+	require.Contains(t, string(tool.SDKRawToolJSON), "9007199254740993")
+	require.False(t, tool.HasSDKRawToolProjectionConflict())
+
+	providerJSON, err := json.Marshal(tool)
+	require.NoError(t, err)
+	require.NotContains(t, string(providerJSON), `"_meta"`)
+	require.NotContains(t, string(providerJSON), `"x-unknown"`)
+}
+
+func TestComputeToolsHashIncludesRawToolMetadata(t *testing.T) {
+	tool := schemas.ChatTool{
+		Type:     schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{Name: "tool"},
+	}
+	base := computeToolsHash(map[string]schemas.ChatTool{"tool": tool}, nil, "")
+	tool.SDKRawToolJSON = json.RawMessage(`{"name":"tool","title":"first"}`)
+	tool.SDKRawToolProjectionFingerprint = schemas.SDKRawToolProjectionFingerprint(tool)
+	first := computeToolsHash(map[string]schemas.ChatTool{"tool": tool}, nil, "")
+	require.NotEqual(t, base, first, "adding whole-tool metadata must rebuild native tools/list")
+
+	tool.SDKRawToolJSON = json.RawMessage(`{"name":"tool","title":"second"}`)
+	second := computeToolsHash(map[string]schemas.ChatTool{"tool": tool}, nil, "")
+	require.NotEqual(t, first, second, "raw-only metadata changes must refresh the gateway cache")
+}
+
 // TestMCPSchemaProviderProjectionDefaults checks that richer raw schemas never
 // produce an empty provider type, without changing the downstream MCP contract.
 func TestMCPSchemaProviderProjectionDefaults(t *testing.T) {

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -189,6 +190,14 @@ func (a *schemaGatewayAdmitter) AdmitMCPGatewayRequest(ctx *schemas.BifrostConte
 	return access, nil
 }
 
+func (*schemaGatewayAdmitter) VirtualMCPToolAccess(*schemas.BifrostContext, string, schemas.Access) ([]string, bool) {
+	return nil, false
+}
+
+func (*schemaGatewayAdmitter) MCPClientToolAccess(*schemas.BifrostContext, string, schemas.Access) ([]string, bool) {
+	return nil, false
+}
+
 func TestMCPSchemaPreservationEndToEnd(t *testing.T) {
 	testMCPSchemaPreservationEndToEnd(t, "")
 }
@@ -203,12 +212,12 @@ func testMCPSchemaPreservationEndToEnd(t *testing.T, persistenceMode string) {
 	SetLogger(&mockLogger{})
 	var err error
 	fixture := struct{ Tools []map[string]any }{Tools: []map[string]any{
-		{"name": "lookup", "inputSchema": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"query": map[string]any{"type": "string", "pattern": "^[a-z]+$", "minLength": 1}}, "required": []string{"query"}, "x-contract": "synthetic"}, "outputSchema": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"value": map[string]any{"type": "integer"}}}, "annotations": map[string]any{"title": "Lookup", "readOnlyHint": true, "destructiveHint": false}},
+		{"name": "lookup", "title": "Lookup display title", "_meta": map[string]any{"fixture": "synthetic", "presentNull": nil}, "inputSchema": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"query": map[string]any{"type": "string", "pattern": "^[a-z]+$", "minLength": 1}}, "required": []string{"query"}, "x-contract": "synthetic"}, "outputSchema": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"value": map[string]any{"type": "integer"}}}, "annotations": map[string]any{"title": "Lookup", "readOnlyHint": true, "destructiveHint": false}},
 	}}
 	// Synthetic siblings pin composition, refs, large numeric bounds and absent vs {}.
 	var edge map[string]any
 	// Decode numbers exactly for the numeric precision assertion below.
-	dec := json.NewDecoder(bytes.NewReader([]byte(`{"name":"schema_edge","inputSchema":{"type":"object","additionalProperties":false,"maxProperties":2,"$defs":{"N":{"type":"integer","maximum":9007199254740993}},"properties":{"n":{"$ref":"#/$defs/N"},"a":{"type":"array"}},"anyOf":[{"required":["n"]},{"required":["a"]}],"oneOf":[{"maxProperties":1},{"minProperties":2}],"x-extension":{"one":1}},"outputSchema":{},"annotations":{"readOnlyHint":true}}`)))
+	dec := json.NewDecoder(bytes.NewReader([]byte(`{"name":"schema_edge","title":null,"_meta":{"nested":{"items":[null,{"large":9007199254740993}]},"presentNull":null},"inputSchema":{"type":"object","additionalProperties":false,"maxProperties":2,"$defs":{"N":{"type":"integer","maximum":9007199254740993}},"properties":{"n":{"$ref":"#/$defs/N"},"a":{"type":"array"}},"anyOf":[{"required":["n"]},{"required":["a"]}],"oneOf":[{"maxProperties":1},{"minProperties":2}],"x-extension":{"one":1}},"outputSchema":{},"annotations":{"readOnlyHint":true,"x-unknown":{"nested":{"null":null,"large":9007199254740993}}}}`)))
 	dec.UseNumber()
 	require.NoError(t, dec.Decode(&edge))
 	fixture.Tools = append(fixture.Tools, map[string]any{"name": "boolean_true", "inputSchema": true, "outputSchema": false, "annotations": map[string]any{"readOnlyHint": true}}, map[string]any{"name": "boolean_false", "inputSchema": false, "outputSchema": true, "annotations": map[string]any{"readOnlyHint": true}}, edge, map[string]any{"name": "schema_absent", "inputSchema": map[string]any{}, "annotations": map[string]any{"readOnlyHint": true}})
@@ -372,7 +381,7 @@ func testMCPSchemaPreservationEndToEnd(t *testing.T, persistenceMode string) {
 			name := "fixture-" + up["name"].(string)
 			down, ok := got[name]
 			require.True(t, ok, name)
-			for _, field := range []string{"inputSchema", "outputSchema", "annotations"} {
+			for _, field := range []string{"inputSchema", "outputSchema", "annotations", "title", "_meta"} {
 				value, present := up[field]
 				actual, exists := down[field]
 				if !present {
@@ -385,6 +394,17 @@ func testMCPSchemaPreservationEndToEnd(t *testing.T, persistenceMode string) {
 				require.JSONEq(t, string(expected), string(actual), "%s %s changed", name, field)
 				if name == "fixture-schema_edge" && field == "inputSchema" {
 					require.Contains(t, string(actual), "9007199254740993")
+				}
+				if name == "fixture-schema_edge" && (field == "_meta" || field == "annotations") {
+					require.Contains(t, string(actual), "9007199254740993")
+					if field == "_meta" {
+						require.Contains(t, string(actual), `"presentNull":null`)
+					} else {
+						require.Contains(t, string(actual), `"null":null`)
+					}
+				}
+				if name == "fixture-schema_edge" && field == "title" {
+					require.Equal(t, "null", string(actual), "explicit null title must remain distinct from an absent title")
 				}
 			}
 		}
@@ -436,6 +456,95 @@ func TestMCPServerSchemaSnapshotOwnsMetadata(t *testing.T) {
 	require.Contains(t, string(wire), `"inputSchema":{}`)
 	require.Contains(t, string(wire), `"outputSchema":{}`)
 	require.Contains(t, string(wire), `"readOnlyHint":true`)
+}
+
+func TestMCPRawToolTypedHookEditFailsClosedButNameOnlyRewriteWorks(t *testing.T) {
+	newTool := func() schemas.ChatTool {
+		description := "original description"
+		tool := schemas.ChatTool{
+			Type: schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{
+				Name:        "upstream-name",
+				Description: &description,
+				Parameters:  &schemas.ToolFunctionParameters{Type: "object"},
+			},
+			MCPToolSchema: &schemas.MCPToolSchema{InputSchema: []byte(`{"type":"object"}`)},
+			Annotations:   &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(true)},
+			SDKRawToolJSON: json.RawMessage(
+				`{"name":"upstream-name","description":"original description","title":"Native title","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true,"x-unknown":{"null":null}}}`,
+			),
+		}
+		tool.SDKRawToolProjectionFingerprint = schemas.SDKRawToolProjectionFingerprint(tool)
+		return tool
+	}
+	list := func(t *testing.T, tool schemas.ChatTool) ([]byte, error) {
+		t.Helper()
+		response := (&MCPServerHandler{}).buildServer([]schemas.ChatTool{tool}).HandleMessage(
+			context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`),
+		)
+		return sonic.Marshal(response)
+	}
+
+	t.Run("typed description edit is rejected", func(t *testing.T) {
+		tool := newTool()
+		*tool.Function.Description = "edited by hook"
+		_, err := list(t, tool)
+		require.ErrorContains(t, err, "raw MCP tool projection conflict")
+	})
+
+	t.Run("name rewrite retains raw metadata", func(t *testing.T) {
+		tool := newTool()
+		tool.Function.Name = "gateway-renamed"
+		wire, err := list(t, tool)
+		require.NoError(t, err)
+		var response struct {
+			Result struct {
+				Tools []map[string]json.RawMessage `json:"tools"`
+			} `json:"result"`
+		}
+		require.NoError(t, json.Unmarshal(wire, &response))
+		require.Len(t, response.Result.Tools, 1)
+		var name string
+		require.NoError(t, json.Unmarshal(response.Result.Tools[0]["name"], &name))
+		require.Equal(t, "gateway-renamed", name)
+		require.JSONEq(t, `"Native title"`, string(response.Result.Tools[0]["title"]))
+		annotations := response.Result.Tools[0]["annotations"]
+		require.Contains(t, string(annotations), `"x-unknown":{"null":null}`)
+	})
+}
+
+func BenchmarkMCPNativeMetadata(b *testing.B) {
+	description := "synthetic benchmark tool"
+	tool := schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name:        "benchmark",
+			Description: &description,
+			Parameters:  &schemas.ToolFunctionParameters{Type: "object"},
+		},
+	}
+	benchmarkMCPToolsList(b, "typed_fallback", tool)
+
+	rawTool := tool
+	rawTool.MCPToolSchema = &schemas.MCPToolSchema{InputSchema: []byte(`{"type":"object"}`)}
+	rawTool.SDKRawToolJSON = json.RawMessage(`{"name":"benchmark","description":"synthetic benchmark tool","title":"Benchmark","inputSchema":{"type":"object"}}`)
+	rawTool.SDKRawToolProjectionFingerprint = schemas.SDKRawToolProjectionFingerprint(rawTool)
+	benchmarkMCPToolsList(b, "raw", rawTool)
+}
+
+func benchmarkMCPToolsList(b *testing.B, name string, tool schemas.ChatTool) {
+	b.Run(name, func(b *testing.B) {
+		request := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+		mcpServer := (&MCPServerHandler{}).buildServer([]schemas.ChatTool{tool})
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			response := mcpServer.HandleMessage(context.Background(), request)
+			if _, err := json.Marshal(response); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
 
 // slugAdmitter admits everything and resolves slugs from fixed maps.

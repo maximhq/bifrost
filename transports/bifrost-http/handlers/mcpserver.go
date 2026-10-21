@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -461,6 +462,10 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 				mcpTool.RawInputSchema = metadata.InputSchema
 			}
 			mcpTool.RawOutputSchema = metadata.OutputSchema
+		}
+		if tool.SDKRawToolJSON != nil {
+			mcpTool.RawToolJSON = append(json.RawMessage(nil), tool.SDKRawToolJSON...)
+			mcpTool.RawToolJSONConflict = tool.HasSDKRawToolProjectionConflict()
 		}
 		mcpServer.AddTool(mcpTool, handler)
 	}
