@@ -75,7 +75,6 @@ func main() {
 
 	// Wrap the HTTP server with middleware that rejects ping requests
 	wrappedHandler := noPingMiddleware(httpServer)
-	wrappedHandler = withReplaySafetyFixture(mcpServer, wrappedHandler)
 
 	if err := http.ListenAndServe(addr, wrappedHandler); err != nil {
 		log.Fatalf("Server error: %v", err)
