@@ -282,14 +282,14 @@ These entries change a default, a status code, a response shape or a Go SDK type
 
 ## 🔧 Maintenance
 
-- **Dependency Security Updates** - Bumped UI dependencies flagged by Dependabot, including `@tanstack/react-router` 1.170.5, `@tanstack/router-plugin` 1.168.7, `axios` 1.20.0 and `dompurify` 3.4.16 (#7796, #8178)
-- **Documentation** - The alert history endpoint docs now cover its sort parameters (#8271)
+- **Dependency Security Updates** - Bumped UI dependencies flagged by Dependabot, including `@tanstack/react-router` 1.170.5, `@tanstack/router-plugin` 1.168.7, `axios` 1.20.0 and `dompurify` 3.4.16
+- **Documentation** - The alert history endpoint docs now cover its sort parameters
 
 ## 🗄️ Database Migrations
 
 This release adds 45 config store and 9 log store migrations. Most add nullable or defaulted columns, new tables, or indexes, and are safe to run while older pods are still serving. The items with a Note need attention before or during the upgrade.
 
-The migration runner now reads the list of applied IDs once at startup and skips steps that are already recorded, so restarts no longer re-run finished steps (#7994). Postgres index checks are scoped to the current schema, and an INVALID index left behind by an interrupted build is dropped and rebuilt (#8439).
+The migration runner now reads the list of applied IDs once at startup and skips steps that are already recorded, so restarts no longer re-run finished steps. Postgres index checks are scoped to the current schema, and an INVALID index left behind by an interrupted build is dropped and rebuilt.
 
 ### Config store: data moves and backfills
 
@@ -420,7 +420,7 @@ Each of these rolls back cleanly by dropping what it added.
 - [#8004](https://github.com/maximhq/bifrost/issues/8004) - [MCP Library] Add: FXMacroData
 - [#8153](https://github.com/maximhq/bifrost/issues/8153) - [Bug]: Routing Tree silently truncates routing rules at 100
 - [#8171](https://github.com/maximhq/bifrost/issues/8171) - [Bug]: Routing Tree CEL parser splits and rewrites operators inside quoted string literals
-- [#8195](https://github.com/maximhq/bifrost/issues/8195) - [Bug]: Anthropic `tool_result.is_error` no longer reaches OpenAI Responses upstreams - the `status: "incomplete"` set by the Anthropic converter is cleared in `ToOpenAIResponsesRequest` (#7835)
+- [#8195](https://github.com/maximhq/bifrost/issues/8195) - [Bug]: Anthropic `tool_result.is_error` no longer reaches OpenAI Responses upstreams - the `status: "incomplete"` set by the Anthropic converter is cleared in `ToOpenAIResponsesRequest`
 - [#8196](https://github.com/maximhq/bifrost/issues/8196) - [Bug]: /v1/responses rejects multi-part assistant messages - output_text is not mapped to text in ToChatMessages
 - [#8205](https://github.com/maximhq/bifrost/issues/8205) - [Bug]: ClickHouse log list returns full input histories
 - [#8207](https://github.com/maximhq/bifrost/issues/8207) - [Bug]: Anthropic tool_addition / tool_removal blocks lose their `tool` object in the Responses conversion
@@ -478,21 +478,21 @@ Each of these rolls back cleanly by dropping what it added.
 - feat: add typed LLMSpanData, SpanEnrichment and connector demand interfaces
 - feat: expose failure identity for pre-dispatch errors
 - feat: add BifrostGuardrailDetection for detect-only guardrail policy matches
-- feat: Bedrock guardrail selective evaluation: guardContent blocks (text and image) survive conversion, guardrailConfig accepts a validated tagSuffix and streamProcessingMode, InvokeModel reads X-Amzn-Bedrock-Guardrail* headers, and the same guard_content marker is available on Chat Completions content blocks (#7696) [@akshaydeo](https://github.com/akshaydeo)
+- feat: Bedrock guardrail selective evaluation: guardContent blocks (text and image) survive conversion, guardrailConfig accepts a validated tagSuffix and streamProcessingMode, InvokeModel reads X-Amzn-Bedrock-Guardrail* headers, and the same guard_content marker is available on Chat Completions content blocks [@akshaydeo](https://github.com/akshaydeo)
 - chore: deprecate attribution context keys in favour of ctx.Grant() accessors
 - fix: gpt-5.6+ requests carrying cache_control are no longer switched to prompt_cache_options.mode "explicit"; markers still become prompt_cache_breakpoint (at most three in implicit mode, four when the caller sets explicit mode) [@akshaydeo](https://github.com/akshaydeo)
 - fix: report truncated Content-Length response streams and discard incomplete connections (thanks [@Constantine3](https://github.com/Constantine3)!)
-- fix: a tool_result flagged is_error keeps its status "incomplete" marker on the OpenAI Responses wire (#8195) (thanks [@shreyanshj10](https://github.com/shreyanshj10)!)
-- fix: Responses to chat conversion maps output_text to text on multi-part assistant turns (#8196) (thanks [@shreyanshj10](https://github.com/shreyanshj10)!)
-- fix: preserve cache_control, citations, prompt_cache_breakpoint and cachePoint in deepCopyChatContentBlock (#8215) (thanks [@Shashank2985](https://github.com/Shashank2985)!)
+- fix: a tool_result flagged is_error keeps its status "incomplete" marker on the OpenAI Responses wire (thanks [@shreyanshj10](https://github.com/shreyanshj10)!)
+- fix: Responses to chat conversion maps output_text to text on multi-part assistant turns (thanks [@shreyanshj10](https://github.com/shreyanshj10)!)
+- fix: preserve cache_control, citations, prompt_cache_breakpoint and cachePoint in deepCopyChatContentBlock (thanks [@Shashank2985](https://github.com/Shashank2985)!)
 - fix: Anthropic-compatible responses report stop_reason "stop_sequence" with the matched stop_sequence for Claude on Anthropic and Vertex, streaming and non-streaming (thanks [@jimseiwert](https://github.com/jimseiwert)!)
 - fix: Anthropic error envelope always uses a documented error.type, mapped from google.rpc status names or the HTTP status when needed (thanks [@jimseiwert](https://github.com/jimseiwert)!)
 - fix: Gemini/Vertex Responses conversion keeps function tools declared without input_schema and orders function responses to match the preceding calls (thanks [@jimseiwert](https://github.com/jimseiwert)!)
-- fix: chat streams converted from a Responses upstream send the assistant role exactly once, on the first chunk (#7693) (thanks [@hmdsefi](https://github.com/hmdsefi)!)
+- fix: chat streams converted from a Responses upstream send the assistant role exactly once, on the first chunk (thanks [@hmdsefi](https://github.com/hmdsefi)!)
 - fix: preserve Mistral streaming text arrays and reject unsupported content blocks (thanks [@xujiantop-crypto](https://github.com/xujiantop-crypto)!)
-- fix: map chat completion n to Gemini candidateCount (#7388) (thanks [@axelray-dev](https://github.com/axelray-dev)!)
-- fix: record output items before closing open items on Gemini streaming Responses when parts and finishReason share a frame (#7341) (thanks [@wofiporia](https://github.com/wofiporia)!)
-- fix: strip the Claude Code billing header again when an effort-only system message comes first, and restore it in place for Anthropic attempts (#8039) [@akshaydeo](https://github.com/akshaydeo)
+- fix: map chat completion n to Gemini candidateCount (thanks [@axelray-dev](https://github.com/axelray-dev)!)
+- fix: record output items before closing open items on Gemini streaming Responses when parts and finishReason share a frame (thanks [@wofiporia](https://github.com/wofiporia)!)
+- fix: strip the Claude Code billing header again when an effort-only system message comes first, and restore it in place for Anthropic attempts [@akshaydeo](https://github.com/akshaydeo)
 - fix: infer http status for stream errors and key-selection failures
 - fix: skip catalog-inferred fallbacks on caller-fault errors; forward raw gemini logprobs
 - fix: refuse aggregate model listing with a direct key, return the provider's error for a refused direct key, and bind no session key for direct keys
@@ -592,10 +592,10 @@ Each of these rolls back cleanly by dropping what it added.
 - feat: compute per-category request cost breakdown in the model catalog
 - feat: produce trace data and plugin spans only when a connector consumes them
 - feat: add above-100k-token pricing tier
-- fix: use updated log retention for subsequent cleanup passes (#8212) (thanks [@Constantine3](https://github.com/Constantine3)!)
-- fix: transcription cost uses the provider-reported usage.cost when present, as chat already does (#7819) (thanks [@hmdsefi](https://github.com/hmdsefi)!)
+- fix: use updated log retention for subsequent cleanup passes (thanks [@Constantine3](https://github.com/Constantine3)!)
+- fix: transcription cost uses the provider-reported usage.cost when present, as chat already does (thanks [@hmdsefi](https://github.com/hmdsefi)!)
 - fix: complexity router keeps custom provider name case so its config lookup succeeds (thanks [@MohammadHijjawi97](https://github.com/MohammadHijjawi97)!)
-- fix: config-driven skill updates serve the new version instead of failing on an unset LatestVersion (#8246) (thanks [@ozenyunus35](https://github.com/ozenyunus35)!)
+- fix: config-driven skill updates serve the new version instead of failing on an unset LatestVersion (thanks [@ozenyunus35](https://github.com/ozenyunus35)!)
 - fix: hash and merge the complexity analyzer config as written in config.json
 - fix: prefer realtime catalog rates for realtime requests
 - fix: parse the reasoning summary capability from the datasheet

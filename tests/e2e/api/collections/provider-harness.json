@@ -276696,6 +276696,73 @@
           }
         }
       ]
+    },
+    {
+      "name": "262. Aggregate model listing completeness (#8759)",
+      "description": "Pins issue #8759. The unscoped GET /v1/models fans out to every provider and walks each provider's pages 1,000 rows at a time. The per-provider poll deadline used to cover the whole walk, and every page re-fetches the upstream catalog, so a large catalog timed out after its first page and the aggregate silently kept 1,000 rows with no next_page_token while ?provider=<name> returned everything. The case lists the unscoped aggregate, walks the provider-scoped listing through next_page_token, and asserts every scoped model id is in the aggregate. Hugging Face is the largest catalog in the integration profile; the invariant holds for every provider.",
+      "item": [
+        {
+          "name": "/v1/models - aggregate includes every row of the provider-scoped listing - huggingface - #8759",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var aggBody = pm.response.text() || '';",
+                  "pm.test('unscoped /v1/models answers 200 with every row and no continuation token', function () {",
+                  "  pm.expect(pm.response.code, 'aggregate listing failed: ' + aggBody.slice(0, 2000)).to.equal(200);",
+                  "  pm.expect(pm.response.json().next_page_token, 'unpaged aggregate returned a next_page_token').to.not.be.ok;",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var aggregate = {};",
+                  "(pm.response.json().data || []).forEach(function (m) { aggregate[m.id] = true; });",
+                  "var scoped = [];",
+                  "var pages = 0;",
+                  "function check(err) {",
+                  "  pm.test('aggregate includes every model of the full huggingface listing', function () {",
+                  "    pm.expect(err, 'scoped page walk failed').to.equal(null);",
+                  "    pm.expect(scoped.length, 'scoped huggingface listing returned no models').to.be.above(0);",
+                  "    var missing = scoped.filter(function (id) { return !aggregate[id]; });",
+                  "    pm.expect(missing.length, missing.length + ' of ' + scoped.length + ' huggingface models (' + pages + ' scoped pages) missing from the aggregate, e.g. ' + missing.slice(0, 10).join(', ')).to.equal(0);",
+                  "  });",
+                  "}",
+                  "function walk(token) {",
+                  "  var url = pm.variables.get('baseUrl') + '/v1/models?provider=huggingface&page_size=1000' + (token ? '&page_token=' + encodeURIComponent(token) : '');",
+                  "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
+                  "    if (err) { return check('request error: ' + err); }",
+                  "    if (res.code !== 200) { return check('scoped page ' + (pages + 1) + ' returned ' + res.code + ': ' + res.text().slice(0, 2000)); }",
+                  "    pages++;",
+                  "    var body = res.json();",
+                  "    (body.data || []).forEach(function (m) { scoped.push(m.id); });",
+                  "    if (body.next_page_token) {",
+                  "      if (pages < 20) { return walk(body.next_page_token); }",
+                  "      return check('scoped listing still had a next_page_token after ' + pages + ' pages; raise the cap or page_size');",
+                  "    }",
+                  "    check(null);",
+                  "  });",
+                  "}",
+                  "walk('');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

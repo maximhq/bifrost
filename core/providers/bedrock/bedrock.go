@@ -4619,7 +4619,7 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 		Model:                     bareModel,
 		IsStreaming:               streaming,
 		ValidateTools:             validateTools,
-		ExcludeFields:             []string{"guardrailConfig"},
+		ExcludeFields:             []string{"guardrailConfig", "additionalModelRequestFieldPaths", "additionalModelResponseFieldPaths"},
 		IncludeFields:             includeFields,
 		BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 		ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,

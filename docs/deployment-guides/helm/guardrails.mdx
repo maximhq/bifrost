@@ -101,7 +101,7 @@ bifrost:
           max_output_tokens: 1000
 ```
 
-Prompt Guardrails returns binary allow or block decisions. It adds judge-model latency and token cost, and it does not inspect image pixels or binary files. See [Prompt Guardrails](/enterprise/guardrails/prompt-guardrails) for model requirements, verification, failure behavior, and policy-writing guidance.
+Prompt Guardrails returns binary allow or block decisions, judged by an LLM or, with `judge_type: "decision"`, by a decision model. It adds judge-model latency and token cost, and it does not inspect image pixels or binary files. See [Prompt Guardrails](/enterprise/guardrails/prompt-guardrails) for model requirements, verification, failure behavior, and policy-writing guidance.
 
 </Tab>
 <Tab title="Presidio">
@@ -632,12 +632,14 @@ Any field marked **env.\* supported** below accepts a bare `"env.VAR_NAME"` stri
 
 | Field | Required | env.\* supported | Notes |
 |-------|----------|-----------------|-------|
+| `judge_type` | No | **Plain only** | `llm` \| `decision` (default: `llm`). See [Decision Model Judges](/enterprise/guardrails/prompt-guardrails#decision-model-judges) |
 | `judge_provider` | Yes | **Plain only** | Configured Bifrost provider used for the judge request |
-| `judge_model` | Yes | **Plain only** | Judge model; must support Chat Completions or the Responses API |
+| `judge_model` | Yes | **Plain only** | `llm`: a model that supports Chat Completions or the Responses API. `decision`: a native decision model |
 | `rule` | Yes | **Plain only** | Natural-language policy to evaluate |
-| `prompt_template` | No | **Plain only** | Custom system-prompt template; must contain `{{rule}}` and must not contain `{{content}}`. Bifrost appends the required JSON output format |
+| `prompt_template` | No | **Plain only** | `llm` only. Custom system-prompt template; must contain `{{rule}}` and must not contain `{{content}}`. Bifrost appends the required JSON output format |
 | `timeout` | No | **Plain only** | Judge-request timeout in seconds (default: `30`) |
-| `max_output_tokens` | No | **Plain only** | Judge response limit from `1` to `1024`, including reasoning tokens (default: `1000`) |
+| `max_output_tokens` | No | **Plain only** | `llm` only. Judge response limit from `1` to `1024`, including reasoning tokens (default: `1000`) |
+| `block_threshold` | No | **Plain only** | `decision` only. Blocks when the violation probability is at or above this value; greater than `0` and at most `1` (default: `0.9`) |
 
 ---
 

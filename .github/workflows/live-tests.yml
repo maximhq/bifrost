@@ -38,7 +38,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.2"
+          go-version: "1.27.3"
 
       # The suite's OpenAI Python SDK leg runs `uv run pytest` from tests/live/python.
       - name: Install uv
@@ -81,7 +81,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.2"
+          go-version: "1.27.3"
 
       - name: Run long GPT Live sessions
         run: |
