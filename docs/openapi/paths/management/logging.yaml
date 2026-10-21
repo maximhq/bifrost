@@ -54,7 +54,7 @@ logs:
           type: string
       - name: routing_engine_used
         in: query
-        description: Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)
+        description: Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)
         schema:
           type: string
       - name: tool_call_names
@@ -89,6 +89,8 @@ logs:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter
@@ -124,6 +126,7 @@ logs:
         description: Only show logs with missing cost
         schema:
           type: boolean
+      - $ref: "#/_histogram-parameters/metadata_key"
       - name: content_search
         in: query
         description: Search in request/response content
@@ -281,7 +284,7 @@ logs-stats:
           type: string
       - name: routing_engine_used
         in: query
-        description: Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)
+        description: Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)
         schema:
           type: string
       - name: tool_call_names
@@ -316,6 +319,8 @@ logs-stats:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter
@@ -351,6 +356,7 @@ logs-stats:
         description: Only show logs with missing cost
         schema:
           type: boolean
+      - $ref: "#/_histogram-parameters/metadata_key"
       - name: content_search
         in: query
         description: Search in request/response content
@@ -545,6 +551,7 @@ logs-histogram:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -603,6 +610,8 @@ logs-histogram-tokens:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -610,6 +619,7 @@ logs-histogram-tokens:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
     security:
@@ -656,6 +666,8 @@ logs-histogram-cost:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -663,8 +675,15 @@ logs-histogram-cost:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
+      - name: bucket_size
+        in: query
+        description: "Bucket width in seconds, overriding the width derived from the time range. Requires start_time and end_time (or period). Below an hour it must divide 3600; from an hour up it must be a whole number of hours, at most 31 days. The window may span at most 5000 buckets."
+        schema:
+          type: integer
+          minimum: 60
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -709,6 +728,8 @@ logs-histogram-models:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -716,6 +737,7 @@ logs-histogram-models:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
     security:
@@ -762,6 +784,8 @@ logs-histogram-latency:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -769,6 +793,7 @@ logs-histogram-latency:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
     security:
@@ -815,6 +840,8 @@ logs-histogram-cost-by-provider:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -822,6 +849,7 @@ logs-histogram-cost-by-provider:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
     security:
@@ -868,6 +896,8 @@ logs-histogram-tokens-by-provider:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -875,6 +905,7 @@ logs-histogram-tokens-by-provider:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
     security:
@@ -921,6 +952,8 @@ logs-histogram-latency-by-provider:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -928,6 +961,7 @@ logs-histogram-latency-by-provider:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
     security:
@@ -980,6 +1014,7 @@ logs-histogram-throughput:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -987,6 +1022,7 @@ logs-histogram-throughput:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
     security:
@@ -1037,6 +1073,7 @@ logs-histogram-throughput-by-provider:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -1044,6 +1081,7 @@ logs-histogram-throughput-by-provider:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
     security:
@@ -1143,7 +1181,7 @@ _histogram-parameters:
   routing_engine_used:
     name: routing_engine_used
     in: query
-    description: Comma-separated list of routing engines to filter by
+    description: Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)
     schema:
       type: string
   complexity_tiers:
@@ -1181,7 +1219,19 @@ _histogram-parameters:
   period:
     name: period
     in: query
-    description: Relative time period filter
+    description: >-
+      Time window resolved server-side; takes precedence over start_time and end_time.
+      Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week,
+      this_month) start at midnight of the current day, week (Monday) or month in `timezone`.
+    schema:
+      type: string
+      enum: [1h, 6h, 24h, 7d, 30d, today, this_week, this_month]
+  timezone:
+    name: timezone
+    in: query
+    description: >-
+      IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or
+      unknown values fall back to UTC. Ignored for sliding periods.
     schema:
       type: string
   min_latency:
@@ -1253,7 +1303,12 @@ _histogram-parameters:
   metadata_key:
     name: metadata_<key>
     in: query
-    description: Metadata filter where <key> is the metadata key to match
+    description: >-
+      Filter on custom log metadata. Replace <key> with the metadata key, for example
+      `metadata_team=search`. Repeat with different keys to require all of them; the value
+      must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters;
+      other keys are ignored. List the keys in use with
+      `GET /api/logs/filterdata?dimensions=metadata_keys`.
     schema:
       type: string
   content_search:
@@ -1511,6 +1566,8 @@ mcp-logs:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter (milliseconds)
@@ -1711,6 +1768,8 @@ mcp-logs-stats:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter
@@ -1907,6 +1966,7 @@ logs-rankings:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -1987,6 +2047,7 @@ logs-rankings-by-dimension:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -2061,6 +2122,7 @@ logs-rankings-users:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_ranking-parameters/limit"
       - $ref: "#/_ranking-parameters/all"
     security:
@@ -2123,6 +2185,7 @@ logs-dashboard:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -2203,6 +2266,8 @@ logs-histogram-cost-by-dimension:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -2210,6 +2275,7 @@ logs-histogram-cost-by-dimension:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
     security:
@@ -2263,6 +2329,8 @@ logs-histogram-tokens-by-dimension:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -2270,6 +2338,7 @@ logs-histogram-tokens-by-dimension:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
     security:
@@ -2323,6 +2392,8 @@ logs-histogram-latency-by-dimension:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -2330,6 +2401,7 @@ logs-histogram-latency-by-dimension:
       - $ref: "#/_histogram-parameters/min_cost"
       - $ref: "#/_histogram-parameters/max_cost"
       - $ref: "#/_histogram-parameters/missing_cost_only"
+      - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
     security:
@@ -2402,6 +2474,8 @@ mcp-logs-histogram:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter (milliseconds)
@@ -2487,6 +2561,8 @@ mcp-logs-histogram-cost:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter (milliseconds)
@@ -2572,6 +2648,8 @@ mcp-logs-histogram-top-tools:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter (milliseconds)

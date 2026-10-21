@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -623,7 +624,6 @@ func TestBuildResponsesMessagePreservesCustomToolCallInput(t *testing.T) {
 	}
 }
 
-
 // TestBuildResponsesMessageKeepsShellCallPayload covers a streamed shell turn.
 // The item deep copy lists every action variant by hand, so a missing shell
 // branch left the assembled log row with an empty action and no commands.
@@ -732,4 +732,51 @@ func TestBuildResponsesMessageKeepsShellCallOutput(t *testing.T) {
 	require.Equal(t, "hello\n", output.ResponsesShellCallOutput[0].Stdout)
 	require.Equal(t, 0, *output.ResponsesShellCallOutput[0].Outcome.ExitCode)
 	require.Equal(t, 1000, *msgs[0].ResponsesToolMessage.ResponsesShellCall.MaxOutputLength)
+}
+
+// TestResponsesStreamRetainsStopReason reproduces a synthetic refusal followed by a metadata-only terminal chunk.
+func TestResponsesStreamRetainsStopReason(t *testing.T) {
+	for _, reason := range []string{"refusal", "content_filter", "stop", "future_reason"} {
+		t.Run(reason, func(t *testing.T) {
+			acc := testResponsesAccumulator(t)
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "stop-"+reason)
+			response := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Response: &schemas.BifrostResponsesResponse{StopReason: schemas.Ptr(reason)},
+			}}
+			_, err := acc.processResponsesStreamingResponse(ctx, response, nil)
+			require.NoError(t, err)
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			tail := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{}}
+			tail.ResponsesStreamResponse.ExtraFields.ChunkIndex = 1
+			got, err := acc.processResponsesStreamingResponse(ctx, tail, nil)
+			require.NoError(t, err)
+			require.NotNil(t, got.Data.FinishReason)
+			require.Equal(t, reason, *got.Data.FinishReason)
+		})
+	}
+}
+
+// TestBuildResponsesMessagesFromChunksWithoutAccumulator pins the exported builder used to rebuild
+// recorded streams outside a live Accumulator: it must sort out-of-order chunks itself and match
+// what the Accumulator method produces for the same input.
+func TestBuildResponsesMessagesFromChunksWithoutAccumulator(t *testing.T) {
+	ci := 0
+	makeChunks := func() []*ResponsesStreamChunk {
+		return []*ResponsesStreamChunk{
+			{ChunkIndex: 2, StreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("world"), ContentIndex: &ci}},
+			{ChunkIndex: 0, StreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("hello"), ContentIndex: &ci}},
+			{ChunkIndex: 1, StreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr(", "), ContentIndex: &ci}},
+		}
+	}
+
+	msgs := BuildResponsesMessagesFromChunks(makeChunks())
+	require.Len(t, msgs, 1)
+	require.NotNil(t, msgs[0].Content)
+	require.NotEmpty(t, msgs[0].Content.ContentBlocks)
+	require.NotNil(t, msgs[0].Content.ContentBlocks[0].Text)
+	require.Equal(t, "hello, world", *msgs[0].Content.ContentBlocks[0].Text)
+
+	viaAccumulator := testResponsesAccumulator(t).buildCompleteMessageFromResponsesStreamChunks(makeChunks())
+	require.Equal(t, viaAccumulator, msgs)
 }

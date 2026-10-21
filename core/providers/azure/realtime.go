@@ -30,7 +30,10 @@ func (provider *AzureProvider) SupportsRealtimeAPI() bool {
 }
 
 func (provider *AzureProvider) RealtimeWebSocketURL(key schemas.Key, model, intent string) (string, *schemas.BifrostError) {
-	endpoint := strings.TrimRight(key.AzureKeyConfig.Endpoint.GetValue(), "/")
+	endpoint, endpointErr := azureRealtimeEndpoint(key)
+	if endpointErr != nil {
+		return "", endpointErr
+	}
 	endpoint = strings.Replace(endpoint, "https://", "wss://", 1)
 	endpoint = strings.Replace(endpoint, "http://", "ws://", 1)
 
@@ -49,7 +52,7 @@ func (provider *AzureProvider) RealtimeHeaders(ctx *schemas.BifrostContext, key 
 			"Authorization": "Bearer " + value,
 		}
 		for k, v := range provider.networkConfig.ExtraHeaders {
-			headers[k] = v
+			headers[k] = v.GetValue()
 		}
 		return headers, nil
 	}
@@ -59,7 +62,7 @@ func (provider *AzureProvider) RealtimeHeaders(ctx *schemas.BifrostContext, key 
 		return nil, authErr
 	}
 	for k, v := range provider.networkConfig.ExtraHeaders {
-		headers[k] = v
+		headers[k] = v.GetValue()
 	}
 	return headers, nil
 }
@@ -75,7 +78,10 @@ func (provider *AzureProvider) ExchangeRealtimeWebRTCSDP(
 	sdp string,
 	session json.RawMessage,
 ) (string, *schemas.BifrostError) {
-	endpoint := strings.TrimRight(key.AzureKeyConfig.Endpoint.GetValue(), "/")
+	endpoint, endpointErr := azureRealtimeEndpoint(key)
+	if endpointErr != nil {
+		return "", endpointErr
+	}
 
 	upstreamURL := fmt.Sprintf("%s/openai/v1/realtime?model=%s",
 		endpoint, url.QueryEscape(model))
@@ -122,7 +128,7 @@ func (provider *AzureProvider) ExchangeRealtimeWebRTCSDP(
 	}
 
 	for k, v := range provider.networkConfig.ExtraHeaders {
-		req.Header.Set(k, v)
+		req.Header.Set(k, v.GetValue())
 	}
 	req.SetBody(bodyBuf.Bytes())
 
@@ -226,7 +232,7 @@ func (provider *AzureProvider) CreateRealtimeClientSecret(
 		req.Header.Set(k, v)
 	}
 	for k, v := range provider.networkConfig.ExtraHeaders {
-		req.Header.Set(k, v)
+		req.Header.Set(k, v.GetValue())
 	}
 	req.SetBody(normalizedBody)
 
@@ -281,6 +287,21 @@ func (provider *AzureProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostC
 	}
 	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
 	return bifrostErr
+}
+
+// azureRealtimeEndpoint returns the key's Azure endpoint without a trailing slash.
+// A realtime session can arrive with a key that carries only a bearer value and no
+// Azure config (an ephemeral token Bifrost has no mapping for), so a missing or
+// empty endpoint is reported as a client error instead of being dereferenced.
+func azureRealtimeEndpoint(key schemas.Key) (string, *schemas.BifrostError) {
+	if key.AzureKeyConfig == nil {
+		return "", newAzureRealtimeError(fasthttp.StatusBadRequest, "invalid_request_error", "azure realtime requires a configured endpoint", nil)
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(key.AzureKeyConfig.Endpoint.GetValue()), "/")
+	if endpoint == "" {
+		return "", newAzureRealtimeError(fasthttp.StatusBadRequest, "invalid_request_error", "azure realtime requires a configured endpoint", nil)
+	}
+	return endpoint, nil
 }
 
 func isRealtimeTranscriptionSession(session json.RawMessage) bool {

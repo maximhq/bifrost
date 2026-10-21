@@ -8,6 +8,8 @@ on:
   pull_request:
     paths:
       - ".github/workflows/**"
+      - "**/go.mod"
+      - "**/version"
 
 permissions:
   contents: read
@@ -49,3 +51,6 @@ jobs:
 
       - name: Check version-format guard
         run: ./.github/workflows/scripts/version-format.test.sh
+
+      - name: Check module path major versions
+        run: ./.github/workflows/scripts/module-major.test.sh

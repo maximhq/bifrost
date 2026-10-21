@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1007,4 +1008,76 @@ func TestCodeModeAgent_ToolErrorInCode(t *testing.T) {
 	assert.GreaterOrEqual(t, mockLLM.chatCallCount, 1, "agent should handle tool error gracefully")
 
 	t.Logf("Tool error from code handled")
+}
+
+// The delivery proof: starlark's tests pin that the stub carries the text, this one pins that it
+// reaches the model, via the follow-up request the agent loop builds after auto-executing
+// readToolFile. That tool is auto-executed unconditionally, so no allow-list setup is needed.
+func TestCodeModeAgent_ServerInstructionsReachTheModel(t *testing.T) {
+	t.Parallel()
+
+	config := GetTestConfig(t)
+	if config.HTTPServerURL == "" {
+		t.Skip("MCP_HTTP_URL not set")
+	}
+
+	codeModeClient := GetSampleCodeModeAgentClientConfig(t, config.HTTPServerURL)
+	manager := setupMCPManager(t, codeModeClient)
+	ctx := createTestContext()
+
+	// Client state, not GetServerInstructions: that aggregate excludes code mode clients, so
+	// sourcing from it would make this test skip itself. Skips on a fixture advertising nothing.
+	state := manager.GetClientByName(codeModeClient.Name)
+	require.NotNil(t, state, "code mode client did not register")
+	if state.ServerInstructions == "" {
+		t.Skip("upstream advertises no instructions; nothing to forward on this fixture")
+	}
+
+	var followUp *schemas.BifrostChatRequest
+	makeReq := func(_ *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		followUp = req
+		return CreateChatResponseWithText("Read the stub"), nil
+	}
+
+	initialResponse := CreateChatResponseWithToolCalls([]schemas.ChatAssistantMessageToolCall{
+		{
+			ID:   schemas.Ptr("call-read-stub"),
+			Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      schemas.Ptr("readToolFile"),
+				Arguments: `{"fileName":"servers/` + codeModeClient.Name + `.pyi"}`,
+			},
+		},
+	})
+
+	originalReq := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What can this server do?")},
+		}},
+	}
+
+	_, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(ctx, originalReq, initialResponse, makeReq)
+	require.Nil(t, bifrostErr, "agent loop should complete")
+	require.NotNil(t, followUp, "readToolFile was not auto-executed, so no follow-up request was built")
+
+	var stub string
+	for _, msg := range followUp.Input {
+		if msg.Role == schemas.ChatMessageRoleTool && msg.Content != nil && msg.Content.ContentStr != nil {
+			stub = *msg.Content.ContentStr
+		}
+	}
+	require.NotEmpty(t, stub, "no tool result reached the follow-up request")
+
+	assert.Contains(t, stub, "---- server instructions (from the upstream handshake) ----",
+		"the stub that reached the model carried no instruction block:\n%s", stub)
+
+	// The rendered block, not a slice of the raw text: every line is commented, so multi-line
+	// instructions never appear verbatim. Rendering is pinned in core/mcp's instructions_test.go.
+	rendered := mcp.InstructionsCommentBlock(state.ServerInstructions, state.ExecutionConfig.MaxInstructionsLength)
+	require.NotEmpty(t, rendered, "an advertising upstream rendered no block")
+	assert.Contains(t, stub, rendered,
+		"the block reached the model without the upstream's own text:\n%s", stub)
 }

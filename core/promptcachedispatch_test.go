@@ -321,6 +321,92 @@ func TestPromptCacheChatRequest_PassesThroughWhenDisabled(t *testing.T) {
 	assert.Nil(t, promptCacheChatRequest(nil, promptCacheOn(), schemas.Anthropic, nil))
 }
 
+// mcpInstructionsChatRequest builds the chat request an MCP-bearing turn dispatches: the gateway
+// prepended its server-instructions system message ahead of the caller's transcript, and
+// recorded it on ctx the way the MCP tool manager does.
+func mcpInstructionsChatRequest() (*schemas.BifrostContext, *schemas.BifrostChatRequest) {
+	instructions := "<mcp_server name=\"sse_mcp\">\nUse the echo tool.\n</mcp_server>"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsInjected, true)
+	ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsText, &instructions)
+	return ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: &instructions}},
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("caller system prompt")}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("caller question")}},
+		},
+	}
+}
+
+// chatMessageHasMarker reports whether any content block of msg carries cache_control.
+func chatMessageHasMarker(msg schemas.ChatMessage) bool {
+	if msg.Content == nil {
+		return false
+	}
+	for _, block := range msg.Content.ContentBlocks {
+		if block.CacheControl != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPromptCacheChatRequest_SkipsInjectedMCPInstructions pins #6180's cache points against the
+// caller's transcript when the gateway has prepended MCP server instructions: the auto marker
+// lands on the caller's first block, and positional and role points count only the caller's
+// messages, instead of everything shifting by the injected message.
+func TestPromptCacheChatRequest_SkipsInjectedMCPInstructions(t *testing.T) {
+	t.Run("auto marks the caller's first block", func(t *testing.T) {
+		ctx, req := mcpInstructionsChatRequest()
+		out := promptCacheChatRequest(ctx, promptCacheOn(), schemas.Anthropic, req)
+		assert.False(t, chatMessageHasMarker(out.Input[0]), "the auto marker landed on the gateway's MCP instructions")
+		assert.True(t, chatMessageHasMarker(out.Input[1]), "the auto marker did not land on the caller's first block")
+		assert.False(t, chatMessageHasMarker(out.Input[2]))
+		require.NotNil(t, out.Input[0].Content.ContentStr, "the injected instructions must be sent unchanged")
+	})
+
+	t.Run("index and role points count the caller's messages", func(t *testing.T) {
+		ctx, req := mcpInstructionsChatRequest()
+		config := &schemas.ProviderConfig{PromptCache: &schemas.PromptCacheConfig{InjectionPoints: []schemas.CacheControlInjectionPoint{
+			{Location: "message", Index: schemas.Ptr(1)},
+			{Location: "message", Role: schemas.Ptr("system"), Index: schemas.Ptr(0)},
+		}}}
+		out := promptCacheChatRequest(ctx, config, schemas.Anthropic, req)
+		assert.False(t, chatMessageHasMarker(out.Input[0]), "a point resolved against the gateway's MCP instructions")
+		assert.True(t, chatMessageHasMarker(out.Input[1]), "role system + index 0 should name the caller's system message")
+		assert.True(t, chatMessageHasMarker(out.Input[2]), "index 1 should name the caller's second message")
+	})
+
+	t.Run("a chat turn dispatched through the Responses API skips them too", func(t *testing.T) {
+		ctx, req := mcpInstructionsChatRequest()
+		responsesReq := req.ToResponsesRequest()
+		require.NotNil(t, responsesReq)
+		require.Len(t, responsesReq.Input, 3)
+		out := promptCacheResponsesRequest(ctx, promptCacheOn(), schemas.Anthropic, responsesReq)
+		hasMarker := func(msg schemas.ResponsesMessage) bool {
+			if msg.Content == nil {
+				return false
+			}
+			for _, block := range msg.Content.ContentBlocks {
+				if block.CacheControl != nil {
+					return true
+				}
+			}
+			return false
+		}
+		assert.False(t, hasMarker(out.Input[0]), "the auto marker landed on the gateway's MCP instructions")
+		assert.True(t, hasMarker(out.Input[1]), "the auto marker did not land on the caller's first block")
+	})
+
+	t.Run("without injected instructions placement is unchanged", func(t *testing.T) {
+		_, req := mcpInstructionsChatRequest()
+		out := promptCacheChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), promptCacheOn(), schemas.Anthropic, req)
+		assert.True(t, chatMessageHasMarker(out.Input[0]), "a caller's own leading system message keeps the auto marker")
+	})
+}
+
 // TestPromptCacheChatRequest_CachePointOnlyReachesBedrock covers a Bedrock -> OpenAI fallback on the same shared request.
 func TestPromptCacheChatRequest_CachePointOnlyReachesBedrock(t *testing.T) {
 	req := chatReqWithText("stable prefix")

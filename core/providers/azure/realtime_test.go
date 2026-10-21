@@ -61,6 +61,42 @@ func TestRealtimeWebSocketURL(t *testing.T) {
 	}
 }
 
+// TestRealtimeRejectsKeyWithoutAzureConfig pins that a key carrying only a bearer value
+// (the shape an unmapped ephemeral token arrives in) is answered with a client error by
+// both realtime entry points instead of dereferencing the missing Azure config.
+func TestRealtimeRejectsKeyWithoutAzureConfig(t *testing.T) {
+	t.Parallel()
+
+	provider := &AzureProvider{}
+	keys := map[string]schemas.Key{
+		"no azure config": {Value: *schemas.NewSecretVar("ek_unmapped_token")},
+		"empty endpoint":  {Value: *schemas.NewSecretVar("ek_unmapped_token"), AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar("  ")}},
+	}
+	for name, key := range keys {
+		t.Run(name, func(t *testing.T) {
+			got, bifrostErr := provider.RealtimeWebSocketURL(key, "gpt-realtime", "")
+			if bifrostErr == nil || got != "" {
+				t.Fatalf("RealtimeWebSocketURL() = %q, %v, want an error and no URL", got, bifrostErr)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != fasthttp.StatusBadRequest {
+				t.Fatalf("RealtimeWebSocketURL() status = %v, want 400", bifrostErr.StatusCode)
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message != "azure realtime requires a configured endpoint" {
+				t.Fatalf("RealtimeWebSocketURL() error = %#v, want the configured-endpoint message", bifrostErr.Error)
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			answer, sdpErr := provider.ExchangeRealtimeWebRTCSDP(ctx, key, "gpt-realtime", "v=0", nil)
+			if sdpErr == nil || answer != "" {
+				t.Fatalf("ExchangeRealtimeWebRTCSDP() = %q, %v, want an error and no answer", answer, sdpErr)
+			}
+			if sdpErr.StatusCode == nil || *sdpErr.StatusCode != fasthttp.StatusBadRequest {
+				t.Fatalf("ExchangeRealtimeWebRTCSDP() status = %v, want 400", sdpErr.StatusCode)
+			}
+		})
+	}
+}
+
 func TestExchangeRealtimeWebRTCSDPUsesIntentForTranscription(t *testing.T) {
 	t.Parallel()
 

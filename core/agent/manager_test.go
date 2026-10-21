@@ -40,7 +40,7 @@ const agentCardPath = "/custom/cards/fixture.json"
 // gatewayCard is a test convenience wrapping gatewayCardWithExtensions with no
 // allowed extensions and no gRPC URL.
 func gatewayCard(upstream *a2a.AgentCard, externalURL, id string, policy schemas.AgentGatewayAuthPolicy, pushSupported bool) *a2a.AgentCard {
-	card, _ := gatewayCardWithExtensions(upstream, externalURL, id, policy, pushSupported, nil, "")
+	card, _ := gatewayCardWithExtensions(upstream, externalURL, id, policy, pushSupported, "")
 	return card
 }
 
@@ -96,6 +96,7 @@ func TestInspectCardIncludesAdvertisedMetadata(t *testing.T) {
 	}
 
 	result := inspectCard(card, map[string]bool{"streaming": true, "pushNotifications": true, "futureCapability": false})
+	require.Equal(t, card, result.Card)
 	require.Equal(t, "metadata-agent", result.Name)
 	require.Equal(t, "2.1.0", result.Version)
 	require.Equal(t, "Example Corp", result.Provider)
@@ -320,7 +321,7 @@ func TestAgentCardDiscoveryResponseSizeLimit(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(test.body) }))
 			defer server.Close()
-			m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "", nil)
+			m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 			require.NoError(t, err)
 			defer m.Close()
 			resolved, err := m.resolveCard(context.Background(), server.URL, nil, upstreamCredentialID("fixture", "discovery"))
@@ -358,7 +359,7 @@ func TestAgentCardDiscoveryRejectsRedirectWithoutLeakingCredential(t *testing.T)
 			return nil
 		},
 	}
-	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "", configuredClient)
+	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "", configuredClient, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	_, err = m.resolveCard(context.Background(), redirect.URL, &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeHeaders, Headers: map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer discovery-secret")}}, upstreamCredentialID("fixture", "discovery"))
@@ -427,7 +428,7 @@ func TestBuildGenerationFiltersInvalidInterfaces(t *testing.T) {
 	}
 	state.mu.Unlock()
 
-	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "", nil)
+	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	generation, err := m.buildGeneration(context.Background(), runtimeConfig{name: "fixture", agentCardURL: upstream.URL + agentCardPath})
@@ -474,7 +475,7 @@ func TestAgentOAuthTokensAreScopedByAgentAndPhase(t *testing.T) {
 	}))
 	defer server.Close()
 
-	m := &Manager{httpClient: server.Client(), oauthTokens: make(map[string]oauthToken)}
+	m := &Manager{privateAllowlistFn: func() []string { return []string{"127.0.0.1"} }, httpClient: server.Client(), oauthTokens: make(map[string]oauthToken)}
 	auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
 		TokenURL: server.URL, ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
 		Scopes: []string{"read", "write"}, Resource: "agent-api",
@@ -530,7 +531,7 @@ func TestAgentOAuthFetchesAreScopedAndCancellable(t *testing.T) {
 	}))
 	defer server.Close()
 
-	m := &Manager{httpClient: server.Client(), oauthTokens: make(map[string]oauthToken)}
+	m := &Manager{privateAllowlistFn: func() []string { return []string{"127.0.0.1"} }, httpClient: server.Client(), oauthTokens: make(map[string]oauthToken)}
 	auth := func(clientID string) *schemas.UpstreamAuth {
 		return &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
 			TokenURL: server.URL, ClientID: schemas.NewSecretVar(clientID), ClientSecret: schemas.NewSecretVar("secret"),
@@ -582,7 +583,7 @@ func TestOAuthDiscoveryRejectsCrossOriginTokenEndpoint(t *testing.T) {
 	}))
 	defer discoveryServer.Close()
 
-	m := &Manager{httpClient: discoveryServer.Client(), oauthTokens: make(map[string]oauthToken)}
+	m := &Manager{privateAllowlistFn: func() []string { return []string{"127.0.0.1"} }, httpClient: discoveryServer.Client(), oauthTokens: make(map[string]oauthToken)}
 	auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
 		DiscoveryURL: discoveryServer.URL, ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
 	}}
@@ -604,7 +605,7 @@ func TestRuntimeRedirectDoesNotLeakManagedHeadersAcrossOrigins(t *testing.T) {
 	}))
 	defer redirect.Close()
 
-	m := &Manager{httpClient: redirect.Client()}
+	m := &Manager{privateAllowlistFn: func() []string { return []string{"127.0.0.1"} }, httpClient: redirect.Client()}
 	client, err := m.clientFor(nil, http.Header{"Authorization": {"Bearer secret"}, "X-API-Key": {"api-secret"}}, true)
 	require.NoError(t, err)
 	req, err := http.NewRequest(http.MethodGet, redirect.URL, nil)
@@ -702,13 +703,14 @@ func TestManagerForwardsToGRPCUpstream(t *testing.T) {
 	cardServer := httptest.NewServer(a2asrv.NewStaticAgentCardHandler(card))
 	defer cardServer.Close()
 
-	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	_, err = m.Create(context.Background(), CreateRequest{
-		Name:         "grpc-upstream",
-		AgentCardURL: cardServer.URL + a2asrv.WellKnownAgentCardPath,
-		RuntimeAuth:  &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeHeaders, Headers: map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer upstream-secret")}},
+		Name:              "grpc-upstream",
+		AgentCardURL:      cardServer.URL + a2asrv.WellKnownAgentCardPath,
+		CredentialOrigins: []string{"http://" + listener.Addr().String()},
+		RuntimeAuth:       &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeHeaders, Headers: map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer upstream-secret")}},
 	})
 	require.NoError(t, err)
 
@@ -760,7 +762,7 @@ func TestPublicAgentCardRunsOnePipelineLifecycleAndDenialSkipsDiscovery(t *testi
 	upstream, _, cardState := fixture(t, nil, nil)
 	defer upstream.Close()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: upstream.URL + agentCardPath})
@@ -806,7 +808,7 @@ func TestManagerPersistPublishReloadLiveCardAndProxy(t *testing.T) {
 	upstream, _, cardState := fixture(t, nil, nil)
 	defer upstream.Close()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	view, err := m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: upstream.URL + agentCardPath, VirtualKeyIDs: []string{"vk-1"}})
@@ -825,13 +827,13 @@ func TestManagerPersistPublishReloadLiveCardAndProxy(t *testing.T) {
 	require.Equal(t, []string{"vk-1"}, stored.VirtualKeyIDs)
 	runtime, ok := m.runtimes.load(view.Name)
 	require.True(t, ok)
-	require.Equal(t, runtimeConfig{name: "fixture", agentCardURL: upstream.URL + agentCardPath}, runtime.config)
-	m2, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	require.Equal(t, runtimeConfig{name: "fixture", agentCardURL: upstream.URL + agentCardPath, credentialOrigins: []string{}}, runtime.config)
+	m2, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m2.Close()
 	reloadedRuntime, ok := m2.runtimes.load(view.Name)
 	require.True(t, ok)
-	require.Equal(t, runtimeConfig{name: "fixture", agentCardURL: upstream.URL + agentCardPath}, reloadedRuntime.config)
+	require.Equal(t, runtimeConfig{name: "fixture", agentCardURL: upstream.URL + agentCardPath, credentialOrigins: []string{}}, reloadedRuntime.config)
 	require.Equal(t, int64(1), cardState.calls.Load(), "startup loads registrations without network discovery")
 	cardState.setName("changed-live")
 	cardHandler, ok := m2.CardHandler(view.Name, "")
@@ -980,7 +982,7 @@ func TestManagementViewsFullyRedactCredentialsAndPreserveMetadata(t *testing.T) 
 	upstream, _, _ := fixture(t, nil, nil)
 	defer upstream.Close()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 
@@ -1087,7 +1089,7 @@ func TestCreateValidatesSupportedClientBeforePersisting(t *testing.T) {
 	upstream := httptest.NewServer(a2asrv.NewStaticAgentCardHandler(card))
 	defer upstream.Close()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 
@@ -1102,7 +1104,7 @@ func TestFailedDeleteKeepsRuntimePublished(t *testing.T) {
 	upstream, _, _ := fixture(t, nil, nil)
 	defer upstream.Close()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	view, err := m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: upstream.URL + agentCardPath, AllowByDefault: true})
@@ -1117,7 +1119,7 @@ func TestConcurrentProxyAndTargetedMutation(t *testing.T) {
 	upstream, exec, _ := fixture(t, nil, nil)
 	defer upstream.Close()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	first, err := m.Create(context.Background(), CreateRequest{Name: "first", AgentCardURL: upstream.URL + agentCardPath, AllowByDefault: true})
@@ -1151,7 +1153,7 @@ func TestAuthCompositionAndPassthroughHeaders(t *testing.T) {
 	state.card.SecurityRequirements = a2a.SecurityRequirementsOptions{{"upstreamKey": {}}, {"upstreamBearer": {}}}
 	state.mu.Unlock()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	view, err := m.Create(context.Background(), CreateRequest{Name: "secured", AgentCardURL: upstream.URL + agentCardPath, AllowByDefault: true})
@@ -1321,7 +1323,7 @@ func TestCardHandlerReadsCurrentAuthenticationPolicy(t *testing.T) {
 
 	var enforce atomic.Bool
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{AuthPolicy: schemas.AgentGatewayAuthPolicy{
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }, AuthPolicy: schemas.AgentGatewayAuthPolicy{
 		EnforceAuthentication: enforce.Load,
 	}})
 	require.NoError(t, err)
@@ -1347,7 +1349,7 @@ func TestManagerDoesNotPublishFailedPersistence(t *testing.T) {
 	upstream, _, _ := fixture(t, nil, nil)
 	defer upstream.Close()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}, fail: true}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: upstream.URL + agentCardPath, AllowByDefault: true})
@@ -1722,7 +1724,7 @@ func TestConcurrentFirstMessagesShareInitializationAndSteadyState(t *testing.T) 
 	upstream, exec, state := fixture(t, nil, nil)
 	defer upstream.Close()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{"fixture": {Name: "fixture", AgentCardURL: upstream.URL + agentCardPath, Enabled: true, AllowByDefault: true}}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	require.Zero(t, state.calls.Load())
@@ -1746,7 +1748,7 @@ func TestSharedInitializationFailureThenRetrySucceeds(t *testing.T) {
 	defer upstream.Close()
 	state.fail.Store(true)
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{"fixture": {Name: "fixture", AgentCardURL: upstream.URL + agentCardPath, Enabled: true}}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	runtime, _ := m.runtimes.load("fixture")
@@ -1777,7 +1779,7 @@ func TestCanceledInitializationWaiterDoesNotCancelSharedAttempt(t *testing.T) {
 	defer upstream.Close()
 	state.discovery = release
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{"fixture": {Name: "fixture", AgentCardURL: upstream.URL + agentCardPath, Enabled: true}}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	runtime, _ := m.runtimes.load("fixture")
@@ -1821,7 +1823,7 @@ func TestLazyInitializationTimeoutAllowsRetry(t *testing.T) {
 	defer server.Close()
 
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{"fixture": {Name: "fixture", AgentCardURL: server.URL, Enabled: true}}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	m.buildTimeout = 20 * time.Millisecond
@@ -1854,7 +1856,7 @@ func TestRefreshTimeoutAllowsRetry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	m.buildTimeout = 20 * time.Millisecond
@@ -1886,7 +1888,7 @@ func TestCloseDuringInitializationPreventsLatePublish(t *testing.T) {
 	defer upstream.Close()
 	state.discovery = release
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{"fixture": {Name: "fixture", AgentCardURL: upstream.URL + agentCardPath, Enabled: true}}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	runtime, _ := m.runtimes.load("fixture")
 	done := make(chan error, 1)
@@ -1905,7 +1907,7 @@ func TestCapturedCardHandlerStopsAfterDelete(t *testing.T) {
 	upstream, _, state := fixture(t, nil, nil)
 	defer upstream.Close()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: upstream.URL + agentCardPath})
@@ -2033,7 +2035,7 @@ func TestLiveCardStillDiscoversEveryRequest(t *testing.T) {
 	upstream, _, state := fixture(t, nil, nil)
 	defer upstream.Close()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: upstream.URL + agentCardPath})
@@ -2051,7 +2053,7 @@ func TestUpdateTransitionsAndRedactedSecretPreservation(t *testing.T) {
 	upstream, _, _ := fixture(t, nil, nil)
 	defer upstream.Close()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: upstream.URL + agentCardPath, Enabled: boolPtr(true), RuntimeAuth: &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeHeaders, Headers: map[string]schemas.SecretVar{"x-api-key": *schemas.NewSecretVar("stored-secret")}}})
@@ -2073,6 +2075,41 @@ func TestUpdateTransitionsAndRedactedSecretPreservation(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// TestUpdateWritesAnOAuthSecretSwitchedToAReference pins that switching an upstream
+// OAuth secret to an env reference is written: every reference used to count as
+// redacted, so the old plaintext was kept, and adding OAuth with a reference failed.
+func TestUpdateWritesAnOAuthSecretSwitchedToAReference(t *testing.T) {
+	t.Setenv("AGENT_OAUTH_SECRET_V2", "rotated")
+	upstream, _, _ := fixture(t, nil, nil)
+	defer upstream.Close()
+	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
+	require.NoError(t, err)
+	defer m.Close()
+	base := upstream.URL + agentCardPath
+	oauth := func(id, secret string) *schemas.UpstreamAuth {
+		return &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{TokenURL: "https://idp.example.com/token", ClientID: schemas.NewSecretVar(id), ClientSecret: schemas.NewSecretVar(secret)}}
+	}
+	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: base, Enabled: boolPtr(false), RuntimeAuth: oauth("client", "leaked-plain")})
+	require.NoError(t, err)
+
+	_, err = m.Update(context.Background(), "fixture", UpdateRequest{AgentCardURL: &base, Enabled: boolPtr(false), RuntimeAuth: oauth("client", "<REDACTED>")})
+	require.NoError(t, err)
+	stored, _ := store.GetAgentRegistration(context.Background(), "fixture")
+	require.Equal(t, "leaked-plain", stored.RuntimeAuth.OAuth.ClientSecret.GetValue(), "the masked placeholder keeps the stored secret")
+
+	_, err = m.Update(context.Background(), "fixture", UpdateRequest{AgentCardURL: &base, Enabled: boolPtr(false), RuntimeAuth: oauth("client", "env.AGENT_OAUTH_SECRET_V2")})
+	require.NoError(t, err)
+	stored, _ = store.GetAgentRegistration(context.Background(), "fixture")
+	require.True(t, stored.RuntimeAuth.OAuth.ClientSecret.IsFromSecret(), "the switch to a reference is written")
+	require.Equal(t, "rotated", stored.RuntimeAuth.OAuth.ClientSecret.GetValue())
+
+	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture2", AgentCardURL: base, Enabled: boolPtr(false)})
+	require.NoError(t, err)
+	_, err = m.Update(context.Background(), "fixture2", UpdateRequest{AgentCardURL: &base, Enabled: boolPtr(false), RuntimeAuth: oauth("client", "env.AGENT_OAUTH_SECRET_V2")})
+	require.NoError(t, err, "adding OAuth with a reference has nothing to preserve and must be accepted")
+}
 func TestNormalizeRejectsIncompleteCredential(t *testing.T) {
 	_, err := normalize(CreateRequest{Name: "x", AgentCardURL: "https://example.com", DiscoveryAuth: &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeHeaders}})
 	require.Error(t, err)
@@ -2103,7 +2140,7 @@ func TestInboundRequestCancellationPreservesSDKExecutionLifetime(t *testing.T) {
 		rpc.ServeHTTP(w, r)
 	})
 
-	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: upstream.URL + agentCardPath})
@@ -2163,7 +2200,7 @@ func TestUpstreamTruncatedResponseFailsWithoutPartialLeakAndOtherCallsRemainHeal
 		}
 		good.ServeHTTP(w, r)
 	})
-	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: upstream.URL + agentCardPath})
@@ -2208,6 +2245,7 @@ func TestStaleStatusRefreshesAfterAdvancingAcrossCachedCandidates(t *testing.T) 
 		}}
 	}
 	_, handler, _ := failoverHandler(t, stale(&firstCalls), stale(&secondCalls))
+	handler.manager.privateAllowlistFn = func() []string { return []string{"127.0.0.1"} }
 	handler.runtime.mu.Lock()
 	handler.runtime.config.agentCardURL = upstream.URL
 	handler.runtime.mu.Unlock()
@@ -2254,7 +2292,7 @@ func TestCreateDisabledRegistrationSkipsUpstreamDiscovery(t *testing.T) {
 func TestDisablingRegistrationSkipsUpstreamDiscovery(t *testing.T) {
 	upstream, _, _ := fixture(t, nil, nil)
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
 	cardURL := upstream.URL + agentCardPath
@@ -2295,7 +2333,7 @@ func TestRegistrationDiscoveryUsesBuildTimeout(t *testing.T) {
 			cardState.discovery = blockDiscovery
 
 			store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-			m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+			m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 			require.NoError(t, err)
 			defer m.Close()
 			m.buildTimeout = 20 * time.Millisecond
@@ -2318,7 +2356,7 @@ func TestManagerCloseWaitsForSupersededRuntimeDrain(t *testing.T) {
 	upstream, _, _ := fixture(t, nil, nil)
 	defer upstream.Close()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	cardURL := upstream.URL + agentCardPath
 	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: cardURL})
@@ -2460,10 +2498,10 @@ func taskUpstreamGateway(t *testing.T) (*taskUpstream, *a2aclient.Client) {
 // taskUpstreamGatewayManager is the same fixture, additionally exposing the
 // manager so a test can reach the gateway's other protocol binding.
 func taskUpstreamGatewayManager(t *testing.T) (*taskUpstream, *a2aclient.Client, *Manager) {
-	return extensionGatewayManager(t, nil, nil)
+	return extensionGatewayManager(t, nil)
 }
 
-func extensionGatewayManager(t *testing.T, extensions []a2a.AgentExtension, allowed []string) (*taskUpstream, *a2aclient.Client, *Manager) {
+func extensionGatewayManager(t *testing.T, extensions []a2a.AgentExtension) (*taskUpstream, *a2aclient.Client, *Manager) {
 	t.Helper()
 	upstreamHandler := &taskUpstream{}
 	mux := http.NewServeMux()
@@ -2473,10 +2511,10 @@ func extensionGatewayManager(t *testing.T, extensions []a2a.AgentExtension, allo
 	mux.Handle(agentCardPath, a2asrv.NewStaticAgentCardHandler(card))
 	mux.Handle("/rpc", a2asrv.NewJSONRPCHandler(upstreamHandler))
 
-	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	t.Cleanup(m.Close)
-	_, err = m.Create(context.Background(), CreateRequest{Name: "tasks", AgentCardURL: upstream.URL + agentCardPath, ExtensionURIs: allowed})
+	_, err = m.Create(context.Background(), CreateRequest{Name: "tasks", AgentCardURL: upstream.URL + agentCardPath})
 	require.NoError(t, err)
 	protocol, ok := m.ProtocolHandler("tasks")
 	require.True(t, ok)
@@ -2516,7 +2554,7 @@ func TestExtensionPassthroughAndValidationAcrossBindings(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			upstream, jsonClient, manager := extensionGatewayManager(t, []a2a.AgentExtension{extension}, []string{extensionURI})
+			upstream, jsonClient, manager := extensionGatewayManager(t, []a2a.AgentExtension{extension})
 			client := test.client(t, manager, jsonClient)
 			ctx := a2aclient.AttachServiceParams(context.Background(), a2aclient.ServiceParams{a2a.SvcParamExtensions: {extensionURI}})
 			request := &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")), Metadata: map[string]any{extensionURI: map[string]any{"trace_id": "abc"}}}
@@ -2531,7 +2569,7 @@ func TestExtensionPassthroughAndValidationAcrossBindings(t *testing.T) {
 	}
 
 	t.Run("unknown requested extension is rejected before upstream", func(t *testing.T) {
-		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{extension}, []string{extensionURI})
+		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{extension})
 		ctx := a2aclient.AttachServiceParams(context.Background(), a2aclient.ServiceParams{a2a.SvcParamExtensions: {"https://example.com/extensions/unknown"}})
 		_, err := client.SendMessage(ctx, &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))})
 		require.Error(t, err)
@@ -2539,14 +2577,14 @@ func TestExtensionPassthroughAndValidationAcrossBindings(t *testing.T) {
 	})
 
 	t.Run("required extension is rejected for extension-unaware client", func(t *testing.T) {
-		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{{URI: extensionURI, Required: true}}, []string{extensionURI})
+		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{{URI: extensionURI, Required: true}})
 		_, err := client.SendMessage(context.Background(), &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))})
 		require.ErrorIs(t, err, a2a.ErrExtensionSupportRequired)
 		require.Empty(t, upstream.calls())
 	})
 
 	t.Run("oversized extension metadata is rejected before upstream", func(t *testing.T) {
-		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{extension}, []string{extensionURI})
+		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{extension})
 		ctx := a2aclient.AttachServiceParams(context.Background(), a2aclient.ServiceParams{a2a.SvcParamExtensions: {extensionURI}})
 		request := &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")), Metadata: map[string]any{extensionURI: strings.Repeat("x", maxExtensionPayloadSize)}}
 		_, err := client.SendMessage(ctx, request)
@@ -2562,16 +2600,16 @@ func TestGatewayCardAdvertisesOnlySafeExtensions(t *testing.T) {
 		{URI: "https://example.com/extensions/denied"},
 	}}}
 
-	card, err := gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, []string{allowedURI}, "")
+	card, err := gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, "")
 	require.NoError(t, err)
-	require.Equal(t, []a2a.AgentExtension{{URI: allowedURI, Params: map[string]any{"limit": 10}}}, card.Capabilities.Extensions)
+	require.Equal(t, upstream.Capabilities.Extensions, card.Capabilities.Extensions)
 
 	upstream.Capabilities.Extensions[1].Required = true
-	_, err = gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, []string{allowedURI}, "")
-	require.ErrorContains(t, err, "requires denied extension")
+	_, err = gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, "")
+	require.NoError(t, err)
 
 	upstream.Capabilities.Extensions = []a2a.AgentExtension{{URI: allowedURI, Required: true, Params: map[string]any{"payload": strings.Repeat("x", maxExtensionPayloadSize)}}}
-	_, err = gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, []string{allowedURI}, "")
+	_, err = gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, "")
 	require.ErrorContains(t, err, "requires untranslatable extension")
 }
 
@@ -2582,23 +2620,23 @@ func TestGatewayCardAdvertisesGRPCInterfaceWhenConfigured(t *testing.T) {
 	require.Empty(t, m.grpcInterfaceURL(strings.Repeat("a", MaxGRPCAgentNameLength+1)))
 	require.Empty(t, (&Manager{}).grpcInterfaceURL("agent-1"))
 
-	card, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "http://gateway", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, nil, m.grpcInterfaceURL("agent-1"))
+	card, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "http://gateway", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, m.grpcInterfaceURL("agent-1"))
 	require.NoError(t, err)
 	require.Len(t, card.SupportedInterfaces, 3)
 	require.Equal(t, a2a.TransportProtocolGRPC, card.SupportedInterfaces[2].ProtocolBinding)
 	require.Equal(t, "agent-1.a2a.bifrost.example:9090", card.SupportedInterfaces[2].URL)
 
-	unconfigured, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "http://gateway", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, nil, "")
+	unconfigured, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "http://gateway", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, "")
 	require.NoError(t, err)
 	require.Len(t, unconfigured.SupportedInterfaces, 2)
 }
 
 func TestGatewayCardOmitsRelativeHTTPInterfacesWithoutOrigin(t *testing.T) {
-	card, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, nil, "")
+	card, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, "")
 	require.NoError(t, err)
 	require.Empty(t, card.SupportedInterfaces)
 
-	card, err = gatewayCardWithExtensions(&a2a.AgentCard{}, "", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, nil, "agent-1.a2a.bifrost.example:9090")
+	card, err = gatewayCardWithExtensions(&a2a.AgentCard{}, "", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, "agent-1.a2a.bifrost.example:9090")
 	require.NoError(t, err)
 	require.Equal(t, []*a2a.AgentInterface{a2a.NewAgentInterface("agent-1.a2a.bifrost.example:9090", a2a.TransportProtocolGRPC)}, card.SupportedInterfaces)
 }
@@ -2651,7 +2689,7 @@ func (p *panickingUpstream) GetTask(context.Context, *a2a.GetTaskRequest) (*a2a.
 }
 
 func TestTransportPanicHandlerReturnsErrorInsteadOfCrashing(t *testing.T) {
-	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	t.Cleanup(m.Close)
 
@@ -2837,7 +2875,7 @@ func twoAgentGateway(t *testing.T) (*memoryStore, *Manager, map[string]string) {
 		"agent-a": upstreamAgentServer(t, "agent-a", &ownedTaskUpstream{taskID: "task-owned-by-a"}),
 		"agent-b": upstreamAgentServer(t, "agent-b", &ownedTaskUpstream{taskID: "task-owned-by-b"}),
 	}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	t.Cleanup(m.Close)
 	for name, url := range urls {
@@ -2875,7 +2913,7 @@ func TestHTTPJSONCancelTaskPreservesNativeNotFoundError(t *testing.T) {
 		a2asrv.NewJSONRPCHandler(upstreamHandler).ServeHTTP(w, r)
 	}))
 
-	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	t.Cleanup(m.Close)
 	_, err = m.Create(context.Background(), CreateRequest{Name: "tasks", AgentCardURL: upstream.URL + agentCardPath})

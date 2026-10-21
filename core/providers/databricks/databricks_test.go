@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -1428,5 +1430,219 @@ func TestDatabricksGatewayTagsDoNotMutateCallerHeaders(t *testing.T) {
 	}
 	if ctxHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); len(ctxHeaders) != 1 {
 		t.Errorf("context extra headers has %d entries after the request, want the caller's 1", len(ctxHeaders))
+	}
+}
+
+// databricksDecisionResponseBody is an ai_decide reply for newDatabricksDecisionRequest,
+// as returned live: answers under response, the noul value as probability, no usage.
+const databricksDecisionResponseBody = `{"response":{"answers":{
+	"escalate":{"type":"noul","probability":0.83},
+	"team":{"type":"choice","choice":"engineering","probabilities":{"billing":0.0,"engineering":1.0},"confidence":0.99},
+	"severity":{"type":"score","score":1.82,"legend":{"0":"Minor","1":"Major","2":"Critical"},"probabilities":{"0":0.02,"1":0.14,"2":0.84},"confidence":0.82}
+}},"metadata":{"version":"1.0"}}`
+
+func newDatabricksDecisionRequest(input schemas.DecisionInput) *schemas.BifrostDecisionRequest {
+	return &schemas.BifrostDecisionRequest{
+		Provider: schemas.Databricks,
+		Model:    "ai_decide",
+		Input:    input,
+		Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("escalate"), Instructions: schemas.NewDecisionText("Does this ticket need escalation?")},
+			{
+				Type:         schemas.DecisionTypeChoice,
+				Name:         schemas.Ptr("team"),
+				Instructions: schemas.NewDecisionText("Which team should handle this ticket?"),
+				Choices: []schemas.DecisionChoice{
+					{Value: schemas.DecisionScalar{Str: schemas.Ptr("billing")}, Description: schemas.NewDecisionText("Charges and refunds")},
+					{Value: schemas.DecisionScalar{Str: schemas.Ptr("engineering")}, Description: schemas.NewDecisionText("Bugs and outages")},
+				},
+			},
+			{
+				Type:         schemas.DecisionTypeScore,
+				Name:         schemas.Ptr("severity"),
+				Instructions: schemas.NewDecisionText("How severe is this incident?"),
+				Levels: []schemas.DecisionLevel{
+					{Label: "0", Description: schemas.NewDecisionText("Minor")},
+					{Label: "1", Description: schemas.NewDecisionText("Major")},
+					{Label: "2", Description: schemas.NewDecisionText("Critical")},
+				},
+			},
+		},
+	}
+}
+
+func newDatabricksDecisionKey(t *testing.T, server *httptest.Server) schemas.Key {
+	t.Helper()
+	return schemas.Key{
+		Models:              []string{"*"},
+		Value:               *schemas.NewSecretVar("dapi-secret-token"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server))},
+	}
+}
+
+// TestDatabricksDecisionSendsAIDecideBody pins the native call: the body is Typesafe's
+// systemone request without model and with the function version pinned, it goes to the
+// workspace's /api/2.0/ai-functions/ai-decide with the PAT, and the reply is unwrapped from
+// response with each noul probability read as the predicate's probability.
+func TestDatabricksDecisionSendsAIDecideBody(t *testing.T) {
+	t.Parallel()
+
+	type capturedRequest struct {
+		path, auth string
+		body       []byte
+	}
+	// The handler runs on the server's goroutine, so the request is handed over on a channel.
+	captured := make(chan capturedRequest, 1)
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		captured <- capturedRequest{path: r.URL.Path, auth: r.Header.Get("Authorization"), body: body}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-request-id", "req-1")
+		_, _ = w.Write([]byte(databricksDecisionResponseBody))
+	})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bErr := provider.Decision(ctx, newDatabricksDecisionKey(t, server), newDatabricksDecisionRequest(schemas.DecisionInput{Text: schemas.Ptr("Checkout is down for every customer.")}))
+	if bErr != nil {
+		t.Fatalf("Decision returned an error: %v", bErr.Error)
+	}
+	sent := <-captured
+
+	if sent.path != "/api/2.0/ai-functions/ai-decide" {
+		t.Errorf("path = %q, want /api/2.0/ai-functions/ai-decide", sent.path)
+	}
+	if sent.auth != "Bearer dapi-secret-token" {
+		t.Errorf("Authorization = %q, want the PAT as Bearer", sent.auth)
+	}
+	var gotBody, wantBody map[string]any
+	if err := json.Unmarshal(sent.body, &gotBody); err != nil {
+		t.Fatalf("decode sent body: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{
+		"state": "Checkout is down for every customer.",
+		"questions": {
+			"escalate": {"type": "noul", "instructions": "Does this ticket need escalation?"},
+			"team": {"type": "choice", "instructions": "Which team should handle this ticket?", "criteria": {"billing": "Charges and refunds", "engineering": "Bugs and outages"}},
+			"severity": {"type": "score", "instructions": "How severe is this incident?", "criteria": ["Minor", "Major", "Critical"]}
+		},
+		"options": {"version": "1.0"}
+	}`), &wantBody); err != nil {
+		t.Fatalf("decode want body: %v", err)
+	}
+	if !reflect.DeepEqual(gotBody, wantBody) {
+		t.Errorf("sent body = %s, want no model and the pinned version", sent.body)
+	}
+
+	if resp.Model != "ai_decide" {
+		t.Errorf("model = %q, want the requested ai_decide", resp.Model)
+	}
+	if len(resp.Answers) != 3 {
+		t.Fatalf("answers = %+v, want 3", resp.Answers)
+	}
+	if p := resp.Answers[0].Probability; p == nil || *p != 0.83 {
+		t.Errorf("escalate probability = %v, want 0.83 from the noul probability", p)
+	}
+	if c := resp.Answers[1].Choice; c == nil || c.Str == nil || *c.Str != "engineering" {
+		t.Errorf("team choice = %+v, want engineering", c)
+	}
+	if s := resp.Answers[2].Score; s == nil || *s != 1.82 {
+		t.Errorf("severity score = %v, want 1.82", s)
+	}
+	if resp.Usage != nil && resp.Usage.TotalTokens != 0 {
+		t.Errorf("usage = %+v, want none: ai_decide reports no usage", resp.Usage)
+	}
+}
+
+// TestDatabricksDecisionRejectsLocally pins the requests answered without calling Databricks:
+// a model other than ai_decide is unsupported (compat emulates it), an empty input is a 400
+// because ai_decide answers a null state with no answers, and an image part is a 400 because
+// ai_decide reads it as JSON text.
+func TestDatabricksDecisionRejectsLocally(t *testing.T) {
+	t.Parallel()
+
+	image := schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
+		Role: "user",
+		Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
+		}},
+	}}}
+	cases := map[string]struct {
+		model      string
+		input      schemas.DecisionInput
+		wantStatus int
+	}{
+		"serving endpoint model": {model: "databricks-claude-sonnet-4", input: schemas.DecisionInput{Text: schemas.Ptr("hi")}},
+		"empty input":            {model: "ai_decide", wantStatus: http.StatusBadRequest},
+		"image part":             {model: "ai_decide", input: image, wantStatus: http.StatusBadRequest},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("unexpected call to %s", r.URL.Path)
+			})
+			request := newDatabricksDecisionRequest(tc.input)
+			request.Model = tc.model
+			_, bErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newDatabricksDecisionKey(t, server), request)
+			if bErr == nil {
+				t.Fatal("expected an error")
+			}
+			if tc.wantStatus == 0 {
+				if bErr.Error == nil || bErr.Error.Code == nil || *bErr.Error.Code != "unsupported_operation" {
+					t.Errorf("error = %+v, want unsupported_operation", bErr.Error)
+				}
+				return
+			}
+			if bErr.StatusCode == nil || *bErr.StatusCode != tc.wantStatus {
+				t.Errorf("status = %v, want %d (%+v)", bErr.StatusCode, tc.wantStatus, bErr.Error)
+			}
+		})
+	}
+}
+
+// TestDatabricksDecisionPassesDatabricksErrorsThrough pins that ai_decide's own validation
+// errors reach the caller with their status, code and message, and that its response headers
+// are kept on the context for error replies too.
+func TestDatabricksDecisionPassesDatabricksErrorsThrough(t *testing.T) {
+	t.Parallel()
+
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-request-id", "req-400")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error_code":"BAD_REQUEST","message":"Invalid decision request: question 's' of type 'score' requires 'criteria' to be an ordered array of 2 to 10 level descriptions, but got an array of 11 level(s)."}`))
+	})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bErr := provider.Decision(ctx, newDatabricksDecisionKey(t, server), newDatabricksDecisionRequest(schemas.DecisionInput{Text: schemas.Ptr("hi")}))
+	if bErr == nil {
+		t.Fatal("expected an error")
+	}
+	if bErr.StatusCode == nil || *bErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %v, want 400", bErr.StatusCode)
+	}
+	if bErr.Error == nil || bErr.Error.Code == nil || *bErr.Error.Code != "BAD_REQUEST" || !strings.Contains(bErr.Error.Message, "2 to 10 level descriptions") {
+		t.Errorf("error = %+v, want Databricks' BAD_REQUEST and message", bErr.Error)
+	}
+	headers, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+	found := false
+	for k, v := range headers {
+		if strings.EqualFold(k, "x-request-id") && v == "req-400" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("context headers = %v, want x-request-id from the error reply", headers)
+	}
+}
+
+// TestDatabricksDecisionWithoutAnswersFails pins that a 200 carrying "response": null, which
+// ai_decide returns for a null state, is an error rather than an empty decision.
+func TestDatabricksDecisionWithoutAnswersFails(t *testing.T) {
+	t.Parallel()
+
+	resp, bErr := databricks.ToBifrostDecisionResponse(&databricks.DatabricksDecisionResponse{}, newDatabricksDecisionRequest(schemas.DecisionInput{Text: schemas.Ptr("hi")}))
+	if bErr == nil || bErr.Error == nil || bErr.Error.Message != "databricks returned no answers" {
+		t.Errorf("got %+v, %+v; want the no-answers error", resp, bErr)
 	}
 }

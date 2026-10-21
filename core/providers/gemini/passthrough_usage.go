@@ -9,6 +9,67 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// IsInteractionsPassthroughPath reports whether a Gemini passthrough path targets the
+// Interactions API (/interactions, no colon action). It has no typed Bifrost equivalent, so
+// ClassifyPassthroughPath returns "" for it and callers that care check this first.
+func IsInteractionsPassthroughPath(path string) bool {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	return strings.Contains(path, "/interactions")
+}
+
+// ClassifyPassthroughPath maps a Gemini/Vertex passthrough path to the Bifrost request type its
+// :action suffix addresses. :generateContent and :streamGenerateContent are Responses-shaped
+// (Bifrost routes GenAI generation through the Responses schema), :predict is Imagen and
+// :predictLongRunning is Veo. A query string is ignored; Interactions paths and unknown actions
+// return "". Usage extraction and passthrough log parsing both dispatch on this.
+func ClassifyPassthroughPath(path string) schemas.RequestType {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	if strings.Contains(path, "/interactions") {
+		return ""
+	}
+
+	action := passthroughAction(path)
+	switch action {
+	case "generateContent", "streamGenerateContent":
+		return schemas.ResponsesRequest
+	case "countTokens":
+		return schemas.CountTokensRequest
+	case "embedContent", "batchEmbedContents":
+		return schemas.EmbeddingRequest
+	case "predict":
+		// Vertex serves embedding models (text-embedding-*, multimodalembedding@*,
+		// gemini-embedding-*) on :predict as well as Imagen.
+		if strings.Contains(strings.ToLower(passthroughModelSegment(path)), "embedding") {
+			return schemas.EmbeddingRequest
+		}
+		return schemas.ImageGenerationRequest
+	case "predictLongRunning":
+		return schemas.VideoGenerationRequest
+	}
+	return ""
+}
+
+// passthroughAction returns the :action suffix of a query-free passthrough path ("" without one).
+func passthroughAction(path string) string {
+	if colonIdx := strings.LastIndexByte(path, ':'); colonIdx >= 0 {
+		return path[colonIdx+1:]
+	}
+	return ""
+}
+
+// passthroughModelSegment returns the model name of a query-free :action path: the segment after
+// the last "/" and before the ":action" suffix.
+func passthroughModelSegment(path string) string {
+	if colonIdx := strings.LastIndexByte(path, ':'); colonIdx >= 0 {
+		path = path[:colonIdx]
+	}
+	return path[strings.LastIndexByte(path, '/')+1:]
+}
+
 // ExtractGeminiPassthroughUsage extracts usage from a completed Gemini/Vertex
 // passthrough response. Handles both SSE streaming (last event) and plain JSON
 // (non-streaming) for all billable endpoint types.
@@ -20,32 +81,24 @@ import (
 // :predict is Imagen priced per-image. :predictLongRunning is Veo priced per-second.
 // /interactions paths use the Interactions API usage shape.
 func ExtractGeminiPassthroughUsage(path string, reqBody, body []byte) *schemas.BifrostPassthroughUsage {
+	if IsInteractionsPassthroughPath(path) {
+		return extractGeminiInteractionsUsage(body)
+	}
+	// :predict serves both embedding and Imagen models; extractGeminiPredictUsage tells them apart
+	// by the response shape, so every :predict bills through it whatever the path classifies as.
 	if idx := strings.IndexByte(path, '?'); idx >= 0 {
 		path = path[:idx]
 	}
-
-	// Interactions API uses /interactions paths — no colon suffix.
-	if strings.Contains(path, "/interactions") {
-		return extractGeminiInteractionsUsage(body)
-	}
-
-	colonIdx := strings.LastIndexByte(path, ':')
-	action := ""
-	if colonIdx >= 0 {
-		action = path[colonIdx+1:]
-	}
-
-	switch action {
-	case "generateContent", "streamGenerateContent":
-		return extractGeminiGenerateContentUsage(body)
-
-	case "embedContent", "batchEmbedContents":
-		return extractGeminiEmbeddingUsage(body)
-
-	case "predict":
+	if passthroughAction(path) == "predict" {
 		return extractGeminiPredictUsage(reqBody, body)
+	}
 
-	case "predictLongRunning":
+	switch ClassifyPassthroughPath(path) {
+	case schemas.ResponsesRequest:
+		return extractGeminiGenerateContentUsage(body)
+	case schemas.EmbeddingRequest:
+		return extractGeminiEmbeddingUsage(body)
+	case schemas.VideoGenerationRequest:
 		// Veo video generation — priced per second of video.
 		return extractGeminiVeoUsage(reqBody)
 	}

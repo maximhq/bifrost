@@ -13,6 +13,7 @@ package keyselectors
 //	go test ./core/keyselectors/ -bench WeightedRandom -benchmem
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"testing"
@@ -114,3 +115,32 @@ func benchmarkWeightedRandom(b *testing.B, keyCount int) {
 func BenchmarkWeightedRandom3Keys(b *testing.B)   { benchmarkWeightedRandom(b, 3) }
 func BenchmarkWeightedRandom25Keys(b *testing.B)  { benchmarkWeightedRandom(b, 25) }
 func BenchmarkWeightedRandom200Keys(b *testing.B) { benchmarkWeightedRandom(b, 200) }
+
+// keyChiSquareCritical maps degrees of freedom to the chi-square value a fit stays under at p = 1e-6,
+// so a correct split essentially never fails while a real skew fails by a wide margin.
+var keyChiSquareCritical = map[int]float64{1: 23.928, 2: 27.631, 3: 30.664}
+
+// TestWeightedRandomSplitFollowsTheWeights checks the share of picks each key gets against its
+// weight, which TestWeightedRandom does not: it checks only which keys can be picked (plan row RR-05,
+// whose key column says each provider's keys serve by key weight).
+func TestWeightedRandomSplitFollowsTheWeights(t *testing.T) {
+	for _, weights := range [][]float64{{1, 1}, {0.6, 0.3, 0.1}, {5, 3, 2, 1}} {
+		t.Run(fmt.Sprint(weights), func(t *testing.T) {
+			const n = 20000
+			counts := pickCounts(t, weights, n)
+			total := 0.0
+			for _, w := range weights {
+				total += w
+			}
+			stat := 0.0
+			for i, w := range weights {
+				expected := float64(n) * w / total
+				diff := float64(counts["key-"+strconv.Itoa(i)]) - expected
+				stat += diff * diff / expected
+			}
+			if critical := keyChiSquareCritical[len(weights)-1]; stat >= critical {
+				t.Fatalf("picks %v do not fit weights %v (chi-square %.1f, critical %.1f)", counts, weights, stat, critical)
+			}
+		})
+	}
+}

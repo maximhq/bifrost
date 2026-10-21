@@ -144,6 +144,10 @@ func (provider *OpenAIProvider) ResponsesRetrieve(ctx *schemas.BifrostContext, k
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRetrieveRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
 	}
@@ -182,6 +186,10 @@ func (provider *OpenAIProvider) ResponsesRetrieve(ctx *schemas.BifrostContext, k
 func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, req *schemas.BifrostResponsesRetrieveRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRetrieveStreamRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
@@ -379,6 +387,10 @@ func (provider *OpenAIProvider) ResponsesDelete(ctx *schemas.BifrostContext, key
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesDeleteRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
 	}
@@ -414,6 +426,10 @@ func (provider *OpenAIProvider) ResponsesDelete(ctx *schemas.BifrostContext, key
 func (provider *OpenAIProvider) ResponsesCancel(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostResponsesCancelRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesCancelRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))
@@ -454,6 +470,10 @@ func (provider *OpenAIProvider) ResponsesCancel(ctx *schemas.BifrostContext, key
 func (provider *OpenAIProvider) ResponsesInputItems(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostResponsesInputItemsRequest) (*schemas.BifrostResponsesInputItemsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesInputItemsRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 	if req == nil || req.ResponseID == "" {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("response_id is required"))

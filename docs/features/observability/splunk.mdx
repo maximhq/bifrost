@@ -257,7 +257,7 @@ Acknowledgement trades a little overhead (per-channel poll traffic, plus unackno
 
 Bifrost attributes each request to a virtual key, user, team, customer, business unit, and project. Because a request can be attributed to a *set* (multi-tenant), the connector shapes attribution differently for events and metrics:
 
-- **Events** carry one **multi-value** field per dimension (`team_ids`, `team_names`, `customer_ids`, `customer_names`, `business_unit_ids`, `business_unit_names`) as native JSON arrays, so `customer_ids=acme` matches a member of the set. Virtual-key, user, and project attribution stay scalar (`virtual_key_id`, `virtual_key_name`, `user_id`, `user_name`, `project_id`, `project_name`), since a request is scoped to at most one project.
+- **Events** carry one **multi-value** field per dimension (`team_ids`, `team_names`, `customer_ids`, `customer_names`, `business_unit_ids`, `business_unit_names`) as native JSON arrays, so `customer_ids=acme` matches a member of the set. Virtual-key, user, project and stored-prompt attribution stay scalar (`virtual_key_id`, `virtual_key_name`, `user_id`, `user_name`, `project_id`, `project_name`, `prompt_id`, `prompt_name`, `prompt_version`), since a request is scoped to at most one project and runs at most one prompt.
 - **Metrics** dimensions must be scalar (a comma-joined value would break `mstats ... BY`), so metric dimensions keep the **singular** form (`customer_id`, `team_id`, ...). Multi-tenant metric attribution reflects the primary tenant only.
 
 <Note>
@@ -284,6 +284,7 @@ With `enable_metrics` on, the connector emits the following metrics to the metri
 | `bifrost.stream.first_token_latency` | Time to first token (streaming) | provider, model |
 | `bifrost.stream.inter_token_latency` | Inter-token latency (streaming) | provider, model |
 | `bifrost.mcp.client.operation.duration` | Duration of an MCP tool call | mcp_method, mcp_tool_name, network_transport, error_type, and attribution |
+| `bifrost.a2a.client.operation.duration` | Agent Gateway operation duration in seconds | operation, method, upstream_transport, error_type, and governance attribution; see [Agent Gateway](#agent-gateway). |
 
 Every metric also carries your configured `custom_fields` and the scalar attribution dimensions.
 
@@ -342,6 +343,30 @@ Some attributes are large and not needed downstream. Tool definitions are a comm
 Names are matched exactly, as they appear in the exported event. A name that does not match any attribute is ignored, so a typo silently has no effect. Check the spelling against an event you have already received.
 
 Unlike `disable_content_logging`, this is per-attribute: everything you have not named is still exported.
+
+## Agent Gateway
+
+A2A traces use the existing HEC connection and event and metric indexes. Each completed trace produces a flattened event. Agent fields are `agent_name`, `a2a_operation`, `a2a_task_id`, `a2a_task_state`, and `conversation_id`, alongside the existing trace, request, session, status, error, latency, and governance fields.
+
+Structured bodies use `input_messages` and `output_messages`, including returned tasks, artifacts, and accumulated streaming output. Events summarize the completed operation; they do not contain the full nested stream-event timeline. `disable_content_logging`, virtual-key content suppression, and span-attribute exclusions apply before the event is built. Raw HTTP capture is not exported to Splunk.
+
+When metrics are enabled, `bifrost.a2a.client.operation.duration` records one duration in seconds per operation. Dimensions include `operation`, the available `method` and `upstream_transport`, governance attribution, and `error_type` on failures. Task and session IDs are event fields rather than metric dimensions.
+
+```spl
+index=your_event_index agent_name=*
+| stats count by a2a_operation status
+```
+
+```spl
+| mstats count(_value) AS operations avg(_value) AS average_seconds
+  WHERE index=your_metrics_index
+    metric_name="bifrost.a2a.client.operation.duration"
+  BY operation
+```
+
+See [Agent Gateway observability](/features/agent-gateway/observability#export-to-observability-connectors) for operation coverage and correlation.
+
+---
 
 ## Troubleshooting
 

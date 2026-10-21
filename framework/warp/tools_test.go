@@ -565,12 +565,13 @@ func TestWarpRejectsUnknownFilterField(t *testing.T) {
 func TestWarpFilterAcceptsPreviouslyMissingFields(t *testing.T) {
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 	filters, err := parseFilters(map[string]any{
-		"stop_reasons":    []any{"length", "content_filter"},
-		"objects":         []any{"embedding"},
-		"project_ids":     []any{"proj-1"},
-		"min_tokens":      float64(10),
-		"max_tokens":      float64(5000),
-		"cache_hit_types": []any{"semantic"},
+		"stop_reasons":       []any{"length", "content_filter"},
+		"objects":            []any{"embedding"},
+		"project_ids":        []any{"proj-1"},
+		"min_tokens":         float64(10),
+		"max_tokens":         float64(5000),
+		"cache_hit_types":    []any{"semantic"},
+		"guardrail_outcomes": []any{"blocked", "detected"},
 	}, now)
 	require.NoError(t, err)
 	require.Equal(t, []string{"length", "content_filter"}, filters.StopReasons)
@@ -581,6 +582,7 @@ func TestWarpFilterAcceptsPreviouslyMissingFields(t *testing.T) {
 	require.NotNil(t, filters.MaxTokens)
 	require.Equal(t, 5000, *filters.MaxTokens)
 	require.Equal(t, []string{"semantic"}, filters.CacheHitTypes)
+	require.Equal(t, []string{"blocked", "detected"}, filters.GuardrailOutcomes)
 }
 
 // A fractional or out-of-range token bound must be rejected rather than
@@ -2297,10 +2299,13 @@ func TestWarpFiltersAcceptErrorTypeCodeAndStatus(t *testing.T) {
 // of seventeen. No link is better than one that is silently wider; each row
 // still carries its own.
 func TestWarpResultsFilteredByErrorFieldsCarryNoLogsLink(t *testing.T) {
-	for _, field := range []string{"error_types", "error_codes", "status_codes"} {
+	for _, field := range []string{"error_types", "error_codes", "status_codes", "guardrail_outcomes"} {
 		value := []any{"invalid_request_error"}
-		if field == "status_codes" {
+		switch field {
+		case "status_codes":
 			value = []any{float64(400)}
+		case "guardrail_outcomes":
+			value = []any{"blocked"}
 		}
 		result, err := runTool(t, "count_logs", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
 			"filters": map[string]any{"start_time": "-7d", field: value},
@@ -2341,6 +2346,10 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 		"roots_only":     "a display mode of the Logs page (grouped), not a question about traffic",
 		"group_sessions": "a display mode of the Logs page (sessions collapsed), not a question about traffic",
 		"ranking_limit":  "set from each tool's own limit argument",
+		// TODO: Warp does not support the agent filters from #7777 yet; remove
+		// these once FilterSchema and parseFilters accept them.
+		"agent_names":          "not yet supported by Warp",
+		"agent_correlation_id": "not yet supported by Warp",
 	}
 	var schema struct {
 		Properties map[string]any `json:"properties"`

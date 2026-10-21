@@ -17,7 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/oauth2"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -27,8 +27,14 @@ import (
 // dialer for this package: the MCP OAuth tests here register against
 // loopback-bound httptest.Server instances, which the production guard in
 // framework/oauth2 refuses to dial. The guard has its own coverage there.
+//
+// It also installs the package logger before any test runs. Production sets
+// it at startup, and code such as the WebSocket panic recovery logs through it
+// unconditionally, so a test that reaches that code must not depend on an
+// earlier test in the run having set it.
 func TestMain(m *testing.M) {
 	oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+	SetLogger(&mockLogger{})
 	os.Exit(m.Run())
 }
 
@@ -356,4 +362,294 @@ func TestReregisterMCPClient_StatusSaysWhoseProblemItIs(t *testing.T) {
 		assert.Equal(t, f.registeredClientID, f.storedClientID(t), "a failed attempt must leave the stored client alone")
 		assert.Empty(t, f.cache.evictedClients, "nothing rotated, so nothing may be invalidated")
 	})
+}
+
+// =============================================================================
+// POST /api/mcp/client with auth_type oauth against an OAuth-protected MCP
+// server on loopback, with the production OAuth dialer.
+// =============================================================================
+
+// newLoopbackOAuthMCPServer serves the RFC 8414 discovery document and RFC 7591
+// registration an OAuth-protected MCP server on the operator's own host
+// exposes (the shape of examples/mcps/oauth-demo-server).
+func newLoopbackOAuthMCPServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	var server *httptest.Server
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 server.URL,
+			"authorization_endpoint": server.URL + "/authorize",
+			"token_endpoint":         server.URL + "/token",
+			"registration_endpoint":  server.URL + "/register",
+		})
+	})
+	mux.HandleFunc("/register", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": "loopback-client"})
+	})
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist pins the fix for MCP
+// OAuth servers on localhost: once the OAuth chain was put behind the
+// public-only dialer, an authenticated admin could not add one at all. With
+// the server's host on mcp_oauth_private_allowlist the admin's registration
+// discovers, registers and returns an authorize URL; without it the chain is
+// still refused, and a caller with auth bypassed is refused regardless.
+func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+
+	for _, tc := range []struct {
+		name         string
+		allow        []string
+		authBypassed bool
+		wantStatus   int
+		wantBody     string
+	}{
+		{name: "authenticated, loopback allowlisted", allow: []string{"127.0.0.1"}, wantStatus: fasthttp.StatusOK, wantBody: "authorize_url"},
+		{name: "authenticated, no allowlist", wantStatus: fasthttp.StatusInternalServerError, wantBody: "blocked connection to non-public address"},
+		{name: "auth bypassed, loopback allowlisted", allow: []string{"127.0.0.1"}, authBypassed: true, wantStatus: fasthttp.StatusForbidden, wantBody: "unauthenticated callers cannot register MCP clients"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(tc.allow))
+			server := newLoopbackOAuthMCPServer(t)
+			store := newRealOAuth2Store(t)
+			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.Header.SetHost("bifrost.example.com")
+			req.SetBodyString(`{"name":"local_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"oauth","oauth_config":{}}`)
+			ctx := initCtx(&req)
+			if tc.authBypassed {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+			h.addMCPClient(ctx)
+
+			body := string(ctx.Response.Body())
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), body)
+			assert.Contains(t, body, tc.wantBody)
+		})
+	}
+}
+
+// removeRecordingMCPManager records RemoveMCPClient calls; any other manager call panics.
+type removeRecordingMCPManager struct {
+	MCPManager
+	removed []string
+}
+
+func (m *removeRecordingMCPManager) RemoveMCPClient(_ context.Context, id string) error {
+	m.removed = append(m.removed, id)
+	return nil
+}
+
+// TestDeleteMCPClient_UnknownIDIsNotFound pins that deleting an MCP client id with
+// no row answers 404 and leaves the runtime manager untouched, while a known id is
+// still removed from both the store and the manager.
+func TestDeleteMCPClient_UnknownIDIsNotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	manager := &removeRecordingMCPManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: manager}
+	del := func(id string) (int, string) {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodDelete)
+		ctx := initCtx(&req)
+		ctx.SetUserValue("id", id)
+		h.deleteMCPClient(ctx)
+		return ctx.Response.StatusCode(), string(ctx.Response.Body())
+	}
+
+	status, body := del("3f8e2a1c-0000-4000-8000-000000000000")
+	assert.Equal(t, fasthttp.StatusNotFound, status, body)
+	assert.Contains(t, body, "not found")
+	assert.Empty(t, manager.removed, "an unknown id must not reach the runtime manager")
+
+	require.NoError(t, store.CreateMCPClientConfig(context.Background(), &schemas.MCPClientConfig{
+		ID:               "mcp-delete-known",
+		Name:             "delete_known",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	status, body = del("mcp-delete-known")
+	assert.Equal(t, fasthttp.StatusOK, status, body)
+	assert.Equal(t, []string{"mcp-delete-known"}, manager.removed)
+	_, err := store.GetMCPClientByID(context.Background(), "mcp-delete-known")
+	assert.ErrorIs(t, err, configstore.ErrNotFound)
+}
+
+// =============================================================================
+// GET /api/mcp/library installed flag
+// =============================================================================
+
+// libraryInstalledStore serves one library page and a client table of any size,
+// honoring the limit/offset the handler asks for.
+type libraryInstalledStore struct {
+	configstore.ConfigStore
+	entries     []configtables.TableMCPLibrary
+	clients     []configtables.TableMCPClient
+	clientPages int
+}
+
+func (s *libraryInstalledStore) GetMCPLibraryPaginated(_ context.Context, _ configstore.MCPLibraryQueryParams) ([]configtables.TableMCPLibrary, int64, error) {
+	return s.entries, int64(len(s.entries)), nil
+}
+
+func (s *libraryInstalledStore) GetMCPClientsPaginated(_ context.Context, params configstore.MCPClientsQueryParams) ([]configtables.TableMCPClient, int64, error) {
+	s.clientPages++
+	if params.Offset >= len(s.clients) {
+		return nil, int64(len(s.clients)), nil
+	}
+	end := min(params.Offset+params.Limit, len(s.clients))
+	return s.clients[params.Offset:end], int64(len(s.clients)), nil
+}
+
+func fillerMCPClients(n int) []configtables.TableMCPClient {
+	clients := make([]configtables.TableMCPClient, n)
+	for i := range clients {
+		clients[i] = configtables.TableMCPClient{
+			ClientID:         fmt.Sprintf("filler-%d", i),
+			Name:             fmt.Sprintf("filler_%d", i),
+			EndpointSlug:     fmt.Sprintf("filler-%d", i),
+			ConnectionType:   string(schemas.MCPConnectionTypeHTTP),
+			ConnectionString: schemas.NewSecretVar(fmt.Sprintf("https://filler.example.com/%d", i)),
+		}
+	}
+	return clients
+}
+
+func TestGetMCPLibrary_InstalledLooksPastFirstHundredClients(t *testing.T) {
+	clients := append(fillerMCPClients(250), configtables.TableMCPClient{
+		ClientID:         "context7",
+		Name:             "Context7",
+		EndpointSlug:     "context7",
+		ConnectionType:   string(schemas.MCPConnectionTypeHTTP),
+		ConnectionString: schemas.NewSecretVar("https://mcp.context7.com/mcp"),
+	})
+	store := &libraryInstalledStore{
+		entries: []configtables.TableMCPLibrary{
+			{Slug: "context7", Name: "Context7", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://mcp.context7.com/mcp"},
+			{Slug: "linear", Name: "Linear", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://mcp.linear.app/mcp"},
+		},
+		clients: clients,
+	}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: store}}
+
+	ctx := &fasthttp.RequestCtx{}
+	h.getMCPLibrary(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var resp struct {
+		Servers []struct {
+			Slug      string `json:"slug"`
+			Installed bool   `json:"installed"`
+		} `json:"servers"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	require.Len(t, resp.Servers, 2)
+	assert.Equal(t, "context7", resp.Servers[0].Slug)
+	assert.True(t, resp.Servers[0].Installed, "client #251 installs context7")
+	assert.Equal(t, "linear", resp.Servers[1].Slug)
+	assert.False(t, resp.Servers[1].Installed)
+	assert.Equal(t, 3, store.clientPages, "251 clients read in pages of 100")
+}
+
+func TestIsMCPLibraryEntryInstalled(t *testing.T) {
+	httpEntry := configtables.TableMCPLibrary{
+		Name:           "Context7",
+		ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionURL:  "https://mcp.context7.com/mcp",
+	}
+	stdioEntry := configtables.TableMCPLibrary{
+		Name:           "File System",
+		ConnectionType: schemas.MCPConnectionTypeSTDIO,
+		StdioConfig:    &schemas.MCPStdioConfig{Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-filesystem"}},
+	}
+	cases := []struct {
+		name   string
+		entry  configtables.TableMCPLibrary
+		client configtables.TableMCPClient
+		want   bool
+	}{
+		{
+			name:   "http renamed client still matches by url",
+			entry:  httpEntry,
+			client: configtables.TableMCPClient{Name: "docs_lookup", EndpointSlug: "context7", ConnectionString: schemas.NewSecretVar("https://mcp.context7.com/mcp")},
+			want:   true,
+		},
+		{
+			name:   "http url with trailing slash matches",
+			entry:  httpEntry,
+			client: configtables.TableMCPClient{Name: "docs_lookup", EndpointSlug: "docs-lookup", ConnectionString: schemas.NewSecretVar("https://mcp.context7.com/mcp/")},
+			want:   true,
+		},
+		{
+			name:   "stdio renamed client matches by immutable endpoint slug",
+			entry:  stdioEntry,
+			client: configtables.TableMCPClient{Name: "my_files", EndpointSlug: "file-system", StdioConfig: &schemas.MCPStdioConfig{Command: "npx", Args: []string{"-y", "other"}}},
+			want:   true,
+		},
+		{
+			name:   "stdio renamed client matches by command and args",
+			entry:  stdioEntry,
+			client: configtables.TableMCPClient{Name: "my_files", EndpointSlug: "my-files", StdioConfig: &schemas.MCPStdioConfig{Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-filesystem"}}},
+			want:   true,
+		},
+		{
+			name:   "stdio client with same command but other args does not match",
+			entry:  stdioEntry,
+			client: configtables.TableMCPClient{Name: "my_files", EndpointSlug: "my-files", StdioConfig: &schemas.MCPStdioConfig{Command: "npx", Args: []string{"-y", "other"}}},
+			want:   false,
+		},
+		{
+			name:   "name match is case-insensitive",
+			entry:  stdioEntry,
+			client: configtables.TableMCPClient{Name: "file_system", EndpointSlug: "custom"},
+			want:   true,
+		},
+		{
+			name:   "unrelated client does not match",
+			entry:  httpEntry,
+			client: configtables.TableMCPClient{Name: "other", EndpointSlug: "other", ConnectionString: schemas.NewSecretVar("https://other.example.com/mcp")},
+			want:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isMCPLibraryEntryInstalled(&tc.entry, []configtables.TableMCPClient{tc.client})
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestSanitizeMCPLibraryServerName(t *testing.T) {
+	cases := map[string]string{
+		"Context7":         "Context7",
+		"Maxim AI":         "Maxim_AI",
+		"  File - System ": "File_System",
+		"a-_b":             "a__b",
+		"-lead":            "lead",
+		"1Password":        "mcp_1Password",
+		"***":              "mcp_",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, sanitizeMCPLibraryServerName(in), in)
+	}
 }

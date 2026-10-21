@@ -409,6 +409,9 @@ func (s *ClickHouseLogStore) BatchCreateAgentLogsIfNotExists(ctx context.Context
 // ReconcileAgentCorrelation uses ClickHouse's existing read-modify-reinsert update
 // model. Reinserted rows keep their immutable key and receive a newer version.
 func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entries []*AgentLog) error {
+	// Correlation scans must not load payload columns. A stream can have many
+	// large event bodies, while only rows missing identifiers need rewriting.
+	const correlationColumns = "id, timestamp, task_id, context_id"
 	type correlationKey struct {
 		agent string
 		id    string
@@ -429,15 +432,25 @@ func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entr
 
 	for key := range requestKeys {
 		var rows []AgentLog
-		if err := s.db.WithContext(ctx).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select(correlationColumns).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
 			return err
 		}
 		ids := make([]string, 0, len(rows))
+		complete := true
 		for i := range rows {
 			ids = append(ids, rows[i].ID)
+			if rows[i].TaskID == nil || *rows[i].TaskID == "" || rows[i].ContextID == nil || *rows[i].ContextID == "" {
+				complete = false
+			}
+			if rows[i].TaskID != nil && *rows[i].TaskID != "" {
+				taskKeys[correlationKey{agent: key.agent, id: *rows[i].TaskID}] = struct{}{}
+			}
+		}
+		if complete {
+			continue
 		}
 		unlock := s.lockRMWBatch("agent_logs", ids)
-		if err := s.db.WithContext(ctx).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select(correlationColumns).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
 			unlock()
 			return err
 		}
@@ -461,9 +474,27 @@ func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entr
 				changed = true
 			}
 			if changed {
-				if err := s.chReinsert(ctx, &rows[i]); err != nil {
+				// Reinsert the current full row, not the metadata projection, so
+				// serialized content and concurrent object-storage updates survive.
+				var full AgentLog
+				if err := s.db.WithContext(ctx).Where("id = ? AND timestamp = fromUnixTimestamp64Milli(?)", rows[i].ID, rows[i].Timestamp.UnixMilli()).First(&full).Error; err != nil {
 					unlock()
 					return err
+				}
+				changed = false
+				if (full.TaskID == nil || *full.TaskID == "") && rows[i].TaskID != nil && *rows[i].TaskID != "" {
+					full.TaskID = rows[i].TaskID
+					changed = true
+				}
+				if (full.ContextID == nil || *full.ContextID == "") && rows[i].ContextID != nil && *rows[i].ContextID != "" {
+					full.ContextID = rows[i].ContextID
+					changed = true
+				}
+				if changed {
+					if err := s.chReinsert(ctx, &full); err != nil {
+						unlock()
+						return err
+					}
 				}
 			}
 			if rows[i].TaskID != nil && *rows[i].TaskID != "" {
@@ -475,15 +506,22 @@ func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entr
 
 	for key := range taskKeys {
 		var rows []AgentLog
-		if err := s.db.WithContext(ctx).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select(correlationColumns).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
 			return err
 		}
 		ids := make([]string, 0, len(rows))
+		complete := true
 		for i := range rows {
 			ids = append(ids, rows[i].ID)
+			if rows[i].ContextID == nil || *rows[i].ContextID == "" {
+				complete = false
+			}
+		}
+		if complete {
+			continue
 		}
 		unlock := s.lockRMWBatch("agent_logs", ids)
-		if err := s.db.WithContext(ctx).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select(correlationColumns).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
 			unlock()
 			return err
 		}
@@ -497,8 +535,16 @@ func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entr
 		if contextID != nil {
 			for i := range rows {
 				if rows[i].ContextID == nil || *rows[i].ContextID == "" {
-					rows[i].ContextID = contextID
-					if err := s.chReinsert(ctx, &rows[i]); err != nil {
+					var full AgentLog
+					if err := s.db.WithContext(ctx).Where("id = ? AND timestamp = fromUnixTimestamp64Milli(?)", rows[i].ID, rows[i].Timestamp.UnixMilli()).First(&full).Error; err != nil {
+						unlock()
+						return err
+					}
+					if full.ContextID != nil && *full.ContextID != "" {
+						continue
+					}
+					full.ContextID = contextID
+					if err := s.chReinsert(ctx, &full); err != nil {
 						unlock()
 						return err
 					}
@@ -634,6 +680,58 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 		}
 	}
 	return nil
+}
+
+// BatchUpdate overlays each entry's non-zero fields onto its existing row via
+// read-modify-write and re-insert, one chunk at a time under the RMW locks.
+// It overrides the embedded RDB implementation, whose GORM UPDATE would be a
+// heavyweight mutation here and would bypass rmwLocks. Several entries for one
+// id are applied in batch order, as the RDB store applies them. Missing ids are
+// skipped, matching the RDB semantics. content_summary is left as the row has
+// it: the entry's own serialization would regenerate it from output only.
+func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
+	byID := make(map[string][]*Log, len(entries))
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil || entry.ID == "" {
+			continue
+		}
+		if _, seen := byID[entry.ID]; !seen {
+			ids = append(ids, entry.ID)
+		}
+		byID[entry.ID] = append(byID[entry.ID], entry)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	st, err := chParseSchema(s.db, &Log{})
+	if err != nil {
+		return err
+	}
+	return forEachRMWChunk(ids, func(chunk []string) error {
+		defer s.lockRMWBatch("logs", chunk)()
+		var rows []*Log
+		if err := s.db.WithContext(ctx).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		for _, r := range rows {
+			for _, src := range byID[r.ID] {
+				if err := src.SerializeFields(); err != nil {
+					return err
+				}
+				src.ContentSummary = ""
+				if err := chApplyStructUpdate(ctx, st, reflect.ValueOf(r).Elem(), reflect.ValueOf(src).Elem()); err != nil {
+					return err
+				}
+				// The overlay skips zero values; the final visibility is always written.
+				r.ContentHidden = src.ContentHidden
+			}
+		}
+		return s.chReinsert(ctx, &rows)
+	})
 }
 
 // UpdateAgentLog applies an update to an Agent log row via read-modify-write.
@@ -861,6 +959,14 @@ func (s *ClickHouseLogStore) Flush(ctx context.Context, since time.Time) error {
 func (s *ClickHouseLogStore) FlushMCPToolLogs(ctx context.Context, since time.Time) error {
 	if err := s.chFlushProcessing(ctx, "mcp_tool_logs", since); err != nil {
 		return fmt.Errorf("failed to cleanup old processing MCP tool logs: %w", err)
+	}
+	return nil
+}
+
+// FlushAgentLogs removes stale processing A2A log rows. See Flush.
+func (s *ClickHouseLogStore) FlushAgentLogs(ctx context.Context, since time.Time) error {
+	if err := s.chFlushProcessing(ctx, "agent_logs", since); err != nil {
+		return fmt.Errorf("failed to cleanup old processing A2A logs: %w", err)
 	}
 	return nil
 }

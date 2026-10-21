@@ -82,7 +82,7 @@ func extendedCardFixture(t *testing.T, withExtended bool) (*httptest.Server, *a2
 func extendedCardGateway(t *testing.T, upstream *httptest.Server, policy schemas.AgentGatewayAuthPolicy) (*Manager, *proxyRequestHandler) {
 	t.Helper()
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
-	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{AuthPolicy: policy})
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{AuthPolicy: policy, PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	t.Cleanup(m.Close)
 	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: upstream.URL + agentCardPath})

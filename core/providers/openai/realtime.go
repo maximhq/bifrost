@@ -32,12 +32,16 @@ func (provider *OpenAIProvider) RealtimeWebSocketURL(_ schemas.Key, model, inten
 }
 
 // RealtimeHeaders returns the headers required for the OpenAI Realtime WebSocket connection.
-func (provider *OpenAIProvider) RealtimeHeaders(_ *schemas.BifrostContext, key schemas.Key) (map[string]string, *schemas.BifrostError) {
+func (provider *OpenAIProvider) RealtimeHeaders(ctx *schemas.BifrostContext, key schemas.Key) (map[string]string, *schemas.BifrostError) {
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 	headers := map[string]string{
 		"Authorization": "Bearer " + key.Value.GetValue(),
 	}
 	for k, v := range provider.networkConfig.ExtraHeaders {
-		headers[k] = v
+		headers[k] = v.GetValue()
 	}
 	return headers, nil
 }
@@ -55,6 +59,10 @@ func (provider *OpenAIProvider) ExchangeRealtimeWebRTCSDP(
 	sdp string,
 	session json.RawMessage,
 ) (string, *schemas.BifrostError) {
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return "", keyErr
+	}
 	path := "/v1/realtime/calls"
 	if session == nil && strings.TrimSpace(model) != "" {
 		path += "?model=" + url.QueryEscape(model)
@@ -71,6 +79,10 @@ func (provider *OpenAIProvider) ExchangeLegacyRealtimeWebRTCSDP(
 	session json.RawMessage,
 	model string,
 ) (string, *schemas.BifrostError) {
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return "", keyErr
+	}
 	return provider.exchangeWebRTCSDP(ctx, key, "/v1/realtime?model="+url.QueryEscape(model), sdp, session)
 }
 
@@ -107,7 +119,7 @@ func (provider *OpenAIProvider) exchangeWebRTCSDP(
 	req.Header.SetContentType(writer.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	for k, v := range provider.networkConfig.ExtraHeaders {
-		req.Header.Set(k, v)
+		req.Header.Set(k, v.GetValue())
 	}
 	if headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string); headers != nil {
 		if agentsSDK := headers["x-openai-agents-sdk"]; agentsSDK != "" {
@@ -209,6 +221,10 @@ func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.RealtimeRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 
 	normalizedBody, _, bifrostErr := NormalizeRealtimeClientSecretRequest(rawRequest, provider.GetProviderKey())
@@ -470,7 +486,7 @@ func (provider *OpenAIProvider) realtimeSessionHeaders(key schemas.Key) map[stri
 		"Authorization": "Bearer " + key.Value.GetValue(),
 	}
 	for k, v := range provider.networkConfig.ExtraHeaders {
-		headers[k] = v
+		headers[k] = v.GetValue()
 	}
 	return headers
 }

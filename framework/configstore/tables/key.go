@@ -45,6 +45,7 @@ type TableKey struct {
 	VertexRegion                  *schemas.SecretVar `gorm:"type:text" json:"vertex_region,omitempty"`
 	VertexAuthCredentials         *schemas.SecretVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
 	VertexForceSingleRegion       *bool              `gorm:"column:vertex_force_single_region" json:"vertex_force_single_region,omitempty"`
+	VertexUseSessionRouting       *bool              `gorm:"column:vertex_use_session_routing" json:"vertex_use_session_routing,omitempty"`
 	VertexAWSWorkloadIdentityJSON *string            `gorm:"type:text" json:"-"` // JSON serialized schemas.VertexAWSWorkloadIdentityConfig
 
 	// Bedrock config fields (embedded)
@@ -85,6 +86,9 @@ type TableKey struct {
 	// SGL config fields (embedded)
 	SGLUrl *schemas.SecretVar `gorm:"type:text" json:"sgl_url,omitempty"`
 
+	// Cloudflare config fields (embedded)
+	CloudflareAccountID *schemas.SecretVar `gorm:"type:text" json:"cloudflare_account_id,omitempty"`
+
 	// Databricks config fields (embedded)
 	DatabricksWorkspaceURL       *schemas.SecretVar `gorm:"type:text" json:"databricks_workspace_url,omitempty"`
 	DatabricksClientID           *schemas.SecretVar `gorm:"type:text" json:"databricks_client_id,omitempty"`
@@ -116,6 +120,14 @@ type TableKey struct {
 	GithubCopilotPrivateKey     *schemas.SecretVar `gorm:"type:text" json:"github_copilot_private_key,omitempty"`
 	GithubCopilotGithubDomain   *schemas.SecretVar `gorm:"type:text" json:"github_copilot_github_domain,omitempty"`
 
+	// oauth_key_config: the credential fields get their own encrypted columns; the
+	// non-secret settings (grant, scopes, claims, auth style) travel as one JSON column.
+	OAuthTokenURL     *schemas.SecretVar `gorm:"column:oauth_token_url;type:text" json:"oauth_token_url,omitempty"`
+	OAuthClientID     *schemas.SecretVar `gorm:"column:oauth_client_id;type:text" json:"oauth_client_id,omitempty"`
+	OAuthClientSecret *schemas.SecretVar `gorm:"column:oauth_client_secret;type:text" json:"oauth_client_secret,omitempty"`
+	OAuthPrivateKey   *schemas.SecretVar `gorm:"column:oauth_private_key;type:text" json:"oauth_private_key,omitempty"`
+	OAuthSettingsJSON *schemas.SecretVar `gorm:"column:oauth_settings_json;type:text" json:"-"` // Non-credential settings; still encrypted, since extra_params is free-form
+
 	// Virtual fields for runtime use (not stored in DB)
 	Models                 schemas.WhiteList               `gorm:"-" json:"models"` // ["*"] allows all models; empty denies all (deny-by-default)
 	BlacklistedModels      schemas.BlackList               `gorm:"-" json:"blacklisted_models"`
@@ -130,6 +142,8 @@ type TableKey struct {
 	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
 	DatabricksKeyConfig    *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
 	GithubCopilotKeyConfig *schemas.GithubCopilotKeyConfig `gorm:"-" json:"github_copilot_key_config,omitempty"`
+	CloudflareKeyConfig    *schemas.CloudflareKeyConfig    `gorm:"-" json:"cloudflare_key_config,omitempty"`
+	OAuthKeyConfig         *schemas.OAuthKeyConfig         `gorm:"-" json:"oauth_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -247,6 +261,8 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 		fsr := k.VertexKeyConfig.ForceSingleRegion
 		k.VertexForceSingleRegion = &fsr
+		sr := k.VertexKeyConfig.UseSessionRouting
+		k.VertexUseSessionRouting = &sr
 		wif, err := MarshalVertexAWSWorkloadIdentityJSON(k.VertexKeyConfig.AWSWorkloadIdentity)
 		if err != nil {
 			return err
@@ -258,6 +274,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.VertexRegion = nil
 		k.VertexAuthCredentials = nil
 		k.VertexForceSingleRegion = nil
+		k.VertexUseSessionRouting = nil
 		k.VertexAWSWorkloadIdentityJSON = nil
 	}
 	if k.BedrockKeyConfig != nil {
@@ -481,6 +498,13 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.SGLUrl = nil
 	}
 
+	if k.CloudflareKeyConfig != nil && k.CloudflareKeyConfig.AccountID.IsSet() {
+		a := k.CloudflareKeyConfig.AccountID
+		k.CloudflareAccountID = &a
+	} else {
+		k.CloudflareAccountID = nil
+	}
+
 	if k.DatabricksKeyConfig != nil {
 		if k.DatabricksKeyConfig.WorkspaceURL.IsSet() {
 			u := k.DatabricksKeyConfig.WorkspaceURL // Value-copy to prevent shared pointer mutation
@@ -556,6 +580,41 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.GithubCopilotPrivateKey = nil
 		k.GithubCopilotGithubDomain = nil
 
+	}
+	// oauth_key_config. The credential fields are value-copied into their own columns, per
+	// the invariant above; the rest is serialised with those fields cleared so no secret
+	// ever lands in the settings column.
+	if k.OAuthKeyConfig != nil {
+		copyPtr := func(v *schemas.SecretVar) *schemas.SecretVar {
+			if v == nil || !v.IsSet() {
+				return nil
+			}
+			c := *v
+			return &c
+		}
+		if k.OAuthKeyConfig.TokenURL.IsSet() {
+			v := k.OAuthKeyConfig.TokenURL
+			k.OAuthTokenURL = &v
+		} else {
+			k.OAuthTokenURL = nil
+		}
+		k.OAuthClientID = copyPtr(k.OAuthKeyConfig.ClientID)
+		k.OAuthClientSecret = copyPtr(k.OAuthKeyConfig.ClientSecret)
+		k.OAuthPrivateKey = copyPtr(k.OAuthKeyConfig.PrivateKey)
+		settings := *k.OAuthKeyConfig
+		settings.TokenURL = schemas.SecretVar{}
+		settings.ClientID, settings.ClientSecret, settings.PrivateKey = nil, nil, nil
+		data, err := json.Marshal(settings)
+		if err != nil {
+			return fmt.Errorf("failed to serialize oauth key config: %w", err)
+		}
+		k.OAuthSettingsJSON = schemas.NewSecretVar(string(data))
+	} else {
+		k.OAuthTokenURL = nil
+		k.OAuthClientID = nil
+		k.OAuthClientSecret = nil
+		k.OAuthPrivateKey = nil
+		k.OAuthSettingsJSON = nil
 	}
 
 	// Store plaintext SecretVar columns into the vault and rewrite them to vault refs.
@@ -685,6 +744,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to encrypt sgl url: %w", err)
 		}
+		// Cloudflare
+		if err := encryptSecretVarPtr(&k.CloudflareAccountID); err != nil {
+			return fmt.Errorf("failed to encrypt cloudflare account id: %w", err)
+		}
 		// Databricks
 		if err := encryptSecretVarPtr(&k.DatabricksWorkspaceURL); err != nil {
 			return fmt.Errorf("failed to encrypt databricks workspace url: %w", err)
@@ -711,6 +774,22 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 		if err := encryptSecretVarPtr(&k.GithubCopilotGithubDomain); err != nil {
 			return fmt.Errorf("failed to encrypt github copilot github domain: %w", err)
+		}
+		// oauth_key_config. The client secret or private key is the whole credential.
+		if err := encryptSecretVarPtr(&k.OAuthTokenURL); err != nil {
+			return fmt.Errorf("failed to encrypt oauth token url: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.OAuthClientID); err != nil {
+			return fmt.Errorf("failed to encrypt oauth client id: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.OAuthClientSecret); err != nil {
+			return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.OAuthPrivateKey); err != nil {
+			return fmt.Errorf("failed to encrypt oauth private key: %w", err)
+		}
+		if err := encryptSecretVarPtr(&k.OAuthSettingsJSON); err != nil {
+			return fmt.Errorf("failed to encrypt oauth settings: %w", err)
 		}
 		k.EncryptionStatus = EncryptionStatusEncrypted
 	}
@@ -836,6 +915,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if err := decryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to decrypt sgl url: %w", err)
 		}
+		// Cloudflare
+		if err := decryptSecretVarPtr(&k.CloudflareAccountID); err != nil {
+			return fmt.Errorf("failed to decrypt cloudflare account id: %w", err)
+		}
 
 		// Databricks
 		if err := decryptSecretVarPtr(&k.DatabricksWorkspaceURL); err != nil {
@@ -862,6 +945,22 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if err := decryptSecretVarPtr(&k.GithubCopilotGithubDomain); err != nil {
 			return fmt.Errorf("failed to decrypt github copilot github domain: %w", err)
+		}
+		// oauth_key_config
+		if err := decryptSecretVarPtr(&k.OAuthTokenURL); err != nil {
+			return fmt.Errorf("failed to decrypt oauth token url: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.OAuthClientID); err != nil {
+			return fmt.Errorf("failed to decrypt oauth client id: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.OAuthClientSecret); err != nil {
+			return fmt.Errorf("failed to decrypt oauth client secret: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.OAuthPrivateKey); err != nil {
+			return fmt.Errorf("failed to decrypt oauth private key: %w", err)
+		}
+		if err := decryptSecretVarPtr(&k.OAuthSettingsJSON); err != nil {
+			return fmt.Errorf("failed to decrypt oauth settings: %w", err)
 		}
 	}
 
@@ -914,7 +1013,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.AzureKeyConfig = azureConfig
 	}
 	// Reconstruct Vertex config if fields are present
-	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil || (k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "") {
+	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil || k.VertexUseSessionRouting != nil || (k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "") {
 		config := &schemas.VertexKeyConfig{}
 
 		if k.VertexProjectID != nil {
@@ -933,6 +1032,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if k.VertexForceSingleRegion != nil {
 			config.ForceSingleRegion = *k.VertexForceSingleRegion
+		}
+		if k.VertexUseSessionRouting != nil {
+			config.UseSessionRouting = *k.VertexUseSessionRouting
 		}
 		if k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "" {
 			var wif schemas.VertexAWSWorkloadIdentityConfig
@@ -1053,6 +1155,14 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	} else {
 		k.SGLKeyConfig = nil
 	}
+	// Reconstruct Cloudflare config if fields are present
+	if k.CloudflareAccountID != nil {
+		k.CloudflareKeyConfig = &schemas.CloudflareKeyConfig{
+			AccountID: *k.CloudflareAccountID,
+		}
+	} else {
+		k.CloudflareKeyConfig = nil
+	}
 
 	// Reconstruct Databricks config if fields are present
 	if k.DatabricksWorkspaceURL != nil || k.DatabricksClientID != nil || k.DatabricksClientSecret != nil ||
@@ -1097,6 +1207,36 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.GithubCopilotKeyConfig = config
 	} else {
 		k.GithubCopilotKeyConfig = nil
+	}
+	// Reconstruct oauth_key_config if any part is present
+	settings := ""
+	if k.OAuthSettingsJSON != nil {
+		settings = k.OAuthSettingsJSON.GetValue()
+	}
+	if settings != "" || k.OAuthTokenURL != nil || k.OAuthClientID != nil ||
+		k.OAuthClientSecret != nil || k.OAuthPrivateKey != nil {
+		config := &schemas.OAuthKeyConfig{}
+		if settings != "" {
+			if err := json.Unmarshal([]byte(settings), config); err != nil {
+				return fmt.Errorf("failed to parse oauth key config: %w", err)
+			}
+		}
+		if k.OAuthTokenURL != nil {
+			config.TokenURL = *k.OAuthTokenURL
+		}
+		copyPtr := func(v *schemas.SecretVar) *schemas.SecretVar {
+			if v == nil {
+				return nil
+			}
+			c := *v
+			return &c
+		}
+		config.ClientID = copyPtr(k.OAuthClientID)
+		config.ClientSecret = copyPtr(k.OAuthClientSecret)
+		config.PrivateKey = copyPtr(k.OAuthPrivateKey)
+		k.OAuthKeyConfig = config
+	} else {
+		k.OAuthKeyConfig = nil
 	}
 	return nil
 }

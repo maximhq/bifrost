@@ -1,0 +1,770 @@
+---
+title: "v2.3.0"
+description: "v2.3.0 changelog - 2026-10-13"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v2.3.0
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v2.3.0
+    docker run -p 8080:8080 maximhq/bifrost:v2.3.0
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="2.3.0">
+
+<Warning>
+  For large deployments, schedule upgrades during low-traffic windows (e.g. weekends). Database migrations run on startup and can cause lock contention on PostgreSQL while they complete. Improved migration handling is rolling out at the application level, starting with v2.3.0.
+</Warning>
+
+<Warning>
+**Pass-through routes and file objects now work differently with virtual keys.** Read this changelog in full before you upgrade. Every one of these changes strengthens Bifrost's security posture. If you have questions, reach out to us.
+</Warning>
+
+## ✨ Features
+
+- **Agent Gateway (A2A)** - Bifrost now proxies A2A agents. Register an upstream agent by its agent card URL (`POST /api/agents`, `POST /api/agents/inspect`, or the new top-level `agents` array in config.json, reconciled by name at startup) and clients reach it at `/agents/a2a/<name>/.well-known/agent-card.json`, `/agents/a2a/<name>/json-rpc` (JSON-RPC and SSE streaming) and `/agents/a2a/<name>/rest/...`, plus an optional shared gRPC listener routed by `<agent>.<a2a_grpc_base_domain>:<a2a_grpc_port>`. The runtime caches cards and clients, refreshes a stale interface on 404/405/410/426, supports header, OAuth and TLS upstream auth, runs A2A plugin hooks, and delivers push notifications through a durable, retried outbox (`/agents/a2a/<name>/push/callback`, authenticated with a per-config token). Push callbacks to loopback or private addresses stay blocked unless the new `server.a2a_allow_private_push_callbacks` is on (default off). Access is governed per virtual key with `agent_grants` (omit to keep, `[]` to clear, unknown agents rejected atomically) and `allow_by_default` per agent; ungranted or disabled agents return `403`. Every A2A operation and stream event gets its own log row (relational, ClickHouse, or hybrid with object-store payloads) in a new Agent Logs workspace with session grouping, raw capture and DAC-bounded filters, LLM and MCP logs carry the A2A correlation id, and A2A client spans plus the `a2a.client.operation.duration` metric reach connectors. The dashboard adds an agent sheet with auth fields and a card preview, push-config UI and an Agent Gateway settings page; Helm adds `bifrost.agents[]`, `bifrost.client.a2aExternalClientUrl`, `bifrost.server.a2aGrpcBaseDomain` and `bifrost.server.a2aGrpcPort`
+- **Warp AI Assistant (alpha)** - Warp (formerly Odin) is a new in-dashboard agent that answers questions about the deployment's logs, spend, latency and governance in plain language, using read-only tools (`query_logs`, `count_logs`, `get_log_detail`, `get_request_trace`, `query_metrics`, `query_usage_by`, `query_model_performance`, `render_chart`, `describe_filter_space`, `describe_virtual_key`, `describe_user_limits`, `ask_user`). It asks multiple-choice clarifying questions, draws inline charts, links to matching rows on the Logs page, resolves "today", "yesterday" and bare dates in the asker's time zone, and filters by agent name and `x-bf-agent-correlation-id`. Admins set a default model plus up to 20 more models users can switch between, `temperature`, `reasoning_effort` and max iterations (2 to 20) at `/api/warp/config`; chat streams from `/api/warp/chat` with history under `/api/warp/conversations` (100-conversation cap). Warp calls the gateway in-process, its calls are logged and governed under the app name **Warp**, signed-in users without an access profile are served, and it only reads rows the asker may see. Governance refusals return their own error codes (`access_denied`, `budget_exceeded`, `rate_limited`, `model_blocked`), and the chat panel is a resizable dock. Gated by the `warp` feature flag, on by default in OSS and off by default in Enterprise
+- **Warp Semantic Log Search** - Completed LLM logs can be embedded into a vector store so Warp's `semantic_search_logs` finds conversations by meaning. The embedding provider, model, dimension and namespace are set in Warp settings; new logs are indexed live, and older logs by a resumable, concurrent background backfill (`/api/warp/log-index/backfill`, `/backfill/status`, `/backfill/cancel`, `/api/warp/log-index/status`). Restricted callers get results prefiltered to rows they can see, the similarity threshold is one 0 to 1 scale on every vector store (default 0.5, Weaviate included), and a finished backfill is hidden once the embedding space changes
+- **GPT Live Sessions** - Bifrost now proxies OpenAI GPT Live sessions over WebSocket and WebRTC at `/v1/live/sessions`, with a sideband `/v1/live/sessions/{session_id}/attach` WebSocket and recording downloads at `/v1/live/sessions/{session_id}/content` (logged as `live_content`). Voice time is billed in 30-second windows from `input_cost_per_second` on a `live` pricing row and backend Responses calls are billed per turn, with governance checked at each window and one session log row carrying transcript, delegations and costs. Live has its own `live` allowed request type (`realtime` does not imply it). Sessions are bound to the virtual key that opened them, keys are picked only from those governance allows, later billing units on an excluded key return `403`, and sideband attachments run through the plugin pipeline as `live_sideband` with their own log row. Failed backend delegations are recorded on the delegation instead of failing the session, an upstream that ends without `session.closed` gives the client `502 server_error`, a failed WebRTC setup still records the 15-second minimum, `x-bf-direct-key` works on WebSocket upgrades, and `?provider=` or `x-model-provider` picks the provider on attach and content routes
+- **Cloudflare Workers AI Provider** - New first-party `cloudflare` provider for chat completions (streaming included), Responses, embeddings and model listing against Workers AI. Every key needs `cloudflare_key_config.account_id` (supports `env.` references); the base URL defaults to `https://api.cloudflare.com/client/v4`. Clef decision models (`clef`, `clef-flash`) are served natively on `/v1/decisions` with image input, and the Cloudflare `{result, success, errors}` envelope is unwrapped. A migration dialog in the UI moves an existing custom provider named `cloudflare` onto the new provider
+- **Provider-Injected MCP Tools** - A provider can carry `injected_tools`, a list of `{name, mcp_client_name, tool_name}` entries. Bifrost adds each MCP tool to every chat and Responses request for that provider (past client and request tool filters), runs it server side when the model calls it (non-streaming, streaming chat, streaming Responses and the Anthropic passthrough path), and returns only the final answer with usage summed across turns. An entry named `web_search` replaces any native web search the client sends; any other name replaces a client tool of the same name. Configure it in the provider's new Tools tab, the provider API or config.json. Depth is capped by `mcp_agent_depth`
+- **OAuth-Minted Keys for OpenAI-Compatible Providers** - Keys on `openai` and on custom providers with an `openai` base can set `oauth_key_config` instead of a static `value`. Bifrost mints a bearer from the token endpoint with the `client_credentials` grant (HTTP Basic or `auth_style: "body"`) or the `jwt_bearer` grant (RFC 7523, RSA/EC signed assertions), caches it per credential, refreshes it a minute before expiry and backs off on rejected credentials. A non-empty `value` always wins. Available in the API, config.json, Helm and a new "OAuth (minted token)" tab in the key form. Databricks OAuth M2M and GitHub Copilot now mint through the same shared token cache, so a rejected Databricks service principal is backed off instead of hitting the token endpoint on every request
+- **Decisions API in OpenAI Shape** - `POST /v1/decisions` now takes `input` (text, messages with image parts, or structured data) and an ordered `questions` list, each with `type` (`predicate`, `choice`, `score`), optional `name`, `instructions`, `criteria`, `choices` or `levels`, plus `safety_identifier`. Answers come back as a list in question order, with Laya answer fields, response `routing` and state/truncation usage fields passed through. New `/openai/v1/decisions` and `/openai/decisions` routes (also under `/langchain`, `/litellm`, `/pydanticai`) accept the OpenAI SDK's native request; an OpenAI-based provider's body is relayed unchanged and others are rebuilt into OpenAI's response shape
+- **Native Decision Models on More Providers** - `/v1/decisions` now reaches native decision endpoints on OpenAI (`gpt-6-luna`), Perplexity (`pplx-decider-*`), Ollama (local System One models `nimble`, `tev1`, `clef`, `clef-flash`, `laya` on `/v1/systemone`, with `keep_alive` and base64 images) and OpenRouter (TypeSafe Jev models and any model the datasheet marks `supports_decisions`, listed live with response headers forwarded). These providers returned `unsupported_operation` before (thanks [@hcavarsan](https://github.com/hcavarsan)!)
+- **Decision Emulation Is Opt-In** - Decision requests to a model with no native decisions endpoint are no longer emulated through the model's Responses API by default. They return `unsupported_operation` with a message naming the model and `convert_decision_to_responses`. Enable emulation with the new compat setting `convert_decision_to_responses` (UI: Compatibility, "Emulate Decisions API on non-decision models") or per request with `x-bf-compat: ["convert_decision_to_responses"]`
+- **TypeSafe as a Custom Provider Base** - Custom providers can use `base_provider_type: "typesafe"`, so a second TypeSafe-compatible endpoint (for example self-hosted Laya or Nimble) runs with its own keys, name, `allowed_requests` and `request_path_overrides` for `decisions` and `list_models`, with keyless listing. The dashboard offers TypeSafe as a base format and adds a Decisions toggle to allowed requests
+- **Decision Pricing Rates** - New datasheet and override fields `input_cost_per_token_decisions` and `output_cost_per_token_decisions` price decisions served natively by chat-row models such as `gpt-6-luna`; rows without them fall back to the normal token rates. Decision requests on variable-price models no longer bill a negative cost
+- **Complexity Router Decision-Model Classifier** - The complexity router can now classify with a decision model (TypeSafe Jev by default; Laya, Nimble, Clef and OpenAI decision models such as `gpt-6-luna` also work), as the primary classifier or as the semantic classifier's fallback. Only user turns are sent (`previous_message_count`, `timeout`), per-tier guidance (definition, signals, examples) can be edited with shipped defaults returned as `jev_defaults` on the status endpoint, and decision calls are billed under the routing cost with a `RequestType`. `GET /api/models?decisions=true` lists only models that serve decisions natively, `decisions` is a request type in pricing overrides and routing CEL rules, decision logs show their questions, and the LLM fallback classifier no longer sends `temperature: 0`. The dashboard has a stepped classifier setup and settings sheets
+- **Durable Queue Framework** - New `framework/queue` package: a durable queue with consumer groups, at-least-once delivery, per-key ordering, retries, dead-lettering and lease heartbeats. Backends: in-memory, and a `logstore` type that keeps queue tables in the logs database on SQLite (single process), Postgres (multi-instance, `SKIP LOCKED` claims, `LISTEN/NOTIFY` wakeups) and ClickHouse. Available to framework consumers; the gateway does not use it yet
+- **Multimodal Embeddings** - `/v1/embeddings` input now accepts content parts (`text`, `image`, `audio`, `video`, `file`, `tokens`) and per-item `params` overrides, served by Cohere, Gemini (including `:batchEmbedContents`) and Vertex (including `gs://` URIs, `multimodalembedding@001` video segments and `embedContentConfig.documentOcr`/`audioTrackExtraction`). Bedrock gains Nova multimodal (`amazon.nova-2-multimodal-embeddings-v1:0`) and Titan multimodal (`amazon.titan-embed-image-v1`) embeddings, `encoding_format` maps to Cohere `embedding_types`, and Parasail serves embeddings. OpenAI-compatible providers get only `encoding_format` and `dimensions` (Mistral no longer returns `422` on `task_type`), and the semantic cache hashes `task_type`, `title` and `auto_truncate`. Embedding inputs are stored in a new `embedding_input` log column and shown in the log view
+- **Shell, apply_patch and Programmatic Tool Callers** - The Responses API now supports OpenAI's `shell` tool with `shell_call`/`shell_call_output` items (streaming included) and the `apply_patch` tool with `apply_patch_call`/`apply_patch_call_output` items and diff stream events. `allowed_callers` is translated between OpenAI's `programmatic` and Anthropic's versioned `code_execution_*` callers on chat and Responses. Gemini `executableCode`/`codeExecutionResult` parts map to `code_interpreter_call` items, and `code_interpreter` reaches Gemini as `codeExecution`. Shell, code interpreter, image generation and computer tools are dropped for Bedrock and Bedrock Mantle, and the semantic cache treats `shell_call` and `apply_patch_call` as tool calls
+- **Retrieve a Single Model** - New `GET /v1/models/{model}` returns one model's metadata, implemented for OpenAI, Anthropic (with alias resolution), Cohere, Gemini, Mistral and Ollama, with `shutdown_date` where the provider announces one. Gated by the `model_retrieve` allowed request and exempt from budgets and rate limits
+- **xAI Realtime** - xAI is now a realtime voice provider on the WebSocket gateway, including client-secret minting through `/v1/realtime/client_secrets`. Browser clients can authenticate with the `xai-client-secret.<token>` subprotocol as well as `openai-insecure-api-key.<token>`; an empty, whitespace-containing or conflicting subprotocol credential returns `400` before the upgrade, and mint requests that carry session settings are rejected (send them with `session.update`). Responses streaming keeps the provider stop reason from the newest chunk that has one, and the logging plugin marks `refusal`, `content_filter` and `safety` stops as errors of type `model_refusal`
+- **Bedrock Passthrough** - New `/bedrock_passthrough` route forwards the three Bedrock operations Bifrost has no native route for: InvokeAgent (streamed as AWS sends it), knowledge-base Retrieve, and ApplyGuardrail. Any other path, method or malformed identifier returns `400`. InvokeAgent and Retrieve are SigV4-signed with the key's AWS credentials (an API-key-only key is refused with `400`), and AWS status, body and `X-Amzn-*` headers come back unchanged. Azure `prompt_filter_results` and per-choice `content_filter_results` are now passed through on chat responses
+- **Vertex AI Workload Identity Federation from AWS** - Vertex keys can set `vertex_key_config.aws_workload_identity` (`audience`, `service_account_email`, `token_lifetime_seconds`, `aws_region`, `aws_role_arn`) to authenticate from EKS IRSA, Pod Identity, ECS task roles or EC2 instance profiles with no stored GCP or AWS key. gcloud-generated AWS `external_account` JSON now also resolves AWS credentials through the AWS SDK chain. New "Workload Identity (AWS)" tab in the key form
+- **Web Search Priced per Request** - Provider-hosted web search is now reported as `usage.tool_usage.web_search.num_requests` (top-level `tool_usage` on Responses) for Anthropic, Gemini, Perplexity and OpenAI Responses, and billed with the new pricing field `web_search_cost_per_request`. Existing values are copied over by migration, and datasheet rows still carrying `search_context_cost_per_query` are read as the new field
+- **Ignore Provider-Reported Cost** - New per-provider `ignore_provider_cost` setting (UI: provider Pricing tab, default `false`) discards the `usage.cost` a provider reports, for providers such as Cortecs that report credits, and prices requests from the model catalog and pricing overrides for logs, budgets, telemetry and streamed totals. The client response keeps the provider's figure
+- **Compat: Route Reasoning-Only Models to Responses** - New compat setting `force_reasoning_only_models_to_responses` sends chat completion requests with tools to the Responses API when the datasheet marks the model as not supporting `reasoning_with_tool_calls`, and converts the answer back to chat format, so reasoning is kept instead of turned off. Defaults to `true`, also available per request through `x-bf-compat`
+- **Chat reasoning.mode and reasoning.summary** - A chat request carrying `reasoning.mode` (`standard` or `pro`) on OpenAI or Azure is served through the Responses API so `pro` is honoured; other providers report it as a dropped compat param. Chat requests can also set `reasoning.summary` (`auto`, `concise`, `detailed`), forwarded when chat is served through the Responses API
+- **DeepSeek Served Model Tracking** - When DeepSeek serves a different model than requested (retired IDs silently upgraded), the served model is recorded as `ServerSideFallbackModel` for pricing and routing info, and a datasheet `server_side_model` covers the Anthropic-compatible endpoint, which echoes the requested ID
+- **Failure Classification and Smarter Key Rotation** - Every failed attempt now gets a `failure_class` on the attempt trail (`credential`, `quota`, `model_access`, `model_gone`, `region_blocked`, `rate_limit`, `transient`, `caller_fault`, `timeout`, `cancelled`, `unknown`), read from provider error codes rather than status alone. Credential and quota failures hold a key out for every model; keys refused for the model, a retired model or a region block are rotated past, and permanent per-key failures walk the key pool even at `max_retries: 0`. Attempts Bifrost ends itself are recorded as `timeout` (504) or `cancelled` (499). Provider retry hints (`Retry-After`, `retry-after-ms`, Gemini `RetryInfo`) are exposed as `extra_fields.retry_after_ms`, clamped to 1s to 5m
+- **Time-to-First-Token Cutoff** - Routing rule targets accept `ttft_timeout_ms` (1 to 300000). A streaming attempt that does not produce its first token in time is cut off and handed to the next fallback without cancelling the request; the last attempt is never cut off, and non-streaming requests are unaffected. A cut-off attempt fails with code `ttft_timeout` and status `504` on the attempt trail. The rule editor has a "Time to first token cutoff (ms)" field per target, also in Helm
+- **Requested Route in Routing Info** - When a routing rule, load balancer or session router rewrites the model or provider, the caller's original route is returned as `routing_info.requested_provider` / `requested_model` and in the `x-bifrost-routing-info-requested-provider` and `x-bifrost-routing-info-requested-model` response headers
+- **Gateway Request ID Header** - Every traced response now carries `x-bifrost-request-id`, the ID the request is logged under (`GET /api/logs/{id}`), next to `x-bifrost-trace-id`. Provider response headers whose names start with `x-bifrost-` are no longer forwarded to the caller
+- **Deprecated Models Hidden from Browsing** - `GET /api/models` without a `query` now leaves out deprecated models and their counts; with a `query` they are kept but sorted last. Pass `include_deprecated=true` to get them all
+- **Provider Objects Bound to the Creating Virtual Key** - Files, batches, videos, containers (and container files) and cached contents created through a virtual key are now recorded in a new `provider_objects` table. Retrieve, content, delete, cancel, results and remix on another key's object return `404`, list pages are narrowed to the caller's own objects, and indirect references (a batch on another key's input file, a container with `file_ids`, a request naming `cached_content`) are checked the same way under every id form the provider accepts. A failed ownership lookup returns `500` instead of an unchecked page, and id lists over 1000 no longer fail large list pages. A new **Restrict Provider Objects to the Creating Virtual Key** switch under Settings > Security (`client.enforce_vk_object_ownership`, default `true`, applied without a restart) turns the restriction off; creators are still recorded while it is off
+- **File-Based Batches Under Model-Restricted Virtual Keys** - A batch defined by `input_file_id` or `input_blob` is now judged by what the provider actually runs. On OpenAI and Azure (and custom providers built on them), which run the models named inside the file, the virtual key must allow every model of the provider. On Gemini, Vertex and Bedrock the request `model` must be present and allowed. A batch create that sends a file or blob together with inline `requests` returns `400`
+- **Passthrough Route Hardening** - Passthrough routes (`/openai_passthrough`, `/anthropic_passthrough`, `/azure_passthrough`, `/genai_passthrough` and siblings) now forward only `POST` requests to a fixed allowlist of inference paths per provider (chat, completions, responses, embeddings, moderations, audio, images, `generateContent`, `countTokens`, `predict` and similar). Paths that could change the upstream host (not rooted, `//`, userinfo `@`, schemes, backslashes, `..`, control characters, percent-encoded forms included) are refused, the final URL must stay on the provider's host, and `x-model-provider` can only confirm the route's provider. The model is read strictly from the JSON body, and governance checks every model a body names, including each task of a Runware task array
+- **Management API Refuses Unlisted Browser Origins** - While dashboard auth is disabled or unconfigured, and on deployments with `config_store.enabled: false`, browser requests to `/api/*` (and `/ws` and `/metrics` without a config store) from an origin that is not localhost, the gateway's own origin, or listed in `client.allowed_origins` (patterns such as `https://*.example.com` work, a bare `*` does not count) now return `403`. Requests without an `Origin` header (CLI, SDKs), whitelisted routes and inference routes are unchanged, and enabling dashboard auth lifts the auth-off check
+- **Real Auth Required for Secret References and Private Targets** - Requests admitted only because dashboard auth is off now get `403` when they: use `env.`/`vault.` references in MCP client credential fields (headers, connection string, OAuth, token exchange, TLS) on `POST /api/mcp/client` or `PUT /api/mcp/client/{id}`; create, re-point or redeliver to a webhook endpoint with `allow_private_network`; set an outbound endpoint (`collector_url`, `metrics_endpoint`, `push_gateway_url`, `endpoint`, `url`, `base_url`) or any `env.`/`vault.` reference on a built-in plugin (OTEL, telemetry); set, change or remove a Vertex key's `vertex_key_config.auth_credentials` (the JSON names the hosts the Google client dials); or delete MCP tool logs via `DELETE /api/mcp-logs`. config.json provisioning is not affected (thanks [@xujiantop-crypto](https://github.com/xujiantop-crypto)!)
+- **Auth Config Changes Need Proof of Control** - When an admin account exists but dashboard auth is switched off, re-enabling auth or replacing the admin username or password through `PUT /api/config` now requires `current_password` (the stored admin password) or a valid `setup_token` in the request. The Security page asks for the current password in that case
+- **Request Decompression Limits** - Compressed request bodies may now expand to at most 100 times their compressed size (1 MiB floor, `client.max_request_body_size_mb` ceiling), and a process-wide in-flight budget of four times the body cap bounds buffered decompression. The budget is charged for bytes actually inflated, so ordinary concurrent gzip traffic is not refused
+- **Access Profiles for Teams, Business Units and Customers** - *(enterprise)* A team, business unit or customer can hold an access profile instead of its own budgets and rate limit, and every virtual key under it is governed by that profile. Virtual keys can now be owned by a business unit (`business_unit_id`), and a business unit holds at most one budget. config.json accepts `access_profile` on `governance.teams`, `governance.customers` and `governance.business_units`, roles accept the new `business-unit-data` and `customer-data` data access scopes, and the dashboard hides a key's own limit editors when a profile governs it
+- **Per-Virtual-Key Content Logging Control** - Virtual keys have a tri-state `disable_content_logging`: omitted or `null` inherits `client.disable_content_logging`, `true` keeps that key's request and response content out of the log store and strips it from OpenTelemetry export (MCP arguments included), `false` keeps content in the log store even when the client setting turns it off. The per-request `x-bf-disable-content-logging` header still wins. The virtual key editor has an Inherit / Off / On select, and the CLI has `--disable-content-logging`
+- **Auto-Delete Expired Virtual Keys** - Virtual keys can set `delete_after_expire` (requires `expires_at`, `400` otherwise). A daily job deletes flagged keys once they expire and posts one notification with the counts. The expiry picker has a matching option
+- **Global Proxy in config.json and for All Outbound Traffic** - The global outbound proxy can be declared as a top-level `proxy_config` in config.json (`enabled`, `url`, `username`, `password`, `no_proxy`, `timeout`, `skip_tls_verify`, `enable_for_scim`, `enable_for_inference`, `enable_for_api`) and in Helm. With `enable_for_api` on, MCP connections, MCP OAuth discovery, model catalog sync, OpenTelemetry export, webhooks, skill fetches and plugin downloads go through it, each keeping its own SSRF policy. With `enable_for_inference` on, providers without their own `proxy_config` now actually send inference through it (the flag was stored but never read before), and multi-entry `no_proxy` lists match on both fasthttp and net/http paths
+- **Adaptive Routing Incidents and Attempt Metadata** - *(enterprise)* Adaptive Routing has an **Incidents** page in the sidebar. Load balancer decisions for each attempt are written to log metadata under the reserved `bifrost_alb_` prefix (caller headers cannot spoof them) and hidden from the log filter sidebar and metadata grid. Docs cover held keys, incidents and the `/api/adaptive-routing` endpoints
+- **Governance Dashboard Updates** - *(enterprise UI)* New Org Chart page under Governance and an enterprise Home landing page; Business Units navigation checks its own `BusinessUnits` permission; new `BackgroundJobs` RBAC resource; Warp follows RBAC; create, edit, delete and rotate controls follow the viewer's permissions with a tooltip explaining why they are disabled; the customers list shows a server-side team count
+- **SSO and SCIM Updates** - Every SSO provider's SCIM block accepts `attributeProjectMappings` (add users to existing projects when an IdP attribute matches a value or glob; memberships granted by a rule are revoked when it stops matching) and `bulkSyncInterval` (directory reconcile interval, default `24h`, from `1h` to `30d`), in config.json and Helm. The generic SSO provider accepts a login `displayName`, and a new identity sync guide aligns the IdP setup docs
+- **Audit Logs: Omit IP Addresses** - *(enterprise)* New `audit_logs.omit_ip_addresses` (Helm `omitIpAddresses`, default `false`) stops recording client IPs in audit logs. New events store no `request_ip` or initiator host, older IPs are hidden from APIs, exports and archives (not deleted), and IP search and filters are disabled. HMAC signatures stay valid
+- **Attribution Context Keys Deprecated** - The raw attribution context keys (`BifrostContextKeyGovernanceVirtualKeyID`, `...TeamID`, `...CustomerID`, `...BusinessUnitID`, `...ProjectID`, `...BudgetIDs`, `...RateLimitIDs`, `BifrostContextKeyUserID`, `...UserName`, `...UserEmail` and related variants) are deprecated in favour of the `ctx.Grant()` accessors. Values and behavior are unchanged. The Grant is not a drop-in copy of the keys: `ctx.Grant()`, `Identity()`, `Limits()`, `VirtualKey()`, `User()` and `Project()` can each be nil, and the identity can hold less than the keys. `Identity().User()` is set only when the request authenticated as a user (a user token or session); a request made with a virtual key assigned to a user leaves `User()` nil while `BifrostContextKeyUserID` still names the user. `Teams()` and `Customers()` hold only what the presented virtual key belongs to, so the team and customer keys can name more, and `BusinessUnits()` can be empty while the business unit keys are set. Code that must keep answering for those requests reads the Grant first and falls back to the deprecated key
+- **MCP Client Target Validation at Connect Time** - MCP clients registered while dashboard auth is off now carry a server-set `require_public_target` flag, and every later dial (reconnects, per-call connections, proxied hops) is held to public addresses, not only the registration-time DNS check. Existing clients default to `false`
+- **MCP OAuth Server Hardening** - Bifrost's MCP OAuth authorization server accepts remote client callback URIs only when listed in `client.oauth2_server_config.allowed_redirect_uris` (loopback and `cursor://anysphere.cursor-mcp` are always allowed), re-checks existing registrations at authorization and token exchange, and shows the exact callback on the consent page. Oversize DCR/authorize fields (`client_name`, `scope`, `redirect_uris`, `state`, `code_challenge`) return `400` before anything is stored
+- **MCP OAuth Private Network Allowlist** - OAuth-protected MCP servers on localhost or a private network can now be added. List hostnames, IPs or CIDRs in `client.mcp_oauth_private_allowlist` (or `mcp.tool_manager_config.oauth_private_allowlist`, which wins) and the MCP OAuth chain (discovery, dynamic client registration, token exchange, refresh) may reach them for clients registered by an authenticated admin or declared in config.json. Link-local and cloud metadata addresses stay blocked, invalid entries stop boot, and edits apply to the next connection
+- **Virtual Key Rotation Revokes MCP OAuth Grants** - Rotating a virtual key now revokes the MCP OAuth refresh tokens minted with its old value and any consented but unexchanged authorization code, in the same transaction as the rotation. OAuth consent in vk mode requires the key's current value
+- **MCP Server Instructions** - The `instructions` an upstream MCP server returns from its `initialize` handshake are now captured, persisted with discovered tools and refreshed with them. Bifrost forwards them on its own `/mcp` gateway and injects them into MCP-bearing chat (as a leading system message) and Responses (appended to `instructions`) requests as tagged `<mcp_server name="...">` blocks, scoped to the servers the request can see. Caps are `mcp.tool_manager_config.max_instructions_per_client` (default 4096 bytes), `max_instructions_total` (default 16384 bytes) and a per-client `max_instructions_length` override. In code mode the instructions appear in the `.pyi` stubs
+- **MCP Connection Recovery and Tool Refresh** - `POST /api/mcp/client/{id}/refresh-tools` (and a **Refresh tools** action in the client table) re-discovers a client's tools immediately, for every client type including per-user and per-call clients. Tool calls that fail because the server dropped its session ("session terminated", "session not found", "need to re-initialize") trigger an immediate reconnect and, where safe, a retry; a failed live-connection check now triggers the documented reconnect, and a failed make-before-break re-dial keeps the live connection. Health probes retry timeouts but treat dead sessions and auth rejections as permanent. `POST /api/mcp/client/{id}/reregister` (dashboard: "Reauthorize with a new client") registers a new dynamic OAuth client and runs consent against it when the upstream forgot the old `client_id`
+- **Code Mode Execution Limits** - Code mode now runs in-process on a pinned Starlark runtime with per-execution budgets instead of child processes. New `mcp.tool_manager_config.code_mode_limits` (also `client.mcp_code_mode_limits` through the config API, the MCP settings page and Helm) sets `max_source_bytes` (default 64 KiB), `max_steps` (1,000,000), `max_memory_bytes` (64 MiB), `max_log_bytes` (64 KiB), `max_tool_calls` (64), `max_value_bytes` (1 MiB, minimum 1024) and `max_nesting_depth` (64, maximum 1000). Cyclic or oversized results are rejected before serialization
+- **Disabled MCP Clients on Virtual Keys** - Each `mcp_configs` entry on a virtual key now shows its MCP client's `disabled` value, and the docs explain that a disabled client offers no tools even when the key lists it
+- **MCP Library Additions** - FXMacroData and Parlel are added to the community MCP library (thanks [@roberttidball](https://github.com/roberttidball)!)
+- **Semantic Cache Scoped by Identity** - Semantic cache entries are now scoped to the identity that wrote them: the request's virtual key plus its user, when the request is attributed to one. The scope is part of the params hash, so it covers direct hits and semantic search alike, and a body field named `identity_scope` cannot claim another identity's scope. The stored `cache_key` is now the raw value the caller sent (the `vk:` / `raw:vk:` rewriting is gone), so `DELETE /api/cache/clear-by-key/{cacheKey}` clears every identity's entries under that key. New `disable_identity_scoping` option (default `false`, UI switch "Scope Cache by Identity") shares entries across identities
+- **Semantic Cache Skips Tool-Call Responses by Default** - Responses that carry client-executed tool calls (chat `tool_calls`, Responses `function_call`, `custom_tool_call`, `computer_call`, `local_shell_call`, `mcp_call`, `mcp_approval_request`) are no longer written to the semantic cache unless `cache_tool_call_responses` is `true`. Server-side tool items such as web search are still cached
+- **Semantic Cache Response Headers** - Responses that went through a semantic cache lookup now carry `x-bifrost-cache-*` headers mirroring `cache_debug`: `x-bifrost-cache-hit` (always sent when a lookup ran), plus `-id`, `-hit-type`, `-hit-latency-ms`, `-requested-provider`, `-requested-model`, `-similarity`, `-threshold`, `-provider-used`, `-model-used` and `-input-tokens` when known. This works on streams and on the Anthropic, GenAI, Bedrock and Cohere routes, whose bodies have no `extra_fields`
+- **Trace Failure Attributes and End-to-End TTFT** - The root span now carries `bifrost.error.type`, `error.type`, `gen_ai.error`, `gen_ai.error.code` and the HTTP status, including for requests rejected before dispatch, and streaming requests get an end-to-end time-to-first-token attribute that includes queueing, plugins and key selection
+- **Raw Payload Export to Connectors** - Connectors can receive the exact provider request and response bodies. Set `export_raw_payloads: true` on an OTel profile (or BigQuery) to attach `bifrost.raw_request` / `bifrost.raw_response` to LLM spans. It requires `store_raw_request_response` on the provider, is suppressed by `disable_content_logging`, and drops bodies over 256 KB. Failed requests export the raw request and the provider's error body. Exposed in the OTel profile form and Helm
+- **Per-Connector Attribute Denylist** - New `excluded_attributes` on OTel profiles (and the Datadog, Kafka, Pub/Sub, Splunk and BigQuery connectors) drops listed span attributes by exact name, such as `gen_ai.request.tools`, before export. BigQuery takes column names (for example `tools`); `trace_id` and `timestamp` cannot be excluded. Unknown names are ignored
+- **Cost Breakdown on Connector Spans** - LLM spans now carry a per-category cost breakdown under `bifrost.cost.*` (input/output/additional sides with text, audio, image, cached read/write, request, reasoning, citation, search queries, guardrail, MCP, semantic cache and routing). `gen_ai.usage.cost` is still emitted. Plugins can call `ctx.CalculateCostBreakdown(resp)` for the same split
+- **App Label on Metrics** - Requests are classified by `User-Agent` into an `app` value (`Claude Code`, `Cursor`, `Codex CLI`, `Cline`, `Windsurf`, `API`, `Other`), exported as the `bifrost.app` span attribute and an `app` label on request-level Prometheus metrics
+- **Datadog Metric Dimensions** - New Datadog `metric_dimensions` lists `x-bf-dim-*` request dimension names to add as DogStatsD metric tags. Dimensions already reached Datadog spans; metrics stay untagged unless listed, to bound cardinality
+- **Lower Tracing Overhead** - Tracing now does only the work attached connectors read: attribute maps, content summaries and export snapshots are skipped when no connector is attached, plugin spans are created only when a connector consumes them, and LLM spans carry a typed payload instead of an untyped attribute bag. Connectors that predate the new interfaces still get everything
+- **OTel HTTP Semantic Conventions** - The root HTTP span now emits the stable OTel HTTP attributes `http.request.method` (unknown methods become `_OTHER` with `http.request.method_original`), `http.response.status_code`, `http.route` (the matched route template), `url.path`, `url.scheme` and `user_agent.original`. The deprecated `http.method`, `http.url`, `http.user_agent` and `http.status_code` are still emitted
+- **Response Headers Plugin Hook** - New `HTTPTransportResponseHeadersHook` runs once, in reverse registration order, just before response headers are sent, for buffered and streaming responses alike, so plugins can set headers on SSE streams. `Content-Length`, `Transfer-Encoding` and `Connection` cannot be changed and the status code is read-only. Native `.so` plugins may export the symbol optionally
+- **Session Grouping in Logs** - The grouped logs view collapses all requests that share a `session_id` under the session's earliest root request, with expandable session rows, session totals and a redesigned expander (tree lines, turn and fallback labels). `GET /api/logs` gains `group_sessions=true` (requires `roots_only=true`; ignored when `session_id`, `parent_request_id` or `request_id` is set), and collapsed rows carry `session_child_count`, `session_total_cost` and `session_total_tokens`
+- **Background Jobs Panel** - New `GET /api/sidekiq/jobs` and `POST /api/sidekiq/jobs/{id}/cancel` list every pending, running or recently finished background job (cost recalculation, Warp log indexing) with progress, and stop one. The notification panel has a Background jobs tab with count badges, Cancel / Stop job and Clear finished. Access uses View and Update on `BackgroundJobs`
+- **Exclude Request Types from Object Storage** - New `logs_store.object_storage_exclude_request_types` lists request types (the log `object` value, for example `list_models`, `embedding`, `chat_completion_stream`) whose logs stay in full in the logs database instead of being offloaded to S3/GCS. Streaming and non-streaming variants are separate types. Logs with hidden content are still cleared from the DB row and not uploaded
+- **Above-100k Token Pricing Tier** - The cost engine now applies the datasheet's `*_above_100k_tokens` rates (input, output, cache read, 5m and 1h cache write) once a prompt exceeds 100,000 tokens, as Claude Haiku 5.5 bills. Higher tiers (128k, 200k, 272k) still take precedence. The custom pricing override form has the new fields
+- **Guardrail Detections** - Guardrail metadata can now record detect-only policy matches (`detections`: phase, rule, guardrail, reason and sanitized categories, never the matched text) alongside judge calls. Docs add the A10 Guardrails integration, regex `allowed_values`, profile execution order, and the prompt guardrails judge model requirements (`max_output_tokens` default 1000)
+- **Unified Provider and Model Selectors** - Every provider and model picker in the dashboard (provider keys and deployments, CEL builder, routing rules, pricing overrides, model catalog, limits, caching and embedding settings, prompts, model access and the add-provider menu) now uses one `ProviderSelector` and one `ModelSelector`, with icons, server-side search and paging, multi-select chips and custom-provider icon fallback. Provider lists in tables collapse into a `+N` chip
+- **Entity Picker Infinite Scroll** - Virtual key, team, customer, virtual MCP and MCP client pickers load further pages on scroll instead of stopping at the first 20 results, and fetch more when excluded rows leave the list short
+- **Responsive Toolbars** - Virtual Keys, Webhooks and provider card toolbars collapse to icon-only buttons at narrow widths
+- **Clearer Client Tool Calls in Logs** - A Responses log that ends on a client-side tool call labels it as a call (not a result), shows "no arguments" for empty arguments, and links to the next request in the session that carries the tool result
+- **Sign-In Redirect on MCP Auth Links** - When `mcp_enable_temp_token_auth` is off, visitors opening an OAuth consent or MCP per-user-headers link are sent to `/login` and back instead of seeing "invalid link". A `401` now carries `error.code` `temp_token_auth_disabled` or `temp_token_rejected` when relevant
+- **Bifrost CLI** - The `bifrost` CLI covers the published API: `api` (generated catalog of OpenAPI operations with search and tags), resource commands (`models`, `responses`, `videos`, `providers`, ...), `chat`, `infer`, `request`/`http`, `context`, `auth`, `usage`, `keys`, `configure`/`unconfigure` (reversible native-agent setup with receipts and rollback) and `completion`. It authenticates to the gateway (SSO in the interactive launcher and authenticated harness launches, with its own browser auth identity). Output is `--output table|json|yaml|raw`, and destructive operations require `--yes`
+- **Helm Chart 2.1.44** - The chart can now set the config fields added since 2.1.43, including `proxy_config`, entity `access_profile`, the `business-unit-data`/`customer-data` scopes, routing `ttft_timeout_ms`, `storage.configStore`/`storage.logsStore` `statementTimeout` and `idleInTransactionSessionTimeout`, `bifrost.client.compat.forceReasoningOnlyModelsToResponses`, `bifrost.client.deleteExpiredVirtualKeys`, `bifrost.client.oauth2ServerConfig.allowedRedirectUris`, virtual key `delete_after_expire`/`disable_content_logging`/`business_unit_id`, `bifrost.mcp.clientConfigs[].requirePublicTarget`, semantic cache `cache_tool_call_responses`, object-form routing rule `fallbacks`, `bifrost.governance.complexityAnalyzerConfig.jev.criteria` and `bifrost.mcp.toolManagerConfig.maxInstructionsPerClient`/`maxInstructionsTotal`. New `topologySpreadConstraints` spreads replicas across nodes and zones, and `extraContainers` adds sidecars (native sidecars go in `initContainers` with `restartPolicy: Always`, refused on Kubernetes older than 1.29)
+
+## ⚙️ Upgrade Notes
+
+These entries change a default, a status code, a response shape or a Go SDK type. The matching entries above describe each change in full.
+
+- **Agent Gateway (A2A)** - optional; set `client.a2a_external_client_url` for push and stable card URLs, and `server.a2a_grpc_base_domain` + `server.a2a_grpc_port` (plus wildcard DNS) for gRPC. Custom `schemas.Tracer` implementations must add `ReleaseTrace`.
+- **Warp AI Assistant (alpha)** - on by default in OSS; set `feature_flags.flags.warp.enabled: false` to keep it hidden.
+- **Cloudflare Workers AI Provider** - the name `cloudflare` is reserved; migrate a custom provider named `cloudflare` with the dashboard dialog or recreate it with `cloudflare_key_config.account_id`.
+- **Decisions API in OpenAI Shape** - map-form `/v1/decisions` bodies are deprecated (still served); update Go SDK code to the new `BifrostDecisionRequest` fields.
+- **Decision Emulation Is Opt-In** - decisions on non-decision models return `unsupported_operation`; set `compat.convert_decision_to_responses: true` or send `x-bf-compat: ["convert_decision_to_responses"]` to keep emulation.
+- **Multimodal Embeddings** - Go SDK `BifrostEmbeddingRequest.Input` is now `[]EmbeddingInputItem`; HTTP bodies are unchanged.
+- **xAI Realtime** - refusal and content-filter stops are logged as `model_refusal` errors; exclude that error type from error-rate alerts if needed.
+- **Web Search Priced per Request** - rename `search_context_cost_per_query` to `web_search_cost_per_request` in config.json overrides; read counts from `usage.tool_usage.web_search.num_requests`.
+- **Compat: Route Reasoning-Only Models to Responses** - turned on for existing deployments; set `compat.force_reasoning_only_models_to_responses: false` to keep the old behavior.
+- **Chat reasoning.mode and reasoning.summary** - the `/openai` chat route strips `reasoning.summary`; send it through `extra_params` there.
+- **Failure Classification and Smarter Key Rotation** - a model missing on every key returns the provider's `404` instead of `502 upstream_credentials_exhausted`; update alerts on that error and on `fail_reason` values.
+- **Gateway Request ID Header** - read the gateway request ID from `x-bifrost-request-id`; upstream `x-bifrost-*` headers are no longer forwarded.
+- **Deprecated Models Hidden from Browsing** - add `include_deprecated=true` to `GET /api/models` to keep deprecated models.
+- **Provider Objects Bound to the Creating Virtual Key** - set `client.enforce_vk_object_ownership: false` if virtual keys share files, batches, containers or cached contents.
+- **File-Based Batches Under Model-Restricted Virtual Keys** - use a `*` model grant for OpenAI/Azure file batches, send an allowed `model` for Gemini/Vertex/Bedrock file batches, and never mix a file with inline `requests`.
+- **Passthrough Route Hardening** - use passthrough only for `POST` inference paths with rooted paths, the route's own provider and one string `model` key.
+- **Management API Refuses Unlisted Browser Origins** - add cross-origin browser apps to `client.allowed_origins` or enable dashboard auth.
+- **Real Auth Required for Secret References and Private Targets** - enable dashboard auth or send `X-Bifrost-Setup-Token` for MCP `env.`/`vault.` references, private webhooks, plugin endpoints, Vertex `auth_credentials` and `DELETE /api/mcp-logs`.
+- **Auth Config Changes Need Proof of Control** - send `auth_config.current_password` or `setup_token` when re-enabling auth or rotating admin credentials while auth is off.
+- **Request Decompression Limits** - bodies expanding over 100x return `413`; send them uncompressed or raise `client.max_request_body_size_mb`.
+- **Access Profiles for Teams, Business Units and Customers** - move config.json limits of governed entities and their keys onto the access profile.
+- **Global Proxy in config.json and for All Outbound Traffic** - set `enable_for_inference: false` to keep inference direct, and list direct hosts in `proxy_config.no_proxy`.
+- **Audit Logs: Omit IP Addresses** - make SIEM rules accept both audit `typeURI` values.
+- **Attribution Context Keys Deprecated** - read attribution in custom plugins from `ctx.Grant()`, nil-checking every accessor. Do not swap a user, team, customer or business unit key for its Grant accessor one-for-one: a request made with a virtual key assigned to a user carries that user only on `BifrostContextKeyUserID`, so fall back to the key where the Grant has no answer.
+- **MCP Client Target Validation at Connect Time** - register private MCP servers as an authenticated admin or in config.json, and use `http`, `sse` or `stdio` as `connection_type`.
+- **MCP OAuth Server Hardening** - list remote OAuth callback URIs in `client.oauth2_server_config.allowed_redirect_uris` before upgrading.
+- **Virtual Key Rotation Revokes MCP OAuth Grants** - re-authorize MCP clients after rotating their virtual key.
+- **MCP Server Instructions** - bound injected instructions with `max_instructions_per_client`, `max_instructions_total` or per-client `max_instructions_length`.
+- **Code Mode Execution Limits** - raise fields under `mcp.tool_manager_config.code_mode_limits` for scripts that exceed the new budgets.
+- **Semantic Cache Scoped by Identity** - expect a cold cache; set `disable_identity_scoping: true` to share entries across identities.
+- **Semantic Cache Skips Tool-Call Responses by Default** - set `cache_tool_call_responses: true` to keep caching them.
+- **App Label on Metrics** - add the new `app` label to recording rules or alerts that match exact label sets.
+- **OTel HTTP Semantic Conventions** - move dashboards to `http.request.method`, `http.response.status_code`, `http.route` and `url.path`; the span name and `http.url` drop the query string.
+- **Response Headers Plugin Hook** - Go types implementing `HTTPTransportPlugin` must add `HTTPTransportResponseHeadersHook` (a no-op is fine).
+- **Exclude Request Types from Object Storage** - only exclude request types whose content you do not need retained in object storage.
+- **Helm Chart 2.1.44** - set `bifrost.client.oauth2ServerConfig.issuerUrl` when `mcpServerAuthMode` is `oauth` or `both`, or `helm template` fails.
+- **Outbound Fetch Redirect Hardening** - test-fire private webhooks with an authenticated caller; point datasheet URLs at their final location or use `file://`.
+- **Provider base_url Shape Checked** - remove userinfo, query strings and fragments from `base_url`.
+- **Direct Keys Stay on Their Provider** - pass `?provider=` or `x-bf-model-provider` on direct-key model listings.
+- **config.json Governance Limits Reconciled Correctly** - read virtual key and provider config limits from the key's model configs after the migration.
+- **Partial Provider Key Updates** - send a field explicitly to clear it.
+- **Weights Must Be Valid Numbers** - use weights of 0 or more for keys and greater than 0 for routing targets.
+- **Duplicate Routing Rule Priority Returns 409** - treat `409` as a request error instead of retrying on `500`.
+- **Dashboard Rankings Under DAC** - treat the ranking row `id: "other"` like `unassigned`.
+- **MCP OAuth and Client Fixes** - expect `404`, not `500`, for an unknown MCP client.
+- **Implicit Prompt Caching for gpt-5.6+ Now Takes Effect** - set `prompt_cache_options.mode: "explicit"` on the request to opt into explicit mode.
+- **Stream Errors Get a Real HTTP Status** - update retry logic and alerts that assumed every stream error was `400`.
+- **Bedrock Incomplete Converse Streams** - truncated Converse streams now end with `502`.
+- **Replicate File List Cursor** - pass the `after` cursor exactly as returned; others get `400 invalid pagination cursor`.
+- **Anthropic Error and Stop Fidelity** - branch on documented Anthropic error types instead of `api_error`.
+- **Error Metrics Report the Real Status** - repoint alerts on `status_code="unknown"` and add `error_type` to OTel queries.
+- **OTLP HTTP Metrics to https Endpoints** - set `tls_ca_cert` or keep `insecure: true` for self-signed collectors.
+- **Connector Export Gaps** - group OTel datapoints by `bifrost_instance_id` instead of `service_instance_id`, and review telemetry `custom_labels` for cardinality.
+- **Postgres Scale Fixes** - plan IO for the background index build; set `statement_timeout` and `idle_in_transaction_session_timeout` to `"0"` to keep server defaults.
+- **ClickHouse Large Team Scopes** - set `logs_store.config.max_query_size` if a ClickHouse settings profile constrains it.
+- **Semantic Cache Vector Store Consistency** - on Weaviate, set `threshold` to `2 * old - 1` to keep the old hit rate.
+
+## 🐞 Fixed
+
+- **Outbound Fetch Redirect Hardening** - Pricing and model-parameter datasheets, the MCP library catalog, OAuth2 discovery, registration and token calls, webhook delivery and the config API URL check now enforce the private-network dial policy on every connection and redirect hop, not only the first URL. Failed URL checks on `PUT /api/config` no longer echo transport details
+- **Encrypted Session and Virtual Key Lookups** - The legacy plaintext fallback for sessions and virtual keys now matches only rows stored in plaintext, so an encrypted row's ciphertext can no longer be used as a session token or virtual key value
+- **Virtual Key Header Redacted in Traces** - `x-bf-vk` is now treated as a credential and redacted in captured request headers, so observability connectors no longer export it
+- **Provider base_url Shape Checked** - Provider `base_url` on create and update must be an origin with an optional path; URLs with credentials, a query (including a bare `?`) or a fragment are rejected before anything is stored or dialed
+- **Direct Keys Stay on Their Provider** - A caller's `x-bf-direct-key` is no longer sent to every configured provider on an unscoped model listing, and drop-in routes (`/openai/v1/models`, `/anthropic/v1/models`, `/genai/v1beta/models`) list only their own provider. A refused direct key returns the provider's own error (for example OpenAI's `401`) instead of `502 upstream_credentials_exhausted`, and no session key binding is created when the direct key serves
+- **Every Provider Egress Path Uses proxy_config** - Side fetches (image and document URLs), credential exchanges (Vertex OAuth, Azure Entra ID, Databricks OAuth) and Bedrock runtime calls now go through the provider's `proxy_config` instead of connecting directly. `https://` proxies are reached over TLS (system roots, `ca_cert_pem`, or `skip_tls_verify`), proxies are dialed dual-stack so IPv6 proxies work, proxy handshakes are bounded at 30s, runtime proxy changes reach already-created clients, and `DisablePathNormalizing` is honoured through the proxy-aware client
+- **No Shutdown Panic From Request-Scoped Work** - Work started while serving a request no longer derives its context from the fasthttp request, which could panic with "missing cancel error" during shutdown
+- **config.json Governance Limits Reconciled Correctly** - Budgets and rate limits declared on a virtual key or provider config in config.json are now stored on the key's all-models model config tiers, as the rest of governance expects, and edits to inline budgets (new `max_limit`, added, removed or moved budgets) apply on reload instead of only at create. Under `source_of_truth: config.json`, inline budgets and rate limits on teams, customers, keys and provider configs survive the prune (a linked inline rate limit no longer stops startup with a foreign key error), calendar-aligned virtual key budgets keep their alignment after a restart, and a governed team is no longer saved with its own inline budgets
+- **Model Limits Match Every Spelling of a Model** - Model config limits now resolve dated aliases, provider-prefixed, re-cased and padded model names to the same key on both write and lookup, so one provider-less limit covers every alias of a model
+- **Virtual Key Update Keeps Key Associations** - `PUT /api/governance/virtual-keys/{id}` without `key_ids` no longer sets `allow_all_keys` to false and detaches every key; an omitted `key_ids` now means unchanged (thanks [@xiechimon](https://github.com/xiechimon)!)
+- **Partial Provider Key Updates** - `PUT /api/providers/{provider}/keys/{key_id}` now keeps fields left out of the body (`value`, `weight`, provider configs) instead of resetting them; fields sent explicitly, even as empty values, are still applied
+- **Fallback Usage Billed After a Billed Primary** - Billing dedup no longer drops a fallback's usage when the primary attempt was already billed
+- **Team Calendar Alignment Kept After Restart** - Calendar-aligned team budgets keep their alignment after a restart
+- **Weights Must Be Valid Numbers** - Negative or non-finite weights on provider keys and virtual key provider configs, and routing targets with a weight of 0 or less, are now rejected. Key selection uses float math, so a bad stored weight can no longer panic a provider worker and tiny weights are no longer truncated
+- **Duplicate Routing Rule Priority Returns 409** - Creating or updating a routing rule with a priority already used in the same scope now returns `409 Conflict` with the priority and the real scope ID, instead of `500` with a pointer address
+- **Session Affinity and Session-Bound Key Fallback** - When a session is bound to a key the provider rejects outright (credential, quota or model access), the request moves to another eligible key and the session rebinds to it, instead of failing with `502 upstream_credentials_exhausted`; keys pinned with `x-bf-api-key`/`x-bf-api-key-id` still fail immediately. A session no longer binds to a fallback that served a request sent with the caller's direct key, no longer moves a request pinned with `x-bf-api-key-id` / `x-bf-api-key` off the head provider, and drops its binding to a key removed from a single-key pool
+- **Caller Errors No Longer Run Catalog-Inferred Fallbacks** - When the model catalog resolver added fallbacks on its own, a `400`/`409`/`413`/`415`/`422` from the primary (for example `logprobs` out of range) is now returned to the caller instead of being answered by a provider the caller never named. Caller- and routing-named fallbacks are unchanged. The Gemini raw `generateContent` path now forwards `logprobs` instead of stripping them
+- **Fallback Response Headers** - When the primary and every fallback fail, the primary's error now goes out with the primary's own provider headers instead of the last fallback's, and a stream answered by a plugin on a fallback names that fallback in its routing headers
+- **Routing Tree Fixes** - The Routing Tree view now shows more than 100 rules, and its CEL parser handles quotes, escapes and triple-quoted strings without splitting operators inside string literals (thanks [@Shashank2985](https://github.com/Shashank2985)!)
+- **Complexity Router Keeps Custom Provider Case** - Custom provider names in the complexity router config keep their case, so a provider such as `DeepInfra-Embeddings` is found at warmup (thanks [@MohammadHijjawi97](https://github.com/MohammadHijjawi97)!)
+- **Complexity Router Classifier Kept on config.json Reload** - A config.json complexity analyzer block that leaves out the classifier no longer resets the classifier chosen in the dashboard on a keyword-only edit. Also fixes a race where abandoning a request delivery could read a message the worker had already released
+- **Model Limits List Respects Data Scope** - The paginated model config list now applies the caller's query scope
+- **Dashboard Rankings Under DAC** - Under team, business unit or customer DAC, the Team, BU, Customer and User ranking tabs now group rows the caller may count but not name into one `Other` row, so each tab adds up to its total and matches the Overview
+- **Code Mode Tool Discovery Scoped to the Virtual Key** - `listToolFiles`, `readToolFile` and `getToolDocs` now show only the tools the request's virtual key may execute
+- **MCP Output Guardrails in Code Mode** - Nested tool results in code mode are logged only after output guardrails run, so blocked or redacted text no longer reaches the model through the execution log, and error results go through the plugin pipeline too
+- **MCP Agent Loop Keeps Earlier Turns** - Auto-executed tool loops now return content and reasoning from every turn, not only the last, and follow-up turns reuse the route turn 1 was served on instead of re-running routing and fallbacks
+- **MCP OAuth and Client Fixes** - `POST /api/mcp/client/{id}/reauthorize` returns a `flow_id` and `GET /api/oauth/config/{id}/status?flow_id=` reports the live flow, so the consent popup no longer closes on the first poll. OAuth2 `state`, `scope` and `client_name` columns are `text`, so long values no longer fail with `server_error` on Postgres. Switching a token exchange client ID or secret to an `env.`/`vault.` reference is saved instead of keeping the old plaintext. A client that has not finished admin authorization stays in `pending_verification` after being enabled, a rejected identity token in token exchange is reported as rejected rather than missing, and deleting or updating an unknown MCP client returns `404`
+- **Implicit Prompt Caching for gpt-5.6+ Now Takes Effect** - v2.2.6 announced implicit prompt caching for gpt-5.6+, but requests carrying `cache_control` markers (Claude Code on `/anthropic/v1/messages` among them) to OpenAI, Azure, Bedrock and Bedrock Mantle were still switched to `prompt_cache_options.mode: "explicit"`, which re-wrote the whole conversation at the cache-write rate every turn. They now stay in implicit mode, with the 20-message lookback. Markers still become `prompt_cache_breakpoint`, capped at three in implicit mode and four when the caller sets explicit mode
+- **Encrypted Reasoning Retry Clears Paired Item IDs** - When an upstream rejects replayed `encrypted_content`, the strip-and-retry now also clears the item `id` on messages, function, custom tool, web search, computer and MCP calls paired with the removed reasoning, so the retry succeeds instead of failing with `Item 'fc_..' ... without its required 'reasoning' item` or `404 Item with id 'rs_..' not found` (seen from Warp on gpt-5.6-luna and load-balanced Azure keys)
+- **Stream Errors Get a Real HTTP Status** - Mid-stream SSE errors on OpenAI-family chat, text, speech, transcription and image paths now carry `429` for rate limits and quota, `400` for context-length errors and `502` otherwise, Anthropic stream errors map their `type` (including `529 overloaded_error`), unparseable Gemini stream errors get `502`, and unexpected key-selection failures return `500` `bifrost_internal`. These were all reported as `400`, which hid them from 5xx dashboards and stopped key rotation
+- **OpenAI Responses Mid-Stream Errors Typed** - A provider error after a stream has started on `/openai/v1/responses` and the litellm, langchain, pydanticai and Azure deployment copies is now sent as `event: error`, as the OpenAI SDKs expect
+- **Bedrock Incomplete Converse Streams** - A Converse stream that ends without `messageStop` now returns a `502` error with the event count and last event type instead of a silent success, with any billed usage attached
+- **Truncated Content-Length Streams** - Streams whose body ends before the declared `Content-Length` are now reported as errors instead of completing silently, and the incomplete connection is discarded (thanks [@Constantine3](https://github.com/Constantine3)!)
+- **Replicate File List Cursor** - The `after` cursor on `GET /v1/files` for Replicate is no longer used as the next request URL; only its `cursor` value is kept and requests stay on the configured file endpoint. Older full-link cursors still work when they point at the configured endpoint
+- **Azure Realtime and WebSocket Panics** - An unmapped ephemeral token on Azure realtime returns `400 invalid_request_error` instead of crashing on a missing key config, and a panic inside a WebSocket session (realtime, live, Responses) drops only that connection instead of the process
+- **Realtime Sessions Priced** - Realtime WebSocket and WebRTC turns on models such as `openai/gpt-realtime` now use the `realtime` pricing row, so log costs and governance budgets are no longer left at zero
+- **Compat Output Token Fitting on Fallbacks** - With `should_convert_params` on, the output token cap and thinking budget are now fitted to the model each attempt actually reaches (fallbacks and aliased deployments included) instead of once before key selection, and a lowered cap no longer leaves a thinking budget above the model's own maximum (for example 65534 on `gemini-2.5-flash`). Each change is logged in the routing logs
+- **Anthropic Retargeting to Smaller Models** - When a routing rule or fallback sends a request sized for a large Claude model to a smaller one, `max_tokens` is lowered to the target's datasheet ceiling (unless the `output-300k` beta is on) and `adaptive` thinking becomes `enabled` with a derived `budget_tokens` on Haiku 4.5, Sonnet 4.5 and Opus 4.5, instead of returning `400`
+- **OpenAI Custom Tools on Older Models** - A datasheet row with `supports_custom_tools: false` (for example gpt-4o) now gets custom (freeform) tools as function tools with one string `input` parameter, with tool choice, `allowed_tools`, replayed custom tool calls and namespace tools rewritten to match, and calls returned to the client as `custom_tool_call`
+- **Sampling Params on Non-Reasoning Defaults** - The datasheet field `default_reasoning_effort` now decides whether a request with no `reasoning.effort` reasons, so models such as `gpt-5.6-sol` that default to `none` keep `temperature` and other sampling fields
+- **reasoning.summary Dropped Where Unsupported** - Models whose datasheet sets the condensed-reasoning capability to `false` (for example Fireworks models on Azure) now have only `reasoning.summary` dropped by compat, keeping reasoning effort, instead of returning `400`
+- **Mirrored Reasoning Effort Accepted** - Requests carrying both `reasoning_effort` and `reasoning.effort` with the same value (ai-sdk clients such as ZCode) are accepted instead of failing with `400`; only conflicting values are rejected (thanks [@Daltonganger](https://github.com/Daltonganger)!)
+- **DeepSeek Structured Output** - `response_format` of type `json_schema` sent to DeepSeek is now downgraded to `json_object` with the schema passed in a system message, instead of failing with DeepSeek's `400`
+- **Kimi and DeepSeek Tool Schemas** - `moonshotai.kimi-k3` on Bedrock no longer fails on tool schemas with string `format` values outside its allowlist (such as `format: byte`), and the schema rewrite now also runs on `/v1/chat/completions`
+- **Claude Tool Schemas on Bedrock Converse** - Claude tools whose `input_schema` has a root `oneOf`/`anyOf`/`allOf` (such as Codex's `automation_update`) are now flattened on Bedrock Converse as on Anthropic direct; schemas beyond the normalizer's limits fail with `400` instead of reaching Bedrock
+- **Bedrock Guardrails Selective Evaluation** - Converse `guardContent` blocks in messages and system prompts are no longer dropped, so guardrails evaluate only the marked content, and `guardrailConfig.tagSuffix` (validated, 1 to 20 alphanumeric) is supported for inline guard tags across Converse, InvokeModel, their streaming variants, chat completions and Responses. InvokeModel ingress also reads the `X-Amzn-Bedrock-Guardrail*` headers
+- **Bedrock Document Cache Points** - A `file` content block with `cache_control` on Bedrock Converse now emits its `cachePoint`, so cached documents are no longer billed as fresh input on every request
+- **Bedrock Converse Reasoning Replay** - Reasoning from OpenAI and Azure models reaches the upstream again when a Converse client replays it (including `redactedContent`), with the original reasoning item ID kept, and a `store` boolean in `additionalModelRequestFields` now reaches Responses targets. A chat-to-Responses conversion also reuses the reasoning item id paired with its encrypted token instead of minting a new one that upstream rejects
+- **Claude Thinking Order on Bare Model IDs** - Signed thinking blocks keep their original position for bare Claude IDs (such as `claude-sonnet-4-5`) that governance later routes to Bedrock, fixing `thinking blocks in the latest assistant message cannot be modified`
+- **Safeguard Verdicts in Streams** - `safeguard_results` in the final `message_delta` from Bedrock and Anthropic now reach Claude Code on the `/anthropic` route inside `delta`, so its auto-mode classifier keeps working through Bifrost
+- **Claude Code Billing Header with Per-Message Effort** - The `x-anthropic-billing-header` system line Claude Code sends is found and stripped again when an effort-only system message comes first, so guardrails no longer evaluate it and non-Anthropic fallbacks no longer receive it as prompt text; Anthropic attempts get it restored in place
+- **Mid-Conversation Tool Changes** - Anthropic `tool_addition` and `tool_removal` blocks on system messages and `tool_changes` on replayed `compaction` blocks are now carried through to Anthropic, streaming included, instead of being silently dropped
+- **Computer-Use and Anthropic Server Tool Conversion** - Batched `actions` arrays on `computer_call` items (gpt-6.1-sol and newer) are kept and split into one Anthropic `tool_use` per action, OpenAI's geometry-less `computer` tool maps to Anthropic's computer toolset, and `cache_control` on Anthropic server tools is no longer dropped
+- **Anthropic Error and Stop Fidelity** - `error.type` in Anthropic error envelopes now matches the HTTP status or a documented Anthropic type instead of defaulting to `api_error` or leaking gRPC names such as `INVALID_ARGUMENT`, and `stop_reason: "stop_sequence"` with the matched `stop_sequence` is preserved, including Claude on Vertex (thanks [@jimseiwert](https://github.com/jimseiwert)!)
+- **Anthropic Extra Params Through Bedrock** - Opted-in extra params on Anthropic and PydanticAI requests now reach Bedrock (thanks [@wangrat](https://github.com/wangrat)!)
+- **Responses Conversion Fixes** - A failed tool result's `status: "incomplete"` is kept on OpenAI Responses, multi-part assistant `output_text` maps to text on chat completions instead of `422`, `cache_control`, citations, `prompt_cache_breakpoint` and `cachePoint` survive content block copies, history `output_text` without `logprobs` is no longer sent as `"logprobs": null`, and streamed Responses events keep `extra_fields` on the `/openai/v1/responses` drop-in (thanks [@shreyanshj10](https://github.com/shreyanshj10), [@Shashank2985](https://github.com/Shashank2985)!)
+- **Assistant Role on Converted Streams** - Chat streams served from a Responses upstream now send `delta.role: "assistant"` exactly once, so clients such as LangChain.js no longer drop tool calls from turns with only reasoning and function calls (thanks [@hmdsefi](https://github.com/hmdsefi)!)
+- **Request Fidelity Fixes** - Cohere replays put thinking before text; `/v1/decisions` emulation no longer forces `tool_choice: required` on models that reject it; `service_tier`, `speed` and `inference_geo` survive the chat-to-Responses bridge in both directions and on streams; bare Perplexity `sonar` is no longer sent to `/v1/responses`; MCP `server_label` round-trips on `mcp_list_tools` and `mcp_call` items; legacy `/v1/complete` prompts already framed as `Human:/Assistant:` are not wrapped again (also on Bedrock)
+- **Gemini Responses Path Parity** - On `/v1/responses`, the Go SDK, Vertex and bare-model `/genai`, JSON mode is no longer sent with function tools to pre-Gemini-3 models, Gemini-native tools without a Responses form (`retrieval`, `googleSearchRetrieval`, `enterpriseWebSearch`, `googleMaps`, `urlContext`, `computerUse`) are forwarded byte for byte, `candidateCount`, `logprobs`, `responseLogprobs` and `seed` are kept, multiple candidates are no longer flattened, and `urlContextMetadata` is carried back
+- **Gemini Provider Fixes** - Function tools without `input_schema` are declared instead of dropped and parallel tool results are reordered to call order for Vertex, tool output with a `$ref` key is sent as a string instead of failing with `400`, `n` maps to `candidateCount` on Gemini and Vertex chat, streaming Responses keeps output items when parts and `finishReason` share a frame, the `Authorization` header is dropped when `x-goog-api-key` is set for Vertex Express, and image, Imagen and transcription extra params survive retries and fallbacks (thanks [@jimseiwert](https://github.com/jimseiwert), [@axelray-dev](https://github.com/axelray-dev), [@wofiporia](https://github.com/wofiporia), [@SandyDRawat](https://github.com/SandyDRawat)!)
+- **Gemini Embedding Params and Transcription Cost** - A request-level `taskType` or `title` now reaches every entry of a Gemini `:batchEmbedContents` request instead of leaking to the top level, and transcription pricing uses the provider-reported `usage.cost` (for example OpenRouter voxtral) instead of the datasheet (thanks [@hmdsefi](https://github.com/hmdsefi)!)
+- **GenAI Raw Body on Non-Google Targets** - GenAI requests that fall back to a non-Google provider, or target Claude, Mistral, Llama or other Model Garden models on Vertex, are now converted instead of receiving the raw Gemini body (which failed with `Missing required parameter: 'model'`)
+- **Vertex Interactions Passthrough and Video Polls** - `POST /genai_passthrough/v1beta/interactions` is no longer refused on Gemini, Vertex keeps the `v1beta1` version prefix that Interactions needs, and Veo video retrieve and download poll the region named in the operation instead of the key's region
+- **Embedding Raw Request Capture** - Bedrock and Vertex embedding responses now include the raw request when raw request capture is on
+- **Mistral Streamed Text Arrays** - Streamed Mistral content arrays are preserved and unsupported content parts are rejected instead of being garbled (thanks [@xujiantop-crypto](https://github.com/xujiantop-crypto)!)
+- **TypeSafe SDK Compatibility** - TypeSafe decision requests that the official SDK accepts (null `state`, null instructions and descriptions) are forwarded, native extensions such as `images` are kept, upstream headers (`x-typesafe-request-id`, `Retry-After`) and error detail are forwarded, and `/typesafe/v1/models` calls the endpoint's own model list
+- **Model Listing Robustness** - One unreachable provider no longer holds `GET /v1/models` until the request timeout (each poll is bounded and last-known catalog models are served), and paging through a listing that changes between pages no longer repeats or skips models (thanks [@novai42](https://github.com/novai42)!)
+- **GitHub Copilot Key Handling** - Copilot keys using a GitHub App bundle can have an empty `value`, a `422` for a never-granted `copilot_requests` permission gets its own guidance, and masked secrets no longer fail format checks when editing a Copilot provider
+- **Mid-Stream Retry Logging** - A stream error held back for a retry no longer closes the log row with the failed attempt's error or double-decrements the active-request gauge; plugins see exactly one terminal event
+- **Error Metrics Report the Real Status** - Errors Bifrost raises itself (request conversion failures, empty or unparseable provider responses) are now labelled with the status the caller received (500 for internal faults, 400 for provider-attributed errors with no status and for provider/model auto-resolve failures) instead of `status_code="unknown"` on Prometheus, OTel, Datadog and Splunk, and error spans always carry `http.response.status_code`
+- **OTLP HTTP Metrics to https Endpoints** - OTel push metrics over `protocol: http` to an `https://` `metrics_endpoint` were silently sent as plaintext and dropped, because `insecure` (default `true`) forced plaintext. The endpoint scheme now picks the transport, and `insecure` only skips certificate verification
+- **Connector Export Gaps** - Chat requests now export `gen_ai.request.tools` like Responses requests. Prometheus `http_*` series no longer disappear after a config reload, the telemetry plugin's own `custom_labels` are applied (unioned with `client_config.prometheus_labels`), a lone `"*"` in `request_headers` is no longer swapped for the stored value, and the plugins API reports a loaded plugin's runtime status instead of masking it as `disabled`
+- **Prometheus Metrics With Custom Labels** - With both `user_labels_enabled` and custom labels configured, metrics no longer overwrite each other's label names, which made `/metrics` return `500` with duplicate label errors
+- **Prometheus Bills Cancelled Requests** - Usage the provider already billed on cancelled or failed requests (for example a client disconnecting mid-stream) is now counted in Prometheus tokens and cost, matching logs and governance
+- **Complete Traces for Abandoned Requests** - When a caller disconnects mid-request, the trace is now completed after the worker finishes, so cost, model and token attributes are exported, and a race that could crash the process when a span was released is gone
+- **Batch ID on Settlement Spans** - Settlement spans emitted for batch requests now carry the batch ID, so settled cost can be tied to its batch
+- **Custom Tool Calls in Traces and Logs** - `custom_tool_call`, `local_shell_call` and `code_interpreter_call` inputs are now recorded in traces and log tool calls instead of being dropped
+- **Telemetry metrics_enabled in config.json** - The telemetry plugin's `metrics_enabled` (default `true`; `false` stops serving `/metrics`) is now accepted by the config.json schema
+- **Postgres Scale Fixes** - Fixes for deployments with hundreds of millions of logs and 100k users and virtual keys: chunked multi-row log inserts, id lists bound as one parameter, owner/time composite indexes, retention deleting in 5000-row batches (MCP tool logs included), keyset paging for cost recalculation, bounded ranking name lookups, schema-scoped index checks, set-based MCP and provider cleanup, and governance dumps that write only changed budget and rate-limit rows. Log pages show `10,000+` when the total is capped
+- **Postgres Log Batches with Binary Content** - A single log with a NUL byte, invalid UTF-8 or a JSON escape `jsonb` rejects no longer fails the whole batch insert. Text columns are sanitized before the write (a NUL-only value is stored as U+FFFD), binary bodies (audio passthrough, multipart uploads, Bedrock event streams) are stored as `<binary content omitted: N bytes>`, and large-response previews end on a character boundary so Postgres no longer rejects the batch with SQLSTATE 22021
+- **Postgres Log Writes on Connection Errors** - When Postgres is unreachable, a failed log batch is retried whole up to 3 times with backoff instead of fanning out into row-by-row inserts, which backed up the write queue and grew memory. Row-level data errors still fall back to per-row inserts
+- **No Lost Logs for Slow Requests** - A request idle past the pending-log TTL no longer loses its log: the input is persisted as a `processing` row before eviction, and the late response updates that row
+- **Log Writes During Logstore Migrations** - While one node holds the Postgres logstore migration lock, log writers on other nodes hold their batches (up to 2 minutes) instead of queueing behind the `ALTER TABLE` and stalling the cluster
+- **Faster Startup Migrations** - Config store and logs store startup now runs only pending migration steps instead of re-running every step's bookkeeping, which took minutes against a remote Postgres
+- **SQLite "database is locked" on Writes** - Config store transactions on SQLite now take the write lock at `BEGIN`, so a write that follows a read waits out the busy timeout instead of failing at once, for example right after startup while the pricing sync is writing
+- **ClickHouse Large Team Scopes** - Team-scoped users with large teams no longer get `Max query size exceeded` on every logs chart. Bifrost now sends ClickHouse `max_query_size`, configurable as `logs_store.config.max_query_size` in bytes (Helm `storage.logsStore.clickhouse.maxQuerySize`)
+- **ClickHouse Millisecond Precision** - ClickHouse time-window filters and the logs keyset cursor now keep millisecond precision. Bounds were truncated to the second, so paging could loop forever or skip rows, which affected cost recalculation and backfills
+- **ClickHouse Log List Payloads** - The ClickHouse log list no longer returns full input histories; `input_history` and `responses_input_history` are truncated to the last message, as on Postgres and SQLite (thanks [@ege-arhan](https://github.com/ege-arhan)!)
+- **Log Filters Match Multi-Owner Rows** - Team, customer and business unit log filters now match the same rows the dimension rankings count on ClickHouse and SQLite
+- **Error Breakdowns with Object Storage** - With object storage on, `error_details` stays in the database instead of being offloaded, so error type, error code and status code rankings and filters work again
+- **Plugin Logs in Object Storage Exports** - Plugin logs (guardrail decisions and similar) are now included in the payload uploaded to object storage and restored on read
+- **Log Retention Without Restart** - Saving `log_retention_days` now updates the running log cleaner immediately (thanks [@Constantine3](https://github.com/Constantine3)!)
+- **Cost and Latency Sorting** - Sorting logs and MCP logs by cost or latency now puts rows with no value (failed requests) last in both directions on Postgres and SQLite
+- **Opaque Provider Cost** - When a provider reports only a total cost, the log cost breakdown no longer shows the whole amount as input cost
+- **Pricing for Mixed-Case Model Names** - Pricing lookups retry with the lowercase model name, so deployments like Azure `DeepSeek-V4.1-Flash` are priced from a lowercase datasheet entry
+- **Pricing Sync Falls Back to the Database** - `POST /api/pricing/force-sync` no longer returns `500` when the pricing URL hangs; the fetch timeout (60s pricing, 45s model parameters) covers only the fetch and its retries, and stored pricing is used after it. Logs now name the URL that failed
+- **Model Catalog Sync in Clusters** - Only the node that actually synced pricing broadcasts a reload, instead of every node every cycle
+- **Clearing Pricing URLs** - `PUT /api/config` with an empty `pricing_url` or `model_parameters_url` resets it to the default datasheet URL instead of failing
+- **Dashboard Metadata Across Restarts** - Client metadata such as `onboarding_dismissed` is no longer lost when config writes overlap at boot or across replicas
+- **Config-Driven Skill Updates** - Updating an existing skill from config.json no longer fails with `serving version "" ... has no version row` (thanks [@ozenyunus35](https://github.com/ozenyunus35)!)
+- **Semantic Cache Request Families** - Cache entries are isolated by request family, so a `/v1/chat/completions` entry is no longer served to a `/v1/responses` caller with the same cache key (thanks [@Atharva-Kanherkar](https://github.com/Atharva-Kanherkar)!)
+- **Semantic Cache Write Race** - The semantic cache now serializes the response before its post-hook returns, so the cached entry matches the response at hook time instead of racing core's later cleanup of raw request and response fields
+- **Semantic Cache Vector Store Consistency** - Embedding dimension changes are refused on every vector store (not only Redis and Qdrant), and a failed update restores the previous config. The plugins API validates `semantic_cache` configs like config.json does. Embedding failures store an exact-match entry instead of skipping the write, `clear-by-key` percent-decodes the key (bad encoding returns `400`), clearing a missing `cache_id` succeeds on Redis, and `x-bf-cache-no-store` is case-insensitive
+- **Prometheus Settings Form** - One Save and Reset now covers both Pull and Push tabs, and the Overhead breakdown and User labels toggles are visible on both
+- **Zero Reasoning Max Tokens in Logs** - A reasoning max tokens value of `0` now renders in the log view (thanks [@G-XD](https://github.com/G-XD)!)
+- **Live Polling from an Absolute Range** - Turning on Live polling while viewing an absolute time range now switches to a relative period instead of re-fetching the same rows forever, and polling pauses correctly for tabs opened in the background
+- **Dashboard Fixes** - Model selectors in limits, routing rules and the CEL builder accept any model, selectors no longer show internal placeholders such as `__none__`, MCP badges have dark mode colors, the rate limit placeholder reads "No limit", the virtual keys Status column is wider, the Virtual MCPs table drops its noisy warning icon, and the create MCP client form has the headers and Allowed Extra Headers fields the edit form has. Creation buttons read "Add" instead of "New", the onboarding widget renders above other overlays, enterprise pages pick up their Tailwind classes again when the UI is linked through a symlink, and charts no longer log width/height warnings on load (thanks [@basil-k-aji-dev](https://github.com/basil-k-aji-dev)!)
+- **Dashboard Layout and Accessibility** - The logs metric strip no longer truncates figures at 1440px, the table status row stays in view, tables and settings no longer overflow on mobile, and the log details sheet keeps a sticky header and its state. Icon-only buttons, switches, selects, progress bars, filters and sidebar items have accessible names, click-only rows are keyboard reachable, decorative icons are hidden from screen readers, labels are tied to their controls, media elements carry caption tracks, and muted text, badge and editor comment colors meet contrast ratios
+
+## 🔧 Maintenance
+
+- **Dependency Security Updates** - Bumped UI dependencies flagged by Dependabot, including `@tanstack/react-router` 1.170.5, `@tanstack/router-plugin` 1.168.7, `axios` 1.20.0 and `dompurify` 3.4.16
+- **Documentation** - The alert history endpoint docs now cover its sort parameters
+
+## 🗄️ Database Migrations
+
+This release adds 45 config store and 9 log store migrations. Most add nullable or defaulted columns, new tables, or indexes, and are safe to run while older pods are still serving. The items with a Note need attention before or during the upgrade.
+
+The migration runner now reads the list of applied IDs once at startup and skips steps that are already recorded, so restarts no longer re-run finished steps. Postgres index checks are scoped to the current schema, and an INVALID index left behind by an interrupted build is dropped and rebuilt.
+
+### Config store: data moves and backfills
+
+- **move_config_json_vk_limits_to_model_configs** - Moves budgets and rate limits that a virtual key or a virtual key provider config owned directly onto all-models model configs, creating those configs when needed. Non-reversible: the original owner is not recorded. What changes: while the rollout runs, pods still on 2.2.6 no longer see these limits on the virtual key or provider config, so they stop enforcing them until they are replaced. What to do: upgrade all pods in one short window, or scale down to one pod for the upgrade, if enforcing those limits during the rollout matters.
+- **backfill_compat_force_reasoning_only_models_to_responses** - Sets `compat_force_reasoning_only_models_to_responses` to `true` on every existing client config row. Non-reversible: the rollback does nothing. What changes: chat requests with tools to models that cannot reason with tool calls are routed to the Responses API on existing deployments after the upgrade. What to do: to keep the 2.2.6 behaviour, set `client.compat.force_reasoning_only_models_to_responses: false` in config.json (UI: Settings, Compatibility) after upgrading.
+- **move_pricing_override_search_context_to_web_search** - Renames the `search_context_cost_per_query` key to `web_search_cost_per_request` inside saved pricing overrides. Non-reversible: no rollback. What changes: pods still on 2.2.6 do not see the old key in overrides during the rollout. What to do: rename `search_context_cost_per_query` to `web_search_cost_per_request` in any pricing override you keep in config.json.
+- **add_web_search_cost_per_request_column** - Adds `model_pricing.web_search_cost_per_request` and copies existing `search_context_cost_per_query` rates into it. Reversible: drops the column.
+- **add_batch_jobs_due_index** - Clears `next_check_at` on settled and unpriceable batch jobs (in batches of 10,000), then builds the partial index `idx_batch_jobs_due` concurrently. Non-reversible: cleared values cannot be restored.
+- **add_client_config_enforce_vk_object_ownership_column** - Adds `config_client.enforce_vk_object_ownership` with default `true` and sets existing rows to `true`. Reversible: drops the column. What changes: files, batches, containers and cached content created through a virtual key can only be read, listed or deleted through that same virtual key. What to do: set `client.enforce_vk_object_ownership: false` in config.json (UI toggle under virtual key settings) if clients share provider objects across virtual keys.
+
+### Config store: unique indexes on existing data
+
+- **add_value_hash_and_token_hash_indexes** - Sets empty `governance_virtual_keys.value_hash` and `sessions.token_hash` values to NULL in batches of 10,000, then builds UNIQUE indexes on both concurrently. If duplicates already exist, it builds a non-unique index and logs a warning instead of failing. Non-reversible.
+- **make_mcp_oauth_flows_state_unique** - Deletes expired pending or claiming duplicate `mcp_oauth_flows` rows, then replaces `idx_mcp_oauth_flows_state` with a UNIQUE index built concurrently. It keeps a non-unique index and warns if duplicates remain. Non-reversible: deleted rows cannot be restored.
+
+### Config store: other non-reversible additions
+
+Each of these only adds a column or table and is safe during a rolling deploy. Its rollback refuses to run because dropping the column would destroy saved settings or credentials.
+
+- **add_vertex_aws_workload_identity_column** - Adds `config_keys.vertex_aws_workload_identity_json`.
+- **add_oauth_key_config_columns** - Adds five `oauth_*` columns to `config_keys` (bounded by a 5s lock timeout).
+- **widen_oauth2_client_controlled_columns** - Postgres only: changes OAuth2 `state`, `scope` and `client_name` columns from `varchar` to `text`. No rewrite, brief lock. No rollback.
+- **add_warp_api_key_id_column** - Adds `warp_config.api_key_id`, and clears and drops the earlier `api_key` column. `warp_config` is new in this release, so nothing is lost when upgrading from 2.2.6.
+- **add_warp_log_embedding_columns**, **add_warp_temperature_reasoning_columns** - Add Warp embedding, search, temperature and reasoning settings.
+- **add_virtual_key_disable_content_logging_column** - Adds nullable `governance_virtual_keys.disable_content_logging`.
+- **add_agent_gateway_tables** - Creates the agent registration, virtual key agent grant, push config and push delivery tables, and adds `config_client.a2a_external_client_url`.
+- **add_agent_push_config_tenant_column** - Adds `tenant` to the agent push config table.
+- **add_ignore_provider_cost_column** - Adds `config_providers.ignore_provider_cost` (default `false`).
+- **add_provider_objects_table** - Creates `provider_objects`, which records the virtual key that created each file, batch, container or cached content.
+
+### Config store: reversible additions
+
+Each of these rolls back cleanly by dropping what it added.
+
+- **Columns:**
+  - `add_virtual_key_delete_after_expire_column`
+  - `add_client_config_delete_expired_virtual_keys_column`
+  - `add_mcp_discovered_instructions_column`
+  - `add_mcp_instruction_cap_columns`
+  - `add_mcp_client_max_instructions_length_column`
+  - `add_mcp_client_require_public_target_column`
+  - `add_warp_history_retention_days_column`
+  - `add_warp_additional_models_column`
+  - `add_ttft_timeout_ms_column_to_routing_targets`
+  - `add_mcp_code_mode_limits_client_column`
+  - `add_compat_force_reasoning_only_models_to_responses_column`
+  - `add_a2a_raw_capture_setting`
+  - `add_100k_token_pricing_columns`
+  - `add_decisions_pricing_columns`
+  - `add_injected_tools_json_column`
+  - `add_compat_convert_decision_to_responses_column`
+  - `add_cloudflare_key_config_columns`
+  - `add_mcp_oauth_private_allowlist_column`
+- **Tables:** `add_warp_config_table`
+- **Indexes, built concurrently on Postgres:**
+  - `add_vk_provider_config_virtual_key_id_index`
+  - `add_vk_mcp_configs_mcp_client_id_index`
+  - `add_vk_provider_config_provider_and_key_indexes`
+  - `add_virtual_keys_created_at_id_index`
+  - `add_batch_jobs_file_id_indexes`
+  - `add_provider_objects_object_id_index`
+- **add_virtual_key_business_unit_column** - Adds `governance_virtual_keys.business_unit_id` with an index. The index is not built concurrently. The column starts empty, so the build is short, but it briefly blocks virtual key writes.
+
+### Log store
+
+- **logs_add_owner_timestamp_indexes**, **logs_add_ranking_name_timestamp_indexes** - Replace the single-column `virtual_key_id`, `user_id`, `team_id`, `selected_key_id`, `routing_rule_id`, `customer_id`, `business_unit_id` and `project_id` indexes on `logs` (and the owner indexes on `mcp_tool_logs`) with `(column, timestamp)` composites. On Postgres a background job builds the composites concurrently and drops each old index only after its composite is valid. Reversible on SQLite. On Postgres the rollback does not restore the old indexes. What changes: a 2.2.6 pod that restarts during the rollout, or after a rollback, rebuilds the old single-column indexes in the background on a large `logs` table, and 2.3.0 pods then drop them again. What to do: on large Postgres log stores, finish the rollout without restarting old pods, and expect extra index build I/O right after the upgrade.
+- **agent_logs_init** - Adds `logs.agent_correlation_id`, `mcp_tool_logs.session_id` and `mcp_tool_logs.agent_correlation_id`, and creates `agent_logs`. It takes brief locks on `logs` and `mcp_tool_logs`, bounded by a 5s lock timeout. Its indexes are built in the background, concurrently on Postgres. Reversible only while the new table and columns are empty.
+- **agent_logs_add_raw_payload_columns** - Adds `agent_logs.raw_request` and `raw_response`. Non-reversible: the rollback would delete recorded transport bodies.
+- **logs_add_warp_conversation_tables** - Creates `warp_conversations` and `warp_messages`. Reversible only while they are empty.
+- **logs_add_warp_message_outcome_columns** - Adds `finish_reason`, `total_tokens`, `cost` and `question_json` to `warp_messages`. Reversible only while no outcome is recorded.
+- **logs_add_warp_conversations_updated_at_index** - Concurrent index on `warp_conversations(updated_at DESC)`. Reversible.
+- **logs_add_embedding_input_column** - Adds `logs.embedding_input`. Reversible.
+- **logs_add_live_session_column** - Adds `logs.live_session`. Reversible.
+- **Background jobs** - The invalid-metadata cleanup and the `cached_read_tokens` backfill now walk `logs` in one-hour windows and run once. Completion is recorded in the migrations table as `logs_bg_invalid_metadata_cleanup_v1` and `logs_bg_cached_read_tokens_backfill_v1`.
+
+## 🐙 Closed GitHub Issues
+
+- [#2649](https://github.com/maximhq/bifrost/issues/2649) - [Feature]: OpenAI Responses API `ShellTool` not supported
+- [#3471](https://github.com/maximhq/bifrost/issues/3471) - [Bug]: Bedrock Titan embedding concatenates list inputs instead of fanning out - silent corruption and 400 on large batches
+- [#3632](https://github.com/maximhq/bifrost/issues/3632) - [bug]: bedrock - Titan multimodal embedding model rejected as unsupported
+- [#6143](https://github.com/maximhq/bifrost/issues/6143) - [Bug]: data race - fasthttp requestStream released to pool while SSE reader is still inside Read (stream cancellation)
+- [#6477](https://github.com/maximhq/bifrost/issues/6477) - [Bug]: MCP OAuth reauthorization prematurely closes popup on first poll tick and rejects completion with 409 (stale "authorized" status in oauth_configs)
+- [#6612](https://github.com/maximhq/bifrost/issues/6612) - [Bug]: A single unreachable provider blocks the aggregate GET /v1/models (re-polled live every request; bounded only by the shared request timeout)
+- [#6742](https://github.com/maximhq/bifrost/issues/6742) - [Feature]: Surface DeepSeek's silent model substitution and validate usage completeness on its Anthropic endpoint
+- [#6870](https://github.com/maximhq/bifrost/issues/6870) - [Bug]: Failed live MCP connection checks never trigger the documented reconnect
+- [#6885](https://github.com/maximhq/bifrost/issues/6885) - [Bug]: MCP tool lists never refresh when a server's tool set changes - notifications/tools/list_changed is ignored, and per-call clients have no refresh path at all
+- [#7191](https://github.com/maximhq/bifrost/issues/7191) - [Bug]: MCP OAuth authorization is lost and manual re-login does not recover it
+- [#7233](https://github.com/maximhq/bifrost/issues/7233) - [Bug]: Direct-only cache response serialization races with core cleanup and can panic
+- [#7275](https://github.com/maximhq/bifrost/issues/7275) - [Bug]: gpt-6-astra / Foundry: tools + reasoning on /v1/chat/completions still 400 after #5231
+- [#7341](https://github.com/maximhq/bifrost/issues/7341) - [Bug]: Gemini Responses stream - response.completed.Output is empty when parts and finishReason share one frame
+- [#7342](https://github.com/maximhq/bifrost/issues/7342) - [Bug]: Gemini Responses stream drops a generated image part that carries a thoughtSignature
+- [#7344](https://github.com/maximhq/bifrost/issues/7344) - [Bug]: strict, allowed_tools, parallel_tool_calls and allowed_callers are dropped in provider conversion
+- [#7347](https://github.com/maximhq/bifrost/issues/7347) - [Bug]: PUT /api/governance/virtual-keys/{id} silently sets allow_all_keys=false and drops key associations when key_ids is omitted (GET does not return key_ids)
+- [#7388](https://github.com/maximhq/bifrost/issues/7388) - [Bug]: Gemini & Vertex Providers: Missing N Parameter Mapping to CandidateCount in Chat Completions
+- [#7415](https://github.com/maximhq/bifrost/issues/7415) - [Feature]: Support OpenRouter’s native Decisions API
+- [#7438](https://github.com/maximhq/bifrost/issues/7438) - [Bug]: otel HTTP telemetry uses deprecated semconv; no http.route or http.server.request.duration
+- [#7446](https://github.com/maximhq/bifrost/issues/7446) - [Bug]: otel HTTP metrics exporter ignores https scheme when insecure is omitted (defaults true)
+- [#7450](https://github.com/maximhq/bifrost/issues/7450) - [Bug]: Semantic cache panics while marshaling /v1/responses
+- [#7560](https://github.com/maximhq/bifrost/issues/7560) - [Bug]: semantic_cache serves a chat.completion entry to a /v1/responses caller because the direct cache key omits the request family
+- [#7572](https://github.com/maximhq/bifrost/issues/7572) - PUT /api/providers/{provider}/keys/{key_id}: partial update silently wipes key value and weight (destructive merge default)
+- [#7580](https://github.com/maximhq/bifrost/issues/7580) - [Feature]: Allow OpenAI reasoning.mode ("pro") on Chat Completions and carry it through chat→responses conversion
+- [#7581](https://github.com/maximhq/bifrost/issues/7581) - [Bug]: Complexity Router: fails to find provider config unless provider name is all-lowercase
+- [#7584](https://github.com/maximhq/bifrost/issues/7584) - UI: Recharts warns width(-1)/height(-1) on Dashboard, LLM Logs and MCP Logs
+- [#7599](https://github.com/maximhq/bifrost/issues/7599) - [Bug]: TypeSafe native compatibility rejects SDK-valid inputs and loses payload/response fidelity
+- [#7601](https://github.com/maximhq/bifrost/issues/7601) - [Bug]: /v1/responses for Anthropic and Gemini omits status and does not signal max_output_tokens truncation
+- [#7610](https://github.com/maximhq/bifrost/issues/7610) - Provider harness: group 25 (DeepSeek Anthropic-Compatible Migration) runs on the OpenAI-compatible endpoint - is use_anthropic_endpoints meant to be set?
+- [#7613](https://github.com/maximhq/bifrost/issues/7613) - [Bug]: Bedrock Converse drops cache_control on file/document content blocks
+- [#7634](https://github.com/maximhq/bifrost/issues/7634) - Access profile summary shows "All models" when blocked models are configured
+- [#7649](https://github.com/maximhq/bifrost/issues/7649) - [Bug]: Bedrock provider drops extended-thinking token count (`output_tokens_details.thinking_tokens`) that AWS returns
+- [#7659](https://github.com/maximhq/bifrost/issues/7659) - [Bug]: mirrored reasoning params (reasoning_effort + reasoning.effort, equal values) rejected as 400 Invalid request payload
+- [#7661](https://github.com/maximhq/bifrost/issues/7661) - [Bug]: Reasoning Parameters renders an unlabeled 0 for `reasoning.max_tokens`
+- [#7693](https://github.com/maximhq/bifrost/issues/7693) - [Bug]: streamed chat completions omit delta.role when the request is converted to the Responses API
+- [#7694](https://github.com/maximhq/bifrost/issues/7694) - [Bug]: Gemini rejects tool results that contain `$ref` - JSON-object tool output is forwarded as structured function_response.response
+- [#7696](https://github.com/maximhq/bifrost/issues/7696) - [Bug]: Bedrock guardrail selective evaluation is impossible - guardContent blocks silently stripped in canonical round-trip; guardrailConfig has no tagSuffix
+- [#7720](https://github.com/maximhq/bifrost/issues/7720) - [Bug]: Bifrost ignores "store": false in additionalModelRequestFields on the Bedrock Converse route, so store cannot be disabled for Azure
+- [#7729](https://github.com/maximhq/bifrost/issues/7729) - [Bug]: Bifrost replaces the reasoning item id when a Bedrock Converse request replays redactedContent, so Azure rejects it and Bifrost strips the reasoning
+- [#7760](https://github.com/maximhq/bifrost/issues/7760) - ListAllModels returns duplicate and skipped models when a provider listing changes between pages
+- [#7768](https://github.com/maximhq/bifrost/issues/7768) - [Bug]: bare Claude model ids hoist thinking blocks on the Bedrock path
+- [#7784](https://github.com/maximhq/bifrost/issues/7784) - [MCP Library] Parlel - free people/companies/jobs/agents MCP
+- [#7812](https://github.com/maximhq/bifrost/issues/7812) - [Bug]: Gemini embeddings: `taskType`/`title` applied only to the first input of a batched `/v1/embeddings` request
+- [#7819](https://github.com/maximhq/bifrost/issues/7819) - [Bug]: Transcription cost ignores provider-reported usage.cost and per-second pricing is unreachable when input_tokens > 0
+- [#7826](https://github.com/maximhq/bifrost/issues/7826) - [Bug]: Gemini and Vertex image and transcription requests lose ExtraParams on retry
+- [#7843](https://github.com/maximhq/bifrost/issues/7843) - [Bug]: Postgres log store batch inserts exceed the 65,535 bind-parameter limit, so full batches fall back to row-by-row inserts
+- [#7915](https://github.com/maximhq/bifrost/issues/7915) - [Bug]: Anthropic-compatible /anthropic/v1/messages returns wrong or non-standard error.type
+- [#7920](https://github.com/maximhq/bifrost/issues/7920) - [Bug]: Anthropic /v1/messages never reports stop_reason "stop_sequence" or the matched stop_sequence
+- [#7926](https://github.com/maximhq/bifrost/issues/7926) - [Bug]: Gemini/Vertex drop function tools without input_schema and mis-pair parallel tool results
+- [#7990](https://github.com/maximhq/bifrost/issues/7990) - [Bug]: Responses history gains `logprobs: null`, causing upstream 400
+- [#8004](https://github.com/maximhq/bifrost/issues/8004) - [MCP Library] Add: FXMacroData
+- [#8153](https://github.com/maximhq/bifrost/issues/8153) - [Bug]: Routing Tree silently truncates routing rules at 100
+- [#8171](https://github.com/maximhq/bifrost/issues/8171) - [Bug]: Routing Tree CEL parser splits and rewrites operators inside quoted string literals
+- [#8195](https://github.com/maximhq/bifrost/issues/8195) - [Bug]: Anthropic `tool_result.is_error` no longer reaches OpenAI Responses upstreams - the `status: "incomplete"` set by the Anthropic converter is cleared in `ToOpenAIResponsesRequest`
+- [#8196](https://github.com/maximhq/bifrost/issues/8196) - [Bug]: /v1/responses rejects multi-part assistant messages - output_text is not mapped to text in ToChatMessages
+- [#8205](https://github.com/maximhq/bifrost/issues/8205) - [Bug]: ClickHouse log list returns full input histories
+- [#8207](https://github.com/maximhq/bifrost/issues/8207) - [Bug]: Anthropic tool_addition / tool_removal blocks lose their `tool` object in the Responses conversion
+- [#8212](https://github.com/maximhq/bifrost/issues/8212) - [Bug]: Log retention changes do not update the running cleaner
+- [#8215](https://github.com/maximhq/bifrost/issues/8215) - [Bug]: DeepCopyChatMessage drops cache_control, citations, prompt_cache_breakpoint and cachePoint on chat content blocks
+- [#8246](https://github.com/maximhq/bifrost/issues/8246) - skills_registry: config-driven skill updates always fail - `populateSkillFiles` resolves the serving version via `skill.LatestVersion`, which `configEntryToTableSkill` never sets
+- [#8266](https://github.com/maximhq/bifrost/issues/8266) - [Bug]: calendar-aligned virtual key budgets reset on a rolling window after a restart
+- [#8286](https://github.com/maximhq/bifrost/issues/8286) - [Bug]: Fixed-length streamed responses silently accept premature EOF
+
+</Update>
+<Update label="Core" description="1.12.0">
+- feat: agent gateway runtime with A2A request, event and trace contracts, card discovery, A2A plugin pipeline, streaming, durable push delivery and opt-in private push callbacks; `schemas.Tracer` gains `ReleaseTrace`
+- feat: gpt live session schemas, live provider interface and openai implementation, with sideband attach routes, the `live_sideband` request type and delegation error recording
+- feat: add cloudflare workers ai provider with chat, responses, embeddings, model listing and native clef decisions
+- feat: inject any number of named provider-configured mcp tools into chat and responses requests, past tool filters, and execute them server side including streaming
+- feat: oauth_key_config mints bearer tokens for openai-compatible providers through a shared token cache, also used by databricks and github copilot
+- feat: normalise decision requests and answers to an openai-style list shape (map form deprecated) and add openai decision converters for the openai-format route
+- feat: native decision support for openai, perplexity, ollama and openrouter
+- feat: emulate decisions through responses only when the request is marked by convert_decision_to_responses
+- feat: Typesafe can back a custom provider (base_provider_type "typesafe") with its own name, keys, allowed_requests, request_path_overrides and keyless listing [@akshaydeo](https://github.com/akshaydeo)
+- feat: complexity router decision classifier support: RequestType on routing calls and decision cost tracking
+- feat: multimodal embedding input with per-item params for cohere, gemini, vertex, bedrock nova/titan and parasail
+- feat: shell and apply_patch tools, allowed_callers translation and gemini code execution on the responses api
+- feat: add ModelRetrieve operation for openai, anthropic, cohere, gemini, mistral and ollama
+- feat: xai realtime provider with client-secret minting; realtime events keep their own copy of raw bytes
+- feat: bedrock passthrough for InvokeAgent, knowledge-base Retrieve and ApplyGuardrail; pass through azure content filter annotations
+- feat: vertex aws workload identity federation and sdk-chain resolution for aws external_account json
+- feat: add ToolUsage.WebSearch usage and deprecate NumSearchQueries
+- feat: add IgnoreProviderCost to provider config
+- feat: add BifrostContextKeyCompatForceReasoningOnlyToResponses
+- feat: route chat requests with reasoning.mode to the responses api on openai and azure, and carry reasoning.summary through chat to responses conversion
+- feat: stamp the deepseek served model and read server_side_model from the datasheet
+- feat: classify provider failures (including timeout and cancelled), rotate keys past permanent per-key failures and carry provider retry hints on errors
+- feat: per-attempt first-token deadline for stream attempts with fallback handover
+- feat: requested_provider and requested_model on RoutingInfo and as reserved context keys
+- feat: Access.AllowsEveryModel for provider-wide model grants
+- feat: passthrough body model fields for governance checks
+- feat: require_public_target on MCP clients, enforced on every dial
+- feat: allowlisted private dialer for MCP OAuth
+- feat: capture, aggregate and inject upstream MCP server instructions, with per-client and total byte caps
+- feat: RefreshMCPClientTools for on-demand tool rediscovery
+- feat: detect dead MCP sessions on tool calls and reconnect; retry probe timeouts but not dead sessions or auth failures
+- feat: bound code mode execution with step, memory, source, log, tool-call, value and nesting limits
+- feat: process-wide HTTP client factory so MCP, OAuth, catalog sync and OTLP follow the global API proxy
+- feat: BifrostContextKeyGovernanceDisableContentLogging and bifrost.content_logging.disabled span attribute
+- feat: BifrostContextKeyLoadBalancerAttempt and LoadBalancerMetadataPrefix
+- feat: add HTTPTransportResponseHeadersHook and pooled HTTPResponseMetadata to HTTP transport plugins
+- feat: add Warp config schema, log embedding configuration, multi-model selection and agent error codes
+- feat: add BifrostContextKeyCacheLookup to carry the cache lookup outcome before a response exists
+- feat: add RawPayloadConsumer and raw request/response fields on LLM spans
+- feat: add StripTraceAttributes for per-connector attribute denylists
+- feat: add bifrost.cost.* attributes and BifrostContext.CalculateCostBreakdown for plugins
+- feat: add bifrost.app span attribute derived from User-Agent
+- feat: add TraceSessionID and TraceDimensions accessors for connector metric tags
+- feat: add typed LLMSpanData, SpanEnrichment and connector demand interfaces
+- feat: expose failure identity for pre-dispatch errors
+- feat: add BifrostGuardrailDetection for detect-only guardrail policy matches
+- feat: Bedrock guardrail selective evaluation: guardContent blocks (text and image) survive conversion, guardrailConfig accepts a validated tagSuffix and streamProcessingMode, InvokeModel reads X-Amzn-Bedrock-Guardrail* headers, and the same guard_content marker is available on Chat Completions content blocks [@akshaydeo](https://github.com/akshaydeo)
+- chore: deprecate attribution context keys in favour of ctx.Grant() accessors
+- fix: gpt-5.6+ requests carrying cache_control are no longer switched to prompt_cache_options.mode "explicit"; markers still become prompt_cache_breakpoint (at most three in implicit mode, four when the caller sets explicit mode) [@akshaydeo](https://github.com/akshaydeo)
+- fix: report truncated Content-Length response streams and discard incomplete connections (thanks [@Constantine3](https://github.com/Constantine3)!)
+- fix: a tool_result flagged is_error keeps its status "incomplete" marker on the OpenAI Responses wire (thanks [@shreyanshj10](https://github.com/shreyanshj10)!)
+- fix: Responses to chat conversion maps output_text to text on multi-part assistant turns (thanks [@shreyanshj10](https://github.com/shreyanshj10)!)
+- fix: preserve cache_control, citations, prompt_cache_breakpoint and cachePoint in deepCopyChatContentBlock (thanks [@Shashank2985](https://github.com/Shashank2985)!)
+- fix: Anthropic-compatible responses report stop_reason "stop_sequence" with the matched stop_sequence for Claude on Anthropic and Vertex, streaming and non-streaming (thanks [@jimseiwert](https://github.com/jimseiwert)!)
+- fix: Anthropic error envelope always uses a documented error.type, mapped from google.rpc status names or the HTTP status when needed (thanks [@jimseiwert](https://github.com/jimseiwert)!)
+- fix: Gemini/Vertex Responses conversion keeps function tools declared without input_schema and orders function responses to match the preceding calls (thanks [@jimseiwert](https://github.com/jimseiwert)!)
+- fix: chat streams converted from a Responses upstream send the assistant role exactly once, on the first chunk (thanks [@hmdsefi](https://github.com/hmdsefi)!)
+- fix: preserve Mistral streaming text arrays and reject unsupported content blocks (thanks [@xujiantop-crypto](https://github.com/xujiantop-crypto)!)
+- fix: map chat completion n to Gemini candidateCount (thanks [@axelray-dev](https://github.com/axelray-dev)!)
+- fix: record output items before closing open items on Gemini streaming Responses when parts and finishReason share a frame (thanks [@wofiporia](https://github.com/wofiporia)!)
+- fix: strip the Claude Code billing header again when an effort-only system message comes first, and restore it in place for Anthropic attempts [@akshaydeo](https://github.com/akshaydeo)
+- fix: infer http status for stream errors and key-selection failures
+- fix: skip catalog-inferred fallbacks on caller-fault errors; forward raw gemini logprobs
+- fix: refuse aggregate model listing with a direct key, return the provider's error for a refused direct key, and bind no session key for direct keys
+- fix: restore primary provider headers after exhausted fallbacks and name plugin-answered fallbacks in stream routing headers
+- fix: apply the global proxy to providers without their own and honour multi-entry no_proxy lists
+- fix: route every provider egress stack, auth client and url fetch through proxy_config, with https and ipv6 proxies
+- fix: build passthrough urls that stay on the provider host
+- fix: keep replicate file list pagination on the configured file endpoint
+- fix: validate azure realtime endpoint before use and contain websocket session panics
+- fix: fit output tokens and thinking budget per attempt after key selection
+- fix: clamp max_tokens and rewrite adaptive thinking for pre-adaptive claude models
+- fix: send custom tools as function tools when the datasheet marks them unsupported
+- fix: read default reasoning effort from the datasheet when deciding to strip sampling params
+- fix: add opt-out capability for reasoning.summary
+- fix: clear paired item ids when stripping rejected reasoning
+- fix: downgrade json_schema response_format to json_object on deepseek
+- fix: keep gemini responses-path parity for json mode, native tools, candidateCount, logprobs and urlContextMetadata
+- fix: normalize root schema compositions for claude tools on bedrock converse
+- fix: per-model tool schema policy for kimi on chat and responses
+- fix: carry anthropic mid-conversation tool changes through the responses representation
+- fix: disable genai raw-body passthrough for non-google providers and model garden models on vertex
+- fix: keep the vertex passthrough api version and poll veo operations in their own region
+- fix: preserve safeguard_results in streamed message_delta
+- fix: error on bedrock converse streams missing messageStop
+- fix: emit cachePoint after cached document blocks on bedrock converse
+- fix: keep reasoning item ids and encrypted tokens through bedrock converse and chat-to-responses replays; forward store
+- fix: preserve thinking block order for bare claude model ids
+- fix: computer tool actions array, computer tool muxing and server tool cache_control
+- fix: omit null logprobs on history output_text and keep stream extra_fields on the openai responses drop-in
+- fix: send only OpenAI embedding params to OpenAI-compatible providers; label Cohere embeddings_by_type
+- fix: gemini $ref tool outputs, vertex express auth and image/transcription extra params on fallbacks
+- fix: fan out gemini embedding taskType and title per entry
+- fix: capture raw request on bedrock and vertex embeddings
+- fix: forward anthropic extra params through bedrock conversion (thanks [@wangrat](https://github.com/wangrat)!)
+- fix: accept matching reasoning_effort and reasoning.effort (thanks [@Daltonganger](https://github.com/Daltonganger)!)
+- fix: align typesafe validation and fidelity with the typesafe sdk
+- fix: bound per-provider model list polls and resume pagination after the last returned id (thanks [@novai42](https://github.com/novai42)!)
+- fix: allow empty copilot key values for github app auth and distinguish 422 permission errors
+- fix: cohere replay thinking order, decisions tool_choice gate, served tier on chat bridge, bare sonar routing, mcp server_label, legacy prompt framing
+- fix: hold back retried stream errors from post-hooks
+- fix: end large-response previews on a utf-8 boundary
+- fix: float weighted key selection that ignores negative or non-finite weights
+- fix: session affinity skips direct-key fallbacks and caller key pins, drops bindings to removed keys in single-key pools, and falls back to sibling keys when a session-bound key is rejected outright
+- fix: read the message context before abandoning delivery
+- fix: route code-mode tool results through PostMCPHook before logging
+- fix: MCP agent loop keeps earlier turns, the turn-1 route and caller cache points
+- fix: keep the live MCP connection on a failed make-before-break re-dial and reconnect after a failed live-connection check
+- fix: preserve pending_verification through EnableClient and the connection checker
+- fix: report a rejected inbound bearer token separately from a missing one in token exchange
+- fix: treat only masked placeholders as keep-stored for OAuth credentials
+- fix: redact x-bf-vk in captured request headers
+- fix: add BifrostError.EffectiveHTTPStatus as the single source for the status a caller received
+- fix: add span attribute helpers for chat tools export
+- fix: defer trace completion for abandoned deliveries
+
+</Update>
+<Update label="Framework" description="1.9.0">
+- feat: persist agent registrations, virtual-key agent grants, push configs and push delivery outbox, and store and query agent operation and event logs
+- feat: add Warp agent, read-only log/metric/governance tools, chat history and asker-scoped visibility
+- feat: index completed logs for Warp semantic search with sidekiq backfill and visibility prefiltering
+- feat: price live voice seconds and bind live sessions to the opening virtual key
+- feat: persist cloudflare_key_config.account_id on provider keys
+- feat: persist injected_tools on providers as a list of named entries
+- feat: persist, validate and expose oauth_key_config on provider keys
+- feat: add compat_convert_decision_to_responses column (default false, no backfill)
+- feat: add decision-specific token rates and skip negative variable-price rates for decisions
+- feat: complexity router decision classifier config with per-tier guidance criteria, shipped defaults and decision cost tracking
+- feat: add framework/queue with memory, SQLite, Postgres and ClickHouse backends
+- feat: add embedding_input log column and span attributes for the new embedding input shape
+- feat: replace search_context_cost_per_query with web_search_cost_per_request priced from tool_usage.web_search.num_requests
+- feat: price from the catalog when ignore_provider_cost is on, including streamed cost
+- feat: add compat_force_reasoning_only_models_to_responses column and backfill it to true
+- feat: persist vertex aws_workload_identity as encrypted json
+- feat: accumulate shell and apply_patch stream items
+- feat: carry server_side_model in model capabilities
+- feat: failure attributes on the root span and end-to-end ttft for streams
+- feat: provider_objects ownership table, enforce_vk_object_ownership client config column and id-suffix lookups for provider jobs and objects
+- feat: AllowsEveryModel on grants
+- feat: require_public_target column on MCP clients
+- feat: MCP OAuth private network allowlist with separate public-only and allowlisted transports
+- feat: RevokeOAuth2GrantsBySubject for virtual key rotation
+- feat: persist discovered MCP server instructions and per-client max_instructions_length
+- feat: ReregisterDynamicClient for evicted dynamic client registrations
+- feat: access profiles held by teams, business units and customers; business_unit_id owner on virtual keys
+- feat: global proxy_config in config.json; webhooks, skills and plugin downloads through the HTTP client factory
+- feat: delete_after_expire on virtual keys and ListExpiredVirtualKeysForDeletion
+- feat: disable_content_logging column on virtual keys
+- feat: ttft_timeout_ms on routing rule targets
+- feat: hide every load balancer metadata key from log filters; logs registry for downstream routing panels
+- feat: team_count on paginated customer lists
+- feat: persist code mode limits in client config
+- feat: support HTTPTransportResponseHeadersHook in plugin loading
+- feat: add group_sessions log filter collapsing sessions to their earliest root with session rollups
+- feat: add ListSidekiqJobs and per-kind progress summarizers
+- feat: add object_storage_exclude_request_types to keep chosen request types out of object storage
+- feat: render raw payloads only when a connector opts in, and export the raw request and provider error body for failed requests
+- feat: compute per-category request cost breakdown in the model catalog
+- feat: produce trace data and plugin spans only when a connector consumes them
+- feat: add above-100k-token pricing tier
+- fix: use updated log retention for subsequent cleanup passes (thanks [@Constantine3](https://github.com/Constantine3)!)
+- fix: transcription cost uses the provider-reported usage.cost when present, as chat already does (thanks [@hmdsefi](https://github.com/hmdsefi)!)
+- fix: complexity router keeps custom provider name case so its config lookup succeeds (thanks [@MohammadHijjawi97](https://github.com/MohammadHijjawi97)!)
+- fix: config-driven skill updates serve the new version instead of failing on an unset LatestVersion (thanks [@ozenyunus35](https://github.com/ozenyunus35)!)
+- fix: hash and merge the complexity analyzer config as written in config.json
+- fix: prefer realtime catalog rates for realtime requests
+- fix: parse the reasoning summary capability from the datasheet
+- fix: one terminal stream event per request
+- fix: responses streaming keeps the latest provider stop reason
+- fix: structured tool call summaries for custom, local shell and code interpreter calls
+- fix: tighter MCP OAuth2 server validation and redirect URI allowlist
+- fix: enforce the private-network dial policy on every redirect hop for pricing, model-parameter, MCP library and OAuth2 fetches
+- fix: match legacy plaintext lookups only against plaintext rows
+- fix: redact x-bf-vk in trace request headers
+- fix: move config.json virtual key and provider config limits to model config tiers (migration move_config_json_vk_limits_to_model_configs)
+- fix: wrap duplicate routing rule priority in ErrAlreadyExists and print the scope ID
+- fix: widen OAuth2 state, scope and client_name columns to text
+- fix: wrap ErrNotFound for unknown MCP client update and delete
+- fix: team, customer and business unit filters match multi-value owners on ClickHouse and SQLite
+- fix: read paginated model configs through ScopedDB
+- fix: count ranking rows the caller cannot name under a synthetic Other row
+- fix: always set http.response.status_code on error spans
+- fix: export gen_ai.request.tools on chat spans
+- fix: guard LLM span population against concurrent trace release
+- fix: dimension mismatch checks on every vector store and cosine scoring on Weaviate
+- fix: make ClickHouse max_query_size configurable, default 16 MiB
+- fix: keep millisecond precision in ClickHouse time filters and keyset cursor
+- fix: truncate ClickHouse input histories to the last message in list queries (thanks [@ege-arhan](https://github.com/ege-arhan)!)
+- fix: sanitize Postgres log text and JSON columns so one row cannot fail a batch, storing NUL-only values as U+FFFD
+- fix: add LogStore.BatchUpdate to reconcile late responses onto existing rows
+- fix: add MaintenanceGate to detect a running logstore migration
+- fix: classify transient Postgres write errors
+- fix: Postgres scale fixes for large logs, users and virtual keys, with runtime session timeouts and provider-object id lists bound as one parameter
+- fix: run only pending migration steps on startup
+- fix: begin sqlite config store transactions with an immediate write lock
+- fix: keep error_details in the database when object storage is enabled
+- fix: include plugin_logs in the object storage payload
+- fix: sort missing cost and latency last
+- fix: leave the cost split empty for opaque provider totals
+- fix: fall back to the lowercase model name in pricing lookup
+- fix: fall back to DB pricing when the datasheet URL hangs
+- fix: fire the after-sync hook only on the node that ran the sync
+- fix: serialize client config writers so metadata is carried forward
+- fix: bound agent log filter dropdowns by the DAC dimension ceiling
+- chore: upgraded core to v1.12.0
+
+</Update>
+<Update label="compat" description="0.4.0">
+- feat: add convert_decision_to_responses setting (default off) and x-bf-compat feature; skip decision emulation for models served natively by openai, perplexity, ollama, openrouter and cloudflare
+- feat: add force_reasoning_only_models_to_responses toggle (default true)
+- feat: report reasoning.mode as dropped on providers without it
+- feat: implement HTTPTransportResponseHeadersHook as a no-op
+- fix: hand output token and thinking budget fitting to core through BifrostContextKeyConvertParamValues so it runs per attempt
+- fix: drop reasoning.summary for models that do not support it
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
+
+</Update>
+<Update label="governance" description="1.9.0">
+- feat: bind files, batches, videos, containers and cached contents to the creating virtual key under every id form the provider accepts, behind enforce_vk_object_ownership
+- feat: require a model (or a provider-wide grant) for file-based batches under model-restricted virtual keys, following a custom provider's base type
+- feat: team, business unit and customer access profile limit holders and permits; refuse an entity's own limits when a profile governs it
+- feat: per-agent access checks with virtual-key agent grants and allow_by_default
+- feat: bill live sessions per window without counting each window as a request, and evaluate live sidebands through pre-hooks without a model
+- feat: let provider-injected MCP tools past client and request tool filters
+- feat: stamp the virtual key's content-logging decision on the request and root span
+- feat: serve Warp for signed-in users without an access profile
+- feat: implement HTTPTransportResponseHeadersHook as a no-op
+- fix: check every model a passthrough body names and refuse model-less passthrough under model-restricted keys
+- fix: canonicalise model config keys across aliases, prefixes and casing
+- fix: include the fallback index in billing dedup so fallback usage is billed
+- fix: preserve team calendar alignment after restart
+- fix: load balancer treats negative weights as 0
+- fix: scope code-mode tool discovery to the request's grant
+- fix: dump only changed budget and rate-limit rows
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
+
+</Update>
+<Update label="jsonparser" description="1.6.10">
+- feat: implement HTTPTransportResponseHeadersHook as a no-op that leaves response headers unchanged
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
+
+</Update>
+<Update label="logging" description="1.9.0">
+- feat: log A2A operations and stream events as agent log rows, with session grouping and raw capture
+- feat: one log row per live session with transcript, delegations and costs; log live sideband attachments and record failed delegations without failing the session
+- feat: log decision requests and answers in the list shape and record decision classifier calls in routing costs
+- feat: store embedding request inputs in embedding_input
+- feat: carry tool_usage through log serialization for repricing
+- feat: store bifrost's cost breakdown for providers that ignore reported cost
+- feat: log shell and apply_patch items
+- feat: merge load balancer attempt decisions into log metadata
+- feat: honour the virtual key's content-logging decision in the log store and drop MCP arguments when content is disabled late
+- feat: hand completed logs to the Warp log indexer
+- feat: report cost recalculation progress to the background jobs list
+- feat: export the cost breakdown on log spans
+- feat: log refusal, content_filter and safety stop reasons as model_refusal errors
+- feat: implement HTTPTransportResponseHeadersHook as a no-op
+- fix: project custom and local shell tool calls into logged tool_calls
+- fix: add batch ID attribute to settlement spans
+- fix: store binary log bodies as a size placeholder
+- fix: persist evicted pending logs and update them when the response arrives
+- fix: pause batch writes while a logstore migration holds its lock
+- fix: retry transient batch write failures whole instead of falling back per row
+- fix: page cost recalculation by keyset without per-page counts
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
+
+</Update>
+<Update label="maxim" description="1.7.10">
+- feat: implement HTTPTransportResponseHeadersHook as a no-op that leaves response headers unchanged
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
+
+</Update>
+<Update label="mocker" description="1.6.10">
+- feat: implement HTTPTransportResponseHeadersHook as a no-op that leaves response headers unchanged
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
+
+</Update>
+<Update label="modelcatalogresolver" description="1.1.10">
+- fix: mark resolver-generated fallbacks as inferred so caller-fault errors are not retried on providers the caller never named
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
+
+</Update>
+<Update label="otel" description="1.6.0">
+- feat: export A2A client spans and the a2a.client.operation.duration metric
+- feat: add export_raw_payloads profile option
+- feat: add excluded_attributes profile option
+- feat: export bifrost.cost.* breakdown attributes
+- feat: read the typed LLM span payload
+- feat: OTLP exporters dial through the global API proxy
+- feat: strip exported content for virtual keys that turn content logging off
+- feat: implement HTTPTransportResponseHeadersHook as a no-op
+- fix: report effective status and add error_type to bifrost_error_requests_total
+- fix: honour the https scheme on OTLP HTTP metrics endpoints
+- fix: rename the per-replica datapoint label to bifrost_instance_id
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
+
+</Update>
+<Update label="prompts" description="1.1.10">
+- feat: implement HTTPTransportResponseHeadersHook as a no-op that leaves response headers unchanged
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
+
+</Update>
+<Update label="routing" description="1.2.0">
+- feat: decision-model complexity classifier (TypeSafe Jev, Laya, Nimble, Clef and OpenAI decision models) as primary or semantic fallback, with per-tier guidance and decision cost tracking
+- feat: send complexity classification decisions in the list shape
+- feat: ttft_timeout_ms sets the first-token deadline for streaming attempts
+- fix: LLM fallback classifier no longer sends temperature 0
+- chore: read embedding input through the new item shape
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
+
+</Update>
+<Update label="semanticcache" description="1.7.0">
+- feat: scope cache entries by virtual key and user, with a disable_identity_scoping opt-out
+- feat: cache_tool_call_responses (default false) skips caching responses that carry client-executed tool calls, shell_call and apply_patch_call included
+- feat: record lookup outcome for x-bifrost-cache-* response headers, including streams
+- feat: implement HTTPTransportResponseHeadersHook as a no-op
+- fix: isolate cache entries by request family (thanks [@Atharva-Kanherkar](https://github.com/Atharva-Kanherkar)!)
+- fix: snapshot the response before PostLLMHook returns so async cache writes do not race core cleanup
+- fix: placeholder vector on embedding failure and stricter config validation
+- fix: include embedding task params in the cache hash
+- chore: build cache keys from the new embedding input shape and the new oauth_key_config key schema
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
+
+</Update>
+<Update label="telemetry" description="1.9.0">
+- feat: add app label to request-level metrics
+- feat: derive metric labels from the enrichment dimension registry
+- feat: key health and rotation metrics follow the new failure classes, including timeout and cancelled
+- feat: implement HTTPTransportResponseHeadersHook as a no-op
+- fix: label error metrics with the effective HTTP status instead of unknown
+- fix: apply plugin custom_labels and resolve the plugin per request after reloads
+- fix: record billed usage from cancelled and failed requests
+- fix: build each metric's label set in a fresh slice so custom labels do not alias
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
+
+</Update>

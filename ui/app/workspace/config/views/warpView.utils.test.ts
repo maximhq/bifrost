@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { WarpBackfillJob } from "@/lib/types/warp";
-import { requireFiniteNumber, retainedWarpBackfillForSpace, retainFinishedWarpBackfill, warpSavedSpaceKey } from "./warpView.utils";
+import {
+	requireFiniteNumber,
+	retainedWarpBackfillForSpace,
+	retainFinishedWarpBackfill,
+	validateWarpMaxIterations,
+	warpSavedSpaceKey,
+} from "./warpView.utils";
 
 describe("requireFiniteNumber", () => {
 	// Clearing a number input is the case that matters: valueAsNumber gives NaN,
@@ -30,6 +36,27 @@ describe("requireFiniteNumber", () => {
 		expect(requireFiniteNumber(0, "nope")).toBe(true);
 		expect(requireFiniteNumber(-1, "nope")).toBe(true);
 		expect(requireFiniteNumber(8, "nope")).toBe(true);
+	});
+});
+
+describe("validateWarpMaxIterations", () => {
+	// The server refuses 1: the last step is reserved for answering, so a budget
+	// of one never produces an answer.
+	it("rejects 1, which the server refuses", () => {
+		expect(validateWarpMaxIterations(1)).not.toBe(true);
+	});
+
+	it("accepts the server's range, 2 through 20", () => {
+		expect(validateWarpMaxIterations(2)).toBe(true);
+		expect(validateWarpMaxIterations(8)).toBe(true);
+		expect(validateWarpMaxIterations(20)).toBe(true);
+	});
+
+	it("rejects values outside the range or not a whole number", () => {
+		expect(validateWarpMaxIterations(0)).not.toBe(true);
+		expect(validateWarpMaxIterations(21)).not.toBe(true);
+		expect(validateWarpMaxIterations(2.5)).not.toBe(true);
+		expect(validateWarpMaxIterations(Number.NaN)).not.toBe(true);
 	});
 });
 

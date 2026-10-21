@@ -174,6 +174,13 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		if key.SGLKeyConfig.URL.GetValue() == "" {
 			return fmt.Errorf("sgl_key_config.url is required")
 		}
+	case schemas.Cloudflare:
+		if key.CloudflareKeyConfig == nil {
+			return fmt.Errorf("cloudflare_key_config is required")
+		}
+		if key.CloudflareKeyConfig.AccountID.GetValue() == "" {
+			return fmt.Errorf("cloudflare_key_config.account_id is required")
+		}
 	case schemas.GithubCopilot:
 		// Two auth modes, either is sufficient.
 		//
@@ -217,7 +224,37 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 			}
 		}
 	}
+	// oauth_key_config lets a key mint its bearer instead of carrying a static value. Only the
+	// OpenAI provider resolves it, so it is honoured on openai and on every custom provider
+	// built on that base; elsewhere it would be silently ignored, which reads as a working
+	// key that 401s, so it is refused instead. When the key has no static value the config is
+	// what authenticates, so it must be whole. A static value always wins over the config, so
+	// an incomplete config does not take a usable key out of rotation here; the management API
+	// still refuses to save one.
+	if key.OAuthKeyConfig != nil {
+		if !ProviderSupportsOAuthKeyConfig(providerKey) {
+			return fmt.Errorf("oauth_key_config is only supported on openai and on custom providers whose base_provider_type is openai")
+		}
+		if strings.TrimSpace(key.Value.GetValue()) == "" {
+			if err := key.OAuthKeyConfig.Validate(); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+// ProviderSupportsOAuthKeyConfig reports whether a provider (the base provider for a custom
+// one) resolves oauth_key_config into a bearer token.
+func ProviderSupportsOAuthKeyConfig(providerKey schemas.ModelProvider) bool {
+	return providerKey == schemas.OpenAI
+}
+
+// keyValueMayBeEmpty reports whether a key with no value is still usable: either the provider
+// carries its credentials in its own key config (CanProviderKeyValueBeEmpty), or the key
+// mints its bearer from oauth_key_config on a provider that honours it.
+func keyValueMayBeEmpty(providerKey schemas.ModelProvider, key *schemas.Key) bool {
+	return CanProviderKeyValueBeEmpty(providerKey) || (key.OAuthKeyConfig != nil && ProviderSupportsOAuthKeyConfig(providerKey))
 }
 
 // routingErrorSummary produces a sanitized, audit-safe one-line summary of a
@@ -316,19 +353,16 @@ func newBifrostQueueFullError() *schemas.BifrostError {
 // newBifrostMessageChan creates a channel that sends a bifrost response.
 // It is used to send a bifrost response to the client.
 func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.BifrostStreamChunk {
-	ch := make(chan *schemas.BifrostStreamChunk)
-
-	go func() {
-		defer close(ch)
-		ch <- &schemas.BifrostStreamChunk{
-			BifrostTextCompletionResponse:      message.TextCompletionResponse,
-			BifrostChatResponse:                message.ChatResponse,
-			BifrostResponsesStreamResponse:     message.ResponsesStreamResponse,
-			BifrostSpeechStreamResponse:        message.SpeechStreamResponse,
-			BifrostTranscriptionStreamResponse: message.TranscriptionStreamResponse,
-		}
-	}()
-
+	// Filled and closed up front: a stream nobody reads holds no goroutine.
+	ch := make(chan *schemas.BifrostStreamChunk, 1)
+	ch <- &schemas.BifrostStreamChunk{
+		BifrostTextCompletionResponse:      message.TextCompletionResponse,
+		BifrostChatResponse:                message.ChatResponse,
+		BifrostResponsesStreamResponse:     message.ResponsesStreamResponse,
+		BifrostSpeechStreamResponse:        message.SpeechStreamResponse,
+		BifrostTranscriptionStreamResponse: message.TranscriptionStreamResponse,
+	}
+	close(ch)
 	return ch
 }
 
@@ -347,6 +381,20 @@ func stampRequestedRoute(ctx *schemas.BifrostContext, requested schemas.Route) {
 	}
 	ctx.SetValue(schemas.BifrostContextKeyRequestedProvider, requested.Provider)
 	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, model)
+}
+
+// agentContinuationRoute returns the route that served the first turn of the MCP agent loop
+// this request continues, or nil when the request is not an agent-loop continuation.
+func agentContinuationRoute(ctx *schemas.BifrostContext) *schemas.RoutingInfo {
+	route, _ := ctx.Value(schemas.BifrostContextKeyMCPAgentServedRoute).(*schemas.RoutingInfo)
+	return route
+}
+
+// requestedRouteFromContext reads back the route stampRequestedRoute recorded.
+func requestedRouteFromContext(ctx *schemas.BifrostContext) schemas.Route {
+	provider, _ := ctx.Value(schemas.BifrostContextKeyRequestedProvider).(schemas.ModelProvider)
+	model, _ := ctx.Value(schemas.BifrostContextKeyRequestedModel).(string)
+	return schemas.Route{Provider: provider, Model: model}
 }
 
 // layerFallbackIdentity marks an attempt's routing info as a fallback's when the request is on one,
@@ -435,9 +483,9 @@ func restoreProviderResponseHeaders(ctx *schemas.BifrostContext, headers map[str
 // should stay tied to the caller's trace) and
 // BifrostContextKeySkipPluginPipeline (whether the internal request runs the
 // plugin pipeline is the caller's decision).
-// virtualKeyHeader carries Bifrost's own virtual key. IsSensitiveHeader does not match it
-// (no api-key/authorization/secret substring, no -token suffix), so it would otherwise be
-// exported to traces verbatim.
+// virtualKeyHeader carries Bifrost's own virtual key. IsSensitiveHeader redacts its value
+// wherever captured headers are exported; as an extra-header span attribute it is dropped
+// outright, since even its presence says nothing useful about the request.
 const virtualKeyHeader = "x-bf-vk"
 
 // extraHeaderSpanAttribute returns the span-attribute value for a caller-supplied header and
@@ -848,9 +896,12 @@ func isPromptOptionalVideoEditType(t *string) bool {
 
 // wrapConvertedStreamPostHookRunner wraps a PostHookRunner so that streaming
 // responses produced by a type-converted request are converted back to the
-// caller's original type before the post-hook runs.
+// caller's original type before the post-hook runs. Each converted chunk is
+// marked with ConvertedRequestType: its RawResponse is still the target API's
+// bytes, which integrations must not echo to a client of the original API.
 func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
 	roleSent := false
+	var identity chatStreamIdentity
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			switch targetType {
@@ -858,6 +909,7 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				// text→chat: convert chat stream chunk back to text completion
 				if result.ChatResponse != nil {
 					if converted := result.ChatResponse.ToBifrostTextCompletionResponse(); converted != nil {
+						converted.ExtraFields.ConvertedRequestType = targetType
 						result = &schemas.BifrostResponse{TextCompletionResponse: converted}
 					}
 				}
@@ -866,12 +918,43 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				if result.ResponsesStreamResponse != nil {
 					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
 						roleSent = setAssistantRoleOnce(converted, roleSent)
+						identity.apply(converted)
+						converted.ExtraFields.ConvertedRequestType = targetType
 						result = &schemas.BifrostResponse{ChatResponse: converted}
 					}
 				}
 			}
 		}
 		return postHookRunner(ctx, result, bifrostErr)
+	}
+}
+
+// chatStreamIdentity holds the id, model and created of a converted chat stream.
+// Only the response.created, in_progress and completed events carry the Response
+// object, so the deltas between them convert without these fields. OpenAI SDK
+// stream accumulators drop a chunk whose id differs from the stream's.
+type chatStreamIdentity struct {
+	id      string
+	model   string
+	created int
+}
+
+// apply records each field a chunk carries and fills in each one it lacks.
+func (s *chatStreamIdentity) apply(resp *schemas.BifrostChatResponse) {
+	if resp.ID == "" {
+		resp.ID = s.id
+	} else {
+		s.id = resp.ID
+	}
+	if resp.Model == "" {
+		resp.Model = s.model
+	} else {
+		s.model = resp.Model
+	}
+	if resp.Created == 0 {
+		resp.Created = s.created
+	} else {
+		s.created = resp.Created
 	}
 }
 

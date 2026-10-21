@@ -125,6 +125,7 @@ func requireA2ADenied(t *testing.T, p *GovernancePlugin, ctx *schemas.BifrostCon
 	require.NoError(t, err)
 	require.NotNil(t, short)
 	require.NotNil(t, short.Error)
+	assert.True(t, short.Error.IsBifrostError)
 	require.NotNil(t, short.Error.StatusCode)
 	assert.Equal(t, 403, *short.Error.StatusCode)
 	require.NotNil(t, short.Error.Type)

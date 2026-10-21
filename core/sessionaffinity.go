@@ -135,9 +135,11 @@ func (a *sessionAffinity) ResolveRoute(ctx *schemas.BifrostContext, requested sc
 // ResolveKey implements schemas.SessionAffinity: the key that last served the session on this
 // provider and model is used while it is still eligible. Only the primary provider of a
 // request answers from a binding; a fallback provider serves because the primary could not,
-// and what it serves with is settled by the outcome.
+// and what it serves with is settled by the outcome. A pool of one key has nothing to choose, so
+// it never answers from a binding; a binding to a key that left the pool is still dropped there,
+// as from a larger pool, so the key coming back does not take the session back.
 func (a *sessionAffinity) ResolveKey(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, eligible []schemas.Key) (schemas.Key, bool) {
-	if a == nil || a.kv == nil || ctx == nil || len(eligible) < 2 {
+	if a == nil || a.kv == nil || ctx == nil || len(eligible) == 0 {
 		return schemas.Key{}, false
 	}
 	if fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); fallbackIndex > 0 {
@@ -145,7 +147,7 @@ func (a *sessionAffinity) ResolveKey(ctx *schemas.BifrostContext, provider schem
 	}
 	key := SessionStateKey(ctx, SessionStateKindKey, string(provider), model)
 	boundID, found := SessionStateString(a.kv, key)
-	if !found {
+	if !found || (len(eligible) == 1 && eligible[0].ID == boundID) {
 		return schemas.Key{}, false
 	}
 	for _, candidate := range eligible {
@@ -347,9 +349,11 @@ func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, request
 	req.SetModel(resolved[0].Model)
 	// A demoted primary keeps its pin as a fallback pin, which the fallback loop re-applies
 	// after clearing the previous attempt's context; a promoted fallback brings its own.
+	// The session only reorders the chain the hooks produced, so a chain Bifrost inferred stays inferred.
+	inferred := len(fallbacks) > 0 && fallbacks[0].Inferred
 	next := make([]schemas.Fallback, 0, len(resolved)-1)
 	for _, route := range resolved[1:] {
-		next = append(next, schemas.Fallback{Provider: route.Provider, Model: route.Model, KeyID: route.KeyID})
+		next = append(next, schemas.Fallback{Provider: route.Provider, Model: route.Model, KeyID: route.KeyID, Inferred: inferred})
 	}
 	req.SetFallbacks(next)
 	if resolved[0].KeyID == primaryKeyPin {

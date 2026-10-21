@@ -25,6 +25,11 @@
       "key": "__purge_queue",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "setup_token",
+      "value": "bifrost-e2e-setup-token",
+      "type": "string"
     }
   ],
   "event": [
@@ -38,6 +43,10 @@
           "  var nonce = Date.now().toString(36) + '-' + Math.floor(Math.random() * 1000000).toString(36);",
           "  pm.collectionVariables.set('run_id', seed + '-' + nonce);",
           "  console.log('run_id = ' + pm.collectionVariables.get('run_id'));",
+          "}",
+          "var __setupToken = pm.variables.get('setup_token');",
+          "if (__setupToken && pm.request.url.getPath().indexOf('/api/') === 0) {",
+          "  pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: __setupToken });",
           "}"
         ]
       }
@@ -247,8 +256,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-add-provider-and-key]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-add-provider-and-key-' + pm.variables.get('run_id');",
@@ -288,7 +297,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. key model appears in catalog [openai-add-provider-and-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. key model appears in catalog [openai-add-provider-and-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -493,8 +502,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-update-key-models]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-update-key-models-' + pm.variables.get('run_id');",
@@ -534,7 +543,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. initial model gated in [openai-update-key-models]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. initial model gated in [openai-update-key-models]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -635,8 +644,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-update-key-models]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-update-key-models-' + pm.variables.get('run_id');",
@@ -676,7 +685,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. new model gated in, old gated out [openai-update-key-models]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. new model gated in, old gated out [openai-update-key-models]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -881,8 +890,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-disable-reenable-key]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-disable-reenable-key-' + pm.variables.get('run_id');",
@@ -922,7 +931,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. model present while enabled [openai-disable-reenable-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. model present while enabled [openai-disable-reenable-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -1023,8 +1032,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-disable-reenable-key]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-disable-reenable-key-' + pm.variables.get('run_id');",
@@ -1064,7 +1073,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. model gone while disabled [openai-disable-reenable-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. model gone while disabled [openai-disable-reenable-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -1165,8 +1174,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-disable-reenable-key]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-disable-reenable-key-' + pm.variables.get('run_id');",
@@ -1206,7 +1215,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"07. model returns when re-enabled [openai-disable-reenable-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"07. model returns when re-enabled [openai-disable-reenable-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -1456,8 +1465,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-delete-key-sibling-survives]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-delete-key-sibling-survives-' + pm.variables.get('run_id');",
@@ -1497,7 +1506,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. both keys' models present [openai-delete-key-sibling-survives]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. both keys' models present [openai-delete-key-sibling-survives]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -1589,8 +1598,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-delete-key-sibling-survives]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-delete-key-sibling-survives-' + pm.variables.get('run_id');",
@@ -1630,7 +1639,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"06. sibling model survives delete [openai-delete-key-sibling-survives]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"06. sibling model survives delete [openai-delete-key-sibling-survives]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -1835,8 +1844,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-delete-provider]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-delete-provider-' + pm.variables.get('run_id');",
@@ -1876,7 +1885,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. model present before delete [openai-delete-provider]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. model present before delete [openai-delete-provider]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -1966,8 +1975,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-delete-provider]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-delete-provider-' + pm.variables.get('run_id');",
@@ -2007,7 +2016,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. no models after provider delete [openai-delete-provider]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. no models after provider delete [openai-delete-provider]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -2212,8 +2221,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-alias-resolution]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-alias-resolution-' + pm.variables.get('run_id');",
@@ -2253,7 +2262,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. aliased key model present [openai-alias-resolution]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. aliased key model present [openai-alias-resolution]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -2290,26 +2299,10 @@
           "name": "04. alias resolves to underlying model [openai-alias-resolution]",
           "event": [
             {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var pollKey = '__poll_' + pm.info.requestName;",
-                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
-                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
-                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));",
-                  "if (attempt === 0) { var __ws = Date.now(); while (Date.now() - __ws < 2000) {} }"
-                ]
-              }
-            },
-            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-alias-resolution]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('inference status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -2320,19 +2313,8 @@
                   "}",
                   "var ok = true, errMsg = '';",
                   "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
-                  "if (ok) {",
-                  "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. alias resolves to underlying model [openai-alias-resolution]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
-                  "} else if (attempt < maxAttempts) {",
-                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
-                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
-                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
-                  "  pm.execution.setNextRequest(pm.info.requestName);",
-                  "} else {",
-                  "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. alias resolves to underlying model [openai-alias-resolution]\", function () { throw new Error(errMsg); });",
-                  "  pm.execution.setNextRequest(cleanupReq);",
-                  "}"
+                  "pm.test(\"04. alias resolves to underlying model [openai-alias-resolution]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
                 ]
               }
             }
@@ -2535,8 +2517,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-blacklist-regate]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-blacklist-regate-' + pm.variables.get('run_id');",
@@ -2564,7 +2546,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. wildcard catalog serves live models [openai-blacklist-regate]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. wildcard catalog serves live models [openai-blacklist-regate]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -2665,8 +2647,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-blacklist-regate]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-blacklist-regate-' + pm.variables.get('run_id');",
@@ -2706,7 +2688,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. blacklisted model gated out, catalog still populated [openai-blacklist-regate]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. blacklisted model gated out, catalog still populated [openai-blacklist-regate]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -2956,8 +2938,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-multi-key-union]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-multi-key-union-' + pm.variables.get('run_id');",
@@ -2997,7 +2979,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. catalog lists union of both keys' models [openai-multi-key-union]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. catalog lists union of both keys' models [openai-multi-key-union]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -3202,8 +3184,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-model-details-gating]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-openai-model-details-gating-' + pm.variables.get('run_id');",
@@ -3243,7 +3225,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. details list gated to key models [openai-model-details-gating]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. details list gated to key models [openai-model-details-gating]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -3449,8 +3431,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-base-models-stable]\";",
                   "function assertNow() {",
                   "  var target = \"gpt-4o\";",
@@ -3471,7 +3453,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. base name listed while key allows it [openai-base-models-stable]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. base name listed while key allows it [openai-base-models-stable]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -3573,8 +3555,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [openai-base-models-stable]\";",
                   "function assertNow() {",
                   "  var target = \"gpt-4o\";",
@@ -3595,7 +3577,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. base name still listed after key change [openai-base-models-stable]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. base name still listed after key change [openai-base-models-stable]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -3801,8 +3783,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-add-provider-and-key]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-add-provider-and-key-' + pm.variables.get('run_id');",
@@ -3842,7 +3824,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. key model appears in catalog [anthropic-add-provider-and-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. key model appears in catalog [anthropic-add-provider-and-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -4047,8 +4029,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-update-key-models]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-update-key-models-' + pm.variables.get('run_id');",
@@ -4088,7 +4070,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. initial model gated in [anthropic-update-key-models]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. initial model gated in [anthropic-update-key-models]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -4189,8 +4171,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-update-key-models]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-update-key-models-' + pm.variables.get('run_id');",
@@ -4230,7 +4212,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. new model gated in, old gated out [anthropic-update-key-models]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. new model gated in, old gated out [anthropic-update-key-models]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -4435,8 +4417,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-disable-reenable-key]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-disable-reenable-key-' + pm.variables.get('run_id');",
@@ -4476,7 +4458,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. model present while enabled [anthropic-disable-reenable-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. model present while enabled [anthropic-disable-reenable-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -4577,8 +4559,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-disable-reenable-key]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-disable-reenable-key-' + pm.variables.get('run_id');",
@@ -4618,7 +4600,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. model gone while disabled [anthropic-disable-reenable-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. model gone while disabled [anthropic-disable-reenable-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -4719,8 +4701,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-disable-reenable-key]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-disable-reenable-key-' + pm.variables.get('run_id');",
@@ -4760,7 +4742,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"07. model returns when re-enabled [anthropic-disable-reenable-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"07. model returns when re-enabled [anthropic-disable-reenable-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -5010,8 +4992,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-delete-key-sibling-survives]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-delete-key-sibling-survives-' + pm.variables.get('run_id');",
@@ -5051,7 +5033,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. both keys' models present [anthropic-delete-key-sibling-survives]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. both keys' models present [anthropic-delete-key-sibling-survives]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -5143,8 +5125,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-delete-key-sibling-survives]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-delete-key-sibling-survives-' + pm.variables.get('run_id');",
@@ -5184,7 +5166,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"06. sibling model survives delete [anthropic-delete-key-sibling-survives]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"06. sibling model survives delete [anthropic-delete-key-sibling-survives]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -5389,8 +5371,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-delete-provider]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-delete-provider-' + pm.variables.get('run_id');",
@@ -5430,7 +5412,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. model present before delete [anthropic-delete-provider]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. model present before delete [anthropic-delete-provider]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -5520,8 +5502,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-delete-provider]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-delete-provider-' + pm.variables.get('run_id');",
@@ -5561,7 +5543,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. no models after provider delete [anthropic-delete-provider]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. no models after provider delete [anthropic-delete-provider]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -5766,8 +5748,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-alias-resolution]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-alias-resolution-' + pm.variables.get('run_id');",
@@ -5807,7 +5789,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. aliased key model present [anthropic-alias-resolution]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. aliased key model present [anthropic-alias-resolution]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -5844,26 +5826,10 @@
           "name": "04. alias resolves to underlying model [anthropic-alias-resolution]",
           "event": [
             {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var pollKey = '__poll_' + pm.info.requestName;",
-                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
-                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
-                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));",
-                  "if (attempt === 0) { var __ws = Date.now(); while (Date.now() - __ws < 2000) {} }"
-                ]
-              }
-            },
-            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-alias-resolution]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('inference status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -5874,19 +5840,8 @@
                   "}",
                   "var ok = true, errMsg = '';",
                   "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
-                  "if (ok) {",
-                  "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. alias resolves to underlying model [anthropic-alias-resolution]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
-                  "} else if (attempt < maxAttempts) {",
-                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
-                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
-                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
-                  "  pm.execution.setNextRequest(pm.info.requestName);",
-                  "} else {",
-                  "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. alias resolves to underlying model [anthropic-alias-resolution]\", function () { throw new Error(errMsg); });",
-                  "  pm.execution.setNextRequest(cleanupReq);",
-                  "}"
+                  "pm.test(\"04. alias resolves to underlying model [anthropic-alias-resolution]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
                 ]
               }
             }
@@ -6089,8 +6044,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-blacklist-regate]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-blacklist-regate-' + pm.variables.get('run_id');",
@@ -6118,7 +6073,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. wildcard catalog serves live models [anthropic-blacklist-regate]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. wildcard catalog serves live models [anthropic-blacklist-regate]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -6219,8 +6174,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-blacklist-regate]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-blacklist-regate-' + pm.variables.get('run_id');",
@@ -6260,7 +6215,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. blacklisted model gated out, catalog still populated [anthropic-blacklist-regate]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. blacklisted model gated out, catalog still populated [anthropic-blacklist-regate]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -6510,8 +6465,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-multi-key-union]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-multi-key-union-' + pm.variables.get('run_id');",
@@ -6551,7 +6506,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. catalog lists union of both keys' models [anthropic-multi-key-union]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. catalog lists union of both keys' models [anthropic-multi-key-union]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -6756,8 +6711,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-model-details-gating]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-anthropic-model-details-gating-' + pm.variables.get('run_id');",
@@ -6797,7 +6752,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. details list gated to key models [anthropic-model-details-gating]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. details list gated to key models [anthropic-model-details-gating]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -7003,8 +6958,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-base-models-stable]\";",
                   "function assertNow() {",
                   "  var target = \"claude-sonnet-4-5\";",
@@ -7025,7 +6980,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. base name listed while key allows it [anthropic-base-models-stable]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. base name listed while key allows it [anthropic-base-models-stable]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -7127,8 +7082,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [anthropic-base-models-stable]\";",
                   "function assertNow() {",
                   "  var target = \"claude-sonnet-4-5\";",
@@ -7149,7 +7104,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. base name still listed after key change [anthropic-base-models-stable]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. base name still listed after key change [anthropic-base-models-stable]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -7355,8 +7310,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-add-provider-and-key]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-add-provider-and-key-' + pm.variables.get('run_id');",
@@ -7396,7 +7351,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. key model appears in catalog [gemini-add-provider-and-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. key model appears in catalog [gemini-add-provider-and-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -7601,8 +7556,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-update-key-models]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-update-key-models-' + pm.variables.get('run_id');",
@@ -7642,7 +7597,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. initial model gated in [gemini-update-key-models]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. initial model gated in [gemini-update-key-models]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -7743,8 +7698,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-update-key-models]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-update-key-models-' + pm.variables.get('run_id');",
@@ -7784,7 +7739,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. new model gated in, old gated out [gemini-update-key-models]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. new model gated in, old gated out [gemini-update-key-models]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -7989,8 +7944,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-disable-reenable-key]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-disable-reenable-key-' + pm.variables.get('run_id');",
@@ -8030,7 +7985,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. model present while enabled [gemini-disable-reenable-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. model present while enabled [gemini-disable-reenable-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -8131,8 +8086,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-disable-reenable-key]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-disable-reenable-key-' + pm.variables.get('run_id');",
@@ -8172,7 +8127,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. model gone while disabled [gemini-disable-reenable-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. model gone while disabled [gemini-disable-reenable-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -8273,8 +8228,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-disable-reenable-key]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-disable-reenable-key-' + pm.variables.get('run_id');",
@@ -8314,7 +8269,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"07. model returns when re-enabled [gemini-disable-reenable-key]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"07. model returns when re-enabled [gemini-disable-reenable-key]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -8564,8 +8519,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-delete-key-sibling-survives]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-delete-key-sibling-survives-' + pm.variables.get('run_id');",
@@ -8605,7 +8560,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. both keys' models present [gemini-delete-key-sibling-survives]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. both keys' models present [gemini-delete-key-sibling-survives]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -8697,8 +8652,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-delete-key-sibling-survives]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-delete-key-sibling-survives-' + pm.variables.get('run_id');",
@@ -8738,7 +8693,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"06. sibling model survives delete [gemini-delete-key-sibling-survives]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"06. sibling model survives delete [gemini-delete-key-sibling-survives]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -8943,8 +8898,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-delete-provider]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-delete-provider-' + pm.variables.get('run_id');",
@@ -8984,7 +8939,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. model present before delete [gemini-delete-provider]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. model present before delete [gemini-delete-provider]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -9074,8 +9029,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-delete-provider]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-delete-provider-' + pm.variables.get('run_id');",
@@ -9115,7 +9070,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. no models after provider delete [gemini-delete-provider]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. no models after provider delete [gemini-delete-provider]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -9320,8 +9275,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-alias-resolution]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-alias-resolution-' + pm.variables.get('run_id');",
@@ -9361,7 +9316,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. aliased key model present [gemini-alias-resolution]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. aliased key model present [gemini-alias-resolution]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -9398,26 +9353,10 @@
           "name": "04. alias resolves to underlying model [gemini-alias-resolution]",
           "event": [
             {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "var pollKey = '__poll_' + pm.info.requestName;",
-                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
-                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
-                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));",
-                  "if (attempt === 0) { var __ws = Date.now(); while (Date.now() - __ws < 2000) {} }"
-                ]
-              }
-            },
-            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-alias-resolution]\";",
                   "function assertNow() {",
                   "  if (pm.response.code !== 200) { throw new Error('inference status ' + pm.response.code + ' body ' + pm.response.text()); }",
@@ -9428,19 +9367,8 @@
                   "}",
                   "var ok = true, errMsg = '';",
                   "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
-                  "if (ok) {",
-                  "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. alias resolves to underlying model [gemini-alias-resolution]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
-                  "} else if (attempt < maxAttempts) {",
-                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
-                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
-                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
-                  "  pm.execution.setNextRequest(pm.info.requestName);",
-                  "} else {",
-                  "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. alias resolves to underlying model [gemini-alias-resolution]\", function () { throw new Error(errMsg); });",
-                  "  pm.execution.setNextRequest(cleanupReq);",
-                  "}"
+                  "pm.test(\"04. alias resolves to underlying model [gemini-alias-resolution]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
                 ]
               }
             }
@@ -9643,8 +9571,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-blacklist-regate]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-blacklist-regate-' + pm.variables.get('run_id');",
@@ -9672,7 +9600,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. wildcard catalog serves live models [gemini-blacklist-regate]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. wildcard catalog serves live models [gemini-blacklist-regate]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -9773,8 +9701,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-blacklist-regate]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-blacklist-regate-' + pm.variables.get('run_id');",
@@ -9814,7 +9742,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. blacklisted model gated out, catalog still populated [gemini-blacklist-regate]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. blacklisted model gated out, catalog still populated [gemini-blacklist-regate]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -10064,8 +9992,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-multi-key-union]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-multi-key-union-' + pm.variables.get('run_id');",
@@ -10105,7 +10033,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"04. catalog lists union of both keys' models [gemini-multi-key-union]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"04. catalog lists union of both keys' models [gemini-multi-key-union]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -10310,8 +10238,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-model-details-gating]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-gemini-model-details-gating-' + pm.variables.get('run_id');",
@@ -10351,7 +10279,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. details list gated to key models [gemini-model-details-gating]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. details list gated to key models [gemini-model-details-gating]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -10557,8 +10485,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-base-models-stable]\";",
                   "function assertNow() {",
                   "  var target = \"gemini-2.5-flash\";",
@@ -10579,7 +10507,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. base name listed while key allows it [gemini-base-models-stable]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. base name listed while key allows it [gemini-base-models-stable]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -10681,8 +10609,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [gemini-base-models-stable]\";",
                   "function assertNow() {",
                   "  var target = \"gemini-2.5-flash\";",
@@ -10703,7 +10631,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. base name still listed after key change [gemini-base-models-stable]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. base name still listed after key change [gemini-base-models-stable]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -10864,8 +10792,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [keyless-provider]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-keyless-provider-' + pm.variables.get('run_id');",
@@ -10886,7 +10814,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"02. keyless provider appears in providers list [keyless-provider]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"02. keyless provider appears in providers list [keyless-provider]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -10931,8 +10859,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [keyless-provider]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-keyless-provider-' + pm.variables.get('run_id');",
@@ -10972,7 +10900,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. keyless provider has no catalog rows [keyless-provider]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. keyless provider has no catalog rows [keyless-provider]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -11177,8 +11105,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [list-models-failing]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-list-models-failing-' + pm.variables.get('run_id');",
@@ -11218,7 +11146,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. key allow-list survives discovery failure [list-models-failing]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. key allow-list survives discovery failure [list-models-failing]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -11423,8 +11351,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [list-models-disabled]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-list-models-disabled-' + pm.variables.get('run_id');",
@@ -11464,7 +11392,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"03. wildcard key surfaces nothing without discovery [list-models-disabled]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"03. wildcard key surfaces nothing without discovery [list-models-disabled]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
@@ -11564,8 +11492,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var maxAttempts = 8;",
-                  "var pollKey = pm.collectionVariables.get('__cur_poll_key');",
-                  "var attempt = parseInt(pm.collectionVariables.get('__cur_poll_attempt') || '0', 10);",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
                   "var cleanupReq = \"cleanup: delete provider [list-models-disabled]\";",
                   "function assertNow() {",
                   "  var providerName = 'catwiring-list-models-disabled-' + pm.variables.get('run_id');",
@@ -11605,7 +11533,7 @@
                   "  pm.execution.setNextRequest(pm.info.requestName);",
                   "} else {",
                   "  pm.collectionVariables.set(pollKey, '0');",
-                  "  pm.test(\"05. explicit allow-list still surfaces [list-models-disabled]\", function () { throw new Error(errMsg); });",
+                  "  pm.test(\"05. explicit allow-list still surfaces [list-models-disabled]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
                   "  pm.execution.setNextRequest(cleanupReq);",
                   "}"
                 ]
