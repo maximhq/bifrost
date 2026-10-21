@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 )
 
@@ -131,5 +132,137 @@ func TestChatTool_InvalidateSerialized_AfterRename(t *testing.T) {
 	}
 	if !bytes.Contains(fresh, []byte(`"renamed_weather"`)) || bytes.Contains(fresh, []byte(`"get_weather"`)) {
 		t.Fatalf("expected re-serialized tool to use the new name; got %s", fresh)
+	}
+}
+
+func TestChatTool_MCPMetadataExcludedFromProviderCache(t *testing.T) {
+	tool := mustTool(t)
+	before, err := MarshalSorted(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool.MCPToolSchema = &MCPToolSchema{InputSchema: []byte(`{"x-original":true}`), OutputSchema: []byte(`{}`)}
+	tool.Annotations = &MCPToolAnnotations{ReadOnlyHint: Ptr(true)}
+	tool.SDKRawToolJSON = json.RawMessage(`{"name":"get_weather","title":"Weather","_meta":{"upstream":true}}`)
+	tool.SDKRawToolProjectionFingerprint = SDKRawToolProjectionFingerprint(tool)
+	metadata := tool.MCPToolSchema.Clone()
+	annotations := tool.Annotations.Clone()
+	metadata.InputSchema[0] = '['
+	*annotations.ReadOnlyHint = false
+	if tool.MCPToolSchema.InputSchema[0] != '{' || !*tool.Annotations.ReadOnlyHint {
+		t.Fatal("MCP metadata clone aliases original")
+	}
+	after, err := MarshalSorted(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("MCP metadata leaked to provider JSON")
+	}
+	if err := tool.EnsureSerialized(); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := MarshalSorted(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, cached) {
+		t.Fatal("MCP metadata leaked to cached provider JSON")
+	}
+}
+
+func TestChatTool_MCPPersistenceOwnsMetadataAndPreservesProviderCache(t *testing.T) {
+	tool := mustTool(t)
+	tool.MCPToolSchema = &MCPToolSchema{InputSchema: []byte(`{"maximum":9007199254740993}`), OutputSchema: []byte(`{}`)}
+	tool.Annotations = &MCPToolAnnotations{ReadOnlyHint: Ptr(true)}
+	tool.SDKRawToolJSON = json.RawMessage(`{"name":"get_weather","title":"Weather","_meta":{"nested":[null,{"large":9007199254740993}],"presentNull":null},"annotations":{"x-unknown":{"null":null}}}`)
+	tool.SDKRawToolProjectionFingerprint = SDKRawToolProjectionFingerprint(tool)
+	if err := tool.EnsureSerialized(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := MarshalMCPDiscoveredTools(map[string]ChatTool{"weather": tool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(stored, []byte("9007199254740993")) {
+		t.Fatal("stored numeric schema bound lost precision")
+	}
+	if !bytes.Contains(stored, []byte(`"title":"Weather"`)) || !bytes.Contains(stored, []byte(`"presentNull":null`)) {
+		t.Fatalf("stored whole-tool metadata missing: %s", stored)
+	}
+	got, err := UnmarshalMCPDiscoveredTools(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := got["weather"]
+	after, err := json.Marshal(restored)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("provider projection changed: %s %v", after, err)
+	}
+	if !bytes.Equal(restored.SDKRawToolJSON, tool.SDKRawToolJSON) || restored.SDKRawToolProjectionFingerprint != tool.SDKRawToolProjectionFingerprint {
+		t.Fatal("whole-tool metadata changed during persistence round trip")
+	}
+	restored.MCPToolSchema.InputSchema[0] = '['
+	*restored.Annotations.ReadOnlyHint = false
+	if tool.MCPToolSchema.InputSchema[0] != '{' || !*tool.Annotations.ReadOnlyHint {
+		t.Fatal("restored metadata aliases original")
+	}
+	if storedAgain, err := MarshalMCPDiscoveredTools(map[string]ChatTool{"weather": tool}); err != nil || !bytes.Equal(stored, storedAgain) {
+		t.Fatal("MCP storage mutated or nondeterministic")
+	}
+	copy := DeepCopyChatTool(restored)
+	rawBeforeCopy := append(json.RawMessage(nil), restored.SDKRawToolJSON...)
+	copy.SDKRawToolJSON[0] = '['
+	if !bytes.Equal(restored.SDKRawToolJSON, rawBeforeCopy) {
+		t.Fatal("deep-copied whole-tool metadata aliases the source")
+	}
+	if after, err := json.Marshal(tool); err != nil || !bytes.Equal(before, after) {
+		t.Fatal("storage changed serialized provider cache")
+	}
+}
+
+func TestChatTool_MCPDiscoveredMetadataVersionCompatibility(t *testing.T) {
+	legacy, err := UnmarshalMCPDiscoveredTools([]byte(`{"weather":{"type":"function","function":{"name":"get_weather"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy["weather"].MCPToolSchema != nil || legacy["weather"].SDKRawToolJSON != nil {
+		t.Fatal("legacy projection unexpectedly gained MCP metadata")
+	}
+
+	v1, err := UnmarshalMCPDiscoveredTools([]byte(`{"weather":{"type":"function","function":{"name":"get_weather"},"_bifrost_mcp":{"version":1,"schema":{"inputSchema":{"type":"object"}},"annotations":{"readOnlyHint":true}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v1["weather"].MCPToolSchema == nil || v1["weather"].SDKRawToolJSON != nil {
+		t.Fatal("version 1 metadata was not retained as schema-only")
+	}
+}
+
+func TestChatTool_MCPDiscoveredMetadataRejectsInvalidVersionsAndFingerprints(t *testing.T) {
+	cases := []struct {
+		name     string
+		metadata string
+		wantErr  string
+	}{
+		{"v1 raw tool", `{"version":1,"schema":{},"sdkRawToolJSON":{"name":"t"},"sdkRawToolProjectionFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, "v1 MCP metadata cannot contain raw tool fields"},
+		{"v2 missing raw tool", `{"version":2,"schema":{},"sdkRawToolProjectionFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, "v2 MCP metadata requires raw tool and projection fingerprint"},
+		{"v2 missing fingerprint", `{"version":2,"schema":{},"sdkRawToolJSON":{"name":"t"}}`, "v2 MCP metadata requires raw tool and projection fingerprint"},
+		{"v2 raw array", `{"version":2,"sdkRawToolJSON":[],"sdkRawToolProjectionFingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, "stored raw MCP tool must be a JSON object"},
+		{"v2 malformed fingerprint", `{"version":2,"sdkRawToolJSON":{"name":"t"},"sdkRawToolProjectionFingerprint":"bad"}`, "invalid raw MCP tool projection fingerprint"},
+		{"v2 null fingerprint", `{"version":2,"sdkRawToolJSON":{"name":"t"},"sdkRawToolProjectionFingerprint":null}`, "null MCP metadata sdkRawToolProjectionFingerprint"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(`{"tool":{"type":"function","function":{"name":"t"},"_bifrost_mcp":` + tc.metadata + `}}`)
+			_, err := UnmarshalMCPDiscoveredTools(data)
+			if err == nil || !bytes.Contains([]byte(err.Error()), []byte(tc.wantErr)) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
 	}
 }

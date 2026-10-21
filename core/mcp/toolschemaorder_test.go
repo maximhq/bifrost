@@ -192,3 +192,56 @@ func TestPerformCheck_RepeatedSyncs_ToolSchemaBytesStable(t *testing.T) {
 	}
 	assert.Equal(t, 1, callCount, "only the first discovery is a tools change")
 }
+
+func TestMCPSchemaPreservationReconnectAndRefresh(t *testing.T) {
+	upstream := server.NewMCPServer("schema-refresh", "1", server.WithToolCapabilities(true))
+	setTool := func(input, output string, readOnly bool) {
+		tool := mcpgo.NewToolWithRawSchema("edge", "edge", json.RawMessage(input))
+		if output != "" {
+			tool.RawOutputSchema = json.RawMessage(output)
+		}
+		tool.Annotations.ReadOnlyHint = schemas.Ptr(readOnly)
+		upstream.AddTool(tool, func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			t.Fatal("tools/call prohibited")
+			return nil, nil
+		})
+	}
+	input := `{"type":"object","additionalProperties":false,"x-input":1}`
+	setTool(input, `{"type":"object","additionalProperties":false,"x-output":1}`, true)
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(upstream))
+	defer ts.Close()
+	manager := NewMCPManager(context.Background(), schemas.MCPConfig{ToolSyncInterval: time.Hour}, nil, &MockLogger{}, nil)
+	defer manager.Cleanup()
+	changes := 0
+	manager.SetToolsChangeCallback(func(string, string, map[string]schemas.ChatTool, map[string]string, string) { changes++ })
+	config := &schemas.MCPClientConfig{ID: "refresh", Name: "refresh", NeedsSessionStickiness: schemas.Ptr(true), ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(ts.URL), AuthType: schemas.MCPAuthTypeNone, ToolsToExecute: schemas.WhiteList{"*"}, ToolSyncInterval: time.Hour}
+	require.NoError(t, manager.AddClient(context.Background(), config))
+	require.Equal(t, 1, changes)
+	checker := NewClientConnectionChecker(manager, config.ID, time.Hour, true, &MockLogger{})
+	checker.performCheck()
+	require.Equal(t, 1, changes)
+	// Key reordering is semantically identical and must not change the hash.
+	setTool(`{"x-input":1,"additionalProperties":false,"type":"object"}`, `{"x-output":1,"additionalProperties":false,"type":"object"}`, true)
+	checker.performCheck()
+	require.Equal(t, 1, changes)
+	require.NoError(t, manager.ReconnectClient(config.ID))
+	require.Equal(t, 1, changes)
+	setTool(input, "{}", true)
+	checker.performCheck()
+	require.Equal(t, 2, changes)
+	state := manager.GetClientByName(config.Name)
+	require.Equal(t, "{}", string(state.ToolMap["refresh-edge"].MCPToolSchema.OutputSchema))
+	require.NoError(t, manager.ReconnectClient(config.ID))
+	require.Equal(t, 2, changes)
+	setTool(input, "", true)
+	checker.performCheck()
+	require.Equal(t, 3, changes)
+	state = manager.GetClientByName(config.Name)
+	require.Nil(t, state.ToolMap["refresh-edge"].MCPToolSchema.OutputSchema)
+	// Annotation-only changes also affect the downstream contract.
+	setTool(input, "", false)
+	checker.performCheck()
+	require.Equal(t, 4, changes)
+	require.NoError(t, manager.ReconnectClient(config.ID))
+	require.Equal(t, 4, changes)
+}

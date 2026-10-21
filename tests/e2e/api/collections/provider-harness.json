@@ -276763,6 +276763,218 @@
           }
         }
       ]
+    },
+    {
+      "name": "183. MCP schema projection (PR #7894)",
+      "description": "Requires the loopback MCP fixture tests/e2e/api/fixtures/mcp-schema-server.py registered as schema_projection. Checks the actual OpenAI-bound JSON after MCP discovery, not client-supplied function definitions. Before the fix boolean/union schemas cause failed discovery or empty provider types. With INCLUDE_PREVIEW=1 every error and every missing fixture tool fails; no tools are executed.",
+      "item": [
+        {
+          "name": "[PREVIEW] openai/gpt-4o-mini MCP schema projection - PR #7894",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('schema projection survives discovery and reaches OpenAI', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  var rr = (j.extra_fields || {}).raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'enable send_back_raw_request').to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  ['boolean_schema', 'union_schema', 'untyped_schema'].forEach(function (name) {",
+                  "    var matches = tools.filter(function (t) { return t.function && t.function.name === 'schema_projection-' + name; });",
+                  "    pm.expect(matches.length, 'missing discovered fixture tool: ' + name).to.equal(1);",
+                  "    pm.expect(matches[0].function.parameters.type).to.equal('object');",
+                  "    pm.expect(JSON.stringify(matches[0])).to.not.include('_bifrost_mcp');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "schema_projection"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"tool_choice\": \"none\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "263. MCP whole-tool metadata (PR #7894)",
+      "description": "Discovery-only regression on both native gateway routes. Requires the loopback mcp-schema-server.py fixture registered as schema_projection with code mode off and the harness identity granted that client. Unknown metadata, numeric tokens, null/absent fields and namespacing must survive. No tools/call or provider requests are made by these two cases. The existing schema projection case separately covers provider-bound JSON. INCLUDE_PREVIEW=1 is required. Unexpected auth errors and missing fixture tools fail.",
+      "item": [
+        {
+          "name": "[PREVIEW] openai MCP whole-tool metadata /mcp - PR #7894",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native whole-tool metadata survives discovery', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var text = pm.response.text();",
+                  "  var payload = text;",
+                  "  if (/^data:/m.test(text)) {",
+                  "    var frames = text.split('\\n').filter(function (line) { return /^data:/.test(line); });",
+                  "    pm.expect(frames.length, text).to.be.above(0);",
+                  "    payload = frames[0].replace(/^data:\\s*/, '');",
+                  "  }",
+                  "  var body = JSON.parse(payload);",
+                  "  pm.expect(body.error, payload).to.equal(undefined);",
+                  "  pm.expect(body.result, payload).to.be.an('object');",
+                  "  pm.expect(body.result.tools, payload).to.be.an('array');",
+                  "  function named(name) {",
+                  "    var found = body.result.tools.filter(function (tool) { return tool.name === 'schema_projection-' + name; });",
+                  "    pm.expect(found.length, 'missing fixture tool ' + name + ': ' + payload).to.equal(1);",
+                  "    return found[0];",
+                  "  }",
+                  "  var tool = named('boolean_schema');",
+                  "  pm.expect(tool.title).to.equal('Whole tool fixture');",
+                  "  pm.expect(tool._meta).to.deep.equal({source: 'synthetic'});",
+                  "  pm.expect(tool.inputSchema).to.equal(true);",
+                  "  pm.expect(tool.outputSchema).to.equal(false);",
+                  "  pm.expect(tool['x-tool-extension'].nested[0]).to.equal(null);",
+                  "  pm.expect(payload).to.match(/\"exact\"\\s*:\\s*9007199254740993(?:[,}])/);",
+                  "  pm.expect(tool.annotations).to.have.property('x-unknown-hint', null);",
+                  "  pm.expect(named('untyped_schema')).to.have.property('title', null);",
+                  "  pm.expect(named('union_schema')).to.not.have.property('title');",
+                  "  pm.expect(payload).to.not.include('sdkRawToolJSON');",
+                  "  pm.expect(payload).to.not.include('_bifrost_mcp');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] openai MCP whole-tool metadata /mcp/schema_projection - PR #7894",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native whole-tool metadata survives discovery', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var text = pm.response.text();",
+                  "  var payload = text;",
+                  "  if (/^data:/m.test(text)) {",
+                  "    var frames = text.split('\\n').filter(function (line) { return /^data:/.test(line); });",
+                  "    pm.expect(frames.length, text).to.be.above(0);",
+                  "    payload = frames[0].replace(/^data:\\s*/, '');",
+                  "  }",
+                  "  var body = JSON.parse(payload);",
+                  "  pm.expect(body.error, payload).to.equal(undefined);",
+                  "  pm.expect(body.result, payload).to.be.an('object');",
+                  "  pm.expect(body.result.tools, payload).to.be.an('array');",
+                  "  function named(name) {",
+                  "    var found = body.result.tools.filter(function (tool) { return tool.name === 'schema_projection-' + name; });",
+                  "    pm.expect(found.length, 'missing fixture tool ' + name + ': ' + payload).to.equal(1);",
+                  "    return found[0];",
+                  "  }",
+                  "  var tool = named('boolean_schema');",
+                  "  pm.expect(tool.title).to.equal('Whole tool fixture');",
+                  "  pm.expect(tool._meta).to.deep.equal({source: 'synthetic'});",
+                  "  pm.expect(tool.inputSchema).to.equal(true);",
+                  "  pm.expect(tool.outputSchema).to.equal(false);",
+                  "  pm.expect(tool['x-tool-extension'].nested[0]).to.equal(null);",
+                  "  pm.expect(payload).to.match(/\"exact\"\\s*:\\s*9007199254740993(?:[,}])/);",
+                  "  pm.expect(tool.annotations).to.have.property('x-unknown-hint', null);",
+                  "  pm.expect(named('untyped_schema')).to.have.property('title', null);",
+                  "  pm.expect(named('union_schema')).to.not.have.property('title');",
+                  "  pm.expect(payload).to.not.include('sdkRawToolJSON');",
+                  "  pm.expect(payload).to.not.include('_bifrost_mcp');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp/schema_projection",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp",
+                "schema_projection"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}"
+            }
+          }
+        }
+      ]
     }
   ]
 }
