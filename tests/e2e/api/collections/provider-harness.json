@@ -276764,12 +276764,214 @@
         }
       ]
     },
+    {
+      "name": "263. Bedrock tool result renders the same as a string or one text block (tool result rendering)",
+      "description": "On the chat-completions path, convertToolMessages sent a tool message whose content was a string through tryParseJSONIntoContentBlock (JSON output became a Converse json block) but always sent the same text as a text block when the content was a one-element array of text blocks. OpenAI-compatible clients that set the cache breakpoint by sending only the last message as an array (so it can carry cache_control) send each tool result as a block on the turn it is last and as a string on later turns, so the rendering flipped from text to json between turns, the bytes before the earlier checkpoint changed, and Bedrock prompt caching missed on every turn of an agent loop. Case 1 pins the one-block form with cache_control: the toolResult carries a json object and the cachePoint still trails it (red before the fix: the content was {\"text\": ...}). Case 2 pins the string form producing the same json (parity baseline). Case 3 pins /v1/responses, whose function_call_output blocks already went through the same helper, so both neutral routes render identically. Each case reads the outbound Converse body via x-bf-send-back-raw-request.",
+      "item": [
+        {
+          "name": "263.1 bedrock/claude-haiku-4-5 /v1/chat/completions one text block tool result with cache_control renders as json then cachePoint (tool result rendering)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// A tool result must render the same whether the client sent it as a string or as one",
+                  "// text block: clients that mark only the last message with cache_control send it as a",
+                  "// block on that turn and as a string afterwards, so a text/json flip breaks the cached prefix.",
+                  "pm.test('263.1 bedrock/claude-haiku-4-5 /v1/chat/completions one text block tool result with cache_control renders as json then cachePoint (tool result rendering): request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('263.1 bedrock/claude-haiku-4-5 /v1/chat/completions one text block tool result with cache_control renders as json then cachePoint (tool result rendering): toolResult carries the output as a json object', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var content = null; var idx = -1;",
+                  "  (rr.messages || []).forEach(function (m) { (m.content || []).forEach(function (b, i) { if (b.toolResult && idx < 0) { content = m.content; idx = i; } }); });",
+                  "  pm.expect(idx, 'no toolResult block reached Converse: ' + wire.slice(0, 600)).to.be.at.least(0);",
+                  "  var inner = content[idx].toolResult.content || [];",
+                  "  pm.expect(inner.length, 'toolResult content: ' + JSON.stringify(inner)).to.eql(1);",
+                  "  pm.expect(inner[0].text, 'tool output was sent as a text block instead of json: ' + JSON.stringify(inner)).to.be.undefined;",
+                  "  pm.expect(inner[0].json, 'toolResult json altered: ' + JSON.stringify(inner)).to.eql({\"files\":[\"a\",\"b\"],\"n\":2});",
+                  "  var next = content[idx + 1] || {};",
+                  "  pm.expect(next.cachePoint, 'cache_control on the tool block was dropped - no cachePoint after the toolResult: ' + JSON.stringify(content).slice(0, 600)).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"list_files\",\n        \"description\": \"Lists files in the workspace\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {}\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call list_files, then reply with only the number of files.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_list_files_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"list_files\",\n            \"arguments\": \"{}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_list_files_1\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{\\\"files\\\":[\\\"a\\\",\\\"b\\\"],\\\"n\\\":2}\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "263.2 bedrock/claude-haiku-4-5 /v1/chat/completions string tool result renders as json (tool result rendering)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// A tool result must render the same whether the client sent it as a string or as one",
+                  "// text block: clients that mark only the last message with cache_control send it as a",
+                  "// block on that turn and as a string afterwards, so a text/json flip breaks the cached prefix.",
+                  "pm.test('263.2 bedrock/claude-haiku-4-5 /v1/chat/completions string tool result renders as json (tool result rendering): request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('263.2 bedrock/claude-haiku-4-5 /v1/chat/completions string tool result renders as json (tool result rendering): toolResult carries the output as a json object', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var content = null; var idx = -1;",
+                  "  (rr.messages || []).forEach(function (m) { (m.content || []).forEach(function (b, i) { if (b.toolResult && idx < 0) { content = m.content; idx = i; } }); });",
+                  "  pm.expect(idx, 'no toolResult block reached Converse: ' + wire.slice(0, 600)).to.be.at.least(0);",
+                  "  var inner = content[idx].toolResult.content || [];",
+                  "  pm.expect(inner.length, 'toolResult content: ' + JSON.stringify(inner)).to.eql(1);",
+                  "  pm.expect(inner[0].text, 'tool output was sent as a text block instead of json: ' + JSON.stringify(inner)).to.be.undefined;",
+                  "  pm.expect(inner[0].json, 'toolResult json altered: ' + JSON.stringify(inner)).to.eql({\"files\":[\"a\",\"b\"],\"n\":2});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"list_files\",\n        \"description\": \"Lists files in the workspace\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {}\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call list_files, then reply with only the number of files.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_list_files_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"list_files\",\n            \"arguments\": \"{}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_list_files_1\",\n      \"content\": \"{\\\"files\\\":[\\\"a\\\",\\\"b\\\"],\\\"n\\\":2}\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "263.3 bedrock/claude-haiku-4-5 /v1/responses function_call_output input_text block renders as json (tool result rendering)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// A tool result must render the same whether the client sent it as a string or as one",
+                  "// text block: clients that mark only the last message with cache_control send it as a",
+                  "// block on that turn and as a string afterwards, so a text/json flip breaks the cached prefix.",
+                  "pm.test('263.3 bedrock/claude-haiku-4-5 /v1/responses function_call_output input_text block renders as json (tool result rendering): request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('263.3 bedrock/claude-haiku-4-5 /v1/responses function_call_output input_text block renders as json (tool result rendering): toolResult carries the output as a json object', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var content = null; var idx = -1;",
+                  "  (rr.messages || []).forEach(function (m) { (m.content || []).forEach(function (b, i) { if (b.toolResult && idx < 0) { content = m.content; idx = i; } }); });",
+                  "  pm.expect(idx, 'no toolResult block reached Converse: ' + wire.slice(0, 600)).to.be.at.least(0);",
+                  "  var inner = content[idx].toolResult.content || [];",
+                  "  pm.expect(inner.length, 'toolResult content: ' + JSON.stringify(inner)).to.eql(1);",
+                  "  pm.expect(inner[0].text, 'tool output was sent as a text block instead of json: ' + JSON.stringify(inner)).to.be.undefined;",
+                  "  pm.expect(inner[0].json, 'toolResult json altered: ' + JSON.stringify(inner)).to.eql({\"files\":[\"a\",\"b\"],\"n\":2});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_output_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"list_files\",\n      \"description\": \"Lists files in the workspace\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call list_files, then reply with only the number of files.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_list_files_1\",\n      \"name\": \"list_files\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_list_files_1\",\n      \"output\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{\\\"files\\\":[\\\"a\\\",\\\"b\\\"],\\\"n\\\":2}\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
 {
-      "name": "263. Tencent TokenHub Provider Coverage (chat, streaming, tools, responses, count tokens)",
+      "name": "264. Tencent TokenHub Provider Coverage (chat, streaming, tools, responses)",
       "description": "Tencent TokenHub had zero harness coverage before this folder: no cases in the collection, no entry in PROVIDER_KEYWORDS, no provider_config env file, no provider-capabilities row, and the provider was not configured in the harness gateway config.\n\nTencent TokenHub (https://tokenhub-intl.tencentcloudmaas.com) exposes an OpenAI-compatible Chat Completions API and an Anthropic-compatible Messages API from the same host. Bifrost defaults to the OpenAI-compatible surface (/v1/chat/completions, /v1/models) and lets a key opt into /v1/messages via use_anthropic_endpoints; the Anthropic routing is key-config-gated and is pinned by Go tests in core/providers/tencent/tencent_test.go, so this folder pins the default OpenAI-compatible path end to end.\n\nResponses has no native Tencent route and is muxed through chat by Bifrost. Count tokens uses the Anthropic-compatible /v1/messages/count_tokens endpoint. Capabilities Tencent does not implement (text completion, embeddings, audio, image, batch, files, containers, video, rerank) are declared false in provider-capabilities.json and are covered by the shared documented-unsupported checks; they are deliberately not duplicated here.\n\nModels used are the datasheet-priced deepseek-v4-flash (cheap) and deepseek-v4-pro (tools).",
       "item": [
         {
-          "name": "263.1 Chat Completions (OpenAI-compatible /v1/chat/completions)",
+          "name": "264.1 Chat Completions (OpenAI-compatible /v1/chat/completions)",
           "description": "Tencent serves chat completions at its OpenAI-compatible /v1/chat/completions endpoint with Bearer auth, so Bifrost reuses the OpenAI handlers unchanged.",
           "item": [
             {
@@ -276921,7 +277123,7 @@
           ]
         },
         {
-          "name": "263.2 Responses API (/v1/responses, muxed through Chat Completions)",
+          "name": "264.2 Responses API (/v1/responses, muxed through Chat Completions)",
           "description": "Tencent has no native OpenAI Responses route; Bifrost converts the Responses request to Chat Completions and converts the result back (or uses /v1/messages when the key opts into Anthropic endpoints).",
           "item": [
             {
