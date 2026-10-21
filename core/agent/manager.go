@@ -111,10 +111,8 @@ type Store interface {
 // sdkClient is the subset of the A2A SDK client the gateway actually uses,
 // isolated as an interface so tests can substitute an upstream without a real
 // server. It mirrors the protocol methods the gateway forwards today, including
-// the push-config registration hop the durable push relay performs. Push-config
-// reads and the local delete bookkeeping are served from the gateway's own
-// store, so the read methods are deliberately absent. Destroy must release the
-// client's transport resources.
+// push-config operations. Reads consult upstream authorization before projecting
+// the gateway's stored callbacks. Destroy must release transport resources.
 type sdkClient interface {
 	GetTask(context.Context, *a2a.GetTaskRequest) (*a2a.Task, error)
 	ListTasks(context.Context, *a2a.ListTasksRequest) (*a2a.ListTasksResponse, error)
@@ -124,6 +122,8 @@ type sdkClient interface {
 	SubscribeToTask(context.Context, *a2a.SubscribeToTaskRequest) iter.Seq2[a2a.Event, error]
 	GetExtendedAgentCard(context.Context, *a2a.GetExtendedAgentCardRequest) (*a2a.AgentCard, error)
 	CreateTaskPushConfig(context.Context, *a2a.PushConfig) (*a2a.PushConfig, error)
+	GetTaskPushConfig(context.Context, *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error)
+	ListTaskPushConfigs(context.Context, *a2a.ListTaskPushConfigRequest) ([]*a2a.PushConfig, error)
 	DeleteTaskPushConfig(context.Context, *a2a.DeleteTaskPushConfigRequest) error
 	Destroy() error
 }
@@ -2736,10 +2736,13 @@ func forwardUpstream[T any](
 				}
 				callStart := time.Now()
 				value, callErr := call(upstreamCtx, lease.candidate.client)
-				// Push config mutations measure their SDK calls separately because the
+				// Push config operations measure their SDK calls separately because the
 				// callback also persists local state. Other calls accumulate their full
 				// upstream duration here, including each retry.
-				if envelope.RequestType != schemas.A2ARequestTypeCreateTaskPushConfig && envelope.RequestType != schemas.A2ARequestTypeDeleteTaskPushConfig {
+				switch envelope.RequestType {
+				case schemas.A2ARequestTypeCreateTaskPushConfig, schemas.A2ARequestTypeGetTaskPushConfig,
+					schemas.A2ARequestTypeListTaskPushConfigs, schemas.A2ARequestTypeDeleteTaskPushConfig:
+				default:
 					schemas.AddUpstreamLatency(gateCtx, time.Since(callStart))
 				}
 				advanceAfterFailure(lease, callErr)

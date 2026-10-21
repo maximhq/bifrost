@@ -1418,6 +1418,12 @@ func (c *fakeSDKClient) GetExtendedAgentCard(ctx context.Context, req *a2a.GetEx
 func (c *fakeSDKClient) CreateTaskPushConfig(context.Context, *a2a.PushConfig) (*a2a.PushConfig, error) {
 	return nil, a2a.ErrUnsupportedOperation
 }
+func (c *fakeSDKClient) GetTaskPushConfig(context.Context, *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error) {
+	return nil, a2a.ErrUnsupportedOperation
+}
+func (c *fakeSDKClient) ListTaskPushConfigs(context.Context, *a2a.ListTaskPushConfigRequest) ([]*a2a.PushConfig, error) {
+	return nil, a2a.ErrUnsupportedOperation
+}
 func (c *fakeSDKClient) DeleteTaskPushConfig(context.Context, *a2a.DeleteTaskPushConfigRequest) error {
 	return a2a.ErrUnsupportedOperation
 }

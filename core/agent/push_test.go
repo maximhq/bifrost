@@ -18,6 +18,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/push"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
@@ -595,6 +596,23 @@ func (c *pushUpstreamClient) DeleteTaskPushConfig(_ context.Context, req *a2a.De
 	return nil
 }
 
+func (c *pushUpstreamClient) GetTaskPushConfig(_ context.Context, req *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, config := range c.created {
+		if config.TaskID == req.TaskID && config.ID == req.ID {
+			return config, nil
+		}
+	}
+	return nil, push.ErrPushConfigNotFound
+}
+
+func (c *pushUpstreamClient) ListTaskPushConfigs(_ context.Context, req *a2a.ListTaskPushConfigRequest) ([]*a2a.PushConfig, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.created, nil
+}
+
 func (c *pushUpstreamClient) lastCreated(t *testing.T) *a2a.PushConfig {
 	t.Helper()
 	c.mu.Lock()
@@ -605,7 +623,7 @@ func (c *pushUpstreamClient) lastCreated(t *testing.T) *a2a.PushConfig {
 
 // pushGateway builds a push-enabled manager whose fixture runtime forwards to a
 // recording fake upstream, bypassing discovery.
-func pushGateway(t *testing.T) (*Manager, *proxyRequestHandler, *memoryPushStore, *pushUpstreamClient) {
+func pushGateway(t testing.TB) (*Manager, *proxyRequestHandler, *memoryPushStore, *pushUpstreamClient) {
 	t.Helper()
 	store := newMemoryPushStore()
 	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
@@ -620,6 +638,299 @@ func pushGateway(t *testing.T) (*Manager, *proxyRequestHandler, *memoryPushStore
 	require.NoError(t, runtime.replaceGeneration(newClientGeneration(&a2a.AgentCard{}, client, string(a2a.TransportProtocolJSONRPC))))
 	m.runtimes.store("fixture", runtime)
 	return m, &proxyRequestHandler{runtime: runtime, manager: m, config: runtime.config}, store, client
+}
+
+type pushAuthorizationExecutor struct{}
+
+func (pushAuthorizationExecutor) Execute(_ context.Context, ctx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		if !yield(a2a.NewSubmittedTask(ctx, ctx.Message), nil) {
+			return
+		}
+		yield(a2a.NewStatusUpdateEvent(ctx, a2a.TaskStateInputRequired, nil), nil)
+	}
+}
+
+func (pushAuthorizationExecutor) Cancel(_ context.Context, ctx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		yield(a2a.NewStatusUpdateEvent(ctx, a2a.TaskStateCanceled, nil), nil)
+	}
+}
+
+type pushAuthorizationSender struct{}
+
+func (pushAuthorizationSender) SendPush(context.Context, *a2a.PushConfig, a2a.Event) error {
+	return nil
+}
+
+// Only the external upstream's policy owns resource permissions. The SDK's
+// normal handler enforces task ownership; explicit sharing permits push reads
+// without permitting GetTask, so a generic task precheck would be incorrect.
+type pushAuthorizationInterceptor struct {
+	a2asrv.PassthroughCallInterceptor
+	mu         sync.Mutex
+	store      *push.InMemoryPushConfigStore
+	sharedTask a2a.TaskID
+	sharedIDs  map[string]bool
+	readErr    error
+	getResult  *a2a.PushConfig
+	emptyList  bool
+	getCalls   int
+	listCalls  int
+}
+
+func (p *pushAuthorizationInterceptor) Before(ctx context.Context, call *a2asrv.CallContext, req *a2asrv.Request) (context.Context, any, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	values, _ := call.ServiceParams().Get("X-Api-Key")
+	if len(values) != 1 || (values[0] != "owner" && values[0] != "other") {
+		return ctx, nil, a2a.ErrUnauthenticated
+	}
+	call.User = a2asrv.NewAuthenticatedUser(values[0], nil)
+	switch request := req.Payload.(type) {
+	case *a2a.GetTaskPushConfigRequest:
+		p.getCalls++
+		if p.readErr != nil {
+			return ctx, nil, p.readErr
+		}
+		if p.getResult != nil {
+			return ctx, p.getResult, nil
+		}
+		if call.User.Name == "other" && request.TaskID == p.sharedTask && p.sharedIDs[request.ID] {
+			config, err := p.store.Get(ctx, request.TaskID, request.ID)
+			return ctx, config, err
+		}
+	case *a2a.ListTaskPushConfigRequest:
+		p.listCalls++
+		if p.readErr != nil {
+			return ctx, nil, p.readErr
+		}
+		if p.emptyList {
+			return ctx, &a2a.ListTaskPushConfigResponse{Configs: []*a2a.PushConfig{}}, nil
+		}
+		if call.User.Name == "other" && request.TaskID == p.sharedTask {
+			configs, err := p.store.List(ctx, request.TaskID)
+			if err != nil {
+				return ctx, nil, err
+			}
+			shared := make([]*a2a.PushConfig, 0, len(configs))
+			for _, config := range configs {
+				if p.sharedIDs[config.ID] {
+					shared = append(shared, config)
+				}
+			}
+			return ctx, &a2a.ListTaskPushConfigResponse{Configs: shared}, nil
+		}
+	}
+	return ctx, nil, nil
+}
+
+func TestPushReadsAuthorizeUpstream(t *testing.T) {
+	upstreamStore := push.NewInMemoryStore()
+	policy := &pushAuthorizationInterceptor{store: upstreamStore, sharedIDs: map[string]bool{}}
+	capabilities := a2a.AgentCapabilities{PushNotifications: true}
+	upstream := a2asrv.NewHandler(pushAuthorizationExecutor{},
+		a2asrv.WithCapabilityChecks(&capabilities),
+		a2asrv.WithPushNotifications(upstreamStore, pushAuthorizationSender{}),
+		a2asrv.WithCallInterceptors(policy))
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	mux.Handle(agentCardPath, a2asrv.NewStaticAgentCardHandler(&a2a.AgentCard{
+		Name: "fixture", Version: "1", Capabilities: capabilities,
+		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(server.URL+"/rpc", a2a.TransportProtocolJSONRPC)},
+	}))
+	mux.Handle("/rpc", a2asrv.NewJSONRPCHandler(upstream))
+	cardURL := server.URL + agentCardPath
+	store := newMemoryPushStore()
+	manager, err := NewManager(context.Background(), store, nil, "http://gateway", nil,
+		ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
+	require.NoError(t, err)
+	t.Cleanup(manager.Close)
+	_, err = manager.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: cardURL})
+	require.NoError(t, err)
+	client := gatewayClientFor(t, manager, "fixture")
+	owner := a2aclient.AttachServiceParams(context.Background(), a2aclient.ServiceParams{"X-Api-Key": {"owner"}})
+	other := a2aclient.AttachServiceParams(context.Background(), a2aclient.ServiceParams{"X-Api-Key": {"other"}})
+	result, err := client.SendMessage(owner, &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("create task"))})
+	require.NoError(t, err)
+	task, ok := result.(*a2a.Task)
+	require.True(t, ok)
+	for _, id := range []string{"private", "shared"} {
+		_, err := client.CreateTaskPushConfig(owner, &a2a.PushConfig{
+			TaskID: task.ID, ID: id, Tenant: "callback-tenant", URL: "https://callback.example/events?secret=" + id,
+			Token: "client-token", Auth: &a2a.PushAuthInfo{Scheme: "Bearer", Credentials: "client-secret"},
+		})
+		require.NoError(t, err)
+	}
+	get := &a2a.GetTaskPushConfigRequest{TaskID: task.ID, ID: "private"}
+	list := &a2a.ListTaskPushConfigRequest{TaskID: task.ID}
+	t.Run("owner", func(t *testing.T) {
+		got, err := client.GetTaskPushConfig(owner, get)
+		require.NoError(t, err)
+		require.Equal(t, "https://callback.example/events?secret=private", got.URL)
+		require.Equal(t, "callback-tenant", got.Tenant)
+		require.Empty(t, got.Token)
+		require.Empty(t, got.Auth.Credentials)
+		configs, err := client.ListTaskPushConfigs(owner, list)
+		require.NoError(t, err)
+		require.Len(t, configs, 2)
+	})
+	t.Run("denied get", func(t *testing.T) {
+		got, err := client.GetTaskPushConfig(other, get)
+		require.ErrorIs(t, err, a2a.ErrTaskNotFound)
+		require.Nil(t, got)
+	})
+	t.Run("denied list", func(t *testing.T) {
+		got, err := client.ListTaskPushConfigs(other, list)
+		require.ErrorIs(t, err, a2a.ErrTaskNotFound)
+		require.Nil(t, got)
+	})
+	policy.mu.Lock()
+	policy.sharedTask, policy.sharedIDs = task.ID, map[string]bool{"shared": true}
+	policy.mu.Unlock()
+	t.Run("shared config without task permission", func(t *testing.T) {
+		_, err := client.GetTask(other, &a2a.GetTaskRequest{ID: task.ID})
+		require.ErrorIs(t, err, a2a.ErrTaskNotFound)
+		got, err := client.GetTaskPushConfig(other, &a2a.GetTaskPushConfigRequest{TaskID: task.ID, ID: "shared"})
+		require.NoError(t, err)
+		require.Equal(t, "https://callback.example/events?secret=shared", got.URL)
+		require.Empty(t, got.Token)
+	})
+	t.Run("shared list excludes private config", func(t *testing.T) {
+		got, err := client.ListTaskPushConfigs(other, list)
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		require.Equal(t, "shared", got[0].ID)
+	})
+	t.Run("empty upstream list", func(t *testing.T) {
+		policy.mu.Lock()
+		policy.emptyList = true
+		policy.mu.Unlock()
+		defer func() { policy.mu.Lock(); policy.emptyList = false; policy.mu.Unlock() }()
+		got, err := client.ListTaskPushConfigs(owner, list)
+		require.NoError(t, err)
+		require.Empty(t, got)
+	})
+	for _, denied := range []error{a2a.ErrUnauthorized, a2a.ErrUnauthenticated, a2a.ErrPushNotificationNotSupported, a2a.ErrTaskNotFound} {
+		t.Run(denied.Error(), func(t *testing.T) {
+			policy.mu.Lock()
+			policy.readErr = denied
+			policy.mu.Unlock()
+			defer func() { policy.mu.Lock(); policy.readErr = nil; policy.mu.Unlock() }()
+			got, err := client.GetTaskPushConfig(owner, get)
+			require.ErrorIs(t, err, denied)
+			require.Nil(t, got)
+			configs, err := client.ListTaskPushConfigs(owner, list)
+			require.ErrorIs(t, err, denied)
+			require.Nil(t, configs)
+		})
+	}
+	t.Run("nonexistent task", func(t *testing.T) {
+		got, err := client.ListTaskPushConfigs(owner, &a2a.ListTaskPushConfigRequest{TaskID: "missing"})
+		require.ErrorIs(t, err, a2a.ErrTaskNotFound)
+		require.Nil(t, got)
+	})
+	t.Run("mismatched upstream resource", func(t *testing.T) {
+		for _, mismatch := range []*a2a.PushConfig{
+			{TaskID: "another-task", ID: get.ID, URL: "https://gateway.example/ingress"},
+			{TaskID: task.ID, ID: "another-config", URL: "https://gateway.example/ingress"},
+		} {
+			policy.mu.Lock()
+			policy.getResult = mismatch
+			policy.mu.Unlock()
+			got, err := client.GetTaskPushConfig(owner, get)
+			require.Error(t, err)
+			require.Nil(t, got)
+		}
+		policy.mu.Lock()
+		policy.getResult = nil
+		policy.mu.Unlock()
+	})
+	t.Run("upstream-only config is not exposed", func(t *testing.T) {
+		_, err := upstreamStore.Save(owner, task.ID, &a2a.PushConfig{TaskID: task.ID, ID: "upstream-only", URL: "https://gateway.example/ingress", Token: "upstream-secret"})
+		require.NoError(t, err)
+		configs, err := client.ListTaskPushConfigs(owner, list)
+		require.NoError(t, err)
+		require.Len(t, configs, 2)
+		got, err := client.GetTaskPushConfig(owner, &a2a.GetTaskPushConfigRequest{TaskID: task.ID, ID: "upstream-only"})
+		require.Error(t, err)
+		require.Nil(t, got)
+	})
+	t.Run("deleted upstream config leaves no stale disclosure", func(t *testing.T) {
+		require.NoError(t, upstreamStore.Delete(owner, task.ID, "private"))
+		got, err := client.GetTaskPushConfig(owner, get)
+		require.Error(t, err)
+		require.Nil(t, got)
+		configs, err := client.ListTaskPushConfigs(owner, list)
+		require.NoError(t, err)
+		require.Len(t, configs, 1)
+		require.Equal(t, "shared", configs[0].ID)
+	})
+	t.Run("canceled caller", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(owner)
+		cancel()
+		got, err := client.GetTaskPushConfig(ctx, get)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Nil(t, got)
+		configs, err := client.ListTaskPushConfigs(ctx, list)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Nil(t, configs)
+	})
+	t.Run("unavailable upstream", func(t *testing.T) {
+		server.Close()
+		got, err := client.GetTaskPushConfig(owner, get)
+		require.Error(t, err)
+		require.Nil(t, got)
+		configs, err := client.ListTaskPushConfigs(owner, list)
+		require.Error(t, err)
+		require.Nil(t, configs)
+	})
+	policy.mu.Lock()
+	require.Positive(t, policy.getCalls)
+	require.Positive(t, policy.listCalls)
+	policy.mu.Unlock()
+}
+
+// Measures gateway work with an in-process upstream, excluding network RTT.
+func BenchmarkPushConfigReads(b *testing.B) {
+	_, handler, _, _ := pushGateway(b)
+	_, err := handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{TaskID: "task-1", ID: "cfg-1", URL: "https://callback.example/events"})
+	require.NoError(b, err)
+	b.Run("get", func(b *testing.B) {
+		req := &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"}
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := handler.GetTaskPushConfig(context.Background(), req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("list", func(b *testing.B) {
+		req := &a2a.ListTaskPushConfigRequest{TaskID: "task-1"}
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := handler.ListTaskPushConfigs(context.Background(), req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// The shared forwarding bookkeeping must not add allocations to non-push calls.
+func BenchmarkAgentSendForwarding(b *testing.B) {
+	_, handler, _, client := pushGateway(b)
+	response := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("ok"))
+	client.send = func(context.Context, *a2a.SendMessageRequest) (a2a.SendMessageResult, error) {
+		return response, nil
+	}
+	req := &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hello"))}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := handler.SendMessage(context.Background(), req); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func pushEventPayload(t *testing.T, taskID string) []byte {
