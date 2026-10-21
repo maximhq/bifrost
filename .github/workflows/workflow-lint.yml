@@ -61,6 +61,9 @@ jobs:
       - name: Check PR approval coverage
         run: bash .github/workflows/scripts/run-security-tool.sh prapproval
 
+      - name: Check release approval configuration
+        run: bash .github/workflows/scripts/run-security-tool.sh releaseapproval
+
       - name: Check release security policy
         run: bash .github/workflows/scripts/run-security-tool.sh workflowpolicy "$GITHUB_WORKSPACE/.github/workflows"
 

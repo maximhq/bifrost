@@ -1,0 +1,6 @@
+{
+  "branch_policies": [
+    {"name": "main", "type": "branch"},
+    {"name": "v2.0.0", "type": "branch"}
+  ]
+}
