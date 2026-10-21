@@ -28,5 +28,6 @@
         "bifrost": "bin.js"
     },
     "type": "module",
-    "dependencies": {}
+    "files": ["bin.js"],
+  "dependencies": {}
 }
