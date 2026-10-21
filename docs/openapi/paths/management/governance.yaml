@@ -377,6 +377,7 @@ virtual-keys-by-id:
 virtual-keys-rotate-by-id:
   post:
     operationId: rotateVirtualKey
+    x-bifrost-destructive: true
     x-mint:
       content: |
         **Required Permissions**
@@ -554,6 +555,7 @@ virtual-keys-budget-override:
 virtual-keys-rotate:
   post:
     operationId: bulkRotateVirtualKeys
+    x-bifrost-destructive: true
     x-mint:
       content: |
         **Required Permissions**

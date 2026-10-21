@@ -208,6 +208,7 @@ func buildOperationV3(method, path string, op map[string]any, pathParams []Param
 		Description: strings.TrimSpace(asString(op["description"])),
 		Deprecated:  asBool(op["deprecated"]),
 		Tags:        asStringSlice(op["tags"]),
+		Extensions:  operationExtensions(op),
 	}
 	if servers := parseServers(op["servers"], doc, opts); len(servers) > 0 {
 		operation.Servers = servers
@@ -270,6 +271,21 @@ func buildOperationV3(method, path string, op map[string]any, pathParams []Param
 		}
 	}
 	return operation
+}
+
+// operationExtensions returns an operation object's x-* keys (nil when it has
+// none), so callers can act on vendor markers such as x-bifrost-destructive.
+func operationExtensions(op map[string]any) map[string]any {
+	var ext map[string]any
+	for k, v := range op {
+		if strings.HasPrefix(k, "x-") {
+			if ext == nil {
+				ext = map[string]any{}
+			}
+			ext[k] = v
+		}
+	}
+	return ext
 }
 
 // resolveRequestBody resolves a request body and each of its media types on

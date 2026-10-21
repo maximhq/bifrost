@@ -296,6 +296,7 @@ type BifrostHTTPServer struct {
 	RSSFeedsHandler      *handlers.RSSFeedsHandler
 	WarpHandler          *handlers.WarpHandler
 	MCPServerHandler     *handlers.MCPServerHandler
+	BifrostMCP           *handlers.BifrostMCP // /api as MCP tools on /v1/mcp; its server loads after boot
 	AgentGatewayHandler  *handlers.AgentGatewayHandler
 	devPprofHandler      *handlers.DevPprofHandler
 	skillsServingHandler *handlers.SkillsServingHandler
