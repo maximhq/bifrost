@@ -581,6 +581,20 @@ export interface GenericAuthConfig {
 	aws?: { service: string; region?: string };
 }
 
+export type GenericUnitsSource = "response" | "request";
+export type GenericUnitsMeasure = "value" | "chars" | "body_bytes";
+
+export const GenericUnitsSourceLabels: Record<GenericUnitsSource, string> = {
+	response: "Response body (a count the API reports)",
+	request: "Request body (what the caller sent)",
+};
+
+export const GenericUnitsMeasureLabels: Record<GenericUnitsMeasure, string> = {
+	value: "Number at the path",
+	chars: "Characters of the string at the path",
+	body_bytes: "Bytes of the whole body",
+};
+
 // GenericUsageConfig matching Go's schemas.GenericUsageConfig (gjson paths)
 export interface GenericUsageConfig {
 	model_path?: string;
@@ -589,6 +603,10 @@ export interface GenericUsageConfig {
 	total_tokens_path?: string;
 	cost_path?: string;
 	cost_per_request?: number;
+	units_path?: string;
+	units_source?: GenericUnitsSource;
+	units_measure?: GenericUnitsMeasure;
+	cost_per_unit?: number;
 	disable_optimistic_parsing?: boolean;
 }
 

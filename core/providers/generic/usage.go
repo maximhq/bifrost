@@ -112,12 +112,49 @@ func firstCost(body []byte, paths []string) (float64, bool) {
 // usageFields is what one body (or one stream event) said about usage. Presence is tracked per
 // field so events that each carry part of the picture can be merged.
 type usageFields struct {
-	input, output, total, cost             float64
-	hasInput, hasOutput, hasTotal, hasCost bool
+	input, output, total, cost, units                float64
+	hasInput, hasOutput, hasTotal, hasCost, hasUnits bool
 }
 
 func (f usageFields) any() bool {
-	return f.hasInput || f.hasOutput || f.hasTotal || f.hasCost
+	return f.hasInput || f.hasOutput || f.hasTotal || f.hasCost || f.hasUnits
+}
+
+// billsUnits reports whether the mapping prices a quantity.
+func (u resolvedUsage) billsUnits() bool {
+	return u.costPerUnit > 0 && (u.unitsPath != "" || u.unitsMeasure == schemas.GenericUnitsBodyBytes)
+}
+
+// measureUnits reads the billable quantity from a body per the mapping's measure.
+func (u resolvedUsage) measureUnits(contentType string, body []byte) (float64, bool) {
+	switch u.unitsMeasure {
+	case schemas.GenericUnitsBodyBytes:
+		return float64(len(body)), len(body) > 0
+	case schemas.GenericUnitsChars:
+		if !(isJSONContentType(contentType) || (contentType == "" && gjson.ValidBytes(body))) {
+			return 0, false
+		}
+		if v := providerUtils.GetJSONField(body, u.unitsPath); v.Exists() && v.Type == gjson.String {
+			return float64(len([]rune(v.Str))), true
+		}
+		return 0, false
+	default:
+		if !(isJSONContentType(contentType) || (contentType == "" && gjson.ValidBytes(body))) {
+			return 0, false
+		}
+		return firstNumber(body, []string{u.unitsPath})
+	}
+}
+
+// requestUnits reads the quantity from the caller's body when the mapping bills request-side units
+// (Translate text, TTS markup). It is known before the upstream answers, so it seeds both the
+// buffered and the streaming paths.
+func (u resolvedUsage) requestUnits(contentType string, body []byte) usageFields {
+	var f usageFields
+	if u.billsUnits() && u.unitsSource == schemas.GenericUnitsFromRequest {
+		f.units, f.hasUnits = u.measureUnits(contentType, body)
+	}
+	return f
 }
 
 // merge overlays the fields o carries onto f.
@@ -134,12 +171,22 @@ func (f *usageFields) merge(o usageFields) {
 	if o.hasCost {
 		f.cost, f.hasCost = o.cost, true
 	}
+	if o.hasUnits {
+		f.units, f.hasUnits = o.units, true
+	}
 }
 
-// parse reads the mapped fields from a JSON body. Non-JSON bodies yield nothing.
+// parse reads the mapped fields from a response body (or one stream event). Non-JSON bodies yield
+// nothing, except a response-side body_bytes quantity.
 func (u resolvedUsage) parse(contentType string, body []byte) usageFields {
 	var f usageFields
-	if len(body) == 0 || !(isJSONContentType(contentType) || (contentType == "" && gjson.ValidBytes(body))) {
+	if len(body) == 0 {
+		return f
+	}
+	if u.billsUnits() && u.unitsSource == schemas.GenericUnitsFromResponse {
+		f.units, f.hasUnits = u.measureUnits(contentType, body)
+	}
+	if !(isJSONContentType(contentType) || (contentType == "" && gjson.ValidBytes(body))) {
 		return f
 	}
 	f.input, f.hasInput = firstNumber(body, u.tokenPaths(u.inputTokensPath, optimisticInputTokenPaths))
@@ -169,26 +216,36 @@ func (u resolvedUsage) build(f usageFields) *schemas.BifrostPassthroughUsage {
 	if f.hasCost {
 		cost += f.cost
 	}
+	if f.hasUnits && u.costPerUnit > 0 {
+		cost += f.units * u.costPerUnit
+	}
 	if cost > 0 {
 		usage.Cost = &schemas.BifrostCost{TotalCost: cost}
 	}
 	return usage
 }
 
-// extractUsage reads tokens and cost from a buffered response body per the mapping.
-func extractUsage(u resolvedUsage, contentType string, body []byte) *schemas.BifrostPassthroughUsage {
-	return u.build(u.parse(contentType, body))
+// extractUsage reads tokens, cost and a response-side quantity from a buffered response body and
+// merges them over whatever the request already established (request-side units).
+func extractUsage(u resolvedUsage, contentType string, body []byte, initial usageFields) *schemas.BifrostPassthroughUsage {
+	f := initial
+	f.merge(u.parse(contentType, body))
+	return u.build(f)
 }
 
 // hasUsageEvent is the cheap gate for streams: only events that carry one of the mapped (or
 // optimistic) fields are fully parsed.
 func (u resolvedUsage) hasUsageEvent(event []byte) bool {
-	for _, group := range [][]string{
+	groups := [][]string{
 		u.tokenPaths(u.totalTokensPath, optimisticTotalTokenPaths),
 		u.tokenPaths(u.inputTokensPath, optimisticInputTokenPaths),
 		u.tokenPaths(u.outputTokensPath, optimisticOutputTokenPaths),
 		u.costPaths(),
-	} {
+	}
+	if u.billsUnits() && u.unitsSource == schemas.GenericUnitsFromResponse && u.unitsPath != "" {
+		groups = append(groups, []string{u.unitsPath})
+	}
+	for _, group := range groups {
 		for _, p := range group {
 			if providerUtils.GetJSONField(event, p).Exists() {
 				return true
@@ -201,8 +258,9 @@ func (u resolvedUsage) hasUsageEvent(event []byte) bool {
 // streamObserver returns the per-event observer for one stream. Fields accumulate across events,
 // so a stream that reports input tokens on its first event and output tokens on its last (the
 // Anthropic shape) is billed for both; an event that carries nothing leaves what was seen alone.
-func (u resolvedUsage) streamObserver() func(event []byte) *schemas.BifrostPassthroughUsage {
-	var acc usageFields
+// initial carries what the request already established (request-side units).
+func (u resolvedUsage) streamObserver(initial usageFields) func(event []byte) *schemas.BifrostPassthroughUsage {
+	acc := initial
 	return func(event []byte) *schemas.BifrostPassthroughUsage {
 		f := u.parse("application/json", event)
 		if !f.any() {
@@ -213,7 +271,8 @@ func (u resolvedUsage) streamObserver() func(event []byte) *schemas.BifrostPasst
 	}
 }
 
-// defaultUsage is what a billable call reports when nothing could be read from the response.
-func (u resolvedUsage) defaultUsage() *schemas.BifrostPassthroughUsage {
-	return u.build(usageFields{})
+// defaultUsage is what a billable call reports when nothing could be read from the response:
+// the flat fee plus any request-side units.
+func (u resolvedUsage) defaultUsage(initial usageFields) *schemas.BifrostPassthroughUsage {
+	return u.build(initial)
 }

@@ -71,7 +71,7 @@ curl -X POST http://localhost:8080/api/providers/tavily/keys \
         "base_provider_type": "generic",
         "generic_config": {
           "auth": { "type": "bearer" },
-          "usage": { "cost_per_request": 0.008 },
+          "usage": { "units_path": "usage.credits", "cost_per_unit": 0.008 },
           "routes": [
             { "method": "POST", "path": "/search", "billable": true },
             { "method": "GET", "path": "/usage", "billable": false }
@@ -91,7 +91,25 @@ curl -X POST http://localhost:8080/api/providers/tavily/keys \
       "custom_provider_config": {
         "base_provider_type": "generic",
         "generic_config": {
-          "auth": { "type": "aws_sigv4", "aws": { "service": "textract", "region": "us-east-1" } }
+          "auth": { "type": "aws_sigv4", "aws": { "service": "textract", "region": "us-east-1" } },
+          "usage": { "units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.0015 }
+        }
+      }
+    },
+    "translate": {
+      "keys": [{
+        "name": "aws",
+        "value": "",
+        "weight": 1,
+        "models": ["*"],
+        "bedrock_key_config": { "access_key": "env.AWS_ACCESS_KEY_ID", "secret_key": "env.AWS_SECRET_ACCESS_KEY", "region": "us-east-1" }
+      }],
+      "network_config": { "base_url": "https://translate.us-east-1.amazonaws.com" },
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": { "type": "aws_sigv4", "aws": { "service": "translate" } },
+          "usage": { "units_source": "request", "units_measure": "chars", "units_path": "Text", "cost_per_unit": 0.000015 }
         }
       }
     }
@@ -134,7 +152,22 @@ Paths are [gjson](https://github.com/tidwall/gjson) paths. Tokens and cost are r
 | `input_tokens_path`, `output_tokens_path`, `total_tokens_path` | Response body paths for tokens |
 | `cost_path` | Response body path for a provider-reported USD cost; an array of numbers is summed |
 | `cost_per_request` | Flat USD fee added to every billable call. A route may set `0` to waive the provider fee |
+| `units_path` | gjson path of a billable quantity (pages, credits, text). Ignored when `units_measure` is `body_bytes` |
+| `units_source` | `response` (default): a count the API reports. `request`: what the caller sent, which per-character APIs bill on |
+| `units_measure` | `value` (default): the number at the path. `chars`: the character count of the string at the path. `body_bytes`: the byte length of the whole body |
+| `cost_per_unit` | USD per unit |
 | `disable_optimistic_parsing` | Read only the configured paths |
+
+**Per-unit pricing.** Most non-LLM APIs bill by quantity, and the quantity is in a different place for each:
+
+| API | Bills per | Mapping |
+| --- | --- | --- |
+| AWS Textract | page | `units_path: DocumentMetadata.Pages`, `cost_per_unit: 0.0015` (response) |
+| Tavily | API credit | `units_path: usage.credits`, `cost_per_unit: 0.008` (response; send `include_usage: true`) |
+| AWS Translate | character of input, spaces included | `units_source: request`, `units_measure: chars`, `units_path: Text`, `cost_per_unit: 0.000015` |
+| Azure TTS (neural voices) | character of SSML | `units_source: request`, `units_measure: body_bytes`, `cost_per_unit: 0.000016` |
+
+Cost per call is `units × cost_per_unit + cost_per_request + extracted cost`. Request-side quantities count what the upstream itself bills on: a caller cannot send less text than it wants translated, and padding the text raises the upstream bill as much as the Bifrost charge. A quantity that is missing, negative or not JSON (unless the measure is `body_bytes`) adds nothing. Streams accumulate a response-side quantity across events and keep a request-side one; an unframed stream (audio) reports it on its final chunk. Azure TTS Avatar bills per second of a batch job, which no synchronous relay can see; use a flat fee for it.
 
 **Optimistic defaults.** With no mapping, Bifrost reads the shapes most APIs borrow: request `model`; response `usage.prompt_tokens` or `usage.input_tokens`, `usage.completion_tokens` or `usage.output_tokens`, `usage.total_tokens`; cost `usage.cost`. A root-level `cost` is never read by default, since on many APIs it is a product price rather than a bill. Naming any token path turns the optimistic token lookup off, so a half-mapped response is never topped up from a block you did not map. `disable_optimistic_parsing` also stops the default `model` lookup. Negative numbers are ignored. Bodies are scanned when their `Content-Type` is any JSON media type, including `application/x-amz-json-1.1`.
 

@@ -6,7 +6,15 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
-import { GenericAuthTypeLabels, GenericAuthTypes, GenericProviderConfig, GenericRouteMethods, ModelProvider } from "@/lib/types/config";
+import {
+	GenericAuthTypeLabels,
+	GenericAuthTypes,
+	GenericProviderConfig,
+	GenericRouteMethods,
+	GenericUnitsMeasureLabels,
+	GenericUnitsSourceLabels,
+	ModelProvider,
+} from "@/lib/types/config";
 import { genericProviderConfigSchema } from "@/lib/types/schemas";
 import { importOpenAPI, parseOpenAPIText, type OpenAPIImport } from "@/lib/utils/openapiImport";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -41,6 +49,10 @@ const emptyUsage = {
 	total_tokens_path: "",
 	cost_path: "",
 	cost_per_request: 0,
+	units_path: "",
+	units_source: "response" as const,
+	units_measure: "value" as const,
+	cost_per_unit: 0,
 	disable_optimistic_parsing: false,
 };
 
@@ -73,6 +85,12 @@ function cleanUsage(usage: FormValues["usage"], keepZeroFee = false) {
 	if (usage.total_tokens_path) out.total_tokens_path = usage.total_tokens_path;
 	if (usage.cost_path) out.cost_path = usage.cost_path;
 	if (usage.cost_per_request !== undefined && (keepZeroFee || usage.cost_per_request > 0)) out.cost_per_request = usage.cost_per_request;
+	if (usage.cost_per_unit !== undefined && (keepZeroFee || usage.cost_per_unit > 0)) {
+		out.cost_per_unit = usage.cost_per_unit;
+		if (usage.units_path) out.units_path = usage.units_path;
+		if (usage.units_source && usage.units_source !== "response") out.units_source = usage.units_source;
+		if (usage.units_measure && usage.units_measure !== "value") out.units_measure = usage.units_measure;
+	}
 	if (usage.disable_optimistic_parsing) out.disable_optimistic_parsing = true;
 	return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -363,6 +381,94 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 								</FormItem>
 							)}
 						/>
+					</div>
+					<div className="space-y-3 rounded-sm border p-3" data-testid="generic-units-section">
+						<div>
+							<p className="text-sm font-medium">Per-unit pricing</p>
+							<p className="text-muted-foreground text-sm">
+								For APIs that bill by quantity: pages the response reports, characters of the text you sent, or the size of the request
+								body. Cost per call becomes units × rate, plus the flat fee and any extracted cost.
+							</p>
+						</div>
+						<div className="grid gap-4 md:grid-cols-2">
+							<FormField
+								control={form.control}
+								name="usage.units_source"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Read the quantity from</FormLabel>
+										<Select value={field.value ?? "response"} onValueChange={field.onChange} disabled={disabled}>
+											<FormControl>
+												<SelectTrigger data-testid="generic-units-source-select">
+													<SelectValue />
+												</SelectTrigger>
+											</FormControl>
+											<SelectContent>
+												{(Object.keys(GenericUnitsSourceLabels) as (keyof typeof GenericUnitsSourceLabels)[]).map((k) => (
+													<SelectItem key={k} value={k}>
+														{GenericUnitsSourceLabels[k]}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="usage.units_measure"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Measure</FormLabel>
+										<Select value={field.value ?? "value"} onValueChange={field.onChange} disabled={disabled}>
+											<FormControl>
+												<SelectTrigger data-testid="generic-units-measure-select">
+													<SelectValue />
+												</SelectTrigger>
+											</FormControl>
+											<SelectContent>
+												{(Object.keys(GenericUnitsMeasureLabels) as (keyof typeof GenericUnitsMeasureLabels)[]).map((k) => (
+													<SelectItem key={k} value={k}>
+														{GenericUnitsMeasureLabels[k]}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+									</FormItem>
+								)}
+							/>
+							{form.watch("usage.units_measure") !== "body_bytes" &&
+								textField(
+									"usage.units_path",
+									"Units path",
+									"DocumentMetadata.Pages",
+									"generic-units-path-input",
+									"e.g. DocumentMetadata.Pages (Textract), usage.credits (Tavily), Text (Translate)",
+								)}
+							<FormField
+								control={form.control}
+								name="usage.cost_per_unit"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Cost per unit (USD)</FormLabel>
+										<FormControl>
+											<Input
+												type="number"
+												step="any"
+												min={0}
+												placeholder="0"
+												data-testid="generic-units-cost-per-unit-input"
+												disabled={disabled}
+												value={field.value ?? 0}
+												onChange={(e) => field.onChange(e.target.value === "" ? 0 : Number(e.target.value))}
+											/>
+										</FormControl>
+										<FormDescription>e.g. 0.0015 per Textract page, 0.000015 per Translate character</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</div>
 					</div>
 					{switchField(
 						"usage.disable_optimistic_parsing",

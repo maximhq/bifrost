@@ -1116,15 +1116,29 @@ export const allowedRequestsSchema = z.object({
 const gjsonPath = z.string().trim().optional();
 
 // Generic relay usage mapping (gjson paths, flat per-request fee)
-export const genericUsageConfigSchema = z.object({
-	model_path: gjsonPath,
-	input_tokens_path: gjsonPath,
-	output_tokens_path: gjsonPath,
-	total_tokens_path: gjsonPath,
-	cost_path: gjsonPath,
-	cost_per_request: z.number().min(0, "Cost per request must not be negative").optional(),
-	disable_optimistic_parsing: z.boolean().optional(),
-});
+export const genericUsageConfigSchema = z
+	.object({
+		model_path: gjsonPath,
+		input_tokens_path: gjsonPath,
+		output_tokens_path: gjsonPath,
+		total_tokens_path: gjsonPath,
+		cost_path: gjsonPath,
+		cost_per_request: z.number().min(0, "Cost per request must not be negative").optional(),
+		units_path: gjsonPath,
+		units_source: z.enum(["response", "request"]).optional(),
+		units_measure: z.enum(["value", "chars", "body_bytes"]).optional(),
+		cost_per_unit: z.number().min(0, "Cost per unit must not be negative").optional(),
+		disable_optimistic_parsing: z.boolean().optional(),
+	})
+	.superRefine((usage, ctx) => {
+		if (usage.cost_per_unit && usage.cost_per_unit > 0 && usage.units_measure !== "body_bytes" && !usage.units_path) {
+			ctx.addIssue({
+				code: "custom",
+				message: "Units path is required unless the measure is bytes of the whole body",
+				path: ["units_path"],
+			});
+		}
+	});
 
 const genericRouteGlob = z
 	.string()

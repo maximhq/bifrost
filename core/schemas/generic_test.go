@@ -72,3 +72,24 @@ func TestGenericProviderConfigClone(t *testing.T) {
 	assert.False(t, *src.Routes[0].Billable)
 	assert.Equal(t, "c", src.Routes[0].Usage.CostPath)
 }
+
+func TestGenericUsageConfigUnitsValidation(t *testing.T) {
+	ok := func(u *GenericUsageConfig) {
+		t.Helper()
+		assert.NoError(t, (&GenericProviderConfig{Usage: u}).Validate())
+	}
+	bad := func(u *GenericUsageConfig, msg string) {
+		t.Helper()
+		err := (&GenericProviderConfig{Usage: u}).Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), msg)
+	}
+	ok(&GenericUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: Ptr(0.0015)})
+	ok(&GenericUsageConfig{UnitsPath: "Text", UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsChars, CostPerUnit: Ptr(0.000015)})
+	ok(&GenericUsageConfig{UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsBodyBytes, CostPerUnit: Ptr(0.000016)})
+	ok(&GenericUsageConfig{UnitsPath: "pages"})
+	bad(&GenericUsageConfig{UnitsPath: "pages", CostPerUnit: Ptr(-1.0)}, "cost_per_unit must not be negative")
+	bad(&GenericUsageConfig{UnitsPath: "pages", UnitsSource: "header", CostPerUnit: Ptr(1.0)}, "units_source")
+	bad(&GenericUsageConfig{UnitsPath: "pages", UnitsMeasure: "words", CostPerUnit: Ptr(1.0)}, "units_measure")
+	bad(&GenericUsageConfig{CostPerUnit: Ptr(1.0)}, "units_path is required")
+}

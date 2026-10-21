@@ -13436,6 +13436,32 @@
           "minimum": 0,
           "description": "Flat USD fee added to every billable call; on a route, 0 waives the provider fee"
         },
+        "units_path": {
+          "type": "string",
+          "description": "gjson path of the billable quantity, e.g. DocumentMetadata.Pages (response) or Text (request). Ignored when units_measure is body_bytes"
+        },
+        "units_source": {
+          "type": "string",
+          "enum": [
+            "response",
+            "request"
+          ],
+          "description": "Body the quantity is read from: the upstream response (default) or the caller's request, which is what per-character APIs bill on"
+        },
+        "units_measure": {
+          "type": "string",
+          "enum": [
+            "value",
+            "chars",
+            "body_bytes"
+          ],
+          "description": "value: the number at units_path (default); chars: the character count of the string at units_path; body_bytes: the byte length of the whole body"
+        },
+        "cost_per_unit": {
+          "type": "number",
+          "minimum": 0,
+          "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + any extracted cost"
+        },
         "disable_optimistic_parsing": {
           "type": "boolean",
           "description": "Read only the configured paths"
