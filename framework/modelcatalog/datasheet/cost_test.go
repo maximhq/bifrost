@@ -1498,6 +1498,38 @@ func TestComputeEmbeddingCost_NilUsage(t *testing.T) {
 	assert.Equal(t, 0.0, computeEmbeddingCostTotal(&p, nil, serviceTier{}))
 }
 
+func TestComputeEmbeddingCost_TotalTokensFallback(t *testing.T) {
+	// Upstreams that omit prompt_tokens on embeddings (e.g. Voyage's
+	// OpenAI-compatible endpoint, which reports usage.total_tokens only) must
+	// still be priced: embeddings are input-only, so total == input.
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0000001),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+	}
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 0, TotalTokens: 764}
+	cost := computeEmbeddingCostTotal(&p, usage, serviceTier{})
+	assert.InDelta(t, 764*0.0000001, cost, 1e-12)
+}
+
+func TestComputeEmbeddingCost_PromptTokensWinOverTotal(t *testing.T) {
+	// When both fields are present the explicit prompt count stays authoritative.
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0000001),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+	}
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 100, TotalTokens: 500}
+	cost := computeEmbeddingCostTotal(&p, usage, serviceTier{})
+	assert.InDelta(t, 100*0.0000001, cost, 1e-12)
+}
+
+func TestComputeEmbeddingCost_ZeroUsageStaysUnpriced(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.0000001),
+		OutputCostPerToken: bifrost.Ptr(0.0),
+	}
+	assert.Equal(t, 0.0, computeEmbeddingCostTotal(&p, &schemas.BifrostLLMUsage{}, serviceTier{}))
+}
+
 // =========================================================================
 // 3. computeRerankCost — unit tests
 // =========================================================================
