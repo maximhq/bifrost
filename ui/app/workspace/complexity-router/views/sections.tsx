@@ -1,10 +1,8 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { DecisionModelSelector, DecisionProviderSelector } from "@/components/ui/decisionModelSelector";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
-import { ModelSelector } from "@/components/ui/modelSelector";
-import { ProviderSelector } from "@/components/ui/providerSelector";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { TagInput } from "@/components/ui/tagInput";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,13 +19,12 @@ import {
 	SELF_HOSTED_DECISION_MODELS,
 	TIER_PHRASE_LIST_DEFINITIONS,
 } from "@/lib/types/complexityRouter";
-import { useGetModelsQuery } from "@/lib/store/apis/providersApi";
 import type { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
-import { decisionProviderIconKey } from "@/lib/utils/decisionModelProviders";
+import { clefModelFromProvider, isDecisionProvider } from "@/lib/utils/decisionModelProviders";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, Check, ChevronRight, Info, LoaderCircle, Pencil, RotateCcw, Scale, TriangleAlert, Waypoints } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import {
 	Controller,
 	useWatch,
@@ -37,16 +34,7 @@ import {
 	type UseFormRegister,
 	type UseFormSetValue,
 } from "react-hook-form";
-import {
-	clefModelFromProvider,
-	decisionTimeoutFieldValue,
-	defaultDecisionModel,
-	isDecisionProvider,
-	isOpenAIDecisionProvider,
-	selfHostedModelGroups,
-	type AnalyzerFormValues,
-	type DecisionProviderState,
-} from "../formSchema";
+import { decisionTimeoutFieldValue, type AnalyzerFormValues, type DecisionProviderState } from "../formSchema";
 import { FieldLabel, InfoTip, SectionHeading } from "./formPrimitives";
 
 // The Complexity Router page's sections. Each binds to the page's single form.
@@ -285,38 +273,18 @@ interface DecisionFieldsProps {
 // DecisionFields holds the decision model's settings: which model answers, and
 // how much conversation it sees and for how long. They apply wherever the
 // decision model runs, as the primary classifier or as the semantic fallback, so
-// both places render this. The model control follows the provider: Typesafe lists
-// Jev releases, OpenAI and OpenRouter list the models the datasheet marks as decision
-// models, Azure lists Microsoft's decision models, a Cloudflare provider's URL fixes its Clef model,
-// Databricks serves only ai_decide,
-// and a self-hosted provider offers the models it lists, or the known Laya and
-// Nimble checkpoints when it lists none.
+// both places render this. The provider and model controls are the shared
+// decision-model pickers, which decide what each provider offers.
 export function DecisionFields({ control, register, setValue, errors, canUpdate, providers, providerKeyIds }: DecisionFieldsProps) {
 	const providerName = useWatch({ control, name: "decision.provider" });
 	const model = useWatch({ control, name: "decision.model" });
-	const provider = providers.find((candidate) => candidate.name === providerName);
-	const servesJev = providerName === "typesafe";
-	const servesOpenRouter = providerName === "openrouter";
-	const servesCloudflare = providerName === "cloudflare";
-	const servesPerplexity = providerName === "perplexity";
-	const servesOllama = providerName === "ollama";
-	const servesAzure = providerName === "azure";
-	const servesOpenAI = provider ? isOpenAIDecisionProvider(provider) : providerName === "openai";
-	const servesClef = clefModelFromProvider(provider) !== undefined;
-	const servesDatabricks = providerName === "databricks";
-	// These providers' catalogs mix decision models with chat models, so only their decision models are listed.
-	const listsDecisionModels = servesOpenAI || servesOpenRouter || servesCloudflare || servesPerplexity || servesOllama || servesAzure;
-	const selfHosted = provider !== undefined && !servesJev && !listsDecisionModels && !servesClef && !servesDatabricks;
-
-	const { data: listed } = useGetModelsQuery(
-		{ provider: providerName, keys: providerKeyIds.length > 0 ? providerKeyIds : undefined, limit: 50 },
-		{ skip: !selfHosted },
+	// Stable, since the model picker selects a self-hosted provider's first listed model from an effect.
+	const selectModel = useCallback(
+		(next: string) => setValue("decision.model", next, { shouldDirty: true, shouldValidate: true }),
+		[setValue],
 	);
-	const listedModels = useMemo(() => (listed?.models ?? []).map((entry) => entry.name), [listed]);
-	// A self-hosted provider that lists its models starts on the first one.
-	useEffect(() => {
-		if (selfHosted && !model && listedModels.length > 0) setValue("decision.model", listedModels[0], { shouldDirty: true });
-	}, [selfHosted, model, listedModels, setValue]);
+	const provider = providers.find((candidate) => candidate.name === providerName);
+	const servesClef = clefModelFromProvider(provider) !== undefined;
 
 	return (
 		<div className="grid gap-4 sm:grid-cols-2" data-testid="complexity-router-decision-fields">
@@ -328,18 +296,14 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 					control={control}
 					name="decision.provider"
 					render={({ field }) => (
-						<ProviderSelector
+						<DecisionProviderSelector
 							inputId="decision-provider"
 							data-testid="complexity-router-decision-provider-select"
-							filter={isDecisionProvider}
-							resolveIconKey={decisionProviderIconKey}
+							providers={providers}
 							value={field.value || ""}
-							onChange={(value: string) => {
-								if (value === field.value) return;
-								field.onChange(value);
-								// A model name only means something on its own provider.
-								const next = providers.find((candidate) => candidate.name === value);
-								setValue("decision.model", defaultDecisionModel(next), { shouldDirty: true });
+							onChange={(next, defaultModel) => {
+								field.onChange(next);
+								setValue("decision.model", defaultModel, { shouldDirty: true });
 							}}
 							disabled={!canUpdate}
 						/>
@@ -363,98 +327,19 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 				<Controller
 					control={control}
 					name="decision.model"
-					render={({ field }) => {
-						if (listsDecisionModels) {
-							// OpenAI's, OpenRouter's, Cloudflare's, Perplexity's and Ollama's catalogs (and a
-							// custom OpenAI-based provider's) are mostly chat models, which the decisions
-							// endpoint rejects, so only their decision models are listed.
-							return (
-								<ModelSelector
-									inputId="decision-model"
-									data-testid="complexity-router-decision-model-select"
-									hideSearchIcon
-									openWithEmptySearch
-									provider={providerName}
-									keys={providerKeyIds}
-									decisions
-									value={field.value ?? ""}
-									onChange={(next) => field.onChange(next)}
-									placeholder="Search decision models…"
-									emptyMessage="This provider lists no decision models"
-									disabled={!canUpdate}
-								/>
-							);
-						}
-						if (servesJev || !provider) {
-							return (
-								<ModelSelector
-									inputId="decision-model"
-									data-testid="complexity-router-decision-model-select"
-									hideSearchIcon
-									openWithEmptySearch
-									provider={providerName || undefined}
-									keys={providerKeyIds}
-									value={field.value ?? ""}
-									onChange={(next) => field.onChange(next)}
-									allowCustomModel
-									placeholder={providerName ? "Search or type a Jev model…" : "Select a provider first"}
-									disabled={!canUpdate || !providerName}
-								/>
-							);
-						}
-						if (servesClef || servesDatabricks) {
-							// Cloudflare binds the model to the provider's URL, and Databricks serves only
-							// ai_decide, so it is shown, not chosen: selecting the provider fills it in.
-							return (
-								<Input
-									id="decision-model"
-									data-testid="complexity-router-decision-model-input"
-									value={field.value ?? ""}
-									readOnly
-									disabled
-									className="font-mono"
-								/>
-							);
-						}
-						if (listedModels.length > 0) {
-							// A listing is one page of a possibly longer catalog, so search and typed
-							// names stay available instead of a fixed list that hides later models.
-							return (
-								<ModelSelector
-									inputId="decision-model"
-									data-testid="complexity-router-decision-model-select"
-									hideSearchIcon
-									openWithEmptySearch
-									provider={providerName || undefined}
-									keys={providerKeyIds}
-									value={field.value ?? ""}
-									onChange={(next) => field.onChange(next)}
-									allowCustomModel
-									placeholder="Search or type a model…"
-									disabled={!canUpdate}
-								/>
-							);
-						}
-						return (
-							<Select value={field.value || undefined} onValueChange={field.onChange} disabled={!canUpdate}>
-								<SelectTrigger className="w-full" id="decision-model" data-testid="complexity-router-decision-model-select">
-									<SelectValue placeholder="Select a model" />
-								</SelectTrigger>
-								<SelectContent>
-									{selfHostedModelGroups(providerName).map((group) => (
-										<SelectGroup key={group.label}>
-											<SelectLabel>{group.label}</SelectLabel>
-											{group.models.map((name) => (
-												<SelectItem key={name} value={name}>
-													{name}
-												</SelectItem>
-											))}
-										</SelectGroup>
-									))}
-								</SelectContent>
-							</Select>
-						);
-					}}
+					render={({ field }) => (
+						<DecisionModelSelector
+							inputId="decision-model"
+							data-testid="complexity-router-decision-model-select"
+							fixedModelTestId="complexity-router-decision-model-input"
+							providerName={providerName}
+							provider={provider}
+							keys={providerKeyIds}
+							value={field.value ?? ""}
+							onChange={selectModel}
+							disabled={!canUpdate}
+						/>
+					)}
 				/>
 				{servesClef && <p className="text-muted-foreground text-xs">Set by this provider&rsquo;s Cloudflare URL.</p>}
 				{LAYA_MODELS.includes(model) && (
