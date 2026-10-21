@@ -57,7 +57,13 @@ import {
 } from "@/lib/store";
 import { AgentGrantsEditor } from "@/components/agents/agentGrantsEditor";
 import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
-import { createDeleteAfterExpire, diffVmcpAssignments, updateDeleteAfterExpire, vmcpAssignmentsDirty } from "./virtualKeySheet.utils";
+import {
+	createDeleteAfterExpire,
+	diffVmcpAssignments,
+	resolveOwnerProfileState,
+	updateDeleteAfterExpire,
+	vmcpAssignmentsDirty,
+} from "./virtualKeySheet.utils";
 import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
 import {
 	type BudgetComparisonEntry,
@@ -404,6 +410,12 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
 	const hasCreateStandalone = useRbac(RbacResource.VirtualKeys, RbacOperation.CreateStandalone);
+	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
+	const hasKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
+	// An owner's access profile is read through that owner's own route, so each kind needs its View.
+	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
+	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
+	const hasBusinessUnitsAccess = useRbac(RbacResource.BusinessUnits, RbacOperation.View);
 	const canSubmit = isEditing ? hasUpdateAccess : hasCreateAccess;
 
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
@@ -450,7 +462,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// The banner names the owner. A caller that did not pass a name falls back to the team lookup
 	// (the one owner kind with a plain by-id read here), and then to the id itself.
 	const { data: attachedTeamData } = useGetTeamQuery(attachedTeamId, {
-		skip: !isOwnerLocked || !attachedTeamId || !!lockedOwner?.name,
+		skip: !isOwnerLocked || !attachedTeamId || !!lockedOwner?.name || !hasTeamsAccess,
 	});
 	const lockedOwnerName = lockedOwner?.name || attachedTeamData?.team?.name || lockedOwner?.id || "";
 
@@ -461,9 +473,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		}, 150); // Slightly longer than the 100ms animation duration
 	};
 
-	// RTK Query hooks
-	const { error: providersError } = useGetProvidersQuery();
-	const { error: keysError } = useGetAllKeysQuery();
+	// RTK Query hooks. Skipped without the permission, which also keeps their error toasts quiet.
+	const { error: providersError } = useGetProvidersQuery(undefined, { skip: !hasProvidersAccess });
+	const { error: keysError } = useGetAllKeysQuery(undefined, { skip: !hasKeysAccess });
 	const [createVirtualKey, { isLoading: isCreating }] = useCreateVirtualKeyMutation();
 	const [updateVirtualKey, { isLoading: isUpdating }] = useUpdateVirtualKeyMutation();
 	const [rotateVirtualKey, { isLoading: isRotating }] = useRotateVirtualKeyMutation();
@@ -713,7 +725,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// the entity owns: the server strips the key's own providers, budgets, rate limits and MCP
 	// access on create or move. Resolve the profile of whichever owner is selected (including the
 	// locked defaultTeamId) so the sheet can lock those fields before Save. A 404 (no profile) or
-	// any other error leaves data undefined, which reads as "not governed".
+	// any other error leaves data undefined, which reads as "not governed". The lookup needs View on
+	// the owner's kind and is skipped without it (see resolveOwnerProfileState).
 	const watchedEntityType = form.watch("entityType");
 	const watchedTeamId = form.watch("teamId");
 	const watchedCustomerId = form.watch("customerId");
@@ -726,23 +739,35 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				: watchedEntityType === "business_unit" && watchedBusinessUnitId
 					? { entityType: "business_unit" as const, entityId: watchedBusinessUnitId, label: "business unit" }
 					: undefined;
+	const canReadOwnerProfile = owner
+		? { team: hasTeamsAccess, customer: hasCustomersAccess, business_unit: hasBusinessUnitsAccess }[owner.entityType]
+		: false;
 	const {
 		data: ownerProfileData,
 		isError: isOwnerProfileError,
 		isFetching: isOwnerProfileFetching,
 		error: ownerProfileError,
 		refetch: refetchOwnerProfile,
-	} = useGetEntityAccessProfileQuery({ entityType: owner?.entityType ?? "team", entityId: owner?.entityId ?? "" }, { skip: !owner });
+	} = useGetEntityAccessProfileQuery(
+		{ entityType: owner?.entityType ?? "team", entityId: owner?.entityId ?? "" },
+		{ skip: !owner || !canReadOwnerProfile },
+	);
 	// While a newly selected owner's lookup is in flight, data still holds the previous owner's
 	// response; matching the entity keeps that stale profile from locking the form.
 	const ownerProfile =
 		owner &&
+		canReadOwnerProfile &&
 		!isOwnerProfileError &&
 		ownerProfileData?.access_profile?.entity_type === owner.entityType &&
 		ownerProfileData.access_profile?.entity_id === owner.entityId
 			? ownerProfileData.access_profile
 			: undefined;
-	const isGovernedByOwnerProfile = !!ownerProfile;
+	// The key's current owner, as the server stored it, for when the owner's profile cannot be read.
+	const isCurrentOwner =
+		isEditing &&
+		!!owner &&
+		owner.entityId ===
+			{ team: virtualKey?.team_id, customer: virtualKey?.customer_id, business_unit: virtualKey?.business_unit_id }[owner.entityType];
 	// Only a 404 means "this owner holds no profile". Any other failure leaves the answer unknown,
 	// and unknown must not read as ungoverned: the governance editors would unlock, and a save would
 	// send fields the server discards for a governed owner - reporting success while dropping the
@@ -751,9 +776,21 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// Absent data is not "still loading": the OSS build answers this from a stub that has no backend
 	// to ask, and a settled "no profile" has to read as ungoverned or Save would never enable there.
 	// Pending is what isFetching says, and nothing else.
+	// A caller without View on the owner's kind never asks, so it is neither pending nor failed.
 	const ownerProfileStatus = (ownerProfileError as unknown as { status?: number } | null | undefined)?.status;
-	const ownerProfileFailed = !!owner && isOwnerProfileError && ownerProfileStatus !== 404;
-	const isOwnerProfileUnknown = !!owner && (isOwnerProfileFetching || ownerProfileFailed);
+	const {
+		isGoverned: isGovernedByOwnerProfile,
+		failed: ownerProfileFailed,
+		unknown: isOwnerProfileUnknown,
+	} = resolveOwnerProfileState({
+		hasOwner: !!owner,
+		canReadOwnerProfile,
+		isFetching: isOwnerProfileFetching,
+		isError: isOwnerProfileError,
+		errorStatus: ownerProfileStatus,
+		hasOwnerProfile: !!ownerProfile,
+		isServerFlaggedCurrentOwner: isCurrentOwner && isOwnerGoverned,
+	});
 	// An owner-governed key gave its own configuration up to the profile, so taking it off that owner
 	// (unassigning it, or moving it under an owner without a profile) leaves it with nothing
 	// configured until it is set up again here.
@@ -765,6 +802,10 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 			<p data-testid="vk-owner-profile-notice">
 				Governed by <span className="font-medium">{ownerProfile.name}</span>, the access profile of this {owner.label}. Its budgets, rate
 				limits and providers apply to this key.
+			</p>
+		) : isGovernedByOwnerProfile && owner ? (
+			<p data-testid="vk-owner-profile-notice">
+				Governed by the access profile of this {owner.label}. Its budgets, rate limits and providers apply to this key.
 			</p>
 		) : null;
 
