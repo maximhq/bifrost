@@ -3942,6 +3942,13 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 		return documentBlock
 	}
 
+	// An explicitly empty text document still needs a text source type.
+	if file.FileData != nil && *file.FileData == "" && file.FileType != nil && (*file.FileType == "text/plain" || *file.FileType == "txt") {
+		documentBlock.Source.SourceObj.Type = "text"
+		documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
+		documentBlock.Source.SourceObj.Data = file.FileData
+	}
+
 	return documentBlock
 }
 
@@ -4029,6 +4036,13 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 		documentBlock.Source.SourceObj.Type = "url"
 		documentBlock.Source.SourceObj.URL = fileBlock.FileURL
 		return documentBlock
+	}
+
+	// An explicitly empty text document still needs a text source type.
+	if fileBlock.FileData != nil && *fileBlock.FileData == "" && fileBlock.FileType != nil && (*fileBlock.FileType == "text/plain" || *fileBlock.FileType == "txt") {
+		documentBlock.Source.SourceObj.Type = "text"
+		documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
+		documentBlock.Source.SourceObj.Data = fileBlock.FileData
 	}
 
 	return documentBlock
