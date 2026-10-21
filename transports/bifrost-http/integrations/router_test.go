@@ -1372,6 +1372,80 @@ func TestGenAIPassthroughHTTPDisconnectCancelsUpstream(t *testing.T) {
 	}
 }
 
+func BenchmarkGatewayPassthroughHTTP(b *testing.B) {
+	const path = "/genai_passthrough/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+	const requestBody = `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`
+	for _, tc := range []struct {
+		name                 string
+		escapeEvery          int
+		usageEvery, parallel bool
+	}{
+		{name: "plain"}, {name: "mixed_usage", escapeEvery: 4, usageEvery: true},
+		{name: "escaped", escapeEvery: 1, usageEvery: true}, {name: "parallel", parallel: true},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			var body strings.Builder
+			for i := range 256 {
+				text := "A plain streamed sentence."
+				if tc.escapeEvery > 0 && i%tc.escapeEvery == 0 {
+					text = "code:\n\"quoted text\""
+				}
+				encoded, err := schemas.MarshalSorted(text)
+				require.NoError(b, err)
+				fmt.Fprintf(&body, `data: {"candidates":[{"content":{"parts":[{"text":%s}],"role":"model"},"index":0}]`, encoded)
+				if tc.usageEvery {
+					fmt.Fprintf(&body, `,"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":%d,"totalTokenCount":%d}`, i+1, i+6)
+				}
+				body.WriteString("}\n\n")
+			}
+			body.WriteString("data: " + `{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":256,"totalTokenCount":261}}` + "\n\n")
+			data := []byte(body.String())
+			baseURL, receipt := newPassthroughHTTPFixture(b, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.RawQuery != "alt=sse" || r.Header.Get("x-goog-api-key") != "sk-ant-test-operator-key" {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write(data)
+			})
+			client := &http.Client{Timeout: 5 * time.Second}
+			b.Cleanup(client.CloseIdleConnections)
+			run := func() {
+				response, err := client.Post(baseURL+path, "application/json", strings.NewReader(requestBody))
+				if err != nil {
+					b.Fatal(err)
+				}
+				got, err := io.ReadAll(response.Body)
+				closeErr := response.Body.Close()
+				if err != nil || closeErr != nil || response.StatusCode != 200 || !bytes.Equal(got, data) {
+					b.Fatalf("HTTP status %d, bytes %d/%d, read %v, close %v", response.StatusCode, len(got), len(data), err, closeErr)
+				}
+			}
+			run()
+			b.ReportAllocs()
+			b.SetBytes(int64(len(data)))
+			if tc.parallel {
+				b.ResetTimer()
+				b.RunParallel(func(pb *testing.PB) {
+					for pb.Next() {
+						run()
+					}
+				})
+			} else {
+				for b.Loop() {
+					run()
+				}
+			}
+			b.StopTimer()
+			receipt.mu.Lock()
+			defer receipt.mu.Unlock()
+			if receipt.totalTokens != 261 || receipt.pre != receipt.final {
+				b.Fatalf("missing terminal accounting: pre=%d final=%d tokens=%d", receipt.pre, receipt.final, receipt.totalTokens)
+			}
+		})
+	}
+}
+
 type passthroughUpstreamHit struct {
 	path   string
 	apiKey string

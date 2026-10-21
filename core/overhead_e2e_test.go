@@ -1,10 +1,12 @@
 package bifrost
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +14,153 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+type gatewayPassthroughWorkload struct {
+	name                               string
+	events, textBytes, escapeEvery     int
+	usageEvery, nullFinish, jsonArray  bool
+	upstreamDelay, pace, consumerDelay time.Duration
+	parallel                           bool
+}
+
+func gatewayPassthroughWorkloads() []gatewayPassthroughWorkload {
+	return []gatewayPassthroughWorkload{
+		{name: "plain", events: 256, textBytes: 32},
+		{name: "mixed_usage", events: 256, textBytes: 128, escapeEvery: 4, usageEvery: true},
+		{name: "escaped", events: 256, textBytes: 128, escapeEvery: 1, usageEvery: true},
+		{name: "null_finish", events: 256, textBytes: 128, usageEvery: true, nullFinish: true},
+		{name: "json_array", events: 256, textBytes: 128, escapeEvery: 4, usageEvery: true, jsonArray: true},
+		{name: "small", events: 32, textBytes: 32, escapeEvery: 4, usageEvery: true},
+		{name: "large", events: 32, textBytes: 8192, escapeEvery: 4, usageEvery: true},
+		{name: "paced_2ms", events: 32, textBytes: 128, escapeEvery: 4, usageEvery: true, upstreamDelay: 50 * time.Millisecond, pace: 2 * time.Millisecond},
+		{name: "paced_20ms", events: 32, textBytes: 128, escapeEvery: 4, usageEvery: true, upstreamDelay: 50 * time.Millisecond, pace: 20 * time.Millisecond},
+		{name: "slow_consumer", events: 128, textBytes: 8192, escapeEvery: 4, usageEvery: true, consumerDelay: time.Millisecond},
+		{name: "parallel", events: 256, textBytes: 32, parallel: true},
+	}
+}
+
+func (workload gatewayPassthroughWorkload) frames(b *testing.B) [][]byte {
+	b.Helper()
+	frames := make([][]byte, 0, workload.events+1)
+	for i := range workload.events {
+		text := strings.Repeat("x", workload.textBytes)
+		if workload.escapeEvery > 0 && i%workload.escapeEvery == 0 {
+			text = "code:\n\"quoted text\" " + text
+		}
+		encoded, err := schemas.MarshalSorted(text)
+		if err != nil {
+			b.Fatal(err)
+		}
+		finish := ""
+		if workload.nullFinish {
+			finish = `,"finishReason":null`
+		}
+		payload := fmt.Sprintf(`{"candidates":[{"content":{"parts":[{"text":%s}],"role":"model"},"index":0%s}],"modelVersion":"gemini-2.5-flash"`, encoded, finish)
+		if workload.usageEvery {
+			payload += fmt.Sprintf(`,"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":%d,"totalTokenCount":%d}`, i+1, i+6)
+		}
+		frames = append(frames, []byte("data: "+payload+"}\n\n"))
+	}
+	frames = append(frames, []byte(fmt.Sprintf("data: {\"candidates\":[{\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":%d,\"totalTokenCount\":%d}}\n\n", workload.events, workload.events+5)))
+	return frames
+}
+
+// Includes actual core admission, queueing, key selection, Gemini HTTP calls,
+// usage extraction and complete client draining; the upstream is local, not Google.
+func BenchmarkGatewayPassthroughStream(b *testing.B) {
+	for _, workload := range gatewayPassthroughWorkloads() {
+		b.Run(workload.name, func(b *testing.B) {
+			frames := workload.frames(b)
+			data := bytes.Join(frames, nil)
+			query, contentType := "alt=sse", "text/event-stream"
+			if workload.jsonArray {
+				elements := make([][]byte, len(frames))
+				for i, frame := range frames {
+					elements[i] = frame[len("data: ") : len(frame)-len("\n\n")]
+				}
+				data = append(append([]byte("["), bytes.Join(elements, []byte(","))...), ']')
+				query, contentType = "alt=json", "application/json"
+			}
+			requestBody := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1beta/models/gemini-2.5-flash:streamGenerateContent" || r.URL.RawQuery != query || r.Header.Get("x-goog-api-key") != "test-key" {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if workload.upstreamDelay > 0 {
+					time.Sleep(workload.upstreamDelay)
+				}
+				w.Header().Set("Content-Type", contentType)
+				if workload.pace == 0 {
+					_, _ = w.Write(data)
+					return
+				}
+				for i, frame := range frames {
+					if i > 0 {
+						time.Sleep(workload.pace)
+					}
+					if _, err := w.Write(frame); err != nil {
+						return
+					}
+					w.(http.Flusher).Flush()
+				}
+			}))
+			defer upstream.Close()
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.Gemini, 8, 100, upstream.URL)
+			account.SetKeysForProvider(schemas.Gemini, []schemas.Key{{ID: "benchmark-key", Value: *schemas.NewSecretVar("test-key"), Models: schemas.WhiteList{"gemini-2.5-flash"}, Weight: 1}})
+			client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer client.Shutdown()
+			run := func() {
+				ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+				stream, err := client.PassthroughStream(ctx, schemas.Gemini, &schemas.BifrostPassthroughRequest{
+					Model: "gemini-2.5-flash", Method: http.MethodPost,
+					Path: "/v1beta/models/gemini-2.5-flash:streamGenerateContent", RawQuery: query, Body: requestBody,
+				})
+				if err != nil {
+					b.Fatalf("PassthroughStream: %v", err)
+				}
+				got := make([]byte, 0, len(data))
+				var usage *schemas.BifrostPassthroughUsage
+				for chunk := range stream {
+					if chunk.BifrostError != nil || chunk.BifrostPassthroughResponse == nil || chunk.BifrostPassthroughResponse.StatusCode != 200 {
+						b.Fatalf("unexpected chunk: %+v", chunk)
+					}
+					response := chunk.BifrostPassthroughResponse
+					got = append(got, response.Body...)
+					if response.PassthroughUsage != nil {
+						usage = response.PassthroughUsage
+					}
+					if workload.consumerDelay > 0 && len(response.Body) > 0 {
+						time.Sleep(workload.consumerDelay)
+					}
+				}
+				if !bytes.Equal(got, data) || usage == nil || usage.LLMUsage == nil || usage.LLMUsage.TotalTokens != workload.events+5 || ctx.Err() != nil {
+					b.Fatalf("bytes %d/%d, usage %v, context error %v", len(got), len(data), usage, ctx.Err())
+				}
+			}
+			run() // Equivalent untimed warm-up, including codec and connection setup.
+			b.ReportAllocs()
+			b.SetBytes(int64(len(data)))
+			if workload.parallel {
+				b.ResetTimer()
+				b.RunParallel(func(pb *testing.PB) {
+					for pb.Next() {
+						run()
+					}
+				})
+			} else {
+				for b.Loop() {
+					run()
+				}
+			}
+			b.StopTimer()
+		})
+	}
+}
 
 // chatCompletionBody is a minimal well-formed OpenAI chat completion response.
 const chatCompletionBody = `{
