@@ -2172,9 +2172,11 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 	// Skip the fetch entirely when the provider has disabled list_models via
 	// allowed_requests — every per-(provider,keyID) call would just bounce with
 	// "operation not allowed", wasting two goroutines and one bfCtx per attempt.
+	// A generic relay has no model listing at all.
 	if pc, err := s.Config.GetProviderConfigRaw(provider); err == nil && pc != nil &&
 		pc.CustomProviderConfig != nil &&
-		!pc.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
+		(pc.CustomProviderConfig.BaseProviderType == schemas.Generic ||
+			!pc.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest)) {
 		return
 	}
 	// Captured before the upstream calls go out, and checked again by the

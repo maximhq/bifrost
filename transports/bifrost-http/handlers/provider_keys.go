@@ -153,6 +153,10 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
 		return
 	}
+	if lib.GenericKeyValueRequired(providerConfig.CustomProviderConfig) && key.Value.GetValue() == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty for this generic provider's auth type")
+		return
+	}
 
 	if err := validateProviderKeyURL(baseProvider, key); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -295,6 +299,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && mergedKey.Value.GetValue() == "" && mergedKey.OAuthKeyConfig == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
+		return
+	}
+	if lib.GenericKeyValueRequired(providerConfig.CustomProviderConfig) && mergedKey.Value.GetValue() == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty for this generic provider's auth type")
 		return
 	}
 

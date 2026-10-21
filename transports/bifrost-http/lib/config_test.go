@@ -25842,3 +25842,67 @@ func TestA2APrivateAllowlist(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, absent, empty)
 }
+
+// TestValidateCustomProvider_Generic pins what the management API accepts for a generic relay:
+// a base URL is mandatory, the relay config must be internally valid, keyless needs auth none,
+// request_path_overrides has nothing to override, and only the passthrough operations may be on.
+func TestValidateCustomProvider_Generic(t *testing.T) {
+	withBase := func(cpc *schemas.CustomProviderConfig) configstore.ProviderConfig {
+		cpc.BaseProviderType = schemas.Generic
+		return configstore.ProviderConfig{NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.tavily.com"}, CustomProviderConfig: cpc}
+	}
+
+	t.Run("defaults are filled in", func(t *testing.T) {
+		cfg := withBase(&schemas.CustomProviderConfig{})
+		require.NoError(t, ValidateCustomProvider(cfg, "tavily"))
+		require.NotNil(t, cfg.CustomProviderConfig.GenericConfig)
+		assert.Equal(t, schemas.GenericAuthBearer, cfg.CustomProviderConfig.GenericConfig.Auth.Type)
+		require.NotNil(t, cfg.CustomProviderConfig.AllowedRequests)
+		assert.True(t, cfg.CustomProviderConfig.AllowedRequests.Passthrough)
+		assert.True(t, cfg.CustomProviderConfig.AllowedRequests.PassthroughStream)
+		assert.False(t, cfg.CustomProviderConfig.AllowedRequests.ChatCompletion)
+	})
+	t.Run("base url required", func(t *testing.T) {
+		err := ValidateCustomProvider(configstore.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic}}, "tavily")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "network_config.base_url")
+	})
+	t.Run("relay config is validated", func(t *testing.T) {
+		err := ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader}}}), "tavily")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "auth.header_name")
+	})
+	t.Run("keyless needs auth none", func(t *testing.T) {
+		err := ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{IsKeyLess: true}), "tavily")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "is_key_less")
+		require.NoError(t, ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{IsKeyLess: true, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthNone}}}), "tavily"))
+	})
+	t.Run("request path overrides rejected", func(t *testing.T) {
+		err := ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.ChatCompletionRequest: "/x"}}), "tavily")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "request_path_overrides")
+	})
+	t.Run("typed operations cannot be enabled", func(t *testing.T) {
+		err := ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{AllowedRequests: &schemas.AllowedRequests{Passthrough: true, ChatCompletion: true}}), "tavily")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only serve passthrough")
+		require.NoError(t, ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{AllowedRequests: &schemas.AllowedRequests{Passthrough: true}}), "tavily"))
+	})
+	t.Run("standard provider name refused", func(t *testing.T) {
+		err := ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{}), schemas.OpenAI)
+		require.Error(t, err)
+	})
+}
+
+func TestGenericKeyValueRequired(t *testing.T) {
+	assert.False(t, GenericKeyValueRequired(nil))
+	assert.False(t, GenericKeyValueRequired(&schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}))
+	assert.True(t, GenericKeyValueRequired(&schemas.CustomProviderConfig{BaseProviderType: schemas.Generic}), "bearer by default")
+	for _, authType := range []schemas.GenericAuthType{schemas.GenericAuthBearer, schemas.GenericAuthHeader, schemas.GenericAuthQuery, schemas.GenericAuthBasic} {
+		assert.True(t, GenericKeyValueRequired(&schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: authType}}}), string(authType))
+	}
+	for _, authType := range []schemas.GenericAuthType{schemas.GenericAuthNone, schemas.GenericAuthAWSSigV4} {
+		assert.False(t, GenericKeyValueRequired(&schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: authType}}}), string(authType))
+	}
+}

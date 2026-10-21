@@ -489,3 +489,26 @@ func BenchmarkApplyParsedPassthrough(b *testing.B) {
 		}
 	})
 }
+
+// TestPassthroughLogKeepsGenericRelayRaw pins the row a generic (non-LLM) relay leaves behind: it
+// stays a passthrough row whatever path it was sent to, with its raw JSON bodies stored and no
+// typed fields invented from them.
+func TestPassthroughLogKeepsGenericRelayRaw(t *testing.T) {
+	row := runPassthroughCall(t, &Config{}, "req-pt-generic", passthroughCall{
+		provider: "tavily", path: "/search",
+		requestBody: `{"query":"bifrost","search_depth":"basic"}`, status: 200, responseBody: `{"results":[{"title":"Bifrost"}]}`,
+	}, func(ctx *schemas.BifrostContext) {
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Generic)
+	}, nil)
+
+	require.Equal(t, "tavily", row.Provider)
+	require.Equal(t, string(schemas.PassthroughRequest), row.Object)
+	require.True(t, row.IsPassthrough)
+	require.Equal(t, `{"query":"bifrost","search_depth":"basic"}`, row.PassthroughRequestBody)
+	require.Equal(t, `{"results":[{"title":"Bifrost"}]}`, row.PassthroughResponseBody)
+	require.Empty(t, row.InputHistoryParsed)
+	require.Empty(t, row.ResponsesOutputParsed)
+	params := passthroughParamsMap(t, row)
+	require.Equal(t, "/search", params["path"])
+	require.Nil(t, params["parsed_type"])
+}

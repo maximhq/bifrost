@@ -68,6 +68,89 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "generic_echo": {
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Generic Echo Key",
+          "value": "harness-dummy",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "allowed_requests": {
+          "passthrough": true,
+          "passthrough_stream": true
+        },
+        "generic_config": {
+          "auth": {
+            "type": "header",
+            "header_name": "x-api-key"
+          },
+          "usage": {
+            "cost_per_request": 0.001
+          },
+          "routes": [
+            {
+              "method": "GET",
+              "path": "/get",
+              "billable": false
+            }
+          ]
+        }
+      },
+      "network_config": {
+        "base_url": "https://postman-echo.com",
+        "default_request_timeout_in_seconds": 60
+      }
+    },
+    "generic_echo_keyless": {
+      "store_raw_request_response": true,
+      "keys": [],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "is_key_less": true,
+        "generic_config": {
+          "auth": {
+            "type": "none"
+          },
+          "streaming": {
+            "paths": ["/stream/*"]
+          }
+        }
+      },
+      "network_config": {
+        "base_url": "https://postman-echo.com",
+        "default_request_timeout_in_seconds": 60
+      }
+    },
+    "generic_openai": {
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Generic OpenAI Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": {
+            "type": "bearer"
+          }
+        }
+      },
+      "network_config": {
+        "base_url": "https://api.openai.com",
+        "default_request_timeout_in_seconds": 120
+      }
+    },
     "typesafe_custom": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,

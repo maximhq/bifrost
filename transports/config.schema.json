@@ -13106,7 +13106,8 @@
             "sarvam",
             "wafer",
             "cloudflare",
-            "typesafe"
+            "typesafe",
+            "generic"
           ],
           "description": "Base provider type to extend"
         },
@@ -13116,6 +13117,9 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "generic_config": {
+          "$ref": "#/$defs/generic_provider_config"
         },
         "allowed_requests": {
           "type": "object",
@@ -13323,6 +13327,170 @@
       },
       "required": [
         "base_provider_type"
+      ],
+      "additionalProperties": false
+    },
+    "generic_provider_config": {
+      "type": "object",
+      "description": "Relay settings for a custom provider whose base_provider_type is generic: a raw HTTP passthrough to a non-LLM API reached at /passthrough/{provider}/{path}",
+      "properties": {
+        "auth": {
+          "$ref": "#/$defs/generic_auth_config"
+        },
+        "usage": {
+          "$ref": "#/$defs/generic_usage_config"
+        },
+        "streaming": {
+          "$ref": "#/$defs/generic_streaming_config"
+        },
+        "routes": {
+          "type": "array",
+          "description": "Per-route overrides; the first route whose method and path glob match wins",
+          "items": {
+            "$ref": "#/$defs/generic_route_config"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "generic_auth_config": {
+      "type": "object",
+      "description": "How the selected key is presented to the upstream",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "bearer",
+            "header",
+            "query",
+            "basic",
+            "aws_sigv4",
+            "none"
+          ],
+          "description": "bearer: Authorization: Bearer <key>; header: <header_name>: <value_prefix><key>; query: ?<query_param>=<key>; basic: Authorization: Basic base64(<key>) with the key as user:password; aws_sigv4: SigV4 with the key's bedrock_key_config credentials; none: nothing injected (default bearer)"
+        },
+        "header_name": {
+          "type": "string",
+          "description": "Header that carries the key (auth.type header)"
+        },
+        "query_param": {
+          "type": "string",
+          "description": "Query parameter that carries the key (auth.type query)"
+        },
+        "value_prefix": {
+          "type": "string",
+          "description": "Literal prefix placed before the key value (auth.type header)"
+        },
+        "aws": {
+          "type": "object",
+          "description": "SigV4 settings (auth.type aws_sigv4)",
+          "properties": {
+            "service": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+$",
+              "description": "SigV4 signing name, e.g. textract or translate"
+            },
+            "region": {
+              "type": "string",
+              "description": "AWS region; falls back to the key's bedrock_key_config.region"
+            }
+          },
+          "required": [
+            "service"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "generic_usage_config": {
+      "type": "object",
+      "description": "Maps a relayed request/response onto usage and cost with gjson paths. Fields left empty keep the optimistic defaults (request model, response usage.prompt_tokens|input_tokens, usage.completion_tokens|output_tokens, usage.total_tokens, usage.cost|cost). Naming any token path turns the optimistic token lookup off",
+      "properties": {
+        "model_path": {
+          "type": "string",
+          "description": "Request body path for the model name (default model)"
+        },
+        "input_tokens_path": {
+          "type": "string",
+          "description": "Response body path for input tokens"
+        },
+        "output_tokens_path": {
+          "type": "string",
+          "description": "Response body path for output tokens"
+        },
+        "total_tokens_path": {
+          "type": "string",
+          "description": "Response body path for total tokens"
+        },
+        "cost_path": {
+          "type": "string",
+          "description": "Response body path for a provider-reported USD cost; an array of numbers is summed"
+        },
+        "cost_per_request": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Flat USD fee added to every billable call"
+        },
+        "disable_optimistic_parsing": {
+          "type": "boolean",
+          "description": "Read only the configured paths"
+        }
+      },
+      "additionalProperties": false
+    },
+    "generic_streaming_config": {
+      "type": "object",
+      "description": "Which relayed requests are served as streams (a route's stream flag still wins)",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "description": "Rooted segment globs that always stream, e.g. /v1/stream/**",
+          "items": {
+            "type": "string"
+          }
+        },
+        "detect_from_accept_header": {
+          "type": "boolean",
+          "description": "Treat Accept: text/event-stream as a streaming request"
+        }
+      },
+      "additionalProperties": false
+    },
+    "generic_route_config": {
+      "type": "object",
+      "description": "Overrides for one upstream operation",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "HEAD"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Rooted segment glob (* within a segment); a trailing /** matches the prefix and everything below"
+        },
+        "billable": {
+          "type": "boolean",
+          "description": "false relays the call without counting or charging it (default true)"
+        },
+        "stream": {
+          "type": "boolean",
+          "description": "Forces the streaming or buffered relay for this route"
+        },
+        "usage": {
+          "$ref": "#/$defs/generic_usage_config"
+        }
+      },
+      "required": [
+        "method",
+        "path"
       ],
       "additionalProperties": false
     },

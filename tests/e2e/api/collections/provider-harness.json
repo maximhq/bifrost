@@ -281289,6 +281289,430 @@
           }
         }
       ]
+    },
+    {
+      "name": "270. Generic Passthrough (custom provider base type generic) (generic passthrough)",
+      "description": "A custom provider with base_provider_type generic is a raw HTTP relay to a non-LLM API, reached at /passthrough/{provider}/{path}. The provider segment is resolved per request; only generic-based custom providers are served. Bifrost injects the configured key per auth.type (header x-api-key here, bearer for generic_openai, none for the keyless provider), strips caller credentials, pins the upstream host, relays bytes untouched, and reports usage so governance counts the call and the log row keeps the raw bodies. Profile providers: generic_echo and generic_echo_keyless (postman-echo), generic_openai (api.openai.com). Rows: header auth injection and credential stripping; GET with query on a non-billable route; PUT; OpenAI through the relay with optimistic usage reaching the log row; OpenAI SSE through the streaming relay; streaming.paths glob on a keyless provider; 404 for a standard provider name; 404 for an unknown name; 400 from the path guard. Run with FEATURE=\"generic passthrough\".",
+      "item": [
+        {
+          "name": "270.1 POST /passthrough/generic_echo/post - header auth injected, caller x-api-key replaced (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo is a custom provider with base_provider_type generic and auth.type header (x-api-key).",
+                  "// The route segment picks the provider; the configured key replaces whatever credential the caller sent.",
+                  "pm.test('generic relay: POST reached postman-echo', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('generic relay: configured key injected as x-api-key', function () { pm.expect(j.headers['x-api-key'], JSON.stringify(j.headers)).to.eql('harness-dummy'); });",
+                  "pm.test('generic relay: caller authorization never reaches the upstream', function () { pm.expect(j.headers.authorization, JSON.stringify(j.headers)).to.be.undefined; });",
+                  "pm.test('generic relay: body relayed byte for byte', function () { pm.expect(j.json, JSON.stringify(j.json)).to.eql({query: 'bifrost gateway', max_results: 2}); });",
+                  "pm.test('generic relay: x-bifrost-provider names the custom provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider')).to.eql('generic_echo'); });",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(pm.response.headers.get('x-bifrost-request-id'), 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "caller-supplied-key"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer caller-supplied-token"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"bifrost gateway\",\n  \"max_results\": 2\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo",
+                "post"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.2 GET /passthrough/generic_echo/get?foo=bar - GET relayed with query preserved on a non-billable route (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// GET /get is a routes[] entry with billable:false: relayed like any other call, just not counted.",
+                  "pm.test('generic relay: GET reached postman-echo', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('generic relay: query string preserved', function () { pm.expect(j.args, JSON.stringify(j.args)).to.eql({foo: 'bar', n: '2'}); });",
+                  "pm.test('generic relay: configured key injected on GET too', function () { pm.expect(j.headers['x-api-key']).to.eql('harness-dummy'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo/get?foo=bar&n=2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo",
+                "get"
+              ],
+              "query": [
+                {
+                  "key": "foo",
+                  "value": "bar"
+                },
+                {
+                  "key": "n",
+                  "value": "2"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.3 PUT /passthrough/generic_echo/put - non-POST method relayed (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('generic relay: PUT reached postman-echo', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('generic relay: PUT body relayed', function () { pm.expect(j.json, JSON.stringify(j.json)).to.eql({name: 'bifrost'}); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"bifrost\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo/put",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo",
+                "put"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.4 POST /passthrough/generic_openai/v1/chat/completions - openai gpt-4o-mini usage parsed optimistically (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_openai is OpenAI configured as a *generic* provider (bearer auth, no mapping): the relay",
+                  "// forwards bytes untouched and the optimistic parser reads usage.total_tokens for governance and logs.",
+                  "pm.test('generic relay: openai chat completion relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('generic relay: upstream body untouched', function () { pm.expect(j.choices, JSON.stringify(j).slice(0, 300)).to.be.an('array').and.not.empty; });",
+                  "pm.test('generic relay: upstream reported usage', function () { pm.expect(j.usage && j.usage.total_tokens, JSON.stringify(j.usage)).to.be.above(0); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The log row stays a passthrough row (a generic relay is never retyped) and carries the parsed tokens.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.passthrough_response_body !== undefined) {",
+                  "      pm.test('generic relay: log row is a passthrough row', function () { pm.expect(row.object, JSON.stringify({object: row.object, is_passthrough: row.is_passthrough})).to.eql('passthrough'); pm.expect(row.is_passthrough).to.eql(true); });",
+                  "      var total = (row.token_usage && row.token_usage.total_tokens) || row.total_tokens || 0;",
+                  "      pm.test('generic relay: optimistic usage reached the log row', function () { pm.expect(total, JSON.stringify(row.token_usage)).to.be.above(0); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: log row appeared', function () { pm.expect.fail('log ' + reqId + ' has no passthrough_response_body after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hi via the generic relay.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.5 POST /passthrough/generic_openai/v1/chat/completions stream:true - openai gpt-4o-mini SSE relayed (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// stream:true in the body selects the streaming relay; SSE bytes are forwarded unchanged and the",
+                  "// usage on the final event is observed for governance without buffering the stream.",
+                  "pm.test('generic relay: openai stream relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('generic relay: upstream content type kept', function () { pm.expect(pm.response.headers.get('content-type') || '', 'content-type').to.include('text/event-stream'); });",
+                  "pm.test('generic relay: SSE bytes forwarded unchanged', function () { pm.expect(text, text.slice(0, 400)).to.include('data: ').and.to.include('[DONE]'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": { \"include_usage\": true },\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hi via the generic relay stream.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.6 GET /passthrough/generic_echo_keyless/stream/3 - keyless provider served by the streaming relay via streaming.paths (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_keyless has auth.type none, no keys, and streaming.paths [\"/stream/*\"]: the glob",
+                  "// selects the streaming relay (X-Accel-Buffering: no) for a chunked JSON body with no SSE framing.",
+                  "pm.test('generic relay: keyless stream relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "pm.test('generic relay: streaming handler served the glob route', function () { pm.expect(pm.response.headers.get('x-accel-buffering'), 'x-accel-buffering').to.eql('no'); });",
+                  "pm.test('generic relay: chunks forwarded', function () { pm.expect((pm.response.text() || '').length, 'body length').to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_keyless/stream/3",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_keyless",
+                "stream",
+                "3"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] 270.7 POST /passthrough/openai/v1/chat/completions - standard provider is not a generic passthrough (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// /passthrough/{provider} serves only custom providers whose base type is generic; a standard",
+                  "// provider keeps its own *_passthrough route and is refused here before any dispatch.",
+                  "pm.test('generic relay: standard provider name is a 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('no generic passthrough provider named openai');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"hi\" }]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] 270.8 POST /passthrough/does-not-exist/search - unknown provider name (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('generic relay: unknown provider is a 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('no generic passthrough provider named does-not-exist');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/does-not-exist/search",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "does-not-exist",
+                "search"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] 270.9 POST /passthrough/generic_echo/v1@127.0.0.1/x - passthrough path guard rejects before dispatch (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The remainder is concatenated onto the provider base URL, so a userinfo separator in the",
+                  "// first segment is refused by the router before key selection or the upstream is reached.",
+                  "pm.test('generic relay: path guard rejects before dispatch', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('invalid passthrough path');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo/v1@127.0.0.1/x",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo",
+                "v1@127.0.0.1",
+                "x"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

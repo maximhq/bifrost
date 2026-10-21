@@ -1599,3 +1599,32 @@ func TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields(t *testing.T) {
 		}
 	})
 }
+
+// TestCreateProviderKey_GenericRequiresValuePerAuthType pins that a generic provider's key must
+// carry a value for every auth type that injects it. CanProviderKeyValueBeEmpty is true for the
+// generic base (SigV4 keys hold AWS credentials instead), so this is the check that catches an
+// empty bearer or header key.
+func TestCreateProviderKey_GenericRequiresValuePerAuthType(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	h := &ProviderHandler{inMemoryStore: &lib.Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			"tavily": {
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.tavily.com"},
+				CustomProviderConfig: &schemas.CustomProviderConfig{
+					BaseProviderType: schemas.Generic,
+					GenericConfig:    &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "x-api-key"}},
+				},
+			},
+		},
+	}}
+	ctx := newTestRequestCtx(`{"name": "k1", "value": "", "weight": 1}`)
+	ctx.SetUserValue("provider", "tavily")
+	h.createProviderKey(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected 400 for an empty header-auth key, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "auth type") {
+		t.Fatalf("expected the auth-type rule in the error, got %s", ctx.Response.Body())
+	}
+}

@@ -9760,7 +9760,59 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 		return fmt.Errorf("custom provider validation failed: Bedrock providers cannot be keyless (is_key_less=true)")
 	}
 
+	if cpc.BaseProviderType == schemas.Generic {
+		return validateGenericCustomProvider(config, cpc)
+	}
+
 	return nil
+}
+
+// validateGenericCustomProvider checks a custom provider whose base type is generic. The relay
+// needs a base URL to know where to send requests, carries no typed operations (so the allowed
+// requests default to the two passthrough kinds and nothing else may be turned on), and has no
+// provider paths for request_path_overrides to replace.
+func validateGenericCustomProvider(config configstore.ProviderConfig, cpc *schemas.CustomProviderConfig) error {
+	if config.NetworkConfig == nil || strings.TrimSpace(config.NetworkConfig.BaseURL) == "" {
+		return fmt.Errorf("custom provider validation failed: generic providers require network_config.base_url")
+	}
+	if len(cpc.RequestPathOverrides) > 0 {
+		return fmt.Errorf("custom provider validation failed: request_path_overrides does not apply to generic providers")
+	}
+	if cpc.GenericConfig == nil {
+		cpc.GenericConfig = &schemas.GenericProviderConfig{}
+	}
+	if cpc.GenericConfig.Auth.Type == "" {
+		cpc.GenericConfig.Auth.Type = schemas.GenericAuthBearer
+	}
+	if err := cpc.GenericConfig.Validate(); err != nil {
+		return fmt.Errorf("custom provider validation failed: generic_config: %w", err)
+	}
+	if cpc.IsKeyLess && cpc.GenericConfig.Auth.Type != schemas.GenericAuthNone {
+		return fmt.Errorf("custom provider validation failed: is_key_less requires generic_config.auth.type \"none\"")
+	}
+	if cpc.AllowedRequests == nil {
+		cpc.AllowedRequests = &schemas.AllowedRequests{Passthrough: true, PassthroughStream: true}
+		return nil
+	}
+	allowed := *cpc.AllowedRequests
+	allowed.Passthrough, allowed.PassthroughStream = false, false
+	if allowed != (schemas.AllowedRequests{}) {
+		return fmt.Errorf("custom provider validation failed: generic providers only serve passthrough and passthrough_stream")
+	}
+	return nil
+}
+
+// GenericKeyValueRequired reports whether a key for a generic provider must carry a value: every
+// auth type injects the value except none, and aws_sigv4 signs with the key's AWS credentials.
+func GenericKeyValueRequired(cpc *schemas.CustomProviderConfig) bool {
+	if cpc == nil || cpc.BaseProviderType != schemas.Generic {
+		return false
+	}
+	authType := schemas.GenericAuthBearer
+	if cpc.GenericConfig != nil && cpc.GenericConfig.Auth.Type != "" {
+		authType = cpc.GenericConfig.Auth.Type
+	}
+	return authType != schemas.GenericAuthNone && authType != schemas.GenericAuthAWSSigV4
 }
 
 // PromptCacheTTLExtended is the only explicit prompt-cache TTL the gateway accepts.
