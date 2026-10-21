@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/examples/plugins/llm-only
 
-go 1.27.2
+go 1.27.3
 
 replace github.com/maximhq/bifrost/core => ../../../core
 

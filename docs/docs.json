@@ -557,7 +557,9 @@
               {
                 "group": "Cohere SDK",
                 "icon": "c",
-                "pages": ["integrations/cohere-sdk/overview"]
+                "pages": [
+                  "integrations/cohere-sdk/overview"
+                ]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -1733,7 +1735,8 @@
                 "expanded": false,
                 "pages": [
                   "GET /api/governance/budgets",
-                  "GET /api/governance/rate-limits"
+                  "GET /api/governance/rate-limits",
+                  "POST /api/governance/budget-requests/{request_id}/approve"
                 ]
               },
               {
@@ -1999,6 +2002,8 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.3.2",
+              "changelogs/v2.3.1",
               "changelogs/v2.3.0",
               "changelogs/v2.2.6",
               "changelogs/v2.2.5",
@@ -2231,6 +2236,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.3.1",
               "changelogs/ent-v2.3.0",
               "changelogs/ent-v2.2.6",
               "changelogs/ent-v2.2.5",
