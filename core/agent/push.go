@@ -223,45 +223,6 @@ func (h *proxyRequestHandler) pushEnvelope(requestType schemas.A2ARequestType, t
 	return setA2ARequestBody(envelope, body)
 }
 
-// runPushLocal is forwardUpstream for push operations answered from Bifrost's
-// own durable store: same plugin gate, no upstream lease. Reads must be local
-// because the upstream's stored copy of the config points at Bifrost's ingress
-// and carries the gateway-minted token, which must never be served back.
-func runPushLocal[T any](
-	ctx context.Context,
-	h *proxyRequestHandler,
-	envelope *schemas.BifrostA2ARequest,
-	op func(context.Context) (T, error),
-	describe func(T) *schemas.BifrostA2AResponse,
-) (T, error) {
-	var zero T
-	var result T
-	var opErr error
-	start := time.Now()
-	gateCtx := gateContext(ctx)
-	defer gateCtx.StampUpstreamLatency()
-	_, gateErr := h.manager.RunWithPluginPipeline(gateCtx, envelope, func(*schemas.BifrostA2ARequest, func(*schemas.BifrostA2AEvent)) (*schemas.BifrostA2AResponse, error) {
-		phase := startPhaseSpan(gateCtx, "a2a.push.db.local")
-		value, callErr := op(gateCtx)
-		endPhaseSpan(phase)
-		if callErr != nil {
-			opErr = callErr
-			return nil, callErr
-		}
-		result = value
-		resp := describe(value)
-		if resp != nil {
-			resp.ResponseBody = marshalA2APayload(value)
-			resp.ExtraFields.Latency = time.Since(start).Milliseconds()
-		}
-		return resp, nil
-	})
-	if err := gateOutcomeError(gateCtx, gateErr, opErr); err != nil {
-		return zero, err
-	}
-	return result, nil
-}
-
 // describePushResult projects the acted-on configuration onto the plugin-facing
 // response.
 func describePushResult(configID string) *schemas.BifrostA2AResponse {
@@ -485,9 +446,8 @@ func eventTaskID(event a2a.Event) a2a.TaskID {
 	return ""
 }
 
-// GetTaskPushConfig answers from the gateway's own store: the upstream's copy
-// describes Bifrost's ingress and its minted credential, never the client's
-// callback, so forwarding the read would leak the wrong hop.
+// GetTaskPushConfig authorizes the read upstream, then returns the client's
+// stored callback rather than Bifrost's upstream-facing ingress credential.
 func (h *proxyRequestHandler) GetTaskPushConfig(ctx context.Context, req *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error) {
 	m := h.manager
 	if !m.pushEnabled() {
@@ -497,10 +457,22 @@ func (h *proxyRequestHandler) GetTaskPushConfig(ctx context.Context, req *a2a.Ge
 		return nil, err
 	}
 	envelope := h.pushEnvelope(schemas.A2ARequestTypeGetTaskPushConfig, req.TaskID, req.ID, req)
-	return runPushLocal(ctx, h, envelope, func(ctx context.Context) (*a2a.PushConfig, error) {
-		stored, err := m.pushStore.GetAgentPushConfig(ctx, h.config.name, string(req.TaskID), req.ID)
+	return forwardUpstream(ctx, h, envelope, func(ctx context.Context, client sdkClient) (*a2a.PushConfig, error) {
+		callStart := time.Now()
+		authorized, err := client.GetTaskPushConfig(ctx, req)
+		schemas.AddUpstreamLatency(ctx, time.Since(callStart))
 		if err != nil {
 			return nil, err
+		}
+		if authorized == nil || authorized.TaskID != req.TaskID || authorized.ID != req.ID {
+			return nil, push.ErrPushConfigNotFound
+		}
+		phaseCtx, _ := schemas.BifrostContextFromContext(ctx)
+		phase := startPhaseSpan(phaseCtx, "a2a.push.db.local")
+		stored, err := m.pushStore.GetAgentPushConfig(ctx, h.config.name, string(req.TaskID), req.ID)
+		endPhaseSpan(phase)
+		if err != nil {
+			return nil, &nonEndpointFailure{err: err}
 		}
 		if stored == nil {
 			return nil, push.ErrPushConfigNotFound
@@ -511,8 +483,8 @@ func (h *proxyRequestHandler) GetTaskPushConfig(ctx context.Context, req *a2a.Ge
 	})
 }
 
-// ListTaskPushConfigs lists the gateway's stored callbacks for one task, for
-// the same reason GetTaskPushConfig is local.
+// ListTaskPushConfigs projects only configurations returned by the upstream's
+// matching read operation; permission to read a task is not an equivalent gate.
 func (h *proxyRequestHandler) ListTaskPushConfigs(ctx context.Context, req *a2a.ListTaskPushConfigRequest) (*a2a.ListTaskPushConfigResponse, error) {
 	m := h.manager
 	if !m.pushEnabled() {
@@ -524,14 +496,34 @@ func (h *proxyRequestHandler) ListTaskPushConfigs(ctx context.Context, req *a2a.
 	envelope := h.envelope(schemas.A2ARequestTypeListTaskPushConfigs)
 	envelope.BifrostA2ATaskRequest = &schemas.BifrostA2ATaskRequest{TaskID: string(req.TaskID)}
 	setA2ARequestBody(envelope, req)
-	return runPushLocal(ctx, h, envelope, func(ctx context.Context) (*a2a.ListTaskPushConfigResponse, error) {
-		stored, err := m.pushStore.ListAgentPushConfigs(ctx, h.config.name, string(req.TaskID))
+	return forwardUpstream(ctx, h, envelope, func(ctx context.Context, client sdkClient) (*a2a.ListTaskPushConfigResponse, error) {
+		callStart := time.Now()
+		authorized, err := client.ListTaskPushConfigs(ctx, req)
+		schemas.AddUpstreamLatency(ctx, time.Since(callStart))
 		if err != nil {
 			return nil, err
 		}
+		allowed := make(map[string]struct{}, len(authorized))
+		for _, config := range authorized {
+			if config != nil && config.TaskID == req.TaskID && config.ID != "" {
+				allowed[config.ID] = struct{}{}
+			}
+		}
+		if len(allowed) == 0 {
+			return &a2a.ListTaskPushConfigResponse{Configs: []*a2a.PushConfig{}}, nil
+		}
+		phaseCtx, _ := schemas.BifrostContextFromContext(ctx)
+		phase := startPhaseSpan(phaseCtx, "a2a.push.db.local")
+		stored, err := m.pushStore.ListAgentPushConfigs(ctx, h.config.name, string(req.TaskID))
+		endPhaseSpan(phase)
+		if err != nil {
+			return nil, &nonEndpointFailure{err: err}
+		}
 		configs := make([]*a2a.PushConfig, 0, len(stored))
 		for i := range stored {
-			configs = append(configs, redactedPushConfig(&stored[i]))
+			if _, ok := allowed[stored[i].ConfigID]; ok {
+				configs = append(configs, redactedPushConfig(&stored[i]))
+			}
 		}
 		return &a2a.ListTaskPushConfigResponse{Configs: configs}, nil
 	}, func(*a2a.ListTaskPushConfigResponse) *schemas.BifrostA2AResponse {

@@ -36,7 +36,7 @@ Use an absolute HTTP or HTTPS callback URL without credentials embedded in the U
 
   An explicit create operation registers the upstream configuration first, then saves the local configuration. If local storage fails, Bifrost attempts to remove the upstream registration and returns an error.
 
-  Get and list operations read Bifrost's stored configuration without calling the upstream agent. They return your original callback URL, omit the notification token, and include only the authentication scheme. Callback credentials are write-only.
+  Get and list operations first call the upstream agent's matching read operation using the request's upstream credentials. Bifrost returns only authorized configurations from its local store, with your original callback URL, no notification token, and only the authentication scheme. Callback credentials are write-only. These reads require the upstream operation to succeed; an authorization error, unsupported operation, or unavailable agent does not fall back to local data.
 </Accordion>
 
 <Accordion title="Why is this stored in the configuration database?">
