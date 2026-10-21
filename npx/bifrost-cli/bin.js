@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
-import { createHash } from "crypto";
-import { chmodSync, createWriteStream, existsSync, fsyncSync, mkdirSync, readFileSync, appendFileSync, renameSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, appendFileSync } from "fs";
+import { downloadVerified, getAgreedHash } from "./verify.js";
 import { homedir } from "os";
 import { dirname, join } from "path";
-import { Readable } from "stream";
 import { createInterface } from "readline";
 
 const BASE_URL = "https://downloads.getmaxim.ai";
@@ -91,103 +90,11 @@ function getPlatformArchAndBinary() {
 	return { platformDir, archDir, binaryName };
 }
 
-async function downloadBinary(url, dest) {
-	const res = await fetch(url);
-
-	if (!res.ok) {
-		console.error(`❌ Download failed: ${res.status} ${res.statusText}`);
-		process.exit(1);
-	}
-
-	const contentLength = res.headers.get("content-length");
-	const totalSize = contentLength ? parseInt(contentLength, 10) : null;
-	let downloadedSize = 0;
-
-	const fileStream = createWriteStream(dest, { flags: "w" });
-	await new Promise((resolve, reject) => {
-		try {
-			// Convert the fetch response body to a Node.js readable stream
-			const nodeStream = Readable.fromWeb(res.body);
-
-			// Add progress tracking
-			nodeStream.on("data", (chunk) => {
-				downloadedSize += chunk.length;
-				if (totalSize) {
-					const progress = ((downloadedSize / totalSize) * 100).toFixed(1);
-					process.stdout.write(`\r⏱️ Downloading Binary: ${progress}% (${formatBytes(downloadedSize)}/${formatBytes(totalSize)})`);
-				} else {
-					process.stdout.write(`\r⏱️ Downloaded: ${formatBytes(downloadedSize)}`);
-				}
-			});
-
-			nodeStream.pipe(fileStream);
-			fileStream.on("finish", () => {
-				process.stdout.write("\n");
-
-				// Ensure file is fully written to disk
-				try {
-					fsyncSync(fileStream.fd);
-				} catch (syncError) {
-					// fsync might fail on some systems, ignore
-				}
-
-				resolve();
-			});
-			fileStream.on("error", reject);
-			nodeStream.on("error", reject);
-		} catch (error) {
-			reject(error);
-		}
-	});
-
-	chmodSync(dest, 0o755);
-}
-
 // Check if a specific version exists on the download server
 async function checkVersionExists(version, platformDir, archDir, binaryName) {
 	const url = `${BASE_URL}/bifrost-cli/${version}/${platformDir}/${archDir}/${binaryName}`;
-	const res = await fetch(url, { method: "HEAD" });
+	const res = await fetch(url, { method: "HEAD", redirect: "error", signal: AbortSignal.timeout(15000) });
 	return res.ok;
-}
-
-// Verify the downloaded binary against its SHA-256 checksum
-async function verifyChecksum(binaryPath, checksumUrl) {
-	const res = await fetch(checksumUrl);
-	if (!res.ok) {
-		console.warn(`⚠️ Checksum file not available (${res.status}), skipping verification`);
-		return;
-	}
-
-	const checksumContent = (await res.text()).trim();
-	// Format: "<hash>  <filename>" (shasum output)
-	const expectedHash = checksumContent.split(/\s+/)[0];
-	if (!expectedHash) {
-		console.warn("⚠️ Could not parse checksum file, skipping verification");
-		return;
-	}
-
-	const fileBuffer = readFileSync(binaryPath);
-	const actualHash = createHash("sha256").update(fileBuffer).digest("hex");
-
-	if (actualHash !== expectedHash) {
-		const { unlinkSync } = await import("fs");
-		unlinkSync(binaryPath);
-		console.error(`❌ Checksum verification failed!`);
-		console.error(`   Expected: ${expectedHash}`);
-		console.error(`   Got:      ${actualHash}`);
-		console.error(`   The downloaded binary has been deleted for safety.`);
-		process.exit(1);
-	}
-
-	console.log("✅ Checksum verified");
-}
-
-function formatBytes(bytes) {
-	if (bytes === 0) return "0 B";
-	const k = 1024;
-	const sizes = ["B", "KB", "MB", "GB"];
-	const i = Math.floor(Math.log(bytes) / Math.log(k));
-	return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 }
 
 // Detect the user's shell and return the RC file path and the PATH export line
@@ -268,15 +175,13 @@ async function main() {
 	let namedVersion;
 
 	if (VERSION === "latest") {
-		// For "latest", check if the latest path exists on the server
-		const latestExists = await checkVersionExists("latest", platformDir, archDir, binaryName);
-		if (latestExists) {
-			namedVersion = "latest";
-		} else {
-			console.error(`❌ Could not find latest CLI version.`);
-			console.error(`Please specify a version with --cli-version v1.0.0`);
-			process.exit(1);
-		}
+		const response = await fetch(`${BASE_URL}/bifrost-cli/latest/version.txt`, {
+			redirect: "error", signal: AbortSignal.timeout(15000),
+		});
+		if (!response.ok) throw new Error("Could not resolve the latest CLI version");
+		namedVersion = (await response.text()).trim();
+		if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(namedVersion)) throw new Error("Invalid latest CLI version");
+
 	} else {
 		// For explicitly specified versions, verify it exists on the server
 		const versionExists = await checkVersionExists(VERSION, platformDir, archDir, binaryName);
@@ -295,18 +200,9 @@ async function main() {
 	mkdirSync(installDir, { recursive: true });
 	const binaryPath = join(installDir, binaryName);
 
-	// Download to a temp file, verify, then atomically replace
-	const tempBinaryPath = `${binaryPath}.download-${process.pid}-${Date.now()}`;
-	try {
-		await downloadBinary(downloadUrl, tempBinaryPath);
+	const expected = await getAgreedHash(downloadUrl, `cli/${namedVersion}`, `${platformDir}/${archDir}/${binaryName}`);
+	await downloadVerified(downloadUrl, binaryPath, expected);
 
-		const checksumUrl = `${BASE_URL}/bifrost-cli/${namedVersion}/${platformDir}/${archDir}/${binaryName}.sha256`;
-		await verifyChecksum(tempBinaryPath, checksumUrl);
-		renameSync(tempBinaryPath, binaryPath);
-	} catch (err) {
-		try { unlinkSync(tempBinaryPath); } catch {}
-		throw err;
-	}
 	console.log(`✅ Installed bifrost to ${binaryPath}`);
 
 	// Shell PATH setup

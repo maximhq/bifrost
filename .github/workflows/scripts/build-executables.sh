@@ -118,6 +118,8 @@ for platform in "${platforms[@]}"; do
       -o "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH/$output_name" .
   fi
 
+  (cd "$PROJECT_ROOT/dist/$PLATFORM_DIR/$GOARCH" && shasum -a 256 "$output_name" > "$output_name.sha256")
+
   # Change back to project root
   cd "$PROJECT_ROOT"
 done

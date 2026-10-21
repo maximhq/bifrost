@@ -196,6 +196,7 @@ jobs:
             tuf-repo-cdn.sigstore.dev:443
             tuf-repo.github.com:443
             github.com:443
+            uploads.github.com:443
             go.dev:443
             dl.google.com:443
             storage.googleapis.com:443

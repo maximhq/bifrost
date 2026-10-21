@@ -3106,6 +3106,16 @@ jobs:
           SKIP_LATEST_UPLOAD: "true"
         run: bash ./.github/workflows/scripts/upload-to-r2.sh "transports/v${{ needs.detect-changes.outputs.transport-version }}"
 
+      # The finalize job republishes these checksums on the GitHub Release so the
+      # npx launcher has a source the R2 key cannot forge. Binaries stay in R2.
+      - name: Share build checksums with the finalize job
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: transport-checksums-x86-${{ github.sha }}
+          path: dist/**/*.sha256
+          if-no-files-found: error
+          retention-days: 1
+
   # Build linux/arm64 natively on ARM runner and upload to R2
   build-binaries-arm64:
     needs: [bifrost-http-prep, detect-changes]
@@ -3175,6 +3185,16 @@ jobs:
           SKIP_LATEST_UPLOAD: "true"
         run: bash ./.github/workflows/scripts/upload-to-r2.sh "transports/v${{ needs.detect-changes.outputs.transport-version }}"
 
+      # The finalize job republishes these checksums on the GitHub Release so the
+      # npx launcher has a source the R2 key cannot forge. Binaries stay in R2.
+      - name: Share build checksums with the finalize job
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: transport-checksums-arm64-${{ github.sha }}
+          path: dist/**/*.sha256
+          if-no-files-found: error
+          retention-days: 1
+
   # Finalize: changelog, tagging, GitHub release, R2 latest copy
   bifrost-http-release:
     needs: [build-binaries-x86, build-binaries-arm64, detect-changes, bifrost-http-prep]
@@ -3195,6 +3215,7 @@ jobs:
             api.github.com:443
             files.pythonhosted.org:443
             github.com:443
+            uploads.github.com:443
             pypi.org:443
 
       - name: Checkout repository
@@ -3216,6 +3237,20 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: bash ./.github/workflows/scripts/configure-r2.sh
+
+      - name: Collect build checksums
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: transport-checksums-*-${{ github.sha }}
+          path: dist
+          merge-multiple: true
+
+      - name: Fetch the released binaries to prove the checksums
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          VERSION: ${{ needs.detect-changes.outputs.transport-version }}
+        run: bash ./.github/workflows/scripts/fetch-released-binaries.sh "bifrost/v$VERSION" dist
 
       - name: Finalize bifrost-http release
         id: release

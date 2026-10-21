@@ -53,6 +53,9 @@ jobs:
       - name: Check module path major versions
         run: ./.github/workflows/scripts/module-major.test.sh
 
+      - name: Test download verification
+        run: node --test .github/tests/download.test.mjs
+
       - name: Check release security policy
         run: bash .github/workflows/scripts/run-security-tool.sh workflowpolicy "$GITHUB_WORKSPACE/.github/workflows"
 
@@ -60,4 +63,5 @@ jobs:
         run: |
           bash .github/tests/configure-r2.test.sh
           bash .github/tests/release-source.test.sh
+          bash .github/tests/release-checksums.test.sh
           bash .github/workflows/scripts/run-security-tool.sh test

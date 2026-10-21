@@ -54,6 +54,7 @@ jobs:
           PACKAGE: ${{ matrix.package }}
         run: |
           node --check "npx/$PACKAGE/bin.js"
+          node --test .github/tests/download.test.mjs
           mkdir -p "$RUNNER_TEMP/npm-package"
           (cd "npx/$PACKAGE" && npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/npm-package")
           mv "$RUNNER_TEMP/npm-package/"*.tgz "$RUNNER_TEMP/npm-package/package.tgz"

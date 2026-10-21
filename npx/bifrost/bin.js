@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "child_process";
-import { chmodSync, createWriteStream, existsSync, fsyncSync, mkdirSync, mkdtempSync, rmSync } from "fs";
-import { tmpdir } from "os";
+import { existsSync, mkdirSync, unlinkSync } from "fs";
+import { downloadVerified, getAgreedHash, verifyFile } from "./verify.js";
 import { join } from "path";
-import { Readable } from "stream";
 
 const BASE_URL = "https://downloads.getmaxim.ai";
 
@@ -187,60 +186,6 @@ async function getPlatformArchAndBinary() {
 	return { platformDir, archDir, binaryName };
 }
 
-async function downloadBinary(url, dest) {
-	// console.log(`🔄 Downloading binary from ${url}...`);
-
-	const res = await fetch(url);
-
-	if (!res.ok) {
-		console.error(`❌ Download failed: ${res.status} ${res.statusText}`);
-		process.exit(1);
-	}
-
-	const contentLength = res.headers.get("content-length");
-	const totalSize = contentLength ? parseInt(contentLength, 10) : null;
-	let downloadedSize = 0;
-
-	const fileStream = createWriteStream(dest, { flags: "w" });
-	await new Promise((resolve, reject) => {
-		try {
-			// Convert the fetch response body to a Node.js readable stream
-			const nodeStream = Readable.fromWeb(res.body);
-
-			// Add progress tracking
-			nodeStream.on("data", (chunk) => {
-				downloadedSize += chunk.length;
-				if (totalSize) {
-					const progress = ((downloadedSize / totalSize) * 100).toFixed(1);
-					process.stdout.write(`\r⏱️ Downloading Binary: ${progress}% (${formatBytes(downloadedSize)}/${formatBytes(totalSize)})`);
-				} else {
-					process.stdout.write(`\r⏱️ Downloaded: ${formatBytes(downloadedSize)}`);
-				}
-			});
-
-			nodeStream.pipe(fileStream);
-			fileStream.on("finish", () => {
-				process.stdout.write("\n");
-
-				// Ensure file is fully written to disk
-				try {
-					fsyncSync(fileStream.fd);
-				} catch (syncError) {
-					// fsync might fail on some systems, ignore
-				}
-
-				resolve();
-			});
-			fileStream.on("error", reject);
-			nodeStream.on("error", reject);
-		} catch (error) {
-			reject(error);
-		}
-	});
-
-	chmodSync(dest, 0o755);
-}
-
 // Returns the os cache directory path for storing binaries
 // Linux: $XDG_CACHE_HOME or ~/.cache
 // macOS: ~/Library/Caches
@@ -262,27 +207,20 @@ function cacheDir() {
 // gets the latest version number for transport
 async function getLatestVersion() {
 	const releaseUrl = "https://getbifrost.ai/latest-release";
-	const res = await fetch(releaseUrl);
+	const res = await fetch(releaseUrl, { redirect: "error", signal: AbortSignal.timeout(15000) });
 	if (!res.ok) {
-		return null;
+		throw new Error("Could not resolve the latest release version");
 	}
 	const data = await res.json();
+	if (typeof data.name !== "string" || !/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(data.name)) throw new Error("Invalid latest release version");
 	return data.name;
 }
 
 // Check if a specific version exists on the download server
 async function checkVersionExists(version, platformDir, archDir, binaryName) {
 	const url = `${BASE_URL}/bifrost/${version}/${platformDir}/${archDir}/${binaryName}`;
-	const res = await fetch(url, { method: "HEAD" });
+	const res = await fetch(url, { method: "HEAD", redirect: "error", signal: AbortSignal.timeout(15000) });
 	return res.ok;
-}
-
-function formatBytes(bytes) {
-	if (bytes === 0) return "0 B";
-	const k = 1024;
-	const sizes = ["B", "KB", "MB", "GB"];
-	const i = Math.floor(Math.log(bytes) / Math.log(k));
-	return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 }
 
 (async () => {
@@ -305,58 +243,32 @@ function formatBytes(bytes) {
 		namedVersion = VERSION;
 	}
 
-	// Check if we got a valid version for namedVersion
-	// If namedVersion is null, there is no way to get the latest version
-	// In that case, we proceed without caching
-	const namedVersionFound = !!namedVersion;
-
-	// For future use when we want to add multiple fallback binaries
-	const downloadUrls = [];
-
-	// Use the same path segment as the on-disk cache dir (resolved tag), not the synthetic "latest"
-	// string. Otherwise the cached file and URL can disagree and version switches look "stuck".
-	const urlVersion = namedVersionFound ? namedVersion : VERSION;
-	downloadUrls.push(`${BASE_URL}/bifrost/${urlVersion}/${platformDir}/${archDir}/${binaryName}`);
-
+	const downloadUrls = [`${BASE_URL}/bifrost/${namedVersion}/${platformDir}/${archDir}/${binaryName}`];
 	let lastError = null;
 	let binaryWorking = false;
-
-	const bifrostBinDir = namedVersionFound
-		? join(cacheDir(), "bifrost", namedVersion, "bin")
-		: mkdtempSync(join(tmpdir(), "bifrost-npx-"));
-
-	if (!namedVersionFound) {
-		process.once("exit", () => {
-			try {
-				if (existsSync(bifrostBinDir)) {
-					rmSync(bifrostBinDir, { recursive: true, force: true });
-				}
-			} catch {
-				// best-effort cleanup of ephemeral download dir
-			}
-		});
-	}
-
-	// if the binary directory doesn't exist, create it
-	try {
-		if (namedVersionFound && !existsSync(bifrostBinDir)) {
-			mkdirSync(bifrostBinDir, { recursive: true });
-		}
-	} catch (mkdirError) {
-		console.error(`❌ Failed to create directory ${bifrostBinDir}:`, mkdirError.message);
-		process.exit(1);
-	}
+	const bifrostBinDir = join(cacheDir(), "bifrost", namedVersion, "bin");
+	mkdirSync(bifrostBinDir, { recursive: true });
 
 	for (let i = 0; i < downloadUrls.length; i++) {
 		const binaryPath = join(bifrostBinDir, `${binaryName}-${i}`);
 
-		if (!namedVersionFound || !existsSync(binaryPath)) {
-			await downloadBinary(downloadUrls[i], binaryPath);
-			console.log(`✅ Downloaded binary to ${binaryPath}`);
-
-			// Add a small delay to ensure file is fully written and not busy
-			await new Promise((resolve) => setTimeout(resolve, 100));
+		const expected = await getAgreedHash(downloadUrls[i], `transports/${namedVersion}`, `${platformDir}/${archDir}/${binaryName}`);
+		if (existsSync(binaryPath)) {
+			// Older launchers wrote straight to this path and could leave a truncated
+			// file behind. Replace a cache entry that fails verification instead of
+			// failing on it forever; the fresh download is verified before it runs.
+			try {
+				await verifyFile(binaryPath, expected);
+			} catch {
+				console.error(`Cached binary at ${binaryPath} failed verification; downloading again`);
+				unlinkSync(binaryPath);
+			}
 		}
+		if (!existsSync(binaryPath)) {
+			await downloadVerified(downloadUrls[i], binaryPath, expected);
+		}
+		// A cache hit is not evidence of integrity. Verify again before execution.
+		await verifyFile(binaryPath, expected);
 
 		// Test if the binary can execute
 		try {
@@ -393,4 +305,7 @@ function formatBytes(bytes) {
 
 		process.exit(lastError.status || 1);
 	}
-})();
+})().catch((error) => {
+	console.error(`Failed to start Bifrost: ${error.message}`);
+	process.exit(1);
+});
