@@ -495,8 +495,10 @@ func TestExchangeAdminCredentialUncached(t *testing.T) {
 	p := newExchangeProvider(t, server.URL, schemas.TokenExchangeGrantRFC8693)
 	config := exchangeTestClientConfig()
 
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyMCPInboundBearer, "sample-jwt")
 	for range 2 {
-		response, err := p.ExchangeAdminCredential(context.Background(), config, "sample-jwt")
+		response, err := p.ExchangeAdminCredential(ctx, config)
 		if err != nil {
 			t.Fatalf("ExchangeAdminCredential returned error: %v", err)
 		}
@@ -513,7 +515,9 @@ func TestExchangeAdminCredentialUncached(t *testing.T) {
 
 	// No subject token: nothing to exchange — the admin bootstrap is itself
 	// a delegated exchange, always.
-	if _, err := p.ExchangeAdminCredential(context.Background(), config, "  "); !errors.Is(err, schemas.ErrExchangeSubjectTokenMissing) {
+	blank := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	blank.SetValue(schemas.BifrostContextKeyMCPInboundBearer, "  ")
+	if _, err := p.ExchangeAdminCredential(blank, config); !errors.Is(err, schemas.ErrExchangeSubjectTokenMissing) {
 		t.Fatalf("err = %v, want ErrExchangeSubjectTokenMissing for blank subject", err)
 	}
 }
@@ -751,9 +755,10 @@ func newStoredSubjectProvider(t *testing.T, tokenURL string, resolver *fakeIdPRe
 	return p
 }
 
-// subjectEchoEndpoint mints "exchanged-for:<subject>" and returns a reader for
-// the subjects it was sent. A subject listed in fail is answered with that
-// OAuth error code instead: 503 for temporarily_unavailable, else 400.
+// subjectEchoEndpoint mints "exchanged-for:<subject>" with refresh token
+// "refresh-for:<subject>" and returns a reader for the subjects it was sent. A
+// subject listed in fail is answered with that OAuth error code instead: 503
+// for temporarily_unavailable, else 400.
 func subjectEchoEndpoint(t *testing.T, fail map[string]string) (*httptest.Server, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
@@ -775,9 +780,10 @@ func subjectEchoEndpoint(t *testing.T, fail map[string]string) (*httptest.Server
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"access_token": "exchanged-for:" + subject,
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":  "exchanged-for:" + subject,
+			"refresh_token": "refresh-for:" + subject,
+			"token_type":    "Bearer",
+			"expires_in":    3600,
 		})
 	}))
 	return server, func() []string {
@@ -812,18 +818,18 @@ func settleCredential(ctx *schemas.BifrostContext, credential schemas.Credential
 	return ctx
 }
 
-// TestGetExchangedAccessTokenStoredSubjectGate pins who may exchange the
-// stored sign-in when the request carried no identity-provider token: only a
-// request authenticated through that same user's own sign-in. An Edge session
-// still qualifies when a virtual key rides along and the grant settles as that
-// key; a virtual key alone never does, even with an owner, and a credential
-// never exchanges the sign-in of a different user the request was moved to.
-func TestGetExchangedAccessTokenStoredSubjectGate(t *testing.T) {
-	tests := []struct {
-		name   string
-		ctx    func() *schemas.BifrostContext
-		stored bool
-	}{
+// storedSubjectGateCase is one request for the stored sign-in gate: whether a
+// request that carried no identity-provider token may exchange the stored one.
+type storedSubjectGateCase struct {
+	name   string
+	ctx    func() *schemas.BifrostContext
+	stored bool
+}
+
+// storedSubjectGateCases are the requests the gate is pinned on, shared by the
+// tool-call and admin-verification tests, since both paths apply it.
+func storedSubjectGateCases() []storedSubjectGateCase {
+	return []storedSubjectGateCase{
 		{
 			name:   "Edge session",
 			ctx:    func() *schemas.BifrostContext { return storedSubjectContext(grant.CredentialEdgeSession) },
@@ -892,6 +898,16 @@ func TestGetExchangedAccessTokenStoredSubjectGate(t *testing.T) {
 			},
 		},
 	}
+}
+
+// TestGetExchangedAccessTokenStoredSubjectGate pins who may exchange the
+// stored sign-in when the request carried no identity-provider token: only a
+// request authenticated through that same user's own sign-in. An Edge session
+// still qualifies when a virtual key rides along and the grant settles as that
+// key; a virtual key alone never does, even with an owner, and a credential
+// never exchanges the sign-in of a different user the request was moved to.
+func TestGetExchangedAccessTokenStoredSubjectGate(t *testing.T) {
+	tests := storedSubjectGateCases()
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1152,5 +1168,256 @@ func TestGetExchangedAccessTokenStoredSubjectUnavailable(t *testing.T) {
 	}
 	if len(resolver.calls()) != 0 {
 		t.Fatalf("stored calls = %v, want none", resolver.calls())
+	}
+}
+
+// TestExchangeAdminCredentialSubject pins what an admin verification
+// exchanges: the request's own token when it carries one, else the admin's
+// stored sign-in under the same gate a caller's tool use passes. The full
+// response comes back, refresh token included, for the caller to retain.
+func TestExchangeAdminCredentialSubject(t *testing.T) {
+	type adminSubjectCase struct {
+		name        string
+		ctx         func() *schemas.BifrostContext
+		wantSubject string // "" = refused as having no subject
+		wantStored  int
+	}
+	tests := []adminSubjectCase{{
+		name: "request token",
+		ctx: func() *schemas.BifrostContext {
+			ctx := storedSubjectContext(grant.CredentialSessionToken)
+			ctx.SetValue(schemas.BifrostContextKeyMCPInboundBearer, "request-jwt")
+			return ctx
+		},
+		wantSubject: "request-jwt",
+	}}
+	for _, gate := range storedSubjectGateCases() {
+		tt := adminSubjectCase{name: gate.name, ctx: gate.ctx}
+		if gate.stored {
+			tt.wantSubject, tt.wantStored = "stored-access-token", 1
+		}
+		tests = append(tests, tt)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, subjects := subjectEchoEndpoint(t, nil)
+			defer server.Close()
+			resolver := &fakeIdPResolver{stored: "stored-access-token"}
+			p := newStoredSubjectProvider(t, server.URL, resolver)
+
+			response, err := p.ExchangeAdminCredential(tt.ctx(), exchangeTestClientConfig())
+			if tt.wantSubject == "" {
+				if !errors.Is(err, schemas.ErrExchangeSubjectTokenMissing) {
+					t.Fatalf("err = %v, want ErrExchangeSubjectTokenMissing", err)
+				}
+				if len(resolver.calls()) != 0 || len(subjects()) != 0 {
+					t.Fatalf("stored calls = %v, exchanged subjects = %v, want neither", resolver.calls(), subjects())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ExchangeAdminCredential returned error: %v", err)
+			}
+			if response.AccessToken != "exchanged-for:"+tt.wantSubject || response.RefreshToken != "refresh-for:"+tt.wantSubject || response.TokenType != "Bearer" || response.ExpiresIn != 3600 {
+				t.Fatalf("response = %+v, want the full exchange of %q", response, tt.wantSubject)
+			}
+			if got := subjects(); !slices.Equal(got, []string{tt.wantSubject}) {
+				t.Fatalf("exchanged subjects = %v, want [%s]", got, tt.wantSubject)
+			}
+			if got := len(resolver.calls()); got != tt.wantStored {
+				t.Fatalf("stored reads = %d, want %d", got, tt.wantStored)
+			}
+		})
+	}
+}
+
+// An admin verification from the stored sign-in is never cached: each call
+// reads the stored sign-in and exchanges it again, as with a request token.
+func TestExchangeAdminCredentialStoredSubjectUncached(t *testing.T) {
+	server, subjects := subjectEchoEndpoint(t, nil)
+	defer server.Close()
+	resolver := &fakeIdPResolver{stored: "stored-access-token"}
+	p := newStoredSubjectProvider(t, server.URL, resolver)
+
+	for range 2 {
+		if _, err := p.ExchangeAdminCredential(storedSubjectContext(grant.CredentialSessionToken), exchangeTestClientConfig()); err != nil {
+			t.Fatalf("ExchangeAdminCredential returned error: %v", err)
+		}
+	}
+	if len(subjects()) != 2 || len(resolver.calls()) != 2 {
+		t.Fatalf("exchanges = %d, stored reads = %d, want 2 each (never cached)", len(subjects()), len(resolver.calls()))
+	}
+}
+
+// A stored subject the identity provider declines is retried once with a
+// token that changed, as for a caller's tool use; a refusal of the exchange
+// client is returned without asking for a refresh.
+func TestExchangeAdminCredentialStoredSubjectRejected(t *testing.T) {
+	tests := []struct {
+		name         string
+		resolver     *fakeIdPResolver
+		fail         map[string]string
+		wantToken    string
+		wantErr      error // nil = a *TokenExchangeRejectedError unless wantToken is set
+		wantSubjects []string
+		wantCalls    []bool
+	}{
+		{
+			name:         "the refreshed token is exchanged",
+			resolver:     &fakeIdPResolver{stored: "a1", refreshed: "a2"},
+			fail:         map[string]string{"a1": "invalid_grant"},
+			wantToken:    "exchanged-for:a2",
+			wantSubjects: []string{"a1", "a2"},
+			wantCalls:    []bool{false, true},
+		},
+		{
+			name:         "a refresh cannot help: the rejection is returned",
+			resolver:     &fakeIdPResolver{stored: "a1"},
+			fail:         map[string]string{"a1": "invalid_grant"},
+			wantSubjects: []string{"a1"},
+			wantCalls:    []bool{false, true},
+		},
+		{
+			name:         "only a new sign-in can help",
+			resolver:     &fakeIdPResolver{stored: "a1", rejectedErr: schemas.ErrStoredSignInExpired},
+			fail:         map[string]string{"a1": "invalid_grant"},
+			wantErr:      schemas.ErrStoredSignInExpired,
+			wantSubjects: []string{"a1"},
+			wantCalls:    []bool{false, true},
+		},
+		{
+			name:         "the exchange client is refused: no refresh is asked for",
+			resolver:     &fakeIdPResolver{stored: "a1", refreshed: "a2"},
+			fail:         map[string]string{"a1": "invalid_client"},
+			wantSubjects: []string{"a1"},
+			wantCalls:    []bool{false},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, subjects := subjectEchoEndpoint(t, tt.fail)
+			defer server.Close()
+			p := newStoredSubjectProvider(t, server.URL, tt.resolver)
+
+			response, err := p.ExchangeAdminCredential(storedSubjectContext(grant.CredentialSessionToken), exchangeTestClientConfig())
+			switch {
+			case tt.wantToken != "":
+				if err != nil || response.AccessToken != tt.wantToken {
+					t.Fatalf("ExchangeAdminCredential = (%+v, %v), want %q", response, err, tt.wantToken)
+				}
+			case tt.wantErr != nil:
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tt.wantErr)
+				}
+			default:
+				var rejected *schemas.TokenExchangeRejectedError
+				if !errors.As(err, &rejected) {
+					t.Fatalf("err = %T %v, want *TokenExchangeRejectedError", err, err)
+				}
+			}
+			if got := subjects(); !slices.Equal(got, tt.wantSubjects) {
+				t.Fatalf("exchanged subjects = %v, want %v", got, tt.wantSubjects)
+			}
+			if got := tt.resolver.calls(); !slices.Equal(got, tt.wantCalls) {
+				t.Fatalf("stored calls (rejected flag) = %v, want %v", got, tt.wantCalls)
+			}
+		})
+	}
+}
+
+// A transient failure of the retried admin exchange surfaces as a plain error,
+// so the handler answers 422 rather than telling the admin to sign in again.
+func TestExchangeAdminCredentialStoredSubjectRetryTransient(t *testing.T) {
+	server, subjects := subjectEchoEndpoint(t, map[string]string{"a1": "invalid_grant", "a2": "temporarily_unavailable"})
+	defer server.Close()
+	p := newStoredSubjectProvider(t, server.URL, &fakeIdPResolver{stored: "a1", refreshed: "a2"})
+
+	_, err := p.ExchangeAdminCredential(storedSubjectContext(grant.CredentialSessionToken), exchangeTestClientConfig())
+	var rejected *schemas.TokenExchangeRejectedError
+	if err == nil || errors.As(err, &rejected) || errors.Is(err, schemas.ErrStoredSignInExpired) {
+		t.Fatalf("err = %T %v, want a plain error", err, err)
+	}
+	if got := subjects(); len(got) < 2 || got[0] != "a1" || got[len(got)-1] != "a2" {
+		t.Fatalf("exchanged subjects = %v, want a1 then a2", got)
+	}
+}
+
+// With no resolver available, an admin verification from the stored sign-in
+// reports the exchange as unavailable and never reads the sign-in.
+func TestExchangeAdminCredentialStoredSubjectUnavailable(t *testing.T) {
+	resolver := &fakeIdPResolver{stored: "stored-access-token"}
+	p := NewOAuth2Provider(nil, nil)
+	p.SetTokenExchangeIdPResolver(resolver) // available is false
+
+	_, err := p.ExchangeAdminCredential(storedSubjectContext(grant.CredentialSessionToken), exchangeTestClientConfig())
+	if !errors.Is(err, schemas.ErrTokenExchangeUnavailable) {
+		t.Fatalf("err = %v, want ErrTokenExchangeUnavailable", err)
+	}
+	if len(resolver.calls()) != 0 {
+		t.Fatalf("stored calls = %v, want none", resolver.calls())
+	}
+}
+
+// ExchangeAdminCredential answers "no subject" before it checks the config:
+// client create relies on that order to put an API-key request's client in
+// pending_verification, whatever its exchange config, while a request that has
+// a subject is told about a bad config before anything is exchanged or read.
+func TestExchangeAdminCredentialChecksSubjectBeforeConfig(t *testing.T) {
+	invalid := exchangeTestClientConfig()
+	invalid.TokenExchange.ClientID = nil
+	tests := []struct {
+		name        string
+		ctx         func() *schemas.BifrostContext
+		wantMissing bool
+	}{
+		{name: "no subject, as with an API key", ctx: func() *schemas.BifrostContext { return userExchangeContext("") }, wantMissing: true},
+		{name: "request token", ctx: func() *schemas.BifrostContext { return userExchangeContext("request-jwt") }},
+		{name: "stored sign-in", ctx: func() *schemas.BifrostContext { return storedSubjectContext(grant.CredentialSessionToken) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, subjects := subjectEchoEndpoint(t, nil)
+			defer server.Close()
+			resolver := &fakeIdPResolver{stored: "stored-access-token"}
+			p := newStoredSubjectProvider(t, server.URL, resolver)
+
+			_, err := p.ExchangeAdminCredential(tt.ctx(), invalid)
+			if missing := errors.Is(err, schemas.ErrExchangeSubjectTokenMissing); err == nil || missing != tt.wantMissing {
+				t.Fatalf("err = %v, want the missing-subject error: %v", err, tt.wantMissing)
+			}
+			if len(resolver.calls()) != 0 || len(subjects()) != 0 {
+				t.Fatalf("stored calls = %v, exchanged subjects = %v, want neither", resolver.calls(), subjects())
+			}
+		})
+	}
+}
+
+// A stored sign-in that can no longer produce a token reaches the admin as
+// ErrStoredSignInExpired, with no exchange, so the handler can tell them to
+// sign in again rather than to send a token.
+func TestExchangeAdminCredentialStoredSignInExpired(t *testing.T) {
+	tests := []struct {
+		name     string
+		resolver *fakeIdPResolver
+	}{
+		{name: "resolver reports it", resolver: &fakeIdPResolver{storedErr: schemas.ErrStoredSignInExpired}},
+		{name: "resolver returns no token", resolver: &fakeIdPResolver{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, subjects := subjectEchoEndpoint(t, nil)
+			defer server.Close()
+			p := newStoredSubjectProvider(t, server.URL, tt.resolver)
+
+			_, err := p.ExchangeAdminCredential(storedSubjectContext(grant.CredentialSessionToken), exchangeTestClientConfig())
+			if !errors.Is(err, schemas.ErrStoredSignInExpired) {
+				t.Fatalf("err = %v, want ErrStoredSignInExpired", err)
+			}
+			if len(subjects()) != 0 {
+				t.Fatalf("exchanged subjects = %v, want none", subjects())
+			}
+		})
 	}
 }
