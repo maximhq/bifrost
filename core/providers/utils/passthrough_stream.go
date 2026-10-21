@@ -41,6 +41,9 @@ type PassthroughStreamParams struct {
 	// attached to the final chunk. Implementations populate usage directly from the event —
 	// no full response body is retained.
 	Observe func(event []byte) *schemas.BifrostPassthroughUsage
+	// DefaultUsage is attached to the final chunk of a successful stream when Observe produced
+	// nothing (or framing was skipped), so a billable relay with no parseable usage still counts.
+	DefaultUsage *schemas.BifrostPassthroughUsage
 }
 
 // StreamPassthrough runs the shared passthrough streaming loop. It forwards each raw upstream
@@ -193,6 +196,9 @@ func streamPassthrough(
 		}
 
 		finalize := func() {
+			if usage == nil && success {
+				usage = params.DefaultUsage
+			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			extraFields.Latency = time.Since(params.StartTime).Milliseconds()
 			extraFields.RawRequest = params.RawRequest
