@@ -185,3 +185,29 @@ func TestToolResultMultiTextBlocksStayText(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkConvertToolMessagesSingleTextBlock measures the one-text-block tool
+// result path against the string path it now shares.
+func BenchmarkConvertToolMessagesSingleTextBlock(b *testing.B) {
+	const model = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+	out := `{"files":["a","b","c","d"],"n":4,"meta":{"truncated":false}}`
+	forms := map[string]*schemas.ChatMessageContent{
+		"string":    {ContentStr: schemas.Ptr(out)},
+		"one-block": {ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(out), CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}}}},
+	}
+	for name, content := range forms {
+		msgs := []schemas.ChatMessage{{
+			Role:            schemas.ChatMessageRoleTool,
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+			Content:         content,
+		}}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := convertToolMessages(context.Background(), model, msgs); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
