@@ -72,6 +72,63 @@ const azureFiltered = () => ({
 	}),
 });
 
+// Azure answers a prompt its content filter blocks with HTTP 400 and code content_filter. Chat and
+// completions carry the classification under innererror.content_filter_result (the chat body is as
+// captured from Azure); the Responses API carries a content_filters list, one entry per source.
+const azureBlockedMessage =
+	"The response was filtered due to the prompt triggering Azure OpenAI's content management policy. Please modify your prompt and retry. To learn more about our content filtering policies please read our documentation: https://go.microsoft.com/fwlink/?linkid=2198766";
+const azurePromptBlockedChat = () => ({
+	status: 400,
+	headers: {},
+	body: JSON.stringify({
+		error: {
+			message: azureBlockedMessage,
+			type: null,
+			param: "prompt",
+			code: "content_filter",
+			status: 400,
+			innererror: {
+				code: "ResponsibleAIPolicyViolation",
+				content_filter_result: {
+					hate: { filtered: true, severity: "low" },
+					jailbreak: { filtered: false, detected: false },
+					self_harm: { filtered: false, severity: "safe" },
+					sexual: { filtered: false, severity: "safe" },
+					violence: { filtered: true, severity: "medium" },
+				},
+			},
+		},
+	}),
+});
+const azurePromptBlockedResponses = () => ({
+	status: 400,
+	headers: {},
+	body: JSON.stringify({
+		error: {
+			message: azureBlockedMessage,
+			type: "invalid_request_error",
+			param: "prompt",
+			code: "content_filter",
+			innererror: { code: "ContentFiltered" },
+			content_filters: [
+				{
+					blocked: true,
+					source_type: "prompt",
+					content_filter_raw: [],
+					content_filter_results: {
+						hate: { filtered: false, severity: "safe" },
+						jailbreak: { detected: false, filtered: false },
+						self_harm: { filtered: true, severity: "medium" },
+						sexual: { filtered: false, severity: "safe" },
+						violence: { filtered: false, severity: "safe" },
+					},
+					content_filter_offsets: { start_offset: 0, end_offset: 2, check_offset: 0 },
+				},
+			],
+		},
+	}),
+});
+
 // OpenAI pairs a reasoning item's id with its encrypted_content and rejects a replay whose id does not
 // match the token. The fixture issues one reasoning item and enforces that pairing on replay, which is
 // how a gateway that mints a fresh id on replay shows up as a 400.
@@ -132,7 +189,8 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
 	}
-	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
+	const azurePaths = ["/openai/v1/chat/completions", "/openai/v1/completions", "/openai/v1/responses"];
+	if (req.method !== "POST" || (path !== "/v1/chat/completions" && !azurePaths.includes(path) && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
 	const chunks = [];
@@ -205,6 +263,14 @@ const server = http.createServer((req, res) => {
 		// The model's behaviour picks the response, so only an own entry may be looked up: "constructor" or
 		// "toString" must be an unknown model, not an inherited function.
 		const name = model.split("~")[0];
+		// Azure serves Responses under /openai/v1; only the blocked-prompt model answers there.
+		if (path === "/openai/v1/responses") {
+			if (name !== "azure-prompt-blocked") {
+				return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
+			}
+			const r = azurePromptBlockedResponses();
+			return send(r.status, r.headers, r.body);
+		}
 		if (path === "/v1/responses") {
 			// A Responses request whose model names an error behaviour gets that error; any other model gets the
 			// fixed reasoning response below.
@@ -219,7 +285,8 @@ const server = http.createServer((req, res) => {
 			const r = responsesFor(body, (k) => { hits[k] = (hits[k] || 0) + 1; });
 			return send(r.status, r.headers, r.body);
 		}
-		const behaviour = name === "azure-filtered" ? azureFiltered : Object.hasOwn(behaviours, name) ? behaviours[name] : undefined;
+		const azureBehaviours = { "azure-filtered": azureFiltered, "azure-prompt-blocked": azurePromptBlockedChat };
+		const behaviour = Object.hasOwn(azureBehaviours, name) ? azureBehaviours[name] : Object.hasOwn(behaviours, name) ? behaviours[name] : undefined;
 		if (!behaviour) {
 			return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
 		}

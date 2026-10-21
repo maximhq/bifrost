@@ -112166,6 +112166,43 @@
           },
           "event_id": {
             "type": "string"
+          },
+          "content_filter_details": {
+            "type": "object",
+            "description": "Set when the provider's content filter blocked the request (Azure OpenAI code content_filter). Lists only the categories that caused the block; the provider's raw body is never included.",
+            "required": [
+              "categories"
+            ],
+            "properties": {
+              "categories": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "category",
+                    "filtered"
+                  ],
+                  "properties": {
+                    "category": {
+                      "type": "string",
+                      "description": "Provider's category name, e.g. violence, self_harm, jailbreak"
+                    },
+                    "severity": {
+                      "type": "string",
+                      "description": "Severity level (safe, low, medium, high) for severity-scored categories"
+                    },
+                    "filtered": {
+                      "type": "boolean",
+                      "description": "Whether this category blocked the request"
+                    },
+                    "detected": {
+                      "type": "boolean",
+                      "description": "Set by binary detectors such as jailbreak, profanity and protected material"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       },

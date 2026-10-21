@@ -276763,6 +276763,547 @@
           }
         }
       ]
+    },
+    {
+      "name": "263. Azure content-filter errors carry the categories that blocked the prompt (azure content filter errors)",
+      "description": "Local fixture regression like folders 154 and 159: run with providerErrorFixture=1 against the isolated gateway started from tests/e2e/api/provider_config/provider-error-fixture.config.json (see tests/e2e/api/README.md). When Azure's content filter blocks a prompt it answers HTTP 400 with code content_filter and the classification under innererror.content_filter_result (chat and completions) or content_filters (Responses API). Before the fix the gateway kept only code, message and param, so a caller could only learn which category blocked the prompt by turning on send_back_raw_response, which returns the whole upstream body. The fixture model azure-prompt-blocked answers with those bodies (the chat one as captured from Azure). Every case requires the 400 and the content_filter code to survive, error.content_filter_details.categories to list exactly the filtered categories with their severity, and nothing else from Azure's body (innererror, unfiltered categories, raw_response) to reach the client: red before the fix (content_filter_details absent), green after. Covered routes are the OpenAI-shaped surfaces that render Bifrost's error as-is: /v1/chat/completions unary and streamed (a blocked prompt fails before the stream starts, so the stream also answers a 400 JSON body), /v1/completions, /v1/responses unary and streamed, the OpenAI SDK drop-ins /openai/v1/chat/completions and /openai/v1/responses, and the Azure SDK deployment route. /anthropic, /genai, /bedrock and /cohere rebuild errors in their SDK's own envelope, which has no field for this, so they are not pinned here.",
+      "item": [
+        {
+          "name": "263.1 [EXPECT-400] azure /v1/chat/completions prompt block returns the filtered categories without the raw body (azure content filter errors) - #8799",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/azure-prompt-blocked\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "var j = {};",
+                  "try { j = pm.response.json(); } catch (e) {}",
+                  "var err = j.error || {};",
+                  "pm.test('Azure prompt block keeps its 400 and content_filter code', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + txt.slice(0, 800)).to.equal(400);",
+                  "  pm.expect(err.code, 'error.code: ' + txt.slice(0, 800)).to.equal('content_filter');",
+                  "});",
+                  "pm.test('error.content_filter_details lists exactly the categories that blocked the prompt', function () {",
+                  "  pm.expect(err.content_filter_details, 'content_filter_details missing: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(err.content_filter_details.categories, 'categories: ' + txt.slice(0, 800)).to.eql([{ category: 'hate', severity: 'low', filtered: true }, { category: 'violence', severity: 'medium', filtered: true }]);",
+                  "});",
+                  "pm.test('nothing else from the Azure body reaches the client', function () {",
+                  "  ['\"innererror\"', 'ResponsibleAIPolicyViolation', '\"content_filter_result\"', '\"jailbreak\"', '\"self_harm\"', '\"sexual\"'].forEach(function (s) {",
+                  "    pm.expect(txt, 'leaked ' + s + ': ' + txt.slice(0, 800)).to.not.include(s);",
+                  "  });",
+                  "  pm.expect(j.extra_fields && j.extra_fields.raw_response, 'raw_response present: ' + txt.slice(0, 800)).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "263.2 [EXPECT-400] azure /v1/chat/completions stream prompt block returns the filtered categories before the stream starts (azure content filter errors) - #8799",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/azure-prompt-blocked\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "var j = {};",
+                  "try { j = pm.response.json(); } catch (e) {}",
+                  "var err = j.error || {};",
+                  "pm.test('Azure prompt block keeps its 400 and content_filter code', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + txt.slice(0, 800)).to.equal(400);",
+                  "  pm.expect(err.code, 'error.code: ' + txt.slice(0, 800)).to.equal('content_filter');",
+                  "});",
+                  "pm.test('error.content_filter_details lists exactly the categories that blocked the prompt', function () {",
+                  "  pm.expect(err.content_filter_details, 'content_filter_details missing: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(err.content_filter_details.categories, 'categories: ' + txt.slice(0, 800)).to.eql([{ category: 'hate', severity: 'low', filtered: true }, { category: 'violence', severity: 'medium', filtered: true }]);",
+                  "});",
+                  "pm.test('nothing else from the Azure body reaches the client', function () {",
+                  "  ['\"innererror\"', 'ResponsibleAIPolicyViolation', '\"content_filter_result\"', '\"jailbreak\"', '\"self_harm\"', '\"sexual\"'].forEach(function (s) {",
+                  "    pm.expect(txt, 'leaked ' + s + ': ' + txt.slice(0, 800)).to.not.include(s);",
+                  "  });",
+                  "  pm.expect(j.extra_fields && j.extra_fields.raw_response, 'raw_response present: ' + txt.slice(0, 800)).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "263.3 [EXPECT-400] azure /v1/completions prompt block returns the filtered categories without the raw body (azure content filter errors) - #8799",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/azure-prompt-blocked\",\n  \"prompt\": \"hi\",\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "var j = {};",
+                  "try { j = pm.response.json(); } catch (e) {}",
+                  "var err = j.error || {};",
+                  "pm.test('Azure prompt block keeps its 400 and content_filter code', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + txt.slice(0, 800)).to.equal(400);",
+                  "  pm.expect(err.code, 'error.code: ' + txt.slice(0, 800)).to.equal('content_filter');",
+                  "});",
+                  "pm.test('error.content_filter_details lists exactly the categories that blocked the prompt', function () {",
+                  "  pm.expect(err.content_filter_details, 'content_filter_details missing: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(err.content_filter_details.categories, 'categories: ' + txt.slice(0, 800)).to.eql([{ category: 'hate', severity: 'low', filtered: true }, { category: 'violence', severity: 'medium', filtered: true }]);",
+                  "});",
+                  "pm.test('nothing else from the Azure body reaches the client', function () {",
+                  "  ['\"innererror\"', 'ResponsibleAIPolicyViolation', '\"content_filter_result\"', '\"jailbreak\"', '\"self_harm\"', '\"sexual\"'].forEach(function (s) {",
+                  "    pm.expect(txt, 'leaked ' + s + ': ' + txt.slice(0, 800)).to.not.include(s);",
+                  "  });",
+                  "  pm.expect(j.extra_fields && j.extra_fields.raw_response, 'raw_response present: ' + txt.slice(0, 800)).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "263.4 [EXPECT-400] azure /v1/responses prompt block returns the filtered categories from content_filters (azure content filter errors) - #8799",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/azure-prompt-blocked\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "var j = {};",
+                  "try { j = pm.response.json(); } catch (e) {}",
+                  "var err = j.error || {};",
+                  "pm.test('Azure prompt block keeps its 400 and content_filter code', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + txt.slice(0, 800)).to.equal(400);",
+                  "  pm.expect(err.code, 'error.code: ' + txt.slice(0, 800)).to.equal('content_filter');",
+                  "});",
+                  "pm.test('error.content_filter_details lists exactly the categories that blocked the prompt', function () {",
+                  "  pm.expect(err.content_filter_details, 'content_filter_details missing: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(err.content_filter_details.categories, 'categories: ' + txt.slice(0, 800)).to.eql([{ category: 'self_harm', severity: 'medium', filtered: true }]);",
+                  "});",
+                  "pm.test('nothing else from the Azure body reaches the client', function () {",
+                  "  ['\"innererror\"', 'ContentFiltered', '\"content_filters\"', '\"content_filter_results\"', '\"source_type\"', '\"jailbreak\"', '\"hate\"', '\"sexual\"', '\"violence\"'].forEach(function (s) {",
+                  "    pm.expect(txt, 'leaked ' + s + ': ' + txt.slice(0, 800)).to.not.include(s);",
+                  "  });",
+                  "  pm.expect(j.extra_fields && j.extra_fields.raw_response, 'raw_response present: ' + txt.slice(0, 800)).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "263.5 [EXPECT-400] azure /v1/responses stream prompt block returns the filtered categories before the stream starts (azure content filter errors) - #8799",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/azure-prompt-blocked\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "var j = {};",
+                  "try { j = pm.response.json(); } catch (e) {}",
+                  "var err = j.error || {};",
+                  "pm.test('Azure prompt block keeps its 400 and content_filter code', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + txt.slice(0, 800)).to.equal(400);",
+                  "  pm.expect(err.code, 'error.code: ' + txt.slice(0, 800)).to.equal('content_filter');",
+                  "});",
+                  "pm.test('error.content_filter_details lists exactly the categories that blocked the prompt', function () {",
+                  "  pm.expect(err.content_filter_details, 'content_filter_details missing: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(err.content_filter_details.categories, 'categories: ' + txt.slice(0, 800)).to.eql([{ category: 'self_harm', severity: 'medium', filtered: true }]);",
+                  "});",
+                  "pm.test('nothing else from the Azure body reaches the client', function () {",
+                  "  ['\"innererror\"', 'ContentFiltered', '\"content_filters\"', '\"content_filter_results\"', '\"source_type\"', '\"jailbreak\"', '\"hate\"', '\"sexual\"', '\"violence\"'].forEach(function (s) {",
+                  "    pm.expect(txt, 'leaked ' + s + ': ' + txt.slice(0, 800)).to.not.include(s);",
+                  "  });",
+                  "  pm.expect(j.extra_fields && j.extra_fields.raw_response, 'raw_response present: ' + txt.slice(0, 800)).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "263.6 [EXPECT-400] azure /openai/v1/chat/completions (OpenAI SDK route) prompt block returns the filtered categories (azure content filter errors) - #8799",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/azure-prompt-blocked\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "var j = {};",
+                  "try { j = pm.response.json(); } catch (e) {}",
+                  "var err = j.error || {};",
+                  "pm.test('Azure prompt block keeps its 400 and content_filter code', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + txt.slice(0, 800)).to.equal(400);",
+                  "  pm.expect(err.code, 'error.code: ' + txt.slice(0, 800)).to.equal('content_filter');",
+                  "});",
+                  "pm.test('error.content_filter_details lists exactly the categories that blocked the prompt', function () {",
+                  "  pm.expect(err.content_filter_details, 'content_filter_details missing: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(err.content_filter_details.categories, 'categories: ' + txt.slice(0, 800)).to.eql([{ category: 'hate', severity: 'low', filtered: true }, { category: 'violence', severity: 'medium', filtered: true }]);",
+                  "});",
+                  "pm.test('nothing else from the Azure body reaches the client', function () {",
+                  "  ['\"innererror\"', 'ResponsibleAIPolicyViolation', '\"content_filter_result\"', '\"jailbreak\"', '\"self_harm\"', '\"sexual\"'].forEach(function (s) {",
+                  "    pm.expect(txt, 'leaked ' + s + ': ' + txt.slice(0, 800)).to.not.include(s);",
+                  "  });",
+                  "  pm.expect(j.extra_fields && j.extra_fields.raw_response, 'raw_response present: ' + txt.slice(0, 800)).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "263.7 [EXPECT-400] azure /openai/v1/responses (OpenAI SDK route) prompt block returns the filtered categories (azure content filter errors) - #8799",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/azure-prompt-blocked\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "var j = {};",
+                  "try { j = pm.response.json(); } catch (e) {}",
+                  "var err = j.error || {};",
+                  "pm.test('Azure prompt block keeps its 400 and content_filter code', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + txt.slice(0, 800)).to.equal(400);",
+                  "  pm.expect(err.code, 'error.code: ' + txt.slice(0, 800)).to.equal('content_filter');",
+                  "});",
+                  "pm.test('error.content_filter_details lists exactly the categories that blocked the prompt', function () {",
+                  "  pm.expect(err.content_filter_details, 'content_filter_details missing: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(err.content_filter_details.categories, 'categories: ' + txt.slice(0, 800)).to.eql([{ category: 'self_harm', severity: 'medium', filtered: true }]);",
+                  "});",
+                  "pm.test('nothing else from the Azure body reaches the client', function () {",
+                  "  ['\"innererror\"', 'ContentFiltered', '\"content_filters\"', '\"content_filter_results\"', '\"source_type\"', '\"jailbreak\"', '\"hate\"', '\"sexual\"', '\"violence\"'].forEach(function (s) {",
+                  "    pm.expect(txt, 'leaked ' + s + ': ' + txt.slice(0, 800)).to.not.include(s);",
+                  "  });",
+                  "  pm.expect(j.extra_fields && j.extra_fields.raw_response, 'raw_response present: ' + txt.slice(0, 800)).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "263.8 [EXPECT-400] azure /openai/openai/deployments chat/completions (Azure SDK route) prompt block returns the filtered categories (azure content filter errors) - #8799",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure-prompt-blocked\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/openai/deployments/azure-prompt-blocked/chat/completions?api-version=2024-10-21",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "openai",
+                "deployments",
+                "azure-prompt-blocked",
+                "chat",
+                "completions"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "2024-10-21"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "var j = {};",
+                  "try { j = pm.response.json(); } catch (e) {}",
+                  "var err = j.error || {};",
+                  "pm.test('Azure prompt block keeps its 400 and content_filter code', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + txt.slice(0, 800)).to.equal(400);",
+                  "  pm.expect(err.code, 'error.code: ' + txt.slice(0, 800)).to.equal('content_filter');",
+                  "});",
+                  "pm.test('error.content_filter_details lists exactly the categories that blocked the prompt', function () {",
+                  "  pm.expect(err.content_filter_details, 'content_filter_details missing: ' + txt.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(err.content_filter_details.categories, 'categories: ' + txt.slice(0, 800)).to.eql([{ category: 'hate', severity: 'low', filtered: true }, { category: 'violence', severity: 'medium', filtered: true }]);",
+                  "});",
+                  "pm.test('nothing else from the Azure body reaches the client', function () {",
+                  "  ['\"innererror\"', 'ResponsibleAIPolicyViolation', '\"content_filter_result\"', '\"jailbreak\"', '\"self_harm\"', '\"sexual\"'].forEach(function (s) {",
+                  "    pm.expect(txt, 'leaked ' + s + ': ' + txt.slice(0, 800)).to.not.include(s);",
+                  "  });",
+                  "  pm.expect(j.extra_fields && j.extra_fields.raw_response, 'raw_response present: ' + txt.slice(0, 800)).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

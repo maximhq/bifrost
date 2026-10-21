@@ -108,6 +108,8 @@ make dev PORT=8790 APP_DIR="$TASK_CONTENT_LENGTH_APP_DIR"
 
 The isolated profile obtains pricing metadata from the fixture and uses dummy provider
 keys. It does not require the backing services used by the normal integration profile.
+Like the python integration profile, it sets `client.enforce_auth_on_inference` to `false`: a fresh
+gateway otherwise requires a virtual key on every inference request, and the fixture cases send none.
 After `/health` responds, run the three cases in a third terminal:
 
 ```bash
@@ -158,7 +160,11 @@ picks the behaviour and the hit is counted under the full name, so a case counts
 other bearer is refused with 401, as a provider refuses a caller's direct key.
 The same gateway config also registers an Azure key; the fixture answers model `azure-filtered` on
 `/openai/v1/chat/completions` with Azure `prompt_filter_results` and per-choice `content_filter_results`,
-which is how the dropped-annotation defect was measured.
+which is how the dropped-annotation defect was measured. Model `azure-prompt-blocked` answers the way
+Azure does when its content filter blocks a prompt: HTTP 400 with code `content_filter`, the
+classification under `innererror.content_filter_result` on `/openai/v1/chat/completions` and
+`/openai/v1/completions`, and under `content_filters` on `/openai/v1/responses`. Folder 263 runs against
+it (`FEATURE="azure content filter errors"`).
 The cases are skipped unless `providerErrorFixture=1`.
 
 The fixture also serves the two datasheets a fresh gateway downloads on first start (the config's `framework.pricing` URLs point at it), including the model-parameters row that makes `gpt-5-pro` Responses-only, which is what makes folder 160's chat request convert. The run therefore needs no network. Starting the gateway with `HTTPS_PROXY=http://127.0.0.1:9` is a cheap proof: loopback is exempt from proxying, so only an accidental external call would fail.
