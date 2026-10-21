@@ -8756,13 +8756,41 @@
             },
             "resource_client_secret": {
               "type": "string",
-              "description": "id_jag only: secret for resource_client_id; omit for a public client. Can use env. or vault. prefix."
+              "description": "id_jag only: secret for resource_client_id; omit for a public client or when resource_private_key is set. Can use env. or vault. prefix."
+            },
+            "resource_private_key": {
+              "type": "string",
+              "description": "id_jag only: PEM RSA or EC private key. When set, Bifrost authenticates to the upstream authorization server with private_key_jwt (a client assertion signed with this key, audience the token endpoint) instead of a client secret. Cannot be combined with resource_client_secret. Can use env. or vault. prefix."
+            },
+            "resource_key_id": {
+              "type": "string",
+              "description": "id_jag only: kid header of the client assertion, when the upstream server selects keys by ID. Requires resource_private_key."
+            },
+            "resource_signing_algorithm": {
+              "type": "string",
+              "enum": ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"],
+              "description": "id_jag only: client assertion signing algorithm; default RS256. Use an ES algorithm with an EC key. Requires resource_private_key."
+            },
+            "resource_assertion_audience": {
+              "type": "string",
+              "description": "id_jag only: aud claim of the client assertion. Defaults to the upstream token endpoint, which Okta and Entra require; set the authorization server's issuer for servers that expect it instead. Requires resource_private_key."
+            },
+            "resource_client_auth_method": {
+              "type": "string",
+              "enum": ["", "client_secret_basic", "client_secret_post"],
+              "description": "id_jag only: how resource_client_secret is sent. Empty (default) uses HTTP Basic unless the discovered metadata admits only client_secret_post. Set it when resource_token_endpoint is configured, since there is then no discovery. Requires resource_client_secret."
             }
           },
           "required": [
             "audience"
           ],
           "allOf": [
+            {
+              "$comment": "Bifrost authenticates to the upstream authorization server with a client secret or a private key, not both.",
+              "not": {
+                "required": ["resource_client_secret", "resource_private_key"]
+              }
+            },
             {
               "$comment": "client_id is required unless use_idp_credentials is true, in which case the exchange uses the SSO login application's own credentials instead.",
               "if": {

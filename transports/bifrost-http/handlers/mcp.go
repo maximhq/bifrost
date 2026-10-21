@@ -2092,6 +2092,9 @@ func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionS
 		if isRef(tokenExchange.ResourceClientSecret) {
 			refs = append(refs, "token_exchange.resource_client_secret")
 		}
+		if isRef(tokenExchange.ResourcePrivateKey) {
+			refs = append(refs, "token_exchange.resource_private_key")
+		}
 	}
 	if tlsConfig != nil && isRef(tlsConfig.CACertPEM) {
 		refs = append(refs, "tls_config.ca_cert_pem")
@@ -3149,6 +3152,9 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			}
 			if req.TokenExchange.ResourceClientSecret.IsMaskedPlaceholder() {
 				req.TokenExchange.ResourceClientSecret = existingConfig.TokenExchange.ResourceClientSecret
+			}
+			if req.TokenExchange.ResourcePrivateKey.IsMaskedPlaceholder() {
+				req.TokenExchange.ResourcePrivateKey = existingConfig.TokenExchange.ResourcePrivateKey
 			}
 		}
 		if err := req.TokenExchange.ValidateProfile(); err != nil {

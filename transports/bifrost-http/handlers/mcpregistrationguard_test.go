@@ -225,11 +225,11 @@ func TestMCPClientSecretReferences(t *testing.T) {
 		map[string]schemas.SecretVar{"X-Api-Key": envHeader, "X-Plain": plain},
 		schemas.NewSecretVar("https://mcp.example.com/mcp"),
 		&OAuthConfigRequest{ClientID: &plain, ClientSecret: &vaultSecret},
-		&schemas.MCPTokenExchangeConfig{ClientSecret: &envHeader},
+		&schemas.MCPTokenExchangeConfig{ClientSecret: &envHeader, ResourcePrivateKey: &vaultSecret},
 		&schemas.MCPTLSConfig{CACertPEM: &envHeader},
 		nil,
 	)
-	want := []string{"headers.X-Api-Key", "oauth_config.client_secret", "token_exchange.client_secret", "tls_config.ca_cert_pem"}
+	want := []string{"headers.X-Api-Key", "oauth_config.client_secret", "token_exchange.client_secret", "token_exchange.resource_private_key", "tls_config.ca_cert_pem"}
 	if strings.Join(refs, ",") != strings.Join(want, ",") {
 		t.Fatalf("expected %v, got %v", want, refs)
 	}

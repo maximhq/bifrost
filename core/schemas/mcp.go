@@ -572,7 +572,21 @@ type MCPTokenExchangeConfig struct {
 	ResourceTokenEndpoint *string    `json:"resource_token_endpoint,omitempty"` // id_jag: upstream AS token endpoint; default discovered
 	ResourceClientID      *SecretVar `json:"resource_client_id,omitempty"`      // id_jag: Bifrost's client at the upstream AS
 	ResourceClientSecret  *SecretVar `json:"resource_client_secret,omitempty"`  // id_jag: omit for a public client
+	// id_jag: private_key_jwt at the upstream AS instead of a secret
+	ResourcePrivateKey       *SecretVar `json:"resource_private_key,omitempty"`       // PEM RSA or EC key signing the client assertion
+	ResourceKeyID            string     `json:"resource_key_id,omitempty"`            // kid header of the client assertion
+	ResourceSigningAlgorithm string     `json:"resource_signing_algorithm,omitempty"` // default RS256; see OAuthSigningAlgorithms
+	// Assertion aud; default the upstream token endpoint (Okta, Entra). Set the issuer for servers that require it.
+	ResourceAssertionAudience string `json:"resource_assertion_audience,omitempty"`
+	// How resource_client_secret is sent: client_secret_basic or client_secret_post; empty follows discovery, else Basic.
+	ResourceClientAuthMethod string `json:"resource_client_auth_method,omitempty"`
 }
+
+// Values of MCPTokenExchangeConfig.ResourceClientAuthMethod.
+const (
+	ResourceClientAuthBasic = "client_secret_basic"
+	ResourceClientAuthPost  = "client_secret_post"
+)
 
 // Token-exchange profiles (MCPTokenExchangeConfig.Profile).
 const (
@@ -614,9 +628,46 @@ func (c *MCPTokenExchangeConfig) ValidateProfile() error {
 		if endpoint := c.ResourceTokenEndpointURL(); endpoint != "" && !IsHTTPSOrLoopbackURL(endpoint) {
 			return fmt.Errorf("token_exchange.resource_token_endpoint must be an https URL")
 		}
-		return nil
+		return c.validateResourceClientAuth()
 	}
 	return fmt.Errorf("token_exchange.profile must be empty or %q", TokenExchangeProfileIDJAG)
+}
+
+// UsesResourcePrivateKey reports whether Bifrost authenticates to the upstream
+// authorization server with private_key_jwt rather than a client secret.
+func (c *MCPTokenExchangeConfig) UsesResourcePrivateKey() bool {
+	return c != nil && (strings.TrimSpace(c.ResourcePrivateKey.GetValue()) != "" || c.ResourcePrivateKey.IsFromSecret())
+}
+
+// validateResourceClientAuth checks the upstream client authentication: a
+// secret or a private key, never both, and key settings only with a key.
+func (c *MCPTokenExchangeConfig) validateResourceClientAuth() error {
+	hasSecret := strings.TrimSpace(c.ResourceClientSecret.GetValue()) != "" || c.ResourceClientSecret.IsFromSecret()
+	if c.UsesResourcePrivateKey() {
+		if hasSecret {
+			return fmt.Errorf("token_exchange: set either resource_client_secret or resource_private_key, not both")
+		}
+		if c.ResourceClientAuthMethod != "" {
+			return fmt.Errorf("token_exchange.resource_client_auth_method applies to resource_client_secret, not resource_private_key")
+		}
+	} else if c.ResourceKeyID != "" || c.ResourceSigningAlgorithm != "" || c.ResourceAssertionAudience != "" {
+		return fmt.Errorf("token_exchange.resource_key_id, resource_signing_algorithm and resource_assertion_audience require resource_private_key")
+	}
+	switch c.ResourceClientAuthMethod {
+	case "", ResourceClientAuthBasic, ResourceClientAuthPost:
+	default:
+		return fmt.Errorf("token_exchange.resource_client_auth_method must be empty, %q or %q", ResourceClientAuthBasic, ResourceClientAuthPost)
+	}
+	if c.ResourceClientAuthMethod != "" && !hasSecret {
+		return fmt.Errorf("token_exchange.resource_client_auth_method requires resource_client_secret")
+	}
+	if aud := strings.TrimSpace(c.ResourceAssertionAudience); aud != "" && !IsHTTPSOrLoopbackURL(aud) {
+		return fmt.Errorf("token_exchange.resource_assertion_audience must be an https URL")
+	}
+	if alg := c.ResourceSigningAlgorithm; alg != "" && !slices.Contains(OAuthSigningAlgorithms, alg) {
+		return fmt.Errorf("token_exchange.resource_signing_algorithm must be one of %s", strings.Join(OAuthSigningAlgorithms, ", "))
+	}
+	return nil
 }
 
 // IsHTTPSOrLoopbackURL reports whether raw is an https URL, or plain http on a
@@ -675,6 +726,9 @@ func (c *MCPTokenExchangeConfig) DiffersFrom(resolved *MCPTokenExchangeConfig) b
 	}
 	if c.Profile != resolved.Profile || c.Resource != resolved.Resource ||
 		!c.ResourceClientID.Equals(resolved.ResourceClientID) || !c.ResourceClientSecret.Equals(resolved.ResourceClientSecret) ||
+		!c.ResourcePrivateKey.Equals(resolved.ResourcePrivateKey) || c.ResourceKeyID != resolved.ResourceKeyID ||
+		c.ResourceSigningAlgorithm != resolved.ResourceSigningAlgorithm ||
+		c.ResourceAssertionAudience != resolved.ResourceAssertionAudience || c.ResourceClientAuthMethod != resolved.ResourceClientAuthMethod ||
 		c.ResourceTokenEndpointURL() != resolved.ResourceTokenEndpointURL() {
 		return true
 	}

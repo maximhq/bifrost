@@ -3,7 +3,13 @@ package oauth2
 import (
 	"cmp"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -996,18 +1002,25 @@ func TestIDJAGExpiry(t *testing.T) {
 // HTTP Basic, and keeps Basic when both are listed.
 func TestIDJAGExchange_ClientSecretPostWhenOnlyAdvertised(t *testing.T) {
 	for name, tc := range map[string]struct {
-		methods   []string
-		wantBasic bool
+		methods    []string
+		configured bool   // resource_token_endpoint set, so there is no discovery
+		method     string // resource_client_auth_method
+		wantBasic  bool
 	}{
-		"post only":          {[]string{"client_secret_post"}, false},
-		"basic and post":     {[]string{"client_secret_post", "client_secret_basic"}, true},
-		"methods not listed": {nil, true},
+		"post only":                             {methods: []string{"client_secret_post"}},
+		"basic and post":                        {methods: []string{"client_secret_post", "client_secret_basic"}, wantBasic: true},
+		"methods not listed":                    {wantBasic: true},
+		"configured endpoint defaults to basic": {configured: true, wantBasic: true},
+		"configured endpoint with post":         {configured: true, method: schemas.ResourceClientAuthPost},
+		"explicit basic overrides discovery":    {methods: []string{"client_secret_post"}, method: schemas.ResourceClientAuthBasic, wantBasic: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			l := newIDJAGLegs(t)
 			l.asAuthMethods = tc.methods
 			p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
-			if _, err := p.GetExchangedAccessToken(idjagUserContext(), l.idjagClientConfig(false)); err != nil {
+			cfg := l.idjagClientConfig(tc.configured)
+			cfg.TokenExchange.ResourceClientAuthMethod = tc.method
+			if _, err := p.GetExchangedAccessToken(idjagUserContext(), cfg); err != nil {
 				t.Fatalf("GetExchangedAccessToken: %v", err)
 			}
 			if tc.wantBasic {
@@ -1250,6 +1263,78 @@ func TestIDJAGAdminCredential_RenewsFromLiveSession(t *testing.T) {
 	}
 }
 
+// TestIDJAGExchange_PrivateKeyJWTClientAuth checks leg 2 authenticates with a
+// client assertion when a resource private key is set: iss and sub are the
+// client ID, aud is the token endpoint, kid is carried, and no secret is sent.
+func TestIDJAGExchange_PrivateKeyJWTClientAuth(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecDER, err := x509.MarshalECPrivateKey(ecKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaKeyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(rsaKey)}))
+	for name, tc := range map[string]struct {
+		pem, alg, wantAlg string
+		pub               any
+		audience          string // resource_assertion_audience; empty means the token endpoint
+	}{
+		"rsa default":        {pem: rsaKeyPEM, wantAlg: "RS256", pub: &rsaKey.PublicKey},
+		"ec es256":           {pem: string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: ecDER})), alg: "ES256", wantAlg: "ES256", pub: &ecKey.PublicKey},
+		"issuer as audience": {pem: rsaKeyPEM, wantAlg: "RS256", pub: &rsaKey.PublicKey, audience: "https://as.linear.example"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			l := newIDJAGLegs(t)
+			p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+			cfg := l.idjagClientConfig(true)
+			cfg.TokenExchange.ResourceClientSecret = nil
+			cfg.TokenExchange.ResourcePrivateKey = schemas.NewSecretVar(tc.pem)
+			cfg.TokenExchange.ResourceKeyID = "k1"
+			cfg.TokenExchange.ResourceSigningAlgorithm = tc.alg
+			cfg.TokenExchange.ResourceAssertionAudience = tc.audience
+			wantAud := cmp.Or(tc.audience, l.as.URL+"/token")
+			if token, err := p.GetExchangedAccessToken(idjagUserContext(), cfg); err != nil || token != "saas-token" {
+				t.Fatalf("token=%q err=%v", token, err)
+			}
+			if l.asForm.Has("client_secret") {
+				t.Fatal("no client secret is sent with private_key_jwt")
+			}
+			if got := l.asForm.Get("client_assertion_type"); got != "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
+				t.Fatalf("client_assertion_type = %q", got)
+			}
+			assertion, err := jwt.Parse(l.asForm.Get("client_assertion"), func(*jwt.Token) (any, error) { return tc.pub, nil },
+				jwt.WithValidMethods([]string{tc.wantAlg}), jwt.WithIssuer("bifrost-at-linear"),
+				jwt.WithSubject("bifrost-at-linear"), jwt.WithAudience(wantAud), jwt.WithExpirationRequired())
+			if err != nil {
+				t.Fatalf("client assertion does not verify: %v", err)
+			}
+			if assertion.Header["kid"] != "k1" {
+				t.Fatalf("kid = %v, want k1", assertion.Header["kid"])
+			}
+		})
+	}
+
+	t.Run("unparseable key", func(t *testing.T) {
+		l := newIDJAGLegs(t)
+		p := l.newIDJAGProvider(subjectResolver("t", schemas.TokenTypeIDToken))
+		cfg := l.idjagClientConfig(true)
+		cfg.TokenExchange.ResourceClientSecret = nil
+		cfg.TokenExchange.ResourcePrivateKey = schemas.NewSecretVar("not a pem")
+		if _, err := p.GetExchangedAccessToken(idjagUserContext(), cfg); err == nil || !strings.Contains(err.Error(), "client assertion") {
+			t.Fatalf("err = %v, want a client assertion signing error", err)
+		}
+		if l.idpHits.Load() != 0 || l.asHits.Load() != 0 {
+			t.Fatalf("hits idp=%d as=%d, want none: no ID-JAG is spent when the client assertion cannot be signed", l.idpHits.Load(), l.asHits.Load())
+		}
+	})
+}
+
 func TestValidateProfile(t *testing.T) {
 	base := func() *schemas.MCPTokenExchangeConfig {
 		return &schemas.MCPTokenExchangeConfig{Audience: "a", Profile: schemas.TokenExchangeProfileIDJAG, ResourceClientID: schemas.NewSecretVar("c")}
@@ -1286,6 +1371,52 @@ func TestValidateProfile(t *testing.T) {
 		if got := schemas.IsHTTPSOrLoopbackURL(raw); got != want {
 			t.Errorf("IsHTTPSOrLoopbackURL(%q) = %v, want %v", raw, got, want)
 		}
+	}
+	keyPEM := schemas.NewSecretVar("-----BEGIN PRIVATE KEY-----x-----END PRIVATE KEY-----")
+	both := base()
+	both.ResourceClientSecret, both.ResourcePrivateKey = schemas.NewSecretVar("s"), keyPEM
+	if both.ValidateProfile() == nil {
+		t.Fatal("a resource secret and a resource private key together must fail")
+	}
+	kidOnly := base()
+	kidOnly.ResourceKeyID = "k1"
+	if kidOnly.ValidateProfile() == nil {
+		t.Fatal("resource_key_id without resource_private_key must fail")
+	}
+	hmac := base()
+	hmac.ResourcePrivateKey, hmac.ResourceSigningAlgorithm = keyPEM, "HS256"
+	if hmac.ValidateProfile() == nil {
+		t.Fatal("a symmetric resource_signing_algorithm must fail")
+	}
+	withKey := base()
+	withKey.ResourcePrivateKey, withKey.ResourceKeyID, withKey.ResourceSigningAlgorithm = keyPEM, "k1", "ES256"
+	withKey.ResourceAssertionAudience = "https://as.example.com"
+	if err := withKey.ValidateProfile(); err != nil {
+		t.Fatalf("a private key with kid, ES256 and an issuer audience is valid: %v", err)
+	}
+	for name, mutate := range map[string]func(*schemas.MCPTokenExchangeConfig){
+		"audience without a key": func(c *schemas.MCPTokenExchangeConfig) { c.ResourceAssertionAudience = "https://as.example.com" },
+		"plain-http audience": func(c *schemas.MCPTokenExchangeConfig) {
+			c.ResourcePrivateKey, c.ResourceAssertionAudience = keyPEM, "http://as.example.com"
+		},
+		"auth method without a secret": func(c *schemas.MCPTokenExchangeConfig) { c.ResourceClientAuthMethod = schemas.ResourceClientAuthPost },
+		"auth method with a key": func(c *schemas.MCPTokenExchangeConfig) {
+			c.ResourcePrivateKey, c.ResourceClientAuthMethod = keyPEM, schemas.ResourceClientAuthPost
+		},
+		"unknown auth method": func(c *schemas.MCPTokenExchangeConfig) {
+			c.ResourceClientSecret, c.ResourceClientAuthMethod = schemas.NewSecretVar("s"), "private_key_jwt"
+		},
+	} {
+		c := base()
+		mutate(c)
+		if c.ValidateProfile() == nil {
+			t.Errorf("%s must fail validation", name)
+		}
+	}
+	postOK := base()
+	postOK.ResourceClientSecret, postOK.ResourceClientAuthMethod = schemas.NewSecretVar("s"), schemas.ResourceClientAuthPost
+	if err := postOK.ValidateProfile(); err != nil {
+		t.Fatalf("a secret sent with client_secret_post is valid: %v", err)
 	}
 	unknown := base()
 	unknown.Profile = "other"

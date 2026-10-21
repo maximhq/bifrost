@@ -9464,6 +9464,7 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 		exchangeCopy.ClientSecret = exchangeCopy.ClientSecret.Redacted()
 		exchangeCopy.ResourceClientID = exchangeCopy.ResourceClientID.Redacted()
 		exchangeCopy.ResourceClientSecret = exchangeCopy.ResourceClientSecret.Redacted()
+		exchangeCopy.ResourcePrivateKey = exchangeCopy.ResourcePrivateKey.Redacted()
 		configCopy.TokenExchange = &exchangeCopy
 	}
 

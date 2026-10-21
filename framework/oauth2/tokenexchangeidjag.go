@@ -1,6 +1,7 @@
 package oauth2
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/maximhq/bifrost/core/providers/utils/tokencache"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/lrucache"
@@ -18,6 +20,8 @@ import (
 // Wire values for the Cross App Access (ID-JAG) profile of token exchange.
 const (
 	requestedTokenTypeIDJAG = "urn:ietf:params:oauth:token-type:id-jag"
+	// clientAssertionTypeJWTBearer marks a private_key_jwt client assertion (RFC 7523 §2.2).
+	clientAssertionTypeJWTBearer = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 	// resourceEndpointTTL bounds how long a discovered upstream token endpoint
 	// is reused before discovery runs again.
 	resourceEndpointTTL = time.Hour
@@ -202,6 +206,12 @@ func (p *OAuth2Provider) exchangeIDJAG(ctx context.Context, config *schemas.MCPC
 	if _, err := p.resourceTokenEndpoint(ctx, config); err != nil {
 		return nil, nil, err
 	}
+	// Likewise a key that cannot sign: leg 2 would fail after the ID-JAG was spent.
+	if te := config.TokenExchange; te.UsesResourcePrivateKey() {
+		if err := tokencache.ValidatePrivateKey(te.ResourcePrivateKey.GetValue(), te.ResourceSigningAlgorithm); err != nil {
+			return nil, nil, fmt.Errorf("authenticate to the upstream authorization server for MCP client %s: client assertion key: %w", config.Name, err)
+		}
+	}
 	if grant := p.cachedIDJAG(key); grant != nil {
 		response, err := p.redeemIDJAG(ctx, config, grant.assertion)
 		var rejected *schemas.TokenExchangeRejectedError
@@ -263,15 +273,9 @@ func (p *OAuth2Provider) redeemIDJAG(ctx context.Context, config *schemas.MCPCli
 	form := url.Values{}
 	form.Set("grant_type", grantTypeJWTBearer)
 	form.Set("assertion", assertion)
-	var opts []tokenRequestOption
-	switch secret := strings.TrimSpace(cfg.ResourceClientSecret.GetValue()); {
-	case secret == "":
-		form.Set("client_id", clientID)
-	case onlyClientSecretPost(upstream.authMethods):
-		form.Set("client_id", clientID)
-		form.Set("client_secret", secret)
-	default:
-		opts = append(opts, withBasicClientAuth(clientID, secret))
+	opts, err := resourceClientAuth(form, cfg, clientID, upstream)
+	if err != nil {
+		return nil, fmt.Errorf("authenticate to the upstream authorization server for MCP client %s: %w", config.Name, err)
 	}
 	response, err := p.callTokenEndpoint(ctx, upstream.endpoint, form, opts...)
 	if err != nil {
@@ -282,6 +286,43 @@ func (p *OAuth2Provider) redeemIDJAG(ctx context.Context, config *schemas.MCPCli
 		return nil, fmt.Errorf("ID-JAG redemption for MCP client %s failed: %w", config.Name, err)
 	}
 	return response, nil
+}
+
+// resourceClientAuth adds Bifrost's client authentication at the upstream
+// authorization server to form, returning any request options it needs: a
+// client assertion signed with the configured key (RFC 7523 §2.2; audience the
+// configured one, else the token endpoint); else the client secret, sent as
+// resource_client_auth_method says or, when unset, with HTTP Basic unless the
+// upstream admits only the body; else client_id alone for a public client.
+func resourceClientAuth(form url.Values, cfg *schemas.MCPTokenExchangeConfig, clientID string, upstream resourceEndpoint) ([]tokenRequestOption, error) {
+	if cfg.UsesResourcePrivateKey() {
+		clientAssertion, err := tokencache.SignAssertion(tokencache.JWTBearerConfig{
+			PrivateKeyPEM: cfg.ResourcePrivateKey.GetValue(),
+			Issuer:        clientID,
+			Subject:       clientID,
+			Audience:      cmp.Or(strings.TrimSpace(cfg.ResourceAssertionAudience), upstream.endpoint),
+			KeyID:         cfg.ResourceKeyID,
+			Algorithm:     cfg.ResourceSigningAlgorithm,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("sign the client assertion: %w", err)
+		}
+		form.Set("client_id", clientID)
+		form.Set("client_assertion_type", clientAssertionTypeJWTBearer)
+		form.Set("client_assertion", clientAssertion)
+		return nil, nil
+	}
+	switch secret := strings.TrimSpace(cfg.ResourceClientSecret.GetValue()); {
+	case secret == "":
+		form.Set("client_id", clientID)
+	case cfg.ResourceClientAuthMethod == schemas.ResourceClientAuthPost,
+		cfg.ResourceClientAuthMethod == "" && onlyClientSecretPost(upstream.authMethods):
+		form.Set("client_id", clientID)
+		form.Set("client_secret", secret)
+	default:
+		return []tokenRequestOption{withBasicClientAuth(clientID, secret)}, nil
+	}
+	return nil, nil
 }
 
 // onlyClientSecretPost reports whether the upstream's metadata admits the
