@@ -32,9 +32,7 @@ REF_RE = re.compile(r"\./paths/management/([\w.-]+)\.yaml#/([\w~/{}.-]+)")
 
 # Fragments that are genuinely unmounted and predate this work. Listed rather than skipped
 # so they stay visible; removing one is a separate change from keeping the catalogue honest.
-KNOWN_ORPHANS = {
-    "infrastructure.yaml": {"websocket-responses"},
-}
+KNOWN_ORPHANS: dict = {}
 
 passed = 0
 failed = 0
@@ -128,7 +126,7 @@ def test_no_orphaned_fragments():
             text = other.read_text(encoding="utf-8")
             for frag in defined:
                 cross_file = f"{stem}.yaml#/{frag}/" in text
-                same_file = other == source and f"'#/{frag}/" in text
+                same_file = other == source and any(f"{q}#/{frag}/" in text for q in "'\"")
                 if cross_file or same_file:
                     composed.add(frag)
         unused = sorted(defined - referenced - composed - KNOWN_ORPHANS.get(source.name, set()))
