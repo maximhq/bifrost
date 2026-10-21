@@ -100,7 +100,7 @@ func (m *MCPManager) executeToolWithHooks(
 			toolNameMapping = state.ToolNameMapping
 		}
 
-		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig, toolNameMapping)
+		result, opErr := m.toolsManager.executeTool(ctx, preReq, conn, executionConfig, toolNameMapping, state)
 		if opErr != nil {
 			return nil, opErr
 		}

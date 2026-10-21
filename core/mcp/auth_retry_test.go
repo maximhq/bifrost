@@ -389,6 +389,31 @@ func newAuthRetryToolsManager(cm ClientManager, cs schemas.MCPCredentialStore) *
 
 func boolPtr(b bool) *bool { return &b }
 
+func TestExecuteTool_AuthFailureRetry_RechecksAnnotationsAfterHealing(t *testing.T) {
+	for _, perCall := range []bool{false, true} {
+		t.Run(fmt.Sprintf("perCall=%t", perCall), func(t *testing.T) {
+			state, name := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
+			fresh, _ := newAuthRetryClientState("testclient", "dotool", boolPtr(true), boolPtr(false))
+			ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
+			conn := client.NewClient(ft, client.WithSession())
+			cm := &authRetryClientManager{state: state, byNameState: fresh, acquireConn: conn}
+			cs := &authRetryCredStore{requiresPerCall: perCall}
+			tm := newAuthRetryToolsManager(cm, cs)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, err := tm.ExecuteTool(ctx, newAuthRetryToolCallRequest(name), conn, state.ExecutionConfig, state.ToolNameMapping)
+			if err == nil || ft.CallCount() != 1 {
+				t.Fatalf("changed tool was replayed: calls=%d error=%v", ft.CallCount(), err)
+			}
+			if cs.forceRefreshCalls.Load() != 1 || cm.acquireCalls.Load() != 0 {
+				t.Fatalf("expected healing without reacquire/replay: refresh=%d acquire=%d", cs.forceRefreshCalls.Load(), cm.acquireCalls.Load())
+			}
+			if !perCall && cm.reconnectCalls.Load() != 1 {
+				t.Fatal("shared connection was not healed")
+			}
+		})
+	}
+}
+
 // TestExecuteTool_AuthFailureRetry_PerUser_SucceedsOnSecondAttempt covers the
 // per-user path: a 401 on the first CallTool forces a refresh, re-acquires a
 // connection, and retries the SAME call once — which succeeds here.
@@ -823,7 +848,7 @@ func TestExecuteTool_AuthFailureRetry_Shared_Concurrent401sJoinOneReconnect(t *t
 // TestExecuteTool_AuthFailureRetry_DestructiveNonIdempotent_SkipsRetry covers
 // the safety opt-out: a destructive, non-idempotent tool must not be
 // auto-retried even on a clean auth-shaped failure — the original error
-// surfaces unchanged and none of the recovery machinery runs.
+// surfaces while the credential is refreshed without replaying the call.
 func TestExecuteTool_AuthFailureRetry_DestructiveNonIdempotent_SkipsRetry(t *testing.T) {
 	state, toolName := newAuthRetryClientState("testclient", "dotool", boolPtr(true), nil)
 
@@ -847,8 +872,8 @@ func TestExecuteTool_AuthFailureRetry_DestructiveNonIdempotent_SkipsRetry(t *tes
 	if got := ft.CallCount(); got != 1 {
 		t.Errorf("destructive, non-idempotent tool must not be retried, got %d CallTool invocations", got)
 	}
-	if got := cs.forceRefreshCalls.Load(); got != 0 {
-		t.Errorf("ForceRefresh must not run when the retry is skipped, got %d calls", got)
+	if got := cs.forceRefreshCalls.Load(); got != 1 {
+		t.Errorf("ForceRefresh must heal the credential without replay, got %d calls", got)
 	}
 	if got := cm.acquireCalls.Load(); got != 0 {
 		t.Errorf("AcquireClientConn must not run when the retry is skipped, got %d calls", got)
@@ -912,8 +937,8 @@ func TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry(t *testing.T) {
 	if got := ft.CallCount(); got != 1 {
 		t.Errorf("an unannotated tool must not be retried, got %d CallTool invocations", got)
 	}
-	if got := cs.forceRefreshCalls.Load(); got != 0 {
-		t.Errorf("ForceRefresh must not run when the retry is skipped, got %d calls", got)
+	if got := cs.forceRefreshCalls.Load(); got != 1 {
+		t.Errorf("ForceRefresh must heal the credential without replay, got %d calls", got)
 	}
 	if got := cm.acquireCalls.Load(); got != 0 {
 		t.Errorf("AcquireClientConn must not run when the retry is skipped, got %d calls", got)

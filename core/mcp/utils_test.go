@@ -3,14 +3,79 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/internal/injectedauth"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestIsTransientToolCallError_TransportOnly(t *testing.T) {
+	tests := []struct {
+		name  string
+		err   error
+		retry bool
+	}{
+		{"nil", nil, false},
+		{"tool domain temporary failure", errors.New("internal error: temporary failure"), false},
+		{"tool domain status 503", errors.New("internal error: status 503"), false},
+		{"tool domain timeout", errors.New("upstream operation timeout"), false},
+		{"HTTP 503", transport.NewError(errors.New("request failed with status 503: unavailable")), true},
+		{"HTTP 503 outranks auth text in body", transport.NewError(errors.New("request failed with status 503: downstream returned 401 unauthorized")), true},
+		{"HTTP 429", transport.NewError(errors.New("request failed with status 429: slow down")), true},
+		{"HTTP 401", transport.NewError(errors.New("request failed with status 401: try again")), false},
+		{"HTTP 422 with timeout text", transport.NewError(errors.New("request failed with status 422: timeout")), false},
+		{"transport reset", transport.NewError(errors.New("read: connection reset by peer")), true},
+		{"transport broken pipe", transport.NewError(errors.New("write: broken pipe")), true},
+		{"EOF with port digits", transport.NewError(fmt.Errorf("Post http://127.0.0.1:35004: %w", io.EOF)), false},
+		{"EOF with session digits", transport.NewError(fmt.Errorf("Post http://localhost/message?sessionId=abc504def: %w", io.EOF)), false},
+		{"cancel with timeout URL", transport.NewError(fmt.Errorf("Post http://localhost/timeout: %w", context.Canceled)), false},
+		{"typed timeout without timeout text", transport.NewError(&net.DNSError{Err: "slow", Name: "local.invalid", IsTimeout: true}), true},
+		{"dead session", transport.NewError(transport.ErrSessionTerminated), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) { require.Equal(t, tt.retry, isTransientToolCallError(tt.err)) })
+	}
+}
+
+func TestToolCallReplayAllowed(t *testing.T) {
+	config := &schemas.MCPClientConfig{ID: "one", Name: "one"}
+	tests := []struct {
+		name        string
+		annotations *schemas.MCPToolAnnotations
+		allowed     bool
+	}{
+		{"missing", nil, false},
+		{"empty", &schemas.MCPToolAnnotations{}, false},
+		{"additive only", &schemas.MCPToolAnnotations{DestructiveHint: schemas.Ptr(false)}, false},
+		{"explicit nonidempotent additive", &schemas.MCPToolAnnotations{DestructiveHint: schemas.Ptr(false), IdempotentHint: schemas.Ptr(false)}, false},
+		{"destructive", &schemas.MCPToolAnnotations{DestructiveHint: schemas.Ptr(true)}, false},
+		{"readonly", &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(true)}, true},
+		{"idempotent destructive", &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(false), DestructiveHint: schemas.Ptr(true), IdempotentHint: schemas.Ptr(true)}, true},
+		{"readonly ignores other hints", &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(true), DestructiveHint: schemas.Ptr(true), IdempotentHint: schemas.Ptr(false)}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := &schemas.MCPClientState{ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{"one-tool": {Annotations: tt.annotations}}}
+			require.Equal(t, tt.allowed, toolCallReplayAllowed(state, config, "one-tool"))
+			require.False(t, toolCallReplayAllowed(state, config, "missing-tool"))
+			require.False(t, toolCallReplayAllowed(state, &schemas.MCPClientConfig{ID: "other", Name: "one"}, "one-tool"))
+			require.False(t, toolCallReplayAllowed(state, &schemas.MCPClientConfig{ID: "one", Name: "other"}, "one-tool"))
+			state.State = schemas.MCPConnectionStateDisabled
+			require.False(t, toolCallReplayAllowed(state, config, "one-tool"))
+		})
+	}
+	require.False(t, toolCallReplayAllowed(nil, config, "one-tool"))
+	require.False(t, toolCallReplayAllowed(&schemas.MCPClientState{}, config, "one-tool"))
+	require.False(t, toolCallReplayAllowed(&schemas.MCPClientState{ExecutionConfig: config}, nil, "one-tool"))
+}
 
 // TestConvertMCPToolToBifrostSchema_EmptyParameters tests that tools with no parameters
 // get an empty properties map instead of nil, which is required by some providers like OpenAI
