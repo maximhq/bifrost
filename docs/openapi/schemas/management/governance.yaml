@@ -233,6 +233,152 @@ BudgetOverrideRequest:
         Required and must be greater than 0 when `mode` is `cycles`; must be omitted or 0 when `mode` is `forever`.
       minimum: 1
 
+ApproveBudgetRequestRequest:
+  type: object
+  description: |
+    Optional approver overrides for a budget increase request. `amount`, `mode` and `cycles` default to
+    the requested values.
+  properties:
+    amount:
+      type: number
+      description: Amount in dollars to approve. Must be greater than 0.
+      exclusiveMinimum: 0
+    mode:
+      type: string
+      description: |
+        `cycles` keeps the override active for `cycles` reset windows starting with the current one.
+        `forever` keeps it active until it is removed.
+      enum:
+        - cycles
+        - forever
+    cycles:
+      type: integer
+      description: |
+        Number of reset windows the override stays active for. Must be 1-120 when the effective mode is
+        `cycles`, where the effective mode is this body's `mode`, else the requested mode. Ignored when the
+        effective mode is `forever`, and ignored with `add_keep_lifetime` when the budget has an active override.
+    note:
+      type: string
+      description: Optional note shown with the decision.
+      maxLength: 2000
+    override_strategy:
+      type: string
+      description: |
+        How to combine the approval with an active override on the budget. Empty or `add` adds the amount
+        and returns `409` when the lifetimes differ. `replace` replaces the active override.
+        `add_keep_lifetime` adds the amount and keeps the active override's mode and remaining cycles.
+      enum:
+        - ""
+        - add
+        - replace
+        - add_keep_lifetime
+
+BudgetRequest:
+  type: object
+  description: A budget increase request, with the target budget's current state.
+  properties:
+    id:
+      type: string
+    requester_user_id:
+      type: string
+    requester_name:
+      type: string
+    requester_email:
+      type: string
+    target_kind:
+      type: string
+      enum:
+        - virtual_key
+        - access_profile
+    virtual_key_id:
+      type: string
+      description: Set when `target_kind` is `virtual_key`.
+    access_profile_id:
+      type: integer
+      description: Set when `target_kind` is `access_profile`.
+    target_name:
+      type: string
+      description: Name of the virtual key or access profile.
+    budget_id:
+      type: string
+    amount:
+      type: number
+      description: Requested amount in dollars.
+    mode:
+      type: string
+      description: Requested duration mode.
+      enum:
+        - cycles
+        - forever
+    cycles:
+      type: integer
+      description: Requested number of cycles.
+    reason:
+      type: string
+    status:
+      type: string
+      enum:
+        - pending
+        - approved
+        - denied
+        - cancelled
+    decided_by_user_id:
+      type: string
+    decided_by_user_name:
+      type: string
+    decision_note:
+      type: string
+    approved_amount:
+      type: number
+    approved_mode:
+      type: string
+      description: Duration mode actually applied.
+      enum:
+        - cycles
+        - forever
+    approved_cycles:
+      type: integer
+      description: Number of cycles actually applied.
+    created_at:
+      type: string
+      format: date-time
+    decided_at:
+      type: string
+      format: date-time
+    budget:
+      $ref: "#/BudgetRequestBudgetSnapshot"
+    live_reload:
+      type: string
+      description: |
+        `retrying` when the approval is saved but applying it to live governance state failed and is being
+        retried in the background. Omitted otherwise.
+      enum:
+        - retrying
+
+BudgetRequestBudgetSnapshot:
+  type: object
+  description: The target budget's current state.
+  properties:
+    max_limit:
+      type: number
+    current_usage:
+      type: number
+    reset_duration:
+      type: string
+    override_amount:
+      type: number
+    override_mode:
+      type: string
+      enum:
+        - cycles
+        - forever
+    override_cycles_remaining:
+      type: integer
+      description: Remaining cycles of the active override. Omitted for an override that lasts until removed.
+    effective_max_limit:
+      type: number
+      description: "`max_limit` plus any active override."
+
 BudgetOverrideResponse:
   type: object
   description: The persisted budget and the additive limit now in force.
