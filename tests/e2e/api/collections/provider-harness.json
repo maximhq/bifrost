@@ -277031,7 +277031,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count: one two three\"\n    }\n  ],\n  \"max_tokens\": 24,\n  \"stream\": true\n}"
+                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count: one two three\"\n    }\n  ],\n  \"max_tokens\": 24,\n  \"thinking\": {\"type\": \"disabled\"},\n  \"stream\": true\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/chat/completions",
@@ -277181,7 +277181,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-flash\",\n  \"input\": \"Count to 5\",\n  \"max_output_tokens\": 32,\n  \"stream\": true\n}"
+                  "raw": "{\n  \"model\": \"tencent/deepseek-v4-flash\",\n  \"input\": \"Count to 5\",\n  \"max_output_tokens\": 32,\n  \"reasoning\": {\"effort\": \"none\"},\n  \"stream\": true\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/responses",
