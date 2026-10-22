@@ -234,9 +234,10 @@ type BifrostHTTPServer struct {
 	Version   string
 	UIContent embed.FS
 
-	Port   string
-	Host   string
-	AppDir string
+	Port     string
+	Host     string
+	AppDir   string
+	BasePath string // from -base-path / BIFROST_BASE_PATH; resolved against server.base_path in Bootstrap
 
 	LogLevel        string
 	LogOutputStyle  string
@@ -3247,6 +3248,16 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config %v", err)
 	}
+	// The base path is resolved once, before any handler is built, and stored
+	// back on the server config so every handler reads the same value.
+	s.BasePath, err = lib.ResolveBasePath(s.BasePath, s.Config.ServerConfig)
+	if err != nil {
+		return fmt.Errorf("invalid base path: %w", err)
+	}
+	if s.Config.ServerConfig == nil {
+		s.Config.ServerConfig = &lib.ServerConfig{ReadBufferSize: 1024 * 64}
+	}
+	s.Config.ServerConfig.BasePath = s.BasePath
 	if s.Config.KVStore != nil {
 		integrations.RegisterKVDecoders(s.Config.KVStore)
 	}
@@ -3657,6 +3668,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	})
 	// Register UI handler
 	s.RegisterUIRoutes()
+	if err := lib.CheckBasePathCollision(s.BasePath, s.Router.List()); err != nil {
+		return err
+	}
 
 	// Start the Sidekiq dispatcher: on every node it periodically claims pending and
 	// stale (orphaned) jobs, with an atomic claim guaranteeing exactly one node runs
