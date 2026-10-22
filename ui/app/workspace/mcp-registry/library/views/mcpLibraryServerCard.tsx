@@ -12,9 +12,10 @@ import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import i18n from "@/lib/i18n";
 import { MCPLibraryDeleteDialog } from "./mcpLibraryDeleteDialog";
+import { withBasePath } from "@/lib/utils/basePath";
 
 const MAX_VISIBLE_TAGS = 3;
-export const MCP_ICON_FALLBACK = "/images/mcp.svg";
+export const MCP_ICON_FALLBACK = withBasePath("/images/mcp.svg");
 
 /** Map connection_type to a human-friendly transport label. */
 export function transportLabel(connectionType: string): string {
@@ -65,6 +66,7 @@ interface MCPLibraryServerCardProps {
 	onInstall: (server: MCPLibraryEntry) => void;
 }
 
+/** Card for one MCP library entry, with install and delete actions. */
 export function MCPLibraryServerCard({ server, isInstalled, canCreateMCPClient, canDelete, onInstall }: MCPLibraryServerCardProps) {
 	const { t } = useTranslation("mcp");
 	const [deleteEntry, { isLoading: isDeleting }] = useDeleteMCPLibraryEntryMutation();
@@ -100,7 +102,7 @@ export function MCPLibraryServerCard({ server, isInstalled, canCreateMCPClient, 
 								}}
 							/>
 						) : (
-							<img src={"/images/mcp.svg"} alt="" className="h-full w-full object-contain p-1.5" />
+							<img src={withBasePath("/images/mcp.svg")} alt="" className="h-full w-full object-contain p-1.5" />
 						)}
 					</div>
 					<div className="min-w-0 flex-1 space-y-1">

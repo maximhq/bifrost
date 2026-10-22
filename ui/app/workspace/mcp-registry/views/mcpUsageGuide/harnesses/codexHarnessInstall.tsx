@@ -5,7 +5,9 @@ import { buildCodexConfig } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { CodexConfigScope, HarnessInstallProps } from "../types";
 import { getRegistrationLabel, getUserHomePrefix } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
+/** Install panel for Codex: the generated config or command for the selected MCP servers. */
 export function CodexHarnessInstall({
 	canGenerateCommand,
 	clientConfig,
@@ -50,7 +52,7 @@ export function CodexHarnessInstall({
 				emptyMessage={emptyMessage}
 				harnessName="Codex"
 				label="config.toml"
-				logoSrc="/images/harness/codex.svg"
+				logoSrc={withBasePath("/images/harness/codex.svg")}
 				registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 			/>
 		</div>
