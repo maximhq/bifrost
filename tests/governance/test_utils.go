@@ -106,6 +106,18 @@ func baseURL() string {
 	return "http://localhost:8080"
 }
 
+// setupToken returns the OSS setup token the governance test server is configured with
+// (tests/governance/config.json setup_token), overridable through the environment.
+func setupToken() string {
+	if v := os.Getenv("BIFROST_E2E_SETUP_TOKEN"); v != "" {
+		return v
+	}
+	if v := os.Getenv("BIFROST_SETUP_TOKEN"); v != "" {
+		return v
+	}
+	return "bifrost-e2e-setup-token"
+}
+
 func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 	client := &http.Client{}
 	url := fmt.Sprintf("%s%s", baseURL(), req.Path)
@@ -125,6 +137,8 @@ func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	// OSS setup lock: /api needs the setup token while dashboard auth is not active.
+	httpReq.Header.Set("X-Bifrost-Setup-Token", setupToken())
 
 	// Add virtual key header if provided
 	if req.VKHeader != nil {
@@ -180,6 +194,8 @@ func MakeRequestWithCustomHeaders(t *testing.T, req APIRequest, customHeaders ma
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	// OSS setup lock: /api needs the setup token while dashboard auth is not active.
+	httpReq.Header.Set("X-Bifrost-Setup-Token", setupToken())
 
 	// Add custom headers
 	for key, value := range customHeaders {

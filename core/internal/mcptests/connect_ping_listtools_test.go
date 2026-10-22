@@ -731,6 +731,34 @@ func TestServerInstructions_EmptyWhenNoClientAdvertisesAny(t *testing.T) {
 	assert.Equal(t, "", manager.GetAggregatedServerInstructions(context.Background()))
 }
 
+// An edit to any field must not quietly drop the client's own instruction cap:
+// UpdateClient rebuilds ExecutionConfig field by field, so a field missing from
+// that literal reverts to the global default in memory while the DB row keeps
+// the override.
+func TestServerInstructions_PerClientCapSurvivesClientUpdate(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+
+	// Longer than the cap below, shorter than the global default, so only the
+	// per-client override can produce a truncation.
+	instructions := strings.Repeat("Rule: check permissions first. ", 8)
+	cfg := inProcessClientConfig("capped_client", buildInProcessServerWithInstructions(t, "capped-srv", instructions))
+	cfg.MaxInstructionsLength = 40
+	require.NoError(t, manager.AddClient(context.Background(), cfg))
+
+	require.Contains(t, manager.GetAggregatedServerInstructions(context.Background()), "[truncated:",
+		"per-client cap should apply before any update")
+
+	// Mirrors the update handler, which resends the cap alongside the edit.
+	updated := *cfg
+	updated.ToolsToExecute = []string{"echo"}
+	require.NoError(t, manager.UpdateClient(cfg.ID, &updated))
+
+	assert.Contains(t, manager.GetAggregatedServerInstructions(context.Background()), "[truncated:",
+		"per-client cap must survive an unrelated edit")
+}
+
 // startInstructionsServer launches one examples/mcps/instructions-test-server
 // process advertising the given name and instructions, and returns its /mcp URL.
 // Skips the calling test when the fixture has not been built, matching how the
@@ -912,4 +940,29 @@ func TestRefreshClientTools_UnchangedInstructionsStayPut(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, before, manager.GetAggregatedServerInstructions(ctx))
+}
+
+// RefreshMCPClientTools is advertised as working across every client type, but the
+// refresh tests above all run over HTTP. STDIO takes a different path — a child process
+// and a pipe rather than a socket — so it is worth pinning that an on-demand refresh
+// there returns the tool set rather than erroring or emptying it.
+func TestRefreshClientTools_WorksOverSTDIO(t *testing.T) {
+	t.Parallel()
+
+	InitMCPServerPaths(t)
+	cfg := GetGoTestServerConfig(GetBifrostRoot(t))
+	manager := setupMCPManager(t, cfg)
+	ctx := createTestContext()
+
+	before := manager.GetToolPerClient(ctx)[cfg.Name]
+	require.NotEmpty(t, before, "STDIO client should expose tools before the refresh")
+
+	count, err := manager.RefreshClientTools(ctx, cfg.ID)
+	require.NoError(t, err, "refresh must work for a STDIO client")
+	assert.Positive(t, count, "refresh should report the rediscovered tools")
+
+	// An upstream that did not change must come back with the same tool set: a refresh
+	// that quietly emptied it would leave the client connected but useless.
+	assert.Len(t, manager.GetToolPerClient(ctx)[cfg.Name], len(before),
+		"refresh must not drop tools for an unchanged STDIO upstream")
 }

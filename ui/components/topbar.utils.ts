@@ -10,6 +10,7 @@
 
 /** Path segments that are shouted rather than capitalised. */
 const titleAcronyms: Record<string, string> = {
+	a2a: "A2A",
 	ai: "AI",
 	api: "API",
 	llm: "LLM",
@@ -37,10 +38,14 @@ function formatTitlePart(part: string) {
  */
 const routeTitleOverrides: Record<string, string> = {
 	"/workspace/adaptive-routing/settings": "Adaptive Routing Settings",
+	"/workspace/agent-logs": "Agent Logs",
 	"/workspace/alerting/channels": "Alert Channels",
 	"/workspace/alerting/history": "Alert History",
 	"/workspace/alerting/rules": "Alert Rules",
-	"/workspace/cluster": "Cluster Config",
+	"/workspace/cluster/overview": "Cluster Nodes",
+	"/workspace/cluster/incidents": "Cluster Incidents",
+	"/workspace/cluster/settings": "Cluster Settings",
+	"/workspace/cluster/storage": "Cluster Storage",
 	"/workspace/config": "Settings",
 	"/workspace/config/license": "License Info",
 	"/workspace/edge-control/config": "Edge Settings",
@@ -49,6 +54,7 @@ const routeTitleOverrides: Record<string, string> = {
 	"/workspace/governance/rbac": "Roles & Permissions",
 	"/workspace/guardrails/configuration": "Guardrail Rules",
 	"/workspace/guardrails/providers": "Guardrail Providers",
+	"/workspace/guardrails/incidents": "Guardrail Incidents",
 	"/workspace/logs": "LLM Logs",
 	"/workspace/logs/connectors": "Log Connectors",
 	"/workspace/observability": "Observability Connectors",

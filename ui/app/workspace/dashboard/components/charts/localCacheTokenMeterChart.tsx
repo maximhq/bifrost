@@ -81,7 +81,7 @@ function LocalCacheTokenMeterChartImpl({ data }: LocalCacheTokenMeterChartProps)
 					<div>
 						<div className="flex flex-col items-center pt-1 leading-none">
 							<div className="text-muted-foreground text-3xl font-semibold tracking-tight">{percentage.toFixed(1)}%</div>
-							<div className="mt-1 text-[11px] text-zinc-400">of requests served from local cache</div>
+							<div className="text-muted-foreground mt-1 text-[11px]">of requests served from local cache</div>
 						</div>
 						<div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none">
 							<span className="flex items-center gap-1.5">

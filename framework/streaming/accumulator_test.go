@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -1039,5 +1040,73 @@ func TestChatStreamingFinishReasonOnTerminalChunk(t *testing.T) {
 	}
 	if *processed.Data.FinishReason != "stop" {
 		t.Fatalf("accumulated finish_reason = %q, want %q", *processed.Data.FinishReason, "stop")
+	}
+}
+
+// A retried stream attempt reuses its request's accumulator, and its chunk indexes
+// restart at 0. Reset must drop the failed attempt's chunks so the retry's are not
+// discarded as duplicates, and keep the accumulator alive for the plugins that own it.
+func TestResetStreamAccumulatorKeepsRetryChunks(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	requestID := "retried-request"
+	acc := accumulator.CreateStreamAccumulator(requestID, time.Now())
+	add := func(index int, content string) {
+		t.Helper()
+		chunk := &ChatStreamChunk{
+			ChunkIndex: index,
+			Timestamp:  time.Now(),
+			Delta:      &schemas.ChatStreamResponseChoiceDelta{Content: new(content)},
+		}
+		if err := accumulator.addChatStreamChunk(requestID, StreamTypeChat, chunk, false); err != nil {
+			t.Fatalf("failed to add chunk %d: %v", index, err)
+		}
+	}
+
+	add(0, "failed-attempt")
+	accumulator.ResetStreamAccumulator(requestID)
+	add(0, "he")
+	add(1, "llo")
+
+	if current, _ := accumulator.streamAccumulators.Load(requestID); current != acc {
+		t.Fatal("reset replaced the accumulator instead of clearing it")
+	}
+	if got := acc.refCount.Load(); got != 1 {
+		t.Fatalf("refCount = %d, want 1: reset must keep the owners' references", got)
+	}
+	var content []string
+	for _, chunk := range acc.ChatStreamChunks {
+		content = append(content, *chunk.Delta.Content)
+	}
+	if len(content) != 2 || content[0] != "he" || content[1] != "llo" {
+		t.Fatalf("accumulated chunks = %q, want the retry's [he llo]", content)
+	}
+}
+
+// TestBuildChatMessageFromChunksWithoutAccumulator pins the exported builder used to rebuild
+// recorded streams outside a live Accumulator: out-of-order chunks are sorted and content, reasoning
+// and role are assembled exactly as the Accumulator method does.
+func TestBuildChatMessageFromChunksWithoutAccumulator(t *testing.T) {
+	makeChunks := func() []*ChatStreamChunk {
+		return []*ChatStreamChunk{
+			{ChunkIndex: 2, Delta: &schemas.ChatStreamResponseChoiceDelta{Content: schemas.Ptr("there")}},
+			{ChunkIndex: 0, Delta: &schemas.ChatStreamResponseChoiceDelta{Role: schemas.Ptr(string(schemas.ChatMessageRoleAssistant)), Reasoning: schemas.Ptr("think")}},
+			{ChunkIndex: 1, Delta: &schemas.ChatStreamResponseChoiceDelta{Content: schemas.Ptr("hi ")}},
+		}
+	}
+
+	message := BuildChatMessageFromChunks(makeChunks())
+	if message.Content == nil || message.Content.ContentStr == nil || *message.Content.ContentStr != "hi there" {
+		t.Fatalf("unexpected content: %+v", message.Content)
+	}
+	if message.Role != schemas.ChatMessageRoleAssistant {
+		t.Fatalf("unexpected role %q", message.Role)
+	}
+	if message.ChatAssistantMessage == nil || message.ChatAssistantMessage.Reasoning == nil || *message.ChatAssistantMessage.Reasoning != "think" {
+		t.Fatalf("unexpected reasoning: %+v", message.ChatAssistantMessage)
+	}
+
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if viaAccumulator := accumulator.buildCompleteMessageFromChatStreamChunks(makeChunks()); !reflect.DeepEqual(viaAccumulator, message) {
+		t.Fatalf("exported builder diverged from Accumulator method:\n got %+v\nwant %+v", message, viaAccumulator)
 	}
 }

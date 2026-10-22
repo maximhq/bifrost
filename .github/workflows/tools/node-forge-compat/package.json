@@ -1,0 +1,8 @@
+{
+  "name": "node-forge-compat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Native RSA key conversion for the node-forge API used by Newman's ASAP authorizer",
+  "main": "index.js",
+  "license": "MIT"
+}

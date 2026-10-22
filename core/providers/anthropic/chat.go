@@ -65,7 +65,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, error
 
 	if anthropicTool.InputSchema != nil {
 		var err error
-		anthropicTool.InputSchema, err = normalizeAnthropicToolInputSchema(anthropicTool.InputSchema)
+		anthropicTool.InputSchema, err = NormalizeAnthropicToolInputSchema(anthropicTool.InputSchema)
 		if err != nil {
 			return AnthropicTool{}, err
 		}
@@ -419,7 +419,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		}
 
 		if bifrostReq.Params.MaxCompletionTokens != nil {
-			anthropicReq.MaxTokens = *bifrostReq.Params.MaxCompletionTokens
+			anthropicReq.MaxTokens = clampToModelOutputCeiling(caps, *bifrostReq.Params.MaxCompletionTokens)
 		}
 
 		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
@@ -660,6 +660,20 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// policy per user direction. See Bedrock's convertToolConfig for
 			// the direct-Bedrock-path equivalent.
 			filtered, _ := ValidateChatToolsForProvider(bifrostReq.Params.Tools, caps)
+			// Chat has no OpenAI counterpart for allowed_callers, but the neutral
+			// ChatTool carries it, so a "programmatic" caller still has to be renamed
+			// to the request's code execution version (see the Responses path).
+			programmaticCaller := ""
+			for _, tool := range filtered {
+				if hasProgrammaticCaller(tool.AllowedCallers) {
+					declaredVersion, hasCodeExecution := declaredChatCodeExecutionVersion(filtered)
+					programmaticCaller, _ = resolveAnthropicProgrammaticCaller(declaredVersion, hasCodeExecution)
+					if programmaticCaller == "" {
+						return nil, fmt.Errorf("code execution version %q has no allowed_callers value, so a tool restricted to programmatic callers cannot be expressed", declaredVersion)
+					}
+					break
+				}
+			}
 			tools := make([]AnthropicTool, 0, len(filtered))
 			for _, tool := range filtered {
 				if tool.Function != nil {
@@ -667,11 +681,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					if err != nil {
 						return nil, err
 					}
+					converted.AllowedCallers = anthropicAllowedCallers(converted.AllowedCallers, programmaticCaller)
 					tools = append(tools, converted)
 					continue
 				}
 				// Non-function tool: attempt server-tool reconstruction.
 				if converted, ok := convertServerToolToAnthropic(tool, caps, bifrostReq.Provider); ok {
+					converted.AllowedCallers = anthropicAllowedCallers(converted.AllowedCallers, programmaticCaller)
 					tools = append(tools, converted)
 				}
 			}
@@ -773,6 +789,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					}
 					if budgetTokens < MinimumReasoningMaxTokens {
 						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic: %w", MinimumReasoningMaxTokens, ErrReasoningMaxTokensTooLow)
+					}
+					// The output clamp can leave the caller's budget at or above max_tokens; refit it below.
+					if requested := bifrostReq.Params.MaxCompletionTokens; requested != nil && *requested > anthropicReq.MaxTokens {
+						if fitted, ok := fitThinkingBudget(&budgetTokens, reasoningParams.Effort, anthropicReq.MaxTokens); ok {
+							budgetTokens = fitted
+						}
 					}
 					anthropicReq.Thinking = &AnthropicThinking{
 						Type:         "enabled",
@@ -1098,9 +1120,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
 				for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 					toolUse := AnthropicContentBlock{
-						Type: AnthropicContentBlockTypeToolUse,
-						ID:   providerUtils.SanitizeAnthropicToolUseIDPtr(toolCall.ID),
-						Name: toolCall.Function.Name,
+						Type:         AnthropicContentBlockTypeToolUse,
+						ID:           providerUtils.SanitizeAnthropicToolUseIDPtr(toolCall.ID),
+						Name:         toolCall.Function.Name,
+						CacheControl: toolCall.CacheControl,
 					}
 
 					// Preserve original key ordering of tool arguments for prompt caching.
@@ -1229,6 +1252,12 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 	var reasoningDetails []schemas.ChatReasoningDetails
 	var reasoningText string
 	var contentStr *string
+	// Web search citations become url_citation annotations. textOffset is the
+	// byte length of the text blocks seen so far, which is where the next
+	// block starts in the joined content string (see the join below).
+	var annotations []schemas.ChatAssistantMessageAnnotation
+	seenAnnotations := make(map[anthropicAnnotationKey]struct{})
+	textOffset := 0
 
 	// Process content and tool calls
 	if response.Content != nil {
@@ -1240,6 +1269,11 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 						Type: schemas.ChatContentBlockTypeText,
 						Text: c.Text,
 					})
+					start := textOffset
+					textOffset += len(*c.Text)
+					if c.Citations != nil {
+						annotations = appendAnthropicWebSearchAnnotations(annotations, c.Citations.TextCitations, start, textOffset, seenAnnotations)
+					}
 				}
 			case AnthropicContentBlockTypeToolUse:
 				if c.ID != nil && c.Name != nil {
@@ -1368,6 +1402,13 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		}
 	}
 
+	if len(annotations) > 0 {
+		if assistantMessage == nil {
+			assistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		assistantMessage.Annotations = annotations
+	}
+
 	// Create message
 	message := schemas.ChatMessage{
 		Role:                 schemas.ChatMessageRoleAssistant,
@@ -1427,8 +1468,9 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		}
 		// Extended-thinking token count. Already a subset of OutputTokens (see
 		// AnthropicOutputTokensDetails), which matches the Bifrost invariant that
-		// ReasoningTokens <= CompletionTokens — so no folding is required here.
-		if billable.OutputTokensDetails != nil && billable.OutputTokensDetails.ThinkingTokens > 0 {
+		// ReasoningTokens <= CompletionTokens — so no folding is required here. An
+		// explicit thinking_tokens: 0 keeps the details object present (#7649).
+		if billable.OutputTokensDetails != nil {
 			if bifrostResponse.Usage.CompletionTokensDetails == nil {
 				bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 			}
@@ -1517,11 +1559,12 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 	if len(bifrostResp.Choices) > 0 {
 		choice := bifrostResp.Choices[0] // Anthropic typically returns one choice
 
-		if choice.FinishReason != nil {
-			anthropicResp.StopReason = ConvertBifrostFinishReasonToAnthropic(*choice.FinishReason)
+		var stopString *string
+		if choice.ChatNonStreamResponseChoice != nil {
+			stopString = choice.StopString
 		}
-		if choice.ChatNonStreamResponseChoice != nil && choice.StopString != nil {
-			anthropicResp.StopSequence = choice.StopString
+		if choice.FinishReason != nil {
+			anthropicResp.StopReason, anthropicResp.StopSequence = anthropicStopReasonWithSequence(ConvertBifrostFinishReasonToAnthropic(*choice.FinishReason), stopString)
 		}
 
 		// Add reasoning content
@@ -1590,6 +1633,50 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 	return anthropicResp
 }
 
+// anthropicAnnotationKey identifies one url_citation annotation for
+// deduplication: the same source cited twice for the same span is one entry.
+type anthropicAnnotationKey struct {
+	url        string
+	start, end int
+}
+
+// appendAnthropicWebSearchAnnotations maps the web_search_result_location
+// citations of one text block to OpenAI url_citation annotations and appends
+// them to out. Anthropic cites a whole text block, so every annotation spans
+// the block: [start, end) are byte offsets of that block in the chat content
+// string, the same unit the Gemini provider passes through for its grounding
+// segments. Other citation types (document char/page/block locations, search
+// results) have no url_citation equivalent and are skipped. Identical
+// (url, span) pairs already in seen are dropped.
+func appendAnthropicWebSearchAnnotations(out []schemas.ChatAssistantMessageAnnotation, citations []AnthropicTextCitation, start, end int, seen map[anthropicAnnotationKey]struct{}) []schemas.ChatAssistantMessageAnnotation {
+	for _, citation := range citations {
+		if citation.Type != AnthropicCitationTypeWebSearchResultLocation || citation.URL == nil || *citation.URL == "" {
+			continue
+		}
+		key := anthropicAnnotationKey{url: *citation.URL, start: start, end: end}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		annotation := schemas.ChatAssistantMessageAnnotation{
+			Type: "url_citation",
+			URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
+				StartIndex: start,
+				EndIndex:   end,
+				URL:        schemas.Ptr(*citation.URL),
+			},
+		}
+		if citation.Title != nil {
+			annotation.URLCitation.Title = *citation.Title
+		}
+		if citation.CitedText != "" {
+			annotation.URLCitation.Text = schemas.Ptr(citation.CitedText)
+		}
+		out = append(out, annotation)
+	}
+	return out
+}
+
 // AnthropicStreamState tracks per-stream tool call index state.
 type AnthropicStreamState struct {
 	nextToolCallIndex         int
@@ -1609,6 +1696,17 @@ type AnthropicStreamState struct {
 	// payload on replay.
 	reasoningDetailIdxByBlock map[int]int
 	nextReasoningDetailIdx    int
+	// contentLen is the byte length of all content deltas forwarded so far,
+	// i.e. the length of the accumulated chat content string. It locates text
+	// blocks in that string for url_citation annotation spans.
+	contentLen int
+	// textBlockStart maps an open text content_block index to contentLen at
+	// the moment the block started.
+	textBlockStart map[int]int
+	// pendingCitations buffers a text block's citations (from its
+	// content_block_start and citations_delta events) until content_block_stop,
+	// when the block's end offset is known.
+	pendingCitations map[int][]AnthropicTextCitation
 }
 
 // NewAnthropicStreamState returns an initialised stream state for one streaming response.
@@ -1617,6 +1715,8 @@ func NewAnthropicStreamState() *AnthropicStreamState {
 		contentBlockToToolCallIdx: make(map[int]int),
 		sawArgsDelta:              make(map[int]bool),
 		reasoningDetailIdxByBlock: make(map[int]int),
+		textBlockStart:            make(map[int]int),
+		pendingCitations:          make(map[int][]AnthropicTextCitation),
 	}
 }
 
@@ -1642,6 +1742,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 	}
 	if state.sawArgsDelta == nil {
 		state.sawArgsDelta = make(map[int]bool)
+	}
+	if state.textBlockStart == nil {
+		state.textBlockStart = make(map[int]int)
+	}
+	if state.pendingCitations == nil {
+		state.pendingCitations = make(map[int][]AnthropicTextCitation)
 	}
 
 	switch chunk.Type {
@@ -1714,6 +1820,15 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 
 				return streamResponse, nil, false
 
+			case AnthropicContentBlockTypeText:
+				// Remember where this block starts in the content string so its
+				// citations can be given a span on content_block_stop.
+				state.textBlockStart[*chunk.Index] = state.contentLen
+				if chunk.ContentBlock.Citations != nil && len(chunk.ContentBlock.Citations.TextCitations) > 0 {
+					state.pendingCitations[*chunk.Index] = append(state.pendingCitations[*chunk.Index], chunk.ContentBlock.Citations.TextCitations...)
+				}
+				return nil, nil, false
+
 			case AnthropicContentBlockTypeRedactedThinking:
 				// Redacted thinking blocks arrive complete in content_block_start (no
 				// deltas follow). Surface the encrypted payload as a reasoning.encrypted
@@ -1755,6 +1870,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 			switch chunk.Delta.Type {
 			case AnthropicStreamDeltaTypeText:
 				if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
+					state.contentLen += len(*chunk.Delta.Text)
 					// Create streaming response for this delta
 					streamResponse := &schemas.BifrostChatResponse{
 						Object: "chat.completion.chunk",
@@ -1788,7 +1904,15 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 					}
 
 					// Resolve which tool-call this delta belongs to via the content-block index.
-					toolCallIdx := state.contentBlockToToolCallIdx[*chunk.Index]
+					// Only tool_use blocks are registered. server_tool_use blocks
+					// (web_search, code_execution, ...) also stream their input as
+					// input_json_delta, but they run on Anthropic's side and are not
+					// OpenAI tool calls; forwarding them would emit orphan tool_calls
+					// deltas with no id or name.
+					toolCallIdx, isToolBlock := state.contentBlockToToolCallIdx[*chunk.Index]
+					if !isToolBlock {
+						return nil, nil, false
+					}
 					state.sawArgsDelta[*chunk.Index] = true
 
 					// Continuation chunks must omit function.type; only the initial
@@ -1816,6 +1940,18 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 
 					return streamResponse, nil, false
 				}
+
+			case AnthropicStreamDeltaTypeCitations:
+				// Citations arrive inside a text block, usually before its text.
+				// Buffer them; content_block_stop emits them once the block's
+				// span in the content string is known.
+				if chunk.Delta.Citation != nil {
+					if _, ok := state.textBlockStart[*chunk.Index]; !ok {
+						state.textBlockStart[*chunk.Index] = state.contentLen
+					}
+					state.pendingCitations[*chunk.Index] = append(state.pendingCitations[*chunk.Index], *chunk.Delta.Citation)
+				}
+				return nil, nil, false
 
 			case AnthropicStreamDeltaTypeThinking:
 				// Handle thinking content streaming
@@ -1882,6 +2018,31 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 		// with arguments:"" — concatenation yields "" and json.Unmarshal fails
 		// with "unexpected end of JSON input" on strict clients (genkit-go).
 		if chunk.Index != nil {
+			// A text block closes: emit its url_citation annotations, if any,
+			// spanning the block's bytes in the content string.
+			if blockStart, isTextBlock := state.textBlockStart[*chunk.Index]; isTextBlock {
+				citations := state.pendingCitations[*chunk.Index]
+				delete(state.textBlockStart, *chunk.Index)
+				delete(state.pendingCitations, *chunk.Index)
+				annotations := appendAnthropicWebSearchAnnotations(nil, citations, blockStart, state.contentLen, make(map[anthropicAnnotationKey]struct{}))
+				if len(annotations) == 0 {
+					return nil, nil, false
+				}
+				return &schemas.BifrostChatResponse{
+					Object: "chat.completion.chunk",
+					Choices: []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{
+									Annotations: annotations,
+								},
+							},
+						},
+					},
+				}, nil, false
+			}
+
 			toolCallIdx, isToolBlock := state.contentBlockToToolCallIdx[*chunk.Index]
 			needsFlush := isToolBlock && !state.sawArgsDelta[*chunk.Index]
 			delete(state.contentBlockToToolCallIdx, *chunk.Index)
@@ -1923,6 +2084,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 			// Send error through channel before closing
 			bifrostErr := &schemas.BifrostError{
 				IsBifrostError: false,
+				StatusCode:     schemas.Ptr(streamErrorStatus(chunk.Error.Type)),
 				Error: &schemas.ErrorField{
 					Type:    &chunk.Error.Type,
 					Message: chunk.Error.Message,

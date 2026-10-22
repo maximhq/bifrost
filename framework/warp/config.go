@@ -19,6 +19,7 @@ type ConfigView struct {
 	Provider                schemas.ModelProvider `json:"provider"`
 	Model                   string                `json:"model"`
 	APIKeyID                string                `json:"api_key_id,omitempty"`
+	AdditionalModels        []schemas.WarpModel   `json:"additional_models,omitempty"`
 	MaxIterations           int                   `json:"max_iterations"`
 	RequestTimeoutSeconds   int                   `json:"request_timeout_seconds"`
 	HistoryRetentionDays    int                   `json:"history_retention_days"`
@@ -43,11 +44,14 @@ type ConfigInput struct {
 	// APIKeyID names one of the provider's configured keys, or is empty for a
 	// provider that needs none. It round-trips like any other field - no
 	// omitted-means-unchanged special case, because there is no secret to lose.
-	APIKeyID              string `json:"api_key_id,omitempty"`
-	MaxIterations         int    `json:"max_iterations,omitempty"`
-	RequestTimeoutSeconds int    `json:"request_timeout_seconds,omitempty"`
-	HistoryRetentionDays  int    `json:"history_retention_days,omitempty"`
-	SystemPromptSuffix    string `json:"system_prompt_suffix,omitempty"`
+	APIKeyID string `json:"api_key_id,omitempty"`
+	// AdditionalModels are the other models the panel may switch to. Replaced
+	// whole on every write, like the default above: omitted means none.
+	AdditionalModels      []schemas.WarpModel `json:"additional_models,omitempty"`
+	MaxIterations         int                 `json:"max_iterations,omitempty"`
+	RequestTimeoutSeconds int                 `json:"request_timeout_seconds,omitempty"`
+	HistoryRetentionDays  int                 `json:"history_retention_days,omitempty"`
+	SystemPromptSuffix    string              `json:"system_prompt_suffix,omitempty"`
 	// Temperature is a pointer so an explicit 0 (fully deterministic) round-trips
 	// distinctly from "not set". A request that omits the field entirely leaves
 	// this nil, same as one that sends "temperature": null.
@@ -264,11 +268,16 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	if err != nil {
 		return ConfigView{}, err
 	}
+	additionalModels, err := marshalAdditionalModels(input.AdditionalModels)
+	if err != nil {
+		return ConfigView{}, err
+	}
 	row := &tables.TableWarpConfig{
 		Enabled:                 input.Enabled,
 		Provider:                string(input.Provider),
 		Model:                   input.Model,
 		APIKeyID:                strings.TrimSpace(input.APIKeyID),
+		AdditionalModels:        additionalModels,
 		MaxIterations:           input.MaxIterations,
 		RequestTimeoutSeconds:   input.RequestTimeoutSeconds,
 		HistoryRetentionDays:    input.HistoryRetentionDays,
@@ -397,6 +406,9 @@ func ValidateConfigInput(input *ConfigInput) error {
 			return fmt.Errorf("%w: embedding_dimension must be positive when warp is enabled", ErrInvalidConfig)
 		}
 	}
+	if err := validateAdditionalModels(input); err != nil {
+		return err
+	}
 	// One is refused rather than silently corrected: the loop reserves its last
 	// step for answering, so a single step is spent researching and the run ends
 	// out of iterations with nothing to show. Zero still means "use the default".
@@ -435,6 +447,75 @@ func ValidateConfigInput(input *ConfigInput) error {
 	return nil
 }
 
+// validateAdditionalModels normalizes and checks the models exposed beside the
+// default.
+//
+// Unlike the default, an entry is checked whether or not Warp is enabled. A
+// draft may leave the default blank because that is one form filled in over
+// several sittings; a list entry with no model is not a draft of anything, and
+// storing it would put a row in the switcher that fails the moment it is picked.
+//
+// Two entries naming the same provider and model are refused, the default
+// included: the pair is how a chat request names the model it wants, so a
+// repeat would make that choice ambiguous between two keys.
+func validateAdditionalModels(input *ConfigInput) error {
+	if len(input.AdditionalModels) > schemas.WarpMaxAdditionalModels {
+		return fmt.Errorf("%w: additional_models must not list more than %d models", ErrInvalidConfig, schemas.WarpMaxAdditionalModels)
+	}
+	seen := map[schemas.WarpModel]bool{}
+	if input.Provider != "" && input.Model != "" {
+		seen[schemas.WarpModel{Provider: input.Provider, Model: input.Model}] = true
+	}
+	for i := range input.AdditionalModels {
+		entry := &input.AdditionalModels[i]
+		entry.Provider = schemas.ModelProvider(strings.TrimSpace(string(entry.Provider)))
+		entry.Model = strings.TrimSpace(entry.Model)
+		entry.APIKeyID = strings.TrimSpace(entry.APIKeyID)
+		if entry.Provider == "" {
+			return fmt.Errorf("%w: additional_models[%d]: provider is required", ErrInvalidConfig, i)
+		}
+		if !schemas.IsKnownProvider(string(entry.Provider)) {
+			return fmt.Errorf("%w: additional_models[%d]: unknown provider %q", ErrInvalidConfig, i, entry.Provider)
+		}
+		if entry.Model == "" {
+			return fmt.Errorf("%w: additional_models[%d]: model is required", ErrInvalidConfig, i)
+		}
+		pair := schemas.WarpModel{Provider: entry.Provider, Model: entry.Model}
+		if seen[pair] {
+			return fmt.Errorf("%w: additional_models[%d]: %s/%s is already listed", ErrInvalidConfig, i, entry.Provider, entry.Model)
+		}
+		seen[pair] = true
+	}
+	return nil
+}
+
+// marshalAdditionalModels encodes the list for its text column, nil for none.
+func marshalAdditionalModels(models []schemas.WarpModel) (*string, error) {
+	if len(models) == 0 {
+		return nil, nil
+	}
+	encoded, err := sonic.Marshal(models)
+	if err != nil {
+		return nil, err
+	}
+	value := string(encoded)
+	return &value, nil
+}
+
+// additionalModels decodes the stored list. A value that does not parse reads
+// as none, so a damaged column costs the extra choices and leaves the default
+// answering.
+func additionalModels(row *tables.TableWarpConfig) []schemas.WarpModel {
+	if row == nil || row.AdditionalModels == nil || *row.AdditionalModels == "" {
+		return nil
+	}
+	var models []schemas.WarpModel
+	if err := sonic.Unmarshal([]byte(*row.AdditionalModels), &models); err != nil {
+		return nil
+	}
+	return models
+}
+
 // Config returns the resolved configuration for in-process callers, or
 // ErrUnavailable when Warp cannot answer: missing, disabled, or incomplete.
 func (s *Service) Config(ctx context.Context) (*schemas.WarpConfig, error) {
@@ -470,6 +551,7 @@ func (s *Service) configViewFromRow(row *tables.TableWarpConfig) ConfigView {
 		Provider:                schemas.ModelProvider(row.Provider),
 		Model:                   row.Model,
 		APIKeyID:                row.APIKeyID,
+		AdditionalModels:        config.AdditionalModels,
 		MaxIterations:           config.EffectiveMaxIterations(),
 		RequestTimeoutSeconds:   config.EffectiveRequestTimeoutSeconds(),
 		HistoryRetentionDays:    config.EffectiveHistoryRetentionDays(),
@@ -497,6 +579,7 @@ func configFromRow(row *tables.TableWarpConfig) *schemas.WarpConfig {
 		APIKeyID:                        row.APIKeyID,
 		Provider:                        schemas.ModelProvider(row.Provider),
 		Model:                           row.Model,
+		AdditionalModels:                additionalModels(row),
 		MaxIterations:                   row.MaxIterations,
 		RequestTimeoutSeconds:           row.RequestTimeoutSeconds,
 		HistoryRetentionDays:            row.HistoryRetentionDays,

@@ -34,7 +34,7 @@ export function CustomersEmptyState({ onAddClick, canCreate = true }: CustomersE
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
 					<DisabledReason reason={actionDisabledReason(canCreate, "create", "customers")}>
-						<Button aria-label="Add your first customer" onClick={onAddClick} disabled={!canCreate} data-testid="customer-button-create">
+						<Button onClick={onAddClick} disabled={!canCreate} data-testid="customer-button-create">
 							Add Customer
 						</Button>
 					</DisabledReason>

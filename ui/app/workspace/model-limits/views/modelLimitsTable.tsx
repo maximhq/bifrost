@@ -300,7 +300,7 @@ export default function ModelLimitsTable({
 					</div>
 
 					<Select value={scope || "all"} onValueChange={(v) => onScopeChange(v === "all" ? "" : v)}>
-						<SelectTrigger className="w-[160px]" data-testid="model-limits-filter-scope">
+						<SelectTrigger className="w-[160px]" aria-label="Filter by scope" data-testid="model-limits-filter-scope">
 							<SelectValue placeholder="All Scopes" />
 						</SelectTrigger>
 						<SelectContent>
@@ -314,6 +314,7 @@ export default function ModelLimitsTable({
 					</Select>
 
 					<ProviderSelector
+						ariaLabel="Filter by provider"
 						data-testid="model-limits-filter-provider"
 						className="h-9 w-[160px]"
 						size="sm"
@@ -503,6 +504,7 @@ export default function ModelLimitsTable({
 																				</span>
 																			</div>
 																			<Progress
+																				aria-label="Token usage"
 																				value={tokenPercentage}
 																				className={cn(
 																					"bg-muted/70 dark:bg-muted/30 h-1",
@@ -539,6 +541,7 @@ export default function ModelLimitsTable({
 																				</span>
 																			</div>
 																			<Progress
+																				aria-label="Request usage"
 																				value={requestPercentage}
 																				className={cn(
 																					"bg-muted/70 dark:bg-muted/30 h-1",

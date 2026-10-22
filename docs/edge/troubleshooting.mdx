@@ -32,11 +32,11 @@ Open **Diagnostics** from the Edge tray first. It reports the current service, a
 ## Sign-in and identity
 
 <AccordionGroup>
-  <Accordion title="Sign-in says user provisioning is not configured">
-    IdP sign-in is unavailable until a provider is enabled under **Governance → User Provisioning**. Configure and verify the provider, or use the virtual-key path if **Allow virtual key sign-in** is enabled.
+  <Accordion title="Sign-in says user provisioning is not set up">
+    The tray reports **User provisioning not set up - contact your Bifrost admin** when no identity provider is enabled. Edge requires one. Configure and verify a provider under **Governance → User Provisioning** as described in [Prepare identity and access](/edge/setup-bifrost#2-configure-the-identity-provider), then sign in again.
   </Accordion>
-  <Accordion title="The virtual key is not accepted">
-    Confirm the key is active and was entered without surrounding whitespace. Also confirm **Allow virtual key sign-in** is enabled in Edge Settings. The agent does not store a key that Bifrost rejects.
+  <Accordion title="SSO completes in the browser but the tray does not connect">
+    Confirm the user exists in Bifrost and is not blocked by **SCIM only** provisioning mode, which refuses users the IdP has not pushed. Then confirm the device can reach the Bifrost URL and select **Sign in** again.
   </Accordion>
   <Accordion title="The device limit is reached">
     The Bifrost license has no available Edge device seat. Remove an obsolete device registration if appropriate, or contact your Bifrost representative about the licensed limit, then retry sign-in.

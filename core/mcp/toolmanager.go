@@ -23,6 +23,9 @@ type ClientManager interface {
 	GetClientByName(clientName string) *schemas.MCPClientState
 	GetClientForTool(toolName string) *schemas.MCPClientState
 	GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool
+	// InstructionCaps returns the configured instruction byte caps, zero meaning unset.
+	InstructionCaps() InstructionCaps
+
 	// GetServerInstructions returns the upstream `instructions` of the clients visible to
 	// ctx, scoped by the same rules GetToolPerClient applies.
 	GetServerInstructions(ctx context.Context) []schemas.MCPServerInstructions
@@ -591,9 +594,9 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 // prompt, so a policy set on the MCP server ("always update the doc on a relevant change")
 // reaches the model instead of having to be duplicated into every client's system prompt.
 //
-// Off unless the operator asked for it: this adds tokens to every MCP-bearing request and
-// changes the prompt prefix, which invalidates a provider-side cache prefix the caller may be
-// relying on. Both are the operator's cost to opt into, not ours to impose on upgrade.
+// Unconditional, and it costs tokens plus a changed prompt prefix on every MCP-bearing request.
+// Only mcp_disable_auto_tool_inject suppresses it, and that drops the tools too; the caps are not
+// an off switch, since InstructionCaps clamps a non-positive value back to the default.
 func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
 	// The agent loop re-enters this path once per turn against the same context. Without
 	// this guard the block would be prepended again on every turn, growing the prompt
@@ -616,6 +619,9 @@ func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContex
 			Role:    schemas.ChatMessageRoleSystem,
 			Content: &schemas.ChatMessageContent{ContentStr: &instructions},
 		}}, req.ChatRequest.Input...)
+		// Recorded so prompt-cache placement can tell this message from the caller's and
+		// resolve its points against the caller's transcript (see promptCacheChatRequest).
+		ctx.SetValue(schemas.BifrostContextKeyMCPInstructionsText, &instructions)
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
 		if req.ResponsesRequest.Params == nil {
 			req.ResponsesRequest.Params = &schemas.ResponsesParameters{}
@@ -1233,6 +1239,13 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 	)
 }
 
+// UpdateCodeModeLimits replaces the per-execution code mode limits; nil keeps them.
+func (m *ToolsManager) UpdateCodeModeLimits(limits *schemas.MCPCodeModeLimits) {
+	if m.codeMode != nil && limits != nil {
+		m.codeMode.UpdateConfig(&CodeModeConfig{Limits: limits})
+	}
+}
+
 // UpdateConfig updates tool manager configuration atomically.
 // This method is safe to call concurrently from multiple goroutines.
 func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
@@ -1246,11 +1259,12 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 		m.maxAgentDepth.Store(int32(config.MaxAgentDepth))
 	}
 
-	// Update CodeMode configuration — propagate whenever either field is set
-	if m.codeMode != nil && (config.CodeModeBindingLevel != "" || config.ToolExecutionTimeout > 0) {
+	// Update CodeMode configuration — propagate whenever any field is set
+	if m.codeMode != nil && (config.CodeModeBindingLevel != "" || config.ToolExecutionTimeout > 0 || config.CodeModeLimits != nil) {
 		m.codeMode.UpdateConfig(&CodeModeConfig{
 			BindingLevel:         config.CodeModeBindingLevel,
 			ToolExecutionTimeout: time.Duration(config.ToolExecutionTimeout),
+			Limits:               config.CodeModeLimits,
 		})
 	}
 

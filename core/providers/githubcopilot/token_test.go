@@ -683,20 +683,8 @@ func TestFailureBackoff(t *testing.T) {
 		assert.Equal(t, int64(7000), bErr.ExtraFields.RetryAfter)
 	})
 
-	t.Run("backoff grows and clamps", func(t *testing.T) {
-		assert.Equal(t, permanentBackoffBase, backoffFor(1, true))
-		assert.Equal(t, 2*permanentBackoffBase, backoffFor(2, true))
-		assert.Equal(t, permanentBackoffCap, backoffFor(100, true))
-		assert.Equal(t, transientBackoffBase, backoffFor(1, false))
-		assert.Equal(t, transientBackoffCap, backoffFor(100, false))
-	})
-
-	t.Run("rate limits and server errors count as transient", func(t *testing.T) {
-		assert.False(t, isPermanentError(blockingError("x", http.StatusTooManyRequests)))
-		assert.False(t, isPermanentError(blockingError("x", http.StatusBadGateway)))
-		assert.True(t, isPermanentError(blockingError("x", http.StatusUnauthorized)))
-		assert.True(t, isPermanentError(blockingError("x", http.StatusForbidden)))
-	})
+	// Backoff growth and the permanent/transient split are pinned in
+	// core/providers/utils/tokencache (TestBackoffFor, TestIsPermanentError).
 }
 
 // TestClassifyInstallationToken422 pins that GitHub's two 422 causes get different guidance.
@@ -849,4 +837,56 @@ func decodeClaims(t *testing.T, token string) map[string]any {
 	var claims map[string]any
 	require.NoError(t, json.Unmarshal(raw, &claims))
 	return claims
+}
+
+// BenchmarkMintWarm is the per-request cost of a cached Copilot token: the cache lookup and
+// the credentials struct. Both exchanges happen once, outside the timed loop.
+func BenchmarkMintWarm(b *testing.B) {
+	rsaPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		b.Fatal(err)
+	}
+	pemKey := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(rsaPriv)}))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/app/installations/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprintf(w, `{"token":"ghs_fake","expires_at":%q,"permissions":{"copilot_requests":"write"}}`,
+			time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	})
+	mux.HandleFunc(copilotTokenPath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"token":"copilot_fake","expires_at":%d,"refresh_in":0,"endpoints":{"api":"https://api.business.githubcopilot.com"}}`,
+			time.Now().Add(30*time.Minute).Unix())
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	cfg, bErr := validateKeyConfig(&schemas.GithubCopilotKeyConfig{
+		AppID:          *schemas.NewSecretVar("bench-app"),
+		InstallationID: *schemas.NewSecretVar("12345678"),
+		RepositoryID:   *schemas.NewSecretVar("987654321"),
+		PrivateKey:     *schemas.NewSecretVar(pemKey),
+	})
+	if bErr != nil {
+		b.Fatal(bErr)
+	}
+	cfg.endpoints.installationTokenURL = server.URL + "/app/installations/" + cfg.installationID + "/access_tokens"
+	cfg.endpoints.copilotTokenURL = server.URL + copilotTokenPath
+	cfg.endpoints.isEnterprise = false
+	cfg.endpoints.allowedAPIDomains = []string{copilotPublicAPIDomain}
+
+	// One client for the whole run, as the provider holds one exchangeClient: constructing a
+	// client per iteration would charge the benchmark for work the warm path never does.
+	client := &fasthttp.Client{}
+	if _, bErr := mintWithConfig(context.Background(), cfg, client, "", noopLogger{}); bErr != nil {
+		b.Fatal(bErr)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, bErr := mintWithConfig(context.Background(), cfg, client, "", noopLogger{}); bErr != nil {
+			b.Fatal(bErr)
+		}
+	}
 }

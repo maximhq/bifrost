@@ -81,6 +81,33 @@ func TestGetUnfilteredModelsForProvider_UsesDatabricksPricing(t *testing.T) {
 	}
 }
 
+// TestGetUnfilteredModelsForProvider_CloudflareUsesListModelsOnly verifies the
+// unfiltered Cloudflare catalog is its live /models response alone. The datasheet
+// carries the same Workers AI models under other ID shapes, which would otherwise
+// show up as duplicates in the allowed models dropdown.
+func TestGetUnfilteredModelsForProvider_CloudflareUsesListModelsOnly(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"cloudflare/@cf/meta/llama-3.1-8b-instruct-fp8": {"provider":"cloudflare","mode":"chat","base_model":"llama-3.1-8b-instruct"},
+		"cloudflare/workers-ai/@cf/meta/llama-3.1-8b-instruct-fp8": {"provider":"cloudflare","mode":"chat","base_model":"llama-3.1-8b-instruct"},
+		"cloudflare/clef": {"provider":"cloudflare","mode":"chat","base_model":"clef"}
+	}`)
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	mc := NewTestCatalogWithDatasheet(ds)
+	live := []string{"@cf/cloudflare/clef", "@cf/meta/llama-3.1-8b-instruct-fp8"}
+	mc.UpsertLive(schemas.Cloudflare, "k1", true, live)
+
+	if got := mc.GetUnfilteredModelsForProvider(schemas.Cloudflare); !slices.Equal(got, live) {
+		t.Errorf("GetUnfilteredModelsForProvider(Cloudflare) = %v, want %v", got, live)
+	}
+}
+
 func TestGetModelsForProvider_IncludesDeprecatedDatasheetModelsWhenLiveExists(t *testing.T) {
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
 	pricingJSON := []byte(`{
@@ -228,6 +255,57 @@ func TestGetModelsForProvider_PartialListModelsProviderUnionsDatasheet(t *testin
 }
 
 // ptrBool returns a pointer to b, for building schemas.Key fixtures.
+// TestGetProvidersForModel_ZeroKeyCustomProviderNotCandidate pins that a
+// custom provider that is not keyless and has no keys (its only key was
+// rejected at save) does not claim a bare model name. Before the fix it did,
+// and the resolver's alphabetical pick routed text-embedding-005 to it ahead
+// of vertex, failing with no_key_supports_model.
+func TestGetProvidersForModel_ZeroKeyCustomProviderNotCandidate(t *testing.T) {
+	const custom schemas.ModelProvider = "harness-oauthkey-run"
+	vertexKeys := []schemas.Key{{ID: "v1", Models: schemas.WhiteList{"text-embedding-005"}}}
+	for name, seed := range map[string]func(*ModelCatalog){
+		"ReplaceKeyConfig": func(mc *ModelCatalog) {
+			mc.ReplaceKeyConfig(map[schemas.ModelProvider][]schemas.Key{schemas.Vertex: vertexKeys, custom: nil})
+		},
+		"SetKeyConfigForProvider": func(mc *ModelCatalog) {
+			mc.SetKeyConfigForProvider(schemas.Vertex, vertexKeys)
+			mc.SetKeyConfigForProvider(custom, nil)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mc := NewTestCatalog(nil)
+			seed(mc)
+			got := mc.GetProvidersForModel("text-embedding-005")
+			if !slices.Equal(got, []schemas.ModelProvider{schemas.Vertex}) {
+				t.Fatalf("GetProvidersForModel = %v, want [vertex] (zero-key custom provider must not be a candidate)", got)
+			}
+		})
+	}
+}
+
+// TestGetProvidersForModel_ZeroKeyKeylessProviderStillCandidate pins the
+// other side: a keyless custom provider (is_key_less) with no keys keeps
+// claiming any model, since it authenticates without a key.
+func TestGetProvidersForModel_ZeroKeyKeylessProviderStillCandidate(t *testing.T) {
+	const custom schemas.ModelProvider = "keyless-custom"
+	for name, seed := range map[string]func(*ModelCatalog){
+		"ReplaceKeyConfig": func(mc *ModelCatalog) {
+			mc.ReplaceKeyConfig(map[schemas.ModelProvider][]schemas.Key{custom: nil}, custom)
+		},
+		"SetKeyConfigForKeylessProvider": func(mc *ModelCatalog) {
+			mc.SetKeyConfigForKeylessProvider(custom, nil)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mc := NewTestCatalog(nil)
+			seed(mc)
+			if got := mc.GetProvidersForModel("any-model"); !slices.Equal(got, []schemas.ModelProvider{custom}) {
+				t.Fatalf("GetProvidersForModel = %v, want [%s]", got, custom)
+			}
+		})
+	}
+}
+
 func ptrBool(b bool) *bool { return &b }
 
 // TestExtractModelIDs_StripsOwningProviderPrefix verifies the canonical

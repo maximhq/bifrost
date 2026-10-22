@@ -147,6 +147,7 @@ export SPLUNK_CA_CERT="$(cat /path/to/splunk-ca.pem)"
 | `enable_events` | `boolean` | ❌ | `true` | Emit one flattened event per request to the event index. |
 | `enable_metrics` | `boolean` | ❌ | `true` | Derive and emit the metric set to the metrics index. |
 | `disable_content_logging` | `boolean` | ❌ | `false` | Strip request/response content from events. See [Controlling exported content](#controlling-exported-content). |
+| `excluded_attributes` | `string[]` | ❌ | — | Span attribute names to leave out of exported events. See [Excluding attributes](#excluding-attributes). |
 | `ca_cert` | `string \| SecretVar` | ❌ | - | PEM-encoded CA certificate to verify the HEC server's TLS cert. Omit to use the system CA pool. Supports `env.VAR_NAME`. See [TLS](#tls). |
 | `insecure_skip_verify` | `boolean` | ❌ | `false` | Disable TLS certificate verification. **Development or isolated environments only**; production should trust the endpoint via `ca_cert` instead. See [TLS](#tls). |
 | `custom_fields` | `object` | ❌ | - | Static key/value fields added to every event and metric. |
@@ -256,7 +257,7 @@ Acknowledgement trades a little overhead (per-channel poll traffic, plus unackno
 
 Bifrost attributes each request to a virtual key, user, team, customer, business unit, and project. Because a request can be attributed to a *set* (multi-tenant), the connector shapes attribution differently for events and metrics:
 
-- **Events** carry one **multi-value** field per dimension (`team_ids`, `team_names`, `customer_ids`, `customer_names`, `business_unit_ids`, `business_unit_names`) as native JSON arrays, so `customer_ids=acme` matches a member of the set. Virtual-key, user, and project attribution stay scalar (`virtual_key_id`, `virtual_key_name`, `user_id`, `user_name`, `project_id`, `project_name`), since a request is scoped to at most one project.
+- **Events** carry one **multi-value** field per dimension (`team_ids`, `team_names`, `customer_ids`, `customer_names`, `business_unit_ids`, `business_unit_names`) as native JSON arrays, so `customer_ids=acme` matches a member of the set. Virtual-key, user, project and stored-prompt attribution stay scalar (`virtual_key_id`, `virtual_key_name`, `user_id`, `user_name`, `project_id`, `project_name`, `prompt_id`, `prompt_name`, `prompt_version`), since a request is scoped to at most one project and runs at most one prompt.
 - **Metrics** dimensions must be scalar (a comma-joined value would break `mstats ... BY`), so metric dimensions keep the **singular** form (`customer_id`, `team_id`, ...). Multi-tenant metric attribution reflects the primary tenant only.
 
 <Note>
@@ -273,7 +274,7 @@ With `enable_metrics` on, the connector emits the following metrics to the metri
 |--------|-------------|------------|
 | `bifrost.requests.total` | Total LLM requests | provider, model, method |
 | `bifrost.success.total` | Successful requests | provider, model, method |
-| `bifrost.errors.total` | Failed requests | provider, model, method, reason |
+| `bifrost.errors.total` | Failed requests | provider, model, method, status_code, reason |
 | `bifrost.latency.seconds` | Request latency | provider, model, method |
 | `bifrost.tokens.input` | Input/prompt tokens | provider, model |
 | `bifrost.tokens.output` | Output/completion tokens | provider, model |
@@ -283,8 +284,21 @@ With `enable_metrics` on, the connector emits the following metrics to the metri
 | `bifrost.stream.first_token_latency` | Time to first token (streaming) | provider, model |
 | `bifrost.stream.inter_token_latency` | Inter-token latency (streaming) | provider, model |
 | `bifrost.mcp.client.operation.duration` | Duration of an MCP tool call | mcp_method, mcp_tool_name, network_transport, error_type, and attribution |
+| `bifrost.a2a.client.operation.duration` | Agent Gateway operation duration in seconds | operation, method, upstream_transport, error_type, and governance attribution; see [Agent Gateway](#agent-gateway). |
 
 Every metric also carries your configured `custom_fields` and the scalar attribution dimensions.
+
+### Error dimensions
+
+`bifrost.errors.total` carries two error dimensions, mirroring `bifrost_error_requests_total` on the [Prometheus](./prometheus#error-types) and [OTel](./otel) sides.
+
+`status_code` is the status the failure resolves to. For a failure answered over HTTP that is the status the caller received, and it includes the 500s Bifrost raises internally — a request that fails during conversion or on an unparseable provider response has no upstream status of its own. For an error delivered inside an already-committed stream the caller saw HTTP 200 and the error in the event body, so this is the status the failure would have carried, not the wire status. Alert on this.
+
+`reason` is a per-provider vocabulary kept for existing dashboards and is deprecated; it resolves from `bifrost.error.type`, then `gen_ai.error.type`, then `gen_ai.error.code`, then `unknown`. Prefer `status_code`, or the normalized `bifrost.error.type` on the span.
+
+<Note>
+Before Bifrost 2.2.2 these internally-raised failures were tagged `status_code:unknown`, so 5xx dashboards under-counted them. If you have alerts or dashboards keyed on `status_code:unknown`, repoint them — that value is now emitted only for a span carrying no status at all.
+</Note>
 
 ---
 
@@ -309,6 +323,48 @@ This flag is **independent** of the global `client.disable_content_logging`, whi
 
 It also does **not** cover attribution identifiers, which remain on events and metrics. Values captured via `request_headers` are attached regardless of this flag, so only enable header capture for headers you intend to export. Prefer an explicit allowlist of exact header names: wildcard patterns (`*`, `x-custom-*`) can export sensitive headers such as `Authorization`.
 </Warning>
+
+---
+
+## Excluding attributes
+
+Some attributes are large and not needed downstream. Tool definitions are a common example, and Splunk is priced on ingest volume. List the attribute names you want left out of exported events:
+
+```json
+{
+  "name": "splunk",
+  "config": {
+    "endpoint": "https://localhost:8088",
+    "excluded_attributes": ["gen_ai.request.tools"]
+  }
+}
+```
+
+Names are matched exactly, as they appear in the exported event. A name that does not match any attribute is ignored, so a typo silently has no effect. Check the spelling against an event you have already received.
+
+Unlike `disable_content_logging`, this is per-attribute: everything you have not named is still exported.
+
+## Agent Gateway
+
+A2A traces use the existing HEC connection and event and metric indexes. Each completed trace produces a flattened event. Agent fields are `agent_name`, `a2a_operation`, `a2a_task_id`, `a2a_task_state`, and `conversation_id`, alongside the existing trace, request, session, status, error, latency, and governance fields.
+
+Structured bodies use `input_messages` and `output_messages`, including returned tasks, artifacts, and accumulated streaming output. Events summarize the completed operation; they do not contain the full nested stream-event timeline. `disable_content_logging`, virtual-key content suppression, and span-attribute exclusions apply before the event is built. Raw HTTP capture is not exported to Splunk.
+
+When metrics are enabled, `bifrost.a2a.client.operation.duration` records one duration in seconds per operation. Dimensions include `operation`, the available `method` and `upstream_transport`, governance attribution, and `error_type` on failures. Task and session IDs are event fields rather than metric dimensions.
+
+```spl
+index=your_event_index agent_name=*
+| stats count by a2a_operation status
+```
+
+```spl
+| mstats count(_value) AS operations avg(_value) AS average_seconds
+  WHERE index=your_metrics_index
+    metric_name="bifrost.a2a.client.operation.duration"
+  BY operation
+```
+
+See [Agent Gateway observability](/features/agent-gateway/observability#export-to-observability-connectors) for operation coverage and correlation.
 
 ---
 

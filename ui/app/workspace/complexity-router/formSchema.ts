@@ -1,15 +1,15 @@
 import {
 	AnalyzerConfig,
 	COMPLEXITY_TIER_VALUES,
-	DEFAULT_JEV_CONFIG,
-	JevGuidanceDefaults,
-	JevTier,
-	MAX_JEV_CRITERIA_ITEM_CHARACTERS,
-	MAX_JEV_CRITERIA_ITEMS,
-	MAX_JEV_DEFINITION_CHARACTERS,
+	DEFAULT_DECISION_CONFIG,
+	DecisionGuidanceDefaults,
+	DecisionTier,
+	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
+	MAX_DECISION_CRITERIA_ITEMS,
+	MAX_DECISION_DEFINITION_CHARACTERS,
 	DEFAULT_LLM_CONFIG,
 	DEFAULT_SEMANTIC_CONFIG,
-	MAX_JEV_PREVIOUS_MESSAGE_COUNT,
+	MAX_DECISION_PREVIOUS_MESSAGE_COUNT,
 	KeywordListKey,
 	MAX_LLM_PROMPT_CHARACTERS,
 	MAX_LLM_MESSAGE_HISTORY,
@@ -68,53 +68,59 @@ const semanticSchema = z.object({
 		.max(MAX_SEMANTIC_MESSAGE_HISTORY, `Must be at most ${MAX_SEMANTIC_MESSAGE_HISTORY}`),
 	count_toward_budgets: z.boolean().optional(),
 	vector_store: z.enum(["embedded", "vector_store"]).optional(),
-	fallback: z.enum(["none", "llm", "jev"]),
+	fallback: z.enum(["none", "llm", "decision"]),
 });
 
 // The editors always hold what the gateway will send, so an emptied field is
 // rejected rather than saved: it would reload as the shipped default, silently
 // undoing the deletion. Reset to default is the way back.
-const jevCriteriaListSchema = (label: string) =>
+const decisionCriteriaListSchema = (label: string) =>
 	z
-		.array(z.string().max(MAX_JEV_CRITERIA_ITEM_CHARACTERS, `Each ${label} must be at most ${MAX_JEV_CRITERIA_ITEM_CHARACTERS} characters`))
+		.array(
+			z
+				.string()
+				.max(MAX_DECISION_CRITERIA_ITEM_CHARACTERS, `Each ${label} must be at most ${MAX_DECISION_CRITERIA_ITEM_CHARACTERS} characters`),
+		)
 		.min(1, `Add at least one ${label}`)
-		.max(MAX_JEV_CRITERIA_ITEMS, `At most ${MAX_JEV_CRITERIA_ITEMS} ${label}s`);
+		.max(MAX_DECISION_CRITERIA_ITEMS, `At most ${MAX_DECISION_CRITERIA_ITEMS} ${label}s`);
 
-const jevTierCriteriaSchema = z.object({
+const decisionTierCriteriaSchema = z.object({
 	definition: z
 		.string()
 		.trim()
 		.min(1, "Enter a definition")
-		.max(MAX_JEV_DEFINITION_CHARACTERS, `Must be at most ${MAX_JEV_DEFINITION_CHARACTERS} characters`),
-	signals: jevCriteriaListSchema("signal"),
-	examples: jevCriteriaListSchema("example"),
+		.max(MAX_DECISION_DEFINITION_CHARACTERS, `Must be at most ${MAX_DECISION_DEFINITION_CHARACTERS} characters`),
+	signals: decisionCriteriaListSchema("signal"),
+	examples: decisionCriteriaListSchema("example"),
 });
 
-// The unvalidated shape the form always holds; jevGuidanceSchema checks it
+// The unvalidated shape the form always holds; decisionGuidanceSchema checks it
 // only once the editors are seeded.
-const jevTierFormShape = z.object({
+const decisionTierFormShape = z.object({
 	definition: z.string(),
 	signals: z.array(z.string()),
 	examples: z.array(z.string()),
 });
 
-const jevGuidanceSchema = z.object({
+const decisionGuidanceSchema = z.object({
 	criteria: z.object({
-		SIMPLE: jevTierCriteriaSchema,
-		MEDIUM: jevTierCriteriaSchema,
-		COMPLEX: jevTierCriteriaSchema,
+		SIMPLE: decisionTierCriteriaSchema,
+		MEDIUM: decisionTierCriteriaSchema,
+		COMPLEX: decisionTierCriteriaSchema,
 	}),
 });
 
-const jevSchema = z.object({
+const decisionSchema = z.object({
+	provider: z.string().trim().min(1, "Select the provider serving the decision model"),
+	model: z.string().trim().min(1, "Select the decision model"),
 	previous_message_count: z
 		.number()
 		.int("Must be a whole number")
 		.min(0, "Must be at least 0")
-		.max(MAX_JEV_PREVIOUS_MESSAGE_COUNT, `Must be at most ${MAX_JEV_PREVIOUS_MESSAGE_COUNT}`),
+		.max(MAX_DECISION_PREVIOUS_MESSAGE_COUNT, `Must be at most ${MAX_DECISION_PREVIOUS_MESSAGE_COUNT}`),
 	timeout: z
 		.string()
-		.min(1, "Enter a Jev timeout")
+		.min(1, "Enter a decision-model timeout")
 		.refine((value) => isPositiveDurationString(value), "Enter a timeout greater than 0"),
 });
 
@@ -138,32 +144,34 @@ const llmSchema = z.object({
 	count_toward_budgets: z.boolean().optional(),
 });
 
-// usesJev reports whether the Jev block is live: the primary classifier or the
+// usesDecision reports whether the Decision block is live: the primary classifier or the
 // semantic fallback. Its controls are hidden and its values are not saved otherwise.
-function usesJev(values: { classifier: string; semantic: { fallback: string } }): boolean {
-	return values.classifier === "jev" || values.semantic.fallback === "jev";
+function usesDecision(values: { classifier: string; semantic: { fallback: string } }): boolean {
+	return values.classifier === "decision" || values.semantic.fallback === "decision";
 }
 
 export const analyzerConfigSchema = z
 	.object({
-		classifier: z.enum(["semantic", "jev"]),
+		classifier: z.enum(["semantic", "decision"]),
 		keywords: z.object({
 			simple_keywords: z.array(z.string()).min(1, "Simple phrases cannot be empty"),
 			medium_keywords: z.array(z.string()).min(1, "Medium phrases cannot be empty"),
 			complex_keywords: z.array(z.string()).min(1, "Complex phrases cannot be empty"),
 		}),
 		semantic: semanticSchema,
-		// Only shape-checked here: the Jev controls are hidden unless Jev is the
-		// classifier or the fallback, so jevSchema runs in superRefine under that
+		// Only shape-checked here: the Decision controls are hidden unless Decision is the
+		// classifier or the fallback, so decisionSchema runs in superRefine under that
 		// condition rather than letting an invisible error block Save. An emptied
 		// number input registers as NaN, which must pass the shape check too.
-		jev: z.object({
+		decision: z.object({
+			provider: z.string(),
+			model: z.string(),
 			previous_message_count: z.number().or(z.nan()),
 			timeout: z.string(),
 			criteria: z.object({
-				SIMPLE: jevTierFormShape,
-				MEDIUM: jevTierFormShape,
-				COMPLEX: jevTierFormShape,
+				SIMPLE: decisionTierFormShape,
+				MEDIUM: decisionTierFormShape,
+				COMPLEX: decisionTierFormShape,
 			}),
 		}),
 		llm: llmSchema,
@@ -199,18 +207,18 @@ export const analyzerConfigSchema = z
 			});
 		}
 
-		if (usesJev(data)) {
-			const jev = jevSchema.safeParse(data.jev);
-			const issues = jev.success ? [] : [...jev.error.issues];
+		if (usesDecision(data)) {
+			const decision = decisionSchema.safeParse(data.decision);
+			const issues = decision.success ? [] : [...decision.error.issues];
 			// Guidance that was never seeded (the status endpoint has not supplied
 			// defaults) is hidden and saves as "use the defaults", so it is only
 			// validated once the editors hold something.
-			if (!isJevGuidanceEmpty(data.jev)) {
-				const guidance = jevGuidanceSchema.safeParse(data.jev);
+			if (!isDecisionGuidanceEmpty(data.decision)) {
+				const guidance = decisionGuidanceSchema.safeParse(data.decision);
 				if (!guidance.success) issues.push(...guidance.error.issues);
 			}
 			for (const issue of issues) {
-				ctx.addIssue({ code: "custom", message: issue.message, path: ["jev", ...issue.path] });
+				ctx.addIssue({ code: "custom", message: issue.message, path: ["decision", ...issue.path] });
 			}
 		}
 
@@ -313,30 +321,33 @@ export const DEFAULT_FORM_VALUES: AnalyzerFormValues = {
 	},
 	classifier: "semantic",
 	semantic: DEFAULT_SEMANTIC_FORM_VALUES,
-	jev: { ...DEFAULT_JEV_CONFIG, ...jevGuidanceFormValues() },
+	decision: { ...DEFAULT_DECISION_CONFIG, ...decisionGuidanceFormValues() },
 	llm: DEFAULT_LLM_FORM_VALUES,
 	session: { enabled: false },
 };
 
-export type JevGuidanceFormValues = Pick<AnalyzerFormValues["jev"], "criteria">;
+export type DecisionGuidanceFormValues = Pick<AnalyzerFormValues["decision"], "criteria">;
 
-// isJevTierEmpty reports a tier with no definition and no list entries.
-function isJevTierEmpty({ definition, signals, examples }: JevGuidanceFormValues["criteria"][JevTier]): boolean {
+// isDecisionTierEmpty reports a tier with no definition and no list entries.
+function isDecisionTierEmpty({ definition, signals, examples }: DecisionGuidanceFormValues["criteria"][DecisionTier]): boolean {
 	return definition.trim() === "" && signals.length === 0 && examples.length === 0;
 }
 
-// isJevGuidanceEmpty reports guidance the form never seeded: no tier content
+// isDecisionGuidanceEmpty reports guidance the form never seeded: no tier content
 // anywhere.
-export function isJevGuidanceEmpty(jev: JevGuidanceFormValues): boolean {
-	return COMPLEXITY_TIER_VALUES.every((tier) => isJevTierEmpty(jev.criteria[tier]));
+export function isDecisionGuidanceEmpty(decision: DecisionGuidanceFormValues): boolean {
+	return COMPLEXITY_TIER_VALUES.every((tier) => isDecisionTierEmpty(decision.criteria[tier]));
 }
 
-// jevGuidanceFormValues fills the Jev guidance editors: each saved override
+// decisionGuidanceFormValues fills the Decision guidance editors: each saved override
 // wins, and anything unset shows the shipped default so the editor always
 // displays what the gateway will send. Without defaults (status not loaded)
 // unset fields stay empty, which saves as "use the default".
-export function jevGuidanceFormValues(saved?: AnalyzerConfig["jev"], defaults?: JevGuidanceDefaults): JevGuidanceFormValues {
-	const tier = (name: JevTier) => {
+export function decisionGuidanceFormValues(
+	saved?: AnalyzerConfig["decision"],
+	defaults?: DecisionGuidanceDefaults,
+): DecisionGuidanceFormValues {
+	const tier = (name: DecisionTier) => {
 		const override = saved?.criteria?.[name];
 		const shipped = defaults?.criteria[name];
 		return {
@@ -354,10 +365,10 @@ export function jevGuidanceFormValues(saved?: AnalyzerConfig["jev"], defaults?: 
 	};
 }
 
-// jevCriteriaFromDefaults copies the shipped per-tier criteria into form
+// decisionCriteriaFromDefaults copies the shipped per-tier criteria into form
 // values, so restoring them never shares arrays with the status response.
-export function jevCriteriaFromDefaults(defaults: JevGuidanceDefaults): JevGuidanceFormValues["criteria"] {
-	const tier = (name: JevTier) => ({
+export function decisionCriteriaFromDefaults(defaults: DecisionGuidanceDefaults): DecisionGuidanceFormValues["criteria"] {
+	const tier = (name: DecisionTier) => ({
 		definition: defaults.criteria[name].definition,
 		signals: [...defaults.criteria[name].signals],
 		examples: [...defaults.criteria[name].examples],
@@ -365,9 +376,9 @@ export function jevCriteriaFromDefaults(defaults: JevGuidanceDefaults): JevGuida
 	return { SIMPLE: tier("SIMPLE"), MEDIUM: tier("MEDIUM"), COMPLEX: tier("COMPLEX") };
 }
 
-// isJevGuidanceDefault reports whether every tier's definition, signals, and
+// isDecisionGuidanceDefault reports whether every tier's definition, signals, and
 // examples equal the shipped criteria, in order.
-export function isJevGuidanceDefault(criteria: JevGuidanceFormValues["criteria"], defaults: JevGuidanceDefaults): boolean {
+export function isDecisionGuidanceDefault(criteria: DecisionGuidanceFormValues["criteria"], defaults: DecisionGuidanceDefaults): boolean {
 	const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((value, index) => value === b[index]);
 	return COMPLEXITY_TIER_VALUES.every((tier) => {
 		const shipped = defaults.criteria[tier];
@@ -381,17 +392,21 @@ export function isJevGuidanceDefault(criteria: JevGuidanceFormValues["criteria"]
 }
 
 // Fills in the fields the API omitted so the semantic controls stay controlled.
-export function toFormValues(config: AnalyzerConfig, jevDefaults?: JevGuidanceDefaults): AnalyzerFormValues {
+export function toFormValues(config: AnalyzerConfig, decisionDefaults?: DecisionGuidanceDefaults): AnalyzerFormValues {
 	const saved = config.semantic;
 	const savedLLM = config.llm;
 	const classifier = config.classifier?.trim().toLowerCase();
 	return {
-		classifier: classifier === "jev" ? "jev" : "semantic",
+		classifier: classifier === "decision" ? "decision" : "semantic",
 		keywords: config.keywords,
-		jev: {
-			previous_message_count: config.jev?.previous_message_count ?? DEFAULT_JEV_CONFIG.previous_message_count,
-			timeout: config.jev?.timeout ?? DEFAULT_JEV_CONFIG.timeout,
-			...jevGuidanceFormValues(config.jev, jevDefaults),
+		decision: {
+			// A block saved without a model means the gateway default.
+			...(config.decision?.provider && config.decision?.model
+				? { provider: config.decision.provider, model: config.decision.model }
+				: { provider: DEFAULT_DECISION_CONFIG.provider, model: DEFAULT_DECISION_CONFIG.model }),
+			previous_message_count: config.decision?.previous_message_count ?? DEFAULT_DECISION_CONFIG.previous_message_count,
+			timeout: config.decision?.timeout ?? DEFAULT_DECISION_CONFIG.timeout,
+			...decisionGuidanceFormValues(config.decision, decisionDefaults),
 		},
 		session: config.session ?? { enabled: false },
 		llm: savedLLM
@@ -428,24 +443,24 @@ export function toAnalyzerPayload(values: AnalyzerFormValues, saved?: AnalyzerCo
 	return {
 		classifier: values.classifier,
 		keywords: values.keywords,
-		// Unused Jev values are not validated, so keep the saved block instead of
+		// Unused Decision values are not validated, so keep the saved block instead of
 		// sending hidden, possibly invalid edits.
-		...(usesJev(values) ? { jev: toJevPayload(values.jev) } : saved?.jev ? { jev: saved.jev } : {}),
+		...(usesDecision(values) ? { decision: toDecisionPayload(values.decision) } : saved?.decision ? { decision: saved.decision } : {}),
 		...(values.session.enabled ? { session: values.session } : {}),
 		...(semantic ? { semantic } : {}),
 		...(llm ? { llm } : {}),
 	};
 }
 
-// toJevPayload sends the editors' contents. The gateway drops anything equal
+// toDecisionPayload sends the editors' contents. The gateway drops anything equal
 // to its shipped default, so saving untouched guidance stores no override and
 // later default updates still apply. Empty fields are omitted only for the
 // window before the status endpoint has supplied defaults to seed them.
-function toJevPayload(jev: AnalyzerFormValues["jev"]): NonNullable<AnalyzerConfig["jev"]> {
-	const criteria: NonNullable<NonNullable<AnalyzerConfig["jev"]>["criteria"]> = {};
+function toDecisionPayload(decision: AnalyzerFormValues["decision"]): NonNullable<AnalyzerConfig["decision"]> {
+	const criteria: NonNullable<NonNullable<AnalyzerConfig["decision"]>["criteria"]> = {};
 	for (const tier of COMPLEXITY_TIER_VALUES) {
-		const { definition, signals, examples } = jev.criteria[tier];
-		if (isJevTierEmpty(jev.criteria[tier])) continue;
+		const { definition, signals, examples } = decision.criteria[tier];
+		if (isDecisionTierEmpty(decision.criteria[tier])) continue;
 		criteria[tier] = {
 			...(definition.trim() ? { definition } : {}),
 			...(signals.length ? { signals } : {}),
@@ -453,8 +468,10 @@ function toJevPayload(jev: AnalyzerFormValues["jev"]): NonNullable<AnalyzerConfi
 		};
 	}
 	return {
-		previous_message_count: jev.previous_message_count,
-		timeout: jev.timeout,
+		provider: decision.provider.trim(),
+		model: decision.model.trim(),
+		previous_message_count: decision.previous_message_count,
+		timeout: decision.timeout,
 		...(Object.keys(criteria).length ? { criteria } : {}),
 	};
 }
@@ -470,11 +487,11 @@ export function semanticTimeoutFieldValue(timeout: string | undefined): string |
 	return millis ? millis[1] : parseSemanticTimeoutMs(timeout);
 }
 
-// jevTimeoutFieldValue shows the stored Go duration as editable milliseconds.
-export function jevTimeoutFieldValue(timeout: string | undefined): string | number {
+// decisionTimeoutFieldValue shows the stored Go duration as editable milliseconds.
+export function decisionTimeoutFieldValue(timeout: string | undefined): string | number {
 	if (timeout === "") return "";
 	const millis = timeout?.trim().match(/^([0-9]*\.?[0-9]+)ms$/);
-	return millis ? millis[1] : parseSemanticTimeoutMs(timeout ?? DEFAULT_JEV_CONFIG.timeout);
+	return millis ? millis[1] : parseSemanticTimeoutMs(timeout ?? DEFAULT_DECISION_CONFIG.timeout);
 }
 
 // Same round-trip as semanticTimeoutFieldValue, with the llm default backstop.
@@ -491,25 +508,32 @@ export function shouldSeedLLMPrompt(enabled: boolean, defaultPrompt: string, pro
 // isRouterConfigured decides whether the page opens on the classifier choice
 // (nothing set up yet) or straight on the configured classifier's settings.
 // A router counts as configured once it can classify anything: a saved semantic
-// block, or Jev chosen as the primary classifier. Phrases alone do not count;
+// block, or Decision chosen as the primary classifier. Phrases alone do not count;
 // every install has them, and without a classifier they route nothing.
 export function isRouterConfigured(config: AnalyzerConfig | undefined): boolean {
 	if (!config) return false;
-	if (config.classifier?.trim().toLowerCase() === "jev") return true;
+	if (config.classifier?.trim().toLowerCase() === "decision") return true;
 	return Boolean(config.semantic?.provider && config.semantic?.embedding_model);
 }
-// TypesafeState is what the UI can actually tell about the Typesafe provider
-// Jev authenticates through. "configured" is not a guarantee that Jev calls
-// succeed — only a live request proves that — so the UI never calls it "ready".
-export type TypesafeState = "missing" | "failing" | "no-enabled-key" | "configured";
+// DecisionProviderState is what the UI can actually tell about the provider the
+// decision model runs through. "configured" is not a guarantee that decision
+// calls succeed — only a live request proves that — so the UI never calls it "ready".
+export type DecisionProviderState = "missing" | "failing" | "no-enabled-key" | "configured";
 
-export function getTypesafeState(providers: ModelProvider[] | undefined, keys: DBKey[] | undefined): TypesafeState {
-	const provider = (providers ?? []).find((candidate) => candidate.name === "typesafe");
+export function getDecisionProviderState(
+	providers: ModelProvider[] | undefined,
+	keys: DBKey[] | undefined,
+	providerName: string,
+): DecisionProviderState {
+	const provider = (providers ?? []).find((candidate) => candidate.name === providerName);
 	if (!provider) return "missing";
-	// The provider failed to initialise, or could not list models with its keys:
-	// both mean its credentials or settings are wrong.
-	if (provider.provider_status !== "active" || provider.status === "list_models_failed") return "failing";
+	// The provider failed to initialise. A model-listing failure is not checked:
+	// it says nothing about the decisions endpoint, and the provider-level listing
+	// status can be stale while the provider's keys work.
+	if (provider.provider_status !== "active") return "failing";
+	// A keyless custom provider (a self-hosted Laya, for one) needs no key.
+	if (provider.custom_provider_config?.is_key_less) return "configured";
 	// A key omits `enabled` when unset, which the Go side reads as enabled.
-	if (!(keys ?? []).some((key) => key.provider === "typesafe" && key.enabled !== false)) return "no-enabled-key";
+	if (!(keys ?? []).some((key) => key.provider === providerName && key.enabled !== false)) return "no-enabled-key";
 	return "configured";
 }

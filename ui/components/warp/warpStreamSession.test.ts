@@ -167,4 +167,46 @@ describe("WarpStreamSession", () => {
 		await net.close();
 		await sending;
 	});
+
+	// Which model answers is the panel's choice among what the operator exposed.
+	// Unnamed, the server's default applies, so nothing is sent for it.
+	it("names the picked model on the request, and nothing when none is picked", async () => {
+		let sending = session.send([], "on the default");
+		await settle();
+		expect(net.calls[0].body).not.toHaveProperty("provider");
+		expect(net.calls[0].body).not.toHaveProperty("model");
+		await net.push({ type: "done", finish_reason: "stop" });
+		await net.close();
+		await sending;
+
+		sending = session.send([], "on another", { provider: "anthropic", model: "claude-sonnet-5" });
+		await settle();
+		expect(net.calls[1].body).toMatchObject({ provider: "anthropic", model: "claude-sonnet-5" });
+		await net.push({ type: "done", finish_reason: "stop" });
+		await net.close();
+		await sending;
+	});
+
+	// A refusal the server worded - a model that is no longer exposed, say - has
+	// to reach the reader as written rather than as a bare status code.
+	it("files a refused request under the server's own message", async () => {
+		const refuse = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ error: { message: "model is not available for warp: openai/gpt-5" } }), {
+					status: 400,
+					headers: { "Content-Type": "application/json" },
+				}),
+		);
+		const refused = new WarpStreamSession({ ...sink, fetch: refuse as unknown as typeof fetch });
+		await refused.send([], "hello", { provider: "openai", model: "gpt-5" });
+		expect(committed).toHaveLength(1);
+		expect(committed[0].error).toBe(":model is not available for warp: openai/gpt-5");
+	});
+
+	it("falls back to the status when a refusal carries no message", async () => {
+		const refuse = vi.fn(async () => new Response("", { status: 500 }));
+		const refused = new WarpStreamSession({ ...sink, fetch: refuse as unknown as typeof fetch });
+		await refused.send([], "hello");
+		expect(committed[0].error).toBe(":Warp request failed (500)");
+	});
 });

@@ -294,9 +294,11 @@ func failuresLink(filters *logstore.SearchFilters, totalRequests int64, successR
 // select. It has no error-type, error-code or status-code filter, by decision,
 // so a query narrowed by one cannot be reproduced there: the link would open
 // every failure beside a count of seventeen. Such a result gets no link - each
-// row still carries its own - rather than one that is silently wider.
+// row still carries its own - rather than one that is silently wider. The same
+// holds for guardrail_outcomes, which only the Guardrail Incidents view reads.
 func linkableInLogsView(filters *logstore.SearchFilters) bool {
-	return len(filters.ErrorTypes) == 0 && len(filters.ErrorCodes) == 0 && len(filters.StatusCodes) == 0
+	return len(filters.ErrorTypes) == 0 && len(filters.ErrorCodes) == 0 && len(filters.StatusCodes) == 0 &&
+		len(filters.GuardrailOutcomes) == 0
 }
 
 // setLogsLink puts logs_link on a result when there is one to give.
@@ -462,7 +464,11 @@ type linkedDimensionRankingResult struct {
 // unassignedRankingID is the id the store gives owner-less traffic in a rollup
 // ranking. The Logs page cannot filter on the absence of an owner, so that
 // row gets no link rather than one that opens everyone's traffic.
-const unassignedRankingID = "unassigned"
+const unassignedRankingID = logstore.UnassignedDimensionID
+
+// otherRankingID is the id the store gives traffic whose entity the caller may
+// not be shown. Filtering on it would name that entity, so it gets no link.
+const otherRankingID = logstore.OtherDimensionID
 
 // narrowToDimension returns filters narrowed to ranking rows, or false for
 // a dimension the Logs page has no URL parameter for.
@@ -514,7 +520,7 @@ func linkDimensionRankings(result *logstore.DimensionRankingResult, filters *log
 	rows := make([]linkedDimensionRanking, len(result.Rankings))
 	for i, ranking := range result.Rankings {
 		rows[i] = linkedDimensionRanking{DimensionRankingWithTrend: ranking}
-		if ranking.ID == "" || ranking.ID == unassignedRankingID {
+		if ranking.ID == "" || ranking.ID == unassignedRankingID || ranking.ID == otherRankingID {
 			continue
 		}
 		if narrowed, ok := narrowToDimension(filters, dimension, ranking.ID); ok {
@@ -536,13 +542,15 @@ func linkDimensionRankings(result *logstore.DimensionRankingResult, filters *log
 // linkable row, keeps the tool's filters.
 func setRankingLogsLink(out map[string]any, result *logstore.DimensionRankingResult, filters *logstore.SearchFilters, dimension logstore.RankingDimension) map[string]any {
 	var ids []string
-	unassigned := false
+	unassigned, other := false, false
 	if result != nil {
 		for _, ranking := range result.Rankings {
 			switch ranking.ID {
 			case "":
 			case unassignedRankingID:
 				unassigned = true
+			case otherRankingID:
+				other = true
 			default:
 				ids = append(ids, ranking.ID)
 			}
@@ -560,6 +568,9 @@ func setRankingLogsLink(out map[string]any, result *logstore.DimensionRankingRes
 	covers := fmt.Sprintf("the requests of the %d %s rows returned here, not every request in the window", len(ids), dimension)
 	if unassigned {
 		covers += "; Unassigned traffic has no Logs filter and is left out"
+	}
+	if other {
+		covers += "; Other traffic has no Logs filter and is left out"
 	}
 	out["logs_link_covers"] = covers
 	return out

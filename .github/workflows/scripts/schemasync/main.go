@@ -36,7 +36,7 @@ type entrypoint struct {
 
 var entrypoints = []entrypoint{
 	{
-		pkg:        "github.com/maximhq/bifrost/transports/bifrost-http/lib",
+		pkg:        "github.com/maximhq/bifrost/transports/v2/bifrost-http/lib",
 		typeName:   "ConfigData",
 		schemaPath: "", // root schema node — collectProperties will find .properties
 		moduleDir:  "transports",
@@ -118,9 +118,18 @@ var ignoreSchemaProps = map[string]string{
 // ignoreGoFields keys are "schemaPath|fieldName"; value is the reason.
 var ignoreGoFields = map[string]string{
 	"|auth_config": "deprecated; moved to governance.auth_config",
+	// The client columns store the MCP instruction caps, but config.json sets them only under
+	// mcp.tool_manager_config (applyToolManagerToClientConfig); the schema deliberately has no
+	// client-level twin. Mirrors excludedGoFields in transports/bifrost-http/lib/config_test.go.
+	"/properties/client|mcp_max_instructions_per_client": "storage column; configured only via mcp.tool_manager_config.max_instructions_per_client",
+	"/properties/client|mcp_max_instructions_total":      "storage column; configured only via mcp.tool_manager_config.max_instructions_total",
 	// provider_key_id is the internal DB column resolved from provider_key_name at config load time;
 	// schema documents only the human-readable provider_key_name alias.
 	"/properties/governance/properties/pricing_overrides/items|provider_key_id": "internal DB column; config uses provider_key_name alias instead",
+	// governance.providers decodes into TableProvider for budget and rate-limit wiring only;
+	// injected_tools is read from providers.<name>, so the schema must not advertise it here
+	// (TestValidateConfigSchema_InjectedTools pins that).
+	"/properties/governance/properties/providers/items|injected_tools": "gorm:\"-\" field never read from governance.providers; configured under providers.<name>.injected_tools",
 	// oauth_client_id / oauth_client_secret are response-only fields on MCPClientConfig:
 	// populated on GET from the oauth_configs table, never accepted as config.json input.
 	"/properties/mcp/properties/client_configs/items|oauth_client_id":     "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
@@ -145,6 +154,14 @@ var ignoreGoFields = map[string]string{
 	"/properties/mcp/properties/client_configs/items/properties/oauth_config|redirect_uri":  "computed by Bifrost (MCP OAuth callback URI); not authored in config.json",
 	"/properties/mcp/properties/client_configs/items/properties/oauth_config|server_url":    "derived from the client connection_string for OAuth discovery; not authored in config.json",
 	"/properties/mcp/properties/client_configs/items/properties/oauth_config|use_discovery": "deprecated; discovery is automatic when URLs are missing",
+	// openapi_config (schemas.MCPOpenAPIConfig) carries five fields the server computes from the
+	// parsed spec at write time and returns on read; they are never authored in config.json, and
+	// the schema's additionalProperties: false on openapi_config keeps them out deliberately.
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|spec_size":       "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|spec_hash":       "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|spec_title":      "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|openapi_version": "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|operation_count": "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
 	// source_id is a stable external identifier for teams provisioned by an
 	// integrating system (PR #3395). It is assigned through the API by that
 	// system, never authored in config.json.
@@ -162,6 +179,12 @@ var ignoreGoFields = map[string]string{
 	// read paths so list responses can report it without loading the full VirtualKeys
 	// relation; never config.json input.
 	"/properties/governance/properties/customers/items|virtual_key_count": "response-only; derived count populated on read (TableCustomer.VirtualKeyCount), not user-configurable via config.json",
+	// team_count is the same class: a non-persisted (gorm:"-") count the customer list read
+	// path sets so the table can show it without loading the Teams relation.
+	"/properties/governance/properties/customers/items|team_count": "response-only; derived count populated on read (TableCustomer.TeamCount), not user-configurable via config.json",
+	// business_unit is a non-persisted (gorm:"-") display object the governance read paths fill
+	// from the enterprise resolver; config.json links a key to a unit through business_unit_id.
+	"/properties/governance/properties/virtual_keys/items|business_unit": "response-only; resolved on read from business_unit_id (TableVirtualKey.BusinessUnit), not user-configurable via config.json",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are
@@ -181,6 +204,29 @@ var ignoreGoFieldNames = map[string]string{
 var ignoreEnumPaths = map[string]string{
 	"/properties/governance/properties/complexity_analyzer_config/properties/semantic/properties/provider": "accepts custom provider names; enum would reject them",
 	"/properties/governance/properties/complexity_analyzer_config/properties/llm/properties/provider":      "accepts custom provider names; enum would reject them",
+	"/properties/governance/properties/complexity_analyzer_config/properties/decision/properties/provider": "accepts custom provider names (Laya, Nimble, Clef); enum would reject them",
+}
+
+// narrowedEnumPaths are schema paths whose enum intentionally omits some of the Go
+// type's consts, because the Go type is shared with a feature that accepts more values
+// than this config path does. Only the listed consts are excused; any new Go const
+// still surfaces as enum drift.
+var narrowedEnumPaths = map[string]struct {
+	excluded []string
+	reason   string
+}{
+	"/properties/proxy_config/properties/type": {
+		excluded: []string{"socks5", "tcp"},
+		reason:   "global proxy rejects socks5/tcp at load (lib/configproxy.go) and on the API; only http is supported today",
+	},
+	"/properties/agents/items/properties/discovery_auth/properties/type": {
+		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange"},
+		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
+	},
+	"/properties/agents/items/properties/runtime_auth/properties/type": {
+		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange"},
+		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
+	},
 }
 
 // opaqueLeafTypes are named Go types that have custom JSON marshalling and
@@ -985,9 +1031,15 @@ func (c *checker) checkEnum(goVals []string, schemaNode map[string]any, schemaPa
 	for _, v := range goVals {
 		goSet[v] = true
 	}
+	excused := map[string]bool{}
+	if narrowed, ok := narrowedEnumPaths[schemaPath]; ok {
+		for _, v := range narrowed.excluded {
+			excused[v] = true
+		}
+	}
 	var missingInSchema, extraInSchema []string
 	for v := range goSet {
-		if !schemaSet[v] {
+		if !schemaSet[v] && !excused[v] {
 			missingInSchema = append(missingInSchema, v)
 		}
 	}

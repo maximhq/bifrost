@@ -268,7 +268,7 @@ export default function OnboardingWidget() {
 							type="button"
 							data-testid="onboarding-widget-minimize"
 							onClick={() => setMinimized(true)}
-							className="text-muted-foreground hover:text-foreground -m-1 rounded p-1"
+							className="text-muted-foreground hover:text-foreground rounded p-1.5"
 						>
 							<Minus className="size-4" />
 						</button>
@@ -277,7 +277,7 @@ export default function OnboardingWidget() {
 							type="button"
 							data-testid="onboarding-widget-close"
 							onClick={() => setCookie(HIDDEN_UNTIL_NAV_COOKIE, "true", { path: "/" })}
-							className="text-muted-foreground hover:text-foreground -m-1 rounded p-1"
+							className="text-muted-foreground hover:text-foreground rounded p-1.5"
 						>
 							<X className="size-4" />
 						</button>
@@ -322,9 +322,11 @@ export default function OnboardingWidget() {
 												checkboxRefs.current[step.id] = el;
 											}}
 											className="inline-flex"
+											aria-hidden="true"
 										>
-											<Checkbox checked={step.complete} disabled className="pointer-events-none" />
+											<Checkbox checked={step.complete} disabled tabIndex={-1} className="pointer-events-none" />
 										</span>
+										{step.complete && <span className="sr-only">Completed:</span>}
 										<span
 											className={cn(
 												"flex-1 text-sm",
@@ -368,7 +370,7 @@ export default function OnboardingWidget() {
 								Remind me later
 							</button>
 						</PopoverTrigger>
-						<PopoverContent align="start" className="w-64 p-3">
+						<PopoverContent align="start" className="z-[1002] w-64 p-3">
 							<div className="mb-2 flex items-start gap-1.5 text-amber-600 dark:text-amber-500">
 								<AlertTriangle className="mt-0.5 size-3.5 flex-shrink-0" />
 								<p className="text-xs leading-snug">Not completing these steps keeps your Bifrost setup vulnerable.</p>

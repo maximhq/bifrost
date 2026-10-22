@@ -7,14 +7,54 @@ package lib
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
-// HTTP response header names for the routed identity. Set on every successful
-// response from any integration so callers can recover the actual provider /
+// Correlation response headers, written by the tracing middleware on every traced response so a
+// caller can pivot a request into its log row, access log and trace.
+const (
+	// HeaderBifrostRequestID is the request id this gateway logs and traces the request under:
+	// the caller's x-request-id, or the UUID generated when it sent none.
+	HeaderBifrostRequestID = "x-bifrost-request-id"
+	HeaderBifrostTraceID   = "x-bifrost-trace-id"
+	// HeaderRequestID carries the same value as HeaderBifrostRequestID until a provider answers
+	// with its own x-request-id (OpenAI does), which then replaces it. It is deprecated for
+	// callers as a way to read this gateway's request id, and kept for compatibility.
+	HeaderRequestID = "x-request-id"
+)
+
+// gatewayOwnedResponseHeaderPrefix names the response headers this gateway writes about its own
+// handling of a request.
+const gatewayOwnedResponseHeaderPrefix = "x-bifrost-"
+
+// IsGatewayOwnedResponseHeader reports whether name is one of this gateway's x-bifrost-* response
+// headers. A provider's response header with such a name is never forwarded: when the provider is
+// another Bifrost, its x-bifrost-* headers describe its own hop, and forwarding them would replace
+// this hop's correlation ids and routed identity or add values this hop never set.
+func IsGatewayOwnedResponseHeader(name string) bool {
+	return len(name) >= len(gatewayOwnedResponseHeaderPrefix) &&
+		strings.EqualFold(name[:len(gatewayOwnedResponseHeaderPrefix)], gatewayOwnedResponseHeaderPrefix)
+}
+
+// ForwardProviderResponseHeaders copies a provider's response headers onto the response, except
+// the gateway-owned ones (see IsGatewayOwnedResponseHeader). The provider's values still reach
+// the caller in extra_fields.provider_response_headers on routes that return extra_fields.
+func ForwardProviderResponseHeaders(ctx *fasthttp.RequestCtx, headers map[string]string) {
+	for key, value := range headers {
+		if IsGatewayOwnedResponseHeader(key) {
+			continue
+		}
+		ctx.Response.Header.Set(key, value)
+	}
+}
+
+// HTTP response header names for the routed identity. Set on success and error
+// responses from any integration so callers can recover the actual provider /
 // model that handled the request — even when the integration converts the
 // body to a provider-native shape (Anthropic, OpenAI, Bedrock) that has no
 // place to surface Bifrost's `extra_fields`.
@@ -25,7 +65,7 @@ import (
 // BifrostContext because it isn't a field on the response struct.
 //
 // Naming follows the existing `x-bf-*` request-side convention (see
-// `x-bf-vk`, `x-bf-key-id`, etc.).
+// `x-bf-vk`, `x-bf-api-key-id`, etc.).
 const (
 	HeaderBifrostProvider      = "x-bifrost-provider"
 	HeaderBifrostOriginalModel = "x-bifrost-original-model"
@@ -57,12 +97,115 @@ const (
 	HeaderBifrostRoutingInfoRequestedModel          = "x-bifrost-routing-info-requested-model"
 )
 
+// Headers mirroring the semantic cache's cache_debug fields 1:1, so a caller whose route returns
+// a provider-native body with no extra_fields (the Anthropic, GenAI, Bedrock and Cohere SDK
+// routes, and their streams) still learns whether the response came from cache and which entry
+// served it. Emitted on every inference route whenever the cache ran a lookup, and never on an
+// error response, matching the body.
+const (
+	HeaderBifrostCacheHit               = "x-bifrost-cache-hit"
+	HeaderBifrostCacheID                = "x-bifrost-cache-id"
+	HeaderBifrostCacheHitType           = "x-bifrost-cache-hit-type"
+	HeaderBifrostCacheHitLatency        = "x-bifrost-cache-hit-latency-ms"
+	HeaderBifrostCacheRequestedProvider = "x-bifrost-cache-requested-provider"
+	HeaderBifrostCacheRequestedModel    = "x-bifrost-cache-requested-model"
+	HeaderBifrostCacheSimilarity        = "x-bifrost-cache-similarity"
+	HeaderBifrostCacheThreshold         = "x-bifrost-cache-threshold"
+	HeaderBifrostCacheProviderUsed      = "x-bifrost-cache-provider-used"
+	HeaderBifrostCacheModelUsed         = "x-bifrost-cache-model-used"
+	HeaderBifrostCacheInputTokens       = "x-bifrost-cache-input-tokens"
+)
+
+// Headers carrying the scalar extra_fields that have no header in body mode. Written only when
+// client.extra_fields_placement is "headers", where extra_fields is removed from the body. List
+// values are comma-joined. The large and nested fields (raw_request, raw_response,
+// routing_metadata, guardrail_debug, parse_errors, and on errors key_statuses, billed_usage,
+// mcp_auth_required) have no header and are dropped in that mode.
+const (
+	HeaderBifrostLatency                 = "x-bifrost-latency-ms"
+	HeaderBifrostPricingRequestType      = "x-bifrost-pricing-request-type"
+	HeaderBifrostConvertedRequestType    = "x-bifrost-converted-request-type"
+	HeaderBifrostDroppedCompatParams     = "x-bifrost-dropped-compat-params"
+	HeaderBifrostDroppedUnsupportedTools = "x-bifrost-dropped-unsupported-tools"
+	HeaderBifrostPassthroughPath         = "x-bifrost-passthrough-path"
+	HeaderBifrostErrorType               = "x-bifrost-error-type"
+	HeaderBifrostRetryAfterMs            = "x-bifrost-retry-after-ms"
+)
+
+// ExposedResponseHeaders is the Access-Control-Expose-Headers value for allowed cross-origin
+// requests: every response header this gateway writes about its own handling. Browsers hide any
+// response header not listed, and with client.extra_fields_placement = "headers" these headers
+// are the only place extra_fields reaches the client. Built once; requests reuse the string.
+var ExposedResponseHeaders = strings.Join([]string{
+	HeaderBifrostRequestID, HeaderBifrostTraceID, HeaderRequestID,
+	HeaderBifrostProvider, HeaderBifrostOriginalModel, HeaderBifrostResolvedModel,
+	HeaderBifrostFallbackIndex, HeaderBifrostRequestType, HeaderBifrostUpstreamLatency,
+	HeaderBifrostRoutingInfoProvider, HeaderBifrostRoutingInfoModel, HeaderBifrostRoutingInfoKey,
+	HeaderBifrostRoutingInfoAliasModelID, HeaderBifrostRoutingInfoAliasModelName, HeaderBifrostRoutingInfoAliasModelFamily,
+	HeaderBifrostRoutingInfoIsFallback, HeaderBifrostRoutingInfoPrimaryProvider, HeaderBifrostRoutingInfoPrimaryModel,
+	HeaderBifrostRoutingInfoServerSideFallbackModel, HeaderBifrostRoutingInfoRequestedProvider, HeaderBifrostRoutingInfoRequestedModel,
+	HeaderBifrostCacheHit, HeaderBifrostCacheID, HeaderBifrostCacheHitType, HeaderBifrostCacheHitLatency,
+	HeaderBifrostCacheRequestedProvider, HeaderBifrostCacheRequestedModel, HeaderBifrostCacheSimilarity,
+	HeaderBifrostCacheThreshold, HeaderBifrostCacheProviderUsed, HeaderBifrostCacheModelUsed, HeaderBifrostCacheInputTokens,
+	HeaderBifrostLatency, HeaderBifrostPricingRequestType, HeaderBifrostConvertedRequestType,
+	HeaderBifrostDroppedCompatParams, HeaderBifrostDroppedUnsupportedTools, HeaderBifrostPassthroughPath,
+	HeaderBifrostErrorType, HeaderBifrostRetryAfterMs,
+}, ", ")
+
+// extraFieldsKey is the top-level JSON key every Bifrost response and error carries its metadata under.
+const extraFieldsKey = "extra_fields"
+
+// StripExtraFieldsIfInHeaders removes the top-level extra_fields key from a marshaled response
+// body when the request is in headers mode, and returns body unchanged otherwise. A body that
+// is not a JSON object, or has no extra_fields, comes back unchanged.
+func StripExtraFieldsIfInHeaders(ctx *fasthttp.RequestCtx, body []byte) []byte {
+	if !ExtraFieldsInHeaders(ctx) {
+		return body
+	}
+	return StripExtraFields(body)
+}
+
+// StripExtraFields removes the top-level extra_fields key from a marshaled JSON object.
+func StripExtraFields(body []byte) []byte {
+	stripped, err := providerUtils.DeleteJSONField(body, extraFieldsKey)
+	if err != nil {
+		return body
+	}
+	return stripped
+}
+
+// applyExtraFieldsScalarHeaders writes the scalar extra_fields that have no body-mode header.
+// latencyKnown says extra came from a finished response, whose body always serializes latency,
+// so a sub-millisecond 0 is written too; otherwise latency is written only when non-zero.
+func applyExtraFieldsScalarHeaders(ctx *fasthttp.RequestCtx, extra schemas.BifrostResponseExtraFields, latencyKnown bool) {
+	if latencyKnown || extra.Latency > 0 {
+		ctx.Response.Header.Set(HeaderBifrostLatency, strconv.FormatInt(extra.Latency, 10))
+	}
+	if extra.PricingRequestType != "" {
+		ctx.Response.Header.Set(HeaderBifrostPricingRequestType, string(extra.PricingRequestType))
+	}
+	if extra.ConvertedRequestType != "" {
+		ctx.Response.Header.Set(HeaderBifrostConvertedRequestType, string(extra.ConvertedRequestType))
+	}
+	if len(extra.DroppedCompatPluginParams) > 0 {
+		ctx.Response.Header.Set(HeaderBifrostDroppedCompatParams, strings.Join(extra.DroppedCompatPluginParams, ","))
+	}
+	if len(extra.DroppedUnsupportedTools) > 0 {
+		ctx.Response.Header.Set(HeaderBifrostDroppedUnsupportedTools, strings.Join(extra.DroppedUnsupportedTools, ","))
+	}
+	if extra.PassthroughPath != "" {
+		ctx.Response.Header.Set(HeaderBifrostPassthroughPath, extra.PassthroughPath)
+	}
+}
+
 // ApplyBifrostStreamResponseHeaders emits the routed-identity headers for a
 // streaming response, before the first SSE write. Streams only carry
 // ExtraFields on chunks — none exist at header-write time — so the identity
 // comes from the RoutingInfo snapshot core stashes in the context at stream
 // setup (BifrostContextKeyRoutingInfo). Absent snapshot (e.g. a plugin
-// short-circuited the stream) emits only the request-type header.
+// short-circuited the stream) emits only the request-type header. The cache
+// headers come the same way, from the lookup the semantic cache recorded
+// before the stream started, since cache_debug only rides on the last chunk.
 func ApplyBifrostStreamResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, requestType schemas.RequestType) {
 	if bifrostCtx == nil {
 		return
@@ -71,7 +214,48 @@ func ApplyBifrostStreamResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 	if ri, ok := bifrostCtx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
 		extra = ri.ToExtraFields(requestType)
 	}
-	ApplyBifrostResponseHeaders(ctx, bifrostCtx, extra)
+	if lookup, ok := schemas.CacheLookupFromContext(bifrostCtx); ok {
+		extra.CacheDebug = lookup
+	}
+	// In headers mode the chunks lose extra_fields, so the compat plugin's dropped params,
+	// known before dispatch, go out with the stream headers.
+	if ExtraFieldsInHeaders(ctx) {
+		extra.DroppedCompatPluginParams, _ = bifrostCtx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
+	}
+	// Latency does not exist yet when stream headers go out.
+	applyBifrostResponseHeaders(ctx, bifrostCtx, extra, false)
+}
+
+// applyCacheMetadataHeaders writes one x-bifrost-cache-* header per cache_debug field the
+// metadata carries. cache_hit is always written, so its presence alone says a lookup ran.
+func applyCacheMetadataHeaders(ctx *fasthttp.RequestCtx, metadata *schemas.BifrostCacheMetadata) {
+	if metadata == nil {
+		return
+	}
+	ctx.Response.Header.Set(HeaderBifrostCacheHit, strconv.FormatBool(metadata.CacheHit))
+	setIfPresent := func(name string, value *string) {
+		if value != nil && *value != "" {
+			ctx.Response.Header.Set(name, *value)
+		}
+	}
+	setIfPresent(HeaderBifrostCacheID, metadata.CacheID)
+	setIfPresent(HeaderBifrostCacheHitType, metadata.HitType)
+	setIfPresent(HeaderBifrostCacheRequestedProvider, metadata.RequestedProvider)
+	setIfPresent(HeaderBifrostCacheRequestedModel, metadata.RequestedModel)
+	setIfPresent(HeaderBifrostCacheProviderUsed, metadata.ProviderUsed)
+	setIfPresent(HeaderBifrostCacheModelUsed, metadata.ModelUsed)
+	if metadata.CacheHitLatency != nil {
+		ctx.Response.Header.Set(HeaderBifrostCacheHitLatency, strconv.FormatInt(*metadata.CacheHitLatency, 10))
+	}
+	if metadata.Similarity != nil {
+		ctx.Response.Header.Set(HeaderBifrostCacheSimilarity, strconv.FormatFloat(*metadata.Similarity, 'f', -1, 64))
+	}
+	if metadata.Threshold != nil {
+		ctx.Response.Header.Set(HeaderBifrostCacheThreshold, strconv.FormatFloat(*metadata.Threshold, 'f', -1, 64))
+	}
+	if metadata.InputTokens != nil {
+		ctx.Response.Header.Set(HeaderBifrostCacheInputTokens, strconv.Itoa(*metadata.InputTokens))
+	}
 }
 
 // ApplyBifrostErrorResponseHeaders emits the routed-identity headers on an
@@ -82,14 +266,31 @@ func ApplyBifrostStreamResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sch
 // BifrostErrorExtraFields to the shared writer (a different type than the
 // success path's BifrostResponseExtraFields); provider response headers are
 // forwarded separately by the caller.
+//
+// In headers mode the error's own scalars (error_type, retry_after_ms, latency,
+// converted_request_type, dropped_compat_plugin_params) are written too, since the
+// body loses extra_fields.
 func ApplyBifrostErrorResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostErrorExtraFields) {
-	ApplyBifrostResponseHeaders(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{
-		RequestType:            extra.RequestType,
-		RoutingInfo:            extra.RoutingInfo,
-		Provider:               extra.Provider,
-		OriginalModelRequested: extra.OriginalModelRequested,
-		ResolvedModelUsed:      extra.ResolvedModelUsed,
-	})
+	// Error latency is omitempty in the body, so a 0 stays absent here too.
+	applyBifrostResponseHeaders(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{
+		RequestType:               extra.RequestType,
+		RoutingInfo:               extra.RoutingInfo,
+		Provider:                  extra.Provider,
+		OriginalModelRequested:    extra.OriginalModelRequested,
+		ResolvedModelUsed:         extra.ResolvedModelUsed,
+		Latency:                   extra.Latency,
+		ConvertedRequestType:      extra.ConvertedRequestType,
+		DroppedCompatPluginParams: extra.DroppedCompatPluginParams,
+	}, false)
+	if !ExtraFieldsInHeaders(ctx) {
+		return
+	}
+	if extra.ErrorType != "" {
+		ctx.Response.Header.Set(HeaderBifrostErrorType, string(extra.ErrorType))
+	}
+	if extra.RetryAfter > 0 {
+		ctx.Response.Header.Set(HeaderBifrostRetryAfterMs, strconv.FormatInt(extra.RetryAfter, 10))
+	}
 }
 
 // ApplyBifrostResponseHeaders writes both the upstream provider response
@@ -98,7 +299,16 @@ func ApplyBifrostErrorResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 // the headers never appear with a blank value. Safe to call when the caller
 // didn't populate `extra` — the zero value for ExtraFields produces no
 // headers.
+//
+// A finished response always carries RequestType, so that is what marks its latency as
+// measured; an empty placeholder (a large-response stream) has none.
 func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) {
+	applyBifrostResponseHeaders(ctx, bifrostCtx, extra, extra.RequestType != "")
+}
+
+// applyBifrostResponseHeaders is ApplyBifrostResponseHeaders with the caller saying whether
+// extra holds a measured latency (see applyExtraFieldsScalarHeaders).
+func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields, latencyKnown bool) {
 	// "transport-response-headers" overhead phase: writing routed-identity and upstream
 	// headers onto the fasthttp response. Runs inside the root http.request span on the
 	// way out, on no phase span, so it would otherwise fold into "core". Nil-safe.
@@ -107,9 +317,7 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 			defer t.EndSpan(h, schemas.SpanStatusOk, "")
 		}
 	}
-	for key, value := range extra.ProviderResponseHeaders {
-		ctx.Response.Header.Set(key, value)
-	}
+	ForwardProviderResponseHeaders(ctx, extra.ProviderResponseHeaders)
 	if extra.Provider != "" {
 		ctx.Response.Header.Set(HeaderBifrostProvider, string(extra.Provider))
 	}
@@ -174,5 +382,9 @@ func ApplyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 			ctx.Response.Header.Set(HeaderBifrostUpstreamLatency,
 				strconv.FormatFloat(float64(upstream)/float64(time.Millisecond), 'f', 3, 64))
 		}
+	}
+	applyCacheMetadataHeaders(ctx, extra.CacheDebug)
+	if ExtraFieldsInHeaders(ctx) {
+		applyExtraFieldsScalarHeaders(ctx, extra, latencyKnown)
 	}
 }

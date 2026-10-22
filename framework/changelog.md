@@ -1,1 +1,1 @@
-[fix]: complexity router keeps custom provider name case so its config lookup succeeds [@MohammadHijjawi97](https://github.com/MohammadHijjawi97)
+- chore: upgraded Go to 1.27.3 and core to v1.13.1

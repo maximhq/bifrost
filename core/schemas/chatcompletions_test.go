@@ -89,3 +89,132 @@ func TestChatParametersReasoningUnion(t *testing.T) {
 		}
 	})
 }
+
+// Azure OpenAI decorates a chat completion with a top-level prompt_filter_results
+// array and a per-choice content_filter_results object. Clients read them to tell
+// "filtered" from "empty", so a response must round-trip them untouched.
+func TestChatResponsePreservesAzureContentFilterAnnotations(t *testing.T) {
+	const upstream = `{
+		"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"gpt-4o",
+		"prompt_filter_results":[{"prompt_index":0,"content_filter_results":{"hate":{"filtered":false,"severity":"safe"}}}],
+		"choices":[{"index":0,"finish_reason":"stop",
+			"message":{"role":"assistant","content":"hello"},
+			"content_filter_results":{"violence":{"filtered":false,"severity":"safe"}}}],
+		"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+
+	var resp BifrostChatResponse
+	if err := Unmarshal([]byte(upstream), &resp); err != nil {
+		t.Fatalf("decode azure response: %v", err)
+	}
+	out, err := json.Marshal(&resp)
+	if err != nil {
+		t.Fatalf("encode response: %v", err)
+	}
+
+	var got struct {
+		PromptFilterResults []struct {
+			ContentFilterResults map[string]struct {
+				Severity string `json:"severity"`
+			} `json:"content_filter_results"`
+		} `json:"prompt_filter_results"`
+		Choices []struct {
+			ContentFilterResults map[string]struct {
+				Severity string `json:"severity"`
+			} `json:"content_filter_results"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("re-decode %s: %v", out, err)
+	}
+	if len(got.PromptFilterResults) != 1 || got.PromptFilterResults[0].ContentFilterResults["hate"].Severity != "safe" {
+		t.Fatalf("prompt_filter_results was dropped: %s", out)
+	}
+	if len(got.Choices) != 1 || got.Choices[0].ContentFilterResults["violence"].Severity != "safe" {
+		t.Fatalf("choice content_filter_results was dropped: %s", out)
+	}
+
+	t.Run("responses without annotations stay unchanged", func(t *testing.T) {
+		var plain BifrostChatResponse
+		if err := Unmarshal([]byte(`{"id":"c","object":"chat.completion","created":1,"model":"gpt-4o","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]}`), &plain); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		enc, err := json.Marshal(&plain)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		if strings.Contains(string(enc), "filter_results") {
+			t.Fatalf("annotation keys leaked into a response that had none: %s", enc)
+		}
+	})
+}
+
+// reasoning.mode ("standard" | "pro") is an OpenAI Responses-only knob that chat
+// callers send inside the reasoning object, next to effort.
+func TestChatParametersReasoningMode(t *testing.T) {
+	var cp ChatParameters
+	if err := Unmarshal([]byte(`{"reasoning":{"effort":"high","mode":"pro"}}`), &cp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if cp.Reasoning == nil || cp.Reasoning.Mode == nil || *cp.Reasoning.Mode != "pro" {
+		t.Fatalf("reasoning.mode should decode, got %+v", cp.Reasoning)
+	}
+	if cp.Reasoning.Effort == nil || *cp.Reasoning.Effort != "high" {
+		t.Fatalf("reasoning.effort should decode alongside mode, got %+v", cp.Reasoning)
+	}
+}
+
+func TestBifrostLLMUsageNormalizeReasoningTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want *int
+	}{
+		{"sgl top-level", `{"completion_tokens":300,"reasoning_tokens":180}`, Ptr(180)},
+		{"openai nested", `{"completion_tokens":300,"completion_tokens_details":{"reasoning_tokens":180}}`, Ptr(180)},
+		{"nested wins over top-level", `{"completion_tokens_details":{"reasoning_tokens":180},"reasoning_tokens":7}`, Ptr(180)},
+		{"zero top-level leaves details nil", `{"completion_tokens":300,"reasoning_tokens":0}`, nil},
+		{"absent", `{"completion_tokens":300}`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var u BifrostLLMUsage
+			if err := Unmarshal([]byte(tc.in), &u); err != nil {
+				t.Fatal(err)
+			}
+			u.NormalizeReasoningTokens()
+			if u.ReasoningTokens != 0 {
+				t.Fatalf("expected top-level reasoning_tokens cleared, got %d", u.ReasoningTokens)
+			}
+			if tc.want == nil {
+				if u.CompletionTokensDetails != nil {
+					t.Fatalf("expected nil completion_tokens_details, got %+v", u.CompletionTokensDetails)
+				}
+				return
+			}
+			if u.CompletionTokensDetails == nil || u.CompletionTokensDetails.ReasoningTokens != *tc.want {
+				t.Fatalf("expected reasoning_tokens=%d, got %+v", *tc.want, u.CompletionTokensDetails)
+			}
+		})
+	}
+	var nilUsage *BifrostLLMUsage
+	nilUsage.NormalizeReasoningTokens()
+}
+
+func BenchmarkBifrostLLMUsageUnmarshal(b *testing.B) {
+	cases := map[string][]byte{
+		"openai": []byte(`{"prompt_tokens":1200,"completion_tokens":300,"total_tokens":1500,"prompt_tokens_details":{"cached_tokens":1024,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":180,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}`),
+		"sgl":    []byte(`{"prompt_tokens":1200,"completion_tokens":300,"total_tokens":1500,"prompt_tokens_details":{"cached_tokens":1024},"reasoning_tokens":180}`),
+	}
+	for name, data := range cases {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				var u BifrostLLMUsage
+				if err := Unmarshal(data, &u); err != nil {
+					b.Fatal(err)
+				}
+				u.NormalizeReasoningTokens()
+			}
+		})
+	}
+}

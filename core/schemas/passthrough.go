@@ -5,6 +5,7 @@ type BifrostPassthroughRequest struct {
 	Model       string        // model extracted from path or body, used for key selection when non-empty
 	Method      string
 	Path        string // stripped path, e.g. "/v1/fine-tuning/jobs"
+	APIVersion  string // version segment stripped with the route prefix, e.g. "v1beta1"; empty when none
 	RawQuery    string // raw query string, no "?"
 	UpstreamURL string // optional base URL override for host-backed passthrough routes
 	Body        []byte
@@ -17,7 +18,7 @@ type BifrostPassthroughRequest struct {
 type BifrostPassthroughUsage struct {
 	// Text / chat / responses / embeddings
 	LLMUsage     *BifrostLLMUsage
-	ServiceTier  *BifrostServiceTier // Served tier, e.g. "priority", "flex", or "ultrafast".
+	ServiceTier  *BifrostServiceTier // Served tier, e.g. "priority", "fast", "flex", or "ultrafast".
 	Speed        *string             // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
 	InferenceGeo *string             // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
 
@@ -62,4 +63,10 @@ type PassthroughLogParams struct {
 	RawQuery   string `json:"raw_query"` // raw query string, no "?"
 	StatusCode int    `json:"status_code"`
 	Model      string `json:"model,omitempty"` // model extracted from path or request body
+
+	ParsedType   RequestType   `json:"parsed_type,omitempty"`   // typed request kind the bodies were parsed as, e.g. "chat_completion"
+	BaseProvider ModelProvider `json:"base_provider,omitempty"` // wire format of a custom provider, when it differs from the row's provider
+	ModelParams  interface{}   `json:"model_params,omitempty"`  // model parameters parsed from the request body
+
+	MultipartSummary bool `json:"multipart_summary,omitempty"` // request body logged as its form fields and file sizes, not raw
 }

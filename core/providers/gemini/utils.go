@@ -77,29 +77,6 @@ func defaultEffortControl(model string) *schemas.EffortControl {
 	return &schemas.EffortControl{Levels: supportedThinkingLevels(model)}
 }
 
-// geminiBudgetRanges are the published thinking-budget limits. Longest prefix
-// first, since "gemini-2.5-flash" also prefixes "gemini-2.5-flash-lite".
-var geminiBudgetRanges = []struct {
-	prefix   string
-	min, max int
-}{
-	{"gemini-2.5-flash-lite", 512, 24576},
-	{"gemini-2.5-pro", 128, 32768},
-	{"gemini-2.5-flash", 0, 24576},
-}
-
-// defaultBudgetControl returns the published thinking-budget range, or nil when
-// the model publishes none and validation should be skipped.
-func defaultBudgetControl(model string) *schemas.BudgetControl {
-	modelLower := strings.ToLower(model)
-	for _, entry := range geminiBudgetRanges {
-		if strings.Contains(modelLower, entry.prefix) {
-			return &schemas.BudgetControl{Min: new(entry.min), Max: new(entry.max)}
-		}
-	}
-	return nil
-}
-
 // NormalizeRawGenerateContentRequestForCompatibility applies the same
 // provider-compatibility cleanup expected by the typed conversion path, while
 // preserving JSON key order with gjson/sjson-style byte edits.
@@ -108,10 +85,12 @@ func NormalizeRawGenerateContentRequestForCompatibility(jsonBody []byte) []byte 
 		return jsonBody
 	}
 
+	// responseLogprobs/logprobs are forwarded as sent, as the typed path does: Google
+	// validates the range and returns logprobsResult. The penalties are still stripped:
+	// the typed path lets compat's drop-params remove them per model from the catalog,
+	// and this raw path has no such check. "fallbacks" is Bifrost's own key.
 	out := jsonBody
 	for _, path := range []string{
-		"generationConfig.responseLogprobs",
-		"generationConfig.logprobs",
 		"generationConfig.presencePenalty",
 		"generationConfig.frequencyPenalty",
 		"fallbacks",
@@ -339,7 +318,7 @@ func effortToThinkingLevel(caps schemas.ModelCaps, effort string) string {
 }
 
 func getThinkingBudgetRange(caps schemas.ModelCaps, defaultMaxTokens int) thinkingBudgetRange {
-	min, max, _ := caps.ReasoningBudgetRange(defaultMaxTokens, defaultBudgetControl(caps.Model()))
+	min, max, _ := caps.ReasoningBudgetRange(defaultMaxTokens, providerUtils.KnownGeminiReasoningBudget(caps.Model()))
 	return thinkingBudgetRange{Min: min, Max: max}
 }
 
@@ -360,7 +339,7 @@ func validateThinkingBudget(caps schemas.ModelCaps, budget int) error {
 	if budget < 0 {
 		return fmt.Errorf("thinking budget %d is invalid; only 0 and -1 are supported special values", budget)
 	}
-	min, max, ok := caps.ReasoningBudgetRange(0, defaultBudgetControl(caps.Model()))
+	min, max, ok := caps.ReasoningBudgetRange(0, providerUtils.KnownGeminiReasoningBudget(caps.Model()))
 	if !ok {
 		return nil // skip validation
 	}
@@ -881,6 +860,24 @@ func geminiResponsesStatus(stopReason string) (*string, *schemas.ResponsesRespon
 		return schemas.Ptr(schemas.ResponsesResponseStatusIncomplete), nil
 	}
 	return &status, details
+}
+
+// promptBlockError returns the Responses error for a prompt Gemini refused before generating
+// (promptFeedback.blockReason set, no candidates), or nil when the prompt was not blocked.
+// invalid_prompt is OpenAI's ResponseError code for a refused prompt.
+func (response *GenerateContentResponse) promptBlockError() *schemas.ResponsesResponseError {
+	feedback := response.PromptFeedback
+	if feedback == nil || len(response.Candidates) > 0 || feedback.BlockReason == "" || feedback.BlockReason == "BLOCK_REASON_UNSPECIFIED" {
+		return nil
+	}
+	message := feedback.BlockReasonMessage
+	if message == "" {
+		message = feedback.BlockReason
+	}
+	return &schemas.ResponsesResponseError{
+		Code:    "invalid_prompt",
+		Message: message,
+	}
 }
 
 // ConvertBifrostFinishReasonToGemini converts Bifrost canonical finish reasons back to Gemini format.
@@ -1431,18 +1428,26 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			config.Logprobs = schemas.Ptr(int32(topLogProbs))
 		}
 	}
-	// Gemini 2.5 and earlier reject function declarations sent together with
-	// responseMimeType "application/json" (structured output / JSON mode). That
-	// pairing is only supported on Gemini 3.x. Keep function calling working by
-	// dropping the JSON response-format hint for older models.
-	// Docs: https://ai.google.dev/gemini-api/docs/structured-output
-	if len(params.Tools) > 0 &&
-		config.ResponseMIMEType == "application/json" &&
-		!caps.SupportsResponseSchemaWithTools(isGemini3Plus(model)) {
-		config.ResponseMIMEType = ""
-		config.ResponseJSONSchema = nil
-	}
+	dropJSONResponseFormatWithToolsIfUnsupported(&config, len(params.Tools) > 0, caps, model)
 	return config, nil
+}
+
+// dropJSONResponseFormatWithToolsIfUnsupported clears the JSON response format when
+// tools ride along on a model that cannot combine them. Gemini 2.5 and earlier reject
+// function declarations sent together with responseMimeType "application/json"
+// (structured output / JSON mode); the pairing is only supported on Gemini 3.x. Function
+// calling is kept working by dropping the JSON response-format hint for older models.
+// Shared by the chat and Responses converters so the two paths cannot drift.
+// Docs: https://ai.google.dev/gemini-api/docs/structured-output
+func dropJSONResponseFormatWithToolsIfUnsupported(config *GenerationConfig, hasTools bool, caps schemas.ModelCaps, model string) {
+	if !hasTools || config.ResponseMIMEType != "application/json" {
+		return
+	}
+	if caps.SupportsResponseSchemaWithTools(isGemini3Plus(model)) {
+		return
+	}
+	config.ResponseMIMEType = ""
+	config.ResponseJSONSchema = nil
 }
 
 // mapBifrostServiceTierToGemini converts a BifrostServiceTier to a Gemini ServiceTier.
@@ -3366,4 +3371,8 @@ func resultNeedsGeminiNormalization(result gjson.Result) bool {
 		})
 	}
 	return needs
+}
+
+func ptrEqual[T comparable](a, b *T) bool {
+	return a == b || (a != nil && b != nil && *a == *b)
 }

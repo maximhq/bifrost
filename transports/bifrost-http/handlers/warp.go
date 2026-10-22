@@ -19,7 +19,7 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -65,6 +65,10 @@ type WarpResolvers struct {
 	// UserGovernance answers what governs one person's spend. Nil leaves
 	// describe_user_limits out of Warp's tool set.
 	UserGovernance warp.UserGovernanceReader
+	// CallerRestriction reports whether row-level access control narrows the
+	// caller's reads. Nil leaves Warp reading that off the request's own
+	// query scope, which is all an OSS deployment has.
+	CallerRestriction warp.CallerRestrictionResolver
 }
 
 // warpVirtualKeyDecorator builds the overlay describe_virtual_key applies to a
@@ -133,6 +137,9 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 	}
 	if resolvers.UserGovernance != nil {
 		opts = append(opts, warp.WithUserGovernanceReader(resolvers.UserGovernance))
+	}
+	if resolvers.CallerRestriction != nil {
+		opts = append(opts, warp.WithCallerRestrictionResolver(resolvers.CallerRestriction))
 	}
 	if client != nil {
 		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest), warp.WithResponsesExecutor(client.ResponsesRequest))

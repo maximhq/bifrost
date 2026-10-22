@@ -2,6 +2,8 @@
 export { baseApi, clearAuthStorage, getErrorCode, getErrorMessage, setAuthToken } from "./baseApi";
 
 // API slices and hooks
+export * from "./agentLogsApi";
+export * from "./agentsApi";
 export * from "./brandingApi";
 export * from "./configApi";
 export * from "./featureFlagsApi";
@@ -13,6 +15,8 @@ export * from "./mcpLogsApi";
 export * from "./mcpPerUserHeadersApi";
 export * from "./mcpSessionsApi";
 export * from "./notificationsApi";
+export * from "./rssFeedsApi";
+export * from "./sidekiqApi";
 export * from "./oauth2ConsentApi";
 export * from "./warpApi";
 export * from "./oauth2SessionsApi";

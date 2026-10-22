@@ -13,7 +13,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1065,6 +1065,7 @@ func NewCursorRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, acc
 
 	// Add OpenAI list models route for /cursor/v1/models
 	routes = append(routes, CreateOpenAIListModelsRouteConfigs("/cursor", handlerStore)...)
+	routes = append(routes, CreateOpenAIModelRetrieveRouteConfigs("/cursor", handlerStore)...)
 
 	// Add Anthropic routes for /cursor/anthropic/...
 	routes = append(routes, CreateAnthropicRouteConfigs("/cursor", logger)...)

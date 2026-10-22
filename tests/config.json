@@ -1,6 +1,10 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "bifrost-e2e-setup-token",
   "mcp": {
+    "tool_manager_config": {
+      "oauth_private_allowlist": ["localhost", "127.0.0.1", "::1"]
+    },
     "client_configs": [
       {
         "name": "sse_mcp",
@@ -53,6 +57,22 @@
           "weight": 1,
           "models": ["*"],
           "use_for_batch_api": false
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "cloudflare": {
+      "keys": [
+        {
+          "name": "Cloudflare API Key",
+          "value": "env.CLOUDFLARE_API_TOKEN",
+          "weight": 1,
+          "models": ["*"],
+          "cloudflare_key_config": {
+            "account_id": "env.CLOUDFLARE_ACCOUNT_ID"
+          }
         }
       ],
       "network_config": {

@@ -1,6 +1,9 @@
 import { Locator, Page, expect } from "@playwright/test";
 import { BasePage } from "../../../core/pages/base.page";
-import { fillSelect, waitForNetworkIdle } from "../../../core/utils/test-helpers";
+import {
+  fillSelect,
+  waitForNetworkIdle,
+} from "../../../core/utils/test-helpers";
 
 /**
  * Provider display names mapping - matches the UI's ProviderLabels
@@ -85,6 +88,10 @@ export interface VirtualKeyConfig {
   expiryPreset?: "Never" | "30 min" | "1 hour" | "24 hours" | "7 days";
   /** Only meaningful with an expiry; the checkbox is hidden otherwise. */
   deleteAfterExpire?: boolean;
+  /** Metadata entries to add (create) or set (edit: an existing key's value is replaced). */
+  metadata?: Record<string, string>;
+  /** Edit only: metadata keys to remove. */
+  removeMetadataKeys?: string[];
 }
 
 /**
@@ -102,6 +109,7 @@ export class VirtualKeysPage extends BasePage {
   readonly descriptionInput: Locator;
   readonly isActiveToggle: Locator;
   readonly contentLoggingSelect: Locator;
+  readonly metadataSection: Locator;
   readonly deleteAfterExpireCheckbox: Locator;
   readonly providerSelect: Locator;
   readonly saveBtn: Locator;
@@ -121,6 +129,7 @@ export class VirtualKeysPage extends BasePage {
     this.descriptionInput = page.getByTestId("vk-description-input");
     this.isActiveToggle = page.getByTestId("vk-is-active-toggle");
     this.contentLoggingSelect = page.getByTestId("vk-content-logging-select");
+    this.metadataSection = page.getByTestId("vk-metadata-section");
     this.deleteAfterExpireCheckbox = page.getByTestId("vk-delete-after-expire");
     this.providerSelect = page.getByTestId("vk-provider-select");
     this.saveBtn = page.getByTestId("vk-save-btn");
@@ -184,7 +193,7 @@ export class VirtualKeysPage extends BasePage {
   /**
    * Open the row actions dropdown and click Edit.
    */
-  private async openVirtualKeyEditor(name: string): Promise<void> {
+  protected async openVirtualKeyEditor(name: string): Promise<void> {
     await this.searchVirtualKeys(name);
 
     const row = this.getVirtualKeyRow(name);
@@ -218,18 +227,17 @@ export class VirtualKeysPage extends BasePage {
       await this.page.keyboard.press("Escape");
       await expect(this.sheet).not.toBeVisible({ timeout: 5000 });
     }
-
-    await expect(this.page.locator("html"))
-      .not.toHaveClass(/bprogress-busy/, { timeout: 10000 })
-      .catch(() => {});
   }
 
   private async preserveBudgetUsageIfPrompted(): Promise<void> {
     const dialog = this.page.getByTestId("vk-budget-reset-dialog");
-    const isVisible = await dialog.waitFor({ state: 'visible', timeout: 1000 }).then(() => true).catch(() => false);
+    const isVisible = await dialog
+      .waitFor({ state: "visible", timeout: 1000 })
+      .then(() => true)
+      .catch(() => false);
     if (!isVisible) return;
     await this.page.getByTestId("vk-budget-reset-preserve-btn").click();
-    await dialog.waitFor({ state: 'hidden', timeout: 3000 })
+    await dialog.waitFor({ state: "hidden", timeout: 3000 });
   }
 
   /**
@@ -283,6 +291,9 @@ export class VirtualKeysPage extends BasePage {
     if (config.contentLogging && config.contentLogging !== "inherit") {
       await this.setContentLogging(config.contentLogging);
     }
+    if (config.metadata) {
+      await this.setMetadata(config.metadata);
+    }
     await this.setExpiry(config.expiryPreset, config.deleteAfterExpire);
 
     // Add provider configurations
@@ -304,7 +315,11 @@ export class VirtualKeysPage extends BasePage {
 
     // Set entity assignment if specified
     if (config.entityType && config.entityType !== "none") {
-      await this.setEntityAssignment(config.entityType, config.teamId, config.customerId);
+      await this.setEntityAssignment(
+        config.entityType,
+        config.teamId,
+        config.customerId,
+      );
     }
 
     await expect(this.saveBtn).toBeEnabled({ timeout: 10000 });
@@ -335,10 +350,14 @@ export class VirtualKeysPage extends BasePage {
     await this.page.waitForSelector('[role="listbox"]', { timeout: 5000 });
 
     // Get display name - use mapping for known providers, otherwise use exact name
-    const displayName = PROVIDER_DISPLAY_NAMES[config.provider.toLowerCase()] || config.provider;
+    const displayName =
+      PROVIDER_DISPLAY_NAMES[config.provider.toLowerCase()] || config.provider;
 
     // First try exact match for base providers (e.g., "OpenAI", "Anthropic")
-    let option = this.page.getByRole("option", { name: displayName, exact: true });
+    let option = this.page.getByRole("option", {
+      name: displayName,
+      exact: true,
+    });
 
     if ((await option.count()) === 0) {
       // Fallback: try partial match for custom providers (contains provider name)
@@ -362,7 +381,10 @@ export class VirtualKeysPage extends BasePage {
     await option.click();
 
     // Wait for dropdown to close after selection
-    await this.page.waitForSelector('[role="listbox"]', { state: "hidden", timeout: 5000 });
+    await this.page.waitForSelector('[role="listbox"]', {
+      state: "hidden",
+      timeout: 5000,
+    });
   }
 
   /**
@@ -379,9 +401,15 @@ export class VirtualKeysPage extends BasePage {
       await amountInput.fill(String(budget.maxLimit));
       // Select reset period if specified
       if (budget.resetDuration) {
-        await this.page.getByTestId(`vk-budget-lines-line-${i}`).getByRole("combobox").click();
         await this.page
-          .getByRole("option", { name: this.resetDurationLabel(budget.resetDuration), exact: true })
+          .getByTestId(`vk-budget-lines-line-${i}`)
+          .getByRole("combobox")
+          .click();
+        await this.page
+          .getByRole("option", {
+            name: this.resetDurationLabel(budget.resetDuration),
+            exact: true,
+          })
           .click();
       }
     }
@@ -428,7 +456,9 @@ export class VirtualKeysPage extends BasePage {
     customerId?: string,
   ): Promise<void> {
     // Find and click entity type select
-    const entityTypeSelect = this.page.locator('[data-testid="vk-entity-type-select"]');
+    const entityTypeSelect = this.page.locator(
+      '[data-testid="vk-entity-type-select"]',
+    );
     if (await entityTypeSelect.isVisible()) {
       await fillSelect(
         this.page,
@@ -443,9 +473,15 @@ export class VirtualKeysPage extends BasePage {
           await fillSelect(this.page, '[data-testid="vk-team-select"]', teamId);
         }
       } else if (entityType === "customer" && customerId) {
-        const customerSelect = this.page.locator('[data-testid="vk-customer-select"]');
+        const customerSelect = this.page.locator(
+          '[data-testid="vk-customer-select"]',
+        );
         if (await customerSelect.isVisible()) {
-          await fillSelect(this.page, '[data-testid="vk-customer-select"]', customerId);
+          await fillSelect(
+            this.page,
+            '[data-testid="vk-customer-select"]',
+            customerId,
+          );
         }
       }
     }
@@ -454,7 +490,10 @@ export class VirtualKeysPage extends BasePage {
   /**
    * Edit an existing virtual key
    */
-  async editVirtualKey(name: string, updates: Partial<VirtualKeyConfig>): Promise<void> {
+  async editVirtualKey(
+    name: string,
+    updates: Partial<VirtualKeyConfig>,
+  ): Promise<void> {
     // Wait for any existing toasts to disappear
     await this.forceCloseToasts();
     await this.openVirtualKeyEditor(name);
@@ -487,6 +526,13 @@ export class VirtualKeysPage extends BasePage {
       await this.setContentLogging(updates.contentLogging);
     }
 
+    for (const key of updates.removeMetadataKeys ?? []) {
+      await this.removeMetadataEntry(key);
+    }
+    if (updates.metadata) {
+      await this.setMetadata(updates.metadata);
+    }
+
     if (updates.budgets && updates.budgets.length > 0) {
       await this.setBudgets(updates.budgets);
     }
@@ -510,25 +556,40 @@ export class VirtualKeysPage extends BasePage {
       await this.goto();
     }
     await this.searchVirtualKeys(targetName);
-    await expect(this.getVirtualKeyRow(targetName)).toBeVisible({ timeout: 10000 });
+    await expect(this.getVirtualKeyRow(targetName)).toBeVisible({
+      timeout: 10000,
+    });
   }
 
   /**
    * Pick an expiry preset and, when an expiry is set, the delete-after-expire checkbox.
    * Either argument may be omitted to leave that control untouched.
    */
-  private async setExpiry(preset?: VirtualKeyConfig["expiryPreset"], deleteAfterExpire?: boolean): Promise<void> {
+  private async setExpiry(
+    preset?: VirtualKeyConfig["expiryPreset"],
+    deleteAfterExpire?: boolean,
+  ): Promise<void> {
     if (preset) {
-      const testId = preset === "Never" ? "vk-expiry-never" : `vk-expiry-preset-${preset.replace(/\s+/g, "-")}`;
+      const testId =
+        preset === "Never"
+          ? "vk-expiry-never"
+          : `vk-expiry-preset-${preset.replace(/\s+/g, "-")}`;
       await this.page.getByTestId(testId).click();
     }
     if (deleteAfterExpire !== undefined) {
       // Without an expiry the switch is hidden and the key cannot delete after expire, so false holds.
-      if (!deleteAfterExpire && !(await this.deleteAfterExpireCheckbox.isVisible())) {
+      if (
+        !deleteAfterExpire &&
+        !(await this.deleteAfterExpireCheckbox.isVisible())
+      ) {
         return;
       }
-      await expect(this.deleteAfterExpireCheckbox).toBeVisible({ timeout: 5000 });
-      const isChecked = (await this.deleteAfterExpireCheckbox.getAttribute("data-state")) === "checked";
+      await expect(this.deleteAfterExpireCheckbox).toBeVisible({
+        timeout: 5000,
+      });
+      const isChecked =
+        (await this.deleteAfterExpireCheckbox.getAttribute("data-state")) ===
+        "checked";
       if (isChecked !== deleteAfterExpire) {
         await this.deleteAfterExpireCheckbox.click();
       }
@@ -539,7 +600,10 @@ export class VirtualKeysPage extends BasePage {
    * Poll until the virtual key row disappears from the table (e.g. after delete or refetch).
    * Polls so we don't rely on a stale locator.
    */
-  async waitForVirtualKeyGone(name: string, timeoutMs: number): Promise<boolean> {
+  async waitForVirtualKeyGone(
+    name: string,
+    timeoutMs: number,
+  ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if ((await this.getVirtualKeyRow(name).count()) === 0) return true;
@@ -548,7 +612,10 @@ export class VirtualKeysPage extends BasePage {
     return false;
   }
 
-  async deleteVirtualKey(name: string, options?: { requireToast?: boolean }): Promise<void> {
+  async deleteVirtualKey(
+    name: string,
+    options?: { requireToast?: boolean },
+  ): Promise<void> {
     // Check if virtual key exists first
     const exists = await this.virtualKeyExists(name);
     if (!exists) {
@@ -647,9 +714,18 @@ export class VirtualKeysPage extends BasePage {
   /**
    * Pick the key's content-logging choice in the open sheet
    */
-  async setContentLogging(choice: "inherit" | "disabled" | "enabled"): Promise<void> {
-    await this.contentLoggingSelect.click();
-    await this.page.getByTestId(`vk-content-logging-option-${choice}`).click();
+  async setContentLogging(
+    choice: "inherit" | "disabled" | "enabled",
+  ): Promise<void> {
+    const option = this.page.getByTestId(`vk-content-logging-option-${choice}`);
+    // The menu can close again while the sheet settles, leaving the option
+    // mid-exit-animation; reopen it until the pick lands.
+    await expect(async () => {
+      if (!(await option.isVisible())) {
+        await this.contentLoggingSelect.click();
+      }
+      await option.click({ timeout: 2000 });
+    }).toPass({ timeout: 10000 });
   }
 
   /**
@@ -660,6 +736,62 @@ export class VirtualKeysPage extends BasePage {
     if (text.includes("Off for this key")) return "disabled";
     if (text.includes("On for this key")) return "enabled";
     return "inherit";
+  }
+
+  /**
+   * Find the metadata table row whose key input holds `key`, or -1.
+   */
+  private async findMetadataRow(key: string): Promise<number> {
+    const keyInputs = this.metadataSection.locator('input[data-column="key"]');
+    const count = await keyInputs.count();
+    for (let i = 0; i < count; i++) {
+      if ((await keyInputs.nth(i).inputValue()) === key) return i;
+    }
+    return -1;
+  }
+
+  /**
+   * Set metadata entries in the open sheet. An existing key gets its value replaced; a new key is
+   * typed into the table's trailing empty row, which the table replaces with a fresh one.
+   */
+  async setMetadata(entries: Record<string, string>): Promise<void> {
+    await this.metadataSection.scrollIntoViewIfNeeded();
+    for (const [key, value] of Object.entries(entries)) {
+      let row = await this.findMetadataRow(key);
+      if (row === -1) {
+        const keyInputs = this.metadataSection.locator('input[data-column="key"]');
+        row = (await keyInputs.count()) - 1;
+        await keyInputs.nth(row).fill(key);
+      }
+      const valueInput = this.metadataSection.locator('input[data-column="value"]').nth(row);
+      await valueInput.fill(value);
+      await expect(valueInput).toHaveValue(value);
+    }
+  }
+
+  /**
+   * Remove one metadata entry from the open sheet by its key.
+   */
+  async removeMetadataEntry(key: string): Promise<void> {
+    const row = await this.findMetadataRow(key);
+    expect(row, `metadata key ${key} should be in the sheet`).toBeGreaterThanOrEqual(0);
+    await this.metadataSection.locator("tbody tr").nth(row).getByRole("button").click();
+    await expect.poll(() => this.findMetadataRow(key)).toBe(-1);
+  }
+
+  /**
+   * Read the metadata entries shown in the open sheet.
+   */
+  async getMetadata(): Promise<Record<string, string>> {
+    const keyInputs = this.metadataSection.locator('input[data-column="key"]');
+    const valueInputs = this.metadataSection.locator('input[data-column="value"]');
+    const result: Record<string, string> = {};
+    const count = await keyInputs.count();
+    for (let i = 0; i < count; i++) {
+      const key = await keyInputs.nth(i).inputValue();
+      if (key) result[key] = await valueInputs.nth(i).inputValue();
+    }
+    return result;
   }
 
   /**
@@ -704,103 +836,6 @@ export class VirtualKeysPage extends BasePage {
     await toggleBtn.waitFor({ state: "attached", timeout: 10000 });
     await toggleBtn.scrollIntoViewIfNeeded();
     await toggleBtn.click();
-  }
-
-  /**
-   * Reveal and read the displayed virtual key value from the table.
-   */
-  async getDisplayedVirtualKeyValue(name: string): Promise<string> {
-    await this.searchVirtualKeys(name);
-    const row = this.getVirtualKeyRow(name);
-    await expect(row).toBeVisible({ timeout: 10000 });
-    await row.scrollIntoViewIfNeeded();
-
-    if (!(await this.isKeyRevealed(name))) {
-      await this.toggleKeyVisibility(name);
-      await expect(row.getByTestId("vk-key-value")).not.toContainText("•", { timeout: 5000 });
-    }
-
-    return ((await row.getByTestId("vk-key-value").textContent()) ?? "").trim();
-  }
-
-  async waitForVirtualKeyValueToChange(name: string, oldValue: string): Promise<string> {
-    const deadline = Date.now() + 20000;
-    let currentValue = oldValue;
-
-    while (Date.now() < deadline) {
-      await this.page.waitForTimeout(500);
-      currentValue = await this.getDisplayedVirtualKeyValue(name);
-      if (currentValue && currentValue !== oldValue) {
-        return currentValue;
-      }
-    }
-
-    throw new Error(`Virtual key "${name}" value did not change after rotation`);
-  }
-
-  async rotateVirtualKey(name: string): Promise<void> {
-    await this.forceCloseToasts();
-    await this.openVirtualKeyEditor(name);
-
-    const rotateBtn = this.page.getByTestId("vk-rotate-btn");
-    await rotateBtn.waitFor({ state: "visible", timeout: 10000 });
-    await rotateBtn.click();
-
-    const confirmBtn = this.page.getByTestId("vk-rotate-confirm-btn");
-    await confirmBtn.waitFor({ state: "visible", timeout: 5000 });
-    await confirmBtn.click();
-
-    await this.waitForSuccessToast("rotated");
-    await this.closeSheet();
-    await this.goto();
-    await this.searchVirtualKeys(name);
-  }
-
-  async cancelRotateVirtualKey(name: string): Promise<void> {
-    await this.forceCloseToasts();
-    await this.openVirtualKeyEditor(name);
-
-    const rotateBtn = this.page.getByTestId("vk-rotate-btn");
-    await rotateBtn.waitFor({ state: "visible", timeout: 10000 });
-    await rotateBtn.click();
-
-    const cancelBtn = this.page.getByTestId("vk-rotate-cancel-btn");
-    await cancelBtn.waitFor({ state: "visible", timeout: 5000 });
-    await cancelBtn.click();
-    await expect(cancelBtn).not.toBeVisible({ timeout: 5000 }).catch(() => {});
-
-    await this.closeSheet();
-    await this.goto();
-    await this.searchVirtualKeys(name);
-  }
-
-  async selectVirtualKey(name: string): Promise<void> {
-    await this.searchVirtualKeys(name);
-    const row = this.getVirtualKeyRow(name);
-    await expect(row).toBeVisible({ timeout: 10000 });
-    const checkbox = this.page.getByTestId(`vk-select-checkbox-${name}`);
-    await checkbox.scrollIntoViewIfNeeded();
-    if ((await checkbox.getAttribute("data-state")) !== "checked") {
-      await checkbox.click();
-    }
-  }
-
-  async bulkRotateVirtualKeys(names: string[]): Promise<void> {
-    await this.forceCloseToasts();
-    for (const name of names) {
-      await this.selectVirtualKey(name);
-    }
-
-    const rotateBtn = this.page.getByTestId("vk-bulk-rotate-btn");
-    await rotateBtn.waitFor({ state: "visible", timeout: 10000 });
-    await rotateBtn.click();
-
-    const confirmBtn = this.page.getByTestId("vk-bulk-rotate-confirm-btn");
-    await confirmBtn.waitFor({ state: "visible", timeout: 5000 });
-    await confirmBtn.click();
-
-    await this.waitForSuccessToast("Rotated");
-    await this.goto();
   }
 
   /**
@@ -891,7 +926,8 @@ export class VirtualKeysPage extends BasePage {
         } catch (error) {
           // If delete fails, try to close sheet and continue
           await this.closeSheet();
-          const errorMsg = error instanceof Error ? error.message : String(error);
+          const errorMsg =
+            error instanceof Error ? error.message : String(error);
           console.log(`Failed to delete virtual key: ${name} - ${errorMsg}`);
           // Continue with next VK
         }
@@ -923,7 +959,9 @@ export class VirtualKeysPage extends BasePage {
     await this.goto();
     await this.closeSheet();
     await this.dismissToasts().catch(() => {});
-    await this.table.waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
+    await this.table
+      .waitFor({ state: "visible", timeout: 10000 })
+      .catch(() => {});
 
     for (const name of names) {
       const tryDelete = async (): Promise<void> => {
@@ -937,14 +975,21 @@ export class VirtualKeysPage extends BasePage {
         await tryDelete();
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        console.error(`[CLEANUP ERROR] Failed to delete virtual key: ${name} - ${errorMsg}`);
+        console.error(
+          `[CLEANUP ERROR] Failed to delete virtual key: ${name} - ${errorMsg}`,
+        );
         await this.closeSheet();
         await this.page.waitForTimeout(1000);
         try {
           await tryDelete();
         } catch (retryError) {
-          const retryMsg = retryError instanceof Error ? retryError.message : String(retryError);
-          console.error(`[CLEANUP ERROR] Retry failed for virtual key: ${name} - ${retryMsg}`);
+          const retryMsg =
+            retryError instanceof Error
+              ? retryError.message
+              : String(retryError);
+          console.error(
+            `[CLEANUP ERROR] Retry failed for virtual key: ${name} - ${retryMsg}`,
+          );
         }
       }
     }

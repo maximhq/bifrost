@@ -356,6 +356,34 @@ func TestConfigureDialer_SSRFProxyBypass(t *testing.T) {
 	}
 }
 
+// TestConfigureDialer_ProxyBypassSkipsDialTimeoutCallback pins that a no_proxy bypass
+// (errBypassProxy from the proxy dialer) connects through the checked direct-dial path,
+// even when the client also has a DialTimeout callback. The callback carries no IP
+// checks, so taking it would let a bypassed target reach private, link-local or
+// unspecified addresses.
+func TestConfigureDialer_ProxyBypassSkipsDialTimeoutCallback(t *testing.T) {
+	for _, addr := range []string{"10.0.0.1:80", "169.254.169.254:80", "0.0.0.0:80"} {
+		t.Run(addr, func(t *testing.T) {
+			var timeoutCalls atomic.Int32
+			client := &fasthttp.Client{ReadTimeout: time.Second}
+			client.Dial = func(string) (net.Conn, error) { return nil, errBypassProxy }
+			client.DialTimeout = func(addr string, _ time.Duration) (net.Conn, error) {
+				timeoutCalls.Add(1)
+				return nil, fmt.Errorf("unchecked dial to %s", addr)
+			}
+			ConfigureDialer(client, false)
+
+			_, err := client.Dial(addr)
+			if err == nil || !strings.Contains(err.Error(), "is not allowed") {
+				t.Fatalf("expected the bypassed target to be refused by the IP checks, got %v", err)
+			}
+			if n := timeoutCalls.Load(); n != 0 {
+				t.Fatalf("the DialTimeout callback was used %d times for a bypassed target", n)
+			}
+		})
+	}
+}
+
 // TestConfigureDialer_SSRFZeroTimeout verifies that SSRF protection is active
 // even when ReadTimeout is 0 (context.Background() is used instead of WithTimeout).
 func TestConfigureDialer_SSRFZeroTimeout(t *testing.T) {

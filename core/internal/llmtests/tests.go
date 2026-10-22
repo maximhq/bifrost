@@ -57,6 +57,7 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunTranscriptionStreamTest,
 		RunTranscriptionStreamAdvancedTest,
 		RunEmbeddingTest,
+		RunMultimodalEmbeddingTest,
 		RunRerankTest,
 		RunDecisionTest,
 		RunDecisionEmulationTest,
@@ -127,6 +128,7 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunFastModeTest,
 		RunEagerInputStreamingTest,
 		RunServerToolsViaOpenAIEndpointTest,
+		RunWebSearchViaChatCompletionsTest,
 	}
 
 	// Execute all test scenarios without raw request/response (default behavior)
@@ -179,6 +181,7 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"Transcription", testConfig.Scenarios.Transcription},
 		{"TranscriptionStream", testConfig.Scenarios.TranscriptionStream},
 		{"Embedding", testConfig.Scenarios.Embedding && testConfig.EmbeddingModel != ""},
+		{"MultimodalEmbedding", testConfig.Scenarios.MultimodalEmbedding && strings.TrimSpace(testConfig.MultimodalEmbeddingModel) != ""},
 		{"Rerank", testConfig.Scenarios.Rerank && testConfig.RerankModel != ""},
 		{"Decision", testConfig.Scenarios.Decision && testConfig.DecisionModel != ""},
 		{"DecisionEmulation", testConfig.Scenarios.DecisionEmulation && testConfig.DecisionEmulationModel != ""},

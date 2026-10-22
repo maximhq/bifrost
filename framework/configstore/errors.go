@@ -9,6 +9,15 @@ import (
 var ErrNotFound = errors.New("not found")
 var ErrAlreadyExists = errors.New("already exists")
 
+// ErrRoutingRulePriorityTaken is returned when a routing rule's priority is already used by another
+// rule in the same scope and scope ID. It wraps ErrAlreadyExists and reads the same, so callers that
+// only ask whether something already exists are unaffected; callers that advise changing the
+// priority check for it, since a duplicate name surfaces as ErrAlreadyExists too.
+var ErrRoutingRulePriorityTaken = fmt.Errorf("%w", ErrAlreadyExists)
+
+// ErrInvalidAgentGrant marks malformed Agent grant input supplied by a caller.
+var ErrInvalidAgentGrant = errors.New("invalid agent grant")
+
 // ErrMCPEndpointSlugExists is returned when a create resolves an endpoint slug already used by a
 // Virtual MCP or an MCP client. Both serve at /mcp/<slug>, so the slug namespace is shared; callers
 // answer with a clear message and a 409. (Name uniqueness is left to each table's own unique index

@@ -1,6 +1,7 @@
 import { IDLE_WARP_STREAM, type WarpStreamSnapshot } from "@/components/warp/warpStreamSession";
 import type { WarpQuestion } from "@/components/warp/warpStream.utils";
 import { useWarp, type WarpTurn, type WarpTurnToolCall } from "@/lib/contexts/warpContext";
+import type { WarpModel } from "@/lib/types/warp";
 import { useCallback, useSyncExternalStore } from "react";
 
 interface UseWarpStreamResult {
@@ -12,7 +13,8 @@ interface UseWarpStreamResult {
 	/** Set when Warp ended its turn by asking something. */
 	question: WarpQuestion | null;
 	clearQuestion: () => void;
-	send: (history: WarpTurn[], question: string) => Promise<void>;
+	/** `model` names one of the exposed models; omitted, the default answers. */
+	send: (history: WarpTurn[], question: string, model?: Pick<WarpModel, "provider" | "model">) => Promise<void>;
 	stop: () => void;
 	/** Abort and drop whatever the aborted request produced. */
 	discard: () => void;
@@ -45,7 +47,11 @@ export function useWarpStream(): UseWarpStreamResult {
 	const question = warp?.question ?? null;
 	const setQuestion = warp?.setQuestion;
 
-	const send = useCallback((history: WarpTurn[], text: string) => session?.send(history, text) ?? Promise.resolve(), [session]);
+	const send = useCallback(
+		(history: WarpTurn[], text: string, model?: Pick<WarpModel, "provider" | "model">) =>
+			session?.send(history, text, model) ?? Promise.resolve(),
+		[session],
+	);
 	const stop = useCallback(() => session?.stop(), [session]);
 	const discard = useCallback(() => session?.discard(), [session]);
 	const clearQuestion = useCallback(() => setQuestion?.(null), [setQuestion]);

@@ -70,6 +70,25 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 	return bifrostResponse
 }
 
+// ToBifrostModelRetrieveResponse converts a Gemini model resource to a Bifrost model retrieve response
+func (model *GeminiModel) ToBifrostModelRetrieveResponse(providerKey schemas.ModelProvider) *schemas.BifrostModelRetrieveResponse {
+	if model == nil {
+		return nil
+	}
+
+	return &schemas.BifrostModelRetrieveResponse{
+		Model: schemas.Model{
+			ID:               string(providerKey) + "/" + strings.TrimPrefix(model.Name, "models/"),
+			Name:             schemas.Ptr(model.DisplayName),
+			Description:      schemas.Ptr(model.Description),
+			ContextLength:    schemas.Ptr(model.InputTokenLimit),
+			MaxInputTokens:   schemas.Ptr(model.InputTokenLimit),
+			MaxOutputTokens:  schemas.Ptr(model.OutputTokenLimit),
+			SupportedMethods: model.SupportedGenerationMethods,
+		},
+	}
+}
+
 func ToGeminiListModelsResponse(resp *schemas.BifrostListModelsResponse) *GeminiListModelsResponse {
 	if resp == nil {
 		return nil

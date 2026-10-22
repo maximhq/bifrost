@@ -7,7 +7,7 @@ import { SecretVar } from "./schemas";
 export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Base provider names - all supported base providers
-export const BaseProviderNames = ["openai", "anthropic", "cohere", "gemini", "bedrock", "replicate", "fireworks"] as const;
+export const BaseProviderNames = ["openai", "anthropic", "cohere", "gemini", "bedrock", "replicate", "fireworks", "typesafe"] as const;
 
 export type BaseProvider = (typeof BaseProviderNames)[number];
 
@@ -96,6 +96,16 @@ export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	scopes: [],
 } as const satisfies Required<AzureKeyConfig>;
 
+// VertexAWSWorkloadIdentityConfig matching Go's schemas.VertexAWSWorkloadIdentityConfig:
+// GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity, ...).
+export interface VertexAWSWorkloadIdentityConfig {
+	audience: SecretVar;
+	service_account_email?: SecretVar;
+	token_lifetime_seconds?: number;
+	aws_region?: SecretVar;
+	aws_role_arn?: SecretVar;
+}
+
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig
 export interface VertexKeyConfig {
 	project_id: SecretVar;
@@ -103,15 +113,29 @@ export interface VertexKeyConfig {
 	region: SecretVar;
 	auth_credentials?: SecretVar;
 	force_single_region?: boolean;
+	use_session_routing?: boolean;
+	aws_workload_identity?: VertexAWSWorkloadIdentityConfig;
 }
 
+// Seed for the "Workload Identity (AWS)" tab. The lifetime is left unset so the server default
+// (3600s) applies unless the user types one.
+export const DefaultVertexAWSWorkloadIdentityConfig: VertexAWSWorkloadIdentityConfig = {
+	audience: { value: "", ref: "" },
+	service_account_email: { value: "", ref: "" },
+	aws_region: { value: "", ref: "" },
+	aws_role_arn: { value: "", ref: "" },
+} as const satisfies VertexAWSWorkloadIdentityConfig;
+
+// aws_workload_identity is deliberately absent here: an empty block would otherwise be sent to
+// the API on every save. The tab seeds it from DefaultVertexAWSWorkloadIdentityConfig on demand.
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	project_id: { value: "", ref: "" },
 	project_number: { value: "", ref: "" },
 	region: { value: "", ref: "" },
 	auth_credentials: { value: "", ref: "" },
 	force_single_region: false,
-} as const satisfies Required<VertexKeyConfig>;
+	use_session_routing: false,
+} as const satisfies Required<Omit<VertexKeyConfig, "aws_workload_identity">>;
 
 export interface S3BucketConfig {
 	bucket_name: string;
@@ -225,6 +249,16 @@ export const DefaultSGLKeyConfig: SGLKeyConfig = {
 	url: { value: "", ref: "" },
 } as const satisfies Required<SGLKeyConfig>;
 
+// CloudflareKeyConfig matching Go's schemas.CloudflareKeyConfig
+export interface CloudflareKeyConfig {
+	account_id: SecretVar;
+}
+
+// Default CloudflareKeyConfig
+export const DefaultCloudflareKeyConfig: CloudflareKeyConfig = {
+	account_id: { value: "", ref: "" },
+} as const satisfies Required<CloudflareKeyConfig>;
+
 // DatabricksKeyConfig matching Go's schemas.DatabricksKeyConfig
 export interface DatabricksKeyConfig {
 	workspace_url: SecretVar;
@@ -264,6 +298,61 @@ export const DefaultGithubCopilotKeyConfig: GithubCopilotKeyConfig = {
 	github_domain: { value: "", ref: "" },
 } as const satisfies Required<GithubCopilotKeyConfig>;
 
+// OAuthKeyConfig matching Go's schemas.OAuthKeyConfig. Honoured by openai and by custom
+// providers whose base_provider_type is openai: with an empty key value, Bifrost mints the
+// bearer from the token endpoint and refreshes it before expiry.
+export type OAuthGrantType = "client_credentials" | "jwt_bearer";
+export type OAuthAuthStyle = "header" | "body";
+export type OAuthSigningAlgorithm = "RS256" | "RS384" | "RS512" | "PS256" | "PS384" | "PS512" | "ES256" | "ES384" | "ES512";
+export const OAuthSigningAlgorithms: OAuthSigningAlgorithm[] = [
+	"RS256",
+	"RS384",
+	"RS512",
+	"PS256",
+	"PS384",
+	"PS512",
+	"ES256",
+	"ES384",
+	"ES512",
+];
+export interface OAuthKeyConfig {
+	grant_type: OAuthGrantType;
+	token_url: SecretVar;
+	client_id?: SecretVar;
+	client_secret?: SecretVar;
+	private_key?: SecretVar;
+	scopes?: string[];
+	audience?: string;
+	issuer?: string;
+	subject?: string;
+	key_id?: string;
+	signing_algorithm?: OAuthSigningAlgorithm;
+	auth_style?: OAuthAuthStyle;
+	extra_params?: Record<string, string>;
+	assertion_lifetime_seconds?: number;
+	// UI-only discriminator; not sent to the API.
+	_auth_type?: "api_key" | "oauth";
+}
+
+// Default OAuthKeyConfig
+export const DefaultOAuthKeyConfig: OAuthKeyConfig = {
+	grant_type: "client_credentials",
+	token_url: { value: "", ref: "" },
+	client_id: { value: "", ref: "" },
+	client_secret: { value: "", ref: "" },
+	private_key: { value: "", ref: "" },
+	scopes: [],
+	audience: "",
+	issuer: "",
+	subject: "",
+	key_id: "",
+	signing_algorithm: "RS256",
+	auth_style: "header",
+	extra_params: {},
+	assertion_lifetime_seconds: 300,
+	_auth_type: "api_key",
+} as const satisfies Required<OAuthKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -287,6 +376,8 @@ export interface ModelProviderKey {
 	sgl_key_config?: SGLKeyConfig;
 	databricks_key_config?: DatabricksKeyConfig;
 	github_copilot_key_config?: GithubCopilotKeyConfig;
+	cloudflare_key_config?: CloudflareKeyConfig;
+	oauth_key_config?: OAuthKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
@@ -311,6 +402,7 @@ export interface NetworkConfig {
 	base_url?: string;
 	is_key_less?: boolean;
 	extra_headers?: Record<string, string>;
+	extra_headers_secret_vars?: Record<string, SecretVar>; // Response only: extra_headers as SecretVar objects
 	default_request_timeout_in_seconds: number;
 	max_retries: number;
 	retry_backoff_initial: number; // Duration in milliseconds
@@ -347,6 +439,7 @@ export interface ProxyConfig {
 // Request types matching Go's schemas.RequestType
 export type RequestType =
 	| "list_models"
+	| "model_retrieve"
 	| "text_completion"
 	| "text_completion_stream"
 	| "chat_completion"
@@ -359,6 +452,7 @@ export type RequestType =
 	| "responses_input_items"
 	| "embedding"
 	| "rerank"
+	| "decisions"
 	| "speech"
 	| "speech_stream"
 	| "transcription"
@@ -400,7 +494,8 @@ export type RequestType =
 	| "container_file_content"
 	| "container_file_delete"
 	| "websocket_responses"
-	| "realtime";
+	| "realtime"
+	| "live";
 
 // AllowedRequests matching Go's schemas.AllowedRequests
 export interface AllowedRequests {
@@ -428,7 +523,9 @@ export interface AllowedRequests {
 	ocr_stream?: boolean;
 	count_tokens: boolean;
 	list_models: boolean;
+	model_retrieve?: boolean;
 	rerank: boolean;
+	decisions?: boolean;
 	video_generation: boolean;
 	video_edit: boolean;
 	video_retrieve: boolean;
@@ -438,6 +535,7 @@ export interface AllowedRequests {
 	video_remix: boolean;
 	websocket_responses: boolean;
 	realtime: boolean;
+	live?: boolean;
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig
@@ -473,6 +571,16 @@ export interface PromptCacheConfig {
 	cache_control_injection_points?: CacheControlInjectionPoint[];
 }
 
+// InjectedTool is one MCP tool Bifrost adds to every chat and responses request for the
+// provider and executes server side when the model calls it. name is what the model
+// sees: it replaces a client tool of the same name, and web_search also replaces native
+// web search.
+export interface InjectedTool {
+	name: string;
+	mcp_client_name: string;
+	tool_name: string;
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
@@ -481,9 +589,11 @@ export interface ModelProviderConfig {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	injected_tools?: InjectedTool[] | null;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -510,9 +620,11 @@ export interface AddProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	injected_tools?: InjectedTool[] | null;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -523,9 +635,11 @@ export interface UpdateProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	injected_tools?: InjectedTool[] | null;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}
@@ -580,10 +694,15 @@ export interface AuthConfig {
 	admin_username: SecretVar;
 	admin_password: SecretVar;
 	is_enabled: boolean;
-	/** Write-only: required only when this PUT request creates the very first admin account
-	 *  (no admin account exists yet). Provided by the operator via setup_token in config.json
-	 *  or the BIFROST_SETUP_TOKEN env var. Never persisted or returned by GET /api/config. */
+	/** Write-only: the operator-configured setup token (setup_token in config.json or the
+	 *  BIFROST_SETUP_TOKEN env var). Required when this PUT request creates the very first
+	 *  admin account, and also accepted instead of current_password to confirm a change made
+	 *  while dashboard auth is disabled. Never persisted or returned by GET /api/config. */
 	setup_token?: string;
+	/** Write-only: the stored admin password. Required (unless setup_token is sent) to re-enable
+	 *  dashboard auth or change the admin credentials while auth is disabled, because that request
+	 *  reaches the server without any credential check. Never persisted or returned. */
+	current_password?: string;
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)
@@ -658,9 +777,14 @@ export interface BifrostConfig {
 	is_logs_connected: boolean;
 	is_object_storage_connected?: boolean;
 	is_git_available: boolean;
+	skills_marketplace_base_url?: string;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
 	env_label?: string;
+	agent_gateway?: {
+		grpc_base_domain: string;
+		grpc_port: number;
+	};
 }
 
 export interface CompatConfig {
@@ -669,6 +793,19 @@ export interface CompatConfig {
 	should_drop_params: boolean;
 	should_convert_params: boolean;
 	azure_deepseek: boolean;
+	force_reasoning_only_models_to_responses: boolean;
+	convert_decision_to_responses: boolean;
+}
+
+// Per-execution code mode limits; an omitted or 0 field uses the server default.
+export interface MCPCodeModeLimits {
+	max_source_bytes?: number;
+	max_steps?: number;
+	max_memory_bytes?: number;
+	max_log_bytes?: number;
+	max_tool_calls?: number;
+	max_value_bytes?: number;
+	max_nesting_depth?: number;
 }
 
 // Core Bifrost configuration types
@@ -693,6 +830,7 @@ export interface CoreConfig {
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
 	dual_credential_conflict_behavior?: "error" | "prefer_vk" | "prefer_idp";
+	extra_fields_placement?: "body" | "headers";
 	allowed_origins: string[];
 	allowed_headers: string[];
 	max_request_body_size_mb: number;
@@ -704,7 +842,10 @@ export interface CoreConfig {
 	mcp_disable_auto_tool_inject: boolean;
 	mcp_max_instructions_per_client: number;
 	mcp_max_instructions_total: number;
+	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
+	mcp_oauth_private_allowlist?: string[];
+	a2a_private_allowlist?: string[];
 	async_job_result_ttl: number;
 	required_headers: string[];
 	logging_headers: string[];
@@ -713,16 +854,23 @@ export interface CoreConfig {
 	// Default for virtual keys without an explicit delete_after_expire: the daily
 	// cleanup job deletes them once expired.
 	delete_expired_virtual_keys: boolean;
+	// Restrict provider objects (files, batches, containers, live sessions, ...) to the
+	// virtual key that created them.
+	enforce_vk_object_ownership: boolean;
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
+	skills_external_client_url?: SecretVar;
+	a2a_external_client_url?: SecretVar;
+	a2a_store_raw_request_response?: boolean;
 	mcp_server_auth_mode?: "headers" | "both" | "oauth";
 	oauth2_server_config?: {
 		issuer_url?: SecretVar;
 		auth_code_ttl?: number;
 		access_token_ttl?: number;
+		allowed_redirect_uris?: string[];
 		disable_vk_identity?: boolean;
 	};
 }
@@ -741,8 +889,9 @@ export const DefaultCoreConfig: CoreConfig = {
 	disable_db_pings_in_health: false,
 	dump_errors_in_console_logs: false,
 	log_retention_days: 365,
-	enforce_auth_on_inference: false,
+	enforce_auth_on_inference: true,
 	dual_credential_conflict_behavior: "prefer_idp",
+	extra_fields_placement: "body",
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
 	compat: {
@@ -751,6 +900,8 @@ export const DefaultCoreConfig: CoreConfig = {
 		should_drop_params: false,
 		should_convert_params: false,
 		azure_deepseek: false,
+		force_reasoning_only_models_to_responses: true,
+		convert_decision_to_responses: false,
 	},
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
@@ -767,6 +918,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	whitelisted_routes: [],
 	hide_deleted_virtual_keys_in_filters: false,
 	delete_expired_virtual_keys: false,
+	enforce_vk_object_ownership: true,
 	hidden_request_types: [],
 	routing_chain_max_depth: 10,
 };
@@ -779,6 +931,7 @@ interface BaseCacheConfig {
 	exclude_system_prompt?: boolean;
 	cache_by_model: boolean;
 	cache_by_provider: boolean;
+	disable_identity_scoping?: boolean;
 	vector_store_namespace?: string;
 	default_cache_key?: string;
 	created_at?: string;
@@ -787,8 +940,8 @@ interface BaseCacheConfig {
 
 export interface DirectCacheConfig extends BaseCacheConfig {
 	dimension: 1;
-	provider?: undefined;
-	embedding_model?: undefined;
+	provider?: "";
+	embedding_model?: "";
 }
 
 export interface ProviderBackedCacheConfig extends BaseCacheConfig {

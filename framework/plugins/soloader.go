@@ -21,8 +21,25 @@ type SharedObjectPluginLoader struct {
 // NewSharedObjectPluginLoader constructs a loader whose plugin-download client is
 // additionally permitted to reach the hosts/CIDRs in allow. allow may be nil for the
 // default (all private/loopback/CGNAT/link-local targets blocked).
-func NewSharedObjectPluginLoader(allow *network.Allowlist) *SharedObjectPluginLoader {
-	return &SharedObjectPluginLoader{downloadClient: NewPluginDownloadClient(allow)}
+func NewSharedObjectPluginLoader(allow *network.Allowlist, opts ...LoaderOption) *SharedObjectPluginLoader {
+	var options loaderOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+	return &SharedObjectPluginLoader{downloadClient: NewProxiedPluginDownloadClient(allow, options.httpClients)}
+}
+
+// LoaderOption customizes a plugin loader at construction.
+type LoaderOption func(*loaderOptions)
+
+type loaderOptions struct {
+	httpClients *network.HTTPClientFactory
+}
+
+// WithHTTPClientFactory sends plugin downloads through the global proxy when it is
+// enabled for API traffic, keeping the SSRF policy and allowlist.
+func WithHTTPClientFactory(factory *network.HTTPClientFactory) LoaderOption {
+	return func(o *loaderOptions) { o.httpClients = factory }
 }
 
 func (l *SharedObjectPluginLoader) openPlugin(dp *DynamicPlugin) (*plugin.Plugin, error) {
@@ -170,6 +187,21 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 	if sym, err := pluginObj.Lookup("PostMCPHook"); err == nil {
 		if dp.postMCPHook, ok = sym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error)); !ok {
 			return nil, fmt.Errorf("failed to cast PostMCPHook to expected signature")
+		}
+	}
+
+	// Optional: PreA2AHook (A2APlugin — Agent Gateway traffic). Plugins that
+	// don't export it keep working; DynamicPlugin's default is a no-op passthrough.
+	if sym, err := pluginObj.Lookup("PreA2AHook"); err == nil {
+		if dp.preA2AHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PreA2AHook to expected signature")
+		}
+	}
+
+	// Optional: PostA2AHook (A2APlugin — Agent Gateway traffic).
+	if sym, err := pluginObj.Lookup("PostA2AHook"); err == nil {
+		if dp.postA2AHook, ok = sym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostA2AResponse, *schemas.BifrostError, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PostA2AHook to expected signature")
 		}
 	}
 

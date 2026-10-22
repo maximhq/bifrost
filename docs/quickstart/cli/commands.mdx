@@ -1,0 +1,75 @@
+---
+title: "Commands"
+description: "Use Bifrost CLI to inspect the gateway, send inference requests, administer resources, call any API endpoint, and script against stable output formats and exit codes."
+icon: "list"
+---
+
+Commands use the current [context](/quickstart/cli/contexts) and load only the credentials they need: inference commands use the virtual key or SSO session, and administrative commands use the management credential. Run `bifrost help` for the full command list and `bifrost <command> --help` for details.
+
+## Inspect the gateway and your access
+
+```bash
+bifrost status --output json      # health, version, management auth status
+bifrost doctor                    # health, management auth, model discovery
+bifrost auth status --output json # stored credential types for the context
+bifrost models list
+bifrost usage                     # Enterprise SSO: budgets, rate limits, top models and apps
+bifrost usage budgets --output json
+```
+
+## Send inference requests
+
+```bash
+bifrost chat anthropic/claude-sonnet-4-6 --message "user:Summarize Bifrost in one sentence"
+bifrost infer responses --file request.json --stream
+```
+
+## Administer the gateway
+
+```bash
+bifrost providers list
+bifrost credentials list openai
+bifrost virtual-keys list
+bifrost virtual-keys create --file vk.json --dry-run
+bifrost virtual-keys create --file vk.json
+bifrost virtual-keys rotate <vk-id> --yes
+bifrost teams list
+bifrost users list                 # Enterprise
+bifrost roles list                 # Enterprise
+bifrost logs list --limit 20
+```
+
+Each resource lists its actions with `bifrost <resource> --help`. Mutations accept `--body JSON` or `--file PATH`. `--dry-run` previews a mutation, and destructive actions require `--yes`.
+
+For endpoints without a resource command, use the bundled OpenAPI catalog or a raw request:
+
+```bash
+bifrost api list --search virtual
+bifrost api describe getVirtualKey
+bifrost api call getVirtualKey --param vk_id="$VIRTUAL_KEY_ID"
+
+bifrost request GET /api/version --auth none
+bifrost request POST /v1/responses --auth inference --file request.json --stream
+```
+
+`bifrost request` is a low-level escape hatch and does not add `--dry-run` or `--yes` safeguards.
+
+## Output, timeouts, and exit codes
+
+- `--output table|json|yaml|raw` selects the format. `table` fits the terminal and shows at most eight columns; use `json` or `yaml` for complete responses and automation.
+- `--timeout` (default `30s`) limits a buffered request, or only the wait for response headers on a streaming request.
+- `--quiet` suppresses successful output, and `--debug` prints request diagnostics.
+- Exit codes: `0` success, `1` general or usage error, `3` authentication or authorization failure, `4` not found, `5` conflict, `6` timeout or gateway unavailable.
+
+Generate shell completion with `bifrost completion bash|zsh|fish`.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Contexts and credentials" icon="layer-group" href="/quickstart/cli/contexts">
+    Work across environments and configure CI.
+  </Card>
+  <Card title="Troubleshooting" icon="screwdriver-wrench" href="/quickstart/cli/troubleshooting">
+    Fix common authentication, context, and agent errors.
+  </Card>
+</CardGroup>

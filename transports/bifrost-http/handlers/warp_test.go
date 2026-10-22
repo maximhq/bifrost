@@ -9,13 +9,16 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -434,6 +437,101 @@ func TestWarpSnapshotGrantCarriesHeaderVirtualKey(t *testing.T) {
 	require.NoError(t, err)
 	defer cancel()
 	require.Empty(t, warp.NewGrantFromContext(snapshot).Identity().Credential().Value)
+}
+
+// The grant the snapshot settles and the admission Warp asks for only matter
+// together: governance admits a user nothing grants access to because Warp's
+// context asks it to, and only for the identity the dashboard request settled.
+// So the whole path is driven here - the dashboard request's snapshot, Warp's
+// own model-call context, and the governance pre-hook the gateway client would
+// run on it - rather than each half against a hand-built stand-in for the other.
+// A grant the snapshot drops, settles without its user, or settles past a
+// presented key breaks the chat or widens it, and either shows up here.
+func TestWarpChatGovernsTheDashboardCallerEndToEnd(t *testing.T) {
+	store, err := governance.NewLocalGovernanceStore(context.Background(), &mockLogger{}, nil, &configstore.GovernanceConfig{}, nil, nil)
+	require.NoError(t, err)
+	isVkMandatory := false
+	plugin, err := governance.InitFromStore(context.Background(), &governance.Config{IsVkMandatory: &isVkMandatory},
+		&mockLogger{}, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	// govern is the gateway client as far as governance is concerned: it runs
+	// the pre-hook on the context it is handed and stops at a refusal.
+	govern := func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: req})
+		require.NoError(t, err)
+		if shortCircuit != nil {
+			return nil, shortCircuit.Error
+		}
+		return &schemas.BifrostResponsesResponse{}, nil
+	}
+	chat := func(t *testing.T, ctx *fasthttp.RequestCtx) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		t.Helper()
+		snapshot, cancel, err := snapshotWarpContext(ctx, time.Second)
+		require.NoError(t, err)
+		defer cancel()
+		// The agent runs after the handler returns, so the request is gone by
+		// the time the model is called.
+		ctx.ResetUserValues()
+		ctx.Request.Reset()
+		return warp.NewChat(govern, &schemas.WarpConfig{}, "conv-1")(snapshot,
+			&schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o"})
+	}
+	signedIn := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialSessionToken, "session-token"))
+		return ctx
+	}
+	requireAccessNotFound := func(t *testing.T, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		require.Equal(t, 401, *bifrostErr.StatusCode)
+		require.Contains(t, bifrostErr.Error.Message, "access not found")
+	}
+
+	t.Run("a signed-in user with no access profile is served", func(t *testing.T) {
+		response, bifrostErr := chat(t, signedIn())
+
+		require.Nil(t, bifrostErr, "a profile-less user must not be refused: %+v", bifrostErr)
+		require.NotNil(t, response)
+	})
+
+	t.Run("the same grant is refused off Warp's path", func(t *testing.T) {
+		// The control: it is Warp's model-call context that admits the user, not
+		// the grant, so the same settled grant on any other request is still
+		// held to an access it does not have.
+		snapshot, cancel, err := snapshotWarpContext(signedIn(), time.Second)
+		require.NoError(t, err)
+		defer cancel()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		ctx.SetGrant(warp.NewGrantFromContext(snapshot))
+
+		_, bifrostErr := govern(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o"})
+
+		requireAccessNotFound(t, bifrostErr)
+	})
+
+	t.Run("a presented virtual key that resolves to nothing is still refused", func(t *testing.T) {
+		ctx := signedIn()
+		ctx.Request.Header.Set("x-bf-vk", "sk-bf-nobody")
+
+		_, bifrostErr := chat(t, ctx)
+
+		requireAccessNotFound(t, bifrostErr)
+	})
+
+	t.Run("an anonymous dashboard request is served as a key-less one", func(t *testing.T) {
+		// No auth on the deployment: nothing was presented, so there is nothing
+		// to admit and nothing to refuse.
+		response, bifrostErr := chat(t, &fasthttp.RequestCtx{})
+
+		require.Nil(t, bifrostErr, "%+v", bifrostErr)
+		require.NotNil(t, response)
+	})
 }
 
 // A scope that was set on the request but cannot be carried over is the
@@ -910,3 +1008,103 @@ func TestWarpVirtualKeyDecoratorOverlaysTheDashboardResolvers(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 { return &v }
+
+// warpModelsHandler serves chat over a config that exposes one model beside the
+// default, and records where each model call was addressed.
+func warpModelsHandler(calls *[]schemas.BifrostResponsesRequest) *WarpHandler {
+	additional := `[{"provider":"anthropic","model":"claude-sonnet-5","api_key_id":"key-anthropic"}]`
+	store := &recordingWarpStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", AdditionalModels: &additional,
+		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small", EmbeddingDimension: 1536,
+		LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
+	}}
+	chat := func(_ context.Context, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		*calls = append(*calls, *request)
+		// The turn ends on this error; the test only needs to see the address.
+		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "scripted stop"}}
+	}
+	return &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat))}
+}
+
+// The models an operator exposes are part of the config wire shape in both
+// directions: the panel's switcher is built from the read, and the settings
+// page writes the list back whole.
+func TestWarpConfigRoundTripsAdditionalModels(t *testing.T) {
+	store := &recordingWarpStore{}
+	handler := &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}
+	ctx := adminCtx(`{"enabled":true,"provider":"openai","model":"gpt-4o","additional_models":[{"provider":"anthropic","model":"claude-sonnet-5","api_key_id":"key-anthropic"},{"provider":"openai","model":"gpt-4o-mini"}],"embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`)
+	handler.putConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	ctx = &fasthttp.RequestCtx{}
+	handler.getConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	var body struct {
+		Provider         string              `json:"provider"`
+		Model            string              `json:"model"`
+		AdditionalModels []schemas.WarpModel `json:"additional_models"`
+	}
+	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &body))
+	require.Equal(t, "gpt-4o", body.Model)
+	require.Equal(t, []schemas.WarpModel{
+		{Provider: schemas.Anthropic, Model: "claude-sonnet-5", APIKeyID: "key-anthropic"},
+		{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+	}, body.AdditionalModels)
+
+	// A repeated pair is a validation failure like any other: 400, nothing stored.
+	ctx = adminCtx(`{"enabled":true,"provider":"openai","model":"gpt-4o","additional_models":[{"provider":"openai","model":"gpt-4o"}],"embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`)
+	handler.putConfig(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), "already listed")
+	require.Len(t, store.upserted, 1)
+}
+
+// Adding or removing an exposed model is a config write, so it sits behind the
+// same admin gate as the rest: a caller with neither local admin nor an RBAC
+// role cannot change which models Warp offers.
+func TestWarpConfigPutRefusesModelChangesFromNonAdmins(t *testing.T) {
+	store := &recordingWarpStore{}
+	handler := &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"enabled":true,"provider":"openai","model":"gpt-4o","additional_models":[{"provider":"anthropic","model":"claude-sonnet-5"}],"embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`)
+	handler.putConfig(ctx)
+	require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
+	require.Empty(t, store.upserted)
+}
+
+// The chat body names the model to run on, and the handler addresses the turn
+// to it - or to the default when the body names none.
+func TestWarpChatRunsOnTheRequestedModel(t *testing.T) {
+	for name, test := range map[string]struct {
+		body         string
+		wantProvider schemas.ModelProvider
+		wantModel    string
+	}{
+		"default":    {`{"messages":[{"role":"user","content":"hi"}],"stream":false}`, schemas.OpenAI, "gpt-4o"},
+		"additional": {`{"messages":[{"role":"user","content":"hi"}],"provider":"anthropic","model":"claude-sonnet-5","stream":false}`, schemas.Anthropic, "claude-sonnet-5"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls []schemas.BifrostResponsesRequest
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBodyString(test.body)
+			warpModelsHandler(&calls).chat(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.NotEmpty(t, calls)
+			require.Equal(t, test.wantProvider, calls[0].Provider)
+			require.Equal(t, test.wantModel, calls[0].Model)
+		})
+	}
+}
+
+// The model in a chat body is client-sent. One the operator did not expose is
+// a 400 that reaches no model - the caller is not an admin here, which is the
+// point: using Warp never widens what it may run on.
+func TestWarpChatRefusesAModelThatIsNotExposed(t *testing.T) {
+	var calls []schemas.BifrostResponsesRequest
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"messages":[{"role":"user","content":"hi"}],"provider":"openai","model":"gpt-5","stream":false}`)
+	warpModelsHandler(&calls).chat(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), "model is not available for warp")
+	require.Empty(t, calls)
+}

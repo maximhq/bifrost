@@ -291,13 +291,14 @@ export function MetricStrip({ stats, requestHistogram, latencyHistogram, costHis
 	// is good news on requests is a regression here.
 	const costChange = previous ? formatPctChange(totalCost, previous.total_cost, "lower-is-better") : undefined;
 
-	// Columns follow the strip's own width, not the viewport's: beside the app and
-	// filter sidebars a 1440px window leaves the strip about 900px, and six columns
-	// there truncate the trailing figures.
+	// Columns follow the strip's own width, not the viewport's, since the app and
+	// filter sidebars eat into the window. Six columns start at 64rem (1024px) of
+	// strip width so a laptop-sized window keeps one row; below that the trailing
+	// figures truncate, so the strip drops to three.
 	return (
 		<div className="@container/metric-strip shrink-0">
 			<MetricStripCard
-				className="grid-cols-2 @2xl/metric-strip:grid-cols-3 @6xl/metric-strip:grid-cols-6"
+				className="grid-cols-2 @2xl/metric-strip:grid-cols-3 @5xl/metric-strip:grid-cols-6"
 				loading={loading}
 				testId="logs-metric-strip"
 			>

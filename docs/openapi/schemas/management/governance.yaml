@@ -233,6 +233,152 @@ BudgetOverrideRequest:
         Required and must be greater than 0 when `mode` is `cycles`; must be omitted or 0 when `mode` is `forever`.
       minimum: 1
 
+ApproveBudgetRequestRequest:
+  type: object
+  description: |
+    Optional approver overrides for a budget increase request. `amount`, `mode` and `cycles` default to
+    the requested values.
+  properties:
+    amount:
+      type: number
+      description: Amount in dollars to approve. Must be greater than 0.
+      exclusiveMinimum: 0
+    mode:
+      type: string
+      description: |
+        `cycles` keeps the override active for `cycles` reset windows starting with the current one.
+        `forever` keeps it active until it is removed.
+      enum:
+        - cycles
+        - forever
+    cycles:
+      type: integer
+      description: |
+        Number of reset windows the override stays active for. Must be 1-120 when the effective mode is
+        `cycles`, where the effective mode is this body's `mode`, else the requested mode. Ignored when the
+        effective mode is `forever`, and ignored with `add_keep_lifetime` when the budget has an active override.
+    note:
+      type: string
+      description: Optional note shown with the decision.
+      maxLength: 2000
+    override_strategy:
+      type: string
+      description: |
+        How to combine the approval with an active override on the budget. Empty or `add` adds the amount
+        and returns `409` when the lifetimes differ. `replace` replaces the active override.
+        `add_keep_lifetime` adds the amount and keeps the active override's mode and remaining cycles.
+      enum:
+        - ""
+        - add
+        - replace
+        - add_keep_lifetime
+
+BudgetRequest:
+  type: object
+  description: A budget increase request, with the target budget's current state.
+  properties:
+    id:
+      type: string
+    requester_user_id:
+      type: string
+    requester_name:
+      type: string
+    requester_email:
+      type: string
+    target_kind:
+      type: string
+      enum:
+        - virtual_key
+        - access_profile
+    virtual_key_id:
+      type: string
+      description: Set when `target_kind` is `virtual_key`.
+    access_profile_id:
+      type: integer
+      description: Set when `target_kind` is `access_profile`.
+    target_name:
+      type: string
+      description: Name of the virtual key or access profile.
+    budget_id:
+      type: string
+    amount:
+      type: number
+      description: Requested amount in dollars.
+    mode:
+      type: string
+      description: Requested duration mode.
+      enum:
+        - cycles
+        - forever
+    cycles:
+      type: integer
+      description: Requested number of cycles.
+    reason:
+      type: string
+    status:
+      type: string
+      enum:
+        - pending
+        - approved
+        - denied
+        - cancelled
+    decided_by_user_id:
+      type: string
+    decided_by_user_name:
+      type: string
+    decision_note:
+      type: string
+    approved_amount:
+      type: number
+    approved_mode:
+      type: string
+      description: Duration mode actually applied.
+      enum:
+        - cycles
+        - forever
+    approved_cycles:
+      type: integer
+      description: Number of cycles actually applied.
+    created_at:
+      type: string
+      format: date-time
+    decided_at:
+      type: string
+      format: date-time
+    budget:
+      $ref: "#/BudgetRequestBudgetSnapshot"
+    live_reload:
+      type: string
+      description: |
+        `retrying` when the approval is saved but applying it to live governance state failed and is being
+        retried in the background. Omitted otherwise.
+      enum:
+        - retrying
+
+BudgetRequestBudgetSnapshot:
+  type: object
+  description: The target budget's current state.
+  properties:
+    max_limit:
+      type: number
+    current_usage:
+      type: number
+    reset_duration:
+      type: string
+    override_amount:
+      type: number
+    override_mode:
+      type: string
+      enum:
+        - cycles
+        - forever
+    override_cycles_remaining:
+      type: integer
+      description: Remaining cycles of the active override. Omitted for an override that lasts until removed.
+    effective_max_limit:
+      type: number
+      description: "`max_limit` plus any active override."
+
 BudgetOverrideResponse:
   type: object
   description: The persisted budget and the additive limit now in force.
@@ -297,7 +443,8 @@ VirtualKeyProviderConfig:
       type: string
     weight:
       type: [number, 'null']
-      description: Weight for provider load balancing. Null means excluded from weighted routing.
+      minimum: 0
+      description: Weight for provider load balancing. Null means excluded from weighted routing. A negative weight is rejected with 400; when every weight is 0, the first configured provider is picked.
     allowed_models:
       type: array
       items:
@@ -374,12 +521,25 @@ VirtualKey:
       type: string
     description:
       type: string
+    metadata:
+      type: object
+      description: >-
+        Custom key/value metadata attached to the key (for example cost_center, project, owner, environment). Omitted when the key has none.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+      additionalProperties:
+        type: string
+        maxLength: 512
     is_active:
       type: boolean
     expires_at:
       type: [string, 'null']
       format: date-time
       description: Expiry timestamp. Requests using this virtual key are rejected once it passes. Null or absent means the key never expires.
+    delete_after_expire:
+      type: [boolean, 'null']
+      description: Per-key override for client.delete_expired_virtual_keys. Absent or null inherits the client setting; true or false decide for this key whether the daily cleanup job deletes it once expires_at has passed.
     previous_value_expires_at:
       type: [string, 'null']
       format: date-time
@@ -477,6 +637,20 @@ CreateVirtualKeyRequest:
       type: string
     description:
       type: string
+    metadata:
+      type: object
+      description: >-
+        Custom key/value metadata for cost attribution (for example cost_center, project, owner, environment). Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+        not:
+          anyOf:
+            - const: isAsyncRequest
+            - pattern: '^bifrost_alb_'
+      additionalProperties:
+        type: string
+        maxLength: 512
     provider_configs:
       type: array
       description: Provider configurations. When allow_all_providers is omitted or false, an empty list allows no providers (deny-by-default); when true, providers without a config are allowed with all models and keys.
@@ -487,7 +661,8 @@ CreateVirtualKeyRequest:
             type: string
           weight:
             type: [number, 'null']
-            description: Weight for load balancing. Null means excluded from weighted routing.
+            minimum: 0
+            description: Weight for load balancing. Null means excluded from weighted routing. A negative weight is rejected with 400; when every weight is 0, the first configured provider is picked.
           allowed_models:
             type: array
             items:
@@ -560,6 +735,9 @@ CreateVirtualKeyRequest:
       type: string
       format: date-time
       description: Optional expiry timestamp. Must be in the future. Omit for a key that never expires.
+    delete_after_expire:
+      type: boolean
+      description: Override client.delete_expired_virtual_keys for this key. Omit to inherit the client setting. Rejected with 400 when expires_at is not set.
   example:
     name: engineering-vk
     provider_configs:
@@ -583,6 +761,20 @@ UpdateVirtualKeyRequest:
       type: string
     description:
       type: string
+    metadata:
+      type: [object, 'null']
+      description: >-
+        Replaces the key's metadata as a whole. Omit (or send null) to leave it unchanged; send {} to clear it. Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+        not:
+          anyOf:
+            - const: isAsyncRequest
+            - pattern: '^bifrost_alb_'
+      additionalProperties:
+        type: string
+        maxLength: 512
     provider_configs:
       type: array
       items:
@@ -594,7 +786,8 @@ UpdateVirtualKeyRequest:
             type: string
           weight:
             type: [number, 'null']
-            description: Weight for load balancing. Null means excluded from weighted routing.
+            minimum: 0
+            description: Weight for load balancing. Null means excluded from weighted routing. A negative weight is rejected with 400; when every weight is 0, the first configured provider is picked.
           allowed_models:
             type: array
             items:
@@ -671,6 +864,9 @@ UpdateVirtualKeyRequest:
     expires_at:
       type: string
       description: RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged.
+    delete_after_expire:
+      type: [boolean, 'null']
+      description: Override client.delete_expired_virtual_keys for this key. true or false set it, null resets the key to inherit the client setting, omitted leaves it unchanged. A value requires an expiry; clearing expires_at resets it to inherit.
   example:
     description: Updated engineering access
     provider_configs:
@@ -1309,6 +1505,7 @@ TableKey:
         type: string
     weight:
       type: [number, 'null']
+      minimum: 0
     enabled:
       type: [boolean, 'null']
       default: true
@@ -1439,6 +1636,9 @@ RoutingRule:
     id:
       type: string
       description: Unique identifier for the routing rule
+    config_hash:
+      type: string
+      description: Hash of the config.json entry the rule was last synced from. Empty for rules created through the API.
     name:
       type: string
       description: Name of the routing rule
@@ -1448,6 +1648,9 @@ RoutingRule:
     enabled:
       type: boolean
       description: Whether the rule is enabled and active
+    chain_rule:
+      type: boolean
+      description: "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
     cel_expression:
       type: string
       description: CEL (Common Expression Language) expression for matching
@@ -1463,14 +1666,14 @@ RoutingRule:
       description: Ordered fallback chain, tried after the selected target fails
     scope:
       type: string
-      enum: [global, team, customer, virtual_key]
-      description: Scope level for the rule
+      enum: [global, team, customer, virtual_key, user]
+      description: Scope level for the rule. Scopes are evaluated in the order virtual_key, user, team, customer, global. The user scope can be set through the API and UI only; config.json does not support it.
     scope_id:
       type: [string, 'null']
-      description: ID for the scope (empty for global scope)
+      description: ID of the team, customer, virtual key or user the rule is scoped to; null for global scope
     priority:
       type: integer
-      description: Priority for rule evaluation (lower number = higher priority)
+      description: Priority for rule evaluation (lower number = higher priority). Unique within a scope and scope_id.
     query:
       type: [object, 'null']
       description: Visual rule tree structure from query builder
@@ -1493,7 +1696,7 @@ RoutingRule:
       properties:
         scope:
           type: string
-          enum: [team, customer, virtual_key]
+          enum: [team, customer, virtual_key, user]
         scope_id:
           type: string
       required:
@@ -1506,9 +1709,6 @@ CreateRoutingRuleRequest:
   description: Request to create a routing rule
   required:
     - name
-    - cel_expression
-    - scope
-    - priority
     - targets
   properties:
     name:
@@ -1519,10 +1719,15 @@ CreateRoutingRuleRequest:
       description: Optional description
     enabled:
       type: boolean
+      default: true
       description: Whether the rule is enabled
+    chain_rule:
+      type: boolean
+      default: false
+      description: "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
     cel_expression:
       type: string
-      description: CEL expression for matching
+      description: CEL expression for matching. Empty or omitted matches every request.
     targets:
       type: array
       minItems: 1
@@ -1536,14 +1741,16 @@ CreateRoutingRuleRequest:
       description: Ordered fallback chain, tried after the selected target fails
     scope:
       type: string
-      enum: [global, team, customer, virtual_key]
-      description: Scope level for the rule
+      enum: [global, team, customer, virtual_key, user]
+      default: global
+      description: Scope level for the rule. The team, customer or virtual key named by scope_id must exist (400 otherwise); a user scope_id is not checked.
     scope_id:
       type: [string, 'null']
-      description: ID for the scope (required if scope is not global)
+      description: ID for the scope. Required when scope is not global; stored as null for global.
     priority:
       type: integer
-      description: Priority for rule evaluation (lower number = higher priority)
+      default: 0
+      description: Priority for rule evaluation (lower number = higher priority). Must be unique within the same scope and scope_id; a duplicate returns 409.
     query:
       type: [object, 'null']
       description: Visual rule tree structure
@@ -1553,16 +1760,15 @@ CreateRoutingRuleRequest:
         scope:
           type: string
           enum: [global]
-      required:
-        - scope
-      description: Global scope routing rule
+      description: Global scope routing rule (scope omitted or global)
     - type: object
       properties:
         scope:
           type: string
-          enum: [team, customer, virtual_key]
+          enum: [team, customer, virtual_key, user]
         scope_id:
           type: string
+          minLength: 1
       required:
         - scope
         - scope_id
@@ -1574,10 +1780,14 @@ UpdateRoutingRuleRequest:
   properties:
     name:
       type: string
+      description: New name. An empty string is ignored.
     description:
       type: string
     enabled:
       type: boolean
+    chain_rule:
+      type: boolean
+      description: "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
     cel_expression:
       type: string
     targets:
@@ -1590,9 +1800,17 @@ UpdateRoutingRuleRequest:
       type: array
       items:
         $ref: '#/RoutingFallback'
-      description: Ordered fallback chain, tried after the selected target fails
+      description: Replaces the fallback chain when provided; send an empty array to clear it.
     priority:
       type: integer
+      description: Must stay unique within the rule's scope and scope_id; a conflict returns 409.
+    scope:
+      type: string
+      enum: [global, team, customer, virtual_key, user]
+      description: Moves the rule to another scope. An empty string is ignored. A scope other than global needs a scope_id, sent here or already stored; global clears scope_id.
+    scope_id:
+      type: [string, 'null']
+      description: New scope ID, checked against the scope when scope or scope_id is sent.
     query:
       type: [object, 'null']
 
@@ -1616,6 +1834,15 @@ ListRoutingRulesResponse:
     count:
       type: integer
       description: Number of routing rules returned
+    total_count:
+      type: integer
+      description: Number of rules matching the filter before limit and offset
+    limit:
+      type: integer
+      description: Page size applied (default 25, maximum 100). Without limit, offset or search, the number of rules returned.
+    offset:
+      type: integer
+      description: Offset applied; 0 without limit, offset or search
 
 # Model Configs
 
@@ -1916,12 +2143,26 @@ PricingPatch:
     output_cost_per_token_priority:
       type: number
       minimum: 0
+    input_cost_per_token_ultrafast:
+      type: number
+      minimum: 0
+    output_cost_per_token_ultrafast:
+      type: number
+      minimum: 0
     input_cost_per_token_flex:
       type: number
       minimum: 0
     output_cost_per_token_flex:
       type: number
       minimum: 0
+    input_cost_per_token_decisions:
+      type: number
+      minimum: 0
+      description: Input token cost for decision requests. A decision rate always wins over input_cost_per_token, whether it comes from the datasheet or an override; input_cost_per_token is only the fallback when no decision rate is set.
+    output_cost_per_token_decisions:
+      type: number
+      minimum: 0
+      description: Output token cost for decision requests. A decision rate always wins over output_cost_per_token, whether it comes from the datasheet or an override; output_cost_per_token is only the fallback when no decision rate is set.
     input_cost_per_token_fast:
       type: number
       minimum: 0
@@ -1947,6 +2188,13 @@ PricingPatch:
       type: number
       minimum: 0
     output_cost_per_token_above_128k_tokens:
+      type: number
+      minimum: 0
+    # Costs - 100k Tier
+    input_cost_per_token_above_100k_tokens:
+      type: number
+      minimum: 0
+    output_cost_per_token_above_100k_tokens:
       type: number
       minimum: 0
     # Costs - 200k Tier
@@ -1981,6 +2229,12 @@ PricingPatch:
     output_cost_per_token_flex_above_272k_tokens:
       type: number
       minimum: 0
+    input_cost_per_token_above_272k_tokens_ultrafast:
+      type: number
+      minimum: 0
+    output_cost_per_token_above_272k_tokens_ultrafast:
+      type: number
+      minimum: 0
     # Costs - Cache
     cache_creation_input_token_cost:
       type: number
@@ -2003,10 +2257,22 @@ PricingPatch:
     cache_creation_input_token_cost_above_1hr_above_200k_tokens:
       type: number
       minimum: 0
+    cache_creation_input_token_cost_above_100k_tokens:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_above_100k_tokens:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_above_1hr_above_100k_tokens:
+      type: number
+      minimum: 0
     cache_creation_input_audio_token_cost:
       type: number
       minimum: 0
     cache_read_input_token_cost_priority:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_ultrafast:
       type: number
       minimum: 0
     cache_read_input_token_cost_flex:
@@ -2024,6 +2290,9 @@ PricingPatch:
     cache_read_input_token_cost_flex_above_272k_tokens:
       type: number
       minimum: 0
+    cache_read_input_token_cost_above_272k_tokens_ultrafast:
+      type: number
+      minimum: 0
     cache_creation_input_token_cost_above_272k_tokens:
       type: number
       minimum: 0
@@ -2034,6 +2303,16 @@ PricingPatch:
       type: number
       minimum: 0
     cache_creation_input_token_cost_priority:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_above_272k_tokens_priority:
+      type: number
+      minimum: 0
+      description: Cache creation above 272k context for priority (OpenAI Fast mode) requests.
+    cache_creation_input_token_cost_ultrafast:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_above_272k_tokens_ultrafast:
       type: number
       minimum: 0
     cache_creation_input_token_cost_fast:
@@ -2604,17 +2883,23 @@ ComplexitySemanticConfig:
         and falls back to the embedded store otherwise.
     fallback:
       type: string
-      enum: [none, llm, jev]
+      enum: [none, llm, decision]
       description: |
         What answers when semantic classification produces no tier. `none`
         (the default) records the request as skipped, `llm` uses the configured
-        chat model, and `jev` uses the Typesafe decision API.
+        chat model, and `decision` uses the configured decision model.
 
-ComplexityJevConfig:
+ComplexityDecisionConfig:
   type: object
-  description: Typesafe Jev complexity-classifier request settings. Credentials come from the Typesafe provider configuration.
+  description: Decision-model complexity-classifier request settings. Credentials come from the selected provider's configuration.
   additionalProperties: false
   properties:
+    provider:
+      type: string
+      description: Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`.
+    model:
+      type: string
+      description: Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`.
     previous_message_count:
       type: integer
       minimum: 0
@@ -2622,7 +2907,7 @@ ComplexityJevConfig:
       default: 1
       description: Number of preceding user messages sent with the current user request. Assistant messages are excluded.
     timeout:
-      description: Maximum Jev classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.
+      description: Maximum decision-model classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.
       oneOf:
         - type: string
           pattern: '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)$'
@@ -2630,17 +2915,17 @@ ComplexityJevConfig:
           minimum: 0
     criteria:
       type: object
-      description: Per-tier overrides of the shipped Jev definitions, signals, and examples. Any tier or field left out sends the default.
+      description: Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.
       additionalProperties: false
       properties:
         SIMPLE:
-          $ref: '#/ComplexityJevTierCriteria'
+          $ref: '#/ComplexityDecisionTierCriteria'
         MEDIUM:
-          $ref: '#/ComplexityJevTierCriteria'
+          $ref: '#/ComplexityDecisionTierCriteria'
         COMPLEX:
-          $ref: '#/ComplexityJevTierCriteria'
+          $ref: '#/ComplexityDecisionTierCriteria'
 
-ComplexityJevTierCriteria:
+ComplexityDecisionTierCriteria:
   type: object
   additionalProperties: false
   properties:
@@ -2749,9 +3034,9 @@ ComplexitySemanticStatus:
     llm_default_prompt:
       type: string
       description: The shipped classification guidance, served so a configuration client can seed its prompt editor and offer a reset without holding a copy that drifts from the gateway's. Always present in the response, regardless of whether an llm block is configured.
-    jev_defaults:
+    decision_defaults:
       type: object
-      description: The shipped Jev per-tier criteria, served so a configuration client can seed its editors and offer resets. Always present. The fixed question, decision rule, and context rule are not exposed.
+      description: The shipped decision-model per-tier criteria, served so a configuration client can seed its editors and offer resets. Always present. The fixed question, decision rule, and context rule are not exposed.
       properties:
         criteria:
           type: object
@@ -2799,7 +3084,7 @@ ComplexityAnalyzerConfig:
           required: [classifier]
           properties:
             classifier:
-              const: jev
+              const: decision
         properties:
           session:
             properties:
@@ -2832,13 +3117,13 @@ ComplexityAnalyzerConfig:
       $ref: '#/ComplexityKeywordConfig'
     classifier:
       type: string
-      enum: [semantic, jev]
+      enum: [semantic, decision]
       default: semantic
       description: Primary complexity classifier; omitted configuration keeps the semantic default.
     semantic:
       $ref: '#/ComplexitySemanticConfig'
-    jev:
-      $ref: '#/ComplexityJevConfig'
+    decision:
+      $ref: '#/ComplexityDecisionConfig'
     llm:
       $ref: '#/ComplexityLLMConfig'
     session:

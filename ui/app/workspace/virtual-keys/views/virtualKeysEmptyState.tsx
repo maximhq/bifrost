@@ -37,7 +37,7 @@ export function VirtualKeysEmptyState({ onAddClick, canCreate = true }: VirtualK
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
 					<DisabledReason reason={actionDisabledReason(canCreate, "create", "virtual keys")}>
-						<Button aria-label="Add your first virtual key" onClick={onAddClick} disabled={!canCreate} data-testid="create-vk-btn">
+						<Button onClick={onAddClick} disabled={!canCreate} data-testid="create-vk-btn">
 							Add Virtual Key
 						</Button>
 					</DisabledReason>
