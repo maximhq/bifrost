@@ -1407,13 +1407,13 @@ export function LogDetailView({
 								<LogEntryDetailsView
 									className="w-full"
 									label="Latency"
-									tooltip="Total end-to-end request time: upstream plus Bifrost overhead."
+									tooltip="Time this call took end to end: upstream plus Bifrost overhead."
 									value={log.latency == null || isNaN(log.latency) ? "N/A" : <div>{log.latency.toFixed(2)}ms</div>}
 								/>
 								<LogEntryDetailsView
 									className="w-full"
 									label="Upstream Latency"
-									tooltip="Time spent waiting on the provider, summed across every attempt."
+									tooltip="Time this call spent waiting on the provider, including its retries."
 									value={
 										log.upstream_latency == null || isNaN(log.upstream_latency) ? "N/A" : <div>{log.upstream_latency.toFixed(2)}ms</div>
 									}

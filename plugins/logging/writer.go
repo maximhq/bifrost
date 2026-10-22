@@ -81,11 +81,18 @@ type PendingLogData struct {
 type pendingInjectEntries struct {
 	mu        sync.Mutex
 	entries   []*logstore.Log
+	windows   []rowWindow // parallel to entries: each row's attempt window, if measured
 	createdAt time.Time
 	// drained is set by Inject under mu once entries has been handed to the write
 	// queue. A storeOrEnqueueEntry that appends after that point would be writing
 	// into a slice nobody reads again; it writes directly instead.
 	drained bool
+}
+
+// rowWindow is a parked row's attempt window; ok is false when none was measured.
+type rowWindow struct {
+	window schemas.AttemptWindow
+	ok     bool
 }
 
 // pendingAgentInjectEntries is the Agent analogue of pendingInjectEntries: request
