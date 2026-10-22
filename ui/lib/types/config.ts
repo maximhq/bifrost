@@ -780,6 +780,7 @@ export interface BifrostConfig {
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
 	env_label?: string;
+	disable_onboarding?: boolean;
 	agent_gateway?: {
 		grpc_base_domain: string;
 		grpc_port: number;

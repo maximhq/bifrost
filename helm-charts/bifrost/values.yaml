@@ -234,6 +234,7 @@ bifrost:
   logLevel: info
   logStyle: json
   # envLabel: staging  # Short label (max 10 chars) shown in the UI sidebar to identify the environment
+  # disableOnboarding: true  # Hide the UI setup checklist for everyone; survives pod replacement, unlike "hide for everyone"
 
   # Bootstrap secret to create the first admin account. Use the same value on every node so any
   # node can authorize first-admin creation. Never persisted or logged; also read from
