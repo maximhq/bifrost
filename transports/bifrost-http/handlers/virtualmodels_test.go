@@ -97,7 +97,7 @@ func TestVirtualModelRetrieve(t *testing.T) {
 
 	// The port is closed, so the probe fails and residency is simply absent - which must
 	// not stop the metadata from answering.
-	resp, ok := virtualModelRetrieve(ctx, cfg, "qwen38", nil, false)
+	resp, ok := virtualModelRetrieve(ctx, cfg, "qwen38", "", nil, false)
 	if !ok {
 		t.Fatal("a virtual name was not recognised")
 	}
@@ -112,16 +112,43 @@ func TestVirtualModelRetrieve(t *testing.T) {
 	}
 
 	// The provider-prefixed form addresses the same model.
-	if _, ok := virtualModelRetrieve(ctx, cfg, "omlx%2Fqwen38", nil, false); !ok {
+	if _, ok := virtualModelRetrieve(ctx, cfg, "omlx%2Fqwen38", "", nil, false); !ok {
 		t.Fatal("provider/model form was not recognised")
 	}
 
-	if _, ok := virtualModelRetrieve(ctx, cfg, "gpt-4o", nil, false); ok {
+	if _, ok := virtualModelRetrieve(ctx, cfg, "gpt-4o", "", nil, false); ok {
 		t.Fatal("a concrete model name must fall through to the upstream path")
 	}
-	if _, ok := virtualModelRetrieve(ctx, &lib.Config{}, "qwen38", nil, false); ok {
+	if _, ok := virtualModelRetrieve(ctx, &lib.Config{}, "qwen38", "", nil, false); ok {
 		t.Fatal("a gateway without virtual models must fall through")
 	}
 }
 
 func ptrInt(n int) *int { return &n }
+
+// An explicit provider is a constraint on who is being asked, not a hint. When it disagrees with
+// the provider that owns the virtual model, the client wants that provider's own model of the same
+// name, so the virtual entry must not answer. It did: ?provider= was ignored outright, and the
+// prefixed form came back 403 for a concrete model that exists. Both fall through to the upstream
+// path now, which is where that 404 belongs.
+func TestVirtualRetrieveHonoursTheRequestedProvider(t *testing.T) {
+	cfg := testVirtualConfig(t)
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	if resp, handled := virtualModelRetrieve(ctx, cfg, "openai/qwen38", "", nil, false); handled {
+		t.Fatalf("openai/qwen38 was answered by the omlx virtual model (resp=%v), want it left for openai", resp)
+	}
+	if resp, handled := virtualModelRetrieve(ctx, cfg, "qwen38", "openai", nil, false); handled {
+		t.Fatalf("?provider=openai was ignored and the virtual entry answered (resp=%v)", resp)
+	}
+
+	// The owning provider answers whichever way it is spelled, and so does a bare name: that is
+	// the construct itself, and a case-sensitive comparison would break it for ?provider=OMLX.
+	for _, requested := range []schemas.ModelProvider{"", "omlx", "OMLX"} {
+		resp, handled := virtualModelRetrieve(ctx, cfg, "qwen38", requested, nil, false)
+		if !handled || resp == nil {
+			t.Fatalf("provider %q: the virtual model did not answer (handled=%v, resp=%v)", requested, handled, resp)
+		}
+	}
+}

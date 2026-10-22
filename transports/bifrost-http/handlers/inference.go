@@ -1072,7 +1072,7 @@ func (h *CompletionHandler) modelRetrieve(ctx *fasthttp.RequestCtx) {
 		if virtualModelsEnabled(h.config) {
 			access = h.virtualModelAccess(bifrostCtx)
 		}
-		if virtualResp, ok := virtualModelRetrieve(bifrostCtx, h.config, raw, access, presented); ok {
+		if virtualResp, ok := virtualModelRetrieve(bifrostCtx, h.config, raw, schemas.ModelProvider(ctx.QueryArgs().Peek("provider")), access, presented); ok {
 			if virtualResp == nil {
 				SendError(ctx, fasthttp.StatusForbidden, "virtual model access denied")
 				return

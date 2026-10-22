@@ -45,7 +45,7 @@ func TestVirtualDiscoveryRestrictedAccess(t *testing.T) {
 
 			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 			defer ctx.Cancel()
-			retrieved, handled := virtualModelRetrieve(ctx, cfg, "qwen38", tt.access, false)
+			retrieved, handled := virtualModelRetrieve(ctx, cfg, "qwen38", "", tt.access, false)
 			if !handled {
 				t.Fatal("virtual name was not handled")
 			}
@@ -71,15 +71,16 @@ func TestVirtualDiscoveryUnfilteredWithoutAccess(t *testing.T) {
 	}
 }
 
-// A provider-prefixed name must not address another provider's virtual model: residency was
-// measured on the owning provider, so honouring the prefix would hand out a mapping nobody
-// checked. It is handled (never forwarded upstream) and answers nothing.
-func TestVirtualRetrieveRejectsWrongProvider(t *testing.T) {
+// A prefix naming some other provider is not a request for this construct: the client is asking
+// for that provider's own model of the same name, which has to stay reachable, since a virtual
+// model named after a vendor model is the usual migration shape. Falling through hands the request
+// to the provider the client named, which answers with its own truth, so no unmeasured mapping
+// is ever handed out. Claiming it here instead 403'd a valid concrete lookup.
+func TestVirtualRetrieveFallsThroughForAnotherProvider(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	defer ctx.Cancel()
-	resp, handled := virtualModelRetrieve(ctx, testVirtualConfig(t), "ollama/qwen38", nil, false)
-	if !handled || resp != nil {
-		t.Fatalf("wrong provider prefix returned %+v handled=%v, want nothing handled", resp, handled)
+	if resp, handled := virtualModelRetrieve(ctx, testVirtualConfig(t), "ollama/qwen38", "", nil, false); handled {
+		t.Fatalf("wrong provider prefix was claimed as virtual (resp=%v), want it left for the named provider", resp)
 	}
 }
 
@@ -193,7 +194,7 @@ func TestVirtualDiscoveryDeniesUnresolvedCredential(t *testing.T) {
 
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	defer ctx.Cancel()
-	resp, handled := virtualModelRetrieve(ctx, cfg, "qwen38", nil, true)
+	resp, handled := virtualModelRetrieve(ctx, cfg, "qwen38", "", nil, true)
 	if !handled {
 		t.Fatal("virtual name was forwarded upstream instead of answered here")
 	}
