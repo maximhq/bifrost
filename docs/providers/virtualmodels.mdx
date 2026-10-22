@@ -105,7 +105,9 @@ Virtual names appear in `/v1/models` and `/api/models`. Listings do not probe re
 - `bifrost:residency-observed-at`
 - `bifrost:resident-model`, when a candidate is ready
 
-Discovery filters virtual names by the caller's resolved access: the provider and **every candidate** must be permitted before the entry and its residency are published. A caller granted no providers sees nothing, and a provider prefix that does not match the owning provider is rejected.
+Discovery filters virtual names by the caller's resolved access: the provider and **every candidate** must be permitted before the entry and its residency are published. A caller granted no providers sees nothing.
+
+A provider named explicitly, by path prefix or `?provider=`, outranks the virtual name. When it is not the owning provider, the request is for that provider's own model of the same name, so Bifrost leaves it untouched and the named provider answers. A virtual model may therefore share a vendor model's name without hiding it, and `provider/model` stays the way to pin the vendor.
 
 On the dashboard listing they take the same `?keys=` filter the concrete models take. A virtual model is listed only when the selected keys reach **every** candidate, since any one of them may be the one that serves, and the keys that do reach all of them are reported in `accessible_by_keys` exactly as a concrete model reports them.
 
