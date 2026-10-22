@@ -3904,7 +3904,7 @@ func (s *BifrostHTTPServer) Start() error {
 		return fmt.Errorf("failed to create listener on %s: %v", serverAddr, err)
 	}
 	go func() {
-		logger.Info("successfully started bifrost, serving UI on http://%s", serverAddr)
+		logger.Info("successfully started bifrost, serving UI on http://%s%s/", serverAddr, s.BasePath)
 		if err := s.Server.Serve(ln); err != nil {
 			errChan <- err
 		}
