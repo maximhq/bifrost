@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // newTestPlugin builds a PrometheusPlugin on a fresh registry with no pricing manager (cost
@@ -958,5 +960,117 @@ func TestInitReturnsErrorOnRegistrationConflict(t *testing.T) {
 	}
 	if p != nil {
 		t.Fatalf("Init returned a plugin alongside the error: %v", p)
+	}
+}
+
+// overheadResponse is a minimal chat response PostLLMHook accepts as a completed request.
+func overheadResponse() *schemas.BifrostResponse {
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	resp.PopulateExtraFields(schemas.ChatCompletionRequest, "openai", "m", "m")
+	return resp
+}
+
+// waitForOverheadSeries polls until bifrost_overhead_latency_microseconds has want series.
+func waitForOverheadSeries(t *testing.T, p *PrometheusPlugin, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		got := testutil.CollectAndCount(p.OverheadLatencyMicros)
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("bifrost_overhead_latency_microseconds series = %d, want %d (timed out)", got, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The HTTP server runs transport hooks on one BifrostContext and LLM hooks on a separate
+// handler context seeded from it; values set on the handler context never flow back. The
+// scalar overhead histogram was never observed over HTTP because of that split.
+func TestOverheadLatencyRecordedAcrossTransportAndHandlerContexts(t *testing.T) {
+	p := newTestPlugin(t)
+	transportCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, err := p.HTTPTransportPreHook(transportCtx, &schemas.HTTPRequest{}); err != nil {
+		t.Fatalf("HTTPTransportPreHook: %v", err)
+	}
+	// Mirrors TransportInterceptorMiddleware -> fasthttp user values -> ConvertToBifrostContext.
+	handlerCtx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	for k, v := range transportCtx.GetUserValues() {
+		handlerCtx.SetValue(k, v)
+	}
+	handlerCtx.ResetUpstreamLatency()
+	if _, _, err := p.PreLLMHook(handlerCtx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	schemas.AddUpstreamLatency(handlerCtx, time.Millisecond)
+	if _, _, err := p.PostLLMHook(handlerCtx, overheadResponse(), nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+	if err := p.HTTPTransportPostHook(transportCtx, &schemas.HTTPRequest{}, &schemas.HTTPResponse{}); err != nil {
+		t.Fatalf("HTTPTransportPostHook: %v", err)
+	}
+	if got := testutil.CollectAndCount(p.OverheadLatencyMicros); got != 1 {
+		t.Fatalf("bifrost_overhead_latency_microseconds series = %d, want 1", got)
+	}
+	// The LLM-hook goroutine must not record a second observation for an HTTP request.
+	time.Sleep(50 * time.Millisecond)
+	if got := histogramSampleCount(t, p.registry, "bifrost_overhead_latency_microseconds"); got != 1 {
+		t.Fatalf("bifrost_overhead_latency_microseconds samples = %d, want 1", got)
+	}
+}
+
+// Go SDK callers have no transport hooks, so PostLLMHook records overhead itself.
+func TestOverheadLatencyRecordedForSDKCaller(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	ctx.ResetUpstreamLatency()
+	if _, _, err := p.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	if _, _, err := p.PostLLMHook(ctx, overheadResponse(), nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+	waitForOverheadSeries(t, p, 1)
+}
+
+// histogramSampleCount sums the observation count across every series of a histogram family.
+func histogramSampleCount(t *testing.T, reg *prometheus.Registry, name string) uint64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var n uint64
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			n += m.GetHistogram().GetSampleCount()
+		}
+	}
+	return n
+}
+
+// BenchmarkTransportOverheadHooks covers the per-request transport work: slot stamp,
+// LLM-hook capture handoff, and the scalar overhead observation.
+func BenchmarkTransportOverheadHooks(b *testing.B) {
+	p, err := Init(&Config{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatalf("Init: %v", err)
+	}
+	labels := make([]string, len(p.defaultBifrostLabels))
+	upstream := &atomic.Int64{}
+	req := &schemas.HTTPRequest{}
+	resp := &schemas.HTTPResponse{}
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, _ = p.HTTPTransportPreHook(ctx, req)
+		slot := ctx.Value(overheadSlotKey).(*overheadSlot)
+		slot.capture.Store(&overheadCapture{labels: labels, upstream: upstream})
+		_ = p.HTTPTransportPostHook(ctx, req, resp)
 	}
 }
