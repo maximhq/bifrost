@@ -446,7 +446,7 @@
           "name": "BytePlus API Key",
           "value": "env.BYTEPLUS_API_KEY",
           "weight": 1,
-          "models": ["deepseek-v4-flash-260425", "skylark-embedding-vision-251215", "dola-seedream-5-0-pro-260628", "dreamina-seedance-2-5-260628"]
+          "models": ["deepseek-v4-flash-260425", "skylark-embedding-vision-251215", "dola-seedream-5-0-pro-260628", "seedream-4-5-251128", "dreamina-seedance-2-5-260628"]
         }
       ],
       "network_config": {

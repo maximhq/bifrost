@@ -2,6 +2,7 @@ package datasheet
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -161,6 +162,17 @@ func (s *Store) CalculateVideoCostDetails(dims VideoPricingDimensions, provider 
 	return VideoCostDetails{Cost: breakdown.TotalCost, Priced: true, Breakdown: breakdown}
 }
 
+// videoClipCount counts the billable clips in outputs, skipping image outputs such as a task's last frame.
+func videoClipCount(outputs []schemas.VideoOutput) int {
+	n := 0
+	for i := range outputs {
+		if !strings.HasPrefix(outputs[i].ContentType, "image/") {
+			n++
+		}
+	}
+	return n
+}
+
 // VideoDimensionsFromResponse reads back everything a terminal video response
 // actually reports. What that amounts to varies enormously by provider — OpenAI
 // echoes model, duration and size; several others report only a status and a URL —
@@ -172,7 +184,7 @@ func VideoDimensionsFromResponse(resp *schemas.BifrostVideoGenerationResponse) V
 	dims := VideoPricingDimensions{
 		Model:       resp.Model,
 		Size:        resp.Size,
-		OutputCount: len(resp.Videos),
+		OutputCount: videoClipCount(resp.Videos),
 	}
 	if resp.Seconds != nil {
 		if seconds, err := strconv.Atoi(*resp.Seconds); err == nil {

@@ -189,15 +189,50 @@ func ToBifrostImageGenerationResponse(resp *BytePlusImageGenerationResponse, mod
 		Model:   model,
 		Data:    data,
 	}
-	if resp.Usage != nil {
-		bifrostResp.Usage = &schemas.ImageUsage{
-			OutputTokens: resp.Usage.OutputTokens,
-			TotalTokens:  resp.Usage.TotalTokens,
-			OutputTokensDetails: &schemas.ImageTokenDetails{
-				NImages:     resp.Usage.GeneratedImages,
-				ImageTokens: resp.Usage.OutputTokens,
-			},
-		}
-	}
+	bifrostResp.Usage = ToBifrostImageUsage(resp.Usage)
 	return bifrostResp, nil
 }
+
+// ToBifrostImageUsage converts Seedream usage to Bifrost image usage.
+func ToBifrostImageUsage(usage *BytePlusImageUsage) *schemas.ImageUsage {
+	if usage == nil {
+		return nil
+	}
+	return &schemas.ImageUsage{
+		OutputTokens: usage.OutputTokens,
+		TotalTokens:  usage.TotalTokens,
+		OutputTokensDetails: &schemas.ImageTokenDetails{
+			NImages:     usage.GeneratedImages,
+			ImageTokens: usage.OutputTokens,
+		},
+	}
+}
+
+// bytePlusImageStreamError builds the error for a failed stream event. A per-image failure is a moderation
+// refusal unless Ark reports an internal error, the only per-image failure that aborts the stream; an error
+// event without an image index rejects the whole request.
+func bytePlusImageStreamError(failure *BytePlusError, perImage bool) *schemas.BifrostError {
+	message := "byteplus returned no images"
+	var code string
+	if failure != nil {
+		code = failure.Code
+		if failure.Message != "" {
+			message = failure.Message
+		}
+	}
+	status, errType := 400, "invalid_request_error"
+	if perImage {
+		errType = "content_filter"
+	}
+	if code == bytePlusInternalServiceError {
+		status, errType = 500, "server_error"
+	}
+	bifrostErr := providerUtils.NewProviderAPIError(message, nil, status, schemas.Ptr(errType), nil)
+	if code != "" {
+		bifrostErr.Error.Code = schemas.Ptr(code)
+	}
+	return bifrostErr
+}
+
+// bytePlusInternalServiceError is the per-image error code after which Ark stops generating.
+const bytePlusInternalServiceError = "InternalServiceError"
