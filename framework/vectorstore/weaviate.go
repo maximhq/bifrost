@@ -473,6 +473,33 @@ func (s *WeaviateStore) RequiresVectors() bool {
 	return true
 }
 
+// weaviateIntegrationHeader tells the Weaviate server (1.38+) which integration sent a request.
+const weaviateIntegrationHeader = "X-Weaviate-Client-Integration"
+
+// weaviateClientHeaders returns a copy of the user's headers with an
+// X-Weaviate-Client-Integration header of "bifrost/<version>" added. The version comes from the
+// runtime version the server puts on the bootstrap context, or "unknown" when it is absent. A
+// user-supplied header of the same name, in any case, is kept as given.
+func weaviateClientHeaders(ctx context.Context, userHeaders map[string]string) map[string]string {
+	headers := make(map[string]string, len(userHeaders)+1)
+	userSet := false
+	for k, v := range userHeaders {
+		headers[k] = v
+		userSet = userSet || strings.EqualFold(k, weaviateIntegrationHeader)
+	}
+	if userSet {
+		return headers
+	}
+	version := "unknown"
+	if ctx != nil {
+		if v, ok := ctx.Value(schemas.BifrostContextKeyRuntimeVersion).(string); ok && strings.TrimPrefix(v, "v") != "" {
+			version = strings.TrimPrefix(v, "v")
+		}
+	}
+	headers[weaviateIntegrationHeader] = "bifrost/" + version
+	return headers
+}
+
 // newWeaviateStore creates a new Weaviate vector store.
 func newWeaviateStore(ctx context.Context, config *WeaviateConfig, logger schemas.Logger) (*WeaviateStore, error) {
 	// Validate required config
@@ -501,10 +528,8 @@ func newWeaviateStore(ctx context.Context, config *WeaviateConfig, logger schema
 		}
 	}
 
-	// Add custom headers if provided
-	if len(config.Headers) > 0 {
-		cfg.Headers = config.Headers
-	}
+	// Custom headers plus the integration header, sent on REST and gRPC requests
+	cfg.Headers = weaviateClientHeaders(ctx, config.Headers)
 
 	// Create client
 	client, err := weaviate.NewClient(cfg)
