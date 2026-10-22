@@ -235,6 +235,8 @@ deleteResults, err := store.DeleteAll(ctx, namespace, queries)
 Index rebuilding can be asynchronous, so a search may miss while surviving entries are re-indexed. `FLUSHDB` also deletes the cached responses themselves; those responses must be populated again. Direct cache fetches do not need a search index and are unchanged.
 
 Only registered namespaces are eligible for recovery. A namespace explicitly deleted through that instance's vector-store lifecycle is forgotten and is not recreated by later reads. Prefer Bifrost's cache-clear endpoints over `FLUSHDB` when clearing responses without destroying the index.
+
+**Valkey Namespace Deletion**: Valkey Search versions that reject the Redis `DD` option are handled by dropping the index without `DD`, then deleting keys under the namespace's literal prefix. This fallback requires `FT.DROPINDEX`, `SCAN`, and `DEL` permissions; permission and transport errors are returned rather than treated as unsupported syntax. Redis deployments supporting `DD` retain native document deletion.
 </Info>
 
 <Warning>

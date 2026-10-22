@@ -25,6 +25,9 @@ vector-store/plugin settings, retaining its provider keys and inference-auth set
 }
 ```
 
+The same fixture can use `valkey/valkey-bundle:9.0.0` or `9.1.0` in place of the
+Redis image below; keep the vector-store type as `redis` and the same isolated port.
+
 Start the backing service and the gateway in separate terminals:
 
 ```bash
