@@ -548,6 +548,54 @@ func TestToOpenAIChatRequest_StripsUnsupportedSamplingParams(t *testing.T) {
 	}
 }
 
+// TestToOpenAIChatRequest_HonorsLunaConditionalLogprobsRow drives the chat
+// request shaper with the public gpt-6-luna row (issue #8848): the row gates
+// logprobs/top_logprobs behind "when_effort_none". With the row installed the
+// gate must keep the fields at reasoning_effort "none" — where OpenAI returns
+// logprobs — and strip them once reasoning is on, instead of the name-based
+// gpt-6 default that rejects them at every effort.
+func TestToOpenAIChatRequest_HonorsLunaConditionalLogprobsRow(t *testing.T) {
+	installCapabilityRecord(t, "gpt-6-luna", &schemas.ModelCapabilities{
+		IsReasoningModel:       schemas.Ptr(true),
+		DefaultReasoningEffort: schemas.Ptr(schemas.ReasoningEffortMedium),
+		ConditionallyUnsupportedFields: map[string]string{
+			schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
+			schemas.FieldTopP:        schemas.ConditionWhenEffortNone,
+			schemas.FieldLogprobs:    schemas.ConditionWhenEffortNone,
+			schemas.FieldTopLogprobs: schemas.ConditionWhenEffortNone,
+		},
+	})
+
+	build := func(effort string) *schemas.BifrostChatRequest {
+		params := &schemas.ChatParameters{
+			Temperature: schemas.Ptr(0.2),
+			TopP:        schemas.Ptr(0.9),
+			LogProbs:    new(true),
+			TopLogProbs: schemas.Ptr(3),
+		}
+		if effort != "" {
+			params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr(effort)}
+		}
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-6-luna",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: params,
+		}
+	}
+
+	out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), build("none"))
+	require.NotNil(t, out.LogProbs, "logprobs must survive at reasoning_effort none (#8848)")
+	require.NotNil(t, out.TopLogProbs)
+
+	out = ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), build("low"))
+	require.Nil(t, out.LogProbs, "the condition only holds while reasoning is off")
+	require.Nil(t, out.TopLogProbs)
+}
+
 func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEffort(t *testing.T) {
 	// Register the custom "deepseek" provider so ParseModelString strips its prefix.
 	schemas.RegisterKnownProvider(schemas.ModelProvider("deepseek"))
