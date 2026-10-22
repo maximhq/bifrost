@@ -8695,10 +8695,6 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 			return dbErr
 		}
 	}
-	// Probes read base URL, credentials and TLS from the provider config, so rebuild them before
-	// the next request.
-	c.refreshVirtualModelProbes()
-
 	// Release lock before calling client.UpdateProvider to avoid deadlock
 	// client.UpdateProvider will call GetConfigForProvider which needs RLock
 	c.Mu.Unlock()
@@ -8718,6 +8714,10 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 		// but the in-memory state will be consistent
 		return fmt.Errorf("failed to update provider: %w", clientErr)
 	}
+
+	// Probes read base URL, credentials and TLS from the provider config. Rebuild them only once the
+	// update has been accepted, so a rollback cannot leave them pointing at the rejected config.
+	c.refreshVirtualModelProbes()
 
 	logger.Info("Updated configuration for provider: %s", provider)
 	return nil
