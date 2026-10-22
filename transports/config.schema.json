@@ -6589,6 +6589,12 @@
           "maximum": 3600,
           "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
         },
+        "list_models_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "description": "Timeout when polling this provider for the model list in seconds. Default: 5."
+        },
         "keep_alive_timeout_in_seconds": {
           "type": "integer",
           "minimum": 1,
@@ -6669,6 +6675,12 @@
           "minimum": 5,
           "maximum": 3600,
           "description": "Idle timeout per stream chunk in seconds. If no data is received for this many seconds, the stream is closed. Default: 120."
+        },
+        "list_models_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "description": "Timeout when polling this provider for the model list in seconds. Default: 5."
         },
         "keep_alive_timeout_in_seconds": {
           "type": "integer",

@@ -719,6 +719,12 @@ export const networkConfigSchema = z
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
+		list_models_timeout_in_seconds: z
+			.number()
+			.int("List models timeout must be a whole number of seconds")
+			.min(1, "List models timeout must be at least 1 second")
+			.max(3600, "List models timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		keep_alive_timeout_in_seconds: z
 			.number()
 			.int("Keep-alive timeout must be a whole number of seconds")
@@ -783,6 +789,12 @@ export const networkFormConfigSchema = z
 			.int("Stream idle timeout must be a whole number of seconds")
 			.min(5, "Stream idle timeout must be at least 5 seconds")
 			.max(3600, "Stream idle timeout must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
+		list_models_timeout_in_seconds: z.coerce
+			.number("List models timeout must be a number")
+			.int("List models timeout must be a whole number of seconds")
+			.min(1, "List models timeout must be at least 1 second")
+			.max(3600, "List models timeout must be at most 3600 seconds i.e. 60 minutes")
 			.optional(),
 		keep_alive_timeout_in_seconds: z.coerce
 			.number("Keep-alive timeout must be a number")
