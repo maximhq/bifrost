@@ -42,6 +42,7 @@ import { CheckCircle2, ExternalLink, Fingerprint, KeyRound, Loader2, LogIn, Shie
 import { useQueryState } from "nuqs";
 import React from "react";
 import { useEffect, useMemo, useState } from "react";
+import { getCurrentAppPath, withBasePath } from "@/lib/utils/basePath";
 
 // Mirrors handlers.TempTokenRejectedCode: a presented token was refused.
 const TEMP_TOKEN_REJECTED_CODE = "temp_token_rejected";
@@ -69,7 +70,7 @@ function OAuthAuthView() {
 	const [usingTempToken] = useState(() => getActiveTempToken() !== null);
 	const loginGoto = useMemo(() => {
 		if (typeof window !== "undefined") {
-			return `${window.location.pathname}${window.location.search}`;
+			return getCurrentAppPath();
 		}
 		if (flowId) {
 			return `/workspace/mcp-sessions/auth?flow=${encodeURIComponent(flowId)}`;
@@ -517,7 +518,7 @@ function SessionsTabLink({ variant = "outline" }: { variant?: "outline" | "ghost
 function RedirectToSignIn({ loginHref }: { loginHref: string }) {
 	useEffect(() => {
 		// replace(), so Back from /login doesn't re-enter the redirect.
-		window.location.replace(loginHref);
+		window.location.replace(withBasePath(loginHref));
 	}, [loginHref]);
 
 	return (

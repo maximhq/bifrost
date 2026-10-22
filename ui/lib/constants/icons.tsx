@@ -1,6 +1,7 @@
 import { Database, Landmark, Link2, Network, Shuffle, Workflow } from "lucide-react";
 import { useTheme } from "next-themes";
 import { cn } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
 type IconSize = "xs" | "sm" | "md" | "lg" | "xl" | number;
 type IconProps = {
@@ -66,7 +67,7 @@ export const ProviderIcons = {
 	azure: ({ className = "" }: IconProps) => {
 		return (
 			<img
-				src="/images/azure.webp"
+				src={withBasePath("/images/azure.webp")}
 				alt="azure"
 				width={14}
 				height={14}
@@ -465,7 +466,7 @@ export const ProviderIcons = {
 	sgl: ({ className = "" }: IconProps) => {
 		return (
 			<img
-				src="/images/sgl.webp"
+				src={withBasePath("/images/sgl.webp")}
 				alt="sgl"
 				width={14}
 				height={14}
@@ -670,7 +671,7 @@ export const ProviderIcons = {
 	nebius: ({ className = "" }: IconProps) => {
 		return (
 			<img
-				src="/images/nebius.webp"
+				src={withBasePath("/images/nebius.webp")}
 				alt="nebius"
 				width={14}
 				height={14}
@@ -686,7 +687,7 @@ export const ProviderIcons = {
 	laya: ({ className = "" }: IconProps) => {
 		return (
 			<img
-				src="/images/laya.png"
+				src={withBasePath("/images/laya.png")}
 				alt="laya"
 				width={16}
 				height={16}
@@ -699,7 +700,7 @@ export const ProviderIcons = {
 	nimble: ({ className = "" }: IconProps) => {
 		return (
 			<img
-				src="/images/nimble.png"
+				src={withBasePath("/images/nimble.png")}
 				alt="nimble"
 				width={16}
 				height={16}
@@ -712,7 +713,7 @@ export const ProviderIcons = {
 	clef: ({ className = "" }: IconProps) => {
 		return (
 			<img
-				src="/images/clef.png"
+				src={withBasePath("/images/clef.png")}
 				alt="clef"
 				width={16}
 				height={16}
@@ -938,7 +939,7 @@ export const ProviderIcons = {
 
 		return (
 			<img
-				src="/images/databricks.svg"
+				src={withBasePath("/images/databricks.svg")}
 				alt="databricks"
 				width={resolvedSize}
 				height={resolvedSize}

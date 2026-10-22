@@ -3,6 +3,7 @@ import { buildOpenCodeConfig } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { HarnessInstallProps } from "../types";
 import { getRegistrationLabel } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
 export function OpenCodeHarnessInstall({
 	canGenerateCommand,
@@ -38,7 +39,7 @@ export function OpenCodeHarnessInstall({
 			emptyMessage={emptyMessage}
 			harnessName="OpenCode"
 			label="Config"
-			logoSrc="/images/harness/opencode.svg"
+			logoSrc={withBasePath("/images/harness/opencode.svg")}
 			registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 		/>
 	);

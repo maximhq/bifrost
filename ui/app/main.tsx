@@ -10,6 +10,7 @@ import { ErrorComponent } from "./__error";
 import { NotFoundComponent } from "./__notFound";
 import { UpdatingBanner, UpdatingScreen } from "./__updating";
 import { routeTree } from "./routeTree.gen";
+import { getBasePath } from "@/lib/utils/basePath";
 
 installVersionSkewListeners();
 
@@ -40,6 +41,7 @@ function stringifySearchValue(value: unknown): string {
 
 const router = createRouter({
 	routeTree,
+	basepath: getBasePath() || "/",
 	defaultPreload: "intent",
 	scrollRestoration: true,
 	notFoundMode: "root",

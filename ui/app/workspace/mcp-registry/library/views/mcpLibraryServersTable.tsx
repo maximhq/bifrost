@@ -11,6 +11,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { MCPLibraryDeleteDialog } from "./mcpLibraryDeleteDialog";
 import { authLabel, MCP_ICON_FALLBACK, transportIcon, transportLabel } from "./mcpLibraryServerCard";
+import { withBasePath } from "@/lib/utils/basePath";
 
 interface MCPLibraryServersTableProps {
 	servers: MCPLibraryEntry[];
@@ -70,7 +71,7 @@ export function MCPLibraryServersTable({
 												}}
 											/>
 										) : (
-											<img src={"/images/mcp.svg"} alt="" className="h-full w-full object-contain p-1.5" />
+											<img src={withBasePath("/images/mcp.svg")} alt="" className="h-full w-full object-contain p-1.5" />
 										)}
 									</div>
 								</TableCell>

@@ -4,6 +4,7 @@ import { buildClaudeCodeCommand } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { ClaudeScope, HarnessInstallProps } from "../types";
 import { getRegistrationLabel } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
 export function ClaudeCodeHarnessInstall({
 	canGenerateCommand,
@@ -44,7 +45,7 @@ export function ClaudeCodeHarnessInstall({
 			}
 			emptyMessage={emptyMessage}
 			harnessName="Claude Code"
-			logoSrc="/images/harness/claudecode.svg"
+			logoSrc={withBasePath("/images/harness/claudecode.svg")}
 			registrationLabel={getRegistrationLabel(serverScope, selectedServers)}
 		/>
 	);

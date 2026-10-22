@@ -14,6 +14,7 @@ import { getActiveTempToken } from "@/lib/store/apis/tempToken";
 import { Fingerprint, KeyRound, Loader2, LogIn, ShieldCheck, UserRound } from "lucide-react";
 import { useQueryState } from "nuqs";
 import React, { useEffect, useMemo, useState } from "react";
+import { withBasePath } from "@/lib/utils/basePath";
 
 // Mirrors handlers.TempTokenRejectedCode: a presented token was refused.
 const TEMP_TOKEN_REJECTED_CODE = "temp_token_rejected";
@@ -321,7 +322,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 function RedirectToSignIn({ loginHref }: { loginHref: string }) {
 	useEffect(() => {
 		// replace(), so Back from /login doesn't re-enter the redirect.
-		window.location.replace(loginHref);
+		window.location.replace(withBasePath(loginHref));
 	}, [loginHref]);
 
 	return (

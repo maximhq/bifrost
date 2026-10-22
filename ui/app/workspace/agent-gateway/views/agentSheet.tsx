@@ -25,6 +25,7 @@ import { useRef, useState } from "react";
 import { AuthFields, TLSFields, authSummary, emptyAuth, emptySecret, hasTLS, normalizeAuth } from "./agentAuthFields";
 import { AgentCardPreview } from "@/components/agents/agentCardPreview";
 import { AgentEndpoints } from "./agentEndpoints";
+import { withBasePath } from "@/lib/utils/basePath";
 
 const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -554,7 +555,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 							<p className="text-muted-foreground text-xs">
 								Allow Bifrost to call this agent at another address. Only needed when its runtime endpoint differs from its agent card
 								address. Private addresses must also be in the Private Network Allowlist in{" "}
-								<a href="/workspace/config/agent-gateway" className="text-primary underline underline-offset-2">
+								<a href={withBasePath("/workspace/config/agent-gateway")} className="text-primary underline underline-offset-2">
 									Agent Settings
 								</a>
 								.

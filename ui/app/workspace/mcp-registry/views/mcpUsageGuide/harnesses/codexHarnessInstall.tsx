@@ -4,6 +4,7 @@ import { buildCodexConfig } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { CodexConfigScope, HarnessInstallProps } from "../types";
 import { getRegistrationLabel, getUserHomePrefix } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
 export function CodexHarnessInstall({
 	canGenerateCommand,
@@ -48,7 +49,7 @@ export function CodexHarnessInstall({
 				emptyMessage={emptyMessage}
 				harnessName="Codex"
 				label="config.toml"
-				logoSrc="/images/harness/codex.svg"
+				logoSrc={withBasePath("/images/harness/codex.svg")}
 				registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 			/>
 		</div>

@@ -4,6 +4,7 @@ import { buildVSCodeConfig, buildVSCodeDeeplink } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { HarnessInstallProps, VSCodeConfigScope } from "../types";
 import { getRegistrationLabel } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
 export function VSCodeHarnessInstall({
 	canGenerateCommand,
@@ -56,7 +57,7 @@ export function VSCodeHarnessInstall({
 			emptyMessage={emptyMessage}
 			harnessName="VS Code"
 			label="Config"
-			logoSrc="/images/harness/vscode.svg"
+			logoSrc={withBasePath("/images/harness/vscode.svg")}
 			registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 		/>
 	);
