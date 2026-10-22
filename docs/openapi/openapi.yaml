@@ -765,6 +765,10 @@ paths:
     $ref: "./paths/management/users.yaml#/users"
   /api/governance/users/{user_id}:
     $ref: "./paths/management/users.yaml#/users-by-id"
+  /api/governance/users/me/limits:
+    $ref: "./paths/management/users.yaml#/users-me-limits"
+  /api/governance/users/{user_id}/limits:
+    $ref: "./paths/management/users.yaml#/users-limits-by-id"
   /api/governance/users/me/permissions:
     $ref: "./paths/management/users.yaml#/users-me-permissions"
   /api/governance/users/me/vk-creation-policy:
