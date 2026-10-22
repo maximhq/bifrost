@@ -2775,19 +2775,23 @@ export function LogDetailView({
 						</div>
 						{(log.ocr_input || log.ocr_output) && <OCRView ocrInput={log.ocr_input} ocrOutput={log.ocr_output} />}
 						{(log.speech_input || log.speech_output) && (
-							<SpeechView speechInput={log.speech_input} speechOutput={log.speech_output} isStreaming={log.stream} />
+							<SpeechView
+								speechInput={applyRedactionMappingToValue(log.speech_input, activeInputRevealMapping)}
+								speechOutput={log.speech_output}
+								isStreaming={log.stream}
+							/>
 						)}
 						{(log.transcription_input || log.transcription_output) && (
 							<TranscriptionView
-								transcriptionInput={log.transcription_input}
-								transcriptionOutput={log.transcription_output}
+								transcriptionInput={applyRedactionMappingToValue(log.transcription_input, activeInputRevealMapping)}
+								transcriptionOutput={applyRedactionMappingToValue(log.transcription_output, activeOutputRevealMapping)}
 								isStreaming={log.stream}
 							/>
 						)}
 						{(log.image_generation_input || log.image_edit_input || log.image_variation_input || log.image_generation_output) && (
 							<ImageView
-								imageInput={log.image_generation_input}
-								imageEditInput={log.image_edit_input}
+								imageInput={applyRedactionMappingToValue(log.image_generation_input, activeInputRevealMapping)}
+								imageEditInput={applyRedactionMappingToValue(log.image_edit_input, activeInputRevealMapping)}
 								imageVariationInput={log.image_variation_input}
 								imageOutput={log.image_generation_output}
 								requestType={log.object}
@@ -2795,7 +2799,7 @@ export function LogDetailView({
 						)}
 						{(log.video_generation_input || videoOutput || videoListOutput) && (
 							<VideoView
-								videoInput={log.video_generation_input}
+								videoInput={applyRedactionMappingToValue(log.video_generation_input, activeInputRevealMapping)}
 								videoOutput={videoOutput}
 								videoListOutput={videoListOutput}
 								requestType={log.object}
