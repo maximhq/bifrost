@@ -1,1 +1,2 @@
+- fix: separate wildcard model authorization from catalog-backed provider discovery
 - chore: upgraded Go to 1.27.3 and core to v1.13.1

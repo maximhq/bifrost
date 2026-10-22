@@ -39,10 +39,11 @@ type ModelMatcher func(provider, model string, allowed []string) bool
 // There is one scoping slot, not a list. A request is scoped by at most one thing at a time, and
 // composing under one mode is what keeps every answer here decidable.
 type Access struct {
-	bases   []schemas.Permit
-	scoping schemas.Permit
-	mode    CompositionMode
-	matcher ModelMatcher
+	bases                    []schemas.Permit
+	scoping                  schemas.Permit
+	mode                     CompositionMode
+	matcher                  ModelMatcher
+	unrestrictedModelPermits bool
 }
 
 // NewAccess folds the permits the caller holds together with the permit scoping this request,
@@ -68,6 +69,16 @@ func NewAccess(bases []schemas.Permit, scoping schemas.Permit, mode CompositionM
 		mode:    mode,
 		matcher: matcher,
 	}
+}
+
+// NewAccessWithModelDiscovery separates unrestricted model authorization from
+// provider discovery. Wildcard lists need no matcher for authorization; explicit
+// lists and provider candidates still use it. Other permit rules are unchanged.
+// NewAccess retains its original matcher semantics for existing callers.
+func NewAccessWithModelDiscovery(bases []schemas.Permit, scoping schemas.Permit, mode CompositionMode, matcher ModelMatcher) *Access {
+	access := NewAccess(bases, scoping, mode, matcher)
+	access.unrestrictedModelPermits = matcher != nil
+	return access
 }
 
 // Bases implements schemas.Access.
@@ -279,6 +290,14 @@ func (a *Access) unionKeysHeldBy(permits []schemas.Permit, provider string, mode
 func (a *Access) ProvidersForModel(model string) []schemas.ProviderCandidate {
 	if a == nil || model == "" {
 		return nil
+	}
+	if a.unrestrictedModelPermits {
+		// Candidate selection uses the matcher for wildcards too. The local
+		// view keeps the composed model, blacklist, weight and key rules intact
+		// without changing the cached authorization access.
+		discovery := *a
+		discovery.unrestrictedModelPermits = false
+		a = &discovery
 	}
 
 	candidates := make([]schemas.ProviderCandidate, 0, a.providerPermitCount())
@@ -697,9 +716,12 @@ func (a *Access) permitAllowsModel(p schemas.Permit, provider string, model stri
 	return false
 }
 
-// permitsModel applies one provider permit's allowed-models rule, through the matcher when there is
-// one and by name otherwise.
+// permitsModel applies one provider permit's allowed-models rule. Unrestricted authorization
+// permits every name; other lists and discovery use the matcher when available.
 func (a *Access) permitsModel(pp *schemas.ProviderPermit, model string) bool {
+	if a.unrestrictedModelPermits && pp.AllowedModels.IsUnrestricted() {
+		return true
+	}
 	if a.matcher == nil {
 		return pp.AllowedModels.IsAllowed(model)
 	}

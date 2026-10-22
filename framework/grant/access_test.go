@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -391,6 +392,169 @@ func TestAccess_ModelNamesResolveThroughTheMatcher(t *testing.T) {
 		assert.False(t, access.IsModelAllowed("anthropic", "claude-sonnet-4"))
 		assert.Len(t, calls, 1, "a provider the permit does not hold never reaches the matcher")
 	})
+}
+
+func TestAccess_ModelDiscoveryIsSeparateFromWildcardAuthorization(t *testing.T) {
+	var calls int
+	matcher := func(_ string, model string, allowed []string) bool {
+		calls++
+		if schemas.WhiteList(allowed).IsUnrestricted() {
+			return model == "catalog-model"
+		}
+		return schemas.WhiteList(allowed).Contains(model)
+	}
+	permit := newPermit(permitSpec{Type: PermitVirtualKey, ID: "vk", ProviderPermits: []schemas.ProviderPermit{{
+		Provider: "openrouter", AllowedModels: []string{"*"}, KeyIDs: []string{"key"}, Weight: schemas.Ptr(1.0),
+	}}})
+	legacy := NewAccess(held(permit), nil, "", matcher)
+	access := NewAccessWithModelDiscovery(held(permit), nil, "", matcher)
+
+	assert.False(t, legacy.IsModelAllowed("openrouter", "off-catalog"), "existing constructor retains its matcher contract")
+	calls = 0
+	assert.True(t, access.IsModelAllowed("openrouter", "off-catalog"))
+	assert.Zero(t, calls, "wildcard authorization does not consult the catalog")
+	assert.Empty(t, access.ProvidersForModel("off-catalog"), "an authorized name is not automatically a routing candidate")
+	assert.Equal(t, legacy.ProvidersForModel("catalog-model"), access.ProvidersForModel("catalog-model"))
+	assert.True(t, access.IsModelAllowed("openrouter", "off-catalog"), "candidate selection must not mutate cached access")
+	assert.False(t, access.IsModelAllowed("openai", "off-catalog"))
+	assert.Equal(t, []schemas.Permit{permit}, access.PermitsForModel("openrouter", "off-catalog"))
+	keys, restricted := access.KeysForModel("openrouter", "off-catalog")
+	assert.True(t, restricted)
+	assert.Equal(t, []string{"key"}, keys)
+	assert.Empty(t, access.DeniedPermitsForModel("openrouter", "off-catalog"))
+
+	t.Run("explicit off-catalog names remain routing candidates", func(t *testing.T) {
+		named := permitWithModels(PermitVirtualKey, "named", "Named", "openrouter", "off-catalog")
+		access := NewAccessWithModelDiscovery(held(named), nil, "", matcher)
+		assert.True(t, access.IsModelAllowed("openrouter", "off-catalog"))
+		assert.Equal(t, NewAccess(held(named), nil, "", matcher).ProvidersForModel("off-catalog"), access.ProvidersForModel("off-catalog"))
+		assert.NotEmpty(t, access.ProvidersForModel("off-catalog"))
+	})
+	t.Run("empty lists deny", func(t *testing.T) {
+		empty := permitWithModels(PermitVirtualKey, "empty", "Empty", "openrouter")
+		assert.False(t, NewAccessWithModelDiscovery(held(empty), nil, "", matcher).IsModelAllowed("openrouter", "off-catalog"))
+	})
+	for _, blacklist := range []schemas.BlackList{{"off-catalog"}, {"regex:^off-.*"}} {
+		t.Run(string(blacklist[0]), func(t *testing.T) {
+			blocked := newPermit(permitSpec{Type: PermitVirtualKey, ID: "blocked", ProviderPermits: []schemas.ProviderPermit{{
+				Provider: "openrouter", AllowedModels: []string{"*"}, BlacklistedModels: blacklist,
+			}}})
+			assert.False(t, NewAccessWithModelDiscovery(held(blocked), nil, "", matcher).IsModelAllowed("openrouter", "off-catalog"))
+		})
+	}
+}
+
+func TestAccess_ModelDiscoveryPreservesProviderSpecificMatching(t *testing.T) {
+	cases := []struct {
+		provider     schemas.ModelProvider
+		model        string
+		catalogModel string
+	}{
+		{schemas.OpenAI, "gpt-4o", "gpt-4o"},
+		{schemas.Anthropic, "claude-sonnet-4", "claude-sonnet-4"},
+		{schemas.OpenRouter, "claude-sonnet-4", "anthropic/claude-sonnet-4"},
+		{schemas.Vertex, "claude-sonnet-4", "anthropic/claude-sonnet-4"},
+		{schemas.Groq, "gpt-oss-120b", "openai/gpt-oss-120b"},
+		{schemas.Bedrock, "claude-sonnet-4", "anthropic.claude-sonnet-4-v1:0"},
+		{schemas.Gemini, "gemini-2.5-flash", "gemini-2.5-flash"},
+		{schemas.Replicate, "meta/llama-3-8b", "meta/llama-3-8b"},
+		{schemas.Perplexity, "sonar", "sonar"},
+		{schemas.Azure, "deployment-prod", "deployment-prod"},
+		{"hosted-openai", "hosted-model", "hosted-model"},
+	}
+	catalog := modelcatalog.NewTestCatalog(nil)
+	source := &fakeProviderConfigSource{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		"hosted-openai": {CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+			AllowedRequests:  &schemas.AllowedRequests{ChatCompletion: true},
+		}},
+	}}
+	for _, tc := range cases {
+		catalog.UpsertLive(tc.provider, "key", false, []string{tc.catalogModel})
+	}
+	matcher := catalogMatcher(catalog, source)
+	for _, tc := range cases {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			provider := string(tc.provider)
+			permit := permitWithModels(PermitVirtualKey, "vk", "Key", provider, "*")
+			legacy := NewAccess(held(permit), nil, "", matcher)
+			access := NewAccessWithModelDiscovery(held(permit), nil, "", matcher)
+			assert.True(t, access.IsModelAllowed(provider, tc.model))
+			assert.NotEmpty(t, access.ProvidersForModel(tc.model), "provider-specific catalog matching remains available")
+			assert.Equal(t, legacy.ProvidersForModel(tc.model), access.ProvidersForModel(tc.model))
+
+			const unlisted = "provider-native/unlisted:variant"
+			assert.True(t, access.IsModelAllowed(provider, unlisted), "wildcard authorization is provider-independent")
+			assert.Equal(t, legacy.ProvidersForModel(unlisted), access.ProvidersForModel(unlisted))
+			assert.Equal(t, tc.provider == "hosted-openai", len(access.ProvidersForModel(unlisted)) > 0,
+				"a custom provider with list-models disabled keeps its existing discovery behavior")
+
+			// Explicit lists still use the same matcher, including vendor prefixes
+			// and exact deployment/resource names. Authorization does not normalize them.
+			named := permitWithModels(PermitVirtualKey, "named", "Named", provider, tc.catalogModel)
+			legacyNamed := NewAccess(held(named), nil, "", matcher)
+			namedAccess := NewAccessWithModelDiscovery(held(named), nil, "", matcher)
+			for _, model := range []string{tc.model, tc.catalogModel, unlisted} {
+				assert.Equal(t, legacyNamed.IsModelAllowed(provider, model), namedAccess.IsModelAllowed(provider, model), "model=%s", model)
+				assert.Equal(t, legacyNamed.ProvidersForModel(model), namedAccess.ProvidersForModel(model), "model=%s", model)
+			}
+			assert.True(t, namedAccess.IsModelAllowed(provider, tc.catalogModel))
+			assert.False(t, namedAccess.IsModelAllowed(provider, unlisted))
+		})
+	}
+}
+
+func TestAccess_ModelDiscoveryPreservesCompositionAndKeyRestrictions(t *testing.T) {
+	matcher := func(_ string, model string, allowed []string) bool {
+		return (schemas.WhiteList(allowed).IsUnrestricted() && model == "catalog-model") || schemas.WhiteList(allowed).Contains(model)
+	}
+	base := newPermit(permitSpec{Type: PermitVirtualKey, ID: "base", ProviderPermits: []schemas.ProviderPermit{{
+		Provider: "openrouter", AllowedModels: []string{"*"}, KeyIDs: []string{"shared", "base"}, Weight: schemas.Ptr(1.0),
+	}}})
+	scope := newPermit(permitSpec{Type: "scope", ID: "scope", ProviderPermits: []schemas.ProviderPermit{{
+		Provider: "openrouter", AllowedModels: []string{"catalog-model"}, KeyIDs: []string{"shared", "scope"}, Weight: schemas.Ptr(2.0),
+	}}})
+	for _, mode := range []CompositionMode{Intersect, Union} {
+		t.Run(string(mode), func(t *testing.T) {
+			legacy := NewAccess(held(base), scope, mode, matcher)
+			access := NewAccessWithModelDiscovery(held(base), scope, mode, matcher)
+			assert.Equal(t, mode == Union, access.IsModelAllowed("openrouter", "off-catalog"))
+			for _, model := range []string{"catalog-model", "off-catalog"} {
+				assert.Equal(t, legacy.ProvidersForModel(model), access.ProvidersForModel(model), "candidate model=%s", model)
+				assert.Equal(t, legacy.GrantedProvidersForModel(model), access.GrantedProvidersForModel(model))
+			}
+			if mode == Union {
+				keys, restricted := access.KeysForModel("openrouter", "off-catalog")
+				assert.True(t, restricted)
+				assert.Equal(t, []string{"shared", "base"}, keys, "a scope that did not authorize the model cannot widen its keys")
+			}
+			assert.Equal(t, mode == Union, access.IsModelAllowed("openrouter", "off-catalog"), "discovery does not change authorization")
+		})
+	}
+}
+
+func TestAccess_ModelDiscoveryDoesNotMutateSharedAuthorization(t *testing.T) {
+	permit := permitWithModels(PermitVirtualKey, "vk", "Key", "openrouter", "*")
+	access := NewAccessWithModelDiscovery(held(permit), nil, "", func(_ string, model string, _ []string) bool {
+		return model == "catalog-model"
+	})
+	done := make(chan bool, 2)
+	go func() {
+		ok := true
+		for i := 0; i < 1000; i++ {
+			ok = access.IsModelAllowed("openrouter", "off-catalog") && ok
+		}
+		done <- ok
+	}()
+	go func() {
+		ok := true
+		for i := 0; i < 1000; i++ {
+			ok = len(access.ProvidersForModel("off-catalog")) == 0 && ok
+		}
+		done <- ok
+	}()
+	assert.True(t, <-done)
+	assert.True(t, <-done)
 }
 
 func TestAccess_KeysFor(t *testing.T) {
