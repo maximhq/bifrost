@@ -1882,7 +1882,8 @@ func isRedisIndexNotFoundError(err error) bool {
 		strings.HasPrefix(message, "unknown index name: ") ||
 		message == "no such index" || strings.HasPrefix(message, "no such index ") ||
 		strings.HasSuffix(message, ": no such index") ||
-		strings.HasPrefix(message, "search_index_not_found ")
+		strings.HasPrefix(message, "search_index_not_found ") ||
+		(strings.HasPrefix(message, "index with name ") && strings.Contains(message, " not found in database "))
 }
 
 func parseOffsetCursor(cursor *string) (int, error) {

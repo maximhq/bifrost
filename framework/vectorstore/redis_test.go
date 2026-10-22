@@ -384,6 +384,7 @@ func TestIsRedisIndexNotFoundError(t *testing.T) {
 		"Unknown Index name", "Unknown Index name: cache", "No such index",
 		"No such index cache", "cache: no such index",
 		"SEARCH_INDEX_NOT_FOUND Index not found: cache", "ERR No such index cache",
+		"Index with name 'cache' not found in database 0",
 	} {
 		err := redisTestError(message)
 		assert.True(t, isRedisIndexNotFoundError(err), message)
@@ -396,6 +397,8 @@ func TestIsRedisIndexNotFoundError(t *testing.T) {
 		redisTestError("Invalid query"), redisTestError("Index already exists"),
 		redisTestError("SEARCH_INDEX_EXISTS Index already exists"),
 		redisTestError("vector blob size does not match index's expected size"),
+		redisTestError("Key 'cache' not found in database 0"),
+		fmt.Errorf("Index with name 'cache' not found in database 0: %w", redisTestError("NOPERM access denied")),
 	} {
 		assert.False(t, isRedisIndexNotFoundError(err), "%v", err)
 	}
@@ -416,6 +419,7 @@ func TestRedisStore_GetNearestRecoveryIsBounded(t *testing.T) {
 		{"permission error", true, redisTestError("NOPERM access denied"), nil, nil, 1, 0, 0},
 		{"query error", true, redisTestError("Invalid query"), nil, nil, 1, 0, 0},
 		{"one retry", true, redisTestError("No such index cache"), nil, nil, 2, 1, 1},
+		{"Valkey one retry", true, redisTestError("Index with name 'cache' not found in database 0"), redisTestError("Index with name 'cache' not found in database 0"), nil, 2, 1, 1},
 		{"creation denied", true, redisTestError("No such index cache"), nil, redisTestError("NOPERM creation denied"), 1, 1, 1},
 		{"inspection denied", true, redisTestError("No such index cache"), redisTestError("NOPERM inspection denied"), nil, 1, 1, 0},
 		{"inspection failed", true, redisTestError("No such index cache"), errors.New("connection failed"), nil, 1, 1, 0},
