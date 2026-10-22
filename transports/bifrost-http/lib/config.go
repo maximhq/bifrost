@@ -8761,6 +8761,10 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 			return dbErr
 		}
 	}
+	// Probes read base URL, credentials and TLS from the provider config, so rebuild them before
+	// the next request.
+	c.refreshVirtualModelProbes()
+
 	// Release lock before calling client.UpdateProvider to avoid deadlock
 	// client.UpdateProvider will call GetConfigForProvider which needs RLock
 	c.Mu.Unlock()
@@ -8852,6 +8856,7 @@ func (c *Config) AddProviderKey(ctx context.Context, provider schemas.ModelProvi
 	}
 
 	logger.Info("Added key %s to provider: %s", key.ID, provider)
+	c.refreshVirtualModelProbes()
 	return nil
 }
 
@@ -8925,6 +8930,7 @@ func (c *Config) UpdateProviderKey(ctx context.Context, provider schemas.ModelPr
 	}
 
 	logger.Info("Updated key %s for provider: %s", keyID, provider)
+	c.refreshVirtualModelProbes()
 	return nil
 }
 
@@ -8978,6 +8984,7 @@ func (c *Config) RemoveProviderKey(ctx context.Context, provider schemas.ModelPr
 	}
 
 	logger.Info("Removed key %s from provider: %s", keyID, provider)
+	c.refreshVirtualModelProbes()
 	return nil
 }
 
@@ -9002,6 +9009,7 @@ func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvi
 	}
 	delete(c.Providers, provider)
 	logger.Info("Removed provider: %s", provider)
+	c.refreshVirtualModelProbes()
 	return nil
 }
 

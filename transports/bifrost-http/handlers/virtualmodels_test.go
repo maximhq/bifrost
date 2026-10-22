@@ -152,3 +152,27 @@ func TestVirtualRetrieveHonoursTheRequestedProvider(t *testing.T) {
 		}
 	}
 }
+
+// A provider filter arrives spelled however the client likes while owners are stored lowercased, and
+// created must not move between two identical listings.
+func TestVirtualListingProviderCaseAndStableCreated(t *testing.T) {
+	cfg := testVirtualConfig(t)
+
+	upper := &schemas.BifrostListModelsResponse{}
+	appendVirtualModels(upper, cfg, "OMLX", nil, false)
+	if len(upper.Data) != 1 || upper.Data[0].ID != "qwen38" {
+		t.Fatalf("uppercase provider filter matched %+v, want only qwen38", upper.Data)
+	}
+
+	lower := &schemas.BifrostListModelsResponse{}
+	appendVirtualModels(lower, cfg, "omlx", nil, false)
+	if len(lower.Data) != 1 {
+		t.Fatalf("lowercase provider filter matched %d entries, want 1", len(lower.Data))
+	}
+	if upper.Data[0].Created == nil || *upper.Data[0].Created == 0 {
+		t.Fatal("created is missing; a virtual model should report when its definitions were installed")
+	}
+	if *upper.Data[0].Created != *lower.Data[0].Created {
+		t.Fatalf("created moved between two identical listings: %d vs %d", *upper.Data[0].Created, *lower.Data[0].Created)
+	}
+}

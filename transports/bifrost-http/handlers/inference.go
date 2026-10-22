@@ -1068,10 +1068,9 @@ func (h *CompletionHandler) modelRetrieve(ctx *fasthttp.RequestCtx) {
 	// sending it upstream would either 400 here on "provider is required" or 404 at the
 	// backend on a string it has never seen - either of which tells a client that models
 	// it can successfully chat with does not exist.
+	// virtualModelRetrieve decodes the path value itself; decoding here too would turn %252F into
+	// a separator.
 	if raw, _ := ctx.UserValue("model").(string); raw != "" {
-		if decoded, decodeErr := url.PathUnescape(raw); decodeErr == nil {
-			raw = decoded
-		}
 		var access schemas.Access
 		presented := virtualKeyPresented(ctx)
 		if virtualModelsEnabled(h.config) {
