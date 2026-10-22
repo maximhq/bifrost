@@ -15,8 +15,16 @@ import {
 } from "@/lib/types/webhooks";
 import { PanelLeftClose, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 const COLLAPSE_STORAGE_KEY = "webhook-deliveries-filter-sidebar-collapsed";
+
+const OUTCOME_LABEL_KEYS: Record<WebhookDeliveryOutcome, string> = {
+	delivered: "webhooks.outcomes.deliveredLabel",
+	retryable_failure: "webhooks.outcomes.retryingLabel",
+	permanent_failure: "webhooks.outcomes.failedLabel",
+	exhausted: "webhooks.outcomes.exhaustedLabel",
+};
 
 interface WebhookDeliveriesFilterSidebarProps {
 	filters: WebhookDeliveryFilters;
@@ -24,6 +32,7 @@ interface WebhookDeliveriesFilterSidebarProps {
 }
 
 export function WebhookDeliveriesFilterSidebar({ filters, onFiltersChange }: WebhookDeliveriesFilterSidebarProps) {
+	const { t } = useTranslation("governance");
 	const isMobile = useIsMobile();
 	const [collapsed, setCollapsed] = useState(false);
 
@@ -81,7 +90,7 @@ export function WebhookDeliveriesFilterSidebar({ filters, onFiltersChange }: Web
 	return (
 		<div className="bg-card fixed inset-y-2 left-2 z-40 flex h-auto w-[calc(100vw-1rem)] max-w-72 shrink-0 flex-col rounded-md border shadow-xl md:static md:h-full md:w-64 md:max-w-none md:rounded-md md:shadow-none">
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
-				<span className="text-sm font-semibold">Filters</span>
+				<span className="text-sm font-semibold">{t("filters.filters")}</span>
 				<div className="flex items-center gap-1">
 					{activeFilterCount > 0 && (
 						<Button
@@ -92,10 +101,17 @@ export function WebhookDeliveriesFilterSidebar({ filters, onFiltersChange }: Web
 							data-testid="webhook-deliveries-filter-reset"
 						>
 							<RotateCcw className="size-3" />
-							Reset
+							{t("filters.reset")}
 						</Button>
 					)}
-					<Button variant="ghost" size="icon" className="size-7" onClick={toggleCollapsed} title="Hide filters" aria-label="Hide filters">
+					<Button
+						variant="ghost"
+						size="icon"
+						className="size-7"
+						onClick={toggleCollapsed}
+						title={t("filters.hideFilters")}
+						aria-label={t("filters.hideFilters")}
+					>
 						<PanelLeftClose className="size-4" />
 					</Button>
 				</div>
@@ -128,13 +144,18 @@ function toggleValue<T extends string>(selected: T[] | undefined, value: T): T[]
 }
 
 function OutcomeFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("governance");
 	const selected = filters.outcomes ?? [];
 	return (
-		<FilterSection title="Outcome" defaultOpen={defaultOpen || selected.length > 0} testId="webhook-deliveries-filter-outcome">
+		<FilterSection
+			title={t("webhooks.deliveries.filterOutcome")}
+			defaultOpen={defaultOpen || selected.length > 0}
+			testId="webhook-deliveries-filter-outcome"
+		>
 			{WEBHOOK_DELIVERY_OUTCOMES.map((outcome) => (
 				<CheckboxFilterItem
 					key={outcome.value}
-					label={outcome.label}
+					label={t(OUTCOME_LABEL_KEYS[outcome.value])}
 					checked={selected.includes(outcome.value)}
 					onCheckedChange={() =>
 						onFiltersChange({ ...filters, outcomes: toggleValue<WebhookDeliveryOutcome>(filters.outcomes, outcome.value) })
@@ -147,13 +168,18 @@ function OutcomeFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 }
 
 function EventFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("governance");
 	const selected = filters.events ?? [];
 	return (
-		<FilterSection title="Event" defaultOpen={defaultOpen || selected.length > 0} testId="webhook-deliveries-filter-event">
+		<FilterSection
+			title={t("webhooks.deliveries.filterEvent")}
+			defaultOpen={defaultOpen || selected.length > 0}
+			testId="webhook-deliveries-filter-event"
+		>
 			{WEBHOOK_EVENTS.map((event) => (
 				<CheckboxFilterItem
 					key={event.value}
-					label={event.label}
+					label={t(`webhooks.events.${event.value}.label`)}
 					checked={selected.includes(event.value)}
 					onCheckedChange={() => onFiltersChange({ ...filters, events: toggleValue<WebhookEvent>(filters.events, event.value) })}
 					testId={`webhook-deliveries-filter-event-${event.value}`}
@@ -164,13 +190,18 @@ function EventFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentP
 }
 
 function StatusClassFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("governance");
 	const selected = filters.status_class ?? [];
 	return (
-		<FilterSection title="Response status" defaultOpen={defaultOpen || selected.length > 0} testId="webhook-deliveries-filter-status">
+		<FilterSection
+			title={t("webhooks.deliveries.filterResponseStatus")}
+			defaultOpen={defaultOpen || selected.length > 0}
+			testId="webhook-deliveries-filter-status"
+		>
 			{WEBHOOK_DELIVERY_STATUS_CLASSES.map((statusClass) => (
 				<CheckboxFilterItem
 					key={statusClass.value}
-					label={statusClass.label}
+					label={t(`webhooks.statusClass.${statusClass.value}`)}
 					checked={selected.includes(statusClass.value)}
 					onCheckedChange={() =>
 						onFiltersChange({
@@ -186,6 +217,7 @@ function StatusClassFilter({ filters, onFiltersChange, defaultOpen }: FilterComp
 }
 
 function WebhooksFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("governance");
 	const selected = filters.endpoint_ids ?? [];
 	const [opened, setOpened] = useState(false);
 	const hasActive = selected.length > 0;
@@ -202,7 +234,7 @@ function WebhooksFilter({ filters, onFiltersChange, defaultOpen }: FilterCompone
 
 	return (
 		<FilterSection
-			title="Webhooks"
+			title={t("webhooks.deliveries.filterWebhooks")}
 			defaultOpen={defaultOpen || hasActive}
 			loading={isLoading}
 			onOpenChange={(open) => open && setOpened(true)}
@@ -212,7 +244,7 @@ function WebhooksFilter({ filters, onFiltersChange, defaultOpen }: FilterCompone
 				items={items}
 				isSelected={(key) => selected.includes(key)}
 				onToggle={(key) => onFiltersChange({ ...filters, endpoint_ids: toggleValue(filters.endpoint_ids, key) })}
-				placeholder="Search webhooks..."
+				placeholder={t("webhooks.deliveries.searchWebhooks")}
 				inputRef={inputRef}
 				testIdPrefix="webhook-deliveries-filter-webhooks"
 				fetching={isFetching}

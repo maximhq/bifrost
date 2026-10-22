@@ -8,6 +8,7 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
+import { useTranslation } from "react-i18next";
 
 interface Props {
 	show: boolean;
@@ -16,21 +17,23 @@ interface Props {
 }
 
 export default function ConfirmRedirectionDialog({ show, onContinue, onCancel }: Props) {
+	const { t } = useTranslation("models");
+	const { t: tc } = useTranslation("common");
 	return (
 		<AlertDialog open={show}>
 			<AlertDialogContent>
 				<AlertDialogHeader>
-					<AlertDialogTitle>Confirm Redirection</AlertDialogTitle>
-					<AlertDialogDescription>You have unsaved data. Are you sure you want to continue?</AlertDialogDescription>
+					<AlertDialogTitle>{t("providers.redirectTitle")}</AlertDialogTitle>
+					<AlertDialogDescription>{t("providers.redirectDescription")}</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter className="mt-4">
-					<AlertDialogCancel onClick={onCancel}>Cancel</AlertDialogCancel>
+					<AlertDialogCancel onClick={onCancel}>{tc("cancel")}</AlertDialogCancel>
 					<AlertDialogAction
 						onClick={() => {
 							onContinue();
 						}}
 					>
-						Continue
+						{t("providers.continue")}
 					</AlertDialogAction>
 				</AlertDialogFooter>
 			</AlertDialogContent>

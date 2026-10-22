@@ -43,6 +43,8 @@ import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
+import { dateFnsLocale } from "@/lib/i18n/dateLocale";
+import { useTranslation } from "react-i18next";
 import {
 	Bell,
 	Check,
@@ -78,6 +80,8 @@ const severityIcons = {
 };
 
 export default function NotificationCenter() {
+	const { t, i18n } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const dispatch = useAppDispatch();
 	const navigate = useNavigate();
 	const [open, setOpen] = useState(false);
@@ -166,15 +170,17 @@ export default function NotificationCenter() {
 						type="button"
 						aria-label={
 							unreadCount || activeJobCount || liveAttention || freshNewsUnreadCount
-								? `Notifications, ${[
-										liveAttention && `${liveAttention} ongoing`,
-										unreadCount && `${unreadCount} unread`,
-										activeJobCount && `${activeJobCount} running`,
-										freshNewsUnreadCount && `${freshNewsUnreadCount} new in news`,
-									]
-										.filter(Boolean)
-										.join(", ")}`
-								: "Notifications"
+								? t("notifications.ariaWithDetails", {
+										details: [
+											liveAttention && t("notifications.ariaOngoing", { count: liveAttention }),
+											unreadCount && t("notifications.ariaUnreadCount", { count: unreadCount }),
+											activeJobCount && t("notifications.ariaRunning", { count: activeJobCount }),
+											freshNewsUnreadCount && t("notifications.ariaNewInNews", { count: freshNewsUnreadCount }),
+										]
+											.filter(Boolean)
+											.join(", "),
+									})
+								: t("notifications.aria")
 						}
 						data-testid="topbar-notifications-btn"
 						// size-8 matches the theme toggle and the menu/user-pill trigger. Every topbar trigger has to
@@ -214,31 +220,31 @@ export default function NotificationCenter() {
 											data-testid="notification-tab-notifications"
 										>
 											<Bell className="size-3.5" />
-											Notifications
+											{t("notifications.title")}
 											{unreadCount + liveAttention > 0 && <TabCount count={unreadCount + liveAttention} />}
 										</TabsTrigger>
 										{jobsAvailable && (
 											<TabsTrigger
 												value="jobs"
-												title="Background jobs"
+												title={t("notifications.backgroundJobs")}
 												className="gap-1.5 rounded-sm px-2 text-xs"
 												data-testid="notification-tab-jobs"
 											>
 												<Timer className="size-3.5" />
-												Jobs
+												{t("notifications.tabJobs")}
 												{activeJobCount > 0 && <TabCount count={activeJobCount} />}
 											</TabsTrigger>
 										)}
 										{newsAvailable && (
 											<TabsTrigger value="news" className="gap-1.5 rounded-sm px-2 text-xs" data-testid="notification-tab-news">
 												<Newspaper className="size-3.5" />
-												News
+												{t("notifications.tabNews")}
 												{newsUnreadCount > 0 && <TabCount count={newsUnreadCount} />}
 											</TabsTrigger>
 										)}
 									</TabsList>
 								) : (
-									<h2 className="px-1 text-sm font-semibold">Notifications</h2>
+									<h2 className="px-1 text-sm font-semibold">{t("notifications.title")}</h2>
 								)}
 								{isFetching && !isLoading && <RefreshCw className="text-muted-foreground size-3 shrink-0 animate-spin" />}
 							</div>
@@ -249,7 +255,7 @@ export default function NotificationCenter() {
 									className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-xs whitespace-nowrap transition-colors"
 									data-testid="notifications-mark-all-read"
 								>
-									Mark all read
+									{t("notifications.markAllRead")}
 								</button>
 							)}
 							{newsSwitchedOff && canManageNews && <NewsSourcesButton onClick={openSources} />}
@@ -261,7 +267,7 @@ export default function NotificationCenter() {
 									className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer text-xs whitespace-nowrap transition-colors"
 									data-testid="sidekiq-jobs-clear-finished"
 								>
-									Clear finished
+									{t("notifications.clearFinished")}
 								</button>
 							)}
 						</div>
@@ -274,9 +280,9 @@ export default function NotificationCenter() {
 									onCancel={async (id) => {
 										try {
 											const result = await cancelJob(id).unwrap();
-											if (!result.cancelled) toast.info("That job had already finished");
+											if (!result.cancelled) toast.info(t("notifications.jobAlreadyFinished"));
 										} catch (error) {
-											toast.error("Couldn't cancel the job", { description: getErrorMessage(error) });
+											toast.error(t("notifications.cancelJobFailed"), { description: getErrorMessage(error) });
 										}
 									}}
 									onDismiss={(ids) => ids.forEach((id) => dispatch(removeNotification(id)))}
@@ -317,17 +323,17 @@ export default function NotificationCenter() {
 							)}
 							{isLoading ? (
 								<div className="text-muted-foreground flex h-44 items-center justify-center gap-2 text-sm">
-									<RefreshCw className="size-4 animate-spin" /> Loading notifications
+									<RefreshCw className="size-4 animate-spin" /> {t("notifications.loading")}
 								</div>
 							) : isError && !isNotificationsUnavailable(error) ? (
 								<div className="flex h-44 flex-col items-center justify-center gap-3 px-6 text-center">
-									<p className="text-muted-foreground text-sm">Notifications could not be loaded.</p>
+									<p className="text-muted-foreground text-sm">{t("notifications.loadFailed")}</p>
 									<button
 										type="button"
 										onClick={() => refetch()}
 										className="text-primary cursor-pointer text-sm font-medium hover:underline"
 									>
-										Try again
+										{tCommon("retry")}
 									</button>
 								</div>
 							) : notifications.length === 0 && liveNotices.length > 0 ? null : notifications.length === 0 ? (
@@ -338,8 +344,8 @@ export default function NotificationCenter() {
 									<span className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full">
 										<Check className="size-4" />
 									</span>
-									<p className="text-sm font-medium">You&apos;re all caught up</p>
-									<p className="text-muted-foreground text-xs">New notifications will appear here.</p>
+									<p className="text-sm font-medium">{t("notifications.emptyTitle")}</p>
+									<p className="text-muted-foreground text-xs">{t("notifications.emptyDescription")}</p>
 								</div>
 							) : (
 								<ScrollArea className="h-[min(26rem,calc(100vh-8rem))]">
@@ -379,20 +385,30 @@ export default function NotificationCenter() {
 														<span className="min-w-0 flex-1 pr-5">
 															<span className="flex items-start gap-2">
 																<span className={cn("min-w-0 flex-1 text-sm", !isRead && "font-semibold")}>{notification.title}</span>
-																{!isRead && <span className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full" aria-label="Unread" />}
+																{!isRead && (
+																	<span
+																		className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full"
+																		aria-label={t("notifications.unread")}
+																	/>
+																)}
 															</span>
 															<span className="text-muted-foreground mt-0.5 line-clamp-3 block text-xs leading-relaxed">
 																{notification.message}
 															</span>
 															<span className="text-muted-foreground mt-1.5 flex items-center gap-2 text-[11px]">
-																<span>{formatDistanceToNow(new Date(notification.created_at), { addSuffix: true })}</span>
+																<span>
+																	{formatDistanceToNow(new Date(notification.created_at), {
+																		addSuffix: true,
+																		locale: dateFnsLocale(i18n.language),
+																	})}
+																</span>
 																{notification.action_label && <span className="text-primary font-medium">{notification.action_label}</span>}
 															</span>
 														</span>
 													</button>
 													<button
 														type="button"
-														aria-label={`Dismiss ${notification.title}`}
+														aria-label={t("notifications.dismissAria", { title: notification.title })}
 														onClick={() => dispatch(removeNotification(notification.id))}
 														data-testid={`notification-dismiss-${notification.id}`}
 														className="text-muted-foreground hover:bg-muted hover:text-foreground absolute top-2.5 right-2.5 cursor-pointer rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
@@ -414,7 +430,7 @@ export default function NotificationCenter() {
 										className="text-muted-foreground hover:text-destructive cursor-pointer text-xs transition-colors"
 										data-testid="notifications-clear-all"
 									>
-										Clear all
+										{t("notifications.clearAll")}
 									</button>
 								</div>
 							)}
@@ -461,19 +477,21 @@ function NewsList({
 	allCleared,
 	onManageSources,
 }: NewsListProps) {
+	const { t, i18n } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	if (isLoading) {
 		return (
 			<div className="text-muted-foreground flex h-44 items-center justify-center gap-2 text-sm">
-				<RefreshCw className="size-4 animate-spin" /> Loading news
+				<RefreshCw className="size-4 animate-spin" /> {t("notifications.loadingNews")}
 			</div>
 		);
 	}
 	if (isError) {
 		return (
 			<div className="flex h-44 flex-col items-center justify-center gap-3 px-6 text-center">
-				<p className="text-muted-foreground text-sm">News could not be loaded.</p>
+				<p className="text-muted-foreground text-sm">{t("notifications.newsLoadFailed")}</p>
 				<button type="button" onClick={onRetry} className="text-primary cursor-pointer text-sm font-medium hover:underline">
-					Try again
+					{tCommon("retry")}
 				</button>
 			</div>
 		);
@@ -486,17 +504,17 @@ function NewsList({
 					<span className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full">
 						<Check className="size-4" />
 					</span>
-					<p className="text-sm font-medium">You&apos;re all caught up</p>
-					<p className="text-muted-foreground text-xs">New stories from your sources will appear here.</p>
+					<p className="text-sm font-medium">{t("notifications.emptyTitle")}</p>
+					<p className="text-muted-foreground text-xs">{t("notifications.newsCaughtUpDescription")}</p>
 				</div>
 			) : items.length === 0 ? (
 				<div className="flex h-44 flex-col items-center justify-center gap-2 px-6 text-center" data-testid="rss-empty-state">
 					<span className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full">
 						<Newspaper className="size-4" />
 					</span>
-					<p className="text-sm font-medium">No news yet</p>
+					<p className="text-sm font-medium">{t("notifications.noNewsYet")}</p>
 					<button type="button" onClick={onManageSources} className="text-primary cursor-pointer text-xs font-medium hover:underline">
-						Choose news sources
+						{t("notifications.chooseNewsSources")}
 					</button>
 				</div>
 			) : (
@@ -530,7 +548,9 @@ function NewsList({
 										<span className="min-w-0 flex-1">
 											<span className="flex items-start gap-2">
 												<span className={cn("min-w-0 flex-1 text-sm", !isRead && "font-semibold")}>{item.title}</span>
-												{!isRead && <span className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full" aria-label="Unread" />}
+												{!isRead && (
+													<span className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full" aria-label={t("notifications.unread")} />
+												)}
 											</span>
 											{item.summary && (
 												<span className="text-muted-foreground mt-0.5 line-clamp-2 block text-xs leading-relaxed">{item.summary}</span>
@@ -538,14 +558,16 @@ function NewsList({
 											<span className="text-muted-foreground mt-1.5 flex items-center gap-2 text-[11px]">
 												<span className="truncate font-medium">{item.feed_name}</span>
 												{hasRSSPublishedDate(item.published_at) && (
-													<span className="shrink-0">{formatDistanceToNow(new Date(item.published_at), { addSuffix: true })}</span>
+													<span className="shrink-0">
+														{formatDistanceToNow(new Date(item.published_at), { addSuffix: true, locale: dateFnsLocale(i18n.language) })}
+													</span>
 												)}
 											</span>
 										</span>
 									</a>
 									<button
 										type="button"
-										aria-label={`Clear ${item.title}`}
+										aria-label={t("notifications.clearItemAria", { title: item.title })}
 										onClick={() => onDismiss(item.id)}
 										data-testid={`rss-dismiss-${item.id}`}
 										className="text-muted-foreground hover:bg-muted hover:text-foreground absolute top-2.5 right-2.5 cursor-pointer rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
@@ -560,7 +582,7 @@ function NewsList({
 			)}
 			{failedFeeds.length > 0 && (
 				<div className="text-muted-foreground border-t px-4 py-2 text-[11px]" data-testid="rss-failed-feeds">
-					Couldn&apos;t load {failedFeeds.map((feed) => feed.feed_name).join(", ")}.
+					{t("notifications.feedsLoadFailed", { feeds: failedFeeds.map((feed) => feed.feed_name).join(", ") })}
 				</div>
 			)}
 			{items.length > 0 && (
@@ -572,7 +594,7 @@ function NewsList({
 							className="text-muted-foreground hover:text-foreground cursor-pointer text-xs transition-colors"
 							data-testid="rss-mark-all-read"
 						>
-							Mark all read
+							{t("notifications.markAllRead")}
 						</button>
 					)}
 					<button
@@ -581,7 +603,7 @@ function NewsList({
 						className="text-muted-foreground hover:text-destructive cursor-pointer text-xs transition-colors"
 						data-testid="rss-clear-all"
 					>
-						Clear all
+						{t("notifications.clearAll")}
 					</button>
 				</div>
 			)}
@@ -590,11 +612,12 @@ function NewsList({
 }
 
 function NewsSourcesButton({ onClick }: { onClick: () => void }) {
+	const { t } = useTranslation("governance");
 	return (
 		<button
 			type="button"
-			aria-label="News sources"
-			title="News sources"
+			aria-label={t("notifications.newsSources")}
+			title={t("notifications.newsSources")}
 			onClick={onClick}
 			className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors"
 			data-testid="rss-sources-btn"
@@ -610,9 +633,12 @@ function NewsSourcesButton({ onClick }: { onClick: () => void }) {
  * themselves when the condition does.
  */
 function LiveNoticesSection({ notices, onOpen }: { notices: LiveNotice[]; onOpen: (path: string) => void }) {
+	const { t } = useTranslation("governance");
 	return (
 		<div className="border-b" data-testid="live-notices">
-			<div className="text-muted-foreground px-4 pt-2.5 pb-1 text-[11px] font-medium tracking-wide uppercase">Ongoing</div>
+			<div className="text-muted-foreground px-4 pt-2.5 pb-1 text-[11px] font-medium tracking-wide uppercase">
+				{t("notifications.ongoing")}
+			</div>
 			<div className="divide-y">
 				{notices.map((notice) => {
 					const Icon = severityIcons[notice.severity];

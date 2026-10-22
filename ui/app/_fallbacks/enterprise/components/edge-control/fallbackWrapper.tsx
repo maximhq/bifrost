@@ -3,7 +3,7 @@ import ContactUsView from "../views/contactUsView";
 interface EdgeControlFallbackViewProps {
 	icon: React.ReactNode;
 	title: string;
-	description: string;
+	description?: string;
 	readmeLink: string;
 	testIdPrefix?: string;
 }
