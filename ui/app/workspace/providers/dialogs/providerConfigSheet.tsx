@@ -27,7 +27,18 @@ interface Props {
 
 const ANTHROPIC_FAMILY_PROVIDERS = ["anthropic", "vertex", "bedrock", "bedrock_mantle", "azure"];
 
-const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean, hasBetaHeaders: boolean) => {
+// Providers whose openai_config (disable_store) is honoured, mapped to their config tab label.
+const OPENAI_CONFIG_TAB_LABELS: Record<string, string> = {
+	openai: "OpenAI Config",
+	fireworks: "OpenAI Config",
+};
+
+const availableTabs = (
+	hasCustomProviderConfig: boolean,
+	hasGovernanceAccess: boolean,
+	openAIConfigTabLabel: string | undefined,
+	hasBetaHeaders: boolean,
+) => {
 	const tabs = [];
 	if (hasCustomProviderConfig) {
 		tabs.push({
@@ -75,10 +86,10 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 		id: "debugging",
 		label: "Debugging",
 	});
-	if (isOpenAI) {
+	if (openAIConfigTabLabel) {
 		tabs.push({
 			id: "openai-config",
-			label: "OpenAI Config",
+			label: openAIConfigTabLabel,
 		});
 	}
 	return tabs;
@@ -88,12 +99,12 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasCustomProviderConfig = !!provider.custom_provider_config;
-	const isOpenAI = provider.name === "openai";
+	const openAIConfigTabLabel = OPENAI_CONFIG_TAB_LABELS[provider.name];
 	const hasBetaHeaders = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase()) || isTypesafeBased(provider);
 
 	const tabs = useMemo(() => {
-		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, hasBetaHeaders);
-	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, hasBetaHeaders]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, openAIConfigTabLabel, hasBetaHeaders);
+	}, [hasCustomProviderConfig, hasGovernanceAccess, openAIConfigTabLabel, hasBetaHeaders]);
 
 	useEffect(() => {
 		setSelectedTab((previousTab) => {

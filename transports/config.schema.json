@@ -6704,11 +6704,11 @@
     },
     "openai_config": {
       "type": "object",
-      "description": "OpenAI-specific provider settings",
+      "description": "OpenAI Responses API settings, honoured by the openai and fireworks providers",
       "properties": {
         "disable_store": {
           "type": "boolean",
-          "description": "Disable OpenAI Responses API conversation storage."
+          "description": "Force store=false on outgoing Responses API requests (openai and fireworks)."
         }
       },
       "additionalProperties": false
