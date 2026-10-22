@@ -80,7 +80,16 @@ func appendVirtualModels(resp *schemas.BifrostListModelsResponse, cfg *lib.Confi
 //
 // The name arrives as it did in the path, so it may still carry a provider prefix. Both
 // "qwen38" and "omlx/qwen38" address the same virtual model.
-func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName string, access schemas.Access, credentialPresented bool) (*schemas.BifrostModelRetrieveResponse, bool) {
+//
+// A provider the client named - by prefix, or by ?provider= which wins over the prefix exactly as
+// modelRetrieveTarget reads them - is a constraint on who is being asked, not a hint, and it
+// outranks the overlay. If it disagrees with the provider that owns the virtual model then the
+// client wants that provider's own model of the same name, which has to stay reachable: the usual
+// migration shape is a virtual model named after a vendor model, and provider/model is the escape
+// hatch that pins the vendor. So the request falls through and the named provider answers with its
+// own truth, which is also where a 404 for a model it does not have belongs. Claiming such a name
+// here 403'd a valid concrete lookup, and 403 stays reserved for genuine access denial.
+func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName string, requestedProvider schemas.ModelProvider, access schemas.Access, credentialPresented bool) (*schemas.BifrostModelRetrieveResponse, bool) {
 	if !virtualModelsEnabled(cfg) {
 		return nil, false
 	}
@@ -88,16 +97,22 @@ func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName
 	if decoded, err := url.PathUnescape(name); err == nil {
 		name = decoded
 	}
+	requested := strings.ToLower(strings.TrimSpace(string(requestedProvider)))
 	vm, ok := cfg.VirtualModels.Lookup(name)
 	if !ok {
 		if prefix, after, split := strings.Cut(name, "/"); split {
 			vm, ok = cfg.VirtualModels.Lookup(after)
-			if ok && prefix != string(vm.Provider) {
-				return nil, true
+			if ok && requested == "" {
+				requested = strings.ToLower(strings.TrimSpace(prefix))
 			}
 		}
 	}
 	if !ok {
+		return nil, false
+	}
+	// Case-insensitive: the client spells a provider as it likes, while a virtual model stores its
+	// owner lowercased at install.
+	if requested != "" && !strings.EqualFold(requested, string(vm.Provider)) {
 		return nil, false
 	}
 

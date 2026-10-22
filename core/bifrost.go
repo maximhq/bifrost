@@ -535,13 +535,15 @@ func (bifrost *Bifrost) resolveVirtualModel(ctx *schemas.BifrostContext, req *sc
 	if !ok {
 		return nil
 	}
-	// Naming provider and virtual model together ("omlx/qwen38") is fine. Naming a
-	// *different* provider is not: residency was measured on the virtual model's
-	// provider, so honouring the other one would dispatch a name whose residency
-	// nobody checked.
-	if provider != "" && provider != virtual.Provider {
-		return schemas.NewVirtualModelError(400, fmt.Sprintf(
-			"virtual model %q belongs to provider %q, not %q", virtual.Name, virtual.Provider, provider))
+	// A request that names a provider is addressed to that provider, and that outranks the
+	// overlay: if it is not the provider the virtual model lives on, the client wants that
+	// provider's own model of the same name. That is the usual migration shape - a virtual model
+	// named after a vendor model, with provider/model the escape hatch that pins the vendor - so
+	// the overlay leaves the request alone and the named provider answers for its own models.
+	// Refusing here made the overlay shadow a real model that has to stay reachable; the case fold
+	// is because a client spells a provider as it likes while these names are stored lowercased.
+	if provider != "" && !strings.EqualFold(string(provider), string(virtual.Provider)) {
+		return nil
 	}
 
 	resolution, bifrostErr := resolver.Resolve(ctx, virtual)
