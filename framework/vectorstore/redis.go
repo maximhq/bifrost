@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -66,6 +67,17 @@ type RedisStore struct {
 
 	namespaceFieldTypesMu sync.RWMutex
 	namespaceFieldTypes   map[string]map[string]VectorStoreProperties
+	namespaceDimensions   map[string]int
+
+	namespaceLifecycleOnce sync.Once
+	namespaceLifecycle     chan struct{}
+}
+
+// redisNamespaceSchema is a view of a successfully registered definition.
+// Reads never register namespaces; DeleteNamespace forgets their definitions.
+type redisNamespaceSchema struct {
+	dimension  int
+	properties map[string]VectorStoreProperties
 }
 
 // Ping checks if the Redis server is reachable.
@@ -77,6 +89,22 @@ func (s *RedisStore) Ping(ctx context.Context) error {
 func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]VectorStoreProperties) error {
 	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
+	if err := s.lockNamespaceLifecycle(ctx); err != nil {
+		return err
+	}
+	defer s.unlockNamespaceLifecycle()
+	return s.createNamespace(ctx, namespace, dimension, properties, false)
+}
+
+// createNamespace is called with the lifecycle gate held, including during
+// recovery. A concurrent process may also create the index, so verify its
+// dimension rather than treating an already-exists reply as a failed recovery.
+// Registration retains its legacy FT.INFO fallback; recovery stops on any
+// inspection error other than a missing index.
+func (s *RedisStore) createNamespace(ctx context.Context, namespace string, dimension int, properties map[string]VectorStoreProperties, recovering bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Check if index already exists
 	infoResult := s.client.Do(ctx, "FT.INFO", namespace)
@@ -88,11 +116,19 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 		if existing, ok := vectorDimensionFromFTInfo(infoResult.Val()); ok && existing != dimension {
 			return dimensionMismatchError(namespace, existing, dimension, "index")
 		}
-		s.cacheNamespaceFieldTypes(namespace, properties)
+		// An idempotent registration without fields does not change the index
+		// or the field encoding already cached for it.
+		if len(properties) == 0 {
+			properties = s.getNamespaceFieldTypes(namespace)
+		}
+		s.cacheNamespaceSchema(namespace, dimension, properties)
 		return nil // Index already exists with matching dimension
 	}
 	if err := infoResult.Err(); err != nil && strings.Contains(strings.ToLower(err.Error()), "unknown command") {
 		return fmt.Errorf("search module not available: please use Redis Stack or a Valkey bundle with search support (FT.* commands required). original error: %w", err)
+	}
+	if recovering && !isRedisIndexNotFoundError(infoResult.Err()) {
+		return fmt.Errorf("failed to inspect semantic vector index %s: %w", namespace, infoResult.Err())
 	}
 
 	// Extract metadata field names from properties
@@ -135,10 +171,22 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 
 	// Create the index
 	if err := s.client.Do(ctx, args...).Err(); err != nil {
-		return fmt.Errorf("failed to create semantic vector index %s: %w", namespace, err)
+		if !redis.HasErrorPrefix(err, "Index already exists") && !redis.HasErrorPrefix(err, "SEARCH_INDEX_EXISTS ") {
+			return fmt.Errorf("failed to create semantic vector index %s: %w", namespace, err)
+		}
+		info, err := s.client.Do(ctx, "FT.INFO", namespace).Result()
+		if err != nil {
+			return fmt.Errorf("failed to inspect concurrent semantic vector index %s: %w", namespace, err)
+		}
+		if existing, ok := vectorDimensionFromFTInfo(info); ok && existing != dimension {
+			return dimensionMismatchError(namespace, existing, dimension, "index")
+		}
+		if len(properties) == 0 {
+			properties = s.getNamespaceFieldTypes(namespace)
+		}
 	}
 
-	s.cacheNamespaceFieldTypes(namespace, properties)
+	s.cacheNamespaceSchema(namespace, dimension, properties)
 	return nil
 }
 
@@ -1001,14 +1049,17 @@ func containsField(fields []string, candidate string) bool {
 	return false
 }
 
-func (s *RedisStore) cacheNamespaceFieldTypes(namespace string, properties map[string]VectorStoreProperties) {
-	if strings.TrimSpace(namespace) == "" || len(properties) == 0 {
+func (s *RedisStore) cacheNamespaceSchema(namespace string, dimension int, properties map[string]VectorStoreProperties) {
+	if strings.TrimSpace(namespace) == "" {
 		return
 	}
 
-	fieldProps := make(map[string]VectorStoreProperties, len(properties))
-	for field, prop := range properties {
-		fieldProps[field] = prop
+	var fieldProps map[string]VectorStoreProperties
+	if len(properties) > 0 {
+		fieldProps = make(map[string]VectorStoreProperties, len(properties))
+		for field, prop := range properties {
+			fieldProps[field] = prop
+		}
 	}
 
 	s.namespaceFieldTypesMu.Lock()
@@ -1016,16 +1067,21 @@ func (s *RedisStore) cacheNamespaceFieldTypes(namespace string, properties map[s
 	if s.namespaceFieldTypes == nil {
 		s.namespaceFieldTypes = make(map[string]map[string]VectorStoreProperties)
 	}
+	if s.namespaceDimensions == nil {
+		s.namespaceDimensions = make(map[string]int)
+	}
 	s.namespaceFieldTypes[namespace] = fieldProps
+	s.namespaceDimensions[namespace] = dimension
 }
 
-func (s *RedisStore) deleteNamespaceFieldTypes(namespace string) {
+func (s *RedisStore) deleteNamespaceSchema(namespace string) {
 	if strings.TrimSpace(namespace) == "" {
 		return
 	}
 	s.namespaceFieldTypesMu.Lock()
 	defer s.namespaceFieldTypesMu.Unlock()
 	delete(s.namespaceFieldTypes, namespace)
+	delete(s.namespaceDimensions, namespace)
 }
 
 func (s *RedisStore) getNamespaceFieldTypes(namespace string) map[string]VectorStoreProperties {
@@ -1036,9 +1092,60 @@ func (s *RedisStore) getNamespaceFieldTypes(namespace string) map[string]VectorS
 	s.namespaceFieldTypesMu.RLock()
 	defer s.namespaceFieldTypesMu.RUnlock()
 
-	// Safe to hand out directly: cacheNamespaceFieldTypes always publishes a
+	// Safe to hand out directly: cacheNamespaceSchema always publishes a
 	// freshly built map, so an entry is never mutated after it is stored.
 	return s.namespaceFieldTypes[namespace]
+}
+
+func (s *RedisStore) getNamespaceSchema(namespace string) (redisNamespaceSchema, bool) {
+	if strings.TrimSpace(namespace) == "" {
+		return redisNamespaceSchema{}, false
+	}
+
+	s.namespaceFieldTypesMu.RLock()
+	defer s.namespaceFieldTypesMu.RUnlock()
+
+	dimension, ok := s.namespaceDimensions[namespace]
+	return redisNamespaceSchema{dimension: dimension, properties: s.namespaceFieldTypes[namespace]}, ok
+}
+
+// The lifecycle gate is only used by registration, deletion and recovery, never
+// healthy searches. A channel lets recovery waiters honor their request deadline.
+func (s *RedisStore) lockNamespaceLifecycle(ctx context.Context) error {
+	s.namespaceLifecycleOnce.Do(func() { s.namespaceLifecycle = make(chan struct{}, 1) })
+	select {
+	case s.namespaceLifecycle <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			s.unlockNamespaceLifecycle()
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *RedisStore) unlockNamespaceLifecycle() {
+	<-s.namespaceLifecycle
+}
+
+func (s *RedisStore) recoverNamespace(ctx context.Context, namespace string) (bool, error) {
+	if _, ok := s.getNamespaceSchema(namespace); !ok {
+		return false, nil
+	}
+	if err := s.lockNamespaceLifecycle(ctx); err != nil {
+		return false, err
+	}
+	defer s.unlockNamespaceLifecycle()
+	// A delete may have finished while this search waited for the gate.
+	schema, ok := s.getNamespaceSchema(namespace)
+	if !ok {
+		return false, nil
+	}
+	if err := s.createNamespace(ctx, namespace, schema.dimension, schema.properties, true); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // buildRedisQuery converts []Query to Redis query syntax
@@ -1267,7 +1374,18 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 
 	result := s.client.Do(ctx, args...)
 	if result.Err() != nil {
-		return nil, fmt.Errorf("native vector search failed: %w", result.Err())
+		if isRedisIndexNotFoundError(result.Err()) {
+			recovered, err := s.recoverNamespace(ctx, namespace)
+			if err != nil {
+				return nil, fmt.Errorf("failed to recover semantic vector index %s: %w", namespace, err)
+			}
+			if recovered {
+				result = s.client.Do(ctx, args...)
+			}
+		}
+		if result.Err() != nil {
+			return nil, fmt.Errorf("native vector search failed: %w", result.Err())
+		}
 	}
 
 	// Parse search results
@@ -1583,6 +1701,10 @@ func (s *RedisStore) ListNamespaces(ctx context.Context, prefix string) ([]strin
 func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) error {
 	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
+	if err := s.lockNamespaceLifecycle(ctx); err != nil {
+		return err
+	}
+	defer s.unlockNamespaceLifecycle()
 
 	// Drop the index AND its documents using FT.DROPINDEX ... DD. Without DD,
 	// only the index definition is removed while the underlying hashes (keyed
@@ -1592,8 +1714,8 @@ func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) erro
 	// collection-deleting semantics of the other vector store backends.
 	if err := s.client.Do(ctx, "FT.DROPINDEX", namespace, "DD").Err(); err != nil {
 		// Check if error is "Unknown Index name" - that's OK, index doesn't exist
-		if strings.Contains(strings.ToLower(err.Error()), "unknown index name") {
-			s.deleteNamespaceFieldTypes(namespace)
+		if isRedisIndexNotFoundError(err) {
+			s.deleteNamespaceSchema(namespace)
 			// The index is gone, so FT.DROPINDEX ... DD could not reach any
 			// documents. Hashes written under the "<namespace>:" prefix by a
 			// prior run (e.g. one that dropped the index without DD) may still
@@ -1603,7 +1725,7 @@ func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) erro
 		return fmt.Errorf("failed to drop semantic index %s: %w", namespace, err)
 	}
 
-	s.deleteNamespaceFieldTypes(namespace)
+	s.deleteNamespaceSchema(namespace)
 	return nil
 }
 
@@ -1743,6 +1865,24 @@ func isQuerySyntaxError(errMsg string) bool {
 		strings.Contains(errMsg, "invalid filter") ||
 		strings.Contains(errMsg, "invalid query") ||
 		strings.Contains(errMsg, "vector query clause is missing")
+}
+
+// Only backend missing-index replies may trigger schema recovery. Transport,
+// authorization and query errors must not be mistaken for a lost namespace.
+func isRedisIndexNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var redisErr redis.Error
+	if !errors.As(err, &redisErr) {
+		return false
+	}
+	message := strings.ToLower(strings.TrimPrefix(redisErr.Error(), "ERR "))
+	return message == "unknown index name" ||
+		strings.HasPrefix(message, "unknown index name: ") ||
+		message == "no such index" || strings.HasPrefix(message, "no such index ") ||
+		strings.HasSuffix(message, ": no such index") ||
+		strings.HasPrefix(message, "search_index_not_found ")
 }
 
 func parseOffsetCursor(cursor *string) (int, error) {

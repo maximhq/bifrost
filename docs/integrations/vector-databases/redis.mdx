@@ -229,6 +229,12 @@ deleteResults, err := store.DeleteAll(ctx, namespace, queries)
 
 <Info>
 **Search Module Required**: Redis/Valkey integration requires a search module/API that supports `FT.*` commands (index creation and vector search). If `FT.INFO` or `FT.SEARCH` is unavailable, semantic caching will not work.
+
+**Recovery After Index Loss**: If an index registered by the running Bifrost instance disappears (for example, after `FLUSHDB`), the next vector search recreates it with its registered dimension and fields and retries once. Recovery requires permission to run `FT.INFO` and `FT.CREATE`. Authentication, query, and dimension errors do not trigger recreation.
+
+Index rebuilding can be asynchronous, so a search may miss while surviving entries are re-indexed. `FLUSHDB` also deletes the cached responses themselves; those responses must be populated again. Direct cache fetches do not need a search index and are unchanged.
+
+Only registered namespaces are eligible for recovery. A namespace explicitly deleted through that instance's vector-store lifecycle is forgotten and is not recreated by later reads. Prefer Bifrost's cache-clear endpoints over `FLUSHDB` when clearing responses without destroying the index.
 </Info>
 
 <Warning>
