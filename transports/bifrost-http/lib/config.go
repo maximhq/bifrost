@@ -806,10 +806,7 @@ type Config struct {
 	// environment (e.g. "staging", "prod"). Set via config.json env_label or BIFROST_ENV_LABEL env var.
 	EnvLabel string
 
-	// DisableOnboarding hides the UI setup checklist for every user. It is read from config.json
-	// disable_onboarding or the BIFROST_DISABLE_ONBOARDING env var and never persisted, so it holds
-	// on deployments whose config store does not survive a restart.
-	DisableOnboarding bool
+	DisableOnboarding bool // Hides the UI setup checklist for every user
 
 	// StreamingDecompressThreshold overrides the default threshold (10MB) for
 	// switching from buffered to streaming request decompression. Set by
@@ -1247,7 +1244,8 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	} else if label := strings.TrimSpace(os.Getenv("BIFROST_ENV_LABEL")); label != "" {
 		config.EnvLabel = truncateLabel(label)
 	}
-	// 14a. Disable onboarding (config.json takes precedence over BIFROST_DISABLE_ONBOARDING env var)
+	// 14a. Disable onboarding (config.json takes precedence over BIFROST_DISABLE_ONBOARDING env var).
+	// Never persisted, so it holds on deployments whose config store does not survive a restart.
 	if configData.DisableOnboarding != nil {
 		config.DisableOnboarding = *configData.DisableOnboarding
 	} else if v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("BIFROST_DISABLE_ONBOARDING"))); err == nil {

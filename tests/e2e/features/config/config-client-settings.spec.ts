@@ -83,7 +83,8 @@ test.describe('Skills marketplace URL settings', () => {
 })
 
 // Mock an unconfigured instance so the checklist is incomplete and would be visible.
-async function mockUnconfiguredInstance(page: Page, { disableOnboarding = false } = {}) {
+// disable_onboarding is read per request, so a test can flip it between loads.
+async function mockUnconfiguredInstance(page: Page, state = { disableOnboarding: false }) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/config') {
@@ -91,7 +92,7 @@ async function mockUnconfiguredInstance(page: Page, { disableOnboarding = false 
         client_config: { ...DefaultCoreConfig, enforce_auth_on_inference: false, allowed_origins: [] },
         auth_config: null,
         framework_config: {}, is_db_connected: true, metadata: {},
-        disable_onboarding: disableOnboarding,
+        disable_onboarding: state.disableOnboarding,
       } })
     } else if (path === '/api/version') {
       await route.fulfill({ json: '1.0.0' })
@@ -122,10 +123,15 @@ test.describe('Onboarding widget snooze', () => {
   })
 
   test('disable_onboarding from config.json hides the checklist on an incomplete instance', async ({ page }) => {
-    await mockUnconfiguredInstance(page, { disableOnboarding: true })
-    // Wait on the request the widget's own render depends on, so the absence below is not a race with a slow load.
-    const configLoaded = page.waitForResponse(res => new URL(res.url()).pathname === '/api/config')
+    const state = { disableOnboarding: false }
+    await mockUnconfiguredInstance(page, state)
+    // Positive control on the same page and mock: the widget renders while the flag is off.
     await page.goto('/workspace/config/client-settings')
+    await expect(page.getByTestId('onboarding-later')).toBeVisible()
+
+    state.disableOnboarding = true
+    const configLoaded = page.waitForResponse(res => new URL(res.url()).pathname === '/api/config')
+    await page.reload()
     await configLoaded
     await expect(page.getByTestId('onboarding-later')).toHaveCount(0)
   })
