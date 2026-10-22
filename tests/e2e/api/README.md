@@ -4,7 +4,7 @@ End-to-end API tests for the Bifrost API using Postman collections and [Newman](
 
 ## Redis index recovery fixture
 
-Provider-harness folder **264. Redis index recovery after external schema loss (#2791)**
+Provider-harness folder **264. Redis index recovery after external schema loss (#2791 / PR #8901)**
 has two opt-in `[PREVIEW]` rows: chat completions and chat SSE. They require manual
 fault injection; the collection never deletes a Redis index itself. The real-Redis
 Go regressions in `framework/vectorstore/redis_test.go` automate that fault and its

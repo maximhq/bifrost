@@ -1138,6 +1138,7 @@ test("provider-harness: Redis recovery assertions handle JSON/SSE, bounded misse
   const providerHarness = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"));
   const folder = providerHarness.item.find((item) => item.name.startsWith("264. Redis index recovery"));
   assert.ok(folder, "Redis recovery folder missing");
+  assert.strictEqual(folder.name, "264. Redis index recovery after external schema loss (#2791 / PR #8901)");
   assert.strictEqual(folder.item.length, 2);
   const source = listenScript(folder, "test");
   assert.ok(source);

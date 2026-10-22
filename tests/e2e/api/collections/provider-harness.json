@@ -276967,7 +276967,7 @@
       ]
     },
     {
-      "name": "264. Redis index recovery after external schema loss (#2791)",
+      "name": "264. Redis index recovery after external schema loss (#2791 / PR #8901)",
       "description": "Opt-in, manually fault-injected Redis regression. See README.md, \"Redis index recovery fixture\". Configure a dedicated Redis-backed semantic_cache namespace, warm both exact request bodies with their cache keys, verify semantic hits, then FT.DROPINDEX the namespace WITHOUT DD and do not restart Bifrost. These read-only rows require semantic hits from surviving hashes; they cannot refill the cache. Each row can run at most eight times while Redis reindexes. [PREVIEW] keeps the external-service fixture out of default sweeps. The harness never sends FLUSHDB or FT.DROPINDEX itself.",
       "event": [
         {
