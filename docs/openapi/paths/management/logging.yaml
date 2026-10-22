@@ -542,6 +542,65 @@ logs-by-id:
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
 
+logs-trace-by-id:
+  get:
+    operationId: getLogTrace
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get the causal trace of a request
+    description: |
+      Returns the causal chain behind one request: its retry attempts, its
+      complete fallback chain (every provider and model tried, in order, whether
+      each hop succeeded or failed and why), and each hop's guardrail and cache
+      decisions and latency breakdown.
+
+      Use it to explain why a specific request failed or behaved unexpectedly.
+      `getLogById` returns one row's content; this returns the causation around
+      it. The id can be the root request or any fallback hop: the full chain is
+      returned either way.
+
+      It explains one request. It cannot explain why an aggregate changed, such
+      as a spike in errors or a shift in latency; break the change down with
+      the rankings and histogram endpoints instead.
+
+      The chain is capped at 10 fallback hops, and each hop at 20 attempts,
+      guardrail decisions and log lines. When the chain is longer than the cap,
+      `truncated_chain` is true and `final_status` is omitted.
+    tags:
+      - Logging
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: ID of the request, or of any fallback hop in its chain
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/RequestTrace"
+      "404":
+        description: The request, or the root of its chain, was not found or is not visible to the caller
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
 logs-histogram:
   get:
     operationId: getLogsHistogram

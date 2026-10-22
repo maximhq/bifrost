@@ -280013,6 +280013,189 @@
           }
         }
       ]
+    },
+    {
+      "name": "265. Request trace endpoint (log-trace)",
+      "description": "GET /api/logs/{id}/trace serves the causal chain Warp's get_request_trace tool builds (the two now share logstore.BuildRequestTrace), so the management MCP and API clients can explain one request. The case sends one request, waits for its log row through the session listing, and requires the trace to be rooted at it with one successful openai node; an unknown id must return 404. Red before the change: the route did not exist. The seeded log is deleted at the end.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini log-trace seed: one request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{logTraceSession}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"Reply with OK.\"}], \"max_tokens\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh session per run, so the wait below never sees an earlier run's row.",
+                  "pm.collectionVariables.set('logTraceSession', 'harness-log-trace-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('logTraceId', pm.response.headers.get('x-bifrost-request-id') || '');",
+                  "pm.test('log-trace seed: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('log-trace seed: request id returned', function () {",
+                  "  pm.expect(pm.collectionVariables.get('logTraceId'), 'no x-bifrost-request-id header').to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-trace: wait for the seeded log row",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?session_id={{logTraceSession}}&limit=10"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-trace wait: list responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('logTraceTries'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "var tries = Number(pm.collectionVariables.get('logTraceTries') || 0);",
+                  "if (logs.length < 1 && tries < 10) {",
+                  "  // The row is written by the async log writer (1s batches).",
+                  "  pm.collectionVariables.set('logTraceTries', tries + 1);",
+                  "  setTimeout(function () {}, 1500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('logTraceTries');",
+                  "pm.test('log-trace wait: the seeded row is logged', function () {",
+                  "  pm.expect(logs.map(function (l) { return l.id; }), 'rows: ' + pm.response.text()).to.include(pm.collectionVariables.get('logTraceId'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-trace: trace of the seeded request",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/{{logTraceId}}/trace"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-trace: responds 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var id = pm.collectionVariables.get('logTraceId');",
+                  "var trace = pm.response.json();",
+                  "pm.test('log-trace: the chain is rooted at the seeded request', function () {",
+                  "  pm.expect(trace.root_id, 'root: ' + pm.response.text()).to.equal(id);",
+                  "  pm.expect(trace.chain_length, 'length: ' + pm.response.text()).to.be.at.least(1);",
+                  "  pm.expect(trace.nodes[0].id, 'first node: ' + pm.response.text()).to.equal(id);",
+                  "  pm.expect(trace.nodes[0].provider, 'provider: ' + pm.response.text()).to.equal('openai');",
+                  "  pm.expect(trace.truncated_chain, 'truncated: ' + pm.response.text()).to.equal(false);",
+                  "  pm.expect(trace.final_status, 'final status: ' + pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-404] openai log-trace: unknown id is not found",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/harness-log-trace-missing-{{$guid}}/trace"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-trace: unknown id returns 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-trace cleanup: delete the seeded log",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/logs",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\":[\"{{logTraceId}}\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-trace cleanup: delete succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('logTraceId');",
+                  "pm.collectionVariables.unset('logTraceSession');"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

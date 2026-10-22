@@ -1831,3 +1831,146 @@ UserAgentMappingList:
       description: Every mapping, active or not, oldest first
       items:
         $ref: '#/UserAgentMapping'
+
+RequestTrace:
+  type: object
+  description: The causal chain behind one request, ordered by fallback index
+  required:
+    - root_id
+    - chain_length
+    - nodes
+    - truncated_chain
+  properties:
+    root_id:
+      type: string
+      description: ID of the chain's root request
+    chain_length:
+      type: integer
+      description: Number of nodes returned
+    nodes:
+      type: array
+      items:
+        $ref: '#/RequestTraceNode'
+    truncated_chain:
+      type: boolean
+      description: True when the chain has more fallback hops than were returned
+    final_status:
+      type: string
+      description: Status of the chain's last hop. Omitted when the chain is truncated.
+
+RequestTraceNode:
+  type: object
+  description: One request in a chain, the root (fallback index 0) or a fallback hop
+  required:
+    - id
+    - fallback_index
+    - timestamp
+    - provider
+    - model
+    - status
+  properties:
+    id:
+      type: string
+    fallback_index:
+      type: integer
+    timestamp:
+      type: string
+      format: date-time
+    provider:
+      type: string
+    model:
+      type: string
+    status:
+      type: string
+    stop_reason:
+      type: string
+    latency_ms:
+      type: number
+    upstream_latency_ms:
+      type: number
+    overhead_latency_ms:
+      type: number
+    number_of_retries:
+      type: integer
+    attempts:
+      type: array
+      description: Retry attempts, up to 20
+      items:
+        type: object
+        properties:
+          attempt:
+            type: integer
+          key_name:
+            type: string
+          fail_reason:
+            type: string
+          triggered_rotation:
+            type: boolean
+    error:
+      type: object
+      properties:
+        status_code:
+          type: integer
+        type:
+          type: string
+        code:
+          type: string
+        message:
+          type: string
+          description: Truncated to 300 characters
+    cache:
+      type: object
+      properties:
+        hit:
+          type: boolean
+        hit_type:
+          type: string
+        similarity:
+          type: number
+        threshold:
+          type: number
+    guardrails:
+      type: array
+      description: Guardrail judge calls, up to 20
+      items:
+        type: object
+        properties:
+          phase:
+            type: string
+          rule_name:
+            type: string
+          guardrail_name:
+            type: string
+          action:
+            type: string
+          reason:
+            type: string
+    plugin_logs:
+      type: array
+      description: Plugin log lines in the order they happened, up to 20
+      items:
+        type: object
+        properties:
+          plugin:
+            type: string
+          timestamp:
+            type: string
+          level:
+            type: string
+          message:
+            type: string
+    routing_engine_logs:
+      type: array
+      description: The most recent routing engine log lines, up to 20
+      items:
+        type: string
+    overhead_breakdown:
+      type: array
+      description: Self-time spans of Bifrost's own overhead
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          duration_ms:
+            type: number
