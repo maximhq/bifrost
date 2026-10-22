@@ -7042,6 +7042,17 @@ func streamHoldsStartupEvents(ctx *schemas.BifrostContext, providerKey schemas.M
 		schemas.IsOpenAIModelFamily(ctx, model) || providerUtils.AttemptAbortFromContext(ctx) != nil
 }
 
+// readyHeldStreamCommit runs once per stream attempt, on the chunk that commits it. When a
+// plugin holds the stream, the pause/resume gate buffers that chunk and the retry loop's
+// first-chunk check never sees it, so the transport cannot commit the response or start
+// heartbeats; marking the watch ready lets the gate signal the check instead. An ungated stream
+// pays only the gated lookup.
+func readyHeldStreamCommit(ctx *schemas.BifrostContext) {
+	if gated, _ := ctx.Value(schemas.BifrostContextKeyStreamGated).(bool); gated {
+		ctx.ReadyStreamCommitWatch()
+	}
+}
+
 func executeRequestWithRetries[T any](
 	ctx *schemas.BifrostContext,
 	config *schemas.ProviderConfig,
@@ -7457,7 +7468,6 @@ func executeRequestWithRetries[T any](
 			}
 		}
 
-		// Attempt the request
 		result, bifrostError = requestHandler(currentKey)
 
 		// Detect errors carried inside HTTP 200 streams before returning success.
@@ -8297,7 +8307,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
-					startup.ObserveResult(ctx, resp, bifrostErr)
+					if startup.ObserveResult(ctx, resp, bifrostErr) {
+						readyHeldStreamCommit(ctx)
+					}
 					return resp, bifrostErr
 				}
 				// Store a finalizer callback to create aggregated post-hook spans at stream end.
