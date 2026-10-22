@@ -526,6 +526,7 @@ func (h *WebRTCRealtimeHandler) establishRelay(
 	return establishWebRTCRelay(webrtcRelaySetup{
 		requestType: schemas.RealtimeRequest,
 		handler: &realtimeWebRTCMessages{
+			config:               h.config,
 			client:               h.client,
 			session:              session,
 			bifrostCtx:           relayCtx,
@@ -550,6 +551,7 @@ func (h *WebRTCRealtimeHandler) establishRelay(
 // realtimeWebRTCMessages translates Realtime events across a WebRTC relay and runs a plugin
 // pass per turn.
 type realtimeWebRTCMessages struct {
+	config               *lib.Config
 	client               *bifrost.Bifrost
 	session              *bfws.Session
 	bifrostCtx           *schemas.BifrostContext
@@ -645,15 +647,21 @@ func (m *realtimeWebRTCMessages) fromProvider(r *webrtcRelay, msg webrtc.DataCha
 		}
 		// Track session tool definitions from session.created/session.updated (server→client).
 		updateRealtimeSessionFromEvent(m.session, event)
-		inputItemID, inputSummary := pendingRealtimeInputUpdate(event)
-		if inputSummary != "" {
-			m.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
+		if m.transcriptionSession {
+			inputItemID, inputSummary := pendingRealtimeInputUpdate(event)
+			if inputSummary != "" {
+				m.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
+			}
+		} else {
+			recordRealtimeProviderInput(m.config, m.session, event, string(msg.Data))
 		}
 		if event.Delta != nil && m.provider.ShouldAccumulateRealtimeOutput(event.Type) {
 			m.session.AppendRealtimeOutputText(event.Delta.Text)
 			m.session.AppendRealtimeOutputText(event.Delta.Transcript)
 		}
-		if m.provider.ShouldStartRealtimeTurn(event) && m.session.PeekRealtimeTurnHooks() == nil {
+		// Transcription has no response.created event; its unit starts at committed input.
+		startsTurn := m.provider.ShouldStartRealtimeTurn(event) || (m.transcriptionSession && event.Type == schemas.RTEventInputAudioBufferCommitted)
+		if startsTurn && m.session.PeekRealtimeTurnHooks() == nil {
 			if bifrostErr := startRealtimeTurnHooks(m.client, m.bifrostCtx, m.session, m.provider, m.providerKey, m.model, m.key, event); bifrostErr != nil {
 				r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(bifrostErr))
 				return
@@ -690,7 +698,9 @@ func (m *realtimeWebRTCMessages) fromProvider(r *webrtcRelay, msg webrtc.DataCha
 				return
 			}
 		}
-		msg.Data, err = m.provider.ToProviderRealtimeEvent(event)
+		if len(event.RawData) == 0 {
+			msg.Data, err = m.provider.ToProviderRealtimeEvent(event)
+		}
 		if err != nil {
 			logger.Warn("failed to encode translated realtime event: %v", err)
 			// Lifecycle events (response.done / error) must reach the client so it

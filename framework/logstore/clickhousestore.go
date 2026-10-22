@@ -743,6 +743,9 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 				}
 				// The overlay skips zero values; the final visibility is always written.
 				r.ContentHidden = src.ContentHidden
+				if src.RealtimeInputCorrection != nil {
+					r.ContentSummary = src.RealtimeInputCorrection.Summary
+				}
 			}
 		}
 		return s.chReinsert(ctx, &rows)
