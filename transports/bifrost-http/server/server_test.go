@@ -28,6 +28,7 @@ import (
 	"github.com/maximhq/bifrost/framework/mcpdiscovery"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -2335,4 +2336,50 @@ func TestApplyBasePath(t *testing.T) {
 
 	s = &BifrostHTTPServer{BasePath: "no-slash", Config: &lib.Config{}}
 	assert.Error(t, s.ApplyBasePath())
+}
+
+// fixedUserGovernance answers for any user with an empty limits projection.
+type fixedUserGovernance struct{}
+
+func (fixedUserGovernance) DescribeUserGovernance(_ context.Context, userID string) (*warp.UserGovernance, error) {
+	return &warp.UserGovernance{UserID: userID}, nil
+}
+
+// TestRegisterUserLimitsRoutes: without a user governance reader (the OSS build)
+// the user limits routes are not registered; with one they are, behind the
+// middleware chain RegisterAPIRoutes passes.
+func TestRegisterUserLimitsRoutes(t *testing.T) {
+	paths := []string{"/api/governance/users/me/limits", "/api/governance/users/u-1/limits"}
+	serve := func(s *BifrostHTTPServer, path string) *fasthttp.RequestCtx {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(path)
+		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+		s.Router.Handler(&ctx)
+		return &ctx
+	}
+
+	without := &BifrostHTTPServer{Router: router.New()}
+	without.registerUserLimitsRoutes()
+	for _, path := range paths {
+		ctx := serve(without, path)
+		require.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "%s is registered without a reader", path)
+	}
+
+	ran := 0
+	mark := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ran++
+			ctx.Response.Header.Set("X-Test-Middleware", "ran")
+			next(ctx)
+		}
+	})
+	with := &BifrostHTTPServer{Router: router.New(), WarpUserGovernanceReader: fixedUserGovernance{}}
+	with.registerUserLimitsRoutes(mark)
+	for _, path := range paths {
+		ctx := serve(with, path)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "%s: %s", path, ctx.Response.Body())
+		require.Equal(t, "ran", string(ctx.Response.Header.Peek("X-Test-Middleware")), "%s skipped the middleware chain", path)
+	}
+	require.Equal(t, len(paths), ran)
 }
