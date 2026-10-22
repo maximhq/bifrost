@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -570,6 +571,97 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vertex_use_session_routing_column"}, run: migrationAddVertexUseSessionRoutingColumn},
 	{IDs: []string{"add_rss_feeds_table"}, run: migrationAddRSSFeedsTable},
 	{IDs: []string{"add_rss_feeds_icon_url_column"}, run: migrationAddRSSFeedsIconURLColumn},
+	{IDs: []string{"scope_agent_push_identity"}, run: migrationScopeAgentPushIdentity},
+}
+
+// migrationScopeAgentPushIdentity preserves callback rows and ciphertext while
+// replacing their primary key. Legacy queued events have no registration binding;
+// guessing from the current callback could deliver a previous tenant's payload.
+func migrationScopeAgentPushIdentity(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "scope_agent_push_identity",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec("UPDATE config_agent_push_configs SET tenant = '' WHERE tenant IS NULL").Error; err != nil {
+				return err
+			}
+			switch tx.Dialector.Name() {
+			case "sqlite":
+				if err := migrateSQLiteAgentPushPrimaryKey(tx); err != nil {
+					return err
+				}
+			case "postgres":
+				var name string
+				if err := tx.Raw("SELECT conname FROM pg_constraint WHERE conrelid = ?::regclass AND contype = 'p'", "config_agent_push_configs").Scan(&name).Error; err != nil {
+					return err
+				}
+				if name == "" {
+					return fmt.Errorf("agent push configuration primary key is missing")
+				}
+				quoted := `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+				for _, sql := range []string{
+					"ALTER TABLE config_agent_push_configs ALTER COLUMN tenant SET DEFAULT ''",
+					"ALTER TABLE config_agent_push_configs ALTER COLUMN tenant SET NOT NULL",
+					"ALTER TABLE config_agent_push_configs DROP CONSTRAINT " + quoted,
+					"ALTER TABLE config_agent_push_configs ADD PRIMARY KEY (agent_name, tenant, task_id, config_id)",
+				} {
+					if err := tx.Exec(sql).Error; err != nil {
+						return err
+					}
+				}
+			default:
+				return fmt.Errorf("unsupported agent push config database: %s", tx.Dialector.Name())
+			}
+			for _, column := range []string{"tenant", "ingress_token_hash"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableAgentPushDelivery{}, column); err != nil {
+					return err
+				}
+			}
+			return tx.Exec("UPDATE config_agent_push_deliveries SET status = ?, last_error = ?, updated_at = ?, claimed_by = '', claimed_until = NULL WHERE status = ? AND COALESCE(ingress_token_hash, '') = ''",
+				schemas.AgentPushDeliveryStatusDead, "push registration identity unavailable after upgrade; notification cannot be safely delivered", time.Now().UTC(), schemas.AgentPushDeliveryStatusPending).Error
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("scope_agent_push_identity is non-rollbackable: removing tenant identity could merge callbacks and misroute notifications")
+		},
+	})
+}
+
+func migrateSQLiteAgentPushPrimaryKey(tx *gorm.DB) error {
+	var ddl string
+	if err := tx.Raw("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", "config_agent_push_configs").Scan(&ddl).Error; err != nil {
+		return err
+	}
+	primary := regexp.MustCompile(`(?i)PRIMARY KEY\s*\([^)]*\)`)
+	tenant := regexp.MustCompile("(?i)(`tenant`|\"tenant\"|tenant)\\s+[^,]+")
+	if !primary.MatchString(ddl) || !tenant.MatchString(ddl) {
+		return fmt.Errorf("unexpected agent push configuration table definition")
+	}
+	ddl = primary.ReplaceAllString(ddl, "PRIMARY KEY (`agent_name`,`tenant`,`task_id`,`config_id`)")
+	ddl = tenant.ReplaceAllString(ddl, "`tenant` varchar(255) NOT NULL DEFAULT ''")
+	start := strings.Index(ddl, "(")
+	if start < 0 {
+		return fmt.Errorf("invalid agent push configuration table definition")
+	}
+	var indexes []string
+	if err := tx.Raw("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL", "config_agent_push_configs").Scan(&indexes).Error; err != nil {
+		return err
+	}
+	for _, sql := range []string{
+		"CREATE TABLE config_agent_push_configs_tenant_migration " + ddl[start:],
+		"INSERT INTO config_agent_push_configs_tenant_migration SELECT * FROM config_agent_push_configs",
+		"DROP TABLE config_agent_push_configs",
+		"ALTER TABLE config_agent_push_configs_tenant_migration RENAME TO config_agent_push_configs",
+	} {
+		if err := tx.Exec(sql).Error; err != nil {
+			return err
+		}
+	}
+	for _, sql := range indexes {
+		if err := tx.Exec(sql).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
