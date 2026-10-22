@@ -588,10 +588,12 @@ func (s *memoryPushStore) rescheduleNow(id string) {
 // upstream.
 type pushUpstreamClient struct {
 	fakeSDKClient
-	mu      sync.Mutex
-	created []*a2a.PushConfig
-	deleted []*a2a.DeleteTaskPushConfigRequest
-	readErr error
+	mu        sync.Mutex
+	created   []*a2a.PushConfig
+	deleted   []*a2a.DeleteTaskPushConfigRequest
+	readErr   error
+	omitToken bool
+	deleteErr error
 }
 
 func (c *pushUpstreamClient) GetTaskPushConfig(_ context.Context, req *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error) {
@@ -603,6 +605,9 @@ func (c *pushUpstreamClient) GetTaskPushConfig(_ context.Context, req *a2a.GetTa
 	for _, cfg := range c.created {
 		if cfg.Tenant == req.Tenant && cfg.TaskID == req.TaskID && cfg.ID == req.ID {
 			copy := *cfg
+			if c.omitToken {
+				copy.Token = ""
+			}
 			return &copy, nil
 		}
 	}
@@ -619,6 +624,9 @@ func (c *pushUpstreamClient) ListTaskPushConfigs(_ context.Context, req *a2a.Lis
 	for _, cfg := range c.created {
 		if cfg.Tenant == req.Tenant && cfg.TaskID == req.TaskID {
 			copy := *cfg
+			if c.omitToken {
+				copy.Token = ""
+			}
 			result = append(result, &copy)
 		}
 	}
@@ -686,6 +694,14 @@ func BenchmarkEmbeddedPushConfigAbsent(b *testing.B) {
 }
 
 func BenchmarkPushConfigRead(b *testing.B) {
+	benchmarkPushConfigRead(b, false)
+}
+
+func BenchmarkPushConfigReadWithoutUpstreamToken(b *testing.B) {
+	benchmarkPushConfigRead(b, true)
+}
+
+func benchmarkPushConfigRead(b *testing.B, omitToken bool) {
 	store := newMemoryPushStore()
 	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
 	if err != nil {
@@ -693,7 +709,7 @@ func BenchmarkPushConfigRead(b *testing.B) {
 	}
 	b.Cleanup(m.Close)
 	runtime := m.buildRuntime(schemas.AgentRegistration{Name: "fixture", Enabled: true})
-	client := &pushUpstreamClient{}
+	client := &pushUpstreamClient{omitToken: omitToken}
 	if err := runtime.replaceGeneration(newClientGeneration(&a2a.AgentCard{}, client, string(a2a.TransportProtocolJSONRPC))); err != nil {
 		b.Fatal(err)
 	}
@@ -748,17 +764,25 @@ func TestEmbeddedPushTenantResolution(t *testing.T) {
 	}
 }
 
-func TestPushConfigCreateUsesSDKResolvedTenant(t *testing.T) {
-	for _, tc := range []struct{ explicit, iface, contextTenant, want string }{
-		{"explicit", "interface", "context", "explicit"},
-		{"", "interface", "context", "interface"},
-		{"", "", "context", "context"},
+func TestPushConfigUsesSDKResolvedTenant(t *testing.T) {
+	for _, tc := range []struct {
+		explicit, iface, contextTenant, want string
+		readMissing                          bool
+	}{
+		{explicit: "explicit", iface: "interface", contextTenant: "context", want: "explicit"},
+		{iface: "interface", contextTenant: "context", want: "interface"},
+		{contextTenant: "context", want: "context"},
+		{want: ""},
+		{iface: "interface", contextTenant: "context", want: "interface", readMissing: true},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
-			received := make(chan string, 1)
+			received := make(chan string, 6)
+			var mu sync.Mutex
+			var saved a2a.PushConfig
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				var rpc struct {
 					ID     string
+					Method string
 					Params a2a.PushConfig
 				}
 				if err := json.NewDecoder(req.Body).Decode(&rpc); err != nil {
@@ -767,7 +791,30 @@ func TestPushConfigCreateUsesSDKResolvedTenant(t *testing.T) {
 					return
 				}
 				received <- rpc.Params.Tenant
-				if err := json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": rpc.ID, "result": rpc.Params}); err != nil {
+				mu.Lock()
+				var result any
+				switch rpc.Method {
+				case "CreateTaskPushNotificationConfig":
+					saved = rpc.Params
+					result = saved
+				case "GetTaskPushNotificationConfig", "ListTaskPushNotificationConfigs":
+					redacted := saved
+					redacted.Token, redacted.Tenant = "", ""
+					if rpc.Method == "ListTaskPushNotificationConfigs" {
+						result = &a2a.ListTaskPushConfigResponse{Configs: []*a2a.PushConfig{&redacted}}
+					} else {
+						result = redacted
+					}
+				case "DeleteTaskPushNotificationConfig":
+					saved = a2a.PushConfig{}
+				}
+				mu.Unlock()
+				response := map[string]any{"jsonrpc": "2.0", "id": rpc.ID, "result": result}
+				if tc.readMissing && rpc.Method == "GetTaskPushNotificationConfig" {
+					delete(response, "result")
+					response["error"] = map[string]any{"code": -32001, "message": "task not found"}
+				}
+				if err := json.NewEncoder(w).Encode(response); err != nil {
 					t.Error(err)
 				}
 			}))
@@ -786,6 +833,23 @@ func TestPushConfigCreateUsesSDKResolvedTenant(t *testing.T) {
 			stored, err := store.GetAgentPushConfig(ctx, "fixture", tc.want, "task", "config")
 			require.NoError(t, err)
 			require.NotNil(t, stored)
+			require.True(t, stored.TenantBound)
+			if !tc.readMissing {
+				got, err := handler.GetTaskPushConfig(ctx, &a2a.GetTaskPushConfigRequest{Tenant: tc.explicit, TaskID: "task", ID: "config"})
+				require.NoError(t, err)
+				require.Equal(t, tc.want, <-received)
+				require.Equal(t, result, got)
+				listed, err := handler.ListTaskPushConfigs(ctx, &a2a.ListTaskPushConfigRequest{Tenant: tc.explicit, TaskID: "task"})
+				require.NoError(t, err)
+				require.Equal(t, tc.want, <-received)
+				require.Equal(t, []*a2a.PushConfig{result}, listed.Configs)
+			}
+			require.NoError(t, handler.DeleteTaskPushConfig(ctx, &a2a.DeleteTaskPushConfigRequest{Tenant: tc.explicit, TaskID: "task", ID: "config"}))
+			require.Equal(t, tc.want, <-received) // Upstream read, even when not-found.
+			require.Equal(t, tc.want, <-received) // Upstream delete.
+			stored, err = store.GetAgentPushConfig(ctx, "fixture", tc.want, "task", "config")
+			require.NoError(t, err)
+			require.Nil(t, stored)
 		})
 	}
 }
@@ -794,10 +858,13 @@ func TestPushReadDoesNotExposeUnboundCallback(t *testing.T) {
 	m, _, store, _ := pushGateway(t)
 	require.NoError(t, store.SaveAgentPushConfig(context.Background(), &schemas.AgentPushConfig{AgentName: "fixture", Tenant: "tenant-a", TaskID: "task", ConfigID: "config", URL: "http://callback.example", IngressTokenHash: hashPushIngressToken("gateway-token")}))
 	for _, token := range []string{"", "another-token"} {
-		config, err := m.localPushConfig(context.Background(), "fixture", "task", &a2a.PushConfig{TaskID: "task", ID: "config", Token: token})
+		config, err := m.localPushConfig(context.Background(), "fixture", "tenant-a", "task", &a2a.PushConfig{TaskID: "task", ID: "config", Token: token})
 		require.ErrorIs(t, err, push.ErrPushConfigNotFound)
 		require.Nil(t, config)
 	}
+	config, err := m.localPushConfig(context.Background(), "fixture", "tenant-a", "task", &a2a.PushConfig{TaskID: "task", ID: "config", Token: "gateway-token"})
+	require.NoError(t, err)
+	require.NotNil(t, config)
 }
 
 func (c *pushUpstreamClient) CreateTaskPushConfig(_ context.Context, config *a2a.PushConfig) (*a2a.PushConfig, error) {
@@ -812,7 +879,90 @@ func (c *pushUpstreamClient) DeleteTaskPushConfig(_ context.Context, req *a2a.De
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.deleted = append(c.deleted, req)
-	return nil
+	return c.deleteErr
+}
+
+func TestPushConfigReadsWithoutUpstreamToken(t *testing.T) {
+	_, handler, store, upstream := pushGateway(t)
+	for _, tenant := range []string{"tenant-a", "tenant-b"} {
+		_, err := handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{
+			Tenant: tenant, TaskID: "task", ID: "config", URL: "http://" + tenant + ".example/callback",
+			Token: "client-token", Auth: &a2a.PushAuthInfo{Scheme: "Bearer", Credentials: "client-secret"},
+		})
+		require.NoError(t, err)
+	}
+	upstream.omitToken = true
+	for _, tenant := range []string{"tenant-a", "tenant-b"} {
+		got, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{Tenant: tenant, TaskID: "task", ID: "config"})
+		require.NoError(t, err)
+		require.Equal(t, "http://"+tenant+".example/callback", got.URL)
+		require.Empty(t, got.Token)
+		require.Empty(t, got.Auth.Credentials)
+		listed, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{Tenant: tenant, TaskID: "task"})
+		require.NoError(t, err)
+		require.Len(t, listed.Configs, 1)
+		require.Equal(t, got, listed.Configs[0])
+	}
+	// A present but unrecognized credential must not trigger tuple fallback.
+	upstream.omitToken = false
+	upstream.mu.Lock()
+	upstream.created[0].Token = "unrecognized"
+	upstream.mu.Unlock()
+	got, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{Tenant: "tenant-a", TaskID: "task", ID: "config"})
+	require.ErrorIs(t, err, push.ErrPushConfigNotFound)
+	require.Nil(t, got)
+	other, err := store.GetAgentPushConfig(context.Background(), "fixture", "tenant-b", "task", "config")
+	require.NoError(t, err)
+	require.NotNil(t, other)
+}
+
+func TestPushConfigDeleteWithoutUpstreamToken(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		readErr   error
+		deleteErr error
+		legacy    bool
+	}{
+		{name: "omitted token"},
+		{name: "missing push configuration", readErr: push.ErrPushConfigNotFound},
+		{name: "missing task", readErr: a2a.ErrTaskNotFound},
+		{name: "upstream read denied", readErr: a2a.ErrUnauthorized},
+		{name: "upstream delete denied", deleteErr: a2a.ErrUnauthorized},
+		{name: "legacy tenant metadata", legacy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, handler, store, upstream := pushGateway(t)
+			for _, tenant := range []string{"tenant-a", "tenant-b"} {
+				_, err := handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{Tenant: tenant, TaskID: "task", ID: "config", URL: "http://callback.example"})
+				require.NoError(t, err)
+			}
+			upstream.omitToken, upstream.readErr, upstream.deleteErr = true, tc.readErr, tc.deleteErr
+			if tc.legacy {
+				store.pushMu.Lock()
+				key := pushConfigKey("fixture", "tenant-a", "task", "config")
+				legacy := store.configs[key]
+				legacy.TenantBound = false
+				store.configs[key] = legacy
+				store.pushMu.Unlock()
+			}
+			err := handler.DeleteTaskPushConfig(context.Background(), &a2a.DeleteTaskPushConfigRequest{Tenant: "tenant-a", TaskID: "task", ID: "config"})
+			local, getErr := store.GetAgentPushConfig(context.Background(), "fixture", "tenant-a", "task", "config")
+			require.NoError(t, getErr)
+			if errors.Is(tc.readErr, a2a.ErrUnauthorized) || tc.deleteErr != nil {
+				require.ErrorIs(t, err, a2a.ErrUnauthorized)
+				require.NotNil(t, local)
+			} else if tc.legacy {
+				require.NoError(t, err)
+				require.NotNil(t, local)
+			} else {
+				require.NoError(t, err)
+				require.Nil(t, local)
+			}
+			other, getErr := store.GetAgentPushConfig(context.Background(), "fixture", "tenant-b", "task", "config")
+			require.NoError(t, getErr)
+			require.NotNil(t, other)
+		})
+	}
 }
 
 func (c *pushUpstreamClient) lastCreated(t *testing.T) *a2a.PushConfig {
@@ -1387,7 +1537,7 @@ func TestConcurrentPushRelaysDeliverOnce(t *testing.T) {
 	created, err := store.CreateAgentPushDeliveryIfNotExists(context.Background(), &schemas.AgentPushDelivery{
 		ID: "delivery", AgentName: "agent", TaskID: "task", ConfigID: "config",
 		IngressTokenHash: "registration-hash",
-		Payload: `{}`, Status: schemas.AgentPushDeliveryStatusPending, NextAttemptAt: now,
+		Payload:          `{}`, Status: schemas.AgentPushDeliveryStatusPending, NextAttemptAt: now,
 		CreatedAt: now, UpdatedAt: now,
 	})
 	require.NoError(t, err)

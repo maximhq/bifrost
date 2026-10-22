@@ -67,7 +67,7 @@ func (s *agentPushStore) GetAgentPushConfig(_ context.Context, agentName, tenant
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, config := range s.configs {
-		if config.AgentName == agentName && config.TaskID == taskID && config.ConfigID == configID {
+		if config.AgentName == agentName && config.Tenant == tenant && config.TaskID == taskID && config.ConfigID == configID {
 			result := config
 			return &result, nil
 		}

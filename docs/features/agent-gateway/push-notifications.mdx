@@ -36,7 +36,7 @@ Use an absolute HTTP or HTTPS callback URL without credentials embedded in the U
 
   An explicit create operation registers the upstream configuration first, then saves the local configuration. If local storage fails, Bifrost attempts to remove the upstream registration and returns an error.
 
-  Get and list operations first authorize the request through the upstream agent, then resolve Bifrost's stored callback using the gateway-minted notification token. They return your callback URL, omit notification tokens, and include only the authentication scheme. Callback credentials are write-only. The upstream must return the gateway token in its push-configuration reads; configurations registered outside Bifrost are not exposed as local callbacks.
+  Get and list operations first authorize the request through the upstream agent. If the upstream returns the gateway-minted notification token, Bifrost uses it to resolve the stored callback. If the token is omitted, Bifrost matches the effective tenant, task ID, and configuration ID for registrations whose tenant binding was recorded by the gateway. Older registrations without this binding still require the token; re-register them through Bifrost to enable tokenless reads and cleanup. Responses return your callback URL, omit notification tokens, and include only the authentication scheme. Callback credentials are write-only.
 </Accordion>
 
 <Accordion title="Why is this stored in the configuration database?">
