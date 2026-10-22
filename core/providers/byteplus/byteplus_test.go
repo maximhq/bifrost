@@ -3,6 +3,7 @@ package byteplus_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -39,8 +40,10 @@ func TestByteplus(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.BytePlus, Model: "deepseek-v4-flash-260425"},
 		},
-		ReasoningModel: "deepseek-v4-flash-260425",
-		EmbeddingModel: "skylark-embedding-vision-251215",
+		ReasoningModel:       "deepseek-v4-flash-260425",
+		EmbeddingModel:       "skylark-embedding-vision-251215",
+		ImageGenerationModel: "dola-seedream-5-0-pro-260628",
+		VideoGenerationModel: "dreamina-seedance-2-5-260628",
 		Scenarios: llmtests.TestScenarios{
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -56,6 +59,11 @@ func TestByteplus(t *testing.T) {
 			ListModels:            true,
 			Reasoning:             true,
 			Embedding:             true,
+			ImageGeneration:       true,
+			// The shared image edit test always sends a mask, which Seedream rejects.
+			// Mask-free edits are covered by TestBytePlusImageGenerationAndEdit and the harness.
+			ImageEdit:       false,
+			VideoGeneration: os.Getenv("BYTEPLUS_RUN_VIDEO_TESTS") == "1", // Seedance bills per generated video
 		},
 	}
 
@@ -389,4 +397,326 @@ func TestToBytePlusMultimodalEmbeddingRequest(t *testing.T) {
 			t.Fatal("expected an error for token parts")
 		}
 	})
+}
+
+func TestToBytePlusImageGenerationRequest(t *testing.T) {
+	req, err := byteplus.ToBytePlusImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model: "seedream-4-5-251128",
+		Input: &schemas.ImageGenerationInput{Prompt: "a cat"},
+		Params: &schemas.ImageGenerationParameters{
+			N:              schemas.Ptr(3),
+			Size:           schemas.Ptr("2048x2048"),
+			ResponseFormat: schemas.Ptr("b64_json"),
+			InputImages:    []string{"https://example.com/ref.png"},
+			ExtraParams:    map[string]interface{}{"watermark": false, "guidance_scale": 5.5},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.SequentialImageGeneration == nil || *req.SequentialImageGeneration != "auto" || req.SequentialImageGenerationOptions == nil || req.SequentialImageGenerationOptions.MaxImages != 3 {
+		t.Errorf("n=3 should enable sequential generation with max_images 3: %+v %+v", req.SequentialImageGeneration, req.SequentialImageGenerationOptions)
+	}
+	if req.Size == nil || *req.Size != "2048x2048" || req.ResponseFormat == nil || *req.ResponseFormat != "b64_json" {
+		t.Errorf("size/response_format not mapped: %+v %+v", req.Size, req.ResponseFormat)
+	}
+	if len(req.Image) != 1 || req.Image[0] != "https://example.com/ref.png" {
+		t.Errorf("input images not mapped: %v", req.Image)
+	}
+	if req.Watermark == nil || *req.Watermark {
+		t.Errorf("watermark not lifted: %v", req.Watermark)
+	}
+	if _, ok := req.ExtraParams["guidance_scale"]; !ok {
+		t.Errorf("unknown extra params should pass through: %v", req.ExtraParams)
+	}
+}
+
+func TestBytePlusImageGenerationAndEdit(t *testing.T) {
+	provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/images/generations": jsonResponse(http.StatusOK, `{"model":"seedream-4-5-251128","created":1757321139,"data":[{"url":"https://cdn.example/1.png","size":"2048x2048"},{"error":{"code":"OutputImageSensitiveContentDetected","message":"blocked"}}],"usage":{"generated_images":1,"output_tokens":16384,"total_tokens":16384}}`),
+	})
+	ctx := testContext(t)
+
+	resp, bifrostErr := provider.ImageGeneration(ctx, testKey(), &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.BytePlus,
+		Model:    "seedream-4-5-251128",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a cat"},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ImageGeneration error: %+v", bifrostErr.Error)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].URL != "https://cdn.example/1.png" {
+		t.Errorf("failed images should be skipped, got %+v", resp.Data)
+	}
+	if resp.Usage == nil || resp.Usage.OutputTokens != 16384 || resp.Created != 1757321139 {
+		t.Errorf("usage/created not mapped: %+v created=%d", resp.Usage, resp.Created)
+	}
+
+	if _, bifrostErr := provider.ImageEdit(ctx, testKey(), &schemas.BifrostImageEditRequest{
+		Provider: schemas.BytePlus,
+		Model:    "seedream-4-5-251128",
+		Input:    &schemas.ImageEditInput{Prompt: "make it blue", Images: []schemas.ImageInput{{Image: []byte("\x89PNG\r\n\x1a\n0000")}, {URL: "https://example.com/b.png"}}},
+	}); bifrostErr != nil {
+		t.Fatalf("ImageEdit error: %+v", bifrostErr.Error)
+	}
+	edit := captured()[1].body
+	if got := gjson.GetBytes(edit, "image.0").String(); !strings.HasPrefix(got, "data:image/png;base64,") {
+		t.Errorf("image bytes should be sent as a data uri, got %q", got)
+	}
+	if got := gjson.GetBytes(edit, "image.1").String(); got != "https://example.com/b.png" {
+		t.Errorf("image url not forwarded, got %q", got)
+	}
+}
+
+// Converter refusals are the caller's mistake, so they must surface as a 400 with the reason, not a conversion failure.
+// background is a typed OpenAI-shaped field, so the HTTP layer never puts it in ExtraParams.
+func TestToBytePlusImageGenerationRequestDropsInvalidSequentialOptions(t *testing.T) {
+	for name, invalid := range map[string]interface{}{"string": "bogus", "zero max_images": map[string]interface{}{"max_images": 0}} {
+		t.Run(name, func(t *testing.T) {
+			req, err := byteplus.ToBytePlusImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+				Model: "seedream-4-5-251128",
+				Input: &schemas.ImageGenerationInput{Prompt: "a cat"},
+				Params: &schemas.ImageGenerationParameters{
+					N:           schemas.Ptr(2),
+					ExtraParams: map[string]interface{}{"sequential_image_generation_options": invalid},
+				},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if req.SequentialImageGenerationOptions == nil || req.SequentialImageGenerationOptions.MaxImages != 2 {
+				t.Errorf("n=2 should keep max_images 2: %+v", req.SequentialImageGenerationOptions)
+			}
+			if _, ok := req.ExtraParams["sequential_image_generation_options"]; ok {
+				t.Errorf("invalid passthrough value would overwrite the typed options at merge time: %v", req.ExtraParams)
+			}
+		})
+	}
+}
+
+func TestBytePlusImageTypedBackgroundReachesArk(t *testing.T) {
+	gen, err := byteplus.ToBytePlusImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model:  "dola-seedream-5-0-pro-260628",
+		Input:  &schemas.ImageGenerationInput{Prompt: "a logo"},
+		Params: &schemas.ImageGenerationParameters{Background: schemas.Ptr("transparent")},
+	})
+	if err != nil {
+		t.Fatalf("generation convert: %v", err)
+	}
+	genBody, _ := json.Marshal(gen)
+	if gjson.GetBytes(genBody, "background").String() != "transparent" {
+		t.Errorf("generation background should reach Ark, got %s", genBody)
+	}
+	edit, err := byteplus.ToBytePlusImageEditRequest(&schemas.BifrostImageEditRequest{
+		Model:  "dola-seedream-5-0-pro-260628",
+		Input:  &schemas.ImageEditInput{Prompt: "a logo", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+		Params: &schemas.ImageEditParameters{Background: schemas.Ptr("transparent")},
+	})
+	if err != nil {
+		t.Fatalf("edit convert: %v", err)
+	}
+	editBody, _ := json.Marshal(edit)
+	if gjson.GetBytes(editBody, "background").String() != "transparent" {
+		t.Errorf("edit background should reach Ark, got %s", editBody)
+	}
+}
+
+func TestBytePlusConverterRefusalsAreBadRequests(t *testing.T) {
+	provider, captured, _ := newMockBytePlus(t, nil)
+	ctx := testContext(t)
+	check := func(name string, bifrostErr *schemas.BifrostError, wantMessage string) {
+		t.Helper()
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: expected a 400, got %+v", name, bifrostErr)
+			return
+		}
+		if !strings.Contains(bifrostErr.Error.Message, wantMessage) {
+			t.Errorf("%s: message = %q, want it to mention %q", name, bifrostErr.Error.Message, wantMessage)
+		}
+	}
+
+	_, bifrostErr := provider.ImageEdit(ctx, testKey(), &schemas.BifrostImageEditRequest{
+		Provider: schemas.BytePlus,
+		Model:    "dola-seedream-5-0-pro-260628",
+		Input:    &schemas.ImageEditInput{Prompt: "make it blue", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+		Params:   &schemas.ImageEditParameters{Mask: []byte("mask")},
+	})
+	check("image edit mask", bifrostErr, "mask is not supported")
+
+	_, bifrostErr = provider.VideoGeneration(ctx, testKey(), &schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.BytePlus,
+		Model:    "dreamina-seedance-2-5-260628",
+		Input:    &schemas.VideoGenerationInput{Prompt: "a dog", InputReference: schemas.Ptr("https://example.com/first.png")},
+		Params:   &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_images": []string{"https://example.com/r.png"}}},
+	})
+	check("video reference_images with first frame", bifrostErr, "cannot be combined")
+
+	if len(captured()) != 0 {
+		t.Errorf("refused requests should not reach Ark, got %d calls", len(captured()))
+	}
+}
+
+func TestBytePlusImageGenerationAllImagesFailed(t *testing.T) {
+	provider, _, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/images/generations": jsonResponse(http.StatusOK, `{"model":"seedream-4-5-251128","created":1,"data":[{"error":{"code":"OutputImageSensitiveContentDetected","message":"blocked"}}]}`),
+	})
+
+	_, bifrostErr := provider.ImageGeneration(testContext(t), testKey(), &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.BytePlus,
+		Model:    "seedream-4-5-251128",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a cat"},
+	})
+	if bifrostErr == nil {
+		t.Fatal("expected an error when every image failed")
+	}
+	if bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "OutputImageSensitiveContentDetected" {
+		t.Errorf("error code = %v", bifrostErr.Error.Code)
+	}
+}
+
+func TestToBytePlusVideoGenerationRequest(t *testing.T) {
+	req, err := byteplus.ToBytePlusVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model: "seedance-1-0-pro-fast-251015",
+		Input: &schemas.VideoGenerationInput{Prompt: "a dog", InputReference: schemas.Ptr("https://example.com/first.png")},
+		Params: &schemas.VideoGenerationParameters{
+			Seconds:     schemas.Ptr("5"),
+			Size:        "1280x720",
+			Seed:        schemas.Ptr(7),
+			Audio:       schemas.Ptr(true),
+			ExtraParams: map[string]any{"last_frame": "https://example.com/last.png", "camera_fixed": true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(req.Content) != 3 || req.Content[1].Role != "first_frame" || req.Content[2].Role != "last_frame" {
+		t.Errorf("unexpected content: %+v", req.Content)
+	}
+	if req.Duration == nil || *req.Duration != 5 || req.Resolution == nil || *req.Resolution != "720p" || req.Ratio == nil || *req.Ratio != "16:9" {
+		t.Errorf("duration/resolution/ratio not mapped: %v %v %v", req.Duration, req.Resolution, req.Ratio)
+	}
+	if req.GenerateAudio == nil || !*req.GenerateAudio || req.Seed == nil || *req.Seed != 7 {
+		t.Errorf("audio/seed not mapped: %v %v", req.GenerateAudio, req.Seed)
+	}
+	if req.ExtraParams["camera_fixed"] != true {
+		t.Errorf("camera_fixed should pass through: %v", req.ExtraParams)
+	}
+
+	_, err = byteplus.ToBytePlusVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model:  "seedance-1-0-pro-fast-251015",
+		Input:  &schemas.VideoGenerationInput{Prompt: "a dog", InputReference: schemas.Ptr("https://example.com/first.png")},
+		Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_images": []string{"https://example.com/r.png"}}},
+	})
+	if err == nil {
+		t.Error("reference_images combined with a first frame should be rejected")
+	}
+}
+
+func TestBytePlusVideoLifecycle(t *testing.T) {
+	const taskID = "cgt-20250331175019-68d9t"
+	var serverURL string
+	provider, captured, url := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/contents/generations/tasks": jsonResponse(http.StatusOK, `{"id":"`+taskID+`"}`),
+		"GET /api/v3/contents/generations/tasks/" + taskID: func(w http.ResponseWriter, r *http.Request) {
+			jsonResponse(http.StatusOK, `{"id":"`+taskID+`","model":"seedance-1-0-pro-fast-251015","status":"succeeded","content":{"video_url":"`+serverURL+`/files/v.mp4"},"usage":{"completion_tokens":108900,"total_tokens":108900},"created_at":100,"updated_at":200,"resolution":"720p","ratio":"16:9","duration":5}`)(w, r)
+		},
+		"GET /api/v3/contents/generations/tasks":              jsonResponse(http.StatusOK, `{"items":[{"id":"`+taskID+`","model":"seedance-1-0-pro-fast-251015","status":"running","created_at":100},{"id":"cgt-2","model":"seedance-1-0-pro-fast-251015","status":"failed","error":{"code":"InputTextSensitiveContentDetected","message":"blocked"},"created_at":90}],"total":5}`),
+		"DELETE /api/v3/contents/generations/tasks/" + taskID: func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
+		"GET /files/v.mp4": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("mp4data"))
+		},
+	})
+	serverURL = url
+	ctx := testContext(t)
+
+	created, bifrostErr := provider.VideoGeneration(ctx, testKey(), &schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.BytePlus,
+		Model:    "seedance-1-0-pro-fast-251015",
+		Input:    &schemas.VideoGenerationInput{Prompt: "a dog"},
+		Params:   &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5")},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("VideoGeneration error: %+v", bifrostErr.Error)
+	}
+	if created.Status != schemas.VideoStatusQueued || !strings.HasPrefix(created.ID, taskID) || created.ID == taskID {
+		t.Errorf("unexpected create response: id=%s status=%s", created.ID, created.Status)
+	}
+	if created.Seconds == nil || *created.Seconds != "5" {
+		t.Errorf("seconds = %v, want 5", created.Seconds)
+	}
+
+	retrieved, bifrostErr := provider.VideoRetrieve(ctx, testKey(), &schemas.BifrostVideoRetrieveRequest{Provider: schemas.BytePlus, ID: created.ID})
+	if bifrostErr != nil {
+		t.Fatalf("VideoRetrieve error: %+v", bifrostErr.Error)
+	}
+	if retrieved.Status != schemas.VideoStatusCompleted || retrieved.ID != created.ID || retrieved.CompletedAt == nil || *retrieved.CompletedAt != 200 {
+		t.Errorf("unexpected retrieve response: %+v", retrieved)
+	}
+	if len(retrieved.Videos) != 1 || retrieved.Videos[0].URL == nil || !strings.HasSuffix(*retrieved.Videos[0].URL, "/files/v.mp4") {
+		t.Errorf("unexpected videos: %+v", retrieved.Videos)
+	}
+
+	downloaded, bifrostErr := provider.VideoDownload(ctx, testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.BytePlus, ID: created.ID})
+	if bifrostErr != nil {
+		t.Fatalf("VideoDownload error: %+v", bifrostErr.Error)
+	}
+	if string(downloaded.Content) != "mp4data" || downloaded.ContentType != "video/mp4" {
+		t.Errorf("unexpected download: %q %s", downloaded.Content, downloaded.ContentType)
+	}
+
+	listed, bifrostErr := provider.VideoList(ctx, testKey(), &schemas.BifrostVideoListRequest{Provider: schemas.BytePlus, Limit: schemas.Ptr(2)})
+	if bifrostErr != nil {
+		t.Fatalf("VideoList error: %+v", bifrostErr.Error)
+	}
+	if len(listed.Data) != 2 || listed.Data[0].Status != schemas.VideoStatusInProgress || listed.Data[1].Status != schemas.VideoStatusFailed {
+		t.Errorf("unexpected list data: %+v", listed.Data)
+	}
+	if listed.Data[1].Error == nil || listed.Data[1].Error.Code != "InputTextSensitiveContentDetected" {
+		t.Errorf("failed task error not mapped: %+v", listed.Data[1].Error)
+	}
+	if listed.HasMore == nil || *listed.HasMore || listed.Data[0].ID == taskID {
+		t.Errorf("has_more must be false because no after cursor is accepted, and id must carry the suffix: has_more=%v id=%s", listed.HasMore, listed.Data[0].ID)
+	}
+
+	deleted, bifrostErr := provider.VideoDelete(ctx, testKey(), &schemas.BifrostVideoDeleteRequest{Provider: schemas.BytePlus, ID: created.ID})
+	if bifrostErr != nil {
+		t.Fatalf("VideoDelete error: %+v", bifrostErr.Error)
+	}
+	if !deleted.Deleted || deleted.ID != created.ID {
+		t.Errorf("unexpected delete response: %+v", deleted)
+	}
+
+	for _, r := range captured() {
+		if r.method == http.MethodGet && r.path == "/api/v3/contents/generations/tasks" && r.query != "page_num=1&page_size=2" {
+			t.Errorf("list query = %q, want page_num=1&page_size=2", r.query)
+		}
+		if r.method == http.MethodPost && gjson.GetBytes(r.body, "content.0.text").String() != "a dog" {
+			t.Errorf("content[0].text not sent: %s", r.body)
+		}
+	}
+}
+
+func TestBytePlusVideoListRejectsAfterCursor(t *testing.T) {
+	provider, captured, _ := newMockBytePlus(t, nil)
+
+	_, bifrostErr := provider.VideoList(testContext(t), testKey(), &schemas.BifrostVideoListRequest{Provider: schemas.BytePlus, After: schemas.Ptr("cgt-1")})
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected a 400 for an after cursor, got %+v", bifrostErr)
+	}
+	if len(captured()) != 0 {
+		t.Errorf("rejected list should not call upstream")
+	}
+}
+
+func TestToBifrostVideoGenerationResponseTerminalStatuses(t *testing.T) {
+	for _, status := range []byteplus.BytePlusVideoTaskStatus{byteplus.BytePlusVideoTaskStatusFailed, byteplus.BytePlusVideoTaskStatusCancelled, byteplus.BytePlusVideoTaskStatusExpired} {
+		resp, bifrostErr := byteplus.ToBifrostVideoGenerationResponse(&byteplus.BytePlusVideoTask{ID: "t", Status: status})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %+v", bifrostErr)
+		}
+		if resp.Status != schemas.VideoStatusFailed || resp.Error == nil || resp.Error.Code != string(status) {
+			t.Errorf("%s: status=%s error=%+v", status, resp.Status, resp.Error)
+		}
+	}
 }
