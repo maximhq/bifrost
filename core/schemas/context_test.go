@@ -532,6 +532,27 @@ func TestReservedKey_SkipProviderCheckIsProtected(t *testing.T) {
 	}
 }
 
+// TestReservedKey_AuthCredentialIsProtected pins BifrostContextKeyAuthCredential as reserved.
+// Delegated token exchange trusts it to say which credential authenticated the request, so a
+// restricted (plugin) write must not be able to replace it.
+func TestReservedKey_AuthCredentialIsProtected(t *testing.T) {
+	if !isReservedKey(BifrostContextKeyAuthCredential) {
+		t.Fatal("BifrostContextKeyAuthCredential must be a reserved key")
+	}
+
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	recorded := Credential{Kind: "edge_session", Value: "user-1"}
+	ctx.SetValue(BifrostContextKeyAuthCredential, recorded)
+	ctx.BlockRestrictedWrites()
+
+	ctx.SetValue(BifrostContextKeyAuthCredential, Credential{Kind: "edge_session", Value: "user-2"})
+	if v := ctx.Value(BifrostContextKeyAuthCredential); v != recorded {
+		t.Fatalf("reserved key overwritten under BlockRestrictedWrites: got %v, want %v", v, recorded)
+	}
+}
+
 // TestReservedKey_NonComparableKeyDoesNotPanic guards the reserved-write path against
 // non-comparable keys. isReservedKey indexes reservedKeys, which panics on a slice/map/
 // func key unless the type is asserted first, and ClearValue reaches that guard even
