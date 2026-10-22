@@ -6,6 +6,7 @@ import { SecretVar } from "@/lib/types/mcp";
 import { cn } from "@/lib/utils";
 import { Trash } from "lucide-react";
 import React, { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 // A key name a plain object cannot hold as an own entry (see handleKeyChange).
 const UNSUPPORTED_KEY = "__proto__";
@@ -69,15 +70,19 @@ const isValueEmpty = (val: HeaderValue): boolean => {
 export function HeadersTable<T extends HeaderValue>({
 	value,
 	onChange,
-	keyPlaceholder = "Header name",
-	valuePlaceholder = "Header value",
-	label = "Headers",
+	keyPlaceholder: keyPlaceholderProp,
+	valuePlaceholder: valuePlaceholderProp,
+	label: labelProp,
 	disabled = false,
 	useSecretVarInput,
 	fixedKeys,
 	renderKeyInput,
 	renderValueInput,
 }: HeadersTableProps<T>) {
+	const { t } = useTranslation("common");
+	const keyPlaceholder = keyPlaceholderProp ?? t("headersTable.headerName");
+	const valuePlaceholder = valuePlaceholderProp ?? t("headersTable.headerValue");
+	const label = labelProp ?? t("headersTable.headers");
 	// Use explicit prop if provided, otherwise detect from existing values
 	const isSecretVarMode = useSecretVarInput ?? Object.values(value || {}).some((v) => isSecretVar(v));
 
@@ -222,11 +227,11 @@ export function HeadersTable<T extends HeaderValue>({
 				<Table className="table-fixed">
 					<TableHeader>
 						<TableRow>
-							<TableHead className="w-[40%] px-4 py-2">Name</TableHead>
-							<TableHead className="px-4 py-2">Value</TableHead>
+							<TableHead className="w-[40%] px-4 py-2">{t("headersTable.name")}</TableHead>
+							<TableHead className="px-4 py-2">{t("headersTable.value")}</TableHead>
 							{!isFixedKeys && (
 								<TableHead className="w-10 p-0">
-									<span className="sr-only">Actions</span>
+									<span className="sr-only">{t("actions")}</span>
 								</TableHead>
 							)}
 						</TableRow>
@@ -282,7 +287,7 @@ export function HeadersTable<T extends HeaderValue>({
 											)}
 											{hasConflict && (
 												<span className="text-destructive px-3 text-xs">
-													{conflictKey === UNSUPPORTED_KEY ? "This key name is not supported" : "Duplicate key"}
+													{conflictKey === UNSUPPORTED_KEY ? t("headersTable.unsupportedKey") : t("headersTable.duplicateKey")}
 												</span>
 											)}
 										</div>

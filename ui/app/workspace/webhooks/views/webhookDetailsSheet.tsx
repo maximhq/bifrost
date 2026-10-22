@@ -329,7 +329,7 @@ export function WebhookDetailsSheet({ endpoint, isTesting, canManage, onTest, on
 															<TooltipTrigger asChild>
 																<button
 																	type="button"
-																	aria-label={`Copy request ID ${latest.request_id}`}
+																	aria-label={t("webhooks.deliveries.copyRequestId", { id: latest.request_id })}
 																	className="cursor-pointer font-mono text-xs"
 																	onClick={() => copy(latest.request_id ?? "")}
 																	data-testid={`webhook-delivery-request-id-${webhookId}`}

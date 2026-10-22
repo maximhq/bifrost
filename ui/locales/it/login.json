@@ -47,6 +47,24 @@
 		"inMinutes": "tra {{count}} minuti",
 		"invalidTitle": "Questo link non è più valido",
 		"invalidBody": "Il link di autorizzazione è scaduto, è già stato usato o il token è stato rimosso. Riavvia la connessione dal tuo client MCP per ottenere un nuovo link.",
-		"recognizeApplication": "Continua solo se riconosci questa applicazione e la sua destinazione di callback:"
+		"recognizeApplication": "Continua solo se riconosci questa applicazione e la sua destinazione di callback:",
+		"signInRedirectBody": "Questa autorizzazione richiede un account Bifrost autenticato. Ti reindirizziamo all'accesso: tornerai qui subito dopo.",
+		"signInToBifrost": "Accedi a Bifrost"
+	},
+	"setup": {
+		"instructionsIntro": "Il token di configurazione è un segreto impostato dall'operatore sul server. Impostalo in uno dei due modi seguenti, poi riavvia Bifrost:",
+		"instructionsEnv": "Imposta la variabile d'ambiente <code>BIFROST_SETUP_TOKEN</code>.",
+		"instructionsConfig": "Aggiungi <code>setup_token</code> al livello principale di <code>config.json</code>. Accetta un valore letterale, un riferimento <code>env.VAR</code> o un riferimento <code>vault.path</code>:",
+		"instructionsHeader": "I client API inviano lo stesso valore nell'header <code>{{header}}</code>. Il token smette di funzionare quando viene abilitata l'autenticazione della dashboard.",
+		"unreachable": "Impossibile raggiungere Bifrost. Verifica che il server sia in esecuzione.",
+		"invalidToken": "Token di configurazione non valido",
+		"checkFailed": "Bifrost ha restituito {{status}} durante la verifica del token",
+		"title": "Completa la configurazione di Bifrost",
+		"description": "L'autenticazione della dashboard non è configurata, quindi l'API è bloccata. Inserisci il token di configurazione per continuare e creare un account amministratore.",
+		"tokenLabel": "Token di configurazione",
+		"tokenPlaceholder": "Inserisci il token di configurazione",
+		"continue": "Continua",
+		"whereToFind": "Dove trovo il token di configurazione?",
+		"notConfigured": "Su questo server non è configurato alcun token di configurazione, quindi non è ancora possibile continuare."
 	}
 }

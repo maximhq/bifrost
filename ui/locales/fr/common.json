@@ -66,7 +66,11 @@
 		"mcpServers": "serveurs MCP",
 		"virtualMcp": "MCP virtuel",
 		"virtualMcps": "MCP virtuels",
-		"video": "Vidéo"
+		"video": "Vidéo",
+		"agents": "agents",
+		"providers": "fournisseurs",
+		"webhookEndpoints": "points de terminaison webhook",
+		"modelLimits": "limites de modèle"
 	},
 	"aboutField": "À propos de {{field}}",
 	"thisField": "ce champ",
@@ -109,7 +113,8 @@
 		"selectModel": "Sélectionner un modèle",
 		"searching": "Recherche…",
 		"loadingMore": "Chargement…",
-		"useModel": "Utiliser <name>{{name}}</name>"
+		"useModel": "Utiliser <name>{{name}}</name>",
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqué(s)"
 	},
 	"providerSelect": {
 		"select": "Sélectionner un fournisseur",
@@ -118,12 +123,393 @@
 		"couldntLoad": "Impossible de charger les fournisseurs.",
 		"noMatching": "Aucun fournisseur correspondant.",
 		"noneAvailable": "Aucun fournisseur disponible.",
-		"loading": "Chargement des fournisseurs…"
+		"loading": "Chargement des fournisseurs…",
+		"customProviders": "Fournisseurs personnalisés"
 	},
 	"providerList": {
 		"moreProviders_one": "{{count}} fournisseur de plus",
 		"moreProviders_other": "{{count}} fournisseurs de plus",
 		"moreCount": "+{{count}} de plus"
 	},
-	"failedToLoadMoreEntities": "Échec du chargement d’autres éléments {{entity}}"
+	"failedToLoadMoreEntities": "Échec du chargement d’autres éléments {{entity}}",
+	"multiSelect": {
+		"placeholder": "Sélectionner des options",
+		"announce": {
+			"oneSelected": "{{label}} sélectionné. {{selected}} option(s) sélectionnée(s) sur {{total}}.",
+			"manySelected": "{{count}} options sélectionnées. {{selected}} sur {{total}} au total.",
+			"removed": "Option retirée. {{selected}} option(s) sélectionnée(s) sur {{total}}.",
+			"opened": "Liste déroulante ouverte. {{count}} options disponibles. Utilisez les flèches pour naviguer.",
+			"closed": "Liste déroulante fermée.",
+			"found_one": "{{count}} option trouvée pour « {{query}} »",
+			"found_other": "{{count}} options trouvées pour « {{query}} »"
+		},
+		"dropdownHelp": "Liste déroulante à sélection multiple. Utilisez les flèches pour naviguer, Entrée pour sélectionner et Échap pour fermer.",
+		"noneSelected": "Aucune option sélectionnée",
+		"selectedList_one": "{{count}} option sélectionnée : {{labels}}",
+		"selectedList_other": "{{count}} options sélectionnées : {{labels}}",
+		"triggerAria": "Sélection multiple : {{selected}} option(s) sélectionnée(s) sur {{total}}. {{placeholder}}",
+		"removeFromSelection": "Retirer {{label}} de la sélection",
+		"clearAllAria_one": "Effacer l’option sélectionnée",
+		"clearAllAria_other": "Effacer les {{count}} options sélectionnées",
+		"availableOptions": "Options disponibles",
+		"searchPlaceholder": "Rechercher des options...",
+		"searchAria": "Rechercher parmi les options disponibles",
+		"searchHelp": "Saisissez du texte pour filtrer les options. Utilisez les flèches pour parcourir les résultats.",
+		"selectAllAria": "Sélectionner les {{count}} options",
+		"selectAll": "(Tout sélectionner)",
+		"selectAllWithCount": "(Tout sélectionner - {{count}} options)",
+		"optionSelectedAria": "{{label}}, sélectionné{{disabled}}",
+		"optionNotSelectedAria": "{{label}}, non sélectionné{{disabled}}",
+		"disabledSuffix": ", désactivé",
+		"clear": "Effacer"
+	},
+	"quarterStart": {
+		"fiscalYearStarts": "Début de l’exercice fiscal",
+		"nextReset": "Prochaine réinitialisation le <date>{{reset}}</date>. Le trimestre en cours se termine le {{end}}."
+	},
+	"headersTable": {
+		"headerName": "Nom de l’en-tête",
+		"headerValue": "Valeur de l’en-tête",
+		"headers": "En-têtes",
+		"name": "Nom",
+		"value": "Valeur",
+		"unsupportedKey": "Ce nom de clé n’est pas pris en charge",
+		"duplicateKey": "Clé en double"
+	},
+	"sidebar": {
+		"toggle": "Afficher/masquer la barre latérale"
+	},
+	"sheet": {
+		"collapse": "Réduire",
+		"expand": "Développer"
+	},
+	"tabs": {
+		"showMore_one": "Afficher {{count}} onglet de plus",
+		"showMore_other": "Afficher {{count}} onglets de plus"
+	},
+	"promoCard": {
+		"dismiss": "Ignorer"
+	},
+	"searchSelect": {
+		"failedToLoad": "Échec du chargement."
+	},
+	"numberAndSelect": {
+		"resetPeriod": "Période de réinitialisation"
+	},
+	"secretVar": {
+		"resolvedAfterSave": "La valeur résolue apparaîtra après l’enregistrement"
+	},
+	"agentGrants": {
+		"label": "Accès aux agents",
+		"tooltip": "Accordez à cette clé l’accès aux agents enregistrés. La clé pourra ensuite appeler chaque agent à l’adresse <path0>{{path}}</path0>. Les agents ouverts à toutes les clés n’ont pas besoin d’autorisation.",
+		"selectPlaceholder": "Sélectionnez un agent à ajouter",
+		"removeAria": "Retirer {{name}}"
+	},
+	"calendarAlignment": {
+		"rollingNotice": "{{durations}} utiliseront des fenêtres glissantes sur toute leur durée. L’alignement calendaire ne s’applique qu’à 1d, 1w, 1M, 1Q et 1Y."
+	},
+	"formFooter": {
+		"noPermission": "Vous n’avez pas l’autorisation d’effectuer cette action",
+		"saving": "Enregistrement...",
+		"fixValidation": "Veuillez corriger les erreurs de validation",
+		"update": "Mettre à jour {{label}}",
+		"create": "Créer {{label}}"
+	},
+	"loadError": {
+		"failedToLoad": "Échec du chargement de {{entity}}.",
+		"retry": "Réessayer"
+	},
+	"notAvailableBanner": {
+		"title": "La configuration du magasin de configuration est manquante.",
+		"description": "L’interface nécessite une connexion à une base de données pour stocker les données de configuration, mais aucune base de données n’est actuellement configurée.",
+		"enableHintPrefix": "Pour activer l’interface, veuillez ajouter les paramètres de base de données à votre config.json (voir la",
+		"documentation": "documentation",
+		"enableHintSuffix": ")."
+	},
+	"scopeChips": {
+		"showAll_one": "Afficher {{count}} portée",
+		"showAll_other": "Afficher les {{count}} portées",
+		"grantedScopes": "Portées accordées"
+	},
+	"theme": {
+		"light": "Clair",
+		"dark": "Sombre",
+		"system": "Système",
+		"toggle": "Changer de thème"
+	},
+	"trialBanner": {
+		"expired": "Votre essai de Bifrost Enterprise a expiré. <link0>Contactez-nous</link0> si vous avez besoin d’aide.",
+		"expiresIn_one": "Votre essai de Bifrost Enterprise expire dans {{count}} jour. <link0>Contactez-nous</link0> si vous avez besoin d’aide.",
+		"expiresIn_other": "Votre essai de Bifrost Enterprise expire dans {{count}} jours. <link0>Contactez-nous</link0> si vous avez besoin d’aide.",
+		"expiredSubject": "J’ai besoin d’aide pour mon essai Enterprise expiré",
+		"extendSubject": "J’ai besoin d’aide pour prolonger mon essai Enterprise"
+	},
+	"calendarAlignedLabel": "{{label}} (calendaire)",
+	"resetsWhen": "Réinitialisation {{when}}",
+	"budgetDisplay": {
+		"usageAria": "Utilisation du budget",
+		"override": "remplacement",
+		"baseTooltip": "Base {{base}} + remplacement {{override}}"
+	},
+	"rateLimit": {
+		"tokens": "jetons",
+		"req": "req.",
+		"tokensUsageAria": "utilisation des jetons",
+		"requestUsageAria": "Utilisation des requêtes"
+	},
+	"sidekiq": {
+		"sectionAria": "Tâches en arrière-plan",
+		"emptyTitle": "Aucune tâche en arrière-plan",
+		"emptyDescription": "Les tâches de longue durée afficheront leur progression ici.",
+		"status": {
+			"pending": "En file d’attente",
+			"running": "En cours",
+			"completed": "Terminé",
+			"failed": "Échec",
+			"cancelled": "Annulé"
+		},
+		"dismissAria": "Fermer {{label}}",
+		"progressAria": "Progression de {{label}}",
+		"done": "Terminé",
+		"started": "Démarré {{when}}",
+		"finished": "Terminé {{when}}",
+		"stopJob": "Arrêter la tâche",
+		"keep": "Conserver"
+	},
+	"tableColumns": {
+		"configAria": "Configuration des colonnes",
+		"toggle": "Afficher/masquer les colonnes",
+		"resetToDefault": "Rétablir les valeurs par défaut",
+		"actionsAria": "Actions de colonne",
+		"hide": "Masquer la colonne",
+		"unpin": "Détacher",
+		"pinLeft": "Épingler à gauche",
+		"pinRight": "Épingler à droite"
+	},
+	"configSyncAlert": {
+		"message": "Cette configuration est synchronisée depuis <code0>config.json</code0>. Toute mise à jour future de config.json écrasera les modifications faites dans l’interface. Si vous utilisez config.json pour initialiser la configuration, vous pouvez ignorer cette alerte."
+	},
+	"breadcrumb": {
+		"label": "fil d’Ariane",
+		"more": "Plus"
+	},
+	"modelParameters": {
+		"keepBetween": "Veuillez maintenir {{label}} entre {{min}} et {{max}}.",
+		"addString": "Ajouter une chaîne",
+		"select": "Sélectionner"
+	},
+	"entityAssociation": {
+		"placeholders": {
+			"virtualKey": "Ajouter des noms de clés virtuelles…",
+			"team": "Ajouter des noms d’équipes…",
+			"customer": "Ajouter des noms de clients…",
+			"user": "Ajouter des noms d’utilisateurs…",
+			"provider": "Ajouter des noms de fournisseurs…",
+			"apiKey": "Ajouter des noms de clés API…"
+		},
+		"noOptions": {
+			"virtualKey": "Aucune clé virtuelle trouvée",
+			"team": "Aucune équipe trouvée",
+			"customer": "Aucun client trouvé",
+			"user": "Aucun utilisateur trouvé",
+			"provider": "Aucun fournisseur trouvé",
+			"apiKey": "Aucune clé API trouvée"
+		},
+		"selected": "Sélectionné",
+		"createOption": "Ajouter « {{value}} »"
+	},
+	"combobox": {
+		"selectEllipsis3": "Sélectionner…",
+		"select": "Sélectionner…",
+		"clearSelection": "Effacer la sélection",
+		"clearSearch": "Effacer la recherche",
+		"search": "Rechercher…",
+		"typeOrSelect": "Saisir ou sélectionner…",
+		"use": "Utiliser « {{value}} »",
+		"noResults": "Aucun résultat trouvé.",
+		"selectedCount": "{{count}} sélectionné(s)",
+		"removeAria": "Retirer {{label}}"
+	},
+	"validation": {
+		"customProviderNameIsRequired": "Le nom du fournisseur personnalisé est obligatoire",
+		"endpointIsRequired": "Le point de terminaison est obligatoire",
+		"clientIdClientSecretAndTenantIdAreAllRequired": "L’ID client, le secret client et l’ID de locataire sont tous obligatoires pour l’authentification Entra ID",
+		"tokenLifetimeMustBeAWholeNumberOfSeconds": "La durée de vie du jeton doit être un nombre entier de secondes",
+		"tokenLifetimeMustBeAtLeast600Seconds": "La durée de vie du jeton doit être d’au moins 600 secondes",
+		"tokenLifetimeMustBeAtMost43200Seconds": "La durée de vie du jeton ne doit pas dépasser 43200 secondes",
+		"projectIdIsRequired": "L’ID du projet est obligatoire",
+		"regionIsRequired": "La région est obligatoire",
+		"authCredentialsIsRequiredForServiceAccountJsonAuthentication": "Les identifiants d’authentification sont obligatoires pour l’authentification par JSON de compte de service",
+		"workloadIdentityPoolProviderAudienceIsRequired": "L’audience du fournisseur du pool d’identités de charge de travail est obligatoire",
+		"removeTheAuthCredentialsJsonWhenUsingAwsWorkloadIdentity": "Retirez le JSON des identifiants d’authentification lorsque vous utilisez l’identité de charge de travail AWS",
+		"bucketNameIsRequired": "Le nom du bucket est obligatoire",
+		"bothAccessKeyAndSecretKeyAreRequiredForExplicit": "La clé d’accès et la clé secrète sont toutes deux obligatoires pour des identifiants explicites",
+		"modelNameIsRequired": "Le nom du modèle est obligatoire",
+		"serverUrlIsRequired": "L’URL du serveur est obligatoire",
+		"chooseAGrantType": "Choisissez un type d’autorisation",
+		"tokenUrlIsRequired": "L’URL du jeton est obligatoire",
+		"tokenUrlMustBeAnHttpsUrl": "L’URL du jeton doit être une URL https",
+		"tokenUrlMustNotCarryUserinfoAQueryOrA": "L’URL du jeton ne doit contenir ni informations utilisateur, ni requête, ni fragment ; envoyez les paramètres supplémentaires via extra_params",
+		"clientIdIsRequiredForClientCredentials": "L’ID client est obligatoire pour les identifiants client",
+		"clientSecretIsRequiredForClientCredentials": "Le secret client est obligatoire pour les identifiants client",
+		"privateKeyIsRequiredForJwtBearer": "La clé privée est obligatoire pour JWT bearer",
+		"privateKeyMustBeAnRsaOrEcPemBlock": "La clé privée doit être un bloc PEM RSA ou EC",
+		"issuerIsRequiredForJwtBearer": "L’émetteur est obligatoire pour JWT bearer",
+		"audienceIsRequiredForJwtBearer": "L’audience est obligatoire pour JWT bearer",
+		"assertionLifetimeMustBeBetween1And3600Seconds0": "La durée de vie de l’assertion doit être comprise entre 1 et 3600 secondes (0 pour la valeur par défaut)",
+		"accountIdIsRequired": "L’ID du compte est obligatoire",
+		"workspaceUrlIsRequired": "L’URL de l’espace de travail est obligatoire",
+		"clientIdAndClientSecretAreBothRequiredForOauth": "L’ID client et le secret client sont tous deux obligatoires pour l’authentification OAuth M2M",
+		"clientIdAndClientSecretMustBeSetTogether": "L’ID client et le secret client doivent être définis ensemble",
+		"modelIdIsRequired": "L’ID du modèle est obligatoire",
+		"idIsRequired": "L’ID est obligatoire",
+		"nameIsRequired": "Le nom est obligatoire",
+		"weightMustBeAValidNumberBetween0And1": "Le poids doit être un nombre valide compris entre 0 et 1",
+		"weightMustBeEqualToOrGreaterThan0": "Le poids doit être supérieur ou égal à 0",
+		"weightMustBeEqualToOrLessThan1": "Le poids doit être inférieur ou égal à 1",
+		"apiKeyIsRequired": "La clé API est obligatoire",
+		"timeoutMustBeGreaterThan0Seconds": "Le délai d’expiration doit être supérieur à 0 seconde",
+		"timeoutMustBeLessThan3600Seconds": "Le délai d’expiration doit être inférieur à 3600 secondes",
+		"maxRetriesMustBeGreaterThan0": "Le nombre maximal de tentatives doit être supérieur à 0",
+		"maxRetriesMustBeLessThan10": "Le nombre maximal de tentatives doit être inférieur à 10",
+		"streamIdleTimeoutMustBeAWholeNumberOfSeconds": "Le délai d’inactivité du flux doit être un nombre entier de secondes",
+		"streamIdleTimeoutMustBeAtLeast5Seconds": "Le délai d’inactivité du flux doit être d’au moins 5 secondes",
+		"streamIdleTimeoutMustBeAtMost3600SecondsI": "Le délai d’inactivité du flux ne doit pas dépasser 3600 secondes, soit 60 minutes",
+		"keepAliveTimeoutMustBeAWholeNumberOfSeconds": "Le délai keep-alive doit être un nombre entier de secondes",
+		"keepAliveTimeoutMustBeAtLeast1Second": "Le délai keep-alive doit être d’au moins 1 seconde",
+		"keepAliveTimeoutMustBeAtMost3600SecondsI": "Le délai keep-alive ne doit pas dépasser 3600 secondes, soit 60 minutes",
+		"maxConnectionsMustBeAWholeNumber": "Le nombre maximal de connexions doit être un nombre entier",
+		"maxConnectionsMustBeAtLeast1": "Le nombre maximal de connexions doit être d’au moins 1",
+		"maxConnectionsMustBeAtMost10000": "Le nombre maximal de connexions ne doit pas dépasser 10000",
+		"http2PingIntervalMustBeAWholeNumberOf": "L’intervalle de ping HTTP/2 doit être un nombre entier de secondes",
+		"http2PingIntervalMustBeAtLeast0Seconds": "L’intervalle de ping HTTP/2 doit être d’au moins 0 seconde",
+		"http2PingIntervalMustBeAtMost3600Seconds": "L’intervalle de ping HTTP/2 ne doit pas dépasser 3600 secondes, soit 60 minutes",
+		"retryBackoffInitialMustBeRetryBackoffMax": "retry_backoff_initial doit être <= retry_backoff_max",
+		"mustBeAValidHttpOrHttpsUrl": "Doit être une URL HTTP ou HTTPS valide",
+		"timeoutMustBeANumber": "Le délai d’expiration doit être un nombre",
+		"timeoutMustBeLessThan172800SecondsIE48": "Le délai d’expiration doit être inférieur à 172800 secondes, soit 48 heures",
+		"maxRetriesMustBeANumber": "Le nombre maximal de tentatives doit être un nombre",
+		"retryBackoffInitialMustBeANumber": "Le délai initial de réessai doit être un nombre",
+		"retryBackoffInitialMustBeAtLeast100ms": "Le délai initial de réessai doit être d’au moins 100 ms",
+		"retryBackoffInitialMustBeAtMost1000000ms": "Le délai initial de réessai ne doit pas dépasser 1000000 ms",
+		"retryBackoffMaxMustBeANumber": "Le délai maximal de réessai doit être un nombre",
+		"retryBackoffMaxMustBeAtLeast100ms": "Le délai maximal de réessai doit être d’au moins 100 ms",
+		"retryBackoffMaxMustBeAtMost1000000ms": "Le délai maximal de réessai ne doit pas dépasser 1000000 ms",
+		"streamIdleTimeoutMustBeANumber": "Le délai d’inactivité du flux doit être un nombre",
+		"keepAliveTimeoutMustBeANumber": "Le délai keep-alive doit être un nombre",
+		"maxConnectionsMustBeANumber": "Le nombre maximal de connexions doit être un nombre",
+		"http2PingIntervalMustBeANumber": "L’intervalle de ping HTTP/2 doit être un nombre",
+		"initialBackoffMustBeLessThanOrEqualToMax": "Le délai initial doit être inférieur ou égal au délai maximal",
+		"concurrencyMustBeGreaterThan0": "La concurrence doit être supérieure à 0",
+		"concurrencyMustBeLessThanOrEqualTo100": "La concurrence doit être inférieure ou égale à 100",
+		"bufferSizeMustBeGreaterThan0": "La taille du tampon doit être supérieure à 0",
+		"bufferSizeMustBeLessThanOrEqualTo1000": "La taille du tampon doit être inférieure ou égale à 1000",
+		"proxyUrlIsRequiredWhenUsingHttpOrSocks5Proxy": "L’URL du proxy est obligatoire lorsque vous utilisez un proxy HTTP ou SOCKS5",
+		"mustBeAValidUrlEGHttpProxyExample": "Doit être une URL valide (par ex. http://proxy.example.com:8080)",
+		"setARoleAnIndexOrBothAPointWith": "Définissez un rôle, un index, ou les deux : un point sans aucun des deux ne correspond à rien",
+		"use164LettersDigitsOr": "Utilisez 1 à 64 lettres, chiffres, _ ou -",
+		"pickAnMcpServer": "Choisissez un serveur MCP",
+		"pickATool": "Choisissez un outil",
+		"waitingForTheMcpServerToLoad": "En attente du chargement du serveur MCP",
+		"anotherToolAlreadyUsesThisName": "Un autre outil utilise déjà ce nom",
+		"thisMcpToolIsAlreadyInjected": "Cet outil MCP est déjà injecté",
+		"isKeylessIsNotAllowedForBedrock": "Le mode sans clé n’est pas autorisé pour Bedrock",
+		"baseProviderTypeIsRequired": "Le type de fournisseur de base est obligatoire",
+		"atLeastOneKeyIsRequired": "Au moins une clé est obligatoire",
+		"providerNameIsRequired": "Le nom du fournisseur est obligatoire",
+		"embeddingModelIsRequired": "Le modèle d’embedding est obligatoire",
+		"dimensionMustBeGreaterThan1ForProviderBackedSemantic": "La dimension doit être supérieure à 1 pour un cache sémantique adossé à un fournisseur",
+		"maxValueBytesMustBe0OrAtLeast1024": "max_value_bytes doit valoir 0 ou au moins 1024",
+		"concurrencyMustBeANumber": "La concurrence doit être un nombre",
+		"concurrencyMustBeLessThan100000": "La concurrence doit être inférieure à 100000",
+		"bufferSizeMustBeANumber": "La taille du tampon doit être un nombre",
+		"bufferSizeMustBeLessThan100000": "La taille du tampon doit être inférieure à 100000",
+		"concurrencyMustBeLessThanOrEqualToBufferSize": "La concurrence doit être inférieure ou égale à la taille du tampon",
+		"pleaseSelectATraceType": "Veuillez sélectionner un type de trace",
+		"pleaseSelectAProtocol": "Veuillez sélectionner un protocole",
+		"portMustBeBetween1And65535": "Le port doit être compris entre 1 et 65535",
+		"collectorAddressIsRequired": "L’adresse du collecteur est obligatoire",
+		"metricsEndpointIsRequiredWhenMetricsPushIsEnabled": "Le point de terminaison des métriques est obligatoire lorsque l’envoi des métriques est activé",
+		"atLeastOneProfileIsRequired": "Au moins un profil est obligatoire",
+		"apiKeyIsRequired2": "La clé API est obligatoire",
+		"apiKeyMustStartWithSkMx": "La clé API doit commencer par « sk_mx_ »",
+		"mustBeAValidUrlEGHttpPushgateway9091": "Doit être une URL valide (par ex. http://pushgateway:9091)",
+		"passwordIsRequiredWhenUsernameIsProvided": "Le mot de passe est obligatoire lorsqu’un nom d’utilisateur est renseigné",
+		"usernameIsRequiredWhenPasswordIsProvided": "Le nom d’utilisateur est obligatoire lorsqu’un mot de passe est renseigné",
+		"pushGatewayUrlIsRequiredWhenThePushGatewayIs": "L’URL de la Push Gateway est obligatoire lorsque la Push Gateway est activée",
+		"specUrlMustBeAValidHttpOrHttpsUrl": "L’URL de la spécification doit être une URL http:// ou https:// valide",
+		"baseUrlMustBeAValidHttpOrHttpsUrl": "L’URL de base doit être une URL http:// ou https:// valide",
+		"pasteOrUploadASpecOrProvideASpecUrl": "Collez ou importez une spécification, ou indiquez son URL",
+		"clientNameCannotContainHyphens": "Le nom du client ne peut pas contenir de traits d’union",
+		"clientNameCannotContainSpaces": "Le nom du client ne peut pas contenir d’espaces",
+		"clientNameCannotStartWithANumber": "Le nom du client ne peut pas commencer par un chiffre",
+		"headerNameCannotBeEmpty": "Le nom de l’en-tête ne peut pas être vide",
+		"duplicateHeaderNamesAreNotAllowed": "Les noms d’en-tête en double ne sont pas autorisés",
+		"wildcardCannotBeCombinedWithOtherToolNames": "Le caractère générique « * » ne peut pas être combiné avec d’autres noms d’outils",
+		"duplicateToolNamesAreNotAllowed": "Les noms d’outils en double ne sont pas autorisés",
+		"costMustBeNonNegative": "Le coût ne doit pas être négatif",
+		"toolSyncIntervalMustBe0OrAPositiveNumber": "L’intervalle de synchronisation des outils doit valoir 0 ou un nombre positif de minutes",
+		"wildcardCannotBeCombinedWithSpecificHeaderNames": "Le caractère générique « * » ne peut pas être combiné avec des noms d’en-tête spécifiques",
+		"authorizeUrlMustStartWithHttpOrHttps": "L’URL d’autorisation doit commencer par http:// ou https://",
+		"tokenUrlMustStartWithHttpOrHttps": "L’URL du jeton doit commencer par http:// ou https://",
+		"registrationUrlMustStartWithHttpOrHttps": "L’URL d’enregistrement doit commencer par http:// ou https://",
+		"audienceIsRequired": "L’audience est obligatoire",
+		"authorizationServerUrlMustStartWithHttpOrHttps": "L’URL du serveur d’autorisation doit commencer par http:// ou https://",
+		"declareAtLeastOneHeaderNameUsersMustSupply": "Déclarez au moins un nom d’en-tête que les utilisateurs doivent fournir.",
+		"proxyUrlIsRequiredWhenProxyIsEnabled": "L’URL du proxy est obligatoire lorsque le proxy est activé",
+		"ruleNameIsRequired": "Le nom de la règle est obligatoire",
+		"ruleNameMustBeLessThan255Characters": "Le nom de la règle doit comporter moins de 255 caractères",
+		"descriptionMustBeLessThan1000Characters": "La description doit comporter moins de 1000 caractères",
+		"providerIsRequired": "Le fournisseur est obligatoire",
+		"priorityMustBe0OrGreater": "La priorité doit être supérieure ou égale à 0",
+		"priorityMustBe1000OrLess": "La priorité doit être inférieure ou égale à 1000",
+		"scopeIdIsRequiredWhenScopeIsNotGlobal": "L’ID de portée est obligatoire lorsque la portée n’est pas globale",
+		"additionalBudgetMustBeGreaterThan0": "Le budget supplémentaire doit être supérieur à 0.",
+		"resetCyclesMustBeAPositiveWholeNumber": "Le nombre de cycles de réinitialisation doit être un entier positif.",
+		"enterTheSetupTokenConfiguredForThisBifrostInstance": "Saisissez le jeton de configuration défini pour cette instance Bifrost",
+		"giveTheFeedAName": "Donnez un nom au flux",
+		"nameMustBe120CharactersOrFewer": "Le nom doit comporter 120 caractères au maximum",
+		"enterTheFeedUrl": "Saisissez l’URL du flux",
+		"urlIsTooLong": "L’URL est trop longue",
+		"urlMustStartWithHttpOrHttps": "L’URL doit commencer par http:// ou https://",
+		"logoMustBeAnHttpSImageUrlOrAn": "Le logo doit être une URL d’image http(s) ou une image importée",
+		"fieldRequired": "Ce champ est obligatoire",
+		"validNumber": "Doit être un nombre valide",
+		"validText": "Doit être une valeur textuelle valide",
+		"trueOrFalse": "Doit être vrai ou faux",
+		"expectedReceived": "Attendu : {{expected}}, reçu : {{received}}",
+		"minNumber": "Doit être au moins {{minimum}}",
+		"atLeastOneItem": "Au moins un élément est obligatoire",
+		"maxNumber": "Doit être au plus {{maximum}}",
+		"maxChars": "Doit comporter au plus {{maximum}} caractères",
+		"validUrl": "Doit être une URL valide",
+		"validEmail": "Doit être une adresse e-mail valide",
+		"grpcHostPortFormat": "Doit être au format <host>:<port> pour gRPC (par ex. {{example}})",
+		"invalidInput": "Saisie invalide"
+	},
+	"permissionDenied": {
+		"create": "Vous n’avez pas la permission de créer {{entity}}.",
+		"edit": "Vous n’avez pas la permission de modifier {{entity}}.",
+		"delete": "Vous n’avez pas la permission de supprimer {{entity}}.",
+		"rotate": "Vous n’avez pas la permission d’effectuer la rotation de {{entity}}."
+	},
+	"duration": {
+		"unknown": "Inconnue",
+		"second_one": "{{count}} seconde",
+		"second_other": "{{count}} secondes",
+		"minute_one": "{{count}} minute",
+		"minute_other": "{{count}} minutes",
+		"hour_one": "{{count}} heure",
+		"hour_other": "{{count}} heures",
+		"day_one": "{{count}} jour",
+		"day_other": "{{count}} jours",
+		"week_one": "{{count}} semaine",
+		"week_other": "{{count}} semaines",
+		"month_one": "{{count}} mois",
+		"month_other": "{{count}} mois",
+		"quarter_one": "{{count}} trimestre",
+		"quarter_other": "{{count}} trimestres",
+		"year_one": "{{count}} an",
+		"year_other": "{{count}} ans"
+	}
 }

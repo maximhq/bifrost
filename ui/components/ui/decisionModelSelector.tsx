@@ -13,6 +13,7 @@ import {
 	servesFixedDecisionModel,
 } from "@/lib/utils/decisionModelProviders";
 import { useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 
 // The decision-model pickers. Every surface that picks a decision model (the
 // Complexity Router, Prompt Guardrails' decision judge) uses these, so what
@@ -91,6 +92,7 @@ export function DecisionModelSelector({
 	fixedModelTestId = testId,
 	className,
 }: DecisionModelSelectorProps) {
+	const { t } = useTranslation("models");
 	const listsDecisions = listsDecisionModels(provider, providerName);
 	const servesJev = providerName === "typesafe";
 	const fixedModel = servesFixedDecisionModel(provider, providerName);
@@ -119,8 +121,8 @@ export function DecisionModelSelector({
 				decisions
 				value={value}
 				onChange={onChange}
-				placeholder="Search decision models…"
-				emptyMessage="This provider lists no decision models"
+				placeholder={t("decisionModel.searchDecisionModels")}
+				emptyMessage={t("decisionModel.noDecisionModels")}
 				disabled={disabled}
 				className={className}
 			/>
@@ -138,7 +140,7 @@ export function DecisionModelSelector({
 				value={value}
 				onChange={onChange}
 				allowCustomModel
-				placeholder={providerName ? "Search or type a Jev model…" : "Select a provider first"}
+				placeholder={providerName ? t("decisionModel.searchOrTypeJev") : t("routing.complexityUi.selectProviderFirst")}
 				disabled={disabled || !providerName}
 				className={className}
 			/>
@@ -163,7 +165,7 @@ export function DecisionModelSelector({
 				value={value}
 				onChange={onChange}
 				allowCustomModel
-				placeholder="Search or type a model…"
+				placeholder={t("decisionModel.searchOrType")}
 				disabled={disabled}
 				className={className}
 			/>
@@ -172,7 +174,7 @@ export function DecisionModelSelector({
 	return (
 		<Select value={value || undefined} onValueChange={onChange} disabled={disabled}>
 			<SelectTrigger className="w-full" id={inputId} data-testid={testId}>
-				<SelectValue placeholder="Select a model" />
+				<SelectValue placeholder={t("decisionModel.selectModel")} />
 			</SelectTrigger>
 			<SelectContent>
 				{selfHostedModelGroups(providerName).map((group) => (

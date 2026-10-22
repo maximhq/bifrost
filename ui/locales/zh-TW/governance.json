@@ -51,7 +51,15 @@
 			"updateAction": "更新客戶",
 			"createAction": "建立客戶",
 			"calendarAlignHelp": "啟用日曆對齊會將此客戶的預算用量重置為 <bold0>$0.00</bold0>，並將 token/請求速率限制計數重置為 <bold1>0</bold1>，然後將每個重置日期對齊到目前週期開始（例如日、週、月或年的開始）。用量重置無法撤銷，但之後可以關閉日曆對齊。此操作將在儲存時生效。"
-		}
+		},
+		"detail": {
+			"title": "客戶詳情",
+			"description": "此客戶的用量詳情。",
+			"info": "資訊",
+			"name": "名稱",
+			"noBudgets": "未配置預算"
+		},
+		"actionsAria": "客戶操作 {{name}}"
 	},
 	"teams": {
 		"title": "團隊",
@@ -98,10 +106,13 @@
 			"updateAction": "更新團隊",
 			"createAction": "建立團隊",
 			"calendarAlignHelp": "啟用日曆對齊會將此團隊的預算用量重置為 <bold0>$0.00</bold0>，並將 token/請求速率限制計數重置為 <bold1>0</bold1>，然後將每個重置日期對齊到目前週期開始（例如日、週、月或年的開始）。用量重置無法撤銷，但之後可以關閉日曆對齊。此操作將在儲存時生效。"
-		}
+		},
+		"actionsAria": "{{name}} 的團隊操作"
 	},
 	"virtualKeys": {
-		"loadFailed": "載入虛擬金鑰失敗：{{message}}"
+		"loadFailed": "載入虛擬金鑰失敗：{{message}}",
+		"metadataFilterInvalid": "此連結中的中繼資料篩選鍵無效，因此未套用。鍵由 1-256 個字母、數字、「.」、「_」或「-」組成。",
+		"clearFilter": "清除篩選"
 	},
 	"plugins": {
 		"title": "外掛",
@@ -353,7 +364,26 @@
 			"filterEvent": "事件",
 			"filterResponseStatus": "響應狀態",
 			"filterWebhooks": "Webhook",
-			"searchWebhooks": "搜尋 webhook…"
+			"searchWebhooks": "搜尋 webhook…",
+			"table": {
+				"waiting": "正在等待新的投遞…",
+				"empty": "未找到投遞記錄。請嘗試調整篩選條件和/或時間範圍。",
+				"range": "第 {{from}}-{{to}} 筆投遞，共 {{total}} 筆"
+			},
+			"header": {
+				"searchByDeliveryId": "按投遞 ID 搜尋",
+				"switchLookup": "在請求 ID 與投遞 ID 查詢之間切換"
+			},
+			"columns": {
+				"webhook": "Webhook",
+				"deliveryId": "投遞 ID",
+				"actions": "操作",
+				"collapseSends": "收合傳送記錄",
+				"expandSends": "展開傳送記錄",
+				"noPermission": "你沒有重新投遞的權限",
+				"openInLogs": "{{id}} — 在日誌中開啟"
+			},
+			"copyRequestId": "複製請求 ID {{id}}"
 		}
 	},
 	"alerting": {
@@ -381,7 +411,8 @@
 		"unlockTitle": "解鎖使用者排行以獲得更好可見性"
 	},
 	"promptDeployments": {
-		"unlockTitle": "解鎖提示詞部署，以便更好地做提示詞版本管理與 A/B 測試。"
+		"unlockTitle": "解鎖提示詞部署，以便更好地做提示詞版本管理與 A/B 測試。",
+		"accordionTitle": "部署"
 	},
 	"connectorsUnlock": {
 		"splunk": "解鎖原生 Splunk 資料接入以提升可觀測性",
@@ -389,7 +420,8 @@
 		"datadog": "解鎖原生 Datadog 資料接入以提升可觀測性",
 		"bigquery": "解鎖原生 BigQuery 資料接入以進行分析",
 		"kafka": "解鎖原生 Kafka 日誌流式傳輸以實現即時可觀測性",
-		"kafkaDescription": "此功能屬於 Bifrost 企業版許可證。將已完成的請求追蹤以 JSON 流式傳送到 Kafka topic，用於即時分析、告警與下游處理。"
+		"kafkaDescription": "此功能屬於 Bifrost 企業版許可證。將已完成的請求追蹤以 JSON 流式傳送到 Kafka topic，用於即時分析、告警與下游處理。",
+		"kafkaAlt": "Kafka"
 	},
 	"accessProfiles": {
 		"unlockTitle": "解鎖存取配置以提升管控",
@@ -439,7 +471,9 @@
 		"reset": "重設",
 		"addBudgetButton": "新增預算",
 		"maximumSpend": "最高支出（美元）",
-		"noBudgetLimits": "尚未設定預算上限。"
+		"noBudgetLimits": "尚未設定預算上限。",
+		"removeBudgetAria": "移除預算 {{number}}",
+		"duplicateResetPeriod": "重置週期重複；每條預算必須使用不同的間隔。"
 	},
 	"filters": {
 		"filters": "篩選",
@@ -616,5 +650,49 @@
 		"patternCount_other": "{{count}} 個模式",
 		"removeAria": "移除 {{name}}",
 		"noneLeftClick": "沒有可設定的供應商。點擊新增"
+	},
+	"orgChart": {
+		"unlockTitle": "解鎖組織架構圖",
+		"unlockDescription": "在同一棵樹中檢視各業務單元、團隊與使用者的預算、支出、模型與工具。此功能屬於 Bifrost 企業版許可證。"
+	},
+	"usage": {
+		"budgetAria": "預算用量",
+		"tokenAria": "Token 用量",
+		"requestAria": "請求用量",
+		"resets": "{{period}}重置",
+		"tokens": "{{value}} 個 token",
+		"req": "{{value}} 次請求",
+		"tokenTooltip": "{{used}} / {{max}} 個 token",
+		"requestTooltip": "{{used}} / {{max}} 次請求",
+		"keyCount_one": "{{count}} 個金鑰",
+		"keyCount_other": "{{count}} 個金鑰"
+	},
+	"budgetOverride": {
+		"updated": "預算覆寫已更新",
+		"added": "預算覆寫已新增",
+		"removed": "預算覆寫已移除",
+		"invalidInput": "輸入無效",
+		"editOverride": "編輯覆寫",
+		"addOverride": "新增覆寫",
+		"editTitle": "編輯預算覆寫",
+		"addTitle": "新增預算覆寫",
+		"description": "在不更改基礎 {{budget}} 預算的情況下，臨時增加支出額度。",
+		"additionalBudget": "追加預算",
+		"duration": "持續時間",
+		"modeCycles": "持續若干個重置週期",
+		"modeForever": "直到移除",
+		"resetCycles": "重置週期數",
+		"cycleHint": "目前的重置週期計為第一個週期。",
+		"validUntil": "有效期至 <b0>{{date}}</b0>",
+		"currentEffectiveLimit": "目前生效上限：<b0>{{limit}}</b0>",
+		"removeOverride": "移除覆寫",
+		"updateOverride": "更新覆寫",
+		"managerDescription": "在不更改基礎上限的情況下，臨時為預算增加支出額度。",
+		"rowActive": "+{{amount}} 覆寫 · 生效 {{effective}}",
+		"rowBase": "基礎 {{amount}}",
+		"edit": "編輯",
+		"remove": "移除",
+		"update": "更新",
+		"add": "新增"
 	}
 }

@@ -47,6 +47,24 @@
 		"inMinutes": "in {{count}} Minuten",
 		"invalidTitle": "Dieser Link ist nicht mehr gültig",
 		"invalidBody": "Der Autorisierungslink ist abgelaufen, wurde bereits verwendet oder sein Token wurde entfernt. Starte die Verbindung von deinem MCP-Client aus neu, um einen neuen Link zu erhalten.",
-		"recognizeApplication": "Fahre nur fort, wenn du diese Anwendung und ihr Callback-Ziel erkennst:"
+		"recognizeApplication": "Fahre nur fort, wenn du diese Anwendung und ihr Callback-Ziel erkennst:",
+		"signInRedirectBody": "Für diese Autorisierung ist ein angemeldetes Bifrost-Konto erforderlich. Du wirst zur Anmeldung weitergeleitet und kommst danach direkt hierher zurück.",
+		"signInToBifrost": "Bei Bifrost anmelden"
+	},
+	"setup": {
+		"instructionsIntro": "Das Setup-Token ist ein Secret, das der Betreiber auf dem Server festlegt. Lege es auf eine von zwei Arten fest und starte Bifrost anschließend neu:",
+		"instructionsEnv": "Setze die Umgebungsvariable <code>BIFROST_SETUP_TOKEN</code>.",
+		"instructionsConfig": "Füge <code>setup_token</code> auf oberster Ebene von <code>config.json</code> hinzu. Es akzeptiert einen Literalwert, eine <code>env.VAR</code>-Referenz oder eine <code>vault.path</code>-Referenz:",
+		"instructionsHeader": "API-Clients senden denselben Wert im Header <code>{{header}}</code>. Das Token funktioniert nicht mehr, sobald die Dashboard-Authentifizierung aktiviert ist.",
+		"unreachable": "Bifrost ist nicht erreichbar. Prüfe, ob der Server läuft.",
+		"invalidToken": "Ungültiges Setup-Token",
+		"checkFailed": "Bifrost hat bei der Prüfung des Tokens {{status}} zurückgegeben",
+		"title": "Bifrost-Einrichtung abschließen",
+		"description": "Die Dashboard-Authentifizierung ist nicht konfiguriert, daher ist die API gesperrt. Gib das Setup-Token ein, um fortzufahren und ein Admin-Konto zu erstellen.",
+		"tokenLabel": "Setup-Token",
+		"tokenPlaceholder": "Setup-Token eingeben",
+		"continue": "Weiter",
+		"whereToFind": "Wo finde ich das Setup-Token?",
+		"notConfigured": "Auf diesem Server ist kein Setup-Token konfiguriert, daher kann die Einrichtung noch nicht fortgesetzt werden."
 	}
 }

@@ -47,6 +47,24 @@
 		"inMinutes": "{{count}}분 후",
 		"invalidTitle": "이 링크는 더 이상 유효하지 않아요",
 		"invalidBody": "승인 링크가 만료되었거나, 이미 사용되었거나, 토큰이 제거되었어요. MCP 클라이언트에서 연결을 다시 시작해 새 링크를 받으세요.",
-		"recognizeApplication": "이 애플리케이션과 해당 콜백 대상을 인식하는 경우에만 계속하세요."
+		"recognizeApplication": "이 애플리케이션과 해당 콜백 대상을 인식하는 경우에만 계속하세요.",
+		"signInRedirectBody": "이 승인을 진행하려면 Bifrost 계정으로 로그인해야 해요. 로그인 화면으로 이동하며, 로그인하면 바로 이 화면으로 돌아와요.",
+		"signInToBifrost": "Bifrost에 로그인"
+	},
+	"setup": {
+		"instructionsIntro": "설정 토큰은 운영자가 서버에 지정하는 비밀 값이에요. 다음 두 가지 방법 중 하나로 설정한 다음 Bifrost를 다시 시작하세요.",
+		"instructionsEnv": "<code>BIFROST_SETUP_TOKEN</code> 환경 변수를 설정하세요.",
+		"instructionsConfig": "<code>config.json</code>의 최상위에 <code>setup_token</code>을 추가하세요. 리터럴 값, <code>env.VAR</code> 참조 또는 <code>vault.path</code> 참조를 사용할 수 있어요.",
+		"instructionsHeader": "API 클라이언트는 같은 값을 <code>{{header}}</code> 헤더로 보내요. 대시보드 인증이 활성화되면 이 토큰은 더 이상 작동하지 않아요.",
+		"unreachable": "Bifrost에 연결할 수 없어요. 서버가 실행 중인지 확인하세요.",
+		"invalidToken": "설정 토큰이 올바르지 않아요",
+		"checkFailed": "토큰을 확인하는 중 Bifrost가 {{status}}을(를) 반환했어요",
+		"title": "Bifrost 설정 완료하기",
+		"description": "대시보드 인증이 구성되지 않아 API가 잠겨 있어요. 계속하려면 설정 토큰을 입력하고 관리자 계정을 만드세요.",
+		"tokenLabel": "설정 토큰",
+		"tokenPlaceholder": "설정 토큰을 입력하세요",
+		"continue": "계속",
+		"whereToFind": "설정 토큰은 어디에서 찾나요?",
+		"notConfigured": "이 서버에 설정 토큰이 구성되어 있지 않아 아직 설정을 계속할 수 없어요."
 	}
 }

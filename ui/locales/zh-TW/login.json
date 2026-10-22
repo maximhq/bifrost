@@ -47,6 +47,24 @@
 		"inMinutes": "{{count}} 分鐘後",
 		"invalidTitle": "此連結已失效",
 		"invalidBody": "授權連結已過期、已被使用，或其令牌已被剝離。請從 MCP 客戶端重新啟動連線以獲取新連結。",
-		"recognizeApplication": "僅當您認識到此應用程式及其回調目標時才繼續："
+		"recognizeApplication": "僅當您認識到此應用程式及其回調目標時才繼續：",
+		"signInRedirectBody": "此授權需要已登入的 Bifrost 帳戶。正在帶你前往登入，登入後會直接返回此處。",
+		"signInToBifrost": "登入 Bifrost"
+	},
+	"setup": {
+		"instructionsIntro": "設定令牌是由營運人員在伺服器上設定的金鑰。請用以下兩種方式之一進行設定，然後重啟 Bifrost：",
+		"instructionsEnv": "設定 <code>BIFROST_SETUP_TOKEN</code> 環境變數。",
+		"instructionsConfig": "在 <code>config.json</code> 的頂層新增 <code>setup_token</code>。它接受字面值、<code>env.VAR</code> 引用或 <code>vault.path</code> 引用：",
+		"instructionsHeader": "API 用戶端在 <code>{{header}}</code> 請求頭中傳送相同的值。啟用儀表板認證後，該令牌將不再有效。",
+		"unreachable": "無法連線到 Bifrost。請檢查伺服器是否正在執行。",
+		"invalidToken": "設定令牌無效",
+		"checkFailed": "檢查令牌時 Bifrost 返回了 {{status}}",
+		"title": "完成 Bifrost 設定",
+		"description": "尚未配置儀表板認證，因此 API 已被鎖定。請輸入設定令牌以繼續並建立管理員帳戶。",
+		"tokenLabel": "設定令牌",
+		"tokenPlaceholder": "輸入設定令牌",
+		"continue": "繼續",
+		"whereToFind": "在哪裡可以找到設定令牌？",
+		"notConfigured": "此伺服器上未配置設定令牌，因此暫時無法繼續設定。"
 	}
 }

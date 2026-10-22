@@ -1,5 +1,6 @@
 import type { LogsHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { CHART_COLORS, formatFullTimestamp, formatTimestamp } from "../../utils/chartUtils";
@@ -31,6 +32,7 @@ interface CustomTooltipProps {
 }
 
 function CustomTooltip({ active, payload }: CustomTooltipProps) {
+	const { t } = useTranslation("observability");
 	if (!active || !payload || !payload.length) return null;
 
 	const data = payload[0]?.payload;
@@ -43,21 +45,21 @@ function CustomTooltip({ active, payload }: CustomTooltipProps) {
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="bg-chart-success h-2 w-2 rounded-full" />
-						<span className="text-zinc-600 dark:text-zinc-400">Success</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.success")}</span>
 					</span>
 					<span className="text-chart-success-ink font-medium">{data.success.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="bg-chart-error h-2 w-2 rounded-full" />
-						<span className="text-zinc-600 dark:text-zinc-400">Error</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.error")}</span>
 					</span>
 					<span className="text-chart-error-ink font-medium">{data.error.toLocaleString()}</span>
 				</div>
 				<div className="flex items-center justify-between gap-4">
 					<span className="flex items-center gap-1.5">
 						<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cancelled }} />
-						<span className="text-zinc-600 dark:text-zinc-400">Cancelled</span>
+						<span className="text-zinc-600 dark:text-zinc-400">{t("labels.cancelled")}</span>
 					</span>
 					<span className="font-medium text-zinc-600 dark:text-zinc-400">{(data.cancelled ?? 0).toLocaleString()}</span>
 				</div>

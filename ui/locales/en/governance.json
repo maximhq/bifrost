@@ -51,7 +51,15 @@
 			"updateAction": "Update Customer",
 			"createAction": "Create Customer",
 			"calendarAlignHelp": "Enabling calendar alignment will reset budget usage to <bold0>$0.00</bold0> and token/request rate-limit counters to <bold1>0</bold1> for this customer, then snap each reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be undone, but calendar alignment can be turned off later. This will take effect when you save."
-		}
+		},
+		"detail": {
+			"title": "Customer Details",
+			"description": "Usage details for this customer.",
+			"info": "Info",
+			"name": "Name",
+			"noBudgets": "No budgets configured"
+		},
+		"actionsAria": "Customer actions {{name}}"
 	},
 	"teams": {
 		"title": "Teams",
@@ -98,10 +106,13 @@
 			"updateAction": "Update Team",
 			"createAction": "Create Team",
 			"calendarAlignHelp": "Enabling calendar alignment will reset budget usage to <bold0>$0.00</bold0> and token/request rate-limit counters to <bold1>0</bold1> for this team, then snap each reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be undone, but calendar alignment can be turned off later. This will take effect when you save."
-		}
+		},
+		"actionsAria": "Team actions for {{name}}"
 	},
 	"virtualKeys": {
-		"loadFailed": "Failed to load virtual keys: {{message}}"
+		"loadFailed": "Failed to load virtual keys: {{message}}",
+		"metadataFilterInvalid": "The metadata filter key in this link is not valid, so it is not applied. Keys use 1-256 letters, digits, \".\", \"_\" or \"-\".",
+		"clearFilter": "Clear filter"
 	},
 	"plugins": {
 		"title": "Plugins",
@@ -353,7 +364,26 @@
 			"filterEvent": "Event",
 			"filterResponseStatus": "Response status",
 			"filterWebhooks": "Webhooks",
-			"searchWebhooks": "Search webhooks..."
+			"searchWebhooks": "Search webhooks...",
+			"table": {
+				"waiting": "Waiting for new deliveries...",
+				"empty": "No deliveries found. Try adjusting your filters and/or time range.",
+				"range": "{{from}}-{{to}} of {{total}} deliveries"
+			},
+			"header": {
+				"searchByDeliveryId": "Search by delivery ID",
+				"switchLookup": "Switch between request ID and delivery ID lookup"
+			},
+			"columns": {
+				"webhook": "Webhook",
+				"deliveryId": "Delivery ID",
+				"actions": "Actions",
+				"collapseSends": "Collapse sends",
+				"expandSends": "Expand sends",
+				"noPermission": "You do not have permission to redeliver",
+				"openInLogs": "{{id}} — open in logs"
+			},
+			"copyRequestId": "Copy request ID {{id}}"
 		}
 	},
 	"alerting": {
@@ -381,7 +411,8 @@
 		"unlockTitle": "Unlock user rankings for better visibility"
 	},
 	"promptDeployments": {
-		"unlockTitle": "Unlock prompt deployments for better prompt versioning and A/B testing."
+		"unlockTitle": "Unlock prompt deployments for better prompt versioning and A/B testing.",
+		"accordionTitle": "Deployments"
 	},
 	"connectorsUnlock": {
 		"splunk": "Unlock native Splunk data ingestion for better observability",
@@ -389,7 +420,8 @@
 		"datadog": "Unlock native Datadog data ingestion for better observability",
 		"bigquery": "Unlock native BigQuery data ingestion for analytics",
 		"kafka": "Unlock native Kafka log streaming for real-time observability",
-		"kafkaDescription": "This feature is a part of the Bifrost enterprise license. Stream completed request traces as JSON to a Kafka topic for real-time analytics, alerting, and downstream processing."
+		"kafkaDescription": "This feature is a part of the Bifrost enterprise license. Stream completed request traces as JSON to a Kafka topic for real-time analytics, alerting, and downstream processing.",
+		"kafkaAlt": "Kafka"
 	},
 	"accessProfiles": {
 		"unlockTitle": "Unlock access profiles for better performance",
@@ -439,7 +471,9 @@
 		"reset": "Reset",
 		"addBudgetButton": "Add Budget",
 		"maximumSpend": "Maximum Spend (USD)",
-		"noBudgetLimits": "No budget limits configured."
+		"noBudgetLimits": "No budget limits configured.",
+		"removeBudgetAria": "Remove budget {{number}}",
+		"duplicateResetPeriod": "Duplicate reset period; each budget line must use a different interval."
 	},
 	"filters": {
 		"filters": "Filters",
@@ -616,5 +650,49 @@
 		"patternCount_other": "{{count}} patterns",
 		"removeAria": "Remove {{name}}",
 		"noneLeftClick": "No providers left to configure. Click to add"
+	},
+	"orgChart": {
+		"unlockTitle": "Unlock the org chart",
+		"unlockDescription": "See budgets, spend, models and tools across business units, teams and users in one tree. This feature is part of the Bifrost enterprise license."
+	},
+	"budgetOverride": {
+		"updated": "Budget override updated",
+		"added": "Budget override added",
+		"removed": "Budget override removed",
+		"invalidInput": "Invalid input",
+		"editOverride": "Edit override",
+		"addOverride": "Add override",
+		"editTitle": "Edit budget override",
+		"addTitle": "Add budget override",
+		"description": "Temporarily add spending capacity without changing the base {{budget}} budget.",
+		"additionalBudget": "Additional budget",
+		"duration": "Duration",
+		"modeCycles": "For a number of reset cycles",
+		"modeForever": "Until removed",
+		"resetCycles": "Reset cycles",
+		"cycleHint": "The current reset cycle counts as the first cycle.",
+		"validUntil": "Valid until <b0>{{date}}</b0>",
+		"currentEffectiveLimit": "Current effective limit: <b0>{{limit}}</b0>",
+		"removeOverride": "Remove override",
+		"updateOverride": "Update override",
+		"managerDescription": "Temporarily add spending capacity to a budget without changing its base limit.",
+		"rowActive": "+{{amount}} override · effective {{effective}}",
+		"rowBase": "Base {{amount}}",
+		"edit": "Edit",
+		"remove": "Remove",
+		"update": "Update",
+		"add": "Add"
+	},
+	"usage": {
+		"budgetAria": "Budget usage",
+		"tokenAria": "Token usage",
+		"requestAria": "Request usage",
+		"resets": "Resets {{period}}",
+		"tokens": "{{value}} tokens",
+		"req": "{{value}} req",
+		"tokenTooltip": "{{used}} / {{max}} tokens",
+		"requestTooltip": "{{used}} / {{max}} requests",
+		"keyCount_one": "{{count}} key",
+		"keyCount_other": "{{count}} keys"
 	}
 }

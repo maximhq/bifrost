@@ -47,6 +47,24 @@
 		"inMinutes": "en {{count}} minutos",
 		"invalidTitle": "Este enlace ya no es válido",
 		"invalidBody": "El enlace de autorización ha caducado, ya se usó o se le quitó el token. Reinicia la conexión desde tu cliente MCP para obtener uno nuevo.",
-		"recognizeApplication": "Continúa solo si reconoces esta aplicación y su destino de callback:"
+		"recognizeApplication": "Continúa solo si reconoces esta aplicación y su destino de callback:",
+		"signInRedirectBody": "Esta autorización requiere una cuenta de Bifrost con la sesión iniciada. Te llevamos a iniciar sesión; volverás aquí directamente.",
+		"signInToBifrost": "Inicia sesión en Bifrost"
+	},
+	"setup": {
+		"instructionsIntro": "El token de configuración es un secreto que el operador define en el servidor. Defínelo de una de estas dos formas y luego reinicia Bifrost:",
+		"instructionsEnv": "Define la variable de entorno <code>BIFROST_SETUP_TOKEN</code>.",
+		"instructionsConfig": "Agrega <code>setup_token</code> en el nivel superior de <code>config.json</code>. Acepta un valor literal, una referencia <code>env.VAR</code> o una referencia <code>vault.path</code>:",
+		"instructionsHeader": "Los clientes de API envían el mismo valor en el header <code>{{header}}</code>. El token deja de funcionar una vez que se habilita la autenticación del panel.",
+		"unreachable": "No se pudo conectar con Bifrost. Comprueba que el servidor esté en ejecución.",
+		"invalidToken": "Token de configuración no válido",
+		"checkFailed": "Bifrost devolvió {{status}} al comprobar el token",
+		"title": "Termina de configurar Bifrost",
+		"description": "La autenticación del panel no está configurada, por lo que la API está bloqueada. Introduce el token de configuración para continuar y crear una cuenta de administrador.",
+		"tokenLabel": "Token de configuración",
+		"tokenPlaceholder": "Introduce el token de configuración",
+		"continue": "Continuar",
+		"whereToFind": "¿Dónde encuentro el token de configuración?",
+		"notConfigured": "No hay ningún token de configuración en este servidor, por lo que la configuración aún no puede continuar."
 	}
 }

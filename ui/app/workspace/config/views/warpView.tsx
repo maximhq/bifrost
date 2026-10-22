@@ -532,6 +532,7 @@ export default function WarpView() {
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="warp-config-view">
 			<form onSubmit={onSubmit} className="space-y-4">
+				{/* i18n-ignore: product name */}
 				<PageTitle title="Warp">{t("warp.pageDescription")}</PageTitle>
 
 				{isLoadingConfig ? (

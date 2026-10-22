@@ -716,11 +716,8 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										render={({ field }) => (
 											<FormItem className="flex flex-row items-center justify-between">
 												<div className="space-y-0.5">
-													<FormLabel className="text-base">Export Raw Payloads</FormLabel>
-													<FormDescription>
-														Attach the raw provider request and response bodies to exported spans. Requires raw request/response storage to
-														be enabled on the provider.
-													</FormDescription>
+													<FormLabel className="text-base">{t("connectors.otel.exportRawPayloads")}</FormLabel>
+													<FormDescription>{t("connectors.otel.exportRawPayloadsHelp")}</FormDescription>
 												</div>
 												<FormControl>
 													<Switch

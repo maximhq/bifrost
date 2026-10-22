@@ -23,7 +23,8 @@
 		"brandingDescription": "Remplacez le logo Bifrost par le vôtre sur le tableau de bord et l’écran de connexion. Cette fonctionnalité fait partie de la licence Enterprise de Bifrost. Nous aimerions en savoir plus sur votre cas d’usage et sur la façon dont nous pouvons vous aider.",
 		"licenseTitle": "Débloquez la gestion des licences",
 		"apiKeysTitle": "Clés API basées sur les périmètres",
-		"apiKeysDescription": "Besoin d’un contrôle d’accès granulaire avec des clés API basées sur les périmètres ? Les clients Enterprise peuvent créer plusieurs clés API avec des permissions spécifiques pour différents services, équipes ou environnements."
+		"apiKeysDescription": "Besoin d’un contrôle d’accès granulaire avec des clés API basées sur les périmètres ? Les clients Enterprise peuvent créer plusieurs clés API avec des permissions spécifiques pour différents services, équipes ou environnements.",
+		"unknownOs": "Système d’exploitation inconnu"
 	},
 	"clientSettings": {
 		"title": "Paramètres client",
@@ -80,7 +81,14 @@
 		"denylistRules": "<span0>Liste de refus :</span0> les en-têtes de la liste de refus sont toujours bloqués au transfert",
 		"wildcardRules": "<span0>Jokers :</span0> utilisez  <code1>*</code1> à la fin d’un motif pour correspondre à des préfixes (par ex. <code2>anthropic-*</code2> correspond à tous les en-têtes commençant par <code3>anthropic-</code3>). Utilisez  <code4>*</code4> seul pour correspondre à tous les en-têtes.",
 		"headerNames": "Les entrées des listes d’autorisation/refus doivent être le nom d’en-tête <span0>sans</span0> le préfixe  <code1>x-bf-eh-</code1>",
-		"allowlistExample": "Exemple : pour autoriser <code0>x-bf-eh-custom-id</code0> ou l’en-tête direct  <code1>custom-id</code1>, ajoutez  <code2>custom-id</code2> à la liste d’autorisation"
+		"allowlistExample": "Exemple : pour autoriser <code0>x-bf-eh-custom-id</code0> ou l’en-tête direct  <code1>custom-id</code1>, ajoutez  <code2>custom-id</code2> à la liste d’autorisation",
+		"extraFieldsPlacement": "Emplacement des champs supplémentaires",
+		"extraFieldsPlacementHelp": "Où les réponses d’inférence portent les métadonnées <b>extra_fields</b> de Bifrost. <b>Corps</b> conserve l’objet extra_fields dans la réponse JSON. <b>En-têtes</b> le retire du corps et de chaque chunk de streaming, et envoie ses champs scalaires sous forme d’en-têtes de réponse <b>x-bifrost-*</b>.",
+		"extraFieldsPlacementDroppedNote": "En mode En-têtes, ces champs sont abandonnés et ne sont envoyés nulle part : requête brute, réponse brute, métadonnées de routage, débogage des guardrails, erreurs d’analyse et, en cas d’erreur, statuts des clés, usage facturé et détails d’authentification MCP. Les réponses en streaming ne portent que ce qui est connu avant le premier chunk (routage, repli, recherche en cache) ; la latence par chunk, l’index du chunk et les totaux finaux sont donc aussi abandonnés.",
+		"extraFieldsBody": "Corps",
+		"extraFieldsHeaders": "En-têtes",
+		"removeSecurityHeader_one": "Supprimer l’en-tête de sécurité : {{headers}}",
+		"removeSecurityHeader_other": "Supprimer les en-têtes de sécurité : {{headers}}"
 	},
 	"caching": {
 		"title": "Cache local",
@@ -296,7 +304,11 @@
 		"convertUnsupportedParamsHelp": "Convertit les valeurs de paramètres de modèle qui ne sont pas prises en charge par le modèle.",
 		"azureDeepseek": "Utiliser les API Chat Completion pour les modèles Azure Deepseek",
 		"azureDeepseekHelp": "Utiliser les API Chat Completion pour Claude Code, Codex, etc. pour les modèles Azure Deepseek.",
-		"toastSaved": "Paramètres de compatibilité mis à jour avec succès."
+		"toastSaved": "Paramètres de compatibilité mis à jour avec succès.",
+		"forceReasoningOnlyToResponses": "Utiliser l’API Responses pour les modèles OpenAI à raisonnement uniquement",
+		"forceReasoningOnlyToResponsesHelp": "Achemine les requêtes de chat completion vers l’API Responses pour les modèles qui ne peuvent pas raisonner avec des appels d’outils sur les chat completions, au lieu de désactiver le raisonnement.",
+		"convertDecisionToResponses": "Émuler l’API Decisions sur les modèles sans décision",
+		"convertDecisionToResponsesHelp": "Répond aux requêtes de décision pour les modèles sans point de terminaison de décisions natif, en sollicitant le modèle via l’API Responses avec un outil de fonction forcé. Lorsque cette option est désactivée, ces requêtes échouent comme non prises en charge."
 	},
 	"featureFlags": {
 		"title": "Indicateurs de fonctionnalités",
@@ -387,7 +399,26 @@
 		"allowedRedirectUrisHelp": "URI de rappel exactes que les clients MCP distants peuvent utiliser, par ex. <code0>https://www.cursor.com/agents/mcp/oauth/callback</code0>. Ajoutez <code1>*</code1> pour autoriser tout rappel https ; les caractères génériques partiels ne sont pas pris en charge. Les rappels locaux et <code2>cursor://anysphere.cursor-mcp</code2> sont toujours autorisés. La modification de cette liste nécessite l’authentification du tableau de bord.",
 		"allowedRedirectUrisPlaceholder": "Ajouter une URI de rappel (Entrée)",
 		"anyCallbackAllowed": "Tout rappel est autorisé",
-		"anyCallbackAllowedHelp": "Tout client MCP peut s’enregistrer avec un rappel sur n’importe quel hôte ; la page de consentement est donc le seul contrôle contre un client qui enverrait les codes d’autorisation à un attaquant. Préférez une liste d’URI de rappel exactes."
+		"anyCallbackAllowedHelp": "Tout client MCP peut s’enregistrer avec un rappel sur n’importe quel hôte ; la page de consentement est donc le seul contrôle contre un client qui enverrait les codes d’autorisation à un attaquant. Préférez une liste d’URI de rappel exactes.",
+		"limitMaxSourceBytes": "Taille max. du source (octets)",
+		"limitMaxSourceBytesDesc": "Plus grand code qu’une seule exécution peut soumettre.",
+		"limitMaxSteps": "Étapes de calcul max.",
+		"limitMaxStepsDesc": "Étapes d’interpréteur par exécution, y compris le travail effectué dans les fonctions intégrées.",
+		"limitMaxMemoryBytes": "Mémoire max. (octets)",
+		"limitMaxMemoryBytesDesc": "Budget d’allocation estimé par exécution. Chaque exécution concurrente dispose de son propre budget.",
+		"limitMaxLogBytes": "Sortie de journal max. (octets)",
+		"limitMaxLogBytesDesc": "Sortie d’affichage et de journal d’outil par exécution, retours à la ligne inclus.",
+		"limitMaxToolCalls": "Appels d’outils max.",
+		"limitMaxToolCallsDesc": "Appels d’outils MCP imbriqués par exécution.",
+		"limitMaxValueBytes": "Taille max. d’une valeur (octets)",
+		"limitMaxValueBytesDesc": "Budget de taille pour chaque charge utile d’outil et résultat converti. Doit être d’au moins {{min}}.",
+		"limitMaxNestingDepth": "Profondeur d’imbrication max.",
+		"limitMaxNestingDepthDesc": "Profondeur d’imbrication des valeurs traversant la frontière de l’outil. Au plus {{max}}.",
+		"limitNegative": "{{label}} ne doit pas être négatif.",
+		"limitValueBytesMin": "La taille max. d’une valeur doit être d’au moins {{min}} octets.",
+		"limitNestingMax": "La profondeur d’imbrication max. doit être d’au plus {{max}}.",
+		"codeModeLimitsTitle": "Limites du mode code",
+		"codeModeLimitsDescription": "Limites appliquées à chaque exécution de code. Laissez un champ vide pour utiliser sa valeur par défaut. Le nombre d’exécutions simultanées n’est pas limité."
 	},
 	"modelSettings": {
 		"title": "Paramètres des modèles",
@@ -733,7 +764,11 @@
 		"intoPath": " dans {{path}}/",
 		"intoRoot": " à la racine",
 		"previewAfterSaving": "Aperçu disponible après l’enregistrement.",
-		"externalUrlRequired": "Définissez l’URL du client externe dans <settingsLink>Paramètres des compétences</settingsLink> pour activer l’enregistrement dans la marketplace."
+		"externalUrlRequired": "Définissez l’URL du client externe dans <settingsLink>Paramètres des compétences</settingsLink> pour activer l’enregistrement dans la marketplace.",
+		"showLess": "Afficher moins",
+		"showMore": "Afficher plus",
+		"skillNotFound": "Skill introuvable",
+		"backToList": "Retour à la liste"
 	},
 	"promptRepo": {
 		"loadFailed": "Échec du chargement du dépôt d’invites",
@@ -933,7 +968,48 @@
 		"governancePlugin": "Plugin Governance",
 		"governancePluginDesc": "Guide complet du contrôle d’accès, des budgets et de la limitation de débit",
 		"governancePluginContent": "Maîtrisez les clés virtuelles, les budgets hiérarchiques, la limitation de débit et le suivi d’utilisation pour une infrastructure IA sécurisée.",
-		"viewGovernanceGuide": "Voir le guide Governance"
+		"viewGovernanceGuide": "Voir le guide Governance",
+		"heading": "Boostez votre stack Bifrost",
+		"viewFullDocumentation": "Voir la documentation complète",
+		"quickStartGuide": "Guide de démarrage rapide",
+		"readMore": "En savoir plus",
+		"items": {
+			"quickStart": [
+				"Configuration du transport HTTP",
+				"Utilisation du package Go",
+				"Guide Docker"
+			],
+			"architecture": [
+				"Vue d’ensemble du système",
+				"Flux des requêtes",
+				"Modèle de concurrence",
+				"Décisions de conception"
+			],
+			"usageGuides": [
+				"Configuration des fournisseurs",
+				"Gestion des clés",
+				"Gestion des erreurs",
+				"Mémoire et réseau"
+			],
+			"contributing": [
+				"Guide de contribution",
+				"Ajout de fournisseurs",
+				"Développement de plugins",
+				"Conventions de code"
+			],
+			"integrationExamples": [
+				"Intégration OpenAI",
+				"Intégration Anthropic",
+				"Intégration GenAI",
+				"Guides de migration"
+			],
+			"benchmarks": [
+				"Résultats du test à 5K RPS",
+				"Métriques de performance",
+				"Réglage de la configuration",
+				"Comparaisons matérielles"
+			]
+		}
 	},
 	"warp": {
 		"saved": "Configuration Warp enregistrée.",
@@ -1036,7 +1112,10 @@
 			"searchLimit": "La limite de recherche doit être entre 1 et 25.",
 			"retentionRequired": "Une valeur est requise",
 			"retentionWhole": "Doit être un nombre entier de jours",
-			"retentionMin": "Doit être 0 jour ou plus (0 conserve la valeur par défaut)"
+			"retentionMin": "Doit être 0 jour ou plus (0 conserve la valeur par défaut)",
+			"modelRequired": "Choisissez un fournisseur et un modèle pour activer Warp.",
+			"modelOrRemove": "Choisissez un fournisseur et un modèle, ou supprimez ce modèle.",
+			"modelDuplicate": "Ce fournisseur et ce modèle sont déjà dans la liste."
 		},
 		"models": "Modèles",
 		"modelsHelp": "Les modèles avec lesquels Warp raisonne et rédige ses réponses. Le modèle par défaut répond, sauf si quelqu’un en choisit un autre dans le panneau Warp. Un modèle performant est un bon investissement ici.",
@@ -1047,5 +1126,26 @@
 		"modelNumber": "Modèle {{number}}",
 		"makeDefault": "Définir par défaut",
 		"removeModel": "Supprimer le modèle {{number}}"
+	},
+	"agentGateway": {
+		"title": "Paramètres d’Agent Gateway",
+		"description": "Configurez les paramètres d’Agent Gateway (A2A).",
+		"toastSaved": "Paramètres d’Agent Gateway mis à jour avec succès.",
+		"loadFailed": "Échec du chargement des paramètres d’Agent Gateway.",
+		"externalClientUrl": "URL du client externe",
+		"externalClientUrlHelp": "URL de base publique de Bifrost, utilisée pour les cartes d’agent servies et les URL de rappel des notifications push. Si elle est laissée vide, tous les points de terminaison du protocole d’agent sont désactivés. La gestion des agents reste disponible. Prend en charge la syntaxe des variables d’environnement (par ex. <code>env.BIFROST_EXTERNAL_URL</code>).",
+		"privateAllowlist": "Liste d’autorisation du réseau privé",
+		"privateAllowlistHelp": "Hôtes, adresses IP ou plages CIDR, sans schéma ni port, que la découverte, l’OAuth et les requêtes d’exécution d’Agent Gateway peuvent atteindre lorsqu’ils se résolvent vers une adresse privée ou de bouclage. Les adresses link-local et de métadonnées cloud sont toujours bloquées.",
+		"privateAllowlistPlaceholder": "Ajouter un hôte, une IP ou un CIDR (Entrée ou virgule)",
+		"captureRaw": "Capturer la requête et la réponse brutes",
+		"captureRawHelp": "Conserve les charges utiles brutes des requêtes et réponses dans les enregistrements de journal. La capture brute est désactivée pour gRPC, car il utilise des messages protobuf binaires ; une capture limitée en taille peut couper un message et ne peut pas être décodée ni inspectée de façon fiable."
+	},
+	"skillsSettings": {
+		"description": "Configurez la diffusion de la place de marché du dépôt de Skills.",
+		"toastSaved": "Paramètres des Skills mis à jour avec succès.",
+		"loadFailed": "Échec du chargement des paramètres des Skills.",
+		"retry": "Réessayer",
+		"externalClientUrl": "URL du client externe",
+		"externalClientUrlHelp": "URL de base publique de Bifrost pour les places de marché Claude Code et Codex. Laissez vide pour désactiver la diffusion et l’enregistrement de la place de marché. La gestion et le téléchargement des Skills restent disponibles. Prend en charge les variables d’environnement et les références vault."
 	}
 }

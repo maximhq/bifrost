@@ -20,6 +20,7 @@ import { CreatePricingOverrideRequest, PricingOverride, PricingOverrideMatchType
 import { cn } from "@/lib/utils";
 import { ChevronDown, Save, X } from "lucide-react";
 import { Dispatch, SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ParseKeys } from "i18next";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -31,7 +32,7 @@ import "@enterprise/lib/registrations/userPicker";
 // Field metadata lives in ./pricingFields; re-exported here so existing
 // importers of this module keep working unchanged.
 export {
-	fieldLabelByKey,
+	fieldLabelKeyByKey,
 	getRequestTypeGroup,
 	patchKeys,
 	PRICING_FIELDS,
@@ -43,7 +44,7 @@ export type { FieldErrors, FormState, PricingFieldKey, ScopeRoot } from "./prici
 import {
 	buildPatchFromForm,
 	defaultFormState,
-	fieldLabelByKey,
+	fieldLabelKeyByKey,
 	isUnsafePatchKey,
 	patchKeys,
 	PRESERVED_PATCH_KEYS,
@@ -167,13 +168,13 @@ export function patchSummary(override: PricingOverride): string {
 	}
 	const keys = Object.keys(parsed) as PricingFieldKey[];
 	if (keys.length === 0) return "None";
-	const labels = keys.map((key) => fieldLabelByKey[key] || key);
+	const labels = keys.map((key) => (fieldLabelKeyByKey[key] ? i18n.t(fieldLabelKeyByKey[key], { ns: "models" }) : key));
 	if (labels.length <= 2) return labels.join(", ");
 	return `${labels.slice(0, 2).join(", ")} +${labels.length - 2} more`;
 }
 
 export function renderFields(
-	fields: ReadonlyArray<{ key: PricingFieldKey; label: string }>,
+	fields: ReadonlyArray<{ key: PricingFieldKey; labelKey: ParseKeys<"models"> }>,
 	form: FormState,
 	setForm: Dispatch<SetStateAction<FormState>>,
 	errors: FieldErrors,
@@ -183,7 +184,7 @@ export function renderFields(
 		<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 			{fields.map((field) => (
 				<div key={field.key} className="space-y-2 pb-1">
-					<Label>{field.label}</Label>
+					<Label>{i18n.t(field.labelKey, { ns: "models" })}</Label>
 					<Input
 						data-testid={`pricing-override-field-input-${field.key}`}
 						type="text"
@@ -874,8 +875,8 @@ export default function PricingOverrideSheet({ open, onOpenChange, editingOverri
 											<PopoverContent align="start" className="w-[320px] p-2">
 												<div className="max-h-72 space-y-1 overflow-y-auto" onWheel={(e) => e.stopPropagation()}>
 													{REQUEST_TYPE_GROUPS.map((group) => (
-														<div key={group.label}>
-															<div className="text-muted-foreground px-2 py-1 text-xs font-medium">{group.label}</div>
+														<div key={group.labelKey}>
+															<div className="text-muted-foreground px-2 py-1 text-xs font-medium">{t(group.labelKey)}</div>
 															{group.types.map((requestType) => {
 																const checked = field.value.includes(requestType as RequestType);
 																return (
