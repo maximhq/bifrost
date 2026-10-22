@@ -142208,6 +142208,58 @@
           }
         },
         {
+          "name": "databricks/databricks-claude-opus-4-8 /v1/chat/completions reasoning_effort becomes output_config.effort on adaptive-only Claude",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('adaptive-only Claude carries the effort label as output_config.effort', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  var raw = json.extra_fields && json.extra_fields.raw_request;",
+                  "  pm.expect(raw, 'raw request missing; x-bf-send-back-raw-request was not honoured: ' + body).to.exist;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw.thinking && raw.thinking.type, 'thinking not sent as adaptive: ' + JSON.stringify(raw.thinking)).to.equal('adaptive');",
+                  "  pm.expect(raw.output_config && raw.output_config.effort, 'effort label dropped, so max and low send the same request: ' + JSON.stringify(raw.output_config)).to.equal('max');",
+                  "  pm.expect(raw.reasoning_effort, 'reasoning_effort must not reach Databricks').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-claude-opus-4-8\", \"max_tokens\": 1024, \"reasoning_effort\": \"max\", \"messages\": [{\"role\": \"user\", \"content\": \"What is 17*23? Answer with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
           "name": "databricks/databricks-gte-large-en /v1/embeddings",
           "event": [
             {
