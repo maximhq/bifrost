@@ -245,6 +245,7 @@ Network permission does not authorize runtime calls to another service. Set `age
 | `mcp_code_mode_binding_level` | string | - | Code mode binding level: `"server"` or `"tool"` |
 | `mcp_tool_sync_interval` | integer | `10` | Global tool sync interval in minutes (`0` = default of 10 minutes) |
 | `mcp_disable_auto_tool_inject` | boolean | `false` | When `true`, MCP tools are not automatically injected into requests |
+| `mcp_openapi_max_spec_mb` | integer | `0` | Size limit in MiB on an [OpenAPI MCP server](/mcp/openapi-servers)'s spec, inline or fetched (`0` = default of 32, maximum 256) |
 
 ```json
 {

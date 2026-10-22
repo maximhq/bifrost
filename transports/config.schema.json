@@ -389,6 +389,13 @@
           "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use mcp.tool_manager_config.disable_auto_tool_inject.",
           "default": false
         },
+        "mcp_openapi_max_spec_mb": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256,
+          "default": 0,
+          "description": "Size limit, in MiB, on the spec of an openapi MCP client (inline, spec_file or fetched from spec_url). 0 uses the built-in default of 32 MiB. Parsing holds several times the spec's size in memory while it runs."
+        },
         "mcp_code_mode_limits": {
           "$ref": "#/$defs/mcp_code_mode_limits",
           "description": "Per-execution code mode limits, as stored and served by the config API. In config.json prefer mcp.tool_manager_config.code_mode_limits, which takes precedence when both are set."

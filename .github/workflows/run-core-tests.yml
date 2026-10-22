@@ -137,6 +137,7 @@ jobs:
             generativelanguage.googleapis.com:443
             files.pythonhosted.org:443
             pypi.org:443
+            raw.githubusercontent.com:443
             getbifrost.ai:443
             github.com:443
             huggingface.co:443

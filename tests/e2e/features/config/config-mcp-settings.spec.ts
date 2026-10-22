@@ -1,3 +1,4 @@
+import { coreConfigApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 
 test.describe('MCP Settings', () => {
@@ -19,5 +20,25 @@ test.describe('MCP Settings', () => {
     const saveBtn = configSettingsPage.page.getByTestId('mcp-settings-save-btn')
     await expect(saveBtn).toBeVisible()
     await expect(saveBtn).toBeDisabled()
+  })
+
+  test('should save the OpenAPI spec size limit', async ({ configSettingsPage, request }) => {
+    const original = (await coreConfigApi.get(request)).client_config.mcp_openapi_max_spec_mb ?? 0
+    try {
+      await configSettingsPage.goto('mcp-gateway')
+      const input = configSettingsPage.page.getByTestId('mcp-openapi-max-spec-mb-input')
+      await expect(input).toHaveValue(String(original))
+
+      await input.fill('64')
+      const saveBtn = configSettingsPage.page.getByTestId('mcp-settings-save-btn')
+      await expect(saveBtn).toBeEnabled()
+      await saveBtn.click()
+      await expect.poll(async () => (await coreConfigApi.get(request)).client_config.mcp_openapi_max_spec_mb).toBe(64)
+
+      await configSettingsPage.page.reload()
+      await expect(input).toHaveValue('64')
+    } finally {
+      await coreConfigApi.updateClientConfig(request, { mcp_openapi_max_spec_mb: original })
+    }
   })
 })

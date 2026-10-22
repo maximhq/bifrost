@@ -25,6 +25,9 @@ const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 
 const stringListEquals = (a?: string[], b?: string[]) => (a ?? []).join("\n") === (b ?? []).join("\n");
 
+// Mirrors the server's bound on client_config.mcp_openapi_max_spec_mb.
+const MAX_OPENAPI_SPEC_MB = 256;
+
 export default function MCPView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
@@ -46,6 +49,7 @@ export default function MCPView() {
 		mcp_tool_sync_interval: string;
 		mcp_max_instructions_per_client: string;
 		mcp_max_instructions_total: string;
+		mcp_openapi_max_spec_mb: string;
 		oauth2_auth_code_ttl: string;
 		oauth2_access_token_ttl: string;
 	}>({
@@ -55,6 +59,7 @@ export default function MCPView() {
 		mcp_tool_sync_interval: "10",
 		mcp_max_instructions_per_client: "0",
 		mcp_max_instructions_total: "0",
+		mcp_openapi_max_spec_mb: "0",
 		oauth2_auth_code_ttl: "300",
 		oauth2_access_token_ttl: "600",
 	});
@@ -69,6 +74,7 @@ export default function MCPView() {
 				mcp_tool_sync_interval: config?.mcp_tool_sync_interval?.toString() || "10",
 				mcp_max_instructions_per_client: (config?.mcp_max_instructions_per_client ?? 0).toString(),
 				mcp_max_instructions_total: (config?.mcp_max_instructions_total ?? 0).toString(),
+				mcp_openapi_max_spec_mb: (config?.mcp_openapi_max_spec_mb ?? 0).toString(),
 				// Coerce a stored 0 (which the backend treats as "use default") to the
 				// displayed default so the inputs never show a confusing 0.
 				oauth2_auth_code_ttl: (config?.oauth2_server_config?.auth_code_ttl || 300).toString(),
@@ -88,6 +94,7 @@ export default function MCPView() {
 			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
 			localConfig.mcp_max_instructions_per_client !== (config.mcp_max_instructions_per_client ?? 0) ||
 			localConfig.mcp_max_instructions_total !== (config.mcp_max_instructions_total ?? 0) ||
+			localConfig.mcp_openapi_max_spec_mb !== (config.mcp_openapi_max_spec_mb ?? 0) ||
 			!codeModeLimitsEqual(localConfig.mcp_code_mode_limits, config.mcp_code_mode_limits) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
@@ -152,6 +159,14 @@ export default function MCPView() {
 		const numValue = Number.parseInt(value);
 		if (!isNaN(numValue) && numValue >= 0) {
 			setLocalConfig((prev) => ({ ...prev, mcp_max_instructions_total: numValue }));
+		}
+	}, []);
+
+	const handleOpenAPIMaxSpecChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, mcp_openapi_max_spec_mb: value }));
+		const numValue = Number.parseInt(value);
+		if (!isNaN(numValue) && numValue >= 0 && numValue <= MAX_OPENAPI_SPEC_MB) {
+			setLocalConfig((prev) => ({ ...prev, mcp_openapi_max_spec_mb: numValue }));
 		}
 	}, []);
 
@@ -257,6 +272,7 @@ export default function MCPView() {
 			const syncInterval = Number.parseInt(localValues.mcp_tool_sync_interval);
 			const perClientCap = Number.parseInt(localValues.mcp_max_instructions_per_client);
 			const totalCap = Number.parseInt(localValues.mcp_max_instructions_total);
+			const openAPIMaxSpecMB = Number.parseInt(localValues.mcp_openapi_max_spec_mb);
 
 			if (isNaN(syncInterval) || syncInterval < 0) {
 				toast.error("Tool sync interval must be zero or a positive number.");
@@ -270,6 +286,11 @@ export default function MCPView() {
 
 			if (isNaN(totalCap) || totalCap < 0) {
 				toast.error("Max instruction length total must be zero or a positive number.");
+				return;
+			}
+
+			if (isNaN(openAPIMaxSpecMB) || openAPIMaxSpecMB < 0 || openAPIMaxSpecMB > MAX_OPENAPI_SPEC_MB) {
+				toast.error(`OpenAPI spec size limit must be between 0 and ${MAX_OPENAPI_SPEC_MB} MiB.`);
 				return;
 			}
 
@@ -501,6 +522,30 @@ export default function MCPView() {
 						value={localValues.mcp_max_instructions_total}
 						onChange={(e) => handleMaxInstructionsTotalChange(e.target.value)}
 						min="0"
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				{/* OpenAPI Spec Size Limit */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-openapi-max-spec-mb" className="text-sm font-medium">
+							Max OpenAPI Spec Size (MiB)
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Largest document an OpenAPI MCP server accepts, pasted, uploaded or fetched from its URL. Parsing holds several times
+							this in memory. Set to 0 to use the default of 32.
+						</p>
+					</div>
+					<Input
+						id="mcp-openapi-max-spec-mb"
+						data-testid="mcp-openapi-max-spec-mb-input"
+						type="number"
+						className="w-24"
+						value={localValues.mcp_openapi_max_spec_mb}
+						onChange={(e) => handleOpenAPIMaxSpecChange(e.target.value)}
+						min="0"
+						max={MAX_OPENAPI_SPEC_MB}
 						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>

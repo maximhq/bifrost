@@ -88,6 +88,10 @@ type TableClientConfig struct {
 	CompatForceReasoningOnlyModelsToResponses bool `gorm:"column:compat_force_reasoning_only_models_to_responses;default:false" json:"-"`
 	CompatConvertDecisionToResponses          bool `gorm:"column:compat_convert_decision_to_responses;default:false" json:"-"`
 
+	// MCPOpenAPIMaxSpecMB limits an openapi MCP client's spec, in MiB; 0 is the built-in 32.
+	// The explicit column name avoids GORM deriving "mcp_open_api_..." from the field name.
+	MCPOpenAPIMaxSpecMB int `gorm:"column:mcp_openapi_max_spec_mb;default:0" json:"mcp_openapi_max_spec_mb"`
+
 	// MCPServerAuthMode controls how /mcp authenticates inbound clients.
 	// Stored as a plain varchar column so it can be read without JSON parsing.
 	MCPServerAuthMode MCPServerAuthMode `gorm:"column:mcp_server_auth_mode;type:varchar(20);not null;default:'headers'" json:"mcp_server_auth_mode"`

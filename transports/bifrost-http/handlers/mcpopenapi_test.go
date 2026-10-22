@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/mcp_headers"
+	"github.com/maximhq/bifrost/framework/openapimcp"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -260,12 +262,41 @@ func TestPreviewOpenAPISpec_Errors(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
 	assert.Contains(t, body, "top level must be a mapping")
 
-	huge, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: "{" + strings.Repeat(" ", 5<<20) + "}"})
+	huge, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: "{" + strings.Repeat(" ", openapimcp.MaxSpecBytes) + "}"})
 	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(huge), "", false)
 	assert.Equal(t, fasthttp.StatusRequestEntityTooLarge, status, body)
 
 	status, _ = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, `not json`, "", false)
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
+}
+
+// client_config.mcp_openapi_max_spec_mb is read on every request: lowering it refuses a spec the
+// default admits, on preview and on create, and 0 restores the default.
+func TestOpenAPISpec_ConfiguredMaxSpecSize(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	// Padded inside the object: the handlers trim surrounding whitespace before measuring.
+	padded := "{" + strings.Repeat(" ", 1<<20) + strings.TrimPrefix(strings.TrimSpace(petstoreSpecJSON), "{")
+	preview, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: padded})
+	create, _ := json.Marshal(map[string]any{
+		"name": "petstore_sized", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"*"},
+		"openapi_config":   map[string]any{"spec": padded},
+	})
+
+	h.store.ClientConfig.MCPOpenAPIMaxSpecMB = 1
+	status, body := doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(preview), "", false)
+	assert.Equal(t, fasthttp.StatusRequestEntityTooLarge, status, body)
+	assert.Contains(t, body, fmt.Sprintf("exceeds %d bytes", 1<<20))
+	status, body = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(create), "", false)
+	assert.Equal(t, fasthttp.StatusRequestEntityTooLarge, status, body)
+	assert.Empty(t, mgr.added)
+
+	h.store.ClientConfig.MCPOpenAPIMaxSpecMB = 0
+	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(preview), "", false)
+	assert.Equal(t, fasthttp.StatusOK, status, body)
+	status, body = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(create), "", false)
+	assert.Equal(t, fasthttp.StatusOK, status, body)
+	assert.Len(t, mgr.added, 1)
 }
 
 func TestAddMCPClient_OpenAPI_CreatesClientFromSpec(t *testing.T) {

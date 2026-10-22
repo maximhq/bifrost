@@ -3,6 +3,7 @@ import { CodeEditor } from "@/components/ui/codeEditor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useGetCoreConfigQuery } from "@/lib/store";
 import { Info, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -10,7 +11,7 @@ import {
 	formatBytes,
 	isSpecTooLarge,
 	OPENAPI_AUTO_PARSE_DELAY_MS,
-	OPENAPI_MAX_SPEC_BYTES,
+	openAPIMaxSpecBytes,
 	autoParseStep,
 	openAPIParseControls,
 	applyUploadedSpec,
@@ -73,8 +74,12 @@ export function OpenAPISpecSource({
 	compact,
 }: OpenAPISpecSourceProps) {
 	const fileInputRef = useRef<HTMLInputElement>(null);
+	// The server enforces the configured limit; this only spares a doomed upload. A caller who
+	// cannot read the config gets the default.
+	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const maxSpecBytes = openAPIMaxSpecBytes(bifrostConfig?.client_config?.mcp_openapi_max_spec_mb);
 	const sourceEmpty = mode === "url" ? !specUrl.trim() : !specText.trim();
-	const uploadTooLarge = mode === "upload" && specText && isSpecTooLarge(new TextEncoder().encode(specText).length);
+	const uploadTooLarge = mode === "upload" && specText && isSpecTooLarge(new TextEncoder().encode(specText).length, maxSpecBytes);
 
 	const [uploadError, setUploadError] = useState<UploadErrorState | null>(null);
 	// Bumped by every new file, source switch and text edit, so a slow read that
@@ -92,7 +97,7 @@ export function OpenAPISpecSource({
 	const handleFile = async (file: File | undefined) => {
 		if (!file) return;
 		const token = ++readToken.current;
-		const result = await readUploadedSpec(file);
+		const result = await readUploadedSpec(file, maxSpecBytes);
 		if (token !== readToken.current) return;
 		// A rejected file keeps the document already loaded.
 		const { accept, error } = applyUploadedSpec(fileName ?? "", result);
@@ -224,11 +229,11 @@ export function OpenAPISpecSource({
 					</div>
 					{shownUploadError || uploadTooLarge ? (
 						<p className="text-destructive text-xs" data-testid="openapi-spec-upload-error">
-							{shownUploadError ?? `The file exceeds the ${formatBytes(OPENAPI_MAX_SPEC_BYTES)} limit for OpenAPI documents.`}
+							{shownUploadError ?? `The file exceeds the ${formatBytes(maxSpecBytes)} limit for OpenAPI documents.`}
 						</p>
 					) : (
 						<p className="text-muted-foreground text-xs">
-							JSON or YAML, up to {formatBytes(OPENAPI_MAX_SPEC_BYTES)}. The file is read in your browser and stored with the server.
+							JSON or YAML, up to {formatBytes(maxSpecBytes)}. The file is read in your browser and stored with the server.
 						</p>
 					)}
 				</TabsContent>
