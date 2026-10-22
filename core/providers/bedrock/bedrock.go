@@ -3737,21 +3737,12 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 			createdAt = job.SubmitTime.Unix()
 		}
 
-		// Store Bedrock-specific fields in Metadata for later conversion back to Bedrock format
-		metadata := make(map[string]string)
-		if job.JobName != "" {
-			metadata["job_name"] = job.JobName
-		}
-		if job.ModelID != "" {
-			metadata["model_id"] = job.ModelID
-		}
-
 		batches = append(batches, schemas.BifrostBatchRetrieveResponse{
 			ID:        job.JobArn,
 			Object:    "batch",
 			Status:    ToBifrostBatchStatus(job.Status),
 			CreatedAt: createdAt,
-			Metadata:  metadata,
+			Metadata:  batchJobMetadata(job.JobName, job.ModelID, job.Status),
 		})
 	}
 
@@ -3928,14 +3919,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 			continue
 		}
 
-		// Store Bedrock-specific fields in Metadata for later conversion back to Bedrock format
-		metadata := make(map[string]string)
-		if bedrockResp.JobName != "" {
-			metadata["job_name"] = bedrockResp.JobName
-		}
-		if bedrockResp.ModelID != "" {
-			metadata["model_id"] = bedrockResp.ModelID
-		}
+		metadata := batchJobMetadata(bedrockResp.JobName, bedrockResp.ModelID, bedrockResp.Status)
 
 		result := &schemas.BifrostBatchRetrieveResponse{
 			ID:       bedrockResp.JobArn,
