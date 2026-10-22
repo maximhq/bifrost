@@ -336,7 +336,7 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 
 	// SetupTokenHeader is sent by the dashboard on every call while the OSS setup lock is
 	// active, so a UI served from another origin must be able to preflight it.
-	allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", SetupTokenHeader}
+	allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", "X-Bifrost-View-As", SetupTokenHeader}
 	if slices.Contains(cfg.allowedHeaders, "*") {
 		if credentialed {
 			// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
