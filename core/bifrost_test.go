@@ -61,6 +61,95 @@ func createBifrostError(message string, statusCode *int, errorType *string, isBi
 	}
 }
 
+type immediateStreamTracer struct {
+	schemas.NoOpTracer
+	parked schemas.SpanHandle
+	stores int
+	ended  int
+}
+
+func (tracer *immediateStreamTracer) StartSpanID(_ context.Context, _ string, kind schemas.SpanKind) (string, schemas.SpanHandle) {
+	if kind != schemas.SpanKindLLMCall {
+		return "", nil
+	}
+	return "immediate-span", "immediate-handle"
+}
+
+func (tracer *immediateStreamTracer) StoreDeferredSpan(_ string, handle schemas.SpanHandle) {
+	tracer.parked = handle
+	tracer.stores++
+}
+
+func (tracer *immediateStreamTracer) ClearDeferredSpan(_ string) { tracer.parked = nil }
+
+func (tracer *immediateStreamTracer) EndSpan(handle schemas.SpanHandle, _ schemas.SpanStatus, _ string) {
+	if handle != nil {
+		tracer.ended++
+	}
+}
+
+func TestExecuteRequestWithRetries_ImmediateStreamOwnsItsSpan(t *testing.T) {
+	for _, mode := range []string{"terminal-before-return", "startup-error", "empty"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			tracer := &immediateStreamTracer{}
+			ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+			ctx.SetValue(schemas.BifrostContextKeyTraceID, "immediate-trace")
+			handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				if tracer.parked == nil {
+					t.Error("provider can complete before its deferred span is registered")
+				}
+				if mode == "startup-error" {
+					return nil, createBifrostError("startup refused", Ptr(400), nil, true)
+				}
+				stream := make(chan *schemas.BifrostStreamChunk, 1)
+				if mode != "empty" {
+					stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "completed"}}
+					// A fast buffered provider can finish its terminal callback before
+					// returning the channel. Completion must not be parked a second time.
+					tracer.EndSpan(tracer.parked, schemas.SpanStatusOk, "")
+					tracer.ClearDeferredSpan("immediate-trace")
+				}
+				close(stream)
+				return stream, nil
+			}
+			stream, failure := executeRequestWithRetries(ctx, createTestConfig(0, 0, 0), handler, nil,
+				schemas.ChatCompletionStreamRequest, schemas.OpenAI, "proof-model", nil, NewDefaultLogger(schemas.LogLevelError))
+			if stream != nil {
+				for range stream {
+				}
+			}
+			if (failure != nil) != (mode == "startup-error") {
+				t.Fatalf("unexpected failure: %v", failure)
+			}
+			if tracer.parked != nil || tracer.stores != 1 || tracer.ended != 1 {
+				t.Errorf("stream span ownership: parked=%v stores=%d ended=%d", tracer.parked, tracer.stores, tracer.ended)
+			}
+		})
+	}
+}
+
+func BenchmarkExecuteRequestWithRetries_SpanRegistration(b *testing.B) {
+	for _, streaming := range []bool{false, true} {
+		b.Run(fmt.Sprintf("streaming=%t", streaming), func(b *testing.B) {
+			requestType := schemas.ChatCompletionRequest
+			if streaming {
+				requestType = schemas.ChatCompletionStreamRequest
+			}
+			logger := NewDefaultLogger(schemas.LogLevelError)
+			config := createTestConfig(0, 0, 0)
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+				ctx.SetValue(schemas.BifrostContextKeyTraceID, "benchmark-trace")
+				executeRequestWithRetries(ctx, config, func(schemas.Key) (string, *schemas.BifrostError) { return "ok", nil },
+					nil, requestType, schemas.OpenAI, "proof-model", nil, logger)
+			}
+		})
+	}
+}
+
 // Test executeRequestWithRetries - success scenarios
 func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	config := createTestConfig(3, 100*time.Millisecond, 1*time.Second)
