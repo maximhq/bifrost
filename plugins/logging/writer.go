@@ -70,7 +70,7 @@ type PendingLogData struct {
 	LastActivity atomic.Int64
 	// Live is set for a GPT Live session's row: what its units have folded into it so far.
 	Live             *liveSessionState
-	ProvisionalInput bool           // Input captured before the virtual key's content decision was known
+	ProvisionalInput bool           // Input captured before the virtual key's or project's content decision was known
 	ContentPolicy    *contentPolicy // Content policy resolved in PreLLMHook; nil means the global policy
 	EvictionAttempts int            // Sweeps that could not queue this entry's partial row
 	EvictedPartial   bool           // PostLLMHook stub for an already-evicted request; reconciles by UPDATE
@@ -726,7 +726,7 @@ func (p *LoggerPlugin) pendingClaimLock(requestID string) *sync.Mutex {
 // counted. Content follows the policy resolved for the request in PreLLMHook
 // (ContentPolicy; the global policy when none was recorded), because eviction
 // has no request context. Input captured provisionally, before the virtual
-// key's decision was known, is never kept: PostLLMHook's final-policy drop
+// key's or project's decision was known, is never kept: PostLLMHook's final-policy drop
 // cannot run for it. CreatedAt is reset to now so flushStaleProcessingLogs
 // gives the row a fresh window; Timestamp keeps the original request time. No
 // callback: PreLLMHook already announced the processing entry to subscribers.
@@ -792,7 +792,7 @@ func (p *LoggerPlugin) claimStaleMCPEntry(key any) (*logstore.MCPToolLog, bool) 
 		// PostMCPHook claimed it first and still needs the held arguments.
 		return nil, false
 	}
-	// Arguments held back for an unresolved key go with the entry: a stale entry never
+	// Arguments held back for an unresolved key or project go with the entry: a stale entry never
 	// learns its final content decision, so it never gets them.
 	p.provisionalMCPArguments.Delete(key)
 	entry, ok := actual.(*logstore.MCPToolLog)

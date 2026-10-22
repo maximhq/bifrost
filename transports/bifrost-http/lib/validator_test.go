@@ -3680,6 +3680,9 @@ func TestSchemaGovernanceProjectsValidation(t *testing.T) {
 		{name: "a negative token cap is rejected", project: `{"name": "p", "access_rule": "union", "rate_limit": {"token_max_limit": -1, "token_reset_duration": "1h"}}`, wantError: true},
 		{name: "a negative request cap is rejected", project: `{"name": "p", "access_rule": "union", "rate_limit": {"request_max_limit": -1, "request_reset_duration": "1m"}}`, wantError: true},
 		{name: "a members list cannot be declared", project: `{"name": "p", "access_rule": "union", "members": [{"user_id": "u-1"}]}`, wantError: true},
+		{name: "content logging can be turned off for a project", project: `{"name": "p", "access_rule": "union", "disable_content_logging": true}`},
+		{name: "content logging can be turned on for a project", project: `{"name": "p", "access_rule": "union", "disable_content_logging": false}`},
+		{name: "content logging must be a boolean", project: `{"name": "p", "access_rule": "union", "disable_content_logging": "off"}`, wantError: true},
 	}
 
 	for _, tt := range tests {

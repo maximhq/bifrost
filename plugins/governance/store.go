@@ -1349,6 +1349,9 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 // connectors are handed the finished trace without the request context, so the span is the only
 // place they can read the decision from. The mark is one-directional: a key that keeps content on
 // says nothing to a connector, whose own disable_content_logging stays in charge.
+//
+// A project the request is scoped to can override the key's decision once it is admitted, on the
+// context and on the span alike.
 func stampVirtualKeyContentLogging(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) {
 	if ctx == nil || virtualKey == nil || virtualKey.DisableContentLogging == nil {
 		return
