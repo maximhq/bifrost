@@ -279156,6 +279156,402 @@
           }
         }
       ]
+    },
+    {
+      "name": "266. Azure AI Speech: SSML text to speech and fast transcription on speech/ models (azure speech)",
+      "description": "Pins F-19: Azure AI Speech behind the azure provider. A model named speech/<model> leaves the Azure OpenAI audio routes. Text to speech is sent as SSML to {endpoint}/tts/cognitiveservices/v1 with Ocp-Apim-Subscription-Key, X-Microsoft-OutputFormat and a User-Agent. The voice suffix comes from the model (speech/MAI-Voice-2.1-Flash + en-US-Harper is en-US-Harper:MAI-Voice-2.1-Flash) and speed becomes <prosody rate>. Speech to text is sent to fast transcription (/speechtotext/transcriptions:transcribe) as an audio part plus a JSON definition, and usage is the duration rounded up to the second, which is what Azure meters. Before the change every case reached /openai/v1/audio/speech or /openai/deployments/speech/... and failed. The cases cover native /v1 and the OpenAI drop-in routes, the SSE stream with its billable characters on the done event, the empty-body 400 that Azure answers to an unknown voice, and diarization requested through a multipart extra field.",
+      "item": [
+        {
+          "name": "266.1 azure speech/neural native /v1/audio/speech returns SSML-synthesized audio (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/speech/neural\",\n  \"input\": \"Harness Azure Speech probe.\",\n  \"voice\": \"en-US-JennyNeural\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Speech returned audio bytes', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'unexpected content-type: ' + ct + ' ' + pm.response.text().slice(0, 200)).to.match(/audio\\//i);",
+                  "  pm.expect(pm.response.stream.length, 'empty audio body').to.be.above(500);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.2 azure speech/MAI-Voice-2.1-Flash takes the voice suffix from the model and speed as prosody (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/speech/MAI-Voice-2.1-Flash\",\n  \"input\": \"Harness MAI voice probe.\",\n  \"voice\": \"en-US-Harper\",\n  \"speed\": 1.2,\n  \"response_format\": \"opus\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Speech returned audio bytes', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'unexpected content-type: ' + ct + ' ' + pm.response.text().slice(0, 200)).to.match(/audio\\//i);",
+                  "  pm.expect(pm.response.stream.length, 'empty audio body').to.be.above(500);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.3 azure speech/neural OpenAI drop-in /openai/v1/audio/speech returns audio (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/speech/neural\",\n  \"input\": \"Harness drop-in probe.\",\n  \"voice\": \"en-US-GuyNeural\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Speech returned audio bytes', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(pm.response.code, 'speech failed: ' + pm.response.text().slice(0, 300)).to.equal(200);",
+                  "  pm.expect(ct, 'unexpected content-type: ' + ct + ' ' + pm.response.text().slice(0, 200)).to.match(/audio\\//i);",
+                  "  pm.expect(pm.response.stream.length, 'empty audio body').to.be.above(500);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.4 azure speech/neural stream_format sse streams audio deltas and a done event with billable characters (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/speech/neural\",\n  \"input\": \"Harness streaming probe for Azure Speech.\",\n  \"voice\": \"en-US-JennyNeural\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure Speech SSE stream carries deltas and a done event with input_chars', function () {",
+                  "  pm.expect(pm.response.code, 'stream failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'not an SSE stream').to.include('text/event-stream');",
+                  "  pm.expect(body, 'no audio delta: ' + body.slice(0, 300)).to.include('speech.audio.delta');",
+                  "  pm.expect(body, 'no done event: ' + body.slice(-300)).to.include('speech.audio.done');",
+                  "  pm.expect(body, 'done event lacks billable characters: ' + body.slice(-300)).to.match(/\"input_chars\":\\s*[1-9]/);",
+                  "  pm.expect(body, 'stream carried an error: ' + body.slice(0, 300)).to.not.include('\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] 266.5 azure speech/neural unknown voice surfaces Azure's empty-body 400 with a hint (azure speech)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/speech/neural\",\n  \"input\": \"x\",\n  \"voice\": \"en-US-NoSuchVoiceNeural\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('the empty-body 400 carries the Azure Speech hint', function () {",
+                  "  pm.expect(pm.response.code, 'expected the upstream 400: ' + body.slice(0, 300)).to.equal(400);",
+                  "  pm.expect(body, 'missing the hint: ' + body.slice(0, 300)).to.include('check the voice name, SSML and output format');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.6 azure speech/fast-transcription native /v1/audio/transcriptions returns text and duration usage (azure speech)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/speech/fast-transcription",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "language",
+                  "value": "en-US",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure fast transcription returned text billed by the second', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'no text: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage && j.usage.type, 'usage type: ' + body.slice(0, 300)).to.equal('duration');",
+                  "  pm.expect(j.usage.seconds, 'billed seconds must be whole and positive: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(j.usage.seconds % 1, 'billed seconds are rounded up to the second').to.equal(0);",
+                  "  pm.expect(j.duration, 'duration: ' + body.slice(0, 300)).to.be.above(0).and.at.most(j.usage.seconds);",
+                  "  pm.expect(j.language, 'locale: ' + body.slice(0, 300)).to.equal('en-US');",
+                  "  pm.expect(j.segments, 'segments: ' + body.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.words, 'word timings: ' + body.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.7 azure speech/fast-transcription diarization extra form field returns speaker-labelled segments (azure speech)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/speech/fast-transcription",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "diarization",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "max_speakers",
+                  "value": "2",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure fast transcription returned text billed by the second', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'no text: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage && j.usage.type, 'usage type: ' + body.slice(0, 300)).to.equal('duration');",
+                  "  pm.expect(j.usage.seconds, 'billed seconds must be whole and positive: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(j.usage.seconds % 1, 'billed seconds are rounded up to the second').to.equal(0);",
+                  "  pm.expect(j.duration, 'duration: ' + body.slice(0, 300)).to.be.above(0).and.at.most(j.usage.seconds);",
+                  "  pm.expect(j.segments, 'segments: ' + body.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.segments[0].speaker, 'diarization never reached Azure: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.8 azure speech/fast-transcription OpenAI drop-in /openai/v1/audio/transcriptions returns text (azure speech)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/speech/fast-transcription",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('drop-in transcription returned text', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  pm.expect(pm.response.json().text, 'no text: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

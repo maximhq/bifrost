@@ -34,7 +34,8 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | Image Variation  | ❌            | ❌        | -                               |
 | Batch            | ❌            | ❌        | -                               |
 | Text Completions | ❌            | ❌        | -                               |
-| Speech (TTS)     | ❌            | ❌        | -                               |
+| Speech (TTS)     | ✅            | ✅        | `/openai/v1/audio/speech`, or `/tts/cognitiveservices/v1` for [Azure AI Speech](#11-azure-ai-speech) |
+| Transcription    | ✅            | -         | `/openai/deployments/{model}/audio/transcriptions`, or `/speechtotext/transcriptions:transcribe` for [Azure AI Speech](#11-azure-ai-speech) |
 
 <Note>
   **Azure-specific**: Batch operations and Text Completions are not supported by
@@ -1038,6 +1039,81 @@ Bifrost calls `POST {endpoint}/providers/microsoft/v1/systemone`, which uses Typ
 Azure does not gate decisions by model name: a deployment that does not serve decisions returns Azure's own error. With [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, `Microsoft-Decision-1` is still served natively. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use it as its classifier.
 
 Until the model catalog lists its rates, a decision on Azure is priced at $0; add a [pricing override](/providers/custom-pricing) for the Decisions request type to bill it.
+
+---
+
+# 11. Azure AI Speech
+
+Models named `speech/<model>` are served by [Azure AI Speech](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/) instead of an Azure OpenAI deployment, on the same key and endpoint. The endpoint must be a Foundry (AI Services) resource or a Speech resource with a custom domain. Both `*.openai.azure.com` and `*.cognitiveservices.azure.com` work.
+
+An API key is sent as `Ocp-Apim-Subscription-Key`. Entra ID and managed identity send a bearer token, as for every other Azure call. A key with an explicit `models` list must list the `speech/` models it serves.
+
+## Text to speech
+
+**Endpoint**: `POST /v1/audio/speech`, sent to `{endpoint}/tts/cognitiveservices/v1` as SSML
+
+| Model | Voice sent to Azure |
+| --- | --- |
+| `speech/neural` | `voice` as is, such as `en-US-JennyNeural` |
+| `speech/<suffix>`, such as `speech/DragonHDLatestNeural` or `speech/MAI-Voice-2.1-Flash` | `{voice}:{suffix}`, such as `en-US-Harper:MAI-Voice-2.1-Flash` |
+
+A voice that already contains `:` is sent as is. OpenAI voice names such as `alloy` are not Azure voices and get a `400`.
+
+| Parameter | Azure SSML |
+| --- | --- |
+| `input` | Escaped voice text. An input that starts with `<speak` is sent as the whole SSML document. |
+| `speed` | `<prosody rate="{speed}">` |
+| `language_code` | `xml:lang` on `<speak>`, `en-US` when not set |
+| `style`, `styledegree`, `role` | `<mstts:express-as>` |
+| `response_format` | `mp3` (default), `opus`, `wav` and `pcm` map to 24 kHz formats; `aac` and `flac` fall back to mp3; any other value is sent as the `X-Microsoft-OutputFormat` name |
+| `instructions` | Dropped |
+
+`stream_format: "sse"` streams the audio as Azure synthesizes it. `usage.input_chars` counts characters as Azure bills them: the whole SSML except the `<speak>` and `<voice>` tags, with each Chinese character counted twice. Markup Bifrost adds, such as `<prosody>`, is billed.
+
+```bash
+curl http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "azure/speech/MAI-Voice-2.1-Flash",
+    "voice": "en-US-Harper",
+    "input": "Your order shipped.",
+    "speed": 1.2
+  }' --output speech.mp3
+```
+
+## Speech to text
+
+**Endpoint**: `POST /v1/audio/transcriptions`, sent to `{endpoint}/speechtotext/transcriptions:transcribe?api-version=2025-10-15` as an `audio` part and a JSON `definition`
+
+| Model | Azure mode |
+| --- | --- |
+| `speech/fast-transcription` | Fast transcription |
+| `speech/llm-speech` | LLM Speech (`enhancedMode.task`) |
+| Any other `speech/<model>`, such as `speech/MAI-Transcribe-2` | `enhancedMode.model` set to `<model>` |
+
+LLM Speech and MAI-Transcribe are available only in [some regions](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/regions?tabs=llmspeech); other regions answer `400` with `Enhanced mode is currently not supported yet.`
+
+| Field | Azure definition |
+| --- | --- |
+| `language` | `locales`. `speech/fast-transcription` needs a full locale such as `en-US`; a bare code such as `en` is dropped and Azure detects the language. |
+| `prompt` | `enhancedMode.prompt` on `speech/llm-speech`; dropped otherwise |
+| `target_language` | `speech/llm-speech` translates into it |
+| `response_format: "verbose_json"` | `modelOptions.timestamps: "word"` on MAI-Transcribe |
+| `response_format: "diarized_json"`, `diarization`, `max_speakers` | `diarization` |
+| `channels`, `phrases` | `channels`, `phraseList.phrases`. Pass a comma-separated value in a multipart form. |
+| `profanity_filter_mode`, `transcribe_style` | `profanityFilterMode`, `modelOptions.transcribeStyle` |
+
+The response carries `text`, `duration`, `language`, `segments` (speaker-labelled when diarized) and `words`. `usage.seconds` is the duration rounded up to the second, which is what Azure meters.
+
+```bash
+curl http://localhost:8080/v1/audio/transcriptions \
+  -F model=azure/speech/fast-transcription \
+  -F file=@call.wav \
+  -F language=en-US \
+  -F diarization=true
+```
+
+Until the model catalog lists rates for the `speech/` models, they are priced at $0; add a [pricing override](/providers/custom-pricing) to bill them.
 
 ---
 
