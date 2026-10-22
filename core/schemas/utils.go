@@ -2422,6 +2422,12 @@ func IsElevenlabsSoundModel(model string) bool {
 	return strings.Contains(model, "eleven_text_to_sound")
 }
 
+// IsAzureSpeechModel checks if the model targets Azure AI Speech (SSML text to speech,
+// fast transcription) rather than an Azure OpenAI deployment, e.g. "speech/neural".
+func IsAzureSpeechModel(model string) bool {
+	return strings.HasPrefix(model, "speech/")
+}
+
 // IsTypesafeModel checks if the model targets a TypeSafe System One decisions
 // endpoint (e.g. "typesafe/jev-1.13", "~typesafe/jev-latest") rather than chat.
 func IsTypesafeModel(model string) bool {
