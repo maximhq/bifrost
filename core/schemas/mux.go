@@ -2177,10 +2177,16 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		state.TextItemHasContent = true
 	}
 
-	if len(delta.ToolCalls) > 0 {
+	// Every entry is read, not just the first. delta.tool_calls is an array on
+	// the OpenAI wire and consumers accumulate entries by index: vLLM's DeepSeek
+	// parser splits one call across two entries of the same chunk (id and name,
+	// then the arguments), and two distinct calls can arrive together. Taking
+	// [0] dropped the arguments in the first case and the second call in the
+	// second, leaving /anthropic/v1/messages with a tool_use whose input stays
+	// {} (#8898).
+	for _, toolCall := range delta.ToolCalls {
 		// Tool call delta - handle function call arguments
-		toolCall := delta.ToolCalls[0] // Take first tool call
-		contentIndex := 1              // Tool calls use content_index:1
+		contentIndex := 1 // Tool calls use content_index:1
 
 		// Determine tool call ID: use ID if present, otherwise look up by index
 		var toolCallID string
@@ -2193,7 +2199,9 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			} else {
 				// No ID and no mapping found - skip this chunk
 				// This can happen if the stream is malformed or out of order
-				return responses
+				// Skip this entry rather than the whole chunk: a later entry may
+				// carry the id, and the arguments entry shares its index.
+				continue
 			}
 		}
 
