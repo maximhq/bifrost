@@ -2918,6 +2918,43 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 			origMutable: true,
 		},
 		{
+			// A web_search_call with a native OpenAI "ws_" id and a valid status is replayed
+			// as is: OpenAI rejects it without status ("Missing required parameter:
+			// input[N].status") and Codex-style backends without id (#8382).
+			name: "native web_search_call keeps id and status",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("completed"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"ws_replay_probe"` {
+					t.Errorf("id: got %s, want \"ws_replay_probe\"", item["id"])
+				}
+				if string(item["status"]) != `"completed"` {
+					t.Errorf("status: got %s, want \"completed\"", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
+			// A "ws_" id with a status OpenAI does not define is not a native item.
+			name: "web_search_call with ws_ id and foreign status stripped",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_replay_probe"),
+				Status: schemas.Ptr("incomplete"),
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				for _, field := range []string{"id", "status"} {
+					if _, ok := item[field]; ok {
+						t.Errorf("%s present in wire request for web_search_call", field)
+					}
+				}
+			},
+			origMutable: true,
+		},
+		{
 			name: "signature stripped from content blocks",
 			input: schemas.ResponsesMessage{
 				Type:   &messageType,

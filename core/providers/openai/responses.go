@@ -553,6 +553,20 @@ func applyResponsesCacheBreakpoints(messages []schemas.ResponsesMessage, openAIF
 // retags it by role.
 const bareTextContentBlockType schemas.ResponsesMessageContentBlockType = "text"
 
+// isNativeWebSearchCall reports whether message is a web_search_call that OpenAI itself
+// produced: its id has OpenAI's "ws_" prefix and its status is one OpenAI defines.
+func isNativeWebSearchCall(message schemas.ResponsesMessage) bool {
+	if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeWebSearchCall ||
+		message.ID == nil || !strings.HasPrefix(*message.ID, "ws_") || message.Status == nil {
+		return false
+	}
+	switch *message.Status {
+	case "in_progress", "searching", "completed", "failed":
+		return true
+	}
+	return false
+}
+
 func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
@@ -727,7 +741,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
-		// Strip it, with three exceptions. message is a value copy, so the caller's input is
+		// Strip it, with four exceptions. message is a value copy, so the caller's input is
 		// untouched.
 		switch {
 		case message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeApplyPatchCall ||
@@ -740,6 +754,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// OpenAI wire, and `error` on an input item is rejected outright. Dropping
 			// it too would make a failed tool call indistinguishable from a successful
 			// one. Only this value is kept; any other status is still stripped.
+		case isNativeWebSearchCall(message):
+			// A web_search_call that keeps its native "ws_" id is OpenAI's own item, where
+			// id and status are both required on replay ("Missing required parameter:
+			// input[N].status" otherwise). Foreign ids and statuses (Gemini) are still stripped.
 		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeMessage &&
 			message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleAssistant &&
 			message.ID != nil && *message.ID != "" && message.Status != nil &&
@@ -759,7 +777,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			*message.Type == schemas.ResponsesMessageTypeFunctionCallOutput ||
 			*message.Type == schemas.ResponsesMessageTypeWebSearchCall) &&
 			message.ID != nil && *message.ID != "" &&
-			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) {
+			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) &&
+			!isNativeWebSearchCall(message) {
 			message.ID = nil
 		}
 
