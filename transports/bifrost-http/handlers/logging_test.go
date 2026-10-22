@@ -871,17 +871,27 @@ type dashboardLogManager struct {
 	deleteMCPError         error
 	// rankings, when set, supplies the rows GetDimensionRankings returns per dimension.
 	rankings map[logstore.RankingDimension][]logstore.DimensionRankingWithTrend
+	// logs, when set, are the rows GetLog serves by id; searchLogs are what
+	// Search returns.
+	logs       map[string]*logstore.Log
+	searchLogs []logstore.Log
 }
 
 // GetLog implements the test double used by logging handler tests.
 func (m *dashboardLogManager) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
+	if m.logs != nil {
+		if row, ok := m.logs[id]; ok {
+			return row, nil
+		}
+		return nil, logstore.ErrNotFound
+	}
 	return nil, nil
 }
 
 // Search implements the test double used by logging handler tests.
 func (m *dashboardLogManager) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
 	m.lastLLMFilters = *filters
-	return &logstore.SearchResult{}, nil
+	return &logstore.SearchResult{Logs: m.searchLogs, Pagination: logstore.PaginationOptions{TotalCount: int64(len(m.searchLogs))}}, nil
 }
 
 // GetSessionLogs implements the test double used by logging handler tests.
@@ -1766,4 +1776,47 @@ func TestParseBucketSizeOverride(t *testing.T) {
 			}
 		})
 	}
+}
+
+// GET /api/logs/{id}/trace returns the chain behind any hop of a request, and
+// 404 for a row the caller cannot load.
+func TestGetLogTrace(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ts := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
+	hop := logstore.Log{ID: "hop", Timestamp: ts, Provider: "anthropic", Status: "success", FallbackIndex: 1, ParentRequestID: new("root")}
+	mgr := &dashboardLogManager{
+		logs: map[string]*logstore.Log{
+			"root": {ID: "root", Timestamp: ts, Provider: "openai", Status: "error"},
+			"hop":  &hop,
+		},
+		searchLogs: []logstore.Log{hop},
+	}
+	h := &LoggingHandler{logManager: mgr}
+	r := router.New()
+	h.RegisterRoutes(r)
+
+	get := func(path string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.SetRequestURI(path)
+		ctx := initCtx(&req)
+		r.Handler(ctx)
+		return ctx
+	}
+
+	ctx := get("/api/logs/hop/trace")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var trace logstore.RequestTrace
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &trace))
+	require.Equal(t, "root", trace.RootID)
+	require.Equal(t, 2, trace.ChainLength)
+	require.Equal(t, "success", trace.FinalStatus)
+	require.Equal(t, "root", mgr.lastLLMFilters.ParentRequestID)
+
+	ctx = get("/api/logs/missing/trace")
+	require.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	// The plain log route is still the log, not its trace.
+	ctx = get("/api/logs/root")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.NotContains(t, string(ctx.Response.Body()), "chain_length")
 }
