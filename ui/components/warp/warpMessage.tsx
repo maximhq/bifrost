@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Brain, ChevronDown, Info } from "lucide-react";
 import { lazy, memo, Suspense, useMemo, useState, type AnchorHTMLAttributes, type ReactNode } from "react";
+import { withBasePath } from "@/lib/utils/basePath";
 
 // Markdown is not lazy: its Suspense fallback showed the raw markdown, which flashed before every answer.
 // Recharts is heavy and most answers have no chart.
@@ -299,7 +300,7 @@ function WarpAnswerLink({ href, children, ...rest }: AnchorHTMLAttributes<HTMLAn
 		return (
 			<a
 				{...anchorProps}
-				href={href}
+				href={withBasePath(href!)}
 				className="text-primary underline underline-offset-2"
 				data-testid="warp-answer-link"
 				onClick={(event) => {
