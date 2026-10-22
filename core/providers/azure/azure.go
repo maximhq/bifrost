@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -1119,11 +1120,29 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 
 	url := fmt.Sprintf("%s/openai/deployments/%s/audio/transcriptions?api-version=%s", endpoint, request.Model, resolveAPIVersion(ctx, DefaultAzureAPIVersion))
 
+	// Azure Whisper returns no usage, so json is fetched as verbose_json for the billed duration.
+	whisper := strings.Contains(schemas.ResolveCanonicalModel(ctx, request.Model), "whisper")
+	format := ""
+	if request.Params != nil && request.Params.ResponseFormat != nil {
+		format = *request.Params.ResponseFormat
+	}
+	upstreamRequest := request
+	if whisper && (format == "" || format == "json") {
+		params := schemas.TranscriptionParameters{}
+		if request.Params != nil {
+			params = *request.Params
+		}
+		params.ResponseFormat = new("verbose_json")
+		copied := *request
+		copied.Params = &params
+		upstreamRequest = &copied
+	}
+
 	response, err := openai.HandleOpenAITranscriptionRequest(
 		ctx,
 		provider.client,
 		url,
-		request,
+		upstreamRequest,
 		key,
 		provider.networkConfig.ExtraHeaders,
 		authHeader,
@@ -1136,6 +1155,15 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 		return nil, err
 	}
 
+	if whisper {
+		if response.Usage == nil && response.Duration != nil {
+			response.Usage = &schemas.TranscriptionUsage{Type: "duration", Seconds: new(math.Ceil(*response.Duration))}
+		}
+		// A json caller gets the text alone, as OpenAI's json response carries.
+		if upstreamRequest != request {
+			response.Duration, response.Language, response.Task, response.Segments, response.Words = nil, nil, nil, nil, nil
+		}
+	}
 	return response, err
 }
 
