@@ -1,6 +1,6 @@
 ---
 title: "Prompt Guardrails"
-description: "Use a configured LLM judge to enforce natural-language policies on LLM and MCP inputs and outputs."
+description: "Use a configured LLM or decision model as a judge to enforce natural-language policies on LLM and MCP inputs and outputs."
 icon: "shield-check"
 ---
 
@@ -8,10 +8,10 @@ icon: "shield-check"
 
 <Info>Prompt Guardrails is available in **Bifrost v2.0.0 and above**.</Info>
 
-**Prompt Guardrails** is a Bifrost Enterprise guardrail provider that uses a configured LLM as a judge. The judge evaluates text against a natural-language policy and returns one of two decisions:
+**Prompt Guardrails** is a Bifrost Enterprise guardrail provider that uses a configured model as a judge: an LLM, or a [decision model](#decision-model-judges). The judge evaluates text against a natural-language policy, and the result is one of two decisions:
 
 - `ALLOW` lets the request or response continue.
-- `BLOCK` returns a guardrail intervention with the judge's reason.
+- `BLOCK` returns a guardrail intervention with the judge's reason (an LLM judge) or the profile name (a decision model judge).
 
 Use Prompt Guardrails for semantic policies that are difficult to express as fixed patterns, such as organization-specific conduct rules, domain restrictions, or contextual content policies.
 
@@ -26,7 +26,7 @@ At runtime:
 1. A guardrail rule matches an LLM request or MCP tool execution.
 2. Bifrost extracts text from the rule's selected `input`, `output`, or `both` phase.
 3. Prompt Guardrails sends that text and the configured natural-language policy to the selected judge model.
-4. The judge returns a JSON `ALLOW` or `BLOCK` decision with a short reason.
+4. An LLM judge returns a JSON `ALLOW` or `BLOCK` decision with a short reason. A decision model judge returns the probability that the text violates the policy, and Bifrost blocks when it reaches the profile's `block_threshold`.
 5. Bifrost continues processing or returns a guardrail intervention.
 
 The evaluated content is sent separately from the judge's system prompt and encoded as JSON. The internal judge request skips the guardrail plugin pipeline so it cannot recursively invoke Prompt Guardrails.
@@ -54,15 +54,38 @@ You can attach multiple profiles to one rule for layered protection.
 
 ## Judge Model Requirements
 
-The selected judge provider must already be configured and enabled in Bifrost. The judge model must support **Chat Completions** or the **Responses API**. Bifrost prefers Chat Completions and switches to the Responses API when the provider requires it.
+The selected judge provider must already be configured and enabled in Bifrost. An LLM judge model must support **Chat Completions** or the **Responses API**; a decision model judge has its own requirements, covered in [Decision Model Judges](#decision-model-judges). For an LLM judge, Bifrost prefers Chat Completions and switches to the Responses API when the provider requires it.
 
-The judge request sends only the system prompt, the evaluated content, and the output-token limit. It does not send `response_format` or sampling parameters such as `temperature`, so models without structured-output support, including self-hosted models, can be used as judges. The system prompt instructs the judge to return the JSON decision, and Bifrost validates the reply strictly.
+An LLM judge request sends only the system prompt, the evaluated content, and the output-token limit. It does not send `response_format` or sampling parameters such as `temperature`, so models without structured-output support, including self-hosted models, can be used as judges. The system prompt instructs the judge to return the JSON decision, and Bifrost validates the reply strictly.
 
 Model-catalog metadata is not required. When the catalog describes the selected model, the UI shows its advertised capabilities as hints, but **Verify** is the authoritative check because it calls the model.
 
 <Note>
 Reasoning models spend output tokens on reasoning before they write the decision. If verification reports that the judge returned no text decision, increase `max_output_tokens`.
 </Note>
+
+## Decision Model Judges
+
+Set `judge_type` to `decision` to judge with a [decision model](/quickstart/gateway/decisions) instead of an LLM. Decision models answer a typed question with a calibrated probability rather than generated text, so they are typically faster and cheaper per evaluation than an LLM judge, and the blocking point is a number you tune instead of a prompt you rewrite.
+
+For each evaluation, Bifrost sends one `predicate` question on the `/v1/decisions` path: the policy is the question's instructions, and its criteria define `true` as a clear violation of the policy. The extracted text is the input. Bifrost reads the answer's probability and:
+
+- Blocks when the probability is at or above `block_threshold` (default `0.9`).
+- Allows when it is below.
+
+| | LLM judge | Decision model judge |
+|---|---|---|
+| `judge_type` | `llm` (default) | `decision` |
+| Judge models | Chat Completions or Responses models | Native decision models only, such as `typesafe/jev-latest`, `cloudflare/clef-flash`, or a [self-hosted](/providers/self-hosted-decision-models) Laya or Nimble provider |
+| Decision | `ALLOW` or `BLOCK` with a reason | Violation probability compared with `block_threshold` |
+| Block message | `Guardrail intervention: <judge reason>` | `Guardrail intervention: content matched policy "<profile name>".` |
+| Tuning | `prompt_template`, `max_output_tokens` | `block_threshold` |
+
+Only native decision models can judge. A chat model returns `unsupported_operation`, and the compat setting `convert_decision_to_responses` does not apply to judge requests, so a decision profile never falls back to emulating the decision through a chat model. Use an LLM judge for chat models.
+
+Creating or verifying a decision profile with `prompt_template` or `max_output_tokens`, or an LLM profile with `block_threshold`, is rejected. A profile without `judge_type` is an LLM judge, so existing profiles are unchanged.
+
+A refusal, a missing answer, or an answer without a probability is a judge error. Like every other judge error, it is logged and the guardrail fails open; see [Decisions and Failure Behavior](#decisions-and-failure-behavior).
 
 ## Configuration
 
@@ -77,15 +100,17 @@ Reasoning models spend output tokens on reasoning before they write the decision
 2. Select **Prompt Guardrails**.
 3. Click **Add Configuration**.
 4. Enter a descriptive **Name**.
-5. Select the **Judge Provider** and **Judge Model**.
-6. Enter the natural-language policy in **Rule**.
-7. Optionally expand **Additional Configuration** to change the system prompt, timeout, or output-token limit.
-8. Click **Verify**.
-9. Enable and save the configuration.
-10. Go to **Guardrails** > **Configuration** and attach the profile to a guardrail rule.
+5. Choose the **Judge Type**: **LLM** or **Decision Model**.
+6. Select the **Judge Provider** and **Judge Model**. With **Decision Model**, only providers that serve decision models are listed.
+7. Enter the natural-language policy in **Rule**.
+8. For a decision model, set the **Block Threshold**.
+9. Optionally expand **Additional Configuration** to change the timeout and, for an LLM judge, the system prompt or output-token limit.
+10. Turn on **Enabled** if the profile should run as soon as it is attached.
+11. Click **Verify and Save**. Bifrost runs a live judge request first and saves the profile only if it passes.
+12. Go to **Guardrails** > **Configuration** and attach the profile to a guardrail rule.
 
 <Note>
-Changing the provider, model, policy, or additional configuration invalidates the previous verification. Verify the updated configuration before enabling it.
+When you edit an existing profile, **Re-verify** runs the live check without saving, and **Verify and Save** saves your changes after they pass verification. A change you already checked with **Re-verify** is saved without a second check. Each judge type keeps its own provider and model, so switching the judge type and back restores them.
 </Note>
 
 </Tab>
@@ -125,6 +150,27 @@ curl -X POST http://localhost:8080/api/guardrails/prompt-guardrail/verify \
     }
   }'
 ```
+
+To judge with a decision model, set `judge_type` and `block_threshold` and omit `prompt_template` and `max_output_tokens`:
+
+```bash
+curl -X POST http://localhost:8080/api/guardrails/prompt-guardrail \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "block-medical-diagnoses-dm",
+    "enabled": true,
+    "config": {
+      "judge_type": "decision",
+      "judge_provider": "typesafe",
+      "judge_model": "jev-latest",
+      "rule": "Block responses that provide a definitive medical diagnosis for an individual.",
+      "timeout": 10,
+      "block_threshold": 0.9
+    }
+  }'
+```
+
+Updates keep config keys the request omits. When you switch an existing profile between judge types, send the other type's settings as empty values (`"prompt_template": ""` and `"max_output_tokens": 0`, or `"block_threshold": 0`). A profile that still stores them loads and ignores them, but the stored config no longer matches what runs.
 
 The management API assigns the profile ID after creation. Attach the profile to a rule as `"prompt-guardrail:<id>"`; see [Creating Rules](/enterprise/guardrails#creating-rules).
 
@@ -179,12 +225,14 @@ bifrost:
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
+| `judge_type` | No | `llm` | `llm` or `decision`. See [Decision Model Judges](#decision-model-judges). |
 | `judge_provider` | Yes | - | Configured Bifrost provider used for the internal judge request. |
-| `judge_model` | Yes | - | Chat Completions or Responses model used as the judge. |
+| `judge_model` | Yes | - | `llm`: a Chat Completions or Responses model. `decision`: a native decision model. |
 | `rule` | Yes | - | Natural-language policy the judge evaluates. |
-| `prompt_template` | No | Built-in classifier prompt | Judge system-prompt template. It must contain `{{rule}}` and must not contain `{{content}}`. |
+| `prompt_template` | No | Built-in classifier prompt | `llm` only. Judge system-prompt template. It must contain `{{rule}}` and must not contain `{{content}}`. |
 | `timeout` | No | `30` | Judge-request timeout in seconds. Must be greater than zero. |
-| `max_output_tokens` | No | `1000` | Maximum judge response tokens, including any reasoning tokens. Must be between `1` and `1024`. |
+| `max_output_tokens` | No | `1000` | `llm` only. Maximum judge response tokens, including any reasoning tokens. Must be between `1` and `1024`. |
+| `block_threshold` | No | `0.9` | `decision` only. Blocks when the violation probability is at or above this value. Must be greater than `0` and at most `1`. |
 
 The default system prompt treats the configured rule as the complete policy. It blocks only clear rule violations and allows unrelated, ambiguous, or uncertain content. If you customize the prompt, preserve `{{rule}}`; Bifrost always sends the evaluated content separately and appends the required JSON output format to every system prompt, so a custom template does not need to describe the response shape.
 
@@ -209,8 +257,8 @@ The guardrail rule also owns `input`, `output`, or `both`, sampling, execution t
 
 - Configuration-field validation.
 - Provider configuration and model reachability.
-- Chat Completions or Responses API support for the selected model.
-- The judge model's ability to return a valid JSON `ALLOW` or `BLOCK` decision.
+- Chat Completions or Responses API support for an LLM judge, or decisions support for a decision model judge.
+- The judge model's ability to return a valid JSON `ALLOW` or `BLOCK` decision, or a violation probability. For a decision model, the result names the probability and whether it would block at the configured threshold.
 
 Verification evaluates a dummy text value, `"test"`. It does not test whether your policy makes the correct decision on real application content.
 
@@ -220,7 +268,7 @@ A successful verification proves configuration and connectivity, not policy qual
 
 ## Decisions and Failure Behavior
 
-The judge returns:
+An LLM judge returns:
 
 ```json
 {
@@ -229,9 +277,9 @@ The judge returns:
 }
 ```
 
-For `BLOCK`, Bifrost returns a guardrail intervention containing the judge's short reason. For `ALLOW`, processing continues normally.
+For `BLOCK`, Bifrost returns a guardrail intervention containing the judge's short reason. For `ALLOW`, processing continues normally. A decision model judge has no reason to return, so its intervention names the profile, and the violation probability and threshold are recorded in the guardrail log.
 
-If the judge request times out, the provider rejects it, or the response cannot be parsed, Bifrost logs the provider failure and continues the application request or response. Prompt Guardrails therefore fails open on judge/runtime errors. Monitor guardrail logs and alerts if the policy protects a security-critical boundary.
+If the judge request times out, the provider rejects it, the response cannot be parsed, or a decision model refuses or returns no probability, Bifrost logs the provider failure and continues the application request or response. Prompt Guardrails therefore fails open on judge/runtime errors. Monitor guardrail logs and alerts if the policy protects a security-critical boundary.
 
 ## Streaming and MCP
 
@@ -246,7 +294,7 @@ Because Prompt Guardrails can block output, matched streaming-output rules hold 
 
 ## Cost, Latency, and Logs
 
-Each evaluated input or output phase makes an additional LLM request to the judge. Multiple matching rules or Prompt Guardrails profiles can produce multiple judge calls for one application request.
+Each evaluated input or output phase makes an additional request to the judge: a chat or Responses request for an LLM judge, a decisions request for a decision model judge. Multiple matching rules or Prompt Guardrails profiles can produce multiple judge calls for one application request.
 
 Judge calls add:
 
@@ -278,12 +326,14 @@ Recommended practice:
 
 | Error or symptom | Meaning | Recommended action |
 |------------------|---------|--------------------|
-| Model supports neither Chat Completions nor the Responses API | The model cannot serve as a Prompt Guardrails judge | Select a model with either supported inference API |
+| Model supports neither Chat Completions nor the Responses API | The model cannot serve as an LLM judge | Select a model with either supported inference API, or use a decision model judge if it is a native decision model |
 | Judge returned no text decision | The model used its output-token budget, usually on reasoning, before writing a decision | Increase `max_output_tokens` |
 | Judge decision did not contain a JSON object, or returned an invalid action | The model did not follow the required output format | Select a more instruction-following judge model, or simplify a custom `prompt_template` |
 | Provider rejects the model ID | The model belongs to a different provider, or the provider needs a different identifier (for example, a Bedrock inference profile ID) | Select the provider that serves the model and use the identifier that provider expects |
 | Verify succeeds but policy decisions are poor | Verification used dummy content and did not evaluate policy quality | Test representative examples and refine the policy |
 | No judge call for image-only or file-only content | Prompt Guardrails evaluates extracted text only | Add a provider that supports the required modality |
+| Decision judge fails with `unsupported_operation` | The selected model is a chat model, not a native decision model | Select a decision model, or switch the profile to an LLM judge |
+| Decision judge blocks too much or too little | The threshold does not match the policy's risk tolerance | Raise `block_threshold` to block only clear violations, or lower it to block borderline content |
 | More judge cost than expected | Multiple phases, rules, or profiles executed | Review rule matching, `apply_to`, and sampling |
 
 For shared rule configuration, CEL variables, and provider management, see the [Guardrails overview](/enterprise/guardrails).
