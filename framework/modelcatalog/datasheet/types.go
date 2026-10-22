@@ -613,7 +613,8 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 	// own defaults (bedrock fills MaxTokens from the model default). An
 	// undisclosed parameter list means "unknown", not "unsupported": keep the
 	// universally-supported sampling and token-limit params in the allowlist.
-	if len(parsed.ModelParameters) == 0 {
+	// An explicit empty list ([]) is a declared empty surface and gets no defaults.
+	if parsed.ModelParameters == nil {
 		addParam("temperature")
 		addParam("top_p")
 		addParam("stop")
