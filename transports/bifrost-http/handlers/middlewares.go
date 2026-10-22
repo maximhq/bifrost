@@ -178,9 +178,57 @@ func panicSummary(r any) string {
 	return fmt.Sprintf("%T", r)
 }
 
-// ServerRootHandler wraps the router with the server-level middlewares.
+// ServerRootHandler wraps the router with the server-level middlewares. The
+// base-path middleware is added outermost only when server.base_path is
+// configured, so the default chain is unchanged.
 func ServerRootHandler(cors *CorsMiddleware, config *lib.Config, router fasthttp.RequestHandler) fasthttp.RequestHandler {
-	return SecurityHeadersMiddleware()(cors.Middleware()(RecoveryMiddleware(cors)(RequestDecompressionMiddleware(config)(router))))
+	handler := SecurityHeadersMiddleware()(cors.Middleware()(RecoveryMiddleware(cors)(RequestDecompressionMiddleware(config)(router))))
+	if config != nil && config.ServerConfig != nil && config.ServerConfig.BasePath != "" {
+		handler = BasePathMiddleware(config.ServerConfig.BasePath)(handler)
+	}
+	return handler
+}
+
+// BasePathMiddleware strips basePath (normalized, e.g. "/bifrost") from the
+// request URI so every route, auth whitelist entry and path check downstream
+// sees the root-relative path. Requests that do not carry the prefix pass
+// through untouched, so proxies that already strip it, and unprefixed probes
+// such as /health, keep working. The match is on whole segments: "/bifrostx"
+// is not stripped.
+func BasePathMiddleware(basePath string) schemas.BifrostHTTPMiddleware {
+	prefix := []byte(basePath)
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			stripBasePath(ctx, prefix)
+			next(ctx)
+		}
+	}
+}
+
+// stripBasePath rewrites the raw request URI without the prefix. The URI is
+// re-set, not just the path, so Path() and PathOriginal() agree afterwards.
+func stripBasePath(ctx *fasthttp.RequestCtx, prefix []byte) {
+	uri := ctx.Request.URI()
+	rawPath := uri.PathOriginal()
+	if !bytes.HasPrefix(rawPath, prefix) {
+		return
+	}
+	rest := rawPath[len(prefix):]
+	if len(rest) > 0 && rest[0] != '/' {
+		return
+	}
+	var stack [512]byte
+	buf := stack[:0]
+	if len(rest) == 0 {
+		buf = append(buf, '/')
+	} else {
+		buf = append(buf, rest...)
+	}
+	if query := uri.QueryString(); len(query) > 0 {
+		buf = append(buf, '?')
+		buf = append(buf, query...)
+	}
+	ctx.Request.SetRequestURIBytes(buf)
 }
 
 // InferenceOuterMiddlewares returns the middlewares that wrap every inference route
