@@ -112,6 +112,35 @@ describe("Logs Export Workflow & Pagination Logic", () => {
 		expect(collected).toHaveLength(1300);
 	});
 
+	it("deduplicates records across batch boundaries by ID", async () => {
+		const mockFetch = vi.fn().mockImplementation(async (offset: number, _limit: number) => {
+			if (offset === 0) {
+				return [
+					{ ...sampleLog, id: "log-1" },
+					{ ...sampleLog, id: "log-2" },
+					{ ...sampleLog, id: "log-3" },
+				];
+			}
+			if (offset === 3) {
+				// Due to boundary shift, log-3 is returned again
+				return [
+					{ ...sampleLog, id: "log-3" },
+					{ ...sampleLog, id: "log-4" },
+					{ ...sampleLog, id: "log-5" },
+				];
+			}
+			return [];
+		});
+
+		const collected = await collectLogsInBatches({
+			targetTotal: 5,
+			batchSize: 3,
+			fetchBatch: mockFetch,
+		});
+
+		expect(collected.map((l) => l.id)).toEqual(["log-1", "log-2", "log-3", "log-4", "log-5"]);
+	});
+
 	it("preserves active filter dimensions in export queries", () => {
 		const filters: LogFilters = {
 			providers: ["openai", "bedrock"],

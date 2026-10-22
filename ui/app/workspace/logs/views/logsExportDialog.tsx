@@ -17,6 +17,7 @@ import {
 	collectLogsInBatches,
 	formatActiveFiltersSummary,
 	logsToCSV,
+	normalizeExportFilters,
 } from "../utils/logsExport";
 
 export type LogsExportScope = "current_page" | "all";
@@ -119,12 +120,14 @@ export function LogsExportDialog({
 		setIsExporting(true);
 		setProgress({ current: 0, total: targetTotal });
 
+		const exportFilters = normalizeExportFilters(filters);
+
 		try {
 			const collectedLogs = await collectLogsInBatches({
 				targetTotal,
 				fetchBatch: async (offset, limit) => {
 					const result = await triggerGetLogs({
-						filters,
+						filters: exportFilters,
 						pagination: {
 							limit,
 							offset,

@@ -5,6 +5,7 @@
 import { logAppDisplayName, mapAppToClientApp, mapUserAgentToApp } from "@/lib/constants/logs";
 import type { LogEntry, LogFilters } from "@/lib/types/logs";
 import { buildCSV } from "@/lib/utils/csv";
+import { getRangeForPeriod } from "@/lib/utils/timeRange";
 
 export const LOGS_CSV_HEADERS = [
 	"Time",
@@ -30,7 +31,6 @@ export const LOGS_CSV_HEADERS = [
 	"Business Unit",
 	"Project",
 	"Stop Reason",
-	"Error",
 ];
 
 /**
@@ -172,7 +172,6 @@ export function logEntryToCSVRow(log: LogEntry): unknown[] {
 		businessUnit,
 		project,
 		log.stop_reason || "",
-		log.error_details?.error?.message || "",
 	];
 }
 
@@ -225,6 +224,27 @@ export function logsToCSV(logs: LogEntry[]): string {
 }
 
 /**
+ * Normalizes log filters for export by converting any relative period into fixed start_time and end_time timestamps.
+ * This prevents pagination drift across batches when new logs arrive mid-export.
+ *
+ * @param filters The active LogFilters.
+ * @param timezone Optional user timezone (defaults to preferred timezone).
+ * @returns Cloned LogFilters with fixed start_time and end_time and period cleared, or original filters if no period.
+ */
+export function normalizeExportFilters(filters: LogFilters, timezone?: string): LogFilters {
+	if (!filters.period) {
+		return filters;
+	}
+	const { from, to } = getRangeForPeriod(filters.period, timezone);
+	return {
+		...filters,
+		period: undefined,
+		start_time: from.toISOString(),
+		end_time: to.toISOString(),
+	};
+}
+
+/**
  * Options for batch log collection.
  */
 export interface CollectLogsOptions {
@@ -237,6 +257,7 @@ export interface CollectLogsOptions {
 
 /**
  * Collect logs across multiple paginated requests until the target count or end of logs is reached.
+ * Deduplicates log records across batch boundaries by ID as a backstop against shifting offsets.
  *
  * @param options Batch collection configuration including fetch function and cancellation check.
  * @returns Array of collected LogEntry items.
@@ -244,14 +265,31 @@ export interface CollectLogsOptions {
 export async function collectLogsInBatches(options: CollectLogsOptions): Promise<LogEntry[]> {
 	const { targetTotal, batchSize = BATCH_PAGE_SIZE, fetchBatch, onProgress, isCancelled } = options;
 	const collected: LogEntry[] = [];
+	const seenIds = new Set<string>();
 	let offset = 0;
 
-	while (offset < targetTotal && !isCancelled?.()) {
-		const limit = Math.min(batchSize, targetTotal - offset);
+	while (collected.length < targetTotal && !isCancelled?.()) {
+		const limit = Math.min(batchSize, targetTotal - collected.length);
 		const batch = await fetchBatch(offset, limit);
 		if (isCancelled?.()) break;
 
-		collected.push(...batch);
+		if (batch.length === 0) {
+			break;
+		}
+
+		for (const log of batch) {
+			if (log.id) {
+				if (seenIds.has(log.id)) {
+					continue;
+				}
+				seenIds.add(log.id);
+			}
+			collected.push(log);
+			if (collected.length >= targetTotal) {
+				break;
+			}
+		}
+
 		onProgress?.(collected.length, targetTotal);
 
 		// If server returned fewer items than requested, we reached the end of results
@@ -259,7 +297,7 @@ export async function collectLogsInBatches(options: CollectLogsOptions): Promise
 			break;
 		}
 
-		offset += limit;
+		offset += batch.length;
 	}
 
 	return collected;

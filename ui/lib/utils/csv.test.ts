@@ -20,7 +20,9 @@ describe("escapeCell", () => {
 		expect(escapeCell("=SUM(A1:B1)")).toBe('"\'=SUM(A1:B1)"');
 		expect(escapeCell("@SUM(1,2)")).toBe('"\'@SUM(1,2)"');
 		expect(escapeCell("+cmd|' /C calc'!A0")).toBe("\"'+cmd|' /C calc'!A0\"");
-		expect(escapeCell("-calc")).toBe('"\' -calc"'.replace(" ", ""));
+		expect(escapeCell("-calc")).toBe('"\'-calc"');
+		expect(escapeCell("\tcmd")).toBe('"\'\tcmd"');
+		expect(escapeCell("\rcmd")).toBe('"\'\rcmd"');
 		expect(escapeCell("\t=cmd")).toBe('"\'\t=cmd"');
 		expect(escapeCell("  =1+1")).toBe('"\'  =1+1"');
 	});
@@ -64,6 +66,7 @@ describe("downloadCSV", () => {
 		const mockClick = vi.fn();
 		const mockRemove = vi.fn();
 		const mockAppendChild = vi.fn();
+		const mockBlob = vi.fn();
 
 		const fakeElement = {
 			set href(v: string) {},
@@ -72,31 +75,39 @@ describe("downloadCSV", () => {
 			remove: mockRemove,
 		};
 
-		const originalDocument = (globalThis as any).document;
+		const globalScope = globalThis as unknown as Record<string, unknown>;
+		const originalDocument = globalScope.document;
 		const originalURL = globalThis.URL;
+		const originalBlob = globalScope.Blob;
 
-		(globalThis as any).document = {
+		globalScope.document = {
 			createElement: vi.fn().mockReturnValue(fakeElement),
 			body: {
 				appendChild: mockAppendChild,
 			},
 		};
 
-		(globalThis as any).URL = {
+		globalScope.URL = {
 			createObjectURL: vi.fn().mockReturnValue("blob:mock-url"),
 			revokeObjectURL: vi.fn(),
 		};
 
+		globalScope.Blob = mockBlob;
+
 		try {
 			downloadCSV("test-content", "test-export");
 
+			expect(mockBlob).toHaveBeenCalledWith(["\uFEFF", "test-content"], {
+				type: "text/csv;charset=utf-8;",
+			});
 			expect(globalThis.URL.createObjectURL).toHaveBeenCalled();
 			expect(mockAppendChild).toHaveBeenCalledWith(fakeElement);
 			expect(mockClick).toHaveBeenCalled();
 			expect(mockRemove).toHaveBeenCalled();
 		} finally {
-			(globalThis as any).document = originalDocument;
-			(globalThis as any).URL = originalURL;
+			globalScope.document = originalDocument;
+			globalScope.URL = originalURL;
+			globalScope.Blob = originalBlob;
 		}
 	});
 });

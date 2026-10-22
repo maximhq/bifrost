@@ -9,6 +9,7 @@ import {
 	getLogTokenUsage,
 	logEntryToCSVRow,
 	logsToCSV,
+	normalizeExportFilters,
 } from "./logsExport";
 
 describe("logsExport", () => {
@@ -48,17 +49,17 @@ describe("logsExport", () => {
 		responses_input_history: [],
 	};
 
-	it("exports 24 predefined headers", () => {
-		expect(LOGS_CSV_HEADERS).toHaveLength(24);
+	it("exports 23 predefined headers", () => {
+		expect(LOGS_CSV_HEADERS).toHaveLength(23);
 		expect(LOGS_CSV_HEADERS[0]).toBe("Time");
 		expect(LOGS_CSV_HEADERS[1]).toBe("Request ID");
 		expect(LOGS_CSV_HEADERS[12]).toBe("Cost ($)");
-		expect(LOGS_CSV_HEADERS[23]).toBe("Error");
+		expect(LOGS_CSV_HEADERS[22]).toBe("Stop Reason");
 	});
 
 	it("converts a complete LogEntry to CSV row cells", () => {
 		const row = logEntryToCSVRow(mockLog);
-		expect(row).toHaveLength(24);
+		expect(row).toHaveLength(23);
 		expect(row[0]).toBe("2026-10-15T12:00:00Z");
 		expect(row[1]).toBe("req-123");
 		expect(row[2]).toBe("success");
@@ -81,7 +82,6 @@ describe("logsExport", () => {
 		expect(row[20]).toBe("Platform");
 		expect(row[21]).toBe("Search V2");
 		expect(row[22]).toBe("stop");
-		expect(row[23]).toBe("");
 	});
 
 	it("handles missing optional values predictably", () => {
@@ -92,12 +92,6 @@ describe("logsExport", () => {
 			provider: "anthropic",
 			model: "claude-3-5-sonnet",
 			status: "error",
-			error_details: {
-				is_bifrost_error: true,
-				error: {
-					message: "Rate limit exceeded",
-				},
-			},
 			number_of_retries: 0,
 			fallback_index: 0,
 			stream: false,
@@ -107,7 +101,8 @@ describe("logsExport", () => {
 		};
 
 		const row = logEntryToCSVRow(minimalLog);
-		expect(row).toHaveLength(24);
+		expect(row).toHaveLength(23);
+		expect(row[2]).toBe("error");
 		expect(row[8]).toBe(""); // latency
 		expect(row[9]).toBe(""); // prompt tokens
 		expect(row[10]).toBe(""); // completion tokens
@@ -115,7 +110,32 @@ describe("logsExport", () => {
 		expect(row[12]).toBe(""); // cost
 		expect(row[13]).toBe(""); // session
 		expect(row[15]).toBe(""); // virtual key
-		expect(row[23]).toBe("Rate limit exceeded"); // error
+		expect(row[22]).toBe(""); // stop reason
+	});
+
+	it("normalizes export filters by converting period into fixed start_time and end_time", () => {
+		const relativeFilters = {
+			period: "1h",
+			providers: ["openai"],
+			status: ["success"],
+		};
+		const normalized = normalizeExportFilters(relativeFilters);
+		expect(normalized.period).toBeUndefined();
+		expect(normalized.providers).toEqual(["openai"]);
+		expect(normalized.status).toEqual(["success"]);
+		expect(typeof normalized.start_time).toBe("string");
+		expect(typeof normalized.end_time).toBe("string");
+		expect(new Date(normalized.start_time!).getTime()).toBeLessThan(new Date(normalized.end_time!).getTime());
+	});
+
+	it("preserves explicit start_time and end_time when period is absent", () => {
+		const fixedFilters = {
+			start_time: "2026-10-01T00:00:00.000Z",
+			end_time: "2026-10-01T12:00:00.000Z",
+			providers: ["anthropic"],
+		};
+		const normalized = normalizeExportFilters(fixedFilters);
+		expect(normalized).toEqual(fixedFilters);
 	});
 
 	it("resolves multi-value attribution slices with semicolon separator", () => {
@@ -129,6 +149,12 @@ describe("logsExport", () => {
 		const row = logEntryToCSVRow(sliceLog);
 		expect(row[17]).toBe("Team A; Team B");
 		expect(row[18]).toBe("Cust 1; Cust 2");
+	});
+
+	it("extracts application display name from app or user-agent", () => {
+		expect(getLogApp(mockLog)).toBe("web-ui");
+		expect(getLogApp({ ...mockLog, app: undefined, user_agent: "Mozilla/5.0" })).toBeTruthy();
+		expect(getLogApp({ ...mockLog, app: undefined, user_agent: undefined })).toBe("");
 	});
 
 	it("falls back to batch accounting for token usage when top-level token_usage is absent", () => {

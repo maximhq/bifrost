@@ -20,7 +20,11 @@ export function escapeCell(value: unknown): string {
 		return '""';
 	}
 	let str = String(value);
-	if (typeof value === "string" && FORMULA_PREFIX_REGEX.test(str.trimStart()) && !Number.isFinite(Number(str))) {
+	if (
+		typeof value === "string" &&
+		(FORMULA_PREFIX_REGEX.test(str) || FORMULA_PREFIX_REGEX.test(str.trimStart())) &&
+		!Number.isFinite(Number(str))
+	) {
 		str = `'${str}`;
 	}
 	return `"${str.replace(/"/g, '""')}"`;
