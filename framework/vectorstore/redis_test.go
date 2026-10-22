@@ -385,6 +385,7 @@ func TestIsRedisIndexNotFoundError(t *testing.T) {
 		"No such index cache", "cache: no such index",
 		"SEARCH_INDEX_NOT_FOUND Index not found: cache", "ERR No such index cache",
 		"Index with name 'cache' not found in database 0",
+		"Index with name 'cache' not found",
 	} {
 		err := redisTestError(message)
 		assert.True(t, isRedisIndexNotFoundError(err), message)
@@ -398,9 +399,90 @@ func TestIsRedisIndexNotFoundError(t *testing.T) {
 		redisTestError("SEARCH_INDEX_EXISTS Index already exists"),
 		redisTestError("vector blob size does not match index's expected size"),
 		redisTestError("Key 'cache' not found in database 0"),
+		redisTestError("Index with name 'cache' already exists"),
 		fmt.Errorf("Index with name 'cache' not found in database 0: %w", redisTestError("NOPERM access denied")),
 	} {
 		assert.False(t, isRedisIndexNotFoundError(err), "%v", err)
+	}
+}
+
+func TestIsRedisIndexAlreadyExistsError(t *testing.T) {
+	for _, message := range []string{
+		"Index already exists", "SEARCH_INDEX_EXISTS Index already exists",
+		"Index cache already exists.", "Index cache in database 0 already exists.",
+	} {
+		err := redisTestError(message)
+		assert.True(t, isRedisIndexAlreadyExistsError(err, "cache"))
+		assert.True(t, isRedisIndexAlreadyExistsError(fmt.Errorf("wrapped: %w", err), "cache"))
+		assert.False(t, isRedisIndexAlreadyExistsError(errors.New(message), "cache"))
+	}
+	assert.False(t, isRedisIndexAlreadyExistsError(redisTestError("Index other in database 0 already exists."), "cache"))
+	assert.False(t, isRedisIndexAlreadyExistsError(fmt.Errorf("Index cache already exists.: %w", redisTestError("NOPERM denied")), "cache"))
+}
+
+func TestRedisStore_DeleteNamespaceFallbackIsNarrow(t *testing.T) {
+	arity := redisTestError("ERR wrong number of arguments for 'FT.DROPINDEX' command")
+	denied := redisTestError("NOPERM access denied")
+	for _, tc := range []struct {
+		name           string
+		ddError        error
+		bareError      error
+		scanError      error
+		expectedError  error
+		drops          int32
+		scans          int32
+		keepsNamespace bool
+	}{
+		{"native DD", nil, nil, nil, nil, 1, 0, false},
+		{"no DD support", arity, nil, nil, nil, 2, 1, false},
+		{"absent Valkey 9.0", arity, redisTestError("Index with name 'cache' not found"), nil, nil, 2, 1, false},
+		{"absent Valkey 9.1", arity, redisTestError("Index with name 'cache' not found in database 0"), nil, nil, 2, 1, false},
+		{"denied DD", denied, nil, nil, denied, 1, 0, true},
+		{"denied bare drop", arity, denied, nil, denied, 2, 0, true},
+		{"denied sweep", arity, nil, denied, denied, 2, 1, false},
+		{"non-Redis arity", errors.New(arity.Error()), nil, nil, errors.New(arity.Error()), 1, 0, true},
+		{"other command arity", redisTestError("ERR wrong number of arguments for 'GET' command"), nil, nil, redisTestError("ERR wrong number of arguments for 'GET' command"), 1, 0, true},
+		{"misleading wrapper", fmt.Errorf("%s: %w", arity, denied), nil, nil, denied, 1, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newFakeRedisSearchServer(t, 0)
+			defer func() { require.NoError(t, server.close()) }()
+			client := redis.NewClient(&redis.Options{Addr: server.addr(), Protocol: 2, DisableIdentity: true, MaxRetries: -1})
+			defer func() { require.NoError(t, client.Close()) }()
+			store := &RedisStore{client: client}
+			store.cacheNamespaceSchema("cache", 2, nil)
+			var drops, scans atomic.Int32
+			client.AddHook(redisCommandHook(func(ctx context.Context, cmd redis.Cmder, next redis.ProcessHook) error {
+				var err error
+				switch cmd.Name() {
+				case "ft.dropindex":
+					drops.Add(1)
+					if len(cmd.Args()) == 3 {
+						err = tc.ddError
+					} else {
+						err = tc.bareError
+					}
+				case "scan":
+					scans.Add(1)
+					err = tc.scanError
+				}
+				if err != nil {
+					cmd.SetErr(err)
+					return err
+				}
+				return next(ctx, cmd)
+			}))
+			err := store.DeleteNamespace(context.Background(), "cache")
+			if tc.expectedError == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.expectedError.Error())
+			}
+			assert.Equal(t, tc.drops, drops.Load())
+			assert.Equal(t, tc.scans, scans.Load())
+			_, registered := store.getNamespaceSchema("cache")
+			assert.Equal(t, tc.keepsNamespace, registered)
+		})
 	}
 }
 
@@ -857,6 +939,22 @@ func TestVectorDimensionFromFTInfo(t *testing.T) {
 			found:    true,
 		},
 		{
+			name: "Valkey flat nested index",
+			reply: []interface{}{"attributes", []interface{}{[]interface{}{
+				"identifier", "embedding", "type", "VECTOR", "index", []interface{}{"dimensions", int64(2)},
+			}}},
+			expected: 2,
+			found:    true,
+		},
+		{
+			name: "Valkey map nested index",
+			reply: map[string]interface{}{"attributes": []interface{}{map[string]interface{}{
+				"type": "VECTOR", "index": map[string]interface{}{"dimensions": "1536"},
+			}}},
+			expected: 1536,
+			found:    true,
+		},
+		{
 			name:  "no vector attribute",
 			reply: map[string]interface{}{"attributes": []interface{}{tagAttribute}},
 			found: false,
@@ -950,7 +1048,7 @@ func TestRedisStore_GetNearestRecoversMissingIndex(t *testing.T) {
 	defer func() {
 		// The pre-fix failure leaves the index absent, so clean the known keys
 		// directly rather than depending on DeleteNamespace's error handling.
-		_ = setup.Store.client.Do(context.Background(), "FT.DROPINDEX", namespace, "DD").Err()
+		_ = setup.Store.client.Do(context.Background(), "FT.DROPINDEX", namespace).Err()
 		require.NoError(t, setup.Store.client.Del(context.Background(), buildKey(namespace, "matching"), buildKey(namespace, "other-tenant"), buildKey(namespace, "new")).Err())
 	}()
 	properties := map[string]VectorStoreProperties{
@@ -998,7 +1096,8 @@ func TestRedisStore_GetNearestRecoversMissingIndex(t *testing.T) {
 
 	// Losing the documents as well models FLUSHDB. New writes must become
 	// searchable again through the same registered namespace.
-	require.NoError(t, setup.Store.client.Do(setup.ctx, "FT.DROPINDEX", namespace, "DD").Err())
+	require.NoError(t, setup.Store.client.Do(setup.ctx, "FT.DROPINDEX", namespace).Err())
+	require.NoError(t, setup.Store.client.Del(setup.ctx, buildKey(namespace, "matching"), buildKey(namespace, "other-tenant")).Err())
 	require.NoError(t, setup.Store.Add(setup.ctx, namespace, "new", vector, map[string]interface{}{"tenant": "tenant-a", "size": 7}))
 	_, err = search()
 	require.NoError(t, err)
@@ -1018,6 +1117,57 @@ func newRedisRecoveryTestSetup(t *testing.T) (*RedisTestSetup, string) {
 	namespace := TestNamespace + "_recovery_" + generateUUID()
 	t.Cleanup(func() { require.NoError(t, setup.Store.DeleteNamespace(context.Background(), namespace)) })
 	return setup, namespace
+}
+
+func TestRedisStore_DeleteNamespaceClearsKeys(t *testing.T) {
+	setup, namespace := newRedisRecoveryTestSetup(t)
+	store := setup.Store
+	vector := []float32{0.6, 0.8}
+	foreign := namespace + "_other:keep"
+	require.NoError(t, store.client.Set(setup.ctx, foreign, "untouched", 0).Err())
+	t.Cleanup(func() { require.NoError(t, store.client.Del(context.Background(), foreign).Err()) })
+	for _, dropFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("index already dropped=%t", dropFirst), func(t *testing.T) {
+			require.NoError(t, store.CreateNamespace(setup.ctx, namespace, 2, nil))
+			require.NoError(t, store.Add(setup.ctx, namespace, "entry", vector, nil))
+			orphan := buildKey(namespace, "orphan")
+			require.NoError(t, store.client.HSet(setup.ctx, orphan, "response", "old").Err())
+			if dropFirst {
+				require.NoError(t, store.client.Do(setup.ctx, "FT.DROPINDEX", namespace).Err())
+			}
+			require.NoError(t, store.DeleteNamespace(setup.ctx, namespace))
+			assert.Zero(t, store.client.Exists(setup.ctx, buildKey(namespace, "entry"), orphan).Val())
+			assert.Equal(t, "untouched", store.client.Get(setup.ctx, foreign).Val())
+			_, registered := store.getNamespaceSchema(namespace)
+			assert.False(t, registered)
+			assert.True(t, isRedisIndexNotFoundError(store.client.Do(setup.ctx, "FT.INFO", namespace).Err()))
+			require.NoError(t, store.DeleteNamespace(setup.ctx, namespace), "deletion must remain idempotent")
+		})
+	}
+}
+
+func TestRedisStore_DeleteNamespaceKeysTreatsNamespaceLiterally(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+	setup := NewRedisTestSetup(t)
+	defer setup.Cleanup(t)
+	for _, tc := range []struct{ literal, other string }{
+		{"_[ab]", "_a"}, {"_*", "_other"}, {"_?", "_x"}, {"_\\", "_"},
+	} {
+		t.Run(tc.literal, func(t *testing.T) {
+			prefix := "LiteralNamespace_" + generateUUID()
+			namespace := prefix + tc.literal
+			own := buildKey(namespace, "delete")
+			other := buildKey(prefix+tc.other, "keep")
+			t.Cleanup(func() { require.NoError(t, setup.Store.client.Del(context.Background(), own, other).Err()) })
+			require.NoError(t, setup.Store.client.Set(setup.ctx, own, "delete", 0).Err())
+			require.NoError(t, setup.Store.client.Set(setup.ctx, other, "keep", 0).Err())
+			require.NoError(t, setup.Store.deleteNamespaceKeys(setup.ctx, namespace))
+			assert.Zero(t, setup.Store.client.Exists(setup.ctx, own).Val())
+			assert.Equal(t, "keep", setup.Store.client.Get(setup.ctx, other).Val(), "a namespace is a literal prefix, not a glob")
+		})
+	}
 }
 
 func TestRedisStore_GetNearestRecoveryConcurrent(t *testing.T) {
@@ -1074,6 +1224,7 @@ func TestRedisStore_GetNearestRecoveryDoesNotUndoDeletion(t *testing.T) {
 	searched := make(chan struct{})
 	var creates atomic.Int32
 	var dropOnce sync.Once
+	var searchedOnce sync.Once
 	store.client.AddHook(redisCommandHook(func(ctx context.Context, cmd redis.Cmder, next redis.ProcessHook) error {
 		if len(cmd.Args()) < 2 || cmd.Args()[1] != namespace {
 			return next(ctx, cmd)
@@ -1092,7 +1243,7 @@ func TestRedisStore_GetNearestRecoveryDoesNotUndoDeletion(t *testing.T) {
 		}
 		err := next(ctx, cmd)
 		if cmd.Name() == "ft.search" {
-			close(searched)
+			searchedOnce.Do(func() { close(searched) })
 		}
 		return err
 	}))

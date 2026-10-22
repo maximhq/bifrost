@@ -29,6 +29,8 @@ const (
 	RedisMaxSearchResults = 10000
 )
 
+var redisNamespaceGlobEscaper = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`, `]`, `\]`)
+
 type RedisConfig struct {
 	// Connection settings
 	Addr     *schemas.SecretVar `json:"addr"`               // Redis server address (host:port) - REQUIRED
@@ -171,7 +173,7 @@ func (s *RedisStore) createNamespace(ctx context.Context, namespace string, dime
 
 	// Create the index
 	if err := s.client.Do(ctx, args...).Err(); err != nil {
-		if !redis.HasErrorPrefix(err, "Index already exists") && !redis.HasErrorPrefix(err, "SEARCH_INDEX_EXISTS ") {
+		if !isRedisIndexAlreadyExistsError(err, namespace) {
 			return fmt.Errorf("failed to create semantic vector index %s: %w", namespace, err)
 		}
 		info, err := s.client.Do(ctx, "FT.INFO", namespace).Result()
@@ -966,6 +968,12 @@ func vectorDimensionFromFTInfo(reply interface{}) (int, bool) {
 		}
 		rawDimension, ok := ftInfoField(entry, "dim")
 		if !ok {
+			// Valkey reports vector settings under "index", not alongside type.
+			if index, found := ftInfoField(entry, "index"); found {
+				rawDimension, ok = ftInfoField(index, "dimensions")
+			}
+		}
+		if !ok {
 			continue
 		}
 		if value, ok := toFloat64(rawDimension); ok && value > 0 {
@@ -1706,38 +1714,31 @@ func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) erro
 	}
 	defer s.unlockNamespaceLifecycle()
 
-	// Drop the index AND its documents using FT.DROPINDEX ... DD. Without DD,
-	// only the index definition is removed while the underlying hashes (keyed
-	// by the "<namespace>:" prefix this index owns) survive - so recreating the
-	// namespace re-indexes the stale documents. DD deletes exactly the documents
-	// matching this index's prefix, keeping DeleteNamespace consistent with the
-	// collection-deleting semantics of the other vector store backends.
-	if err := s.client.Do(ctx, "FT.DROPINDEX", namespace, "DD").Err(); err != nil {
-		// Check if error is "Unknown Index name" - that's OK, index doesn't exist
-		if isRedisIndexNotFoundError(err) {
-			s.deleteNamespaceSchema(namespace)
-			// The index is gone, so FT.DROPINDEX ... DD could not reach any
-			// documents. Hashes written under the "<namespace>:" prefix by a
-			// prior run (e.g. one that dropped the index without DD) may still
-			// linger; sweep them directly so a recreated namespace starts empty.
-			return s.deleteNamespaceKeys(ctx, namespace)
-		}
+	// Redis can delete indexed documents with DD. Valkey rejects that option;
+	// retry only its command-arity reply, then sweep the namespace's keys after
+	// confirming that the index was removed or is already absent.
+	err := s.client.Do(ctx, "FT.DROPINDEX", namespace, "DD").Err()
+	sweepKeys := false
+	if err != nil && isRedisDropIndexArityError(err) {
+		err = s.client.Do(ctx, "FT.DROPINDEX", namespace).Err()
+		sweepKeys = true
+	}
+	if err != nil && !isRedisIndexNotFoundError(err) {
 		return fmt.Errorf("failed to drop semantic index %s: %w", namespace, err)
 	}
 
 	s.deleteNamespaceSchema(namespace)
+	if sweepKeys || err != nil {
+		return s.deleteNamespaceKeys(ctx, namespace)
+	}
 	return nil
 }
 
 // deleteNamespaceKeys removes every hash stored under the "<namespace>:" prefix.
 //
-// It is the fallback path for DeleteNamespace when the search index no longer
-// exists: the normal path relies on FT.DROPINDEX ... DD to delete the indexed
-// documents, but with no index present that command cannot reach them, leaving
-// orphaned hashes that would be re-indexed (and surface as stale cache hits)
-// the next time the namespace is created. On a Redis Cluster the work is fanned
-// out across every master so all hash slots are covered; on a single node it
-// runs directly against the client.
+// It is used when the index is absent or DD is unsupported, so orphaned hashes
+// cannot be re-indexed as stale cache hits the next time the namespace is created.
+// On a Redis Cluster the work is fanned out across every master.
 func (s *RedisStore) deleteNamespaceKeys(ctx context.Context, namespace string) error {
 	if clusterClient, ok := s.client.(*redis.ClusterClient); ok {
 		return clusterClient.ForEachMaster(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
@@ -1752,7 +1753,7 @@ func (s *RedisStore) deleteNamespaceKeys(ctx context.Context, namespace string) 
 // cursor wraps to 0. It operates on one node only; callers handle cluster
 // fan-out. A missing key set is not an error - the loop simply deletes nothing.
 func (s *RedisStore) deleteNamespaceKeysSingle(ctx context.Context, client redis.Cmdable, namespace string) error {
-	pattern := buildKey(namespace, "*")
+	pattern := redisNamespaceGlobEscaper.Replace(buildKey(namespace, "")) + "*"
 	var scanCursor uint64
 	for {
 		keys, nextCursor, err := client.Scan(ctx, scanCursor, pattern, BatchLimit).Result()
@@ -1883,7 +1884,31 @@ func isRedisIndexNotFoundError(err error) bool {
 		message == "no such index" || strings.HasPrefix(message, "no such index ") ||
 		strings.HasSuffix(message, ": no such index") ||
 		strings.HasPrefix(message, "search_index_not_found ") ||
-		(strings.HasPrefix(message, "index with name ") && strings.Contains(message, " not found in database "))
+		(strings.HasPrefix(message, "index with name ") &&
+			(strings.Contains(message, " not found in database ") || strings.HasSuffix(message, "' not found")))
+}
+
+func isRedisDropIndexArityError(err error) bool {
+	var redisErr redis.Error
+	if !errors.As(err, &redisErr) {
+		return false
+	}
+	message := strings.ToLower(strings.TrimPrefix(redisErr.Error(), "ERR "))
+	return message == "wrong number of arguments for ft.dropindex command" ||
+		message == "wrong number of arguments for 'ft.dropindex' command"
+}
+
+func isRedisIndexAlreadyExistsError(err error, namespace string) bool {
+	if redis.HasErrorPrefix(err, "Index already exists") || redis.HasErrorPrefix(err, "SEARCH_INDEX_EXISTS ") {
+		return true
+	}
+	var redisErr redis.Error
+	if !errors.As(err, &redisErr) {
+		return false
+	}
+	message := strings.TrimPrefix(redisErr.Error(), "ERR ")
+	return message == "Index "+namespace+" already exists." ||
+		(strings.HasPrefix(message, "Index "+namespace+" in database ") && strings.HasSuffix(message, " already exists."))
 }
 
 func parseOffsetCursor(cursor *string) (int, error) {
