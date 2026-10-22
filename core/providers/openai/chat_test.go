@@ -2913,6 +2913,39 @@ func gjsonExists(raw []byte, path string) bool {
 // BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat measures the DeepSeek
 // conversion with no response_format (the common case, which must not pay for
 // the downgrade) and with a json_schema response_format (which does).
+// BenchmarkToOpenAIChatRequest_BytePlusReasoning measures the BytePlus compat case against the
+// generic default branch it replaces, so the reasoning rewrite's cost is visible per request shape.
+func BenchmarkToOpenAIChatRequest_BytePlusReasoning(b *testing.B) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		effort   *string
+	}{
+		{"default_no_reasoning", schemas.Nebius, nil},
+		{"byteplus_no_reasoning", schemas.BytePlus, nil},
+		{"default_effort_low", schemas.Nebius, schemas.Ptr("low")},
+		{"byteplus_effort_low", schemas.BytePlus, schemas.Ptr("low")},
+		{"byteplus_effort_none", schemas.BytePlus, schemas.Ptr("none")},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: tc.provider,
+				Model:    "seed-2-0-lite-260228",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			}
+			if tc.effort != nil {
+				bifrostReq.Params = &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: tc.effort}}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = ToOpenAIChatRequest(ctx, bifrostReq)
+			}
+		})
+	}
+}
+
 func BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat(b *testing.B) {
 	plainBody := `{"model":"deepseek-v4-flash","messages":[{"role":"system","content":"You extract people."},{"role":"user","content":"Ada is 36."}]}`
 	for _, tc := range []struct{ name, body string }{
