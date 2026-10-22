@@ -551,12 +551,49 @@ func (bifrost *Bifrost) resolveVirtualModel(ctx *schemas.BifrostContext, req *sc
 
 	req.SetProvider(resolution.Provider)
 	req.SetModel(resolution.Model)
+	if dropped := dropInferredFallbacks(req); dropped > 0 && ctx != nil {
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineVirtualModel, schemas.LogLevelInfo, fmt.Sprintf(
+			"Virtual model %s resolved to %s/%s: dropped %d fallback provider(s) the client did not name",
+			virtual.Name, resolution.Provider, resolution.Model, dropped))
+	}
 	ctx.SetValue(schemas.BifrostContextKeyVirtualModel, virtual.Name)
 	ctx.SetValue(schemas.BifrostContextKeyVirtualModelResolution, resolution)
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineVirtualModel, schemas.LogLevelInfo, fmt.Sprintf(
 		"Virtual model %s resolved to %s/%s: %s", virtual.Name, resolution.Provider, resolution.Model, resolution.Reason))
 	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineVirtualModel)
 	return nil
+}
+
+// dropInferredFallbacks removes the fallback chain Bifrost promoted for a bare model name and
+// returns how many it removed.
+//
+// The catalog resolver builds that chain from every other provider serving the name the client
+// typed, and it runs before this: a request that gets here has just been rewritten to a resident
+// candidate on the virtual model's own provider. The chain was inferred for a different answer than
+// the one now in flight, so leaving it means a 5xx or a timeout from the local backend gets billed
+// to a vendor the client never named. Chains the caller or a routing config wrote are kept as
+// written: Fallback.Inferred is what distinguishes the two.
+//
+// Costs nothing on an ordinary request: this runs only after a virtual model has resolved.
+func dropInferredFallbacks(req *schemas.BifrostRequest) int {
+	_, _, fallbacks := req.GetRequestFields()
+	inferred := 0
+	for _, fallback := range fallbacks {
+		if fallback.Inferred {
+			inferred++
+		}
+	}
+	if inferred == 0 {
+		return 0
+	}
+	kept := make([]schemas.Fallback, 0, len(fallbacks)-inferred)
+	for _, fallback := range fallbacks {
+		if !fallback.Inferred {
+			kept = append(kept, fallback)
+		}
+	}
+	req.SetFallbacks(kept)
+	return inferred
 }
 
 // PUBLIC API METHODS

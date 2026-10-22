@@ -140,8 +140,39 @@ func TestVirtualModelIgnoresProviderInferredByHooks(t *testing.T) {
 	}
 }
 
-// The client naming a provider explicitly still outranks the overlay, which is the case the previous
-// test must not regress into.
+// A bare model name leaves the catalog resolver having promoted every other provider serving it,
+// marked Inferred. Once the virtual model resolves, that chain answers a question the request no
+// longer asks: the next hop after a local 5xx would be a paid vendor the client never named.
+func TestVirtualModelResolutionDropsInferredFallbacks(t *testing.T) {
+	engine, stub := stubEngine(
+		&schemas.VirtualModel{Name: "gpt-4o", Provider: "ollama", Models: []string{"flash"}},
+		&schemas.VirtualModelResolution{Provider: "ollama", Model: "flash"},
+	)
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	defer ctx.Cancel()
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Model: "gpt-4o",
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o", Inferred: true},
+			{Provider: schemas.Anthropic, Model: "gpt-4o"},
+		},
+	}}
+
+	if err := engine.resolveVirtualModel(ctx, req, ""); err != nil {
+		t.Fatalf("%v", err)
+	}
+	_, model, fallbacks := req.GetRequestFields()
+	if model != "flash" {
+		t.Fatalf("model = %q, want the resident candidate", model)
+	}
+	if len(fallbacks) != 1 || fallbacks[0].Provider != schemas.Anthropic {
+		t.Fatalf("fallbacks after resolution = %+v, want only the entry the caller wrote", fallbacks)
+	}
+	if stub.resolved != 1 {
+		t.Fatalf("resolve calls = %d, want 1", stub.resolved)
+	}
+}
+
 func BenchmarkVirtualModelEnabledMiss(b *testing.B) {
 	engine, _ := stubEngine(
 		&schemas.VirtualModel{Name: "qwen38", Provider: "ollama", Models: []string{"flash"}},
