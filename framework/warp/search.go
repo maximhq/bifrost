@@ -202,7 +202,7 @@ func (s *Service) SearchLogs(ctx context.Context, queries []string, filters *log
 	if filters == nil {
 		filters = &logstore.SearchFilters{}
 	}
-	scope := withCallerRestriction(ctx, ScopeFromContext(ctx), s.callerRestriction)
+	scope := CallerScope(ctx, s.callerRestriction)
 	return searcher.SearchVisible(ctx, queries, filters, scope.Visible, limit)
 }
 

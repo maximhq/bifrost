@@ -3043,6 +3043,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WarpUserGovernanceReader != nil {
 		handlers.NewUserLimitsHandler(s.WarpUserGovernanceReader).RegisterRoutes(s.Router, middlewares...)
 	}
+	handlers.NewCallerHandler(s.WarpCallerRestrictionResolver).RegisterRoutes(s.Router, middlewares...)
 	if s.Config.ConfigStore != nil && s.SidekiqRunner != nil {
 		handlers.NewSidekiqHandler(s.Config.ConfigStore, s.SidekiqRunner).RegisterRoutes(s.Router, middlewares...)
 	}
