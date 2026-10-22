@@ -8695,6 +8695,9 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 	}
 	c.Providers[provider] = config
 	logger.Info("added provider: %s", provider)
+	// A virtual model kept its definition when this provider was deleted; rebuilding its endpoint
+	// here is what makes the name work again without a restart.
+	c.refreshVirtualModelProbes()
 	return nil
 }
 
