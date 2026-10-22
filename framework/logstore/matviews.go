@@ -1094,6 +1094,7 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.AgentNames) == 0 &&
 		!f.RootsOnly &&
 		len(f.MetadataFilters) == 0 &&
+		f.RealtimeInputItemID == "" &&
 		canUseMatViewStatusFilter(f.Status) &&
 		len(f.RoutingEngineUsed) == 0 &&
 		len(f.ToolCallNames) == 0 &&

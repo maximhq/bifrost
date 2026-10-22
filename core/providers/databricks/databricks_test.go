@@ -470,6 +470,80 @@ func TestDatabricksChatStripsUnsupportedFields(t *testing.T) {
 	}
 }
 
+// TestDatabricksChatSendsLegacyMaxTokens pins the output ceiling field. Llama, gpt-oss and Qwen
+// endpoints answer max_completion_tokens with 400 "unknown field", while every chat endpoint
+// checked on a live workspace (GPT, Claude, Gemini, Grok, GLM, Kimi included) accepts max_tokens,
+// so the ceiling always goes out under the legacy name, unary and streaming.
+func TestDatabricksChatSendsLegacyMaxTokens(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotBody map[string]any
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		mu.Lock()
+		gotBody = body
+		mu.Unlock()
+		if stream, _ := body["stream"].(bool); stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(stubChatResponse))
+	})
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, model := range []string{"databricks-meta-llama-3-3-70b-instruct", "databricks-gpt-oss-120b", "system.ai.qwen35-122b-a10b", "databricks-gpt-5-5"} {
+		for _, stream := range []bool{false, true} {
+			name := model + "/unary"
+			if stream {
+				name = model + "/stream"
+			}
+			t.Run(name, func(t *testing.T) {
+				request := &schemas.BifrostChatRequest{
+					Provider: schemas.Databricks,
+					Model:    model,
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+					Params:   &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(321)},
+				}
+				if stream {
+					ch, bErr := provider.ChatCompletionStream(ctx, noopPostHook, nil, key, request)
+					if bErr != nil {
+						t.Fatalf("ChatCompletionStream returned an error: %v", bErr)
+					}
+					for range ch {
+					}
+				} else if _, bErr := provider.ChatCompletion(ctx, key, request); bErr != nil {
+					t.Fatalf("ChatCompletion returned an error: %v", bErr)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if _, exists := gotBody["max_completion_tokens"]; exists {
+					t.Errorf("max_completion_tokens reached Databricks: %#v", gotBody["max_completion_tokens"])
+				}
+				if gotBody["max_tokens"] != float64(321) {
+					t.Errorf("max_tokens: got %#v, want 321", gotBody["max_tokens"])
+				}
+				if request.Params.MaxCompletionTokens == nil || *request.Params.MaxCompletionTokens != 321 {
+					t.Error("converting the wire request mutated the original request")
+				}
+			})
+		}
+	}
+}
+
 // TestDatabricksChatStreamStripsUnsupportedFields covers the streaming handler
 // used by Claude Code. It must apply the same field filtering as the unary path.
 func TestDatabricksChatStreamStripsUnsupportedFields(t *testing.T) {
