@@ -276965,6 +276965,78 @@
           }
         }
       ]
+    },
+    {
+      "name": "A2A push-token-redaction (local fixture)",
+      "item": [
+        {
+          "name": "[SKIP] A2A push-token-redaction: get a configuration when the upstream omits its token",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const required = [\"a2aPushAgent\", \"a2aPushVirtualKey\", \"a2aPushTenant\", \"a2aPushTaskId\", \"a2aPushConfigId\", \"a2aPushCallbackUrl\"];",
+                  "for (const key of required) {",
+                  "  if (pm.variables.get(key) === undefined || pm.variables.get(key) === null) { throw new Error(\"Missing local A2A fixture variable: \" + key); }",
+                  "}",
+                  "const auth = pm.variables.get(\"a2aPushUpstreamAuthorization\");",
+                  "if (auth) { pm.request.headers.upsert({ key: \"Authorization\", value: auth }); } else { pm.request.headers.remove(\"Authorization\"); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"HTTP success\", () => pm.expect(pm.response.code, pm.response.text()).to.equal(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"authorized callback returned\", () => {",
+                  "  pm.expect(body.error, pm.response.text()).to.be.undefined;",
+                  "  pm.expect(body.result).to.be.an(\"object\");",
+                  "  pm.expect(body.result.url).to.equal(pm.variables.get(\"a2aPushCallbackUrl\"));",
+                  "  pm.expect(body.result.taskId).to.equal(pm.variables.get(\"a2aPushTaskId\"));",
+                  "  pm.expect(body.result.id).to.equal(pm.variables.get(\"a2aPushConfigId\"));",
+                  "  pm.expect(body.result).not.to.have.property(\"token\");",
+                  "  if (body.result.authentication) { pm.expect(body.result.authentication).not.to.have.property(\"credentials\"); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "A2A-Version",
+                "value": "1.0"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{a2aPushVirtualKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": \"push-token-redaction\",\n  \"method\": \"GetTaskPushNotificationConfig\",\n  \"params\": {\n    \"tenant\": \"{{a2aPushTenant}}\",\n    \"taskId\": \"{{a2aPushTaskId}}\",\n    \"id\": \"{{a2aPushConfigId}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc",
+            "description": "Local fixture only: the upstream must omit the token in push-config reads, and the configuration must have been registered through the current gateway. Before the fix this returns not-found. Supply the a2aPushAgent, a2aPushVirtualKey, a2aPushTenant, a2aPushTaskId, a2aPushConfigId, and a2aPushCallbackUrl fixture variables; run FEATURE=a2a-push-token-redaction INCLUDE_SKIP=1 without a provider filter."
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

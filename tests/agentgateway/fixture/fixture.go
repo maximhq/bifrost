@@ -233,6 +233,16 @@ func (s *Server) ReleaseCheckpoint() { s.once.Do(func() { close(s.gate) }) }
 // advertises host in its Agent Card so a gateway that cannot reach loopback can
 // still dial it. Close shuts the listener down.
 func Start(bind, host string) (*Server, error) {
+	return start(bind, host, false)
+}
+
+// StartWithoutPushReadTokens models servers which keep notification tokens
+// write-only while still using them to authenticate push deliveries.
+func StartWithoutPushReadTokens(bind, host string) (*Server, error) {
+	return start(bind, host, true)
+}
+
+func start(bind, host string, omitPushTokens bool) (*Server, error) {
 	listener, err := net.Listen("tcp", bind)
 	if err != nil {
 		return nil, fmt.Errorf("listen for lifecycle fixture: %w", err)
@@ -256,10 +266,43 @@ func Start(bind, host string) (*Server, error) {
 	)
 	mux := http.NewServeMux()
 	mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(publicCard))
-	mux.Handle("/jsonrpc", a2asrv.NewJSONRPCHandler(handler))
+	var protocol a2asrv.RequestHandler = handler
+	if omitPushTokens {
+		protocol = pushReadTokenRedactor{RequestHandler: handler}
+	}
+	mux.Handle("/jsonrpc", a2asrv.NewJSONRPCHandler(protocol))
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(listener) }()
 	return &Server{CardURL: baseURL + a2asrv.WellKnownAgentCardPath, server: srv, gate: gate}, nil
+}
+
+type pushReadTokenRedactor struct{ a2asrv.RequestHandler }
+
+func (h pushReadTokenRedactor) GetTaskPushConfig(ctx context.Context, req *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error) {
+	config, err := h.RequestHandler.GetTaskPushConfig(ctx, req)
+	if err != nil || config == nil {
+		return config, err
+	}
+	copy := *config
+	copy.Token = ""
+	return &copy, nil
+}
+
+func (h pushReadTokenRedactor) ListTaskPushConfigs(ctx context.Context, req *a2a.ListTaskPushConfigRequest) (*a2a.ListTaskPushConfigResponse, error) {
+	result, err := h.RequestHandler.ListTaskPushConfigs(ctx, req)
+	if err != nil || result == nil {
+		return result, err
+	}
+	copy := *result
+	copy.Configs = make([]*a2a.PushConfig, len(result.Configs))
+	for i, config := range result.Configs {
+		if config != nil {
+			item := *config
+			item.Token = ""
+			copy.Configs[i] = &item
+		}
+	}
+	return &copy, nil
 }
 
 // Close stops the fixture server and drops open connections.

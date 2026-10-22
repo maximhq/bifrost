@@ -34,6 +34,15 @@ func envOr(name, fallback string) string {
 //	AGENTGATEWAY_HOST        host the gateway uses to reach this process (default 127.0.0.1)
 //	AGENTGATEWAY_BIND        local bind address for fixture and callback (default 127.0.0.1)
 func TestLifecycle(t *testing.T) {
+	testLifecycle(t, false)
+}
+
+func TestLifecycleWithoutUpstreamPushTokens(t *testing.T) {
+	testLifecycle(t, true)
+}
+
+func testLifecycle(t *testing.T, omitPushTokens bool) {
+	t.Helper()
 	gwURL := os.Getenv("AGENTGATEWAY_URL")
 	if gwURL == "" {
 		t.Skip("AGENTGATEWAY_URL is not set")
@@ -51,7 +60,11 @@ func TestLifecycle(t *testing.T) {
 	gw := driver.NewGateway(gwURL, token)
 	bind, host := envOr("AGENTGATEWAY_BIND", "127.0.0.1")+":0", envOr("AGENTGATEWAY_HOST", "127.0.0.1")
 
-	fx, err := fixture.Start(bind, host)
+	start := fixture.Start
+	if omitPushTokens {
+		start = fixture.StartWithoutPushReadTokens
+	}
+	fx, err := start(bind, host)
 	if err != nil {
 		t.Fatal(err)
 	}
