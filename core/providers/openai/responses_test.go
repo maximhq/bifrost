@@ -5049,3 +5049,34 @@ func TestToOpenAIResponsesRequest_MidConversationSystemSkipsMetadataItems(t *tes
 	require.Equal(t, schemas.ResponsesInputMessageRoleUser, *items[3].Role)
 	require.Equal(t, "<system-reminder>\nanswer in french\n</system-reminder>\n", *items[3].Content.ContentStr)
 }
+
+// TestToOpenAIResponsesRequest_DisableStoreContextKey pins that the disable-store context flag forces
+// store=false on the converted request, including a passthrough extra_params store, without touching
+// the caller's request that fallbacks to other providers share.
+func TestToOpenAIResponsesRequest_DisableStoreContextKey(t *testing.T) {
+	newReq := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Fireworks,
+			Model:    "accounts/fireworks/models/qwen3p8-max",
+			Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			Params:   &schemas.ResponsesParameters{Store: schemas.Ptr(true), ExtraParams: map[string]interface{}{"store": true}},
+		}
+	}
+
+	t.Run("flag_set_forces_store_false", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+		req := newReq()
+		out := ToOpenAIResponsesRequest(ctx, req)
+		require.False(t, *out.Store)
+		require.Equal(t, false, out.ExtraParams["store"])
+		require.True(t, *req.Params.Store)
+		require.Equal(t, true, req.Params.ExtraParams["store"])
+	})
+
+	t.Run("flag_unset_keeps_store", func(t *testing.T) {
+		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.True(t, *out.Store)
+		require.Equal(t, true, out.ExtraParams["store"])
+	})
+}

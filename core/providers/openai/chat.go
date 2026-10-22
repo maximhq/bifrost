@@ -118,6 +118,14 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 	}
 
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableStore) == true {
+		openaiReq.Store = new(false)
+		if _, ok := openaiReq.ExtraParams["store"]; ok {
+			openaiReq.ExtraParams = maps.Clone(openaiReq.ExtraParams)
+			openaiReq.ExtraParams["store"] = false
+		}
+	}
+
 	// gpt-5.6 and later take caching intent as prompt_cache_breakpoint on a text
 	// part rather than as Anthropic-style cache_control, which the serializer
 	// strips. Same translation as the Responses path (applyResponsesCacheBreakpoints),

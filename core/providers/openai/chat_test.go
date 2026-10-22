@@ -150,6 +150,45 @@ func TestToOpenAIChatRequest_InvalidatesStaleSerializedCache(t *testing.T) {
 		"converted tool must not emit the pre-normalized cached bytes")
 }
 
+// TestToOpenAIChatRequest_DisableStoreContextKey pins that the disable-store context flag forces
+// store=false on the converted request, including a passthrough extra_params store, without touching
+// the caller's request that fallbacks to other providers share.
+func TestToOpenAIChatRequest_DisableStoreContextKey(t *testing.T) {
+	newReq := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			Params:   &schemas.ChatParameters{Store: schemas.Ptr(true), ExtraParams: map[string]interface{}{"store": true}},
+		}
+	}
+
+	t.Run("flag_set_forces_store_false", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+		req := newReq()
+		out := ToOpenAIChatRequest(ctx, req)
+		require.False(t, *out.Store)
+		require.Equal(t, false, out.ExtraParams["store"])
+		require.True(t, *req.Params.Store)
+		require.Equal(t, true, req.Params.ExtraParams["store"])
+	})
+
+	t.Run("flag_set_without_params", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDisableStore, true)
+		req := newReq()
+		req.Params = nil
+		require.False(t, *ToOpenAIChatRequest(ctx, req).Store)
+	})
+
+	t.Run("flag_unset_keeps_store", func(t *testing.T) {
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.True(t, *out.Store)
+		require.Equal(t, true, out.ExtraParams["store"])
+	})
+}
+
 func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
 	req := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,

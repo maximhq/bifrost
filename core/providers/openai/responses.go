@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 
@@ -1171,6 +1172,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
+	}
+
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableStore) == true {
+		req.Store = new(false)
+		if _, ok := req.ExtraParams["store"]; ok {
+			req.ExtraParams = maps.Clone(req.ExtraParams)
+			req.ExtraParams["store"] = false
+		}
 	}
 
 	if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagement {
