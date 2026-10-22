@@ -276965,6 +276965,164 @@
           }
         }
       ]
+    },
+    {
+      "name": "264. Redis index recovery after external schema loss (#2791)",
+      "description": "Opt-in, manually fault-injected Redis regression. See README.md, \"Redis index recovery fixture\". Configure a dedicated Redis-backed semantic_cache namespace, warm both exact request bodies with their cache keys, verify semantic hits, then FT.DROPINDEX the namespace WITHOUT DD and do not restart Bifrost. These read-only rows require semantic hits from surviving hashes; they cannot refill the cache. Each row can run at most eight times while Redis reindexes. [PREVIEW] keeps the external-service fixture out of default sweeps. The harness never sends FLUSHDB or FT.DROPINDEX itself.",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text() || '';",
+              "pm.test('Redis recovery response is HTTP 200', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 800)).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { throw new Error('Redis recovery HTTP failure: ' + text.slice(0, 800)); }",
+              "var streaming = pm.info.requestName.indexOf('SSE') !== -1;",
+              "var contentType = pm.response.headers.get('content-type') || '';",
+              "var cd = null;",
+              "var answer = '';",
+              "if (streaming) {",
+              "  if (contentType.indexOf('text/event-stream') === -1) { throw new Error('Expected SSE: ' + text.slice(0, 800)); }",
+              "  var done = false;",
+              "  text.split(/\\r?\\n/).forEach(function (line) {",
+              "    if (line.indexOf('data:') !== 0) { return; }",
+              "    var data = line.slice(5).trim();",
+              "    if (data === '[DONE]') { done = true; return; }",
+              "    var frame = JSON.parse(data);",
+              "    if (frame.error) { throw new Error('SSE error: ' + JSON.stringify(frame.error)); }",
+              "    if (frame.object !== 'chat.completion.chunk') { throw new Error('Wrong SSE frame family: ' + data.slice(0, 500)); }",
+              "    if (frame.extra_fields && frame.extra_fields.cache_debug) { cd = frame.extra_fields.cache_debug; }",
+              "    (frame.choices || []).forEach(function (choice) { answer += (choice.delta && choice.delta.content) || ''; });",
+              "  });",
+              "  if (!done) { throw new Error('Chat SSE terminator missing: ' + text.slice(0, 800)); }",
+              "} else {",
+              "  var body = JSON.parse(text);",
+              "  if (body.error || body.object !== 'chat.completion') { throw new Error('Invalid chat response: ' + text.slice(0, 800)); }",
+              "  cd = body.extra_fields && body.extra_fields.cache_debug;",
+              "  answer = body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content;",
+              "}",
+              "// Header-only extra_fields placement is supported too.",
+              "if (!cd && pm.response.headers.get('x-bifrost-cache-hit') !== undefined && pm.response.headers.get('x-bifrost-cache-hit') !== null) {",
+              "  cd = {",
+              "    cache_hit: pm.response.headers.get('x-bifrost-cache-hit') === 'true',",
+              "    cache_id: pm.response.headers.get('x-bifrost-cache-id'),",
+              "    hit_type: pm.response.headers.get('x-bifrost-cache-hit-type')",
+              "  };",
+              "}",
+              "var pollKey = 'redis_index_recovery_poll_' + pm.info.requestName;",
+              "var attempt = Number(pm.collectionVariables.get(pollKey) || 0);",
+              "// No-store is essential: a miss must not populate an entry and make a broken",
+              "// index appear recovered. Surviving seed hashes are the only source of a hit.",
+              "if ((!cd || cd.cache_hit !== true) && attempt < 7) {",
+              "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+              "  setTimeout(function () { pm.execution.setNextRequest(pm.info.requestName); }, Math.min(100 * Math.pow(2, attempt), 1000));",
+              "} else {",
+              "  pm.collectionVariables.set(pollKey, '0');",
+              "  pm.test('Redis index recovery serves the preseeded semantic entry', function () {",
+              "    pm.expect(cd, 'Prepare the Redis fixture described in README.md; response: ' + text.slice(0, 800)).to.be.an('object');",
+              "    pm.expect(cd.cache_hit).to.eql(true);",
+              "    pm.expect(cd.hit_type, 'direct fetch would not prove index recovery').to.eql('semantic');",
+              "    pm.expect(cd.cache_id).to.be.a('string').and.not.empty;",
+              "    pm.expect(answer, text.slice(0, 800)).to.be.a('string').and.not.empty;",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "264.1 [PREVIEW] openai/gpt-4o-mini Redis index recovery unary - #2791",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-cache-key",
+                "value": "redis-index-recovery-chat"
+              },
+              {
+                "key": "x-bf-cache-type",
+                "value": "semantic"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with exactly PONG.\"}],\n  \"max_tokens\": 8,\n  \"temperature\": 0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "264.2 [PREVIEW] openai/gpt-4o-mini Redis index recovery SSE - #2791",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-cache-key",
+                "value": "redis-index-recovery-stream"
+              },
+              {
+                "key": "x-bf-cache-type",
+                "value": "semantic"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with exactly PONG.\"}],\n  \"max_tokens\": 8,\n  \"temperature\": 0,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

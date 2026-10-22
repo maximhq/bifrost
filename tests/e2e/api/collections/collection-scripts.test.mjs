@@ -1134,5 +1134,61 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
 });
 
+test("provider-harness: Redis recovery assertions handle JSON/SSE, bounded misses and errors", () => {
+  const providerHarness = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"));
+  const folder = providerHarness.item.find((item) => item.name.startsWith("264. Redis index recovery"));
+  assert.ok(folder, "Redis recovery folder missing");
+  assert.strictEqual(folder.item.length, 2);
+  const source = listenScript(folder, "test");
+  assert.ok(source);
+  for (const item of folder.item) {
+    assert.ok(item.name.includes("[PREVIEW]"));
+    assert.ok(item.request.header.some((h) => h.key === "x-bf-cache-no-store" && h.value === "true"));
+    assert.ok(item.request.header.some((h) => h.key === "x-bf-cache-type" && h.value === "semantic"));
+  }
+
+  // These assertions must really fail, unlike the no-op expectation chain used
+  // by the other script-safety tests above.
+  function checkedExpect(value, message) {
+    const chain = {};
+    for (const key of ["to", "be", "and"]) Object.defineProperty(chain, key, { get: () => chain });
+    chain.eql = (expected) => { assert.deepStrictEqual(value, expected, message); return chain; };
+    chain.an = chain.a = (type) => { assert.strictEqual(typeof value, type, message); assert.notStrictEqual(value, null, message); return chain; };
+    Object.defineProperty(chain, "not", { get: () => ({ get empty() { assert.ok(value && value.length > 0, message); return chain; } }) });
+    return chain;
+  }
+  function probe(text, { stream = false, code = 200, attempt = 0, headers = {} } = {}) {
+    const name = stream ? "Redis recovery SSE" : "Redis recovery unary";
+    const ctx = sandbox({ responseBody: text, responseCode: code, variables: { ["redis_index_recovery_poll_" + name]: String(attempt) } });
+    ctx.pm.info = { requestName: name };
+    ctx.pm.expect = checkedExpect;
+    ctx.pm.response.headers = { get: (key) => headers[key.toLowerCase()] };
+    ctx.pm.execution.setNextRequest = (value) => { ctx.state.next = value; };
+    try { new Function("pm", "setTimeout", source)(ctx.pm, (callback) => callback()); } catch (error) { ctx.state.error = error; }
+    return ctx.state;
+  }
+  const cd = { cache_hit: true, hit_type: "semantic", cache_id: "seed-id" };
+  const chat = (debug) => JSON.stringify({ object: "chat.completion", choices: [{ message: { content: "PONG" } }], extra_fields: { cache_debug: debug } });
+  const sse = `data: ${JSON.stringify({ object: "chat.completion.chunk", choices: [{ delta: { content: "PONG" } }], extra_fields: { cache_debug: cd } })}\n\ndata: [DONE]\n\n`;
+  for (const state of [probe(chat(cd)), probe(sse, { stream: true, headers: { "content-type": "text/event-stream" } }), probe(chat(undefined), { headers: { "x-bifrost-cache-hit": "true", "x-bifrost-cache-id": "seed-id", "x-bifrost-cache-hit-type": "semantic" } })]) {
+    assert.ifError(state.error);
+    assert.strictEqual(state.next, undefined);
+    assert.ok(state.tests.length >= 2 && state.tests.every((t) => t.passed));
+  }
+  assert.ok(probe(chat({ cache_hit: false })).next);
+  const exhausted = probe(chat({ cache_hit: false }), { attempt: 7 });
+  assert.strictEqual(exhausted.next, undefined);
+  assert.ok(exhausted.tests.some((t) => !t.passed));
+  assert.ok(probe(chat({ ...cd, hit_type: "direct" })).tests.some((t) => !t.passed), "direct fetch cannot prove index recovery");
+  for (const code of [401, 403, 500]) {
+    const state = probe('{"error":{"message":"failed"}}', { code });
+    assert.ok(state.error);
+    assert.ok(state.tests.some((t) => !t.passed));
+    assert.strictEqual(state.next, undefined);
+  }
+  assert.ok(probe('data: {"object":"chat.completion.chunk","choices":[]}\n\n', { stream: true, headers: { "content-type": "text/event-stream" } }).error, "missing terminator must fail");
+  assert.ok(probe('data: {"error":{"message":"failed"}}\n\ndata: [DONE]\n\n', { stream: true, headers: { "content-type": "text/event-stream" } }).error, "stream errors must not be retried as cache misses");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
