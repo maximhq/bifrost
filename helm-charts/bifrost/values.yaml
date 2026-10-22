@@ -1290,6 +1290,9 @@ bifrost:
       # # (for Custom Authorization Servers where claims like "groups" are gated behind a scope).
       # additionalScopes:
       #   - "groups"
+      # # Directory/background sync scope. Default (unset/true) keeps every app-assigned user
+      # # except SUSPENDED/DEPROVISIONED; false narrows the sync to ACTIVE users only.
+      # syncAllUsers: true
       # userIdField: "sub"
       # teamIdsField: "groups"
       # rolesField: "roles"

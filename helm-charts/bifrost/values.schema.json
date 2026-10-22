@@ -3421,6 +3421,10 @@
                         "items": { "type": "string" },
                         "description": "Extra OAuth scopes requested on top of the base openid/profile/email/offline_access set. Primarily for Custom Authorization Servers where claims like 'groups' are gated behind a scope Bifrost does not request by default."
                       },
+                      "syncAllUsers": {
+                        "type": "boolean",
+                        "description": "When true (the default when unset), the directory/background sync keeps every app-assigned Okta user except SUSPENDED or DEPROVISIONED. Set false to narrow the sync to ACTIVE users only."
+                      },
                       "userIdField": {
                         "type": "string",
                         "description": "JWT claim field for user ID (default: 'sub')",
