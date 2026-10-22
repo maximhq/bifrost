@@ -53,6 +53,9 @@ type LoggingHandler struct {
 	// topics lists Warp's topics for the topics filter dimension. Nil until
 	// SetTopicLister wires it, in which case the dimension is empty.
 	topics warp.TopicLister
+	// logSearch serves GET /api/logs/search. Nil until SetLogSearch wires it,
+	// in which case the route answers 503.
+	logSearch LogSearcher
 }
 
 // SetTopicLister wires the Warp topic reader the topics filter dimension
@@ -103,6 +106,16 @@ func topicFilterData(ctx context.Context, topics warp.TopicLister, limit int, qu
 type SidekiqJobStore interface {
 	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)
 	GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error)
+}
+
+// LogSearcher is semantic log search, which Warp's log index provides.
+type LogSearcher interface {
+	SearchLogs(ctx context.Context, queries []string, filters *logstore.SearchFilters, limit int) (warp.SemanticSearchResult, error)
+}
+
+// SetLogSearch wires the semantic search GET /api/logs/search serves.
+func (h *LoggingHandler) SetLogSearch(search LogSearcher) {
+	h.logSearch = search
 }
 
 // SetSidekiqBackend wires the sidekiq runner and job store, and registers the
@@ -434,6 +447,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.PUT("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.updateUserAgentMapping, middlewares...))
 	r.DELETE("/api/logs/user-agent-mappings/{id}", lib.ChainMiddlewares(h.deleteUserAgentMapping, middlewares...))
 	r.GET("/api/logs/{id}", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogByID), middlewares...))
+	r.GET("/api/logs/search", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.searchLogs), middlewares...))
 	r.GET("/api/logs/{id}/trace", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogTrace), middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsStats), middlewares...))
 	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.withHiddenRequestTypes(h.getLogsHistogram), middlewares...))
@@ -960,6 +974,123 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, result)
+}
+
+// logSearchTimeout bounds one semantic search: its embedding requests and
+// vector searches.
+const logSearchTimeout = time.Minute
+
+// searchLogs finds logged conversations by meaning. Each query parameter is one
+// phrasing; a log scores by its best match across them. The other parameters
+// are the log filters the stats and histogram routes take, plus limit. Matches
+// are reloaded through the log store, so the caller's access scope applies.
+func (h *LoggingHandler) searchLogs(ctx *fasthttp.RequestCtx) {
+	// The request is checked whole before availability and before any search,
+	// so a bad one is a 400 whether or not Warp is on, and never pays for an
+	// embedding.
+	filters, ok := parseLogSearchFilters(ctx)
+	if !ok {
+		return
+	}
+	var queries []string
+	for _, value := range ctx.QueryArgs().PeekMulti("query") {
+		queries = append(queries, string(value))
+	}
+	if err := warp.ValidateLogSearch(queries, filters); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	limit := 0
+	if raw := string(ctx.QueryArgs().Peek("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > warp.MaxLogRows {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("limit must be between 1 and %d", warp.MaxLogRows))
+			return
+		}
+		limit = parsed
+	}
+	if h.logSearch == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, logSearchUnavailableMsg)
+		return
+	}
+	searchCtx, cancel := context.WithTimeout(ctx, logSearchTimeout)
+	defer cancel()
+	result, err := h.logSearch.SearchLogs(searchCtx, queries, filters, limit)
+	switch {
+	case errors.Is(err, warp.ErrInvalidSearchQuery):
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+	case errors.Is(err, warp.ErrUnavailable), errors.Is(err, warp.ErrNoVectorStore):
+		SendError(ctx, fasthttp.StatusServiceUnavailable, logSearchUnavailableMsg)
+	case err != nil:
+		// The cause can name embedding providers and vector store hosts, so it is
+		// logged here and the caller gets a fixed message.
+		logger.Warn("semantic log search failed: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "semantic log search failed")
+	default:
+		SendJSON(ctx, result)
+	}
+}
+
+const logSearchUnavailableMsg = "semantic log search needs Warp enabled, with an embedding model and its log index set up"
+
+// logSearchStrictParams are the values parseHistogramFilters drops when they do
+// not parse. Dropped, a bound silently widens a search, so the search route
+// refuses them instead.
+var logSearchStrictParams = []struct {
+	name  string
+	parse func(string) error
+}{
+	{"start_time", func(v string) error { _, err := time.Parse(time.RFC3339Nano, v); return err }},
+	{"end_time", func(v string) error { _, err := time.Parse(time.RFC3339Nano, v); return err }},
+	{"min_latency", func(v string) error { _, err := strconv.ParseFloat(v, 64); return err }},
+	{"max_latency", func(v string) error { _, err := strconv.ParseFloat(v, 64); return err }},
+	{"min_cost", func(v string) error { _, err := strconv.ParseFloat(v, 64); return err }},
+	{"max_cost", func(v string) error { _, err := strconv.ParseFloat(v, 64); return err }},
+	{"min_tokens", func(v string) error { _, err := strconv.Atoi(v); return err }},
+	{"max_tokens", func(v string) error { _, err := strconv.Atoi(v); return err }},
+	{"missing_cost_only", func(v string) error { _, err := strconv.ParseBool(v); return err }},
+	// ResolvePeriod returns a nil start only for a period it does not recognise; an
+	// unknown timezone falls back to UTC instead, so it is not checked here.
+	{"period", func(v string) error {
+		if start, _ := ResolvePeriod(v, ""); start == nil {
+			return errors.New("unrecognised period")
+		}
+		return nil
+	}},
+}
+
+// parseLogSearchFilters reads the search route's filters: the histogram set,
+// with its malformed bounds refused rather than dropped, plus roots_only,
+// group_sessions and fallback_hops_only, which that parser does not read. They are read so the search
+// can refuse them; ignored, they would widen the result. On a refusal it has
+// already written the 400 and returns false.
+func parseLogSearchFilters(ctx *fasthttp.RequestCtx) (*logstore.SearchFilters, bool) {
+	for _, param := range logSearchStrictParams {
+		if raw := string(ctx.QueryArgs().Peek(param.name)); raw != "" {
+			if err := param.parse(raw); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid %s: %q", param.name, raw))
+				return nil, false
+			}
+		}
+	}
+	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return nil, false
+	}
+	for _, flag := range []struct {
+		name string
+		dst  *bool
+	}{{"roots_only", &filters.RootsOnly}, {"group_sessions", &filters.GroupSessions}, {"fallback_hops_only", &filters.FallbackHopsOnly}} {
+		if raw := string(ctx.QueryArgs().Peek(flag.name)); raw != "" {
+			val, err := strconv.ParseBool(raw)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid %s: %q", flag.name, raw))
+				return nil, false
+			}
+			*flag.dst = val
+		}
+	}
+	return filters, true
 }
 
 // getLogTrace returns the causal chain behind one request: its retries, every

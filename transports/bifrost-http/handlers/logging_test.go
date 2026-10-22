@@ -2007,3 +2007,152 @@ func TestGetLogTrace(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	require.NotContains(t, string(ctx.Response.Body()), "chain_length")
 }
+
+// recordingLogSearch is a LogSearcher that records what the route asked for
+// and answers with a fixed result or error.
+type recordingLogSearch struct {
+	queries []string
+	filters *logstore.SearchFilters
+	limit   int
+	hidden  any
+	result  warp.SemanticSearchResult
+	err     error
+}
+
+func (s *recordingLogSearch) SearchLogs(ctx context.Context, queries []string, filters *logstore.SearchFilters, limit int) (warp.SemanticSearchResult, error) {
+	s.queries, s.filters, s.limit = queries, filters, limit
+	s.hidden = ctx.Value(logstore.HiddenRequestTypesContextKey)
+	return s.result, s.err
+}
+
+// GET /api/logs/search passes every phrasing, the standard log filters, the
+// limit and the hidden request types to the search, and maps its refusals.
+func TestSearchLogs(t *testing.T) {
+	SetLogger(&mockLogger{})
+	search := &recordingLogSearch{result: warp.SemanticSearchResult{Rows: []warp.SemanticSearchRow{{Score: 0.71}}, Returned: 1, Threshold: 0.3}}
+	h := &LoggingHandler{
+		logManager: &dashboardLogManager{},
+		config:     &lib.Config{ClientConfig: &configstore.ClientConfig{HiddenRequestTypes: []string{"embedding"}}},
+	}
+	r := router.New()
+	h.RegisterRoutes(r)
+	get := func(path string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.SetRequestURI(path)
+		ctx := initCtx(&req)
+		r.Handler(ctx)
+		return ctx
+	}
+
+	ctx := get("/api/logs/search?query=refunds")
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), "no search wired")
+
+	h.SetLogSearch(search)
+	ctx = get("/api/logs/search?query=refund+requests&query=money+back&providers=openai,anthropic&team_ids=team-1&limit=7")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Equal(t, []string{"refund requests", "money back"}, search.queries)
+	require.Equal(t, []string{"openai", "anthropic"}, search.filters.Providers)
+	require.Equal(t, []string{"team-1"}, search.filters.TeamIDs)
+	require.Equal(t, 7, search.limit)
+	require.Equal(t, []string{"embedding"}, search.hidden, "hidden request types apply as on every log read")
+	var result warp.SemanticSearchResult
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &result))
+	require.Equal(t, 1, result.Returned)
+	require.InDelta(t, 0.3, result.Threshold, 1e-9)
+
+	for _, bad := range []string{"limit=0", "limit=26", "limit=many"} {
+		ctx = get("/api/logs/search?query=refunds&" + bad)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), bad)
+	}
+
+	search.err = fmt.Errorf("checked: %w", warp.ErrInvalidSearchQuery)
+	ctx = get("/api/logs/search")
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+
+	search.err = warp.ErrUnavailable
+	ctx = get("/api/logs/search?query=refunds")
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), "Warp enabled")
+
+	// Any other failure is a 500 that names no internals: the cause is logged, not sent.
+	search.err = errors.New("dial tcp 10.0.0.7:8080: weaviate refused")
+	ctx = get("/api/logs/search?query=refunds")
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	require.NotContains(t, string(ctx.Response.Body()), "10.0.0.7")
+	require.Contains(t, string(ctx.Response.Body()), "semantic log search failed")
+}
+
+// GET /api/logs/search refuses a malformed or unsupported request with 400
+// before any search runs, and before checking whether search is available, so
+// a bad request reads the same whether or not Warp is on.
+func TestSearchLogsRefusesBadRequestsBeforeSearching(t *testing.T) {
+	SetLogger(&mockLogger{})
+	h := &LoggingHandler{logManager: &dashboardLogManager{}, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	r := router.New()
+	h.RegisterRoutes(r)
+	get := func(path string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.SetRequestURI(path)
+		ctx := initCtx(&req)
+		r.Handler(ctx)
+		return ctx
+	}
+	bad := []string{
+		"",
+		"query=a&query=b&query=c&query=d&query=e&query=f",
+		"query=refunds&roots_only=true",
+		"query=refunds&group_sessions=true",
+		"query=refunds&roots_only=maybe",
+		"query=refunds&fallback_hops_only=true",
+		"query=refunds&fallback_hops_only=maybe",
+		"query=refunds&topic_ids=,,",
+		"query=refunds&max_cost=abc",
+		"query=refunds&min_cost=abc",
+		"query=refunds&min_latency=fast",
+		"query=refunds&max_latency=slow",
+		"query=refunds&start_time=yesterday",
+		"query=refunds&end_time=2026-13-01",
+		"query=refunds&min_tokens=many",
+		"query=refunds&max_tokens=1.5",
+		"query=refunds&missing_cost_only=maybe",
+		"query=refunds&period=last_quarter",
+	}
+	for _, query := range bad {
+		ctx := get("/api/logs/search?" + query)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "no search wired, %q: %s", query, ctx.Response.Body())
+	}
+	search := &recordingLogSearch{}
+	h.SetLogSearch(search)
+	for _, query := range bad {
+		search.queries = nil
+		ctx := get("/api/logs/search?" + query)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%q: %s", query, ctx.Response.Body())
+		require.Nil(t, search.queries, "%q reached the search", query)
+	}
+	ctx := get("/api/logs/search?query=refunds&max_cost=0.5&start_time=2026-10-01T00:00:00Z&roots_only=false")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	// A recognised period still searches; the strict checks only refuse what would be dropped.
+	ctx = get("/api/logs/search?query=refunds&period=7d&timezone=Not/AZone")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.NotNil(t, search.filters.StartTime)
+	ctx = get("/api/logs/search?query=refunds&max_cost=0.5&start_time=2026-10-01T00:00:00Z&roots_only=false")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.InDelta(t, 0.5, *search.filters.MaxCost, 1e-9)
+	require.NotNil(t, search.filters.StartTime)
+}
+
+// BenchmarkSearchLogs measures the route's own cost around a search: parsing
+// and checking the request, the call, and writing the result. The search is a
+// fake, so embedding and vector latency are left out.
+func BenchmarkSearchLogs(b *testing.B) {
+	SetLogger(&mockLogger{})
+	h := &LoggingHandler{logManager: &dashboardLogManager{}, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	h.SetLogSearch(&recordingLogSearch{result: warp.SemanticSearchResult{Rows: []warp.SemanticSearchRow{{Score: 0.71}}, Returned: 1, Threshold: 0.3}})
+	var req fasthttp.Request
+	req.SetRequestURI("/api/logs/search?query=refund+requests&query=money+back&providers=openai&max_cost=0.5&start_time=2026-10-01T00:00:00Z&limit=7")
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := initCtx(&req)
+		h.searchLogs(ctx)
+	}
+}
