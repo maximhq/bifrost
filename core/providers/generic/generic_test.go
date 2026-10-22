@@ -642,7 +642,8 @@ func TestGenericStreams(t *testing.T) {
 	assert.True(t, provider.Streams("GET", "/v1/live/room/1", "", false), "streaming.paths glob")
 	assert.True(t, provider.Streams("POST", "/v1/chat", "text/event-stream", false), "Accept header when enabled")
 	assert.True(t, provider.Streams("POST", "/v1/chat", "", true), "body stream flag")
-	assert.True(t, provider.Streams("POST", "/v1/chat/stream", "", false), "path names a stream")
+	assert.False(t, provider.Streams("POST", "/v1/chat/stream", "", false), "the path's wording is not a signal: a non-SSE reply would be forwarded unread and under-billed")
+	assert.False(t, provider.Streams("GET", "/v1/streams/123", "", false))
 	assert.False(t, provider.Streams("POST", "/v1/chat", "application/json", false))
 }
 

@@ -281904,6 +281904,53 @@
           }
         },
         {
+          "name": "[EXPECT-400] 262.23 PUT /api/providers/generic_echo_sigv4 - switching a generic provider to an injecting auth type is refused while a stored key has no value (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_sigv4 holds a key with AWS credentials and no value. Moving the provider to bearer auth would",
+                  "// make the relay inject an empty value on every call, so the update API refuses it the way config.json and",
+                  "// the key API do. A 400 leaves the provider untouched, so the case has no side effect.",
+                  "pm.test('generic provider update: auth type change refused while a key has no value', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('has no value');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"concurrency_and_buffer_size\": {\n    \"concurrency\": 1,\n    \"buffer_size\": 10\n  },\n  \"network_config\": {\n    \"base_url\": \"https://postman-echo.com\"\n  },\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"generic\",\n    \"generic_config\": {\n      \"auth\": {\n        \"type\": \"bearer\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/generic_echo_sigv4",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "generic_echo_sigv4"
+              ]
+            }
+          }
+        },
+        {
           "name": "262.14 POST /passthrough/generic_echo_units/post - per-unit pricing: cost on the log row is units x rate plus the flat fee (generic passthrough)",
           "event": [
             {
@@ -281953,6 +282000,46 @@
                 "passthrough",
                 "generic_echo_units",
                 "post"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.15 GET /passthrough/generic_echo/stream/1 - the word stream in a path does not select the streaming relay; the reply is buffered (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo has no streaming.paths glob and no route for /stream/*, and this GET carries no Accept: text/event-stream",
+                  "// and no body. The path's wording alone must not pick the streaming relay (which would forward a non-SSE body unread and",
+                  "// skip the response-side usage mapping), so the buffered handler serves it: no X-Accel-Buffering header, body intact.",
+                  "pm.test('generic relay: stream-named path relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "pm.test('generic relay: buffered handler served a path that merely contains stream', function () { pm.expect(pm.response.headers.get('x-accel-buffering'), 'x-accel-buffering must be absent').to.not.eql('no'); });",
+                  "pm.test('generic relay: body forwarded', function () { pm.expect((pm.response.text() || '').length, 'body length').to.be.above(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo/stream/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo",
+                "stream",
+                "1"
               ]
             }
           }

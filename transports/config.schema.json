@@ -13471,7 +13471,7 @@
     },
     "generic_streaming_config": {
       "type": "object",
-      "description": "Which relayed requests are served as streams (a route's stream flag still wins)",
+      "description": "Which relayed requests are served as streams, besides a route's stream flag (which wins), Accept: text/event-stream when enabled, and a JSON body with stream: true. The path's wording is never a signal",
       "properties": {
         "paths": {
           "type": "array",

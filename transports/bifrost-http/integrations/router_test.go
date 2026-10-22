@@ -2266,6 +2266,7 @@ func TestGenericPassthroughRoute(t *testing.T) {
 		{name: "GET relayed", method: fasthttp.MethodGet, uri: "/passthrough/echo/jobs/1", wantStatus: fasthttp.StatusOK, wantUpstream: "/jobs/1"},
 		{name: "DELETE relayed", method: fasthttp.MethodDelete, uri: "/passthrough/echo/jobs/1", wantStatus: fasthttp.StatusOK, wantUpstream: "/jobs/1"},
 		{name: "streaming.paths glob selects the streaming relay", method: fasthttp.MethodGet, uri: "/passthrough/echo/live/room", wantStatus: fasthttp.StatusOK, wantUpstream: "/live/room", wantStreamed: true},
+		{name: "the word stream in a path is not a streaming signal", method: fasthttp.MethodGet, uri: "/passthrough/echo/v1/streams/123", wantStatus: fasthttp.StatusOK, wantUpstream: "/v1/streams/123"},
 		{name: "standard provider is not a generic passthrough", uri: "/passthrough/openai/v1/chat/completions", body: `{}`, wantStatus: fasthttp.StatusNotFound, wantBodyHas: "no generic passthrough provider named openai"},
 		{name: "unknown provider", uri: "/passthrough/nope/x", body: `{}`, wantStatus: fasthttp.StatusNotFound, wantBodyHas: "no generic passthrough provider named nope"},
 		{name: "path guard runs before dispatch", uri: "/passthrough/echo/@evil.example/x", body: `{}`, wantStatus: fasthttp.StatusBadRequest, wantBodyHas: "invalid passthrough path"},

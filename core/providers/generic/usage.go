@@ -259,10 +259,11 @@ func (u resolvedUsage) hasUsageEvent(event []byte) bool {
 	return false
 }
 
-// streamObserver returns the per-event observer for one stream. Fields accumulate across events,
-// so a stream that reports input tokens on its first event and output tokens on its last (the
-// Anthropic shape) is billed for both; an event that carries nothing leaves what was seen alone.
-// initial carries what the request already established (request-side units).
+// streamObserver returns the per-event observer for one stream. Each field keeps the last value
+// any event reported (running totals, the OpenAI and Anthropic shape), never a sum of per-event
+// increments; a stream that reports input tokens on its first event and output tokens on its last
+// is billed for both, and an event that carries nothing leaves what was seen alone. initial
+// carries what the request already established (request-side units).
 func (u resolvedUsage) streamObserver(initial usageFields) func(event []byte) *schemas.BifrostPassthroughUsage {
 	acc := initial
 	return func(event []byte) *schemas.BifrostPassthroughUsage {

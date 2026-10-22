@@ -70,7 +70,10 @@ function toFormValues(cfg: GenericProviderConfig | undefined): FormValues {
 		streaming: { paths: cfg?.streaming?.paths ?? [], detect_from_accept_header: cfg?.streaming?.detect_from_accept_header ?? false },
 		routes: (cfg?.routes ?? []).map((r) => ({
 			...r,
-			billable: r.billable ?? genericRouteBillableByDefault(r.method),
+			// An unset billable stays unset in the form: the switch shows the current method's default
+			// until the operator touches it, so changing an imported GET to POST keeps the POST default
+			// rather than freezing the GET one as an explicit override.
+			billable: r.billable,
 			usage: { ...emptyUsage, cost_per_request: undefined, ...(r.usage ?? {}) },
 		})),
 		strict_routes: cfg?.strict_routes ?? false,
@@ -126,8 +129,7 @@ function toConfig(values: FormValues): GenericProviderConfig {
 			method: r.method,
 			path: r.path,
 			// Stored only when it departs from the method default, so the config stays what the operator decided.
-			billable:
-				(r.billable ?? genericRouteBillableByDefault(r.method)) === genericRouteBillableByDefault(r.method) ? undefined : r.billable,
+			billable: r.billable === undefined || r.billable === genericRouteBillableByDefault(r.method) ? undefined : r.billable,
 			stream: r.stream,
 			usage: cleanUsage(r.usage, true),
 		}));
@@ -202,7 +204,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 				routes.append({
 					method: route.method,
 					path: route.path,
-					billable: genericRouteBillableByDefault(route.method),
+					billable: undefined,
 					stream: undefined,
 					usage: { ...emptyUsage, cost_per_request: undefined },
 				});
@@ -539,7 +541,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 								routes.append({
 									method: "POST",
 									path: "/",
-									billable: genericRouteBillableByDefault("POST"),
+									billable: undefined,
 									stream: undefined,
 									usage: { ...emptyUsage, cost_per_request: undefined },
 								})
@@ -628,7 +630,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 												<p className="text-sm font-medium">Billable</p>
 												<Switch
 													size="md"
-													checked={!!field.value}
+													checked={field.value ?? genericRouteBillableByDefault(form.watch(`routes.${index}.method`))}
 													onCheckedChange={field.onChange}
 													disabled={disabled}
 													data-testid={`generic-route-billable-switch-${index}`}
