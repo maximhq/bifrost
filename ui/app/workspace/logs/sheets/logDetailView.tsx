@@ -2485,7 +2485,12 @@ export function LogDetailView({
 											{Object.entries(log.metadata)
 												.filter(([key]) => isShownMetadataKey(key, isRealtimeTurn))
 												.map(([key, value]) => (
-													<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
+													<LogEntryDetailsView
+														key={key}
+														className="w-full"
+														label={key}
+														value={value == null ? "-" : typeof value === "object" ? JSON.stringify(value) : String(value)}
+													/>
 												))}
 										</div>
 									</div>

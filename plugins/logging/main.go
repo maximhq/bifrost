@@ -2281,6 +2281,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if customerNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerNames).([]string); ok && len(customerNames) > 0 {
 		entry.CustomerNamesParsed = customerNames
 	}
+	applyGrantAttribution(ctx, entry)
 	entry.MetadataParsed = pending.InitialData.Metadata
 	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
 	entry.MetadataParsed = mergeLoadBalancerMetadata(entry.MetadataParsed, ctx)
@@ -2560,6 +2561,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 // here since storeOrEnqueueEntry is skipped; Inject's plugin-log and overhead
 // backfill is not available on this path.
 func (p *LoggerPlugin) persistCompletedEntry(ctx *schemas.BifrostContext, entry *logstore.Log, reconcileFromPartial bool) {
+	p.prepareRealtimeTranscriptLog(ctx, entry)
 	if !reconcileFromPartial {
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		return

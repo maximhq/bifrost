@@ -9,14 +9,192 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/azure"
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
+
+// TestRealtimeAudioCommitAllowsResponse checks the socket relay admits manual and automatic responses once.
+func TestRealtimeAudioCommitAllowsResponse(t *testing.T) {
+	for _, provider := range []schemas.RealtimeProvider{&openaiProvider.OpenAIProvider{}, &azure.AzureProvider{}} {
+		for _, mode := range []string{"manual", "automatic", "transcription"} {
+			t.Run(fmt.Sprintf("%T/%s", provider, mode), func(t *testing.T) {
+				gateway := newLiveOwnerTestGateway(t, nil)
+				server, client, cleanup := dialRealtimeTestConn(t)
+				defer cleanup()
+				upstream, providerConn := dialLiveTestUpstream(t)
+				session := bfws.NewSession(nil)
+				defer session.Close()
+				ctx := liveCallerCtx(t, "")
+				handler := &WSRealtimeHandler{client: gateway.client}
+				conn := newRealtimeClientConn(server)
+				transcription := mode == "transcription"
+				done := make(chan error, 1)
+				go func() {
+					done <- handler.relayRealtimeProviderToClient(conn, session, upstream, provider, ctx, schemas.OpenAI, "gpt-realtime-mini", schemas.Key{}, transcription)
+				}()
+				defer func() {
+					_ = upstream.Close()
+					select {
+					case <-done:
+					case <-time.After(time.Second):
+						t.Error("provider relay did not terminate")
+					}
+				}()
+				require.NoError(t, client.SetReadDeadline(time.Now().Add(3*time.Second)))
+				require.NoError(t, providerConn.WriteMessage(ws.TextMessage, []byte(`{"type":"input_audio_buffer.committed","item_id":"audio"}`)))
+				_, raw, err := client.ReadMessage()
+				require.NoError(t, err)
+				require.Contains(t, string(raw), "input_audio_buffer.committed")
+				if transcription {
+					require.NotNil(t, session.PeekRealtimeTurnHooks())
+					require.NoError(t, providerConn.WriteMessage(ws.TextMessage, []byte(`{"type":"conversation.item.input_audio_transcription.completed","item_id":"audio","transcript":"hello"}`)))
+					_, raw, err = client.ReadMessage()
+					require.NoError(t, err)
+					require.Contains(t, string(raw), "input_audio_transcription.completed")
+					require.Nil(t, session.PeekRealtimeTurnHooks())
+					return
+				}
+				require.Nil(t, session.PeekRealtimeTurnHooks())
+				if mode == "manual" {
+					stop, err := handler.processRealtimeClientMessage(conn, session, upstream, provider, ctx, schemas.OpenAI, "gpt-realtime-mini", schemas.Key{}, false, ws.TextMessage, []byte(`{"type":"response.create"}`))
+					require.NoError(t, err)
+					require.False(t, stop)
+					require.NotNil(t, session.PeekRealtimeTurnHooks())
+					require.NoError(t, providerConn.SetReadDeadline(time.Now().Add(time.Second)))
+					_, raw, err = providerConn.ReadMessage()
+					require.NoError(t, err)
+					require.Contains(t, string(raw), "response.create")
+				}
+				started := session.PeekRealtimeTurnHooks()
+				require.NoError(t, providerConn.WriteMessage(ws.TextMessage, []byte(`{"type":"response.created","response":{"id":"response"}}`)))
+				_, raw, err = client.ReadMessage()
+				require.NoError(t, err)
+				require.Contains(t, string(raw), "response.created")
+				require.NotNil(t, session.PeekRealtimeTurnHooks())
+				if started != nil {
+					require.Same(t, started, session.PeekRealtimeTurnHooks())
+				}
+				require.NoError(t, providerConn.WriteMessage(ws.TextMessage, []byte(`{"type":"response.done","response":{"id":"response","status":"completed"}}`)))
+				_, raw, err = client.ReadMessage()
+				require.NoError(t, err)
+				require.Contains(t, string(raw), "response.done")
+				require.Nil(t, session.PeekRealtimeTurnHooks(), "completion must release the pipeline")
+			})
+		}
+	}
+}
+
+// TestRealtimeProviderErrorsRemainRecoverable preserves native errors and lets the provider continue.
+func TestRealtimeProviderErrorsRemainRecoverable(t *testing.T) {
+	for _, code := range []string{"invalid_value", "response_cancel_not_active", "rate_limit_exceeded", "server_error"} {
+		t.Run(code, func(t *testing.T) {
+			server, client, cleanup := dialRealtimeTestConn(t)
+			defer cleanup()
+			upstream, providerConn := dialLiveTestUpstream(t)
+			session := bfws.NewSession(nil)
+			calls, cleanups := 0, 0
+			session.SetRealtimeTurnHooks(&bfws.RealtimeTurnPluginState{
+				RequestID: "turn", StartedAt: time.Now(),
+				PostHookRunner: func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					calls++
+					return result, err
+				},
+				Cleanup: func() { cleanups++ },
+			})
+			done := make(chan error, 1)
+			go func() {
+				done <- (&WSRealtimeHandler{}).relayRealtimeProviderToClient(newRealtimeClientConn(server), session, upstream, &openaiProvider.OpenAIProvider{}, nil, schemas.OpenAI, "realtime", schemas.Key{}, false)
+			}()
+			defer func() {
+				_ = upstream.Close()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Error("provider relay did not terminate")
+				}
+				// Hook callbacks run on the relay goroutine.
+				require.Equal(t, 1, calls)
+				require.Equal(t, 1, cleanups)
+			}()
+			raw := []byte(fmt.Sprintf(`{"type":"error","event_id":"server_event","error":{"type":"invalid_request_error","code":%q,"message":"recoverable","param":"response.output_modalities","event_id":"client_event","extra":{"keep":true}}}`, code))
+			require.NoError(t, providerConn.WriteMessage(ws.TextMessage, raw))
+			require.NoError(t, client.SetReadDeadline(time.Now().Add(time.Second)))
+			_, actual, err := client.ReadMessage()
+			require.NoError(t, err)
+			require.Equal(t, string(raw), string(actual))
+			if code == "response_cancel_not_active" {
+				// A rejected cancel must not consume the current or pending turn.
+				require.NotNil(t, session.PeekRealtimeTurnHooks())
+			}
+			followup := []byte(`{"type":"response.done","response":{"id":"next","status":"completed"}}`)
+			require.NoError(t, providerConn.WriteMessage(ws.TextMessage, followup))
+			_, actual, err = client.ReadMessage()
+			require.NoError(t, err, "recoverable provider error must not end the relay")
+			require.Equal(t, string(followup), string(actual))
+		})
+	}
+}
+
+// TestRealtimeProviderClosePreservesCode forwards provider close frames without a synthetic error.
+func TestRealtimeProviderClosePreservesCode(t *testing.T) {
+	for _, code := range []int{ws.CloseNormalClosure, ws.CloseGoingAway, ws.ClosePolicyViolation, ws.CloseInternalServerErr, 4004} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			server, client, cleanup := dialRealtimeTestConn(t)
+			defer cleanup()
+			upstream, providerConn := dialLiveTestUpstream(t)
+			done := make(chan error, 1)
+			go func() {
+				done <- (&WSRealtimeHandler{}).relayRealtimeProviderToClient(newRealtimeClientConn(server), bfws.NewSession(nil), upstream, &openaiProvider.OpenAIProvider{}, nil, schemas.OpenAI, "realtime", schemas.Key{}, false)
+			}()
+			reason := "invalid_request_error.model_not_found"
+			require.NoError(t, providerConn.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(code, reason), time.Now().Add(time.Second)))
+			require.NoError(t, client.SetReadDeadline(time.Now().Add(time.Second)))
+			_, data, err := client.ReadMessage()
+			require.True(t, ws.IsCloseError(err, code), "got data %s and error %v", data, err)
+			var closeErr *ws.CloseError
+			require.ErrorAs(t, err, &closeErr)
+			require.Equal(t, reason, closeErr.Text)
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("close must end the provider relay")
+			}
+		})
+	}
+}
+
+// TestRealtimeProviderErrorBeforeAbruptClose avoids replacing an already delivered provider error.
+func TestRealtimeProviderErrorBeforeAbruptClose(t *testing.T) {
+	server, client, cleanup := dialRealtimeTestConn(t)
+	defer cleanup()
+	upstream, providerConn := dialLiveTestUpstream(t)
+	done := make(chan error, 1)
+	go func() {
+		done <- (&WSRealtimeHandler{}).relayRealtimeProviderToClient(newRealtimeClientConn(server), bfws.NewSession(nil), upstream, &openaiProvider.OpenAIProvider{}, nil, schemas.OpenAI, "realtime", schemas.Key{}, false)
+	}()
+	raw := []byte(`{"type":"error","error":{"type":"server_error","code":"upstream_detail","message":"original failure"}}`)
+	require.NoError(t, providerConn.WriteMessage(ws.TextMessage, raw))
+	require.NoError(t, client.SetReadDeadline(time.Now().Add(time.Second)))
+	_, actual, err := client.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, string(raw), string(actual))
+	require.NoError(t, providerConn.Close())
+	_, actual, err = client.ReadMessage()
+	require.True(t, ws.IsCloseError(err, ws.CloseInternalServerErr), "unexpected replacement event %s, error %v", actual, err)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("abrupt provider closure did not terminate relay")
+	}
+}
 
 // TestRealtimeTurnMetadataIsolation checks setup snapshots and unit contexts for
 // concurrent connections, including the separate pre-request context used by Live.
