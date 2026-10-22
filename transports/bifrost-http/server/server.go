@@ -3428,6 +3428,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		s.Config.ServerConfig = &lib.ServerConfig{ReadBufferSize: 1024 * 64}
 	}
 	s.Config.ServerConfig.BasePath = s.BasePath
+	lib.SetBasePath(s.BasePath)
 	if s.Config.KVStore != nil {
 		integrations.RegisterKVDecoders(s.Config.KVStore)
 	}

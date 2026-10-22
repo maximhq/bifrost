@@ -4,7 +4,31 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"sync/atomic"
 )
+
+// basePath holds the resolved server.base_path, set once in Bootstrap before
+// the server starts serving.
+var basePath atomic.Pointer[string]
+
+// SetBasePath records the resolved (normalized) base path for BasePath.
+func SetBasePath(path string) {
+	basePath.Store(&path)
+}
+
+// BasePath returns the resolved server.base_path, or "" at the domain root.
+func BasePath() string {
+	if p := basePath.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// WithBasePath prefixes a root-relative dashboard or API path ("/workspace/...")
+// with the base path, for Location headers and links sent to browsers.
+func WithBasePath(path string) string {
+	return BasePath() + path
+}
 
 // NormalizeBasePath validates the URL path prefix Bifrost is mounted under
 // behind a reverse proxy (e.g. "/bifrost" for https://abc.com/bifrost) and
