@@ -95,6 +95,8 @@ func TestCreateSTDIOConnectionRejectsEmptyEnvAssignmentName(t *testing.T) {
 	require.Contains(t, err.Error(), "environment variable name is empty")
 }
 
+// TestCreateSTDIOConnectionStartsWithEnvVars verifies that resolved references
+// reach the child independently of the environment inherited at process start.
 func TestCreateSTDIOConnectionStartsWithEnvVars(t *testing.T) {
 	t.Setenv("BIFROST_STDIO_TEST_HOST", "host=value")
 	t.Setenv("BIFROST_STDIO_TEST_INLINE", "host-inline")
@@ -127,6 +129,11 @@ func TestCreateSTDIOConnectionStartsWithEnvVars(t *testing.T) {
 			conn, _, err := (&MCPManager{}).createSTDIOConnection(ctx, config, nil)
 			require.NoError(t, err)
 			assert.Equal(t, envs, config.StdioConfig.Envs, "connection setup must not resolve references in the stored config")
+			for _, env := range tc.envs {
+				if env == "BIFROST_STDIO_TEST_HOST" {
+					t.Setenv(env, "inherited-after-setup")
+				}
+			}
 			require.NoError(t, conn.Start(ctx))
 			defer func() { assert.NoError(t, conn.Close()) }()
 
@@ -140,7 +147,7 @@ func TestCreateSTDIOConnectionStartsWithEnvVars(t *testing.T) {
 	}
 }
 
-// Run the test binary as a real STDIO MCP server so the parent checks process
+// TestSTDIOEnvHelperProcess runs the test binary as a real STDIO MCP server to check process
 // creation and the environment actually received by the child on every platform.
 func TestSTDIOEnvHelperProcess(t *testing.T) {
 	if os.Getenv("BIFROST_STDIO_TEST_HELPER") != "1" {

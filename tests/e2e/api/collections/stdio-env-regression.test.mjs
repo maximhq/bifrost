@@ -11,6 +11,7 @@ const prerequest = request.event
   .find((event) => event.listen === "prerequest")
   .script.exec.join("\n");
 
+/** Render the harness request and return its decoded STDIO command. */
 function commandInBody(override) {
   const collectionVariables = new Map();
   const pm = {
