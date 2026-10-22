@@ -88,9 +88,9 @@ func TestUserLimitsRoutesCoexistWithEnterpriseUserRoutes(t *testing.T) {
 	require.NotPanics(t, func() { NewUserLimitsHandler(&userLimitsReader{}).RegisterRoutes(r) })
 }
 
-// BenchmarkUserLimits measures the route's own cost around the reader: the
-// lookup, the projection and writing the result. The reader is in memory, so
-// the governance store's latency is left out.
+// BenchmarkUserLimits measures the route's own cost: routing, the projection
+// and writing the result. The reader is a fake holding one user with one
+// profile, so the database reads an enterprise reader makes are left out.
 func BenchmarkUserLimits(b *testing.B) {
 	SetLogger(&mockLogger{})
 	reader := &userLimitsReader{users: map[string]*warp.UserGovernance{
@@ -101,12 +101,19 @@ func BenchmarkUserLimits(b *testing.B) {
 	}}
 	r := router.New()
 	NewUserLimitsHandler(reader).RegisterRoutes(r)
-	var req fasthttp.Request
-	req.SetRequestURI("/api/governance/users/u-1/limits")
-	b.ReportAllocs()
-	for b.Loop() {
-		reader.asked = reader.asked[:0]
-		ctx := initCtx(&req)
-		r.Handler(ctx)
+	for _, path := range []string{"/api/governance/users/u-1/limits", "/api/governance/users/me/limits"} {
+		b.Run(path, func(b *testing.B) {
+			var req fasthttp.Request
+			req.SetRequestURI(path)
+			b.ReportAllocs()
+			for b.Loop() {
+				reader.asked = reader.asked[:0]
+				ctx := initCtx(&req)
+				if path == "/api/governance/users/me/limits" {
+					ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1") // /me resolves the caller; the explicit path names the user itself
+				}
+				r.Handler(ctx)
+			}
+		})
 	}
 }
