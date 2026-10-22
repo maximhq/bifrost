@@ -1,32 +1,33 @@
 import { addMilliseconds } from "date-fns";
+import type { TFunction } from "i18next";
 
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 
 // Policy approval confirms permission, never successful execution.
-export function getMCPLogPresentation(log: MCPToolLogEntry) {
+export function getMCPLogPresentation(log: MCPToolLogEntry, t?: TFunction) {
 	const policy = log.metadata?.inspection_phase === "pre_execution";
 	const approved = policy && log.decision === "allow";
 	const blocked = policy && log.decision === "deny";
 	const label = approved
-		? "Policy approved"
+		? (t?.("mcpLogs.presentation.policyApproved") ?? "Policy approved")
 		: blocked
-			? "Policy blocked"
+			? (t?.("mcpLogs.presentation.policyBlocked") ?? "Policy blocked")
 			: log.status === "unknown"
-				? "Observed"
+				? (t?.("mcpLogs.presentation.observed") ?? "Observed")
 				: log.status === "success"
-					? "Succeeded"
+					? (t?.("mcpLogs.presentation.succeeded") ?? "Succeeded")
 					: log.status === "error"
-						? "Failed"
+						? (t?.("mcpLogs.presentation.failed") ?? "Failed")
 						: log.status === "cancelled"
-							? "Cancelled"
-							: "Processing";
+							? (t?.("mcpLogs.presentation.cancelled") ?? "Cancelled")
+							: (t?.("mcpLogs.presentation.processing") ?? "Processing");
 	const description = approved
-		? "Allowed before execution. No execution result is recorded in this entry."
+		? (t?.("mcpLogs.presentation.approvedDescription") ?? "Allowed before execution. No execution result is recorded in this entry.")
 		: blocked
-			? "Blocked before execution."
+			? (t?.("mcpLogs.presentation.blockedDescription") ?? "Blocked before execution.")
 			: log.status === "unknown"
-				? "Tool activity was captured, but its execution outcome is not known."
-				: "Recorded tool execution outcome.";
+				? (t?.("mcpLogs.presentation.observedDescription") ?? "Tool activity was captured, but its execution outcome is not known.")
+				: (t?.("mcpLogs.presentation.executionDescription") ?? "Recorded tool execution outcome.");
 	const rawDuration = log.metadata?.inspection_duration_ms;
 	const duration = rawDuration == null || (typeof rawDuration === "string" && rawDuration.trim() === "") ? undefined : Number(rawDuration);
 	const inspectionDuration = duration != null && Number.isFinite(duration) && duration >= 0 ? duration : undefined;
@@ -37,10 +38,10 @@ export function getMCPLogPresentation(log: MCPToolLogEntry) {
 			? observed
 			: undefined;
 	const durationLabel = policy
-		? "Policy check"
+		? (t?.("mcpLogs.policyCheck") ?? "Policy check")
 		: log.latency == null && observedDuration != null
-			? "Observed round trip"
-			: "Execution time";
+			? (t?.("mcpLogs.observedRoundTrip") ?? "Observed round trip")
+			: (t?.("mcpLogs.executionTime") ?? "Execution time");
 	return { policy, approved, label, description, inspectionDuration, observedDuration, durationLabel };
 }
 

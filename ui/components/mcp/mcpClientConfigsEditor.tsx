@@ -9,6 +9,7 @@ import { useGetMCPClientsQuery } from "@/lib/store";
 import { MCPClient } from "@/lib/types/mcp";
 import { Info, Trash2 } from "lucide-react";
 import { ReactNode, useCallback, useEffect, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 // One server's tool grant. tools_to_execute: ["*"] = all, [] = none, list = specific.
@@ -38,14 +39,6 @@ interface MCPClientConfigsEditorProps {
 	allClientTools?: boolean;
 }
 
-const DEFAULT_TOOLTIP = (
-	<p>
-		Configure which MCP servers this virtual key can use and their allowed tools. Leaving this section empty blocks all MCP tools. After
-		adding an MCP server, you must select specific tools or choose <span className="font-medium">Allow All Tools</span> to grant tool
-		access.
-	</p>
-);
-
 // Fetches one configured server (name + tools) by id or name, then renders nothing.
 function ConfiguredClientResolver({
 	entry,
@@ -69,11 +62,18 @@ export function MCPClientConfigsEditor({
 	value,
 	onChange,
 	showDefaultsNote = false,
-	label = "MCP Server Configurations",
-	tooltip = DEFAULT_TOOLTIP,
+	label,
+	tooltip,
 	emptyState,
 	allClientTools = false,
 }: MCPClientConfigsEditorProps) {
+	const { t } = useTranslation("governance");
+	const resolvedLabel = label ?? t("mcpConfigs.title");
+	const resolvedTooltip = tooltip ?? (
+		<p>
+			<Trans t={t} i18nKey="mcpConfigs.tooltip" components={{ medium0: <span className="font-medium" /> }} />
+		</p>
+	);
 	// Resolved server records, filled in by the resolvers below.
 	const [resolved, setResolved] = useState<Record<string, MCPClient>>({});
 	const handleResolved = useCallback((key: string, client: MCPClient) => {
@@ -85,7 +85,7 @@ export function MCPClientConfigsEditor({
 
 	const handleAddMCPClient = (option: EntitySelectorOption) => {
 		if (value.some((config) => (option.value && config.mcp_client_id === option.value) || config.mcp_client_name === option.label)) {
-			toast.error("This MCP server is already configured");
+			toast.error(t("mcpConfigs.alreadyConfigured"));
 			return;
 		}
 		onChange([...value, { mcp_client_name: option.label, mcp_client_id: option.value, tools_to_execute: ["*"] }]);
@@ -118,7 +118,7 @@ export function MCPClientConfigsEditor({
 			))}
 
 			<div className="flex items-center gap-2">
-				<Label className="text-sm font-medium">{label}</Label>
+				<Label className="text-sm font-medium">{resolvedLabel}</Label>
 				<TooltipProvider>
 					<Tooltip>
 						<TooltipTrigger asChild>
@@ -126,7 +126,7 @@ export function MCPClientConfigsEditor({
 								<Info className="text-muted-foreground h-3 w-3" />
 							</span>
 						</TooltipTrigger>
-						<TooltipContent>{tooltip}</TooltipContent>
+						<TooltipContent>{resolvedTooltip}</TooltipContent>
 					</Tooltip>
 				</TooltipProvider>
 			</div>
@@ -142,9 +142,12 @@ export function MCPClientConfigsEditor({
 							<div className="flex items-start gap-1.5">
 								<Info className="mt-0.5 h-3 w-3 shrink-0" />
 								<span>
-									The following MCP servers are allowed by default, with all tools enabled, on any virtual key that doesn't configure them
-									explicitly: <span className="text-foreground font-medium">{defaultMCPClients.map((c) => c.config.name).join(", ")}</span>.
-									Adding an explicit config for one below overrides that all-tools default.
+									<Trans
+										t={t}
+										i18nKey="mcpConfigs.defaultsNote"
+										values={{ names: defaultMCPClients.map((c) => c.config.name).join(", ") }}
+										components={{ medium0: <span className="text-foreground font-medium" /> }}
+									/>
 								</span>
 							</div>
 						</div>
@@ -155,7 +158,7 @@ export function MCPClientConfigsEditor({
 			<MCPClientSelector
 				mode="add"
 				fullWidth
-				placeholder="Select an MCP server to add"
+				placeholder={t("mcpConfigs.selectServer")}
 				onSelect={handleAddMCPClient}
 				excludeIds={excludeIds}
 			/>
@@ -168,8 +171,8 @@ export function MCPClientConfigsEditor({
 					<Table>
 						<TableHeader>
 							<TableRow>
-								<TableHead>MCP Server</TableHead>
-								<TableHead>Allowed Tools</TableHead>
+								<TableHead>{t("mcpConfigs.server")}</TableHead>
+								<TableHead>{t("mcpConfigs.allowedTools")}</TableHead>
 								<TableHead className="w-[50px]"></TableHead>
 							</TableRow>
 						</TableHeader>
@@ -207,9 +210,9 @@ export function MCPClientConfigsEditor({
 												hideSelectAll
 												options={[
 													{
-														label: "Allow All Tools",
+														label: t("mcpConfigs.allowAllTools"),
 														value: "*",
-														description: "Allow all current and future tools",
+														description: t("mcpConfigs.allowAllToolsDescription"),
 													},
 													...[...availableTools, ...enabledToolsByConfig]
 														.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)
@@ -239,10 +242,10 @@ export function MCPClientConfigsEditor({
 												}}
 												placeholder={
 													selectedTools.length === 0
-														? "No tools selected"
+														? t("mcpConfigs.noToolsSelected")
 														: selectedTools.includes("*")
-															? "All tools allowed"
-															: "Select tools..."
+															? t("mcpConfigs.allToolsAllowed")
+															: t("mcpConfigs.selectTools")
 												}
 												variant="inverted"
 												className="hover:bg-accent w-full bg-white dark:bg-zinc-800"
@@ -256,7 +259,7 @@ export function MCPClientConfigsEditor({
 												type="button"
 												variant="ghost"
 												size="sm"
-												aria-label={`Remove ${displayName}`}
+												aria-label={t("mcpConfigs.removeAria", { name: displayName })}
 												onClick={() => handleRemoveMCPClient(index)}
 												data-testid={`vk-delete-mcp-${index}`}
 											>

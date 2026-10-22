@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import ContactUsView from "../../views/contactUsView";
 
 interface KafkaConnectorViewProps {
@@ -6,6 +7,8 @@ interface KafkaConnectorViewProps {
 }
 
 export default function KafkaConnectorView(_props: KafkaConnectorViewProps) {
+	const { t } = useTranslation("governance");
+
 	return (
 		<div className="space-y-6">
 			<div className="space-y-4">
@@ -15,8 +18,8 @@ export default function KafkaConnectorView(_props: KafkaConnectorViewProps) {
 						className="mx-auto w-full max-w-lg"
 						testIdPrefix="kafka-connector"
 						icon={<img src="/images/kafka-logo.svg" alt="Kafka" width={88} height={88} />}
-						title="Unlock native Kafka log streaming for real-time observability"
-						description="This feature is a part of the Bifrost enterprise license. Stream completed request traces as JSON to a Kafka topic for real-time analytics, alerting, and downstream processing."
+						title={t("connectorsUnlock.kafka")}
+						description={t("connectorsUnlock.kafkaDescription")}
 						readmeLink="https://docs.getbifrost.ai/enterprise/kafka-connector"
 					/>
 				</div>
