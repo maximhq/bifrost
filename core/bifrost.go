@@ -1880,6 +1880,10 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx *schemas.BifrostContext, req *s
 	if err != nil {
 		return nil, err
 	}
+	// Cache/plugin short-circuits can omit the non-serialized format metadata.
+	if response.TranscriptionResponse != nil && response.TranscriptionResponse.ResponseFormat == nil {
+		response.TranscriptionResponse.BackfillParams(req)
+	}
 	// TODO: Release the response
 	return response.TranscriptionResponse, nil
 }

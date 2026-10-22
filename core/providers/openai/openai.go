@@ -3293,6 +3293,16 @@ func HandleOpenAITranscriptionRequest(
 	}
 	// Extract provider response headers early so they're available on error paths too
 	providerResponseHeaders := timedExtractResponseHeaders(ctx, resp)
+	// Non-JSON transcriptions are re-served as text/subtitles, not a JSON
+	// envelope, so retain the upstream media type just as passthrough does.
+	if resp.StatusCode() == fasthttp.StatusOK && request.Params != nil && schemas.IsPlainTextTranscriptionFormat(request.Params.ResponseFormat) {
+		if contentType := resp.Header.Peek("Content-Type"); len(contentType) > 0 {
+			if providerResponseHeaders == nil {
+				providerResponseHeaders = make(map[string]string, 1)
+			}
+			providerResponseHeaders["Content-Type"] = string(contentType)
+		}
+	}
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	// Handle error response

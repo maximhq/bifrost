@@ -14,7 +14,76 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
+
+func TestTranscriptionNonJSONContentTypeWithoutOtherHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+		_, _ = io.WriteString(w, "WEBVTT\n\n00:00.000 --> 00:01.000\nHello.\n")
+	}))
+	defer upstream.Close()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	client := &fasthttp.Client{}
+	defer client.CloseIdleConnections()
+	req := &schemas.BifrostTranscriptionRequest{Model: "whisper-1", Input: &schemas.TranscriptionInput{
+		File: []byte("fake-audio-bytes"), Filename: "sample.wav",
+	}, Params: &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("vtt")}}
+	resp, err := HandleOpenAITranscriptionRequest(ctx, client, upstream.URL, req,
+		schemas.Key{Value: *schemas.NewSecretVar("test-key")}, nil, nil, schemas.OpenAI, false, nil, &testLogger{})
+	require.Nil(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, map[string]string{"Content-Type": "text/vtt; charset=utf-8"}, resp.ExtraFields.ProviderResponseHeaders)
+	require.Equal(t, resp.ExtraFields.ProviderResponseHeaders, ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders))
+}
+
+// Includes the local upstream round trip and provider parsing/header extraction;
+// latency figures therefore include loopback HTTP, not just gateway CPU time.
+func BenchmarkTranscriptionRequestResponseFormats(b *testing.B) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer r.MultipartForm.RemoveAll()
+		if r.FormValue("response_format") == "text" {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = io.WriteString(w, "Hello.\n")
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"text":"Hello."}`)
+		}
+	}))
+	defer upstream.Close()
+	for _, format := range []string{"", "json", "text"} {
+		name := format
+		if name == "" {
+			name = "default"
+		}
+		b.Run(name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			client := &fasthttp.Client{}
+			defer client.CloseIdleConnections()
+			var responseFormat *string
+			if format != "" {
+				responseFormat = &format
+			}
+			req := &schemas.BifrostTranscriptionRequest{Model: "whisper-1", Input: &schemas.TranscriptionInput{
+				File: []byte("fake-audio-bytes"), Filename: "sample.wav",
+			}, Params: &schemas.TranscriptionParameters{ResponseFormat: responseFormat}}
+			key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, err := HandleOpenAITranscriptionRequest(ctx, client, upstream.URL, req, key, nil, nil, schemas.OpenAI, false, nil, &testLogger{})
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
 
 // testLogger is a minimal no-op logger implementation for testing.
 type testLogger struct{}

@@ -2011,6 +2011,10 @@ func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
 	}
+	if resp != nil && schemas.IsPlainTextTranscriptionFormat(resp.ResponseFormat) {
+		ctx.SetBodyString(resp.Text)
+		return
+	}
 	// Send successful response
 	SendJSON(ctx, resp)
 }
