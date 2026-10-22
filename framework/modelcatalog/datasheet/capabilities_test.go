@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 
@@ -270,6 +271,26 @@ func TestExtractSupportedParams_NoModelParameters(t *testing.T) {
 	})
 	if slices.Contains(declared, "top_p") {
 		t.Errorf("expected top_p to stay undeclared for a row with a model_parameters list, got %v", declared)
+	}
+
+	// An explicit empty list declares an empty surface; only an absent (or
+	// null) list falls back to the defaults.
+	for _, tc := range []struct {
+		row          string
+		wantDefaults bool
+	}{
+		{`{"supports_function_calling": true}`, true},
+		{`{"supports_function_calling": true, "model_parameters": null}`, true},
+		{`{"supports_function_calling": true, "model_parameters": []}`, false},
+	} {
+		var caps schemas.ModelCapabilities
+		if err := json.Unmarshal([]byte(tc.row), &caps); err != nil {
+			t.Fatalf("unmarshal %s: %v", tc.row, err)
+		}
+		got := extractSupportedParams(&caps)
+		if slices.Contains(got, "temperature") != tc.wantDefaults {
+			t.Errorf("row %s: expected default sampling params=%v, got %v", tc.row, tc.wantDefaults, got)
+		}
 	}
 }
 
