@@ -303326,6 +303326,627 @@
           }
         }
       ]
+    },
+    {
+      "name": "264. Warp reads configuration through the Bifrost MCP (warp-management) [SERIAL]",
+      "description": "Warp now reaches Bifrost's /api through the Bifrost MCP that serves /v1/mcp, in process and as the dashboard caller, so a question about how the deployment is configured is answered from the configuration rather than declined. The case waits for the Bifrost MCP spec to load, configures Warp as folder 119 does, asks which providers are configured, and requires the turn to call a management read (listProviders and its neighbours) that succeeded. Red before the change: Warp had no tool that reads configuration and declined the question. Requires the warp flag to be on already (the harness never writes it: a write persists an override the API cannot reset) and the profile's vector store to be reachable; the previous Warp config is restored at the end.",
+      "item": [
+        {
+          "name": "openai warp-management setup: Bifrost MCP is loaded",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The Bifrost MCP loads its spec in the background after boot and answers 503 until it has.",
+                  "// Poll tools/list (carrying the setup token, as every row does) until it stops answering 503.",
+                  "var __token = pm.variables.get('setupToken');",
+                  "function __poll(attempt) {",
+                  "  pm.sendRequest({",
+                  "    url: pm.variables.replaceIn('{{baseUrl}}') + '/v1/mcp', method: 'POST',",
+                  "    header: { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': __token || '' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/list' }) }",
+                  "  }, function (err, res) {",
+                  "    if ((err || res.code === 503) && attempt < 30) { setTimeout(function () { __poll(attempt + 1); }, 1000); }",
+                  "  });",
+                  "}",
+                  "__poll(0);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('initialize is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the server advertises tools', function () {",
+                  "  pm.expect(body.result, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.result.capabilities.tools, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.result.serverInfo.name, pm.response.text()).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": {},\n    \"clientInfo\": {\n      \"name\": \"provider-harness\",\n      \"version\": \"1\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai warp-management setup: read warp feature flag",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management: feature flags list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var flag = pm.response.code === 200 ? (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0] : undefined;",
+                  "pm.test('warp-management: warp flag exists', function () {",
+                  "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "// The harness never writes the flag: every PUT persists an override, and the API has no way back to the default.",
+                  "// Warp is on by default in OSS, so a gateway with it off was turned off on purpose and this folder fails here instead.",
+                  "pm.test('warp-management: warp flag is on (the harness does not turn it on)', function () {",
+                  "  pm.expect(flag && flag.enabled, 'warp is off on this gateway: ' + pm.response.text()).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          }
+        },
+        {
+          "name": "openai warp-management setup: read current warp config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var configWas = null;",
+                  "if (pm.response.code === 200) {",
+                  "  try { configWas = pm.response.json(); } catch (e) { configWas = null; }",
+                  "}",
+                  "var configValid = !!configWas && typeof configWas === 'object' && !Array.isArray(configWas);",
+                  "pm.test('warp-management: warp config snapshot is an object', function () {",
+                  "  pm.expect(configValid, 'not a config object: ' + pm.response.text()).to.equal(true);",
+                  "});",
+                  "// Only a config that read back as an object is saved, so cleanup never PUTs an error body over the real config.",
+                  "if (configValid) {",
+                  "  pm.collectionVariables.set('warpManagementConfigWas', pm.response.text());",
+                  "} else {",
+                  "  pm.collectionVariables.unset('warpManagementConfigWas');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-management: configure Warp with no base URL",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Never overwrite the config without a snapshot to restore it from.",
+                  "if (pm.collectionVariables.get('warpManagementConfigWas') === undefined) {",
+                  "  pm.execution.skipRequest();",
+                  "  return;",
+                  "}",
+                  "// Keep any embedding space already saved: changing it without a new namespace",
+                  "// is rejected, and the harness must not disturb an existing index.",
+                  "var was = JSON.parse(pm.collectionVariables.get('warpManagementConfigWas') || '{}');",
+                  "var body = {",
+                  "  enabled: true,",
+                  "  provider: 'openai',",
+                  "  model: 'gpt-4o-mini',",
+                  "  api_key_id: '',",
+                  "  embedding_provider: was.embedding_provider || 'openai',",
+                  "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
+                  "  embedding_dimension: was.embedding_dimension || 1536,",
+                  "  log_vector_store_namespace: was.log_vector_store_namespace || ''",
+                  "};",
+                  "pm.collectionVariables.set('warpManagementConfigBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management: config saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('warp-management: config has no base_url', function () {",
+                  "  pm.expect(pm.response.json(), 'base_url should be gone: ' + pm.response.text()).to.not.have.property('base_url');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpManagementConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-management: a configuration question is answered through a management tool",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "// Before this change Warp had no tool that reads configuration, so it declined.",
+                  "var management = ['listProviders', 'getProvider', 'listProviderKeys', 'getConfig', 'listKeys', 'listModelsManagement', 'listModelDetailsManagement'];",
+                  "var used = (body.tool_calls || []).filter(function (call) { return management.indexOf(call.name) !== -1; });",
+                  "pm.test('warp-management: turn succeeded', function () {",
+                  "  pm.expect(body.error, 'turn failed: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.answer, 'no answer: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('warp-management: a management tool read the configuration', function () {",
+                  "  pm.expect(used.length, 'no management tool called: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(used.filter(function (call) { return !call.failed; }).length, 'every management call failed: ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "// The decline this change replaces: Warp saying it cannot see how the deployment is configured.",
+                  "var refusal = /\\b(can(?:no|')t|unable to|do(?:n't| not) have (?:access|a tool|the tools?))\\b[^.]{0,80}(configur|set ?up)/i;",
+                  "pm.test('warp-management: the answer does not decline the configuration question', function () {",
+                  "  pm.expect(refusal.test(body.answer || ''), 'declined: ' + body.answer).to.equal(false);",
+                  "});",
+                  "// The answer comes from the configuration, so it names a provider this deployment has.",
+                  "pm.sendRequest({",
+                  "  url: pm.variables.replaceIn('{{baseUrl}}') + '/api/providers', method: 'GET',",
+                  "  header: { 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || '' }",
+                  "}, function (err, res) {",
+                  "  pm.test('warp-management: the configured providers are readable', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "  });",
+                  "  var names = ((res && res.code === 200 && res.json().providers) || []).map(function (p) { return String(p.name || '').toLowerCase(); }).filter(Boolean);",
+                  "  if (names.length === 0) {",
+                  "    return;",
+                  "  }",
+                  "  pm.test('warp-management: the answer names a configured provider', function () {",
+                  "    var answer = (body.answer || '').toLowerCase();",
+                  "    pm.expect(names.some(function (name) { return answer.indexOf(name) !== -1; }), 'the answer names none of ' + names.join(', ') + ': ' + body.answer).to.equal(true);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"Which providers are configured on this Bifrost deployment? Check the configuration, not the traffic logs.\"}], \"stream\": false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-management confirm: asking for a write ends the turn with a confirmation card, and nothing is written",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh name per run, so the lookups below can only match the key this flow creates.",
+                  "var name = 'warp-harness-confirm-' + Date.now();",
+                  "pm.collectionVariables.set('warpConfirmName', name);",
+                  "pm.collectionVariables.unset('warpConfirmConversation');",
+                  "pm.collectionVariables.unset('warpConfirmToken');",
+                  "pm.collectionVariables.unset('warpConfirmVKID');",
+                  "pm.collectionVariables.unset('warpConfirmVKIDs');",
+                  "pm.collectionVariables.set('warpConfirmAskBody', JSON.stringify({",
+                  "  messages: [{ role: 'user', content: 'Create a virtual key named ' + name + ' with no other settings. Use the createVirtualKey tool now; do not ask me anything first.' }],",
+                  "  stream: false",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management confirm: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var name = pm.collectionVariables.get('warpConfirmName');",
+                  "var question = body.question || {};",
+                  "var options = question.options || [];",
+                  "pm.test('warp-management confirm: the turn ends with a confirmation card for createVirtualKey', function () {",
+                  "  pm.expect(body.error, 'turn failed: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.finish_reason, pm.response.text()).to.equal('question');",
+                  "  pm.expect(question.kind, pm.response.text()).to.equal('confirm');",
+                  "  pm.expect(question.question, pm.response.text()).to.include('createVirtualKey').and.to.include(name);",
+                  "});",
+                  "pm.test('warp-management confirm: Confirm carries a token, Cancel does not', function () {",
+                  "  pm.expect(options.length, pm.response.text()).to.equal(2);",
+                  "  pm.expect(options[0].hint, pm.response.text()).to.match(/^confirm:[0-9a-f]{32}$/);",
+                  "  pm.expect(options[1].hint, pm.response.text()).to.equal('cancel');",
+                  "});",
+                  "pm.test('warp-management confirm: the thread id comes back', function () {",
+                  "  pm.expect(body.conversation_id, pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "if (body.conversation_id) { pm.collectionVariables.set('warpConfirmConversation', body.conversation_id); }",
+                  "if (options[0] && options[0].hint) { pm.collectionVariables.set('warpConfirmToken', options[0].hint); }",
+                  "// Every virtual key with exactly this name, read straight from /api, not from what Warp says it did.",
+                  "function warpConfirmLookup(name, done) {",
+                  "  pm.sendRequest({",
+                  "    url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys?search=' + encodeURIComponent(name) + '&limit=100', method: 'GET',",
+                  "    header: { 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || '' }",
+                  "  }, function (err, res) {",
+                  "    pm.test('warp-management confirm: virtual keys are readable', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    var keys = (res && res.code === 200 && res.json().virtual_keys) || [];",
+                  "    var matched = keys.filter(function (vk) { return vk.name === name; });",
+                  "    // Every matching key is kept for cleanup, whichever lookup found it.",
+                  "    var kept = JSON.parse(pm.collectionVariables.get('warpConfirmVKIDs') || '[]');",
+                  "    matched.forEach(function (vk) { if (kept.indexOf(vk.id) < 0) { kept.push(vk.id); } });",
+                  "    pm.collectionVariables.set('warpConfirmVKIDs', JSON.stringify(kept));",
+                  "    if (kept.length > 0) { pm.collectionVariables.set('warpConfirmVKID', kept[0]); }",
+                  "    done(matched);",
+                  "  });",
+                  "}",
+                  "warpConfirmLookup(name, function (found) {",
+                  "  pm.test('warp-management confirm: the card alone writes nothing', function () {",
+                  "    pm.expect(found.length, 'a key was created before Confirm: ' + JSON.stringify(found)).to.equal(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpConfirmAskBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-management confirm: Confirm runs the write once, as the caller",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Exactly what the card's Confirm option sends: its hint, on the card's thread.",
+                  "pm.collectionVariables.set('warpConfirmBody', JSON.stringify({",
+                  "  conversation_id: pm.collectionVariables.get('warpConfirmConversation') || '',",
+                  "  messages: [{ role: 'user', content: pm.collectionVariables.get('warpConfirmToken') || '' }],",
+                  "  stream: false",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management confirm: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('warp-management confirm: the confirmed turn succeeded on the same thread', function () {",
+                  "  pm.expect(body.error, 'turn failed: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.conversation_id, pm.response.text()).to.equal(pm.collectionVariables.get('warpConfirmConversation'));",
+                  "});",
+                  "// Every virtual key with exactly this name, read straight from /api, not from what Warp says it did.",
+                  "function warpConfirmLookup(name, done) {",
+                  "  pm.sendRequest({",
+                  "    url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys?search=' + encodeURIComponent(name) + '&limit=100', method: 'GET',",
+                  "    header: { 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || '' }",
+                  "  }, function (err, res) {",
+                  "    pm.test('warp-management confirm: virtual keys are readable', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    var keys = (res && res.code === 200 && res.json().virtual_keys) || [];",
+                  "    var matched = keys.filter(function (vk) { return vk.name === name; });",
+                  "    // Every matching key is kept for cleanup, whichever lookup found it.",
+                  "    var kept = JSON.parse(pm.collectionVariables.get('warpConfirmVKIDs') || '[]');",
+                  "    matched.forEach(function (vk) { if (kept.indexOf(vk.id) < 0) { kept.push(vk.id); } });",
+                  "    pm.collectionVariables.set('warpConfirmVKIDs', JSON.stringify(kept));",
+                  "    if (kept.length > 0) { pm.collectionVariables.set('warpConfirmVKID', kept[0]); }",
+                  "    done(matched);",
+                  "  });",
+                  "}",
+                  "warpConfirmLookup(pm.collectionVariables.get('warpConfirmName'), function (found) {",
+                  "  pm.test('warp-management confirm: Confirm created exactly one key', function () {",
+                  "    pm.expect(found.length, 'keys with this name: ' + JSON.stringify(found)).to.equal(1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpConfirmBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-management confirm: pressing Confirm again does not repeat the write",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Exactly what the card's Confirm option sends: its hint, on the card's thread.",
+                  "pm.collectionVariables.set('warpConfirmBody', JSON.stringify({",
+                  "  conversation_id: pm.collectionVariables.get('warpConfirmConversation') || '',",
+                  "  messages: [{ role: 'user', content: pm.collectionVariables.get('warpConfirmToken') || '' }],",
+                  "  stream: false",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management confirm: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('warp-management confirm: the repeated Confirm is answered, not failed', function () {",
+                  "  pm.expect(body.error, 'turn failed: ' + pm.response.text()).to.equal(undefined);",
+                  "});",
+                  "// Every virtual key with exactly this name, read straight from /api, not from what Warp says it did.",
+                  "function warpConfirmLookup(name, done) {",
+                  "  pm.sendRequest({",
+                  "    url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys?search=' + encodeURIComponent(name) + '&limit=100', method: 'GET',",
+                  "    header: { 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || '' }",
+                  "  }, function (err, res) {",
+                  "    pm.test('warp-management confirm: virtual keys are readable', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    var keys = (res && res.code === 200 && res.json().virtual_keys) || [];",
+                  "    var matched = keys.filter(function (vk) { return vk.name === name; });",
+                  "    // Every matching key is kept for cleanup, whichever lookup found it.",
+                  "    var kept = JSON.parse(pm.collectionVariables.get('warpConfirmVKIDs') || '[]');",
+                  "    matched.forEach(function (vk) { if (kept.indexOf(vk.id) < 0) { kept.push(vk.id); } });",
+                  "    pm.collectionVariables.set('warpConfirmVKIDs', JSON.stringify(kept));",
+                  "    if (kept.length > 0) { pm.collectionVariables.set('warpConfirmVKID', kept[0]); }",
+                  "    done(matched);",
+                  "  });",
+                  "}",
+                  "warpConfirmLookup(pm.collectionVariables.get('warpConfirmName'), function (found) {",
+                  "  pm.test('warp-management confirm: still exactly one key after the second Confirm', function () {",
+                  "    pm.expect(found.length, 'keys with this name: ' + JSON.stringify(found)).to.equal(1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpConfirmBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai warp-management confirm cleanup: delete the confirmed virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Every key a lookup found, at any step: this request deletes the first, the test script the rest. Without one, nothing was created to remove.",
+                  "if (!pm.collectionVariables.get('warpConfirmVKID')) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management confirm: the created key is deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var first = pm.collectionVariables.get('warpConfirmVKID');",
+                  "JSON.parse(pm.collectionVariables.get('warpConfirmVKIDs') || '[]').filter(function (id) { return id !== first; }).forEach(function (id) {",
+                  "  pm.sendRequest({",
+                  "    url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + encodeURIComponent(id), method: 'DELETE',",
+                  "    header: { 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || '' }",
+                  "  }, function (err, res) {",
+                  "    pm.test('warp-management confirm: extra key ' + id + ' is deleted', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "  });",
+                  "});",
+                  "pm.collectionVariables.unset('warpConfirmVKIDs');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{warpConfirmVKID}}"
+          }
+        },
+        {
+          "name": "openai warp-management cleanup: restore warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Restore only a snapshot setup validated. Without one, setup did not change the config.",
+                  "if (pm.collectionVariables.get('warpManagementConfigWas') === undefined) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management: previous config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpManagementConfigWas}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        }
+      ]
     }
   ]
 }

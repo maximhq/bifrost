@@ -173,7 +173,14 @@ type BifrostMCPToolAccess func(caller *fasthttp.RequestCtx) func(method, path st
 // the spec has loaded. Until then Server returns nil.
 type BifrostMCP struct {
 	opts   BifrostMCPOptions
-	server atomic.Pointer[server.MCPServer]
+	loaded atomic.Pointer[bifrostMCPLoaded]
+}
+
+// bifrostMCPLoaded is one spec load: the server, and the operation behind
+// each of its tools, by tool name.
+type bifrostMCPLoaded struct {
+	server     *server.MCPServer
+	operations map[string]openapimcp.Operation
 }
 
 // NewBifrostMCP returns an unloaded holder; call Start to load it.
@@ -186,7 +193,10 @@ func (m *BifrostMCP) Server() *server.MCPServer {
 	if m == nil {
 		return nil
 	}
-	return m.server.Load()
+	if loaded := m.loaded.Load(); loaded != nil {
+		return loaded.server
+	}
+	return nil
 }
 
 // Start loads the spec in the background, retrying with backoff until it
@@ -231,7 +241,7 @@ func (m *BifrostMCP) Load(ctx context.Context) error {
 	for _, id := range report.unknown {
 		logger.Warn("[Bifrost MCP] denied operation %s is not in the spec", id)
 	}
-	m.server.Store(srv)
+	m.loaded.Store(&bifrostMCPLoaded{server: srv, operations: report.operations})
 	return nil
 }
 
@@ -308,7 +318,8 @@ type bifrostMCPReport struct {
 	excluded    int
 	unrouted    int // excluded because this gateway does not route them
 	unsupported []openapimcp.UnsupportedOperation
-	unknown     []string // bifrostMCPDenied entries the spec does not define
+	unknown     []string                        // bifrostMCPDenied entries the spec does not define
+	operations  map[string]openapimcp.Operation // the operation behind each exposed tool
 }
 
 // buildBifrostMCPServer turns spec bytes into the Bifrost MCP server.
@@ -330,8 +341,10 @@ func buildBifrostMCPServer(data []byte, specURL string, opts BifrostMCPOptions) 
 	}
 	report.unsupported = syn.Unsupported
 	report.exposed = len(syn.Tools)
+	report.operations = make(map[string]openapimcp.Operation, len(syn.Tools))
 	for i := range syn.Tools {
 		annotateBifrostMCPTool(&syn.Tools[i])
+		report.operations[syn.Tools[i].Name] = syn.Tools[i].Operation
 	}
 	srv, err := openapimcp.BuildServer(openapimcp.ServerOptions{
 		ClientName:      "gateway",
@@ -484,6 +497,7 @@ type bifrostMCPCaller struct {
 	headers http.Header
 	host    string
 	remote  net.Addr
+	cookie  string // the dashboard's Cookie header; set only for Warp (see warpManagementCaller)
 }
 
 // WithBifrostMCPCaller records on ctx who the Bifrost MCP's tool calls act
@@ -567,14 +581,19 @@ func (e *BifrostMCPExecutor) Shutdown(ctx context.Context) error {
 }
 
 // bifrostMCPTransport gives each call the caller's Host and drops any Cookie
-// header, whatever put it there: a call never carries a browser session.
+// header, whatever put it there, so a /v1/mcp call never carries a browser
+// session. The one exception is Warp's caller, whose dashboard cookie replaces it.
 type bifrostMCPTransport struct{ next http.RoundTripper }
 
 func (t bifrostMCPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
 	req.Header.Del("Cookie")
-	if caller, _ := req.Context().Value(bifrostMCPCallerKey{}).(bifrostMCPCaller); caller.host != "" {
+	caller, _ := req.Context().Value(bifrostMCPCallerKey{}).(bifrostMCPCaller)
+	if caller.host != "" {
 		req.Host = caller.host
+	}
+	if caller.cookie != "" {
+		req.Header.Set("Cookie", caller.cookie)
 	}
 	return t.next.RoundTrip(req)
 }

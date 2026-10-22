@@ -296,6 +296,11 @@ func conversationDetailFromRow(row *logstore.WarpConversation) schemas.WarpConve
 			// Same posture as the tool trace: a bad blob costs the card's
 			// options, never the message.
 			_ = sonic.UnmarshalString(message.QuestionJSON, &stored.Question)
+			// The pending call is the server's record of what a confirmation
+			// card asks; the card itself already shows it.
+			if stored.Question != nil {
+				stored.Question.Pending = nil
+			}
 		}
 		totalTokens += message.TotalTokens
 		totalCost += message.Cost
@@ -432,6 +437,7 @@ func storedQuestionFrom(question *Question) *schemas.WarpStoredQuestion {
 	return &schemas.WarpStoredQuestion{
 		Question: question.Question, Options: options,
 		AllowOther: question.AllowOther, Kind: question.Kind,
+		Pending: question.pending,
 	}
 }
 
