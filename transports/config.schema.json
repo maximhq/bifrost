@@ -7349,63 +7349,14 @@
           "$ref": "#/$defs/base_key"
         },
         {
-          "type": "object",
           "properties": {
-            "github_copilot_key_config": {
-              "type": "object",
-              "properties": {
-                "app_id": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
-                },
-                "installation_id": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Installation to mint tokens for, digits only (can use env. prefix)"
-                },
-                "repository_id": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
-                },
-                "private_key": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
-                },
-                "github_domain": {
-                  "type": "string",
-                  "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
-                }
-              },
-              "required": [
-                "app_id",
-                "installation_id",
-                "repository_id",
-                "private_key"
-              ],
-              "additionalProperties": false
+            "value": {
+              "minLength": 1,
+              "description": "A fine-grained personal access token (github_pat_), a GitHub OAuth token from Sign in with GitHub (ghu_ or gho_), or a Copilot API token with network_config.base_url (can use env. prefix)"
             }
-          }
-        },
-        {
-          "anyOf": [
-            {
-              "properties": {
-                "value": {
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "value"
-              ]
-            },
-            {
-              "required": [
-                "github_copilot_key_config"
-              ]
-            }
+          },
+          "required": [
+            "value"
           ]
         }
       ]
