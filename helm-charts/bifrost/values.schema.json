@@ -3462,6 +3462,11 @@
                         "type": "string",
                         "description": "Okta API token for Admin API access (optional; enables 24-hour background user/group reconciliation)"
                       },
+                      "syncAllUsers": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Which Okta users directory sync (apiToken) keeps. True (the default when unset) syncs every app-assigned user except those SUSPENDED or DEPROVISIONED (deactivated); false syncs ACTIVE users only. Maps to scim_config.config.syncAllUsers."
+                      },
                       "audience": {
                         "type": "string",
                         "description": "JWT audience for validation (optional)"

@@ -1303,6 +1303,7 @@ bifrost:
       # clientId: ""
       # clientSecret: ""
       # apiToken: ""  # optional — enables background user/group reconciliation (every bulkSyncInterval, 24h by default)
+      # syncAllUsers: true  # directory sync keeps every app-assigned user except suspended/deactivated; false = active users only
       # audience: ""
       # # Extra OAuth scopes on top of the base openid/profile/email/offline_access set
       # # (for Custom Authorization Servers where claims like "groups" are gated behind a scope).

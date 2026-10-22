@@ -10415,6 +10415,11 @@
           "type": "string",
           "description": "Okta API token for Admin API access (optional; enables background user/group reconciliation on the bulkSyncInterval schedule, 24h by default)"
         },
+        "syncAllUsers": {
+          "type": "boolean",
+          "default": true,
+          "description": "Which Okta users directory sync (apiToken) keeps. True (the default when unset) syncs every app-assigned user except those SUSPENDED or DEPROVISIONED (deactivated); false syncs ACTIVE users only."
+        },
         "audience": {
           "type": "string",
           "description": "JWT audience for validation (optional)"
