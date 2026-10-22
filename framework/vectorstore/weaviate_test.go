@@ -2,6 +2,9 @@ package vectorstore
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -885,4 +888,57 @@ func TestWeaviateStore_DeleteMissingIDSucceeds(t *testing.T) {
 	properties := map[string]VectorStoreProperties{"type": {DataType: VectorStorePropertyTypeString}}
 	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, TestClassName, 384, properties))
 	assert.NoError(t, setup.Store.Delete(setup.ctx, TestClassName, generateUUID()))
+}
+
+// TestWeaviateStore_SendsIntegrationHeader pins the X-Weaviate-Client-Integration header the
+// store sends so Weaviate can attribute traffic to Bifrost, and that a user-supplied header of
+// the same name wins.
+func TestWeaviateStore_SendsIntegrationHeader(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+
+	tests := []struct {
+		name        string
+		ctx         context.Context
+		userHeaders map[string]string
+		want        string
+	}{
+		{
+			name: "runtime version from bootstrap context",
+			ctx:  context.WithValue(context.Background(), schemas.BifrostContextKeyRuntimeVersion, "v2.3.1"),
+			want: "bifrost/2.3.1",
+		},
+		{
+			name: "no runtime version",
+			ctx:  context.Background(),
+			want: "bifrost/unknown",
+		},
+		{
+			name:        "user header wins",
+			ctx:         context.WithValue(context.Background(), schemas.BifrostContextKeyRuntimeVersion, "v2.3.1"),
+			userHeaders: map[string]string{"x-weaviate-client-integration": "custom/1.0"},
+			want:        "custom/1.0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Get("X-Weaviate-Client-Integration")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"version":"1.39.13"}`))
+			}))
+			defer server.Close()
+
+			config := WeaviateConfig{
+				Scheme:  "http",
+				Host:    schemas.NewSecretVar(strings.TrimPrefix(server.URL, "http://")),
+				Headers: tt.userHeaders,
+			}
+			_, err := newWeaviateStore(tt.ctx, &config, logger)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.userHeaders, config.Headers, "user headers must not be modified")
+		})
+	}
 }

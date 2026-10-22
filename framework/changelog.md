@@ -1,3 +1,4 @@
+- [feat]: Weaviate vector store sends an `X-Weaviate-Client-Integration: bifrost/<version>` header on REST and gRPC requests so Weaviate can attribute the traffic; a user-supplied header of the same name takes precedence
 - chore: upgraded Go to 1.27.3 and core to v1.13.1
 - [fix]: MiniMax video jobs are settled and priced by the video job sweeper instead of being skipped
 - [feat]: BytePlus video jobs are settled and priced by the video job sweeper
