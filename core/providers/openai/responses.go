@@ -930,6 +930,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			messages = append(messages, message)
 		}
 	}
+	if !caps.SupportsMidConversationSystem(true) {
+		messages = inlineResponsesMidConversationSystem(messages)
+	}
 	// Targets that speak prompt_cache_breakpoint need the caching intent translated
 	// out of cache_control, which their serializer would otherwise strip.
 	// Match on the BASE provider, not the key the request arrived under. A custom

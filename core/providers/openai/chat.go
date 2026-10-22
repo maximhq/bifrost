@@ -48,6 +48,9 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	// Canonical model for capability gating only; wire model (openaiReq.Model) is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	if !caps.SupportsMidConversationSystem(true) {
+		openaiReq.Messages = inlineChatMidConversationSystem(openaiReq.Messages)
+	}
 
 	// Messages is a fresh conversion, so the caller's input keeps its roles.
 	if developerRoleUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model) {

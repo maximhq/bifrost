@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -4833,4 +4834,57 @@ func TestToOpenAIResponsesRequest_StripsTextEditorMaxCharacters(t *testing.T) {
 	if strings.Contains(string(data), `"max_characters"`) {
 		t.Errorf("max_characters leaked onto the OpenAI wire: %s", data)
 	}
+}
+
+// TestToOpenAIResponsesRequest_MidConversationSystemFromDatasheet pins the Responses side of the
+// supports_mid_conversation_system_messages gate: system/developer items after the leading run
+// become <system-reminder> user items only when the datasheet row says false.
+func TestToOpenAIResponsesRequest_MidConversationSystemFromDatasheet(t *testing.T) {
+	const model = "accounts/fireworks/models/qwen3p8-max"
+	msg := func(role schemas.ResponsesMessageRoleType, text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(role),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)},
+		}
+	}
+	input := []schemas.ResponsesMessage{
+		msg(schemas.ResponsesInputMessageRoleDeveloper, "be brief"),
+		msg(schemas.ResponsesInputMessageRoleUser, "hi"),
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("answer in french")},
+			}},
+		},
+		msg(schemas.ResponsesInputMessageRoleSystem, "stay polite"),
+		msg(schemas.ResponsesInputMessageRoleUser, "how are you"),
+	}
+	newReq := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{Provider: schemas.Fireworks, Model: model, Input: slices.Clone(input)}
+	}
+
+	t.Run("datasheet_false_inlines_mid_conversation_system", func(t *testing.T) {
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{SupportsMidConversationSystem: schemas.Ptr(false)})
+		req := newReq()
+		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+		require.Len(t, out.Input.OpenAIResponsesRequestInputArray, 5)
+		items := out.Input.OpenAIResponsesRequestInputArray
+		// Fireworks Qwen sends developer as system by default (supports_developer_role).
+		require.Equal(t, schemas.ResponsesInputMessageRoleSystem, *items[0].Role)
+		require.Equal(t, schemas.ResponsesInputMessageRoleUser, *items[2].Role)
+		require.Equal(t, "<system-reminder>\nanswer in french\n</system-reminder>\n", *items[2].Content.ContentBlocks[0].Text)
+		require.Equal(t, schemas.ResponsesInputMessageRoleUser, *items[3].Role)
+		require.Equal(t, "<system-reminder>\nstay polite\n</system-reminder>\n", *items[3].Content.ContentStr)
+		// The caller's input is not rewritten.
+		require.Equal(t, schemas.ResponsesInputMessageRoleDeveloper, *req.Input[2].Role)
+		require.Equal(t, "answer in french", *req.Input[2].Content.ContentBlocks[0].Text)
+	})
+
+	t.Run("datasheet_silent_keeps_mid_conversation_system", func(t *testing.T) {
+		installCapabilityRecord(t, model, nil)
+		out := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.Equal(t, schemas.ResponsesInputMessageRoleSystem, *out.Input.OpenAIResponsesRequestInputArray[2].Role)
+	})
 }
