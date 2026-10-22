@@ -7,7 +7,7 @@ export type WarpEventType = "start" | "delta" | "tool_call_start" | "tool_call_e
 /** A structured question Warp poses when it cannot safely guess. */
 export interface WarpQuestion {
 	question: string;
-	kind?: "time_range" | "scope" | "other";
+	kind?: "time_range" | "scope" | "other" | "confirm";
 	options: WarpQuestionOption[];
 	allow_other?: boolean;
 }

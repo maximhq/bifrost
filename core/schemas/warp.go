@@ -411,6 +411,18 @@ type WarpStoredQuestion struct {
 	Options    []WarpStoredQuestionOpt `json:"options"`
 	AllowOther bool                    `json:"allow_other"`
 	Kind       string                  `json:"kind,omitempty"`
+	// Pending is the management call a confirmation card is asking about. It is
+	// persisted with the card and never returned by the conversation API.
+	Pending *WarpPendingCall `json:"pending,omitempty"`
+}
+
+// WarpPendingCall is a management write held until the person confirms it.
+// Token is what the card's Confirm option sends back; Arguments is the JSON the
+// model gave the tool.
+type WarpPendingCall struct {
+	Token     string `json:"token"`
+	Tool      string `json:"tool"`
+	Arguments string `json:"arguments"`
 }
 
 // WarpStoredQuestionOpt is one pickable answer.

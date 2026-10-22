@@ -2934,6 +2934,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		UserGovernance:       s.WarpUserGovernanceReader,
 		CallerRestriction:    s.WarpCallerRestrictionResolver,
 	})
+	if s.BifrostMCP != nil {
+		s.WarpHandler.Service().SetManagementTools(handlers.NewWarpManagementTools(s.BifrostMCP))
+	}
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware
@@ -3725,6 +3728,11 @@ func (s *BifrostHTTPServer) StartManagementMCP(ctx context.Context, edition hand
 		ExecClient:  s.managementMCPExec.Client,
 	})
 	handlers.NewManagementMCPHandler(s.BifrostMCP).RegisterRoutes(s.Router, middlewares...)
+	// Warp's routes are registered before the management MCP exists, so its tools
+	// are bound here; a Warp handler built later binds them itself.
+	if s.WarpHandler != nil {
+		s.WarpHandler.Service().SetManagementTools(handlers.NewWarpManagementTools(s.BifrostMCP))
+	}
 	s.BifrostMCP.Start(ctx)
 }
 
