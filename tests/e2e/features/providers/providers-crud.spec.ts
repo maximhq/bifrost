@@ -1,5 +1,6 @@
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
+import { expectListLoadError } from "../../core/utils/test-helpers";
 import {
   createCustomProviderData,
   createProviderKeyData,
@@ -119,6 +120,12 @@ test.describe("Providers", () => {
       // Switch to Anthropic
       await providersPage.selectProvider("anthropic");
       await expect(providersPage.page).toHaveURL(/provider=anthropic/);
+    });
+
+    test("should show the load error instead of the empty state when providers fail to load", async ({
+      page,
+    }) => {
+      await expectListLoadError(page, "/api/providers", "providers-load-error", "providers-button-read-more");
     });
   });
 
