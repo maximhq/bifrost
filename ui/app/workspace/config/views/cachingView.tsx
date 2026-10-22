@@ -86,8 +86,10 @@ const buildPayload = (config: EditorCacheConfig, mode: CacheMode): CacheConfig =
 		cache_by_model: config.cache_by_model,
 		cache_by_provider: config.cache_by_provider,
 		disable_identity_scoping: config.disable_identity_scoping ?? false,
-		vector_store_namespace: config.vector_store_namespace?.trim() || undefined,
-		default_cache_key: config.default_cache_key?.trim() || undefined,
+		// Sent as "" (not undefined) when blank so the server-side merge clears
+		// a previously saved value instead of keeping it.
+		vector_store_namespace: config.vector_store_namespace?.trim() ?? "",
+		default_cache_key: config.default_cache_key?.trim() ?? "",
 	};
 	if (mode === "direct") {
 		return { ...base, provider: "", embedding_model: "", dimension: 1 } as CacheConfig;
