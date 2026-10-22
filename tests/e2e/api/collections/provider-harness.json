@@ -279550,6 +279550,117 @@
               }
             }
           ]
+        },
+        {
+          "name": "266.9 azure/whisper native /v1/audio/transcriptions json returns text with duration usage (azure whisper)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/whisper",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure Whisper json returns the text alone, billed by the second', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'no text: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage && j.usage.type, 'Azure Whisper sends no usage, so the gateway reads it from the duration: ' + body.slice(0, 300)).to.equal('duration');",
+                  "  pm.expect(j.usage.seconds, 'billed seconds must be whole and positive: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(j.usage.seconds % 1, 'billed seconds are rounded up to the second').to.equal(0);",
+                  "  pm.expect(j, 'json carries only text and usage, as OpenAI json does: ' + body.slice(0, 300)).to.not.have.any.keys('duration', 'language', 'task', 'segments', 'words');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.10 azure/whisper OpenAI drop-in /openai/v1/audio/transcriptions verbose_json keeps segments and adds duration usage (azure whisper)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azure/whisper",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "response_format",
+                  "value": "verbose_json",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('Azure Whisper verbose_json keeps its fields and is billed by the second', function () {",
+                  "  pm.expect(pm.response.code, 'transcription failed: ' + body.slice(0, 300)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'no text: ' + body.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.segments, 'segments: ' + body.slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.usage && j.usage.type, 'Azure Whisper sends no usage, so the gateway reads it from the duration: ' + body.slice(0, 300)).to.equal('duration');",
+                  "  pm.expect(j.usage.seconds % 1, 'billed seconds are rounded up to the second').to.equal(0);",
+                  "  pm.expect(j.duration, 'duration: ' + body.slice(0, 300)).to.be.above(0).and.at.most(j.usage.seconds);",
+                  "  pm.expect(j.usage.seconds - j.duration, 'billed seconds round the duration up by less than one second').to.be.below(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

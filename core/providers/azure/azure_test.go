@@ -570,3 +570,88 @@ func TestAzureDecisionPassesAzureErrorsThrough(t *testing.T) {
 		})
 	}
 }
+
+// Azure Whisper bodies below are as captured from a live "whisper" deployment for a 4.24s clip.
+const (
+	azureWhisperJSONBody        = `{"text":"Hello, this is a sample test. Respond with hello for my Bifrost."}`
+	azureWhisperVerboseJSONBody = `{"text":"Hello, this is a sample test. Respond with hello for my Bifrost.","segments":[{"temperature":0,"avg_logprob":-0.35184234380722046,"no_speech_prob":0.00458449125289917,"seek":0,"end":4.400000095367432,"tokens":[50364,2425,11,341,307,257,6889,1500,13,22480,684,365,7751,337,452,363,351,27494,13,50584],"compression_ratio":0.9552238583564758,"id":0,"start":0,"text":" Hello, this is a sample test. Respond with hello for my Bifrost."}],"task":"transcribe","language":"english","duration":4.239999771118164}`
+)
+
+// TestAzureWhisperTranscriptionReportsDurationUsage pins Whisper billing on Azure, which returns no
+// usage block: json is fetched as verbose_json and returned as text only, verbose_json is returned
+// whole, and both carry the duration rounded up to the second. text carries no duration and is
+// left as is, and other transcription models keep the format the caller asked for.
+func TestAzureWhisperTranscriptionReportsDurationUsage(t *testing.T) {
+	const text = "Hello, this is a sample test. Respond with hello for my Bifrost."
+	cases := []struct {
+		name, model  string
+		format       *string
+		wantUpstream string
+		wantSeconds  *float64
+		wantVerbose  bool
+	}{
+		{name: "default json", model: "whisper", wantUpstream: "verbose_json", wantSeconds: new(5.0)},
+		{name: "json", model: "whisper", format: new("json"), wantUpstream: "verbose_json", wantSeconds: new(5.0)},
+		{name: "verbose_json", model: "whisper", format: new("verbose_json"), wantUpstream: "verbose_json", wantSeconds: new(5.0), wantVerbose: true},
+		{name: "text", model: "whisper", format: new("text"), wantUpstream: "text"},
+		{name: "other model", model: "gpt-4o-transcribe", wantUpstream: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			type capturedRequest struct{ path, format string }
+			captured := make(chan capturedRequest, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = r.ParseMultipartForm(1 << 20)
+				format := r.FormValue("response_format")
+				captured <- capturedRequest{path: r.URL.Path, format: format}
+				switch format {
+				case "verbose_json":
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, azureWhisperVerboseJSONBody)
+				case "text":
+					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+					_, _ = io.WriteString(w, text+"\n")
+				default:
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, azureWhisperJSONBody)
+				}
+			}))
+			defer server.Close()
+
+			request := &schemas.BifrostTranscriptionRequest{
+				Provider: schemas.Azure,
+				Model:    tc.model,
+				Input:    &schemas.TranscriptionInput{File: []byte("ID3 audio"), Filename: "sample.mp3"},
+				Params:   &schemas.TranscriptionParameters{ResponseFormat: tc.format},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, bifrostErr := newAzureDecisionProvider(t).Transcription(ctx, newAzureDecisionKey(server.URL), request)
+			if bifrostErr != nil {
+				t.Fatalf("Transcription: %+v", bifrostErr.Error)
+			}
+			sent := <-captured
+
+			if want := "/openai/deployments/" + tc.model + "/audio/transcriptions"; sent.path != want {
+				t.Errorf("path = %s, want %s", sent.path, want)
+			}
+			if sent.format != tc.wantUpstream {
+				t.Errorf("upstream response_format = %q, want %q", sent.format, tc.wantUpstream)
+			}
+			if tc.format != nil && *request.Params.ResponseFormat != *tc.format || tc.format == nil && request.Params.ResponseFormat != nil {
+				t.Errorf("caller's response_format changed to %v", request.Params.ResponseFormat)
+			}
+			if strings.TrimSpace(resp.Text) != text {
+				t.Errorf("text = %q, want %q", resp.Text, text)
+			}
+			switch {
+			case tc.wantSeconds == nil && resp.Usage != nil:
+				t.Errorf("usage = %+v, want none", resp.Usage)
+			case tc.wantSeconds != nil && (resp.Usage == nil || resp.Usage.Type != "duration" || resp.Usage.Seconds == nil || *resp.Usage.Seconds != *tc.wantSeconds):
+				t.Errorf("usage = %+v, want %v duration seconds", resp.Usage, *tc.wantSeconds)
+			}
+			if gotVerbose := resp.Duration != nil || resp.Language != nil || resp.Task != nil || len(resp.Segments) > 0; gotVerbose != tc.wantVerbose {
+				t.Errorf("verbose fields present = %v, want %v (duration %v, segments %d)", gotVerbose, tc.wantVerbose, resp.Duration, len(resp.Segments))
+			}
+		})
+	}
+}
