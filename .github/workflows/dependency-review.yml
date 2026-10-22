@@ -14,6 +14,11 @@ permissions:
 
 jobs:
   dependency-review:
+    # Pull requests from outside contributors (forks, or authors who are not members
+    # or owners of maximhq) cannot get a runner until @maximhq/bifrost-admin approves
+    # the run through Review deployments. Everyone else lands on ci-trusted-branch,
+    # an environment with no protection rules that only gives the job a name.
+    environment: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || !contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)) && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
