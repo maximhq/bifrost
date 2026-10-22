@@ -106,7 +106,9 @@ type Tracer interface {
 	AwaitTransportHandoff(traceID string)
 	// HoldTraceFlush keeps CompleteAndFlushTrace from exporting the trace until the
 	// returned release runs, so a background writer can still add spans to it. A
-	// flush requested while held runs on the last release.
+	// flush requested while held runs on the last release. Take it while the
+	// request is still being handled, before the trace completes: a hold taken
+	// once completion has started does not delay the export.
 	HoldTraceFlush(traceID string) (release func())
 
 	// StoreDeferredSpan stores a span handle for later completion (used for streaming requests).

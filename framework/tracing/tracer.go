@@ -833,6 +833,12 @@ func (t *Tracer) ClearTraceCompletionDeferral(traceID string) {
 // flush requested while held runs on the last release. Unlike
 // DeferTraceCompletion, the transport still completes the trace as usual; only
 // the export waits. A trace that already ended gets a no-op release.
+//
+// Take the hold while the request is still being handled (e.g. from a plugin
+// hook), before the trace completes. A hold taken once completion has started
+// does not delay the export, and spans written under it may be dropped.
+// Closing that window would serialize every request's completion with
+// admission, so it is left to the caller's ordering instead.
 func (t *Tracer) HoldTraceFlush(traceID string) func() {
 	traceID = strings.TrimSpace(traceID)
 	if t == nil || traceID == "" || t.store == nil || t.store.GetTrace(traceID) == nil {
