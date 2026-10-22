@@ -33,6 +33,18 @@ type agentPushStore struct {
 	deliveries map[string]schemas.AgentPushDelivery
 }
 
+func (s *agentPushStore) DeleteAgentPushConfigByIngressTokenHash(_ context.Context, agentName, hash string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, config := range s.configs {
+		if config.AgentName == agentName && config.IngressTokenHash == hash {
+			s.configs = append(s.configs[:i], s.configs[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *agentPushStore) SaveAgentPushConfig(_ context.Context, config *schemas.AgentPushConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -51,7 +63,7 @@ func (s *agentPushStore) BindAgentPushConfigTask(_ context.Context, agentName, i
 	return nil
 }
 
-func (s *agentPushStore) GetAgentPushConfig(_ context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error) {
+func (s *agentPushStore) GetAgentPushConfig(_ context.Context, agentName, tenant, taskID, configID string) (*schemas.AgentPushConfig, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, config := range s.configs {
@@ -75,7 +87,7 @@ func (s *agentPushStore) GetAgentPushConfigByIngressTokenHash(_ context.Context,
 	return nil, nil
 }
 
-func (s *agentPushStore) ListAgentPushConfigs(_ context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error) {
+func (s *agentPushStore) ListAgentPushConfigs(_ context.Context, agentName, tenant, taskID string) ([]schemas.AgentPushConfig, error) {
 	return nil, nil
 }
 
@@ -87,7 +99,7 @@ func (s *agentPushStore) ListAgentPushConfigAgentNames(context.Context) ([]strin
 	return nil, nil
 }
 
-func (s *agentPushStore) DeleteAgentPushConfig(_ context.Context, agentName, taskID, configID string) (bool, error) {
+func (s *agentPushStore) DeleteAgentPushConfig(_ context.Context, agentName, tenant, taskID, configID string) (bool, error) {
 	return false, nil
 }
 

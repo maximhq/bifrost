@@ -21,10 +21,11 @@ export const agentsApi = baseApi.injectEndpoints({
 			providesTags: ["Agents"],
 		}),
 
-		deleteAgentPushConfig: builder.mutation<void, Pick<AgentPushConfigView, "agent_name" | "task_id" | "config_id">>({
-			query: ({ agent_name, task_id, config_id }) => ({
+		deleteAgentPushConfig: builder.mutation<void, Pick<AgentPushConfigView, "agent_name" | "tenant" | "task_id" | "config_id">>({
+			query: ({ agent_name, tenant, task_id, config_id }) => ({
 				url: `/agents/push-configs/${encodeURIComponent(agent_name)}/${encodeURIComponent(task_id)}/${encodeURIComponent(config_id)}`,
 				method: "DELETE",
+				params: { tenant: tenant ?? "" },
 			}),
 			invalidatesTags: ["Agents"],
 		}),
