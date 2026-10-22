@@ -2,6 +2,68 @@
 
 End-to-end API tests for the Bifrost API using Postman collections and [Newman](https://www.npmjs.com/package/newman) (CLI).
 
+## Redis index recovery fixture
+
+Provider-harness folder **264. Redis index recovery after external schema loss (#2791)**
+has two opt-in `[PREVIEW]` rows: chat completions and chat SSE. They require manual
+fault injection; the collection never deletes a Redis index itself. The real-Redis
+Go regressions in `framework/vectorstore/redis_test.go` automate that fault and its
+concurrent/deletion/ACL edge cases without calling paid providers.
+
+Use a dedicated local Redis and gateway, never production. Before starting Bifrost,
+temporarily configure `tests/integrations/python/config.json` with the following
+vector-store/plugin settings, retaining its provider keys and inference-auth setting:
+
+```json
+{
+  "vector_store": {"enabled": true, "type": "redis", "config": {"addr": "127.0.0.1:16381"}},
+  "plugins": [{"name": "semantic_cache", "enabled": true, "config": {
+    "provider": "openai", "embedding_model": "text-embedding-3-small", "dimension": 1536,
+    "vector_store_namespace": "HarnessRedisIndexRecovery", "ttl": "1h",
+    "cache_by_model": true, "cache_by_provider": true
+  }}]
+}
+```
+
+Start the backing service and the gateway in separate terminals:
+
+```bash
+docker run --rm -d --name bifrost-redis-recovery-harness -p 127.0.0.1:16381:6379 redis:8.6.2-alpine redis-server --save '' --appendonly no
+make dev PORT=18082 APP_DIR=$(pwd)/tests/integrations/python
+```
+
+Warm **both exact request bodies** and confirm hits before dropping the index. These
+seed requests deliberately omit `x-bf-cache-no-store`; the verification rows include
+it so a miss cannot refill the cache and falsely pass. Run with baseline compat
+settings and no other traffic to this cache namespace:
+
+```bash
+mkdir -p .tmp/redis-recovery-harness
+jq -r '.item[] | select(.name | startswith("264.")) | .item[] | select(.name | contains("unary")) | .request.body.raw' tests/e2e/api/collections/provider-harness.json > .tmp/redis-recovery-harness/chat.json
+jq -r '.item[] | select(.name | startswith("264.")) | .item[] | select(.name | contains("SSE")) | .request.body.raw' tests/e2e/api/collections/provider-harness.json > .tmp/redis-recovery-harness/stream.json
+for kind in chat stream; do
+  for attempt in 1 2 3 4 5 6 7 8; do
+    curl -fsS http://localhost:18082/v1/chat/completions \
+      -H 'Content-Type: application/json' -H 'x-bf-cache-type: semantic' \
+      -H "x-bf-cache-key: redis-index-recovery-$kind" \
+      --data-binary @.tmp/redis-recovery-harness/$kind.json \
+      -D .tmp/redis-recovery-harness/$kind.headers -o .tmp/redis-recovery-harness/$kind.response || exit 1
+    grep -qi '^x-bifrost-cache-hit: true' .tmp/redis-recovery-harness/$kind.headers && break
+    sleep 0.25
+  done
+  grep -qi '^x-bifrost-cache-hit: true' .tmp/redis-recovery-harness/$kind.headers || exit 1
+done
+redis-cli -p 16381 FT.DROPINDEX HarnessRedisIndexRecovery
+make run-provider-harness-test PROVIDER=openai FEATURE="redis index recovery" INCLUDE_PREVIEW=1 BASE_URL=http://localhost:18082 HARNESS_MAX_REQUESTS=16
+```
+
+Do **not** add `DD`, use `FLUSHDB`, restart Bifrost, or reload the plugin between the
+drop and verification: the seed hashes must survive while their index is absent.
+Each verification row retries at most eight times for asynchronous reindexing and
+fails on HTTP/protocol errors. The two rows make at most 16 gateway calls; fixture
+preparation and internal embedding calls are additional paid-provider work.
+Restore the local profile and stop the dedicated Redis container afterward.
+
 ## Provider secret redaction
 
 The API management collection's `Provider Secret Redaction` folder covers every
