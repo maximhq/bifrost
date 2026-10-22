@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"sort"
@@ -57,6 +58,7 @@ type residencyTarget struct {
 	tlsConfig    *tls.Config
 	allowPrivate bool
 	slotKey      string // provider|baseURL, built once so a cached probe reads a map without building a key
+	identity     uint64 // fingerprint of what the probe sends, so a refresh can tell a reconfigured endpoint from an identical rebuild
 }
 
 const (
@@ -101,7 +103,7 @@ type residencyRegistry struct {
 // contention across cores for a swap that happens at most when config changes.
 type VirtualModelService struct {
 	registry atomic.Pointer[residencyRegistry]
-	created  int64 // when the current definitions were installed, in Unix seconds
+	created  atomic.Int64 // when the current definitions were installed, in Unix seconds
 	slots    sync.Map
 	factory  *network.HTTPClientFactory
 	logger   schemas.Logger
@@ -167,7 +169,7 @@ func (s *VirtualModelService) Install(virtualModels map[string]schemas.VirtualMo
 	}
 
 	s.registry.Store(registry)
-	s.created = time.Now().Unix()
+	s.created.Store(time.Now().Unix())
 	if s.logger != nil {
 		s.logger.Info("virtual models installed: %d", len(registry.entries))
 	}
@@ -274,6 +276,10 @@ func buildResidencyTarget(provider schemas.ModelProvider, providerCfg configstor
 	if err != nil {
 		return nil, err
 	}
+	caPEM := ""
+	if networkCfg != nil && networkCfg.CACertPEM != nil {
+		caPEM = networkCfg.CACertPEM.GetValue()
+	}
 
 	// A failure is remembered for at least a second, or cache_ttl_ms if longer: someone who
 	// tolerates a 30s-old reading tolerates knowing for 30s that the backend did not answer.
@@ -303,7 +309,45 @@ func buildResidencyTarget(provider schemas.ModelProvider, providerCfg configstor
 		tlsConfig:    tlsConfig,
 		allowPrivate: allowPrivate,
 		slotKey:      string(provider) + "|" + baseURL,
+		identity:     probeIdentity(provider, adapter, baseURL, path, extraHeaders, fields, timeout, ttl, failBackoff, staleCap, allowPrivate, caPEM),
 	}, nil
+}
+
+// probeIdentity fingerprints everything that decides what a probe sends and how long its answer is
+// trusted. Refresh compares it with the previous target's: without that, editing any one provider
+// would drop the failure backoff and the detected adapter every other endpoint had earned, and an
+// auto adapter would re-run its detection pass against every engine on the box.
+func probeIdentity(provider schemas.ModelProvider, adapter schemas.ResidencyAdapter, baseURL, path string, headers map[string]string, fields *schemas.ResidencyFieldMap, timeout int, ttl, failBackoff, staleCap time.Duration, allowPrivate bool, caPEM string) uint64 {
+	hash := fnv.New64a()
+	write := func(value string) {
+		_, _ = hash.Write([]byte(value))
+		_, _ = hash.Write([]byte{0})
+	}
+	write(string(provider))
+	write(string(adapter))
+	write(baseURL)
+	write(path)
+	write(caPEM)
+	if allowPrivate {
+		write("private")
+	}
+	if fields != nil {
+		write(fields.Items)
+		write(fields.ID)
+		write(fields.Loaded)
+		write(fields.Loading)
+	}
+	keys := make([]string, 0, len(headers))
+	for key := range headers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		write(key)
+		write(headers[key])
+	}
+	write(fmt.Sprint(timeout, ttl, failBackoff, staleCap))
+	return hash.Sum64()
 }
 
 // firstEnabledKeyValue returns the first usable API key value, or "".
@@ -375,8 +419,6 @@ func (s *VirtualModelService) List() []*schemas.VirtualModel {
 	return out
 }
 
-// Enabled reports whether any virtual model is configured, so the listing handlers can
-// skip their work entirely on a gateway that does not use this feature.
 // Created is when the current definitions were installed, in Unix seconds. Listings report it as
 // the model's created timestamp: a virtual model has no creation time of its own, and stamping
 // time.Now per call made the field change on every listing.
@@ -384,7 +426,7 @@ func (s *VirtualModelService) Created() int64 {
 	if s == nil {
 		return 0
 	}
-	return s.created
+	return s.created.Load()
 }
 
 // Refresh rebuilds the probe endpoints from the current provider configs, keeping the definitions.
@@ -392,9 +434,17 @@ func (s *VirtualModelService) Created() int64 {
 // leaves probes on the boot-time values: every probe answers 401 and, on the default on_probe_error
 // of error, every virtual-model request 502s until restart.
 //
-// A virtual model whose provider was deleted is dropped, so its name stops being rewritten rather
-// than pointing at an endpoint that no longer exists. A definition that cannot be rebuilt keeps its
-// previous endpoint and warns: the old target is a likelier answer than refusing to serve it.
+// A virtual model whose provider was deleted keeps its definition and loses its endpoint. The
+// registry holds the only copy of a definition, so dropping the entry would strand the name until
+// restart even after the provider came back, and deleting then re-creating a provider is a normal
+// way to fix a bad config in the UI. Keeping the entry means the name is still advertised in
+// listings and Resolve refuses with a 503 that says why, rather than the bare name escaping to
+// whichever provider the catalog happens to pick.
+//
+// Rebuilding an endpoint whose fingerprint changed also forgets what its slot remembered: a rotated
+// credential lands on the same slot (keyed by provider and base URL) and would otherwise still be
+// inside the failure backoff it earned with the old key, so the fix would not take effect for a
+// whole window. An endpoint the edit did not touch keeps its state.
 func (s *VirtualModelService) Refresh(providers map[schemas.ModelProvider]configstore.ProviderConfig) {
 	if s == nil {
 		return
@@ -408,8 +458,12 @@ func (s *VirtualModelService) Refresh(providers map[schemas.ModelProvider]config
 		vm := entry.model
 		providerCfg, ok := providers[vm.Provider]
 		if !ok {
+			if entry.target != nil {
+				s.slots.Delete(entry.target.slotKey)
+			}
+			next.entries[key] = &residencyEntry{model: vm}
 			if s.logger != nil {
-				s.logger.Warn("virtual model %q lost its provider %q: requests to this name are no longer rewritten", vm.Name, vm.Provider)
+				s.logger.Warn("virtual model %q lost its provider %q: requests to this name are refused until it is configured again", vm.Name, vm.Provider)
 			}
 			continue
 		}
@@ -421,11 +475,35 @@ func (s *VirtualModelService) Refresh(providers map[schemas.ModelProvider]config
 			next.entries[key] = entry
 			continue
 		}
+		s.forgetProbeState(entry.target, target)
 		next.entries[key] = &residencyEntry{model: vm, target: target}
 	}
 	s.registry.Store(next)
 }
 
+// forgetProbeState drops the failure backoff and the detected adapter a slot remembers about an
+// endpoint that was just reconfigured. The slot is keyed by provider and base URL, so a rotated
+// key, an edited header or a changed adapter all land on the slot the old config dirtied. A target
+// whose fingerprint matches the one it replaces was rebuilt but not changed, and keeps its state.
+func (s *VirtualModelService) forgetProbeState(previous, target *residencyTarget) {
+	if previous != nil && previous.identity == target.identity {
+		return
+	}
+	existing, ok := s.slots.Load(target.slotKey)
+	if !ok {
+		return
+	}
+	slot := existing.(*residencySlot)
+	slot.mu.Lock()
+	slot.failedUntil = time.Time{}
+	// The configured adapter wins over a previously detected one: an operator who switched the
+	// adapter wants the switch honoured, not the answer auto-detection gave under the old config.
+	slot.adapter = target.adapter
+	slot.mu.Unlock()
+}
+
+// Enabled reports whether any virtual model is configured, so the listing handlers can
+// skip their work entirely on a gateway that does not use this feature.
 func (s *VirtualModelService) Enabled() bool {
 	if s == nil {
 		return false
@@ -442,12 +520,16 @@ func (s *VirtualModelService) Resolve(ctx *schemas.BifrostContext, vm *schemas.V
 		return nil, schemas.NewVirtualModelError(500, "virtual model is nil")
 	}
 	entry, ok := s.lookupEntry(vm.Name)
-	if !ok || entry.target == nil {
-		// The definition came from somewhere other than the live registry — a config
-		// reload replaced it mid-flight. There is no endpoint to probe, so refusing
-		// beats guessing.
+	if !ok {
+		// The definition came from somewhere other than the live registry: a config reload replaced
+		// it mid-flight. Refusing beats guessing at what the name meant.
 		return nil, schemas.NewVirtualModelError(503, fmt.Sprintf(
 			"virtual model %q is not installed; retry after the next config reload", vm.Name))
+	}
+	if entry.target == nil {
+		// Kept across a provider deletion, so the name is still advertised but has nothing to probe.
+		return nil, schemas.NewVirtualModelError(503, fmt.Sprintf(
+			"virtual model %q has no probe endpoint: provider %q is not configured", vm.Name, vm.Provider))
 	}
 	return schemas.SelectVirtualModelTarget(vm, s.snapshot(ctx, entry.target))
 }
@@ -458,6 +540,9 @@ func (s *VirtualModelService) MemberStatus(ctx *schemas.BifrostContext, name str
 	entry, ok := s.lookupEntry(name)
 	if !ok {
 		return nil, nil, fmt.Errorf("virtual model %q is not configured", name)
+	}
+	if entry.target == nil {
+		return entry, nil, fmt.Errorf("virtual model %q has no probe endpoint: provider %q is not configured", entry.model.Name, entry.model.Provider)
 	}
 	return entry, s.snapshot(ctx, entry.target), nil
 }

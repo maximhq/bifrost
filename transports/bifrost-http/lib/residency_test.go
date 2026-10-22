@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -511,14 +512,17 @@ func TestStaleReadingIsNotAuthoritativeBeyondTheCap(t *testing.T) {
 
 // Provider edits land after boot, so the probe endpoints have to follow: a rotated key left every
 // probe answering 401 until restart, and a deleted provider kept being routed to.
-func TestRefreshRebuildsProbeTargetsAndDropsADeletedProvider(t *testing.T) {
-	service := NewVirtualModelService(nil, nil)
+// Deleting a provider must not cost the definition. The registry holds the only copy, so dropping
+// the entry would strand the name until a restart even after the provider came back, and deleting
+// then re-creating a provider is a normal way to fix a bad config through the UI.
+func TestRefreshRebuildsProbeTargetsAndSurvivesADeletedProvider(t *testing.T) {
 	providers := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"omlx": {
 			NetworkConfig: &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", AllowPrivateNetwork: true},
 			Keys:          []schemas.Key{{Value: *schemas.NewSecretVar("sk-old")}},
 		},
 	}
+	service := NewVirtualModelService(nil, nil)
 	if err := service.Install(map[string]schemas.VirtualModel{
 		"local-chat": {Name: "local-chat", Provider: "omlx", Models: []string{"flash"}},
 	}, providers); err != nil {
@@ -543,7 +547,140 @@ func TestRefreshRebuildsProbeTargetsAndDropsADeletedProvider(t *testing.T) {
 	}
 
 	service.Refresh(map[schemas.ModelProvider]configstore.ProviderConfig{})
-	if _, ok := service.Lookup("local-chat"); ok {
-		t.Fatal("a virtual model whose provider was deleted is still rewriting requests")
+	vm, ok := service.Lookup("local-chat")
+	if !ok {
+		t.Fatal("the definition was lost with its provider: the name no longer resolves at all")
+	}
+	if service.installedRegistry().entries["local-chat"].target != nil {
+		t.Fatal("the endpoint of a deleted provider is still installed")
+	}
+	if _, err := service.Resolve(schemas.NewBifrostContext(nil, schemas.NoDeadline), vm); err == nil || *err.StatusCode != 503 {
+		t.Fatalf("resolving a virtual model with no provider = %v, want a 503", err)
+	}
+	if _, snapshot, err := service.MemberStatus(schemas.NewBifrostContext(nil, schemas.NoDeadline), "local-chat"); err == nil || snapshot != nil {
+		t.Fatalf("member status with no endpoint = (snapshot %v, err %v), want an error and no snapshot", snapshot, err)
+	}
+
+	service.Refresh(providers)
+	restored := service.installedRegistry().entries["local-chat"].target
+	if restored == nil || restored.baseURL != "http://127.0.0.1:2" {
+		t.Fatalf("endpoint after the provider was re-added = %+v, want it rebuilt without a restart", restored)
+	}
+}
+
+// An edit to one provider must not reset what the others earned: without the fingerprint check every
+// provider save would clear every backoff and re-run every adapter detection pass on the box.
+func TestRefreshKeepsStateForProvidersTheEditDidNotTouch(t *testing.T) {
+	var untouchedHits, editedHits atomic.Int32
+	untouched := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		untouchedHits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer untouched.Close()
+	edited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editedHits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer edited.Close()
+
+	provider := func(url string, headers map[string]schemas.SecretVar) configstore.ProviderConfig {
+		return configstore.ProviderConfig{NetworkConfig: &schemas.NetworkConfig{
+			BaseURL:             url,
+			AllowPrivateNetwork: true,
+			ExtraHeaders:        headers,
+			ModelResidency:      &schemas.ModelResidencyConfig{Adapter: schemas.ResidencyAdapterOMLX, CacheTTLMS: 30000},
+		}}
+	}
+
+	service := NewVirtualModelService(nil, nil)
+	if err := service.Install(map[string]schemas.VirtualModel{
+		"untouched": {Name: "untouched", Provider: "omlx", Models: []string{"flash"}},
+		"edited":    {Name: "edited", Provider: "llamacpp", Models: []string{"flash"}},
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"omlx":     provider(untouched.URL, nil),
+		"llamacpp": provider(edited.URL, nil),
+	}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	for _, name := range []string{"untouched", "edited"} {
+		vm, _ := service.Lookup(name)
+		if _, err := service.Resolve(ctx, vm); err == nil {
+			t.Fatalf("%s resolved against a backend that fails every probe", name)
+		}
+	}
+	if untouchedHits.Load() != 1 || editedHits.Load() != 1 {
+		t.Fatalf("initial probes: untouched=%d edited=%d, want one each", untouchedHits.Load(), editedHits.Load())
+	}
+
+	// A save that changes only llamacpp, handing over omlx's config as a fresh but identical value
+	// the way the caller does after any provider edit.
+	service.Refresh(map[schemas.ModelProvider]configstore.ProviderConfig{
+		"omlx":     provider(untouched.URL, nil),
+		"llamacpp": provider(edited.URL, map[string]schemas.SecretVar{"X-Trace": *schemas.NewSecretVar("1")}),
+	})
+
+	for _, name := range []string{"untouched", "edited"} {
+		vm, _ := service.Lookup(name)
+		if _, err := service.Resolve(ctx, vm); err == nil {
+			t.Fatalf("%s resolved against a backend that still fails every probe", name)
+		}
+	}
+	if got := untouchedHits.Load(); got != 1 {
+		t.Fatalf("another provider's edit cost this endpoint %d extra probe(s): the remembered failure was dropped", got-1)
+	}
+	if got := editedHits.Load(); got != 2 {
+		t.Fatalf("the endpoint that was edited saw %d probes, want its backoff cleared and a fresh one sent", got)
+	}
+}
+
+// The probe slot is keyed by provider and base URL, so a rotated credential lands on the slot the
+// old key dirtied. Unless the remembered failure is cleared, fixing a 401 is not believed until
+// that window runs out: with a 30s cache the first working probe is 30 seconds late.
+func TestRefreshClearsAFailureRememberedUnderTheOldKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sk-new" {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		fmt.Fprint(w, `{"models":[{"name":"flash"}]}`)
+	}))
+	defer server.Close()
+
+	providerWith := func(key string) configstore.ProviderConfig {
+		return configstore.ProviderConfig{
+			NetworkConfig: &schemas.NetworkConfig{
+				BaseURL:             server.URL,
+				AllowPrivateNetwork: true,
+				ModelResidency:      &schemas.ModelResidencyConfig{Adapter: schemas.ResidencyAdapterOllama, CacheTTLMS: 30000},
+			},
+			Keys: []schemas.Key{{Value: *schemas.NewSecretVar(key)}},
+		}
+	}
+
+	service := NewVirtualModelService(nil, nil)
+	if err := service.Install(map[string]schemas.VirtualModel{
+		"local-chat": {Name: "local-chat", Provider: "omlx", Models: []string{"flash"}},
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{"omlx": providerWith("sk-old")}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	vm, _ := service.Lookup("local-chat")
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	if _, err := service.Resolve(ctx, vm); err == nil || *err.StatusCode != 502 {
+		t.Fatalf("a probe made with the stale credential = %v, want the 502 the default policy gives", err)
+	}
+
+	service.Refresh(map[schemas.ModelProvider]configstore.ProviderConfig{"omlx": providerWith("sk-new")})
+
+	resolution, err := service.Resolve(ctx, vm)
+	if err != nil {
+		t.Fatalf("the rotated credential was refused for the whole window the old key earned: %v", err)
+	}
+	if resolution.Model != "flash" {
+		t.Fatalf("resolved model = %q, want flash", resolution.Model)
 	}
 }
