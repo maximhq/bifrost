@@ -5391,7 +5391,7 @@
     },
     "virtual_models": {
       "type": "object",
-      "description": "Resident-aware virtual models. Keys are the names clients send; each resolves at request time to whichever of its candidates the provider reports resident in memory, so a request never evicts a loaded model by naming one that is not loaded. The provider must declare model_residency so its residency can be read.",
+      "description": "Resident-aware virtual models. Keys are the names clients send; each resolves at request time to whichever of its candidates the provider reports resident in memory, so a request normally does not evict a loaded model by naming one that is not loaded. If no candidate is resident the first in the list is sent and the backend loads it, which can evict something else. Residency is read from that provider's network_config.model_residency; omit it and the engine is auto-detected.",
       "additionalProperties": {
         "$ref": "#/$defs/virtual_model_config"
       }
@@ -5431,7 +5431,7 @@
     },
     "model_residency_config": {
       "type": "object",
-      "description": "How to read which models are resident in one provider's memory. Per provider, not per model: a provider is one backend with one memory.",
+      "description": "How to read which models are resident in one provider's memory, set under network_config. Per provider, not per model: a provider is one backend with one memory. Omit it to auto-detect the engine.",
       "additionalProperties": false,
       "properties": {
         "adapter": {
@@ -6710,6 +6710,9 @@
           "type": "boolean",
           "description": "Allow connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x). Enable for providers on a k8s pod network, LAN, or private VPC. Loopback addresses (localhost, 127.0.0.1, ::1) remain allowed regardless of this setting. Link-local addresses (169.254.x.x) are always blocked.",
           "default": false
+        },
+        "model_residency": {
+          "$ref": "#/$defs/model_residency_config"
         }
       },
       "additionalProperties": false
@@ -7819,9 +7822,6 @@
         "prompt_cache": {
           "$ref": "#/$defs/prompt_cache"
         },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
-        },
         "network_config": {
           "$ref": "#/$defs/network_config"
         },
@@ -7869,9 +7869,6 @@
           },
           "minItems": 1,
           "description": "API keys for this provider"
-        },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
@@ -7921,9 +7918,6 @@
           "minItems": 1,
           "description": "API keys for this provider"
         },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
-        },
         "network_config": {
           "$ref": "#/$defs/network_config"
         },
@@ -7971,9 +7965,6 @@
           },
           "minItems": 1,
           "description": "API keys for this provider"
-        },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
         },
         "network_config": {
           "$ref": "#/$defs/network_config_without_base_url"
@@ -8023,9 +8014,6 @@
           "minItems": 1,
           "description": "API keys for this provider"
         },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
-        },
         "network_config": {
           "$ref": "#/$defs/network_config"
         },
@@ -8073,9 +8061,6 @@
           },
           "minItems": 1,
           "description": "API keys for this provider"
-        },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
@@ -8125,9 +8110,6 @@
           "minItems": 1,
           "description": "API keys for this provider"
         },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
-        },
         "network_config": {
           "$ref": "#/$defs/network_config"
         },
@@ -8175,9 +8157,6 @@
           },
           "minItems": 1,
           "description": "API keys for this provider"
-        },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
@@ -8227,9 +8206,6 @@
           "minItems": 1,
           "description": "API keys for this provider"
         },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
-        },
         "network_config": {
           "$ref": "#/$defs/network_config"
         },
@@ -8278,9 +8254,6 @@
           "minItems": 1,
           "description": "API keys for this provider"
         },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
-        },
         "network_config": {
           "$ref": "#/$defs/network_config"
         },
@@ -8325,9 +8298,6 @@
           },
           "minItems": 1,
           "description": "API keys for this provider"
-        },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
@@ -8374,9 +8344,6 @@
           "minItems": 1,
           "description": "API keys for this provider"
         },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
-        },
         "network_config": {
           "$ref": "#/$defs/network_config"
         },
@@ -8421,9 +8388,6 @@
           },
           "minItems": 1,
           "description": "API keys for this provider"
-        },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"
@@ -8472,9 +8436,6 @@
           },
           "minItems": 1,
           "description": "API keys for this provider"
-        },
-        "model_residency": {
-          "$ref": "#/$defs/model_residency_config"
         },
         "network_config": {
           "$ref": "#/$defs/network_config"

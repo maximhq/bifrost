@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -50,21 +51,36 @@ type residencyTarget struct {
 	headers      map[string]string
 	timeout      time.Duration
 	ttl          time.Duration
+	failBackoff  time.Duration // how long a failed probe is remembered, so a dead backend costs one probe per window instead of one per request
+	staleCap     time.Duration // a reused reading older than this stops counting as authoritative
 	fields       *schemas.ResidencyFieldMap
 	tlsConfig    *tls.Config
 	allowPrivate bool
 	slotKey      string // provider|baseURL, built once so a cached probe reads a map without building a key
 }
 
+const (
+	// residencyDefaultFailBackoff bounds how often one endpoint is retried after a failed probe.
+	// It is a floor: an operator who sets a long cache_ttl_ms accepts staler data, and a
+	// remembered failure is exactly that.
+	residencyDefaultFailBackoff = time.Second
+
+	// residencyMinStaleAge floors how old a reused reading may be and still be believed. Ten
+	// cache windows is the rule, but the default window is zero, and ten times zero would discard
+	// a seconds-old reading the moment a probe failed.
+	residencyMinStaleAge = time.Minute
+)
+
 // residencySlot holds one endpoint's last reading plus the mutex that coalesces
 // concurrent probes. The lock is per endpoint, not per process: probing ollama must
 // not stall a request waiting on llama.cpp.
 type residencySlot struct {
-	mu        sync.Mutex
-	adapter   schemas.ResidencyAdapter
-	snapshot  *schemas.ResidencySnapshot
-	expiresAt time.Time
-	flight    *residencyFlight
+	mu          sync.Mutex
+	adapter     schemas.ResidencyAdapter
+	snapshot    *schemas.ResidencySnapshot
+	expiresAt   time.Time
+	failedUntil time.Time // end of the backoff window after a probe failure
+	flight      *residencyFlight
 }
 
 type residencyFlight struct {
@@ -80,31 +96,20 @@ type residencyRegistry struct {
 	entries map[string]*residencyEntry
 }
 
-// VirtualModelService implements schemas.VirtualModelResolver.
+// VirtualModelService implements schemas.VirtualModelResolver. The registry is an atomic pointer
+// rather than a mutex: written once at install, read on every request, so a read lock would be
+// contention across cores for a swap that happens at most when config changes.
 type VirtualModelService struct {
-	registry atomicRegistry
+	registry atomic.Pointer[residencyRegistry]
+	created  int64 // when the current definitions were installed, in Unix seconds
 	slots    sync.Map
 	factory  *network.HTTPClientFactory
 	logger   schemas.Logger
 }
 
-// atomicRegistry wraps the pointer so the swap is a single store. Kept explicit
-// rather than a bare atomic.Pointer field for readability at the two call sites.
-type atomicRegistry struct {
-	mu      sync.RWMutex
-	current *residencyRegistry
-}
-
-func (r *atomicRegistry) load() *residencyRegistry {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.current
-}
-
-func (r *atomicRegistry) store(next *residencyRegistry) {
-	r.mu.Lock()
-	r.current = next
-	r.mu.Unlock()
+// installedRegistry reads the current definition set in a single atomic load.
+func (s *VirtualModelService) installedRegistry() *residencyRegistry {
+	return s.registry.Load()
 }
 
 // NewVirtualModelService builds the resolver. A nil factory falls back to
@@ -121,7 +126,7 @@ func NewVirtualModelService(factory *network.HTTPClientFactory, logger schemas.L
 // than the operator's typo and a clear error.
 func (s *VirtualModelService) Install(virtualModels map[string]schemas.VirtualModel, providers map[schemas.ModelProvider]configstore.ProviderConfig) error {
 	if len(virtualModels) == 0 {
-		s.registry.store(nil)
+		s.registry.Store(nil)
 		return nil
 	}
 
@@ -161,7 +166,8 @@ func (s *VirtualModelService) Install(virtualModels map[string]schemas.VirtualMo
 		registry.entries[key] = &residencyEntry{model: &vm, target: target}
 	}
 
-	s.registry.store(registry)
+	s.registry.Store(registry)
+	s.created = time.Now().Unix()
 	if s.logger != nil {
 		s.logger.Info("virtual models installed: %d", len(registry.entries))
 	}
@@ -181,6 +187,16 @@ func installVirtualModels(config *Config, virtualModels map[string]schemas.Virtu
 	}
 	config.VirtualModels = service
 	return nil
+}
+
+// refreshVirtualModelProbes rebuilds the residency probe endpoints from the current provider
+// configs. Install runs once at boot, so a base URL change, a rotated key or a deleted provider
+// would otherwise leave every probe on the boot-time settings. Callers hold c.Mu.
+func (c *Config) refreshVirtualModelProbes() {
+	if c == nil || c.VirtualModels == nil {
+		return
+	}
+	c.VirtualModels.Refresh(c.Providers)
 }
 
 // VirtualModelResolver hands core the resolver, or a nil interface when nothing is configured.
@@ -215,15 +231,16 @@ func buildResidencyTarget(provider schemas.ModelProvider, providerCfg configstor
 	extraHeaders := map[string]string{}
 	timeout := schemas.DefaultResidencyProbeTimeoutMS
 
+	var residency *schemas.ModelResidencyConfig
 	if networkCfg != nil {
 		baseURL = strings.TrimRight(strings.TrimSpace(networkCfg.BaseURL), "/")
 		allowPrivate = networkCfg.AllowPrivateNetwork
 		for k, v := range networkCfg.ExtraHeaders {
 			extraHeaders[k] = v.GetValue()
 		}
+		// Residency rides with the network config: same endpoint, credentials and TLS settings.
+		residency = networkCfg.ModelResidency
 	}
-
-	residency := providerCfg.ModelResidency
 	adapter := schemas.ResidencyAdapterAuto
 	path := ""
 	ttl := time.Duration(schemas.DefaultResidencyCacheTTLMS) * time.Millisecond
@@ -258,6 +275,20 @@ func buildResidencyTarget(provider schemas.ModelProvider, providerCfg configstor
 		return nil, err
 	}
 
+	// A failure is remembered for at least a second, or cache_ttl_ms if longer: someone who
+	// tolerates a 30s-old reading tolerates knowing for 30s that the backend did not answer.
+	// Without this a down backend makes every virtual-model request wait out the probe timeout.
+	failBackoff := residencyDefaultFailBackoff
+	if ttl > failBackoff {
+		failBackoff = ttl
+	}
+	// A reused reading is believed for ten cache windows, floored at a minute (ten times the
+	// default window of zero would believe nothing).
+	staleCap := 10 * ttl
+	if staleCap < residencyMinStaleAge {
+		staleCap = residencyMinStaleAge
+	}
+
 	return &residencyTarget{
 		provider:     provider,
 		adapter:      adapter,
@@ -266,6 +297,8 @@ func buildResidencyTarget(provider schemas.ModelProvider, providerCfg configstor
 		headers:      extraHeaders,
 		timeout:      time.Duration(timeout) * time.Millisecond,
 		ttl:          ttl,
+		failBackoff:  failBackoff,
+		staleCap:     staleCap,
 		fields:       fields,
 		tlsConfig:    tlsConfig,
 		allowPrivate: allowPrivate,
@@ -314,7 +347,7 @@ func (s *VirtualModelService) Lookup(name string) (*schemas.VirtualModel, bool) 
 	if s == nil {
 		return nil, false
 	}
-	registry := s.registry.load()
+	registry := s.installedRegistry()
 	if registry == nil {
 		return nil, false
 	}
@@ -330,7 +363,7 @@ func (s *VirtualModelService) List() []*schemas.VirtualModel {
 	if s == nil {
 		return nil
 	}
-	registry := s.registry.load()
+	registry := s.installedRegistry()
 	if registry == nil {
 		return nil
 	}
@@ -344,11 +377,60 @@ func (s *VirtualModelService) List() []*schemas.VirtualModel {
 
 // Enabled reports whether any virtual model is configured, so the listing handlers can
 // skip their work entirely on a gateway that does not use this feature.
+// Created is when the current definitions were installed, in Unix seconds. Listings report it as
+// the model's created timestamp: a virtual model has no creation time of its own, and stamping
+// time.Now per call made the field change on every listing.
+func (s *VirtualModelService) Created() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.created
+}
+
+// Refresh rebuilds the probe endpoints from the current provider configs, keeping the definitions.
+// Install runs once at boot, so without this a base URL change, a rotated key or a new TLS setting
+// leaves probes on the boot-time values: every probe answers 401 and, on the default on_probe_error
+// of error, every virtual-model request 502s until restart.
+//
+// A virtual model whose provider was deleted is dropped, so its name stops being rewritten rather
+// than pointing at an endpoint that no longer exists. A definition that cannot be rebuilt keeps its
+// previous endpoint and warns: the old target is a likelier answer than refusing to serve it.
+func (s *VirtualModelService) Refresh(providers map[schemas.ModelProvider]configstore.ProviderConfig) {
+	if s == nil {
+		return
+	}
+	current := s.installedRegistry()
+	if current == nil || len(current.entries) == 0 {
+		return
+	}
+	next := &residencyRegistry{entries: make(map[string]*residencyEntry, len(current.entries))}
+	for key, entry := range current.entries {
+		vm := entry.model
+		providerCfg, ok := providers[vm.Provider]
+		if !ok {
+			if s.logger != nil {
+				s.logger.Warn("virtual model %q lost its provider %q: requests to this name are no longer rewritten", vm.Name, vm.Provider)
+			}
+			continue
+		}
+		target, err := buildResidencyTarget(vm.Provider, providerCfg)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("virtual model %q cannot read residency from provider %q after the edit: %v; keeping the previous endpoint", vm.Name, vm.Provider, err)
+			}
+			next.entries[key] = entry
+			continue
+		}
+		next.entries[key] = &residencyEntry{model: vm, target: target}
+	}
+	s.registry.Store(next)
+}
+
 func (s *VirtualModelService) Enabled() bool {
 	if s == nil {
 		return false
 	}
-	registry := s.registry.load()
+	registry := s.installedRegistry()
 	return registry != nil && len(registry.entries) > 0
 }
 
@@ -381,7 +463,7 @@ func (s *VirtualModelService) MemberStatus(ctx *schemas.BifrostContext, name str
 }
 
 func (s *VirtualModelService) lookupEntry(name string) (*residencyEntry, bool) {
-	registry := s.registry.load()
+	registry := s.installedRegistry()
 	if registry == nil {
 		return nil, false
 	}
@@ -418,23 +500,34 @@ func (s *VirtualModelService) snapshot(ctx *schemas.BifrostContext, target *resi
 			return &schemas.ResidencySnapshot{Provider: target.provider, ObservedAt: now}
 		}
 	}
+	if now.Before(slot.failedUntil) {
+		// A probe failed moments ago. Making this request wait out another doomed probe turns one
+		// dead backend into a timeout on every virtual-model request, so answer from what is known:
+		// the last good reading inside the stale cap, otherwise residency unknown.
+		previous := slot.snapshot
+		slot.mu.Unlock()
+		return unknownAfterFailure(previous, now, target, s.logger)
+	}
 	flight := &residencyFlight{done: make(chan struct{})}
 	slot.flight = flight
 	known := slot.adapter
 	previous := slot.snapshot
 	slot.mu.Unlock()
 
-	probeCtx, cancel := context.WithTimeout(ctx, target.timeout)
+	// The probe is shared, so it must not inherit the fate of whichever caller arrived first: a
+	// client disconnecting mid-probe would fail it for everyone waiting on the result. The timeout
+	// still bounds the call, so nothing runs unbounded.
+	parent := context.Context(context.Background())
+	if ctx != nil {
+		parent = context.WithoutCancel(ctx)
+	}
+	probeCtx, cancel := context.WithTimeout(parent, target.timeout)
 	defer cancel()
 
 	snapshot, adapter, err := probeResidency(probeCtx, target, known, s.httpClient(target))
 	if err != nil {
 		if previous != nil {
-			if s.logger != nil {
-				s.logger.Debug("residency probe of %s failed, reusing a reading observed %s ago: %v",
-					target.baseURL, now.Sub(previous.ObservedAt), err)
-			}
-			snapshot = previous
+			snapshot = unknownAfterFailure(previous, now, target, s.logger)
 		} else {
 			if s.logger != nil {
 				s.logger.Warn("residency probe of %s failed with no earlier reading: %v", target.baseURL, err)
@@ -448,12 +541,46 @@ func (s *VirtualModelService) snapshot(ctx *schemas.BifrostContext, target *resi
 		slot.adapter = adapter
 		slot.snapshot = snapshot
 		slot.expiresAt = time.Now().Add(target.ttl)
+		slot.failedUntil = time.Time{}
+	} else {
+		// Remember the failure, not just the stale reading, so the next request answers at once.
+		slot.failedUntil = time.Now().Add(target.failBackoff)
 	}
 	flight.snapshot = snapshot
 	slot.flight = nil
 	close(flight.done)
 	slot.mu.Unlock()
 	return snapshot
+}
+
+// unknownAfterFailure decides what a backend that did not answer means. A reading inside the stale
+// cap still counts: the backend really did say it, and ObservedAt says how old it is. Beyond the
+// cap the copy is marked non-authoritative, so the request refuses (or takes the first candidate
+// per on_probe_error) instead of routing or cold-loading on an observation from before the outage.
+// The stored snapshot is untouched, so the next success restores it.
+func unknownAfterFailure(previous *schemas.ResidencySnapshot, now time.Time, target *residencyTarget, logger schemas.Logger) *schemas.ResidencySnapshot {
+	if previous == nil {
+		return &schemas.ResidencySnapshot{Provider: target.provider, ObservedAt: now}
+	}
+	staleCap := target.staleCap
+	if staleCap <= 0 {
+		// A target built without a window (tests, or any future path that skips the builder) must
+		// not read as "believe nothing".
+		staleCap = residencyMinStaleAge
+	}
+	if age := now.Sub(previous.ObservedAt); previous.Authoritative && age > staleCap {
+		demoted := *previous
+		demoted.Authoritative = false
+		if logger != nil {
+			logger.Warn("residency of %s last observed %s ago, past the %s stale window: treating it as unknown", target.baseURL, age, staleCap)
+		}
+		return &demoted
+	}
+	if logger != nil {
+		logger.Debug("residency probe of %s failed, reusing a reading observed %s ago", target.baseURL, now.Sub(previous.ObservedAt))
+	}
+	// Inside the cap the reading is untouched, so hand back the same snapshot rather than a copy.
+	return previous
 }
 
 // slotFor returns the per-endpoint slot, created on first use. The key was built when the

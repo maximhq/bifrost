@@ -335,3 +335,215 @@ func TestInstallNormalizesProviderCase(t *testing.T) {
 		t.Fatal("unknown provider was accepted")
 	}
 }
+
+// Residency is configured under network_config, next to the base_url it probes.
+func TestProbeTargetReadsResidencyFromNetworkConfig(t *testing.T) {
+	target := buildProbeTarget(t, configstore.ProviderConfig{
+		NetworkConfig: &schemas.NetworkConfig{
+			BaseURL:             "http://127.0.0.1:1",
+			AllowPrivateNetwork: true,
+			ModelResidency: &schemas.ModelResidencyConfig{
+				Adapter:    schemas.ResidencyAdapterCustom,
+				Path:       "/internal/serving",
+				TimeoutMS:  1500,
+				CacheTTLMS: 250,
+				Fields:     &schemas.ResidencyFieldMap{Items: "models", ID: "name"},
+			},
+		},
+	})
+	if target.adapter != schemas.ResidencyAdapterCustom || target.path != "/internal/serving" {
+		t.Fatalf("residency was not read from network_config: adapter=%q path=%q", target.adapter, target.path)
+	}
+	if target.timeout != 1500*time.Millisecond || target.ttl != 250*time.Millisecond {
+		t.Fatalf("timeout/ttl = %v/%v, want 1.5s/250ms", target.timeout, target.ttl)
+	}
+
+	// Unset stays auto-detect, and the derived windows sit at their floors.
+	def := buildProbeTarget(t, configstore.ProviderConfig{
+		NetworkConfig: &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", AllowPrivateNetwork: true},
+	})
+	if def.adapter != schemas.ResidencyAdapterAuto {
+		t.Fatalf("default adapter = %q, want auto", def.adapter)
+	}
+	if def.failBackoff != residencyDefaultFailBackoff || def.staleCap != residencyMinStaleAge {
+		t.Fatalf("defaults: failBackoff=%v staleCap=%v", def.failBackoff, def.staleCap)
+	}
+
+	// A long cache window moves both windows with it, above the stale floor.
+	long := buildProbeTarget(t, configstore.ProviderConfig{
+		NetworkConfig: &schemas.NetworkConfig{
+			BaseURL:             "http://127.0.0.1:1",
+			AllowPrivateNetwork: true,
+			ModelResidency:      &schemas.ModelResidencyConfig{CacheTTLMS: 10000},
+		},
+	})
+	if long.failBackoff != 10*time.Second || long.staleCap != 100*time.Second {
+		t.Fatalf("with a 10s ttl: failBackoff=%v staleCap=%v, want 10s/100s", long.failBackoff, long.staleCap)
+	}
+
+	// Below the floor the floor wins: ten windows of a short ttl would believe nothing.
+	short := buildProbeTarget(t, configstore.ProviderConfig{
+		NetworkConfig: &schemas.NetworkConfig{
+			BaseURL:             "http://127.0.0.1:1",
+			AllowPrivateNetwork: true,
+			ModelResidency:      &schemas.ModelResidencyConfig{CacheTTLMS: 5000},
+		},
+	})
+	if short.failBackoff != 5*time.Second || short.staleCap != residencyMinStaleAge {
+		t.Fatalf("with a 5s ttl: failBackoff=%v staleCap=%v, want 5s and the %v floor", short.failBackoff, short.staleCap, residencyMinStaleAge)
+	}
+}
+
+// The probe is shared, so the caller that happened to arrive first must not be able to kill it for
+// everyone else by disconnecting. Before WithoutCancel the probe inherited that caller's context.
+func TestSharedProbeSurvivesCallerDisconnect(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entered <- struct{}{}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"models":[{"id":"flash","loaded":true,"is_loading":false}]}`)
+	}))
+	defer server.Close()
+
+	service := NewVirtualModelService(nil, nil)
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{
+		"omlx": {NetworkConfig: &schemas.NetworkConfig{
+			BaseURL:             server.URL,
+			AllowPrivateNetwork: true,
+			ModelResidency:      &schemas.ModelResidencyConfig{Adapter: schemas.ResidencyAdapterOMLX},
+		}},
+	}
+	if err := service.Install(map[string]schemas.VirtualModel{
+		"local-chat": {Name: "local-chat", Provider: "omlx", Models: []string{"flash"}},
+	}, providers); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	target := service.installedRegistry().entries["local-chat"].target
+
+	owner := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	waiter := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	defer owner.Cancel()
+	defer waiter.Cancel()
+
+	ownerDone := make(chan *schemas.ResidencySnapshot, 1)
+	go func() { ownerDone <- service.snapshot(owner, target) }()
+	<-entered
+
+	waiterDone := make(chan *schemas.ResidencySnapshot, 1)
+	go func() { waiterDone <- service.snapshot(waiter, target) }()
+	time.Sleep(50 * time.Millisecond) // let the waiter join the in-flight probe
+
+	owner.Cancel() // the client that started the probe goes away
+	close(release)
+
+	got := <-waiterDone
+	if !got.Authoritative {
+		t.Fatalf("the shared probe died with the caller that started it: %+v", got)
+	}
+	if state := got.StateOf("flash"); state != schemas.ResidencyReady {
+		t.Fatalf("resident model state = %q, want ready", state)
+	}
+	<-ownerDone // the disconnected caller is served too; it just does not get to cancel
+}
+
+// A dead backend must cost one probe per backoff window, not one per request: otherwise every
+// virtual-model request waits out the full timeout on a call that is already known to fail.
+func TestFailedProbeIsRemembered(t *testing.T) {
+	var hits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	service := NewVirtualModelService(nil, nil)
+	target := buildProbeTarget(t, configstore.ProviderConfig{
+		NetworkConfig: &schemas.NetworkConfig{
+			BaseURL:             server.URL,
+			AllowPrivateNetwork: true,
+			ModelResidency:      &schemas.ModelResidencyConfig{Adapter: schemas.ResidencyAdapterOMLX},
+		},
+	})
+
+	first := service.snapshot(schemas.NewBifrostContext(nil, schemas.NoDeadline), target)
+	if first.Authoritative {
+		t.Fatal("a backend that failed every reader must not be authoritative")
+	}
+
+	start := time.Now()
+	second := service.snapshot(schemas.NewBifrostContext(nil, schemas.NoDeadline), target)
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("second request waited %v on a probe whose failure was already known", elapsed)
+	}
+	if second.Authoritative {
+		t.Fatal("the backoff window answered authoritative")
+	}
+	if hits != 1 {
+		t.Fatalf("backend saw %d probes within the backoff window, want 1", hits)
+	}
+}
+
+// Beyond the stale window an old reading is not a fact about the present, so it must stop gating
+// routing. The stored snapshot is left alone, so the next success restores authority.
+func TestStaleReadingIsNotAuthoritativeBeyondTheCap(t *testing.T) {
+	target := &residencyTarget{provider: "omlx", staleCap: time.Minute}
+	now := time.Now()
+
+	fresh := &schemas.ResidencySnapshot{Provider: "omlx", ObservedAt: now.Add(-10 * time.Second), Authoritative: true}
+	if got := unknownAfterFailure(fresh, now, target, nil); !got.Authoritative {
+		t.Fatal("a reading inside the cap lost its authority")
+	}
+
+	aged := &schemas.ResidencySnapshot{Provider: "omlx", ObservedAt: now.Add(-5 * time.Minute), Authoritative: true}
+	got := unknownAfterFailure(aged, now, target, nil)
+	if got.Authoritative {
+		t.Fatal("a reading from before the outage is still authoritative")
+	}
+	if !got.ObservedAt.Equal(aged.ObservedAt) {
+		t.Fatalf("observation time = %v, want the original %v", got.ObservedAt, aged.ObservedAt)
+	}
+	if !aged.Authoritative {
+		t.Fatal("the stored snapshot was mutated; the next success must still be believed")
+	}
+}
+
+// Provider edits land after boot, so the probe endpoints have to follow: a rotated key left every
+// probe answering 401 until restart, and a deleted provider kept being routed to.
+func TestRefreshRebuildsProbeTargetsAndDropsADeletedProvider(t *testing.T) {
+	service := NewVirtualModelService(nil, nil)
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{
+		"omlx": {
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", AllowPrivateNetwork: true},
+			Keys:          []schemas.Key{{Value: *schemas.NewSecretVar("sk-old")}},
+		},
+	}
+	if err := service.Install(map[string]schemas.VirtualModel{
+		"local-chat": {Name: "local-chat", Provider: "omlx", Models: []string{"flash"}},
+	}, providers); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if got := service.installedRegistry().entries["local-chat"].target.headers["Authorization"]; got != "Bearer sk-old" {
+		t.Fatalf("initial probe credential = %q, want Bearer sk-old", got)
+	}
+
+	providers["omlx"] = configstore.ProviderConfig{
+		NetworkConfig: &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:2", AllowPrivateNetwork: true},
+		Keys:          []schemas.Key{{Value: *schemas.NewSecretVar("sk-rotated")}},
+	}
+	service.Refresh(providers)
+
+	after := service.installedRegistry().entries["local-chat"].target
+	if after.baseURL != "http://127.0.0.1:2" {
+		t.Fatalf("base URL after refresh = %q, want the edited one", after.baseURL)
+	}
+	if got := after.headers["Authorization"]; got != "Bearer sk-rotated" {
+		t.Fatalf("probe credential after rotation = %q, want Bearer sk-rotated", got)
+	}
+
+	service.Refresh(map[schemas.ModelProvider]configstore.ProviderConfig{})
+	if _, ok := service.Lookup("local-chat"); ok {
+		t.Fatal("a virtual model whose provider was deleted is still rewriting requests")
+	}
+}

@@ -333,21 +333,3 @@ type VirtualModelResolver interface {
 	VirtualModelRegistry
 	Resolve(ctx *BifrostContext, vm *VirtualModel) (*VirtualModelResolution, *BifrostError)
 }
-
-// GetVirtualModel returns the virtual name a request was addressed by, or "".
-func GetVirtualModel(ctx *BifrostContext) string {
-	if ctx == nil {
-		return ""
-	}
-	name, _ := ctx.Value(BifrostContextKeyVirtualModel).(string)
-	return name
-}
-
-// GetVirtualModelResolution returns the decision recorded for a request, or nil.
-func GetVirtualModelResolution(ctx *BifrostContext) *VirtualModelResolution {
-	if ctx == nil {
-		return nil
-	}
-	res, _ := ctx.Value(BifrostContextKeyVirtualModelResolution).(*VirtualModelResolution)
-	return res
-}

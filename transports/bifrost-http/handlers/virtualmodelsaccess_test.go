@@ -130,8 +130,11 @@ func TestVirtualRetrieveHTTPAuthorizationBeforeProbe(t *testing.T) {
 	cfg := testVirtualConfig(t)
 	cfg.ClientConfig = &configstore.ClientConfig{}
 	cfg.Providers["omlx"] = configstore.ProviderConfig{
-		NetworkConfig:  &schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true},
-		ModelResidency: &schemas.ModelResidencyConfig{Adapter: schemas.ResidencyAdapterOMLX},
+		NetworkConfig: &schemas.NetworkConfig{
+			BaseURL:             server.URL,
+			AllowPrivateNetwork: true,
+			ModelResidency:      &schemas.ModelResidencyConfig{Adapter: schemas.ResidencyAdapterOMLX},
+		},
 	}
 	if err := cfg.VirtualModels.Install(map[string]schemas.VirtualModel{
 		"qwen38": {Provider: "omlx", Models: []string{"flash", "27b"}},

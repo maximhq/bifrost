@@ -17,12 +17,11 @@ import (
 // client as "this model does not exist" and makes an SDK that validates against
 // /v1/models reject a name that would have worked perfectly well.
 
-// virtualModelDescriptor builds the OpenAI-shaped entry for a virtual model. It carries
-// the virtual name as the id, so a client that lists models and then sends one of them
-// sends something resolvable rather than something that only exists in an operator's head.
-func virtualModelDescriptor(vm *schemas.VirtualModel) schemas.Model {
+// virtualModelDescriptor builds the OpenAI-shaped entry for a virtual model. It carries the virtual
+// name as the id, so a client that lists models and then sends one of them sends something
+// resolvable. created comes from the installed definition set, not the clock.
+func virtualModelDescriptor(vm *schemas.VirtualModel, created int64) schemas.Model {
 	ownedBy := string(vm.Provider)
-	created := time.Now().Unix()
 	model := schemas.Model{
 		ID:      vm.Name,
 		OwnedBy: &ownedBy,
@@ -59,7 +58,7 @@ func appendVirtualModels(resp *schemas.BifrostListModelsResponse, cfg *lib.Confi
 		seen[strings.ToLower(existing.ID)] = true
 	}
 	for _, vm := range cfg.VirtualModels.List() {
-		if provider != "" && vm.Provider != provider {
+		if provider != "" && !strings.EqualFold(string(vm.Provider), string(provider)) {
 			continue
 		}
 		if !virtualModelAllowed(vm, access, credentialPresented) {
@@ -69,7 +68,7 @@ func appendVirtualModels(resp *schemas.BifrostListModelsResponse, cfg *lib.Confi
 			continue
 		}
 		seen[strings.ToLower(vm.Name)] = true
-		resp.Data = append(resp.Data, virtualModelDescriptor(vm))
+		resp.Data = append(resp.Data, virtualModelDescriptor(vm, cfg.VirtualModels.Created()))
 	}
 }
 
@@ -82,13 +81,10 @@ func appendVirtualModels(resp *schemas.BifrostListModelsResponse, cfg *lib.Confi
 // "qwen38" and "omlx/qwen38" address the same virtual model.
 //
 // A provider the client named - by prefix, or by ?provider= which wins over the prefix exactly as
-// modelRetrieveTarget reads them - is a constraint on who is being asked, not a hint, and it
-// outranks the overlay. If it disagrees with the provider that owns the virtual model then the
-// client wants that provider's own model of the same name, which has to stay reachable: the usual
-// migration shape is a virtual model named after a vendor model, and provider/model is the escape
-// hatch that pins the vendor. So the request falls through and the named provider answers with its
-// own truth, which is also where a 404 for a model it does not have belongs. Claiming such a name
-// here 403'd a valid concrete lookup, and 403 stays reserved for genuine access denial.
+// modelRetrieveTarget reads them - outranks the overlay. If it is not the owning provider, the
+// client wants that provider's own model of this name, which has to stay reachable, so the request
+// falls through and that provider answers. Claiming it here 403'd a valid concrete lookup; 403 is
+// for access denial only.
 func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName string, requestedProvider schemas.ModelProvider, access schemas.Access, credentialPresented bool) (*schemas.BifrostModelRetrieveResponse, bool) {
 	if !virtualModelsEnabled(cfg) {
 		return nil, false
@@ -110,8 +106,7 @@ func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName
 	if !ok {
 		return nil, false
 	}
-	// Case-insensitive: the client spells a provider as it likes, while a virtual model stores its
-	// owner lowercased at install.
+	// Case-insensitive: clients spell providers as they like, owners are stored lowercased.
 	if requested != "" && !strings.EqualFold(requested, string(vm.Provider)) {
 		return nil, false
 	}
@@ -119,7 +114,7 @@ func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName
 	if !virtualModelAllowed(vm, access, credentialPresented) {
 		return nil, true
 	}
-	descriptor := virtualModelDescriptor(vm)
+	descriptor := virtualModelDescriptor(vm, cfg.VirtualModels.Created())
 	if _, snapshot, err := cfg.VirtualModels.MemberStatus(ctx, vm.Name); err == nil && snapshot != nil {
 		descriptor.AdditionalAttributes["bifrost:residency-authoritative"] = fmt.Sprintf("%t", snapshot.Authoritative)
 		descriptor.AdditionalAttributes["bifrost:residency-observed-at"] = snapshot.ObservedAt.UTC().Format(time.RFC3339)
