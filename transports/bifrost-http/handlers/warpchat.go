@@ -52,6 +52,7 @@ func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration) (conte
 		}
 	}
 	base = warp.WithGrant(base, warpGrantSettler(ctx))
+	base = warpManagementCaller(base, ctx)
 	snapshot, cancel := context.WithTimeout(base, timeout)
 	return snapshot, cancel, nil
 }

@@ -86,6 +86,12 @@ type Service struct {
 	indexer      *LogIndexer
 	semantic     *SemanticSearcher
 	backfillJobs BackfillJobStore
+	// management is the gateway's management MCP, nil until the server binds it
+	// with SetManagementTools. Guarded by mu.
+	management ManagementTools
+	// usedConfirmations is the confirmation tokens already claimed, by when
+	// (see claimConfirmation).
+	usedConfirmations sync.Map
 }
 
 // Option configures a Service.
@@ -311,6 +317,29 @@ func (s *Service) SetLogReader(logs LogReader) {
 	// service no longer uses - or absent entirely on a deployment that enabled
 	// logging after startup, which is exactly the case SetLogReader exists for.
 	s.semantic = s.buildSemanticSearcher()
+}
+
+// SetManagementTools binds the gateway's management MCP. The gateway builds it
+// after Warp's routes are registered, so it arrives late; nil unbinds it.
+func (s *Service) SetManagementTools(tools ManagementTools) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.management = tools
+}
+
+// managementTools returns the bound management MCP and its current catalog,
+// read together so a turn never pairs a catalog with another binding.
+func (s *Service) managementTools() (ManagementTools, *ManagementCatalog) {
+	s.mu.RLock()
+	tools := s.management
+	s.mu.RUnlock()
+	if tools == nil {
+		return nil, nil
+	}
+	return tools, tools.Catalog()
 }
 
 // buildSemanticSearcher returns a searcher for the current dependencies, or nil
