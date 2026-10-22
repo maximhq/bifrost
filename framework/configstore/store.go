@@ -398,12 +398,13 @@ type ConfigStore interface {
 	// same wrapper-forwarding reason as the registration CRUD above.
 	SaveAgentPushConfig(ctx context.Context, config *schemas.AgentPushConfig) error
 	BindAgentPushConfigTask(ctx context.Context, agentName, ingressTokenHash, pendingTaskID, taskID string) error
-	GetAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error)
+	GetAgentPushConfig(ctx context.Context, agentName, tenant, taskID, configID string) (*schemas.AgentPushConfig, error)
 	GetAgentPushConfigByIngressTokenHash(ctx context.Context, agentName, hash string) (*schemas.AgentPushConfig, error)
-	ListAgentPushConfigs(ctx context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error)
+	ListAgentPushConfigs(ctx context.Context, agentName, tenant, taskID string) ([]schemas.AgentPushConfig, error)
 	ListAgentPushConfigsPaginated(ctx context.Context, query schemas.AgentPushConfigQuery) ([]schemas.AgentPushConfig, int64, error)
 	ListAgentPushConfigAgentNames(ctx context.Context) ([]string, error)
-	DeleteAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (bool, error)
+	DeleteAgentPushConfig(ctx context.Context, agentName, tenant, taskID, configID string) (bool, error)
+	DeleteAgentPushConfigByIngressTokenHash(ctx context.Context, agentName, hash string) (bool, error)
 	DeletePendingAgentPushConfig(ctx context.Context, agentName, ingressTokenHash, pendingTaskID string) (bool, error)
 	CreateAgentPushDeliveryIfNotExists(ctx context.Context, delivery *schemas.AgentPushDelivery) (bool, error)
 	ListDueAgentPushDeliveries(ctx context.Context, now time.Time, limit int) ([]schemas.AgentPushDelivery, error)

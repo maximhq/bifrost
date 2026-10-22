@@ -163,9 +163,7 @@ type AgentPushConfig struct {
 	AgentName string `json:"agent_name"`
 	TaskID    string `json:"task_id"`
 	ConfigID  string `json:"config_id"`
-	// Tenant is the downstream client's logical Agent-interface tenant. It is
-	// preserved for local reads; the selected upstream SDK transport supplies its
-	// own interface tenant independently.
+	// Tenant is the effective upstream task namespace, resolved before registration.
 	Tenant string `json:"tenant,omitempty"`
 	// URL is the downstream client's callback endpoint.
 	URL string `json:"url"`
@@ -226,15 +224,17 @@ const (
 // so an upstream retransmission of the same event deduplicates instead of
 // producing a second delivery. Rows carry no secrets.
 type AgentPushDelivery struct {
-	ID            string    `json:"id"`
-	AgentName     string    `json:"agent_name"`
-	TaskID        string    `json:"task_id"`
-	ConfigID      string    `json:"config_id"`
-	Payload       string    `json:"payload,omitempty"`
-	Status        string    `json:"status"`
-	Attempts      int       `json:"attempts"`
-	NextAttemptAt time.Time `json:"next_attempt_at"`
-	LastError     string    `json:"last_error,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID               string    `json:"id"`
+	AgentName        string    `json:"agent_name"`
+	Tenant           string    `json:"tenant,omitempty"`
+	TaskID           string    `json:"task_id"`
+	ConfigID         string    `json:"config_id"`
+	IngressTokenHash string    `json:"-"` // Pins the accepted event to its registration, not its replacement.
+	Payload          string    `json:"payload,omitempty"`
+	Status           string    `json:"status"`
+	Attempts         int       `json:"attempts"`
+	NextAttemptAt    time.Time `json:"next_attempt_at"`
+	LastError        string    `json:"last_error,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }

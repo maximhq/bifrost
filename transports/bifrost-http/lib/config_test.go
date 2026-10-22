@@ -1255,7 +1255,7 @@ func (m *MockConfigStore) BindAgentPushConfigTask(ctx context.Context, agentName
 	return nil
 }
 
-func (m *MockConfigStore) GetAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (*schemas.AgentPushConfig, error) {
+func (m *MockConfigStore) GetAgentPushConfig(ctx context.Context, agentName, tenant, taskID, configID string) (*schemas.AgentPushConfig, error) {
 	return nil, nil
 }
 
@@ -1263,7 +1263,7 @@ func (m *MockConfigStore) GetAgentPushConfigByIngressTokenHash(ctx context.Conte
 	return nil, nil
 }
 
-func (m *MockConfigStore) ListAgentPushConfigs(ctx context.Context, agentName, taskID string) ([]schemas.AgentPushConfig, error) {
+func (m *MockConfigStore) ListAgentPushConfigs(ctx context.Context, agentName, tenant, taskID string) ([]schemas.AgentPushConfig, error) {
 	return nil, nil
 }
 
@@ -1275,7 +1275,7 @@ func (m *MockConfigStore) ListAgentPushConfigAgentNames(ctx context.Context) ([]
 	return nil, nil
 }
 
-func (m *MockConfigStore) DeleteAgentPushConfig(ctx context.Context, agentName, taskID, configID string) (bool, error) {
+func (m *MockConfigStore) DeleteAgentPushConfig(ctx context.Context, agentName, tenant, taskID, configID string) (bool, error) {
 	return false, nil
 }
 
