@@ -103,12 +103,10 @@ var ProbeRetryConfig = RetryConfig{
 
 // ToolCallRetryConfig backs the live tool-call invocation itself
 // (executeToolInternal's CallTool). Deliberately the lightest of the three —
-// a caller is waiting synchronously on this, and unlike a bare connect, the
-// call itself may not be safe to retry blindly (non-idempotent tools), so it
-// trades retry depth for latency: a couple of quick attempts to ride out a
-// genuine blip, nothing more. Uses isTransientToolCallError, not the default
-// isTransientError, so an unrecognized (likely application-level) failure
-// is never retried — see that function's doc comment.
+// a caller is waiting synchronously on this. The executor separately requires
+// read-only/idempotent hints before replay: a transient error does not prove
+// non-execution. Uses isTransientToolCallError rather than the connect-oriented
+// default so tool-domain failures and unrecognized errors are not retried.
 var ToolCallRetryConfig = RetryConfig{
 	MaxRetries:     2,
 	InitialBackoff: 200 * time.Millisecond,
@@ -443,31 +441,46 @@ var transientErrorSubstrings = []string{
 // isTransientToolCallError is ToolCallRetryConfig's classifier: a live tool
 // call already has a working connection (AcquireClientConn succeeded to get
 // here), so an error at this point is either a genuine transport blip
-// (matches transientErrorSubstrings — worth one quick retry) or something
-// application-level (a tool's own business-logic failure, bad arguments, a
-// panic in the tool implementation) that retrying can't fix and might
-// actively harm if the tool isn't idempotent. Unlike isTransientError, this
-// does NOT default to true for unrecognized text — only a positive match
-// against known transport-failure shapes triggers a retry; everything else
-// (including net.Error timeouts, which isTransientError treats as transient
-// but which already have "timeout"/"deadline exceeded" in the substring list
-// above anyway) goes straight through as non-retryable.
+// (a transport.Error with a retryable status/network failure) or a tool-domain
+// error that must not be mistaken for a network failure. Unlike isTransientError,
+// unknown errors fail closed. This classifies the failure only; the executor
+// separately requires replay authorization and a live execution budget.
 func isTransientToolCallError(err error) bool {
 	if err == nil {
 		return false
 	}
-	errStr := strings.ToLower(err.Error())
-	// Auth failures are checked first, before the transient substring scan:
-	// error text like "401 unauthorized: try again" would otherwise match
-	// "try again" below and get retried, contradicting the non-retryable
-	// auth-failure rule this classifier exists to enforce for tool calls.
-	if isAuthFailureErrorText(errStr) {
+	var transportErr *transport.Error
+	if !errors.As(err, &transportErr) {
+		// JSON-RPC tool errors are not network failures, even when their own
+		// domain text contains a status code, "timeout", or "try again".
+		return false
+	}
+	errStr := strings.ToLower(transportErr.Error())
+	if errors.Is(err, context.Canceled) || strings.Contains(errStr, "context canceled") {
+		return false
+	}
+	if status := extractHTTPStatus(errStr); status != "" {
+		switch status {
+		case "429", "500", "502", "503", "504":
+			return true
+		default:
+			return false
+		}
+	}
+	if isDeadSessionError(err) || isAuthFailureErrorText(errStr) {
 		return false
 	}
 	for _, transientErr := range transientErrorSubstrings {
+		// Match statuses only in status position, not in a port/session ID.
+		if len(transientErr) == 3 && transientErr[0] >= '0' && transientErr[0] <= '9' {
+			continue
+		}
 		if strings.Contains(errStr, transientErr) {
 			return true
 		}
+	}
+	if netErr, ok := errors.AsType[net.Error](err); ok {
+		return netErr.Timeout()
 	}
 	return false
 }

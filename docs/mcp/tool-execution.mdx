@@ -381,15 +381,54 @@ if err != nil {
 }
 ```
 
+### Automatic retries and replay safety
+
+A transient failure does not prove that a tool failed to execute. The upstream may
+have committed a record or sent a message before its response was lost.
+
+Bifrost automatically repeats a tool call only when the discovered tool explicitly
+sets `readOnlyHint=true` or `idempotentHint=true`. If neither hint is true,
+missing hints and `destructiveHint=false` do not authorize replay:
+non-destructive tools can still perform additive, non-idempotent operations.
+
+For eligible tools, ordinary transport failures receive at most two additional
+attempts with 200ms backoff, within the original tool execution timeout. Tool-domain
+JSON-RPC errors and structured `isError=true` results are not treated as transient
+network failures. Cancellation and expiry of the execution budget stop further
+attempts. Replay eligibility is checked again before a repeated invocation, so
+tool-list changes during backoff can suppress the retry. Connection-establishment
+retries remain separate and do not replay the
+tool operation. For a tool without replay-safe hints, even a transient connection
+failure or 503 does not authorize another invocation: the client error does not
+provide an authoritative pre-execution/dispatch guarantee.
+
+<Warning>
+  Tool annotations are server-provided hints, not verified behavior. Rely on these
+  retry opt-ins only for servers whose annotations you trust. An incorrect
+  read-only or idempotent hint can still permit duplicate effects. Bifrost does not
+  provide an exactly-once guarantee or automatically generate a server-supported
+  idempotency key.
+</Warning>
+
+When a non-replayable call fails after an invocation was attempted, the error states
+that execution may have succeeded and automatic replay was suppressed. Check the
+upstream state or use the tool's own deduplication/reconciliation mechanism before
+manually repeating the operation. A timeout or cancellation does not roll back
+an upstream operation.
+
 ### Auth failure recovery
 
 <Info>Inline auth-failure retry is available in **Bifrost v2.0.0 and above**.</Info>
 
 When a tool call reaches the upstream MCP server but comes back with a clean auth rejection (401/403), Bifrost reacts on the spot instead of waiting for the health monitor:
 
-- **Per-user clients** (`per_user_oauth`, `per_user_headers`): Bifrost force-refreshes the caller's credential, re-acquires a connection, and retries the same call inline, exactly once. If the retry succeeds, the caller just sees a normal success.
-- **Shared clients** (`oauth`, `headers`): Bifrost immediately force-refreshes the credential and starts reconnecting in the background. The failing call waits briefly for that reconnect (capped by its own deadline) and retries once on the healed connection; the caller usually sees a normal success. If the reconnect doesn't finish in time, the original error surfaces and later calls succeed once the background reconnect completes.
-- **Safety opt-out**: tools annotated as destructive and not idempotent are never retried; the reconnect still happens, but the original error always surfaces so a side effect cannot run twice.
+- **Per-user clients** (`per_user_oauth`, `per_user_headers`): Bifrost force-refreshes the caller's credential. For a replay-eligible tool, it re-acquires a connection and retries the same call inline, at most once. Otherwise it refreshes without replaying the operation and surfaces the original failure.
+- **Shared clients** (`oauth`, `headers`): Bifrost force-refreshes the credential and starts reconnecting in the background. A replay-eligible call waits briefly for that reconnect (capped by its remaining execution budget) and retries once on the healed connection. If replay is suppressed or the reconnect does not finish in time, the error surfaces while the connection heals for later calls.
+- **Shared safety policy**: ordinary retries and recovery both require an explicit read-only/idempotent hint. Recovery rechecks the tool after reconnect, so a changed or removed tool does not inherit its earlier replay eligibility.
+
+The MCP client library can flatten HTTP error responses into tool-domain error
+messages, so auth recovery also recognizes auth-shaped error text. That signal can
+trigger credential/connection healing; it does not override the replay-safety gate.
 
 This applies to `POST /v1/mcp/tool/execute`, [Agent Mode](./agent-mode) tool calls, and tool calls over the [MCP Gateway](./overview#bifrost-as-an-mcp-gateway) alike.
 

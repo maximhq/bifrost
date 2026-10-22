@@ -662,6 +662,19 @@ func (m *ToolsManager) ExecuteTool(
 	executionConfig *schemas.MCPClientConfig,
 	toolNameMapping map[string]string,
 ) (*schemas.BifrostMCPResponse, error) {
+	return m.executeTool(ctx, request, clientConn, executionConfig, toolNameMapping, nil)
+}
+
+// executeTool accepts the state already resolved by the plugin gate. Public
+// ExecuteTool callers can omit it; the fallback lookup is only needed on failure.
+func (m *ToolsManager) executeTool(
+	ctx *schemas.BifrostContext,
+	request *schemas.BifrostMCPRequest,
+	clientConn *client.Client,
+	executionConfig *schemas.MCPClientConfig,
+	toolNameMapping map[string]string,
+	clientState *schemas.MCPClientState,
+) (*schemas.BifrostMCPResponse, error) {
 	// Validate request is not nil
 	if request == nil {
 		return nil, fmt.Errorf("request cannot be nil")
@@ -698,7 +711,7 @@ func (m *ToolsManager) ExecuteTool(
 	now := time.Now()
 
 	// Execute the tool in Chat format (internal execution format)
-	chatResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall, clientConn, executionConfig, toolNameMapping)
+	chatResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall, clientConn, executionConfig, toolNameMapping, clientState)
 	if err != nil {
 		return nil, err
 	}
@@ -745,6 +758,7 @@ func (m *ToolsManager) executeToolInternal(
 	clientConn *client.Client,
 	executionConfig *schemas.MCPClientConfig,
 	toolNameMapping map[string]string,
+	clientState *schemas.MCPClientState,
 ) (*schemas.ChatMessage, string, string, error) {
 	toolName := *toolCall.Function.Name
 
@@ -800,27 +814,70 @@ func (m *ToolsManager) executeToolInternal(
 		},
 	}
 
-	// ToolCallRetryConfig, not ConnectRetryConfig/PerCallConnectRetryConfig:
-	// unlike a bare connect, this call may not be idempotent, so it only gets
-	// a couple of quick, latency-conscious attempts. isTransientToolCallError
-	// (ToolCallRetryConfig's configured classifier) already treats
-	// 401/403/unauthorized/forbidden as non-retryable — those fail
-	// immediately here with zero retries and fall through to the
-	// isAuthFailureErrorText handling below unchanged.
+	// Classifying a failure as transient does not prove the first invocation
+	// did not execute. Resolve replay authorization only on failure, so normal
+	// successful calls do not pay for another tool/state lookup.
+	policyResolved, replayAllowed := false, false
+	resolveReplayPolicy := func() {
+		if policyResolved {
+			return
+		}
+		if clientState == nil && m.clientManager != nil {
+			clientState = m.clientManager.GetClientForTool(toolName)
+		}
+		replayAllowed = toolCallReplayAllowed(clientState, executionConfig, toolName)
+		policyResolved = true
+	}
+	retryConfig := ToolCallRetryConfig
+	classify := retryConfig.IsRetryable
+	if classify == nil {
+		classify = isTransientToolCallError
+	}
+	retryConfig.IsRetryable = func(err error) bool {
+		if !classify(err) {
+			return false
+		}
+		resolveReplayPolicy()
+		return replayAllowed
+	}
 	toolCallStart := time.Now()
 	var toolResponse *mcp.CallToolResult
+	attempted := false
+	var lastCallErr error
 	callErr := ExecuteWithRetry(
 		toolCtx,
 		func() error {
+			if attempted {
+				// Eligibility can be revoked while the retry sleeps. Re-resolve
+				// the original client, never global tool-name routing, before
+				// dispatching another invocation on the held connection.
+				var current *schemas.MCPClientState
+				if m.clientManager != nil {
+					current = m.clientManager.GetClientByName(executionConfig.Name)
+				}
+				replayAllowed = toolCallReplayAllowed(current, executionConfig, toolName)
+				if !replayAllowed {
+					// Preserve the real failure; the retry predicate sees the
+					// revoked authorization and stops without another call.
+					return lastCallErr
+				}
+			}
+			attempted = true
 			var err error
 			toolResponse, err = clientConn.CallTool(toolCtx, callRequest)
+			lastCallErr = err
 			return err
 		},
-		ToolCallRetryConfig,
+		retryConfig,
 		m.logger,
 	)
 	schemas.AddUpstreamLatency(ctx, time.Since(toolCallStart))
 	if callErr != nil {
+		resolveReplayPolicy()
+		outcomeNote := ""
+		if attempted && !replayAllowed {
+			outcomeNote = "; execution may have succeeded; automatic replay was suppressed"
+		}
 		// Set by the recovery below when it gave up because the tool budget ran
 		// out, as opposed to because the reconnect or the retry failed on its
 		// own. Only the recovery can tell those apart, so it reports it rather
@@ -830,7 +887,7 @@ func (m *ToolsManager) executeToolInternal(
 
 		// Sentinel-wrapped so the gate can classify error.type (timeout vs tool_error).
 		if toolCtx.Err() == context.DeadlineExceeded {
-			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s: %w", toolExecutionTimeout, toolName, ErrMCPToolTimeout)
+			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s%s: %w", toolExecutionTimeout, toolName, outcomeNote, ErrMCPToolTimeout)
 		}
 
 		// Two failures are worth reacting to instead of surfacing an opaque
@@ -861,7 +918,7 @@ func (m *ToolsManager) executeToolInternal(
 			// The background reconnect stays independent of it either way:
 			// triggerBackgroundReconnect runs on context.Background().
 			recoveryCtx := schemas.NewBifrostContext(toolCtx, schemas.NoDeadline)
-			retryResponse, recovered, budgetExhausted := m.attemptCallFailureRecovery(recoveryCtx, toolName, callRequest, executionConfig, toolExecutionTimeout)
+			retryResponse, recovered, budgetExhausted := m.attemptCallFailureRecovery(recoveryCtx, toolName, callRequest, executionConfig, toolExecutionTimeout, clientState, replayAllowed)
 			recoveryExhaustedBudget = budgetExhausted
 			if recovered {
 				responseText := extractTextFromMCPResponse(retryResponse, toolName)
@@ -886,9 +943,9 @@ func (m *ToolsManager) executeToolInternal(
 		// have been the caller's own rather than toolExecutionTimeout; the
 		// original cause is kept instead.
 		if recoveryExhaustedBudget {
-			return nil, "", "", fmt.Errorf("MCP tool call for %s ran out of time during recovery: %v: %w", toolName, callErr, ErrMCPToolTimeout)
+			return nil, "", "", fmt.Errorf("MCP tool call for %s ran out of time during recovery: %v%s: %w", toolName, callErr, outcomeNote, ErrMCPToolTimeout)
 		}
-		return nil, "", "", fmt.Errorf("MCP tool call failed for %s: %v: %w", toolName, callErr, ErrMCPToolCallFailed)
+		return nil, "", "", fmt.Errorf("MCP tool call failed for %s: %v%s: %w", toolName, callErr, outcomeNote, ErrMCPToolCallFailed)
 	}
 
 	// Extract text from MCP response
@@ -900,6 +957,24 @@ func (m *ToolsManager) executeToolInternal(
 	// the same reason extractTextFromMCPResponse checks it above.
 	isToolError := toolResponse != nil && toolResponse.IsError
 	return createToolResponseMessage(*toolCall, responseText, isToolError), executionConfig.Name, sanitizedToolName, nil
+}
+
+// toolCallReplayAllowed is the common authorization for ordinary retries and
+// recovery. Missing state/hints fail closed; additive does not mean idempotent.
+// The hints remain server-provided contracts, not verified behavior: operators
+// must trust the server before relying on read-only/idempotent annotations.
+func toolCallReplayAllowed(state *schemas.MCPClientState, config *schemas.MCPClientConfig, toolName string) bool {
+	if state == nil || state.ExecutionConfig == nil || config == nil ||
+		state.ExecutionConfig.ID != config.ID || state.ExecutionConfig.Name != config.Name ||
+		state.State == schemas.MCPConnectionStateDisabled || state.ExecutionConfig.Disabled || config.Disabled {
+		return false
+	}
+	tool, ok := state.ToolMap[toolName]
+	if !ok || tool.Annotations == nil {
+		return false
+	}
+	a := tool.Annotations
+	return (a.ReadOnlyHint != nil && *a.ReadOnlyHint) || (a.IdempotentHint != nil && *a.IdempotentHint)
 }
 
 // attemptCallFailureRecovery reacts to a live tool call that failed for a
@@ -942,50 +1017,15 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 	callRequest mcp.CallToolRequest,
 	executionConfig *schemas.MCPClientConfig,
 	toolExecutionTimeout time.Duration,
+	state *schemas.MCPClientState,
+	replayAllowed bool,
 ) (*mcp.CallToolResult, bool, bool) {
-	state := m.clientManager.GetClientForTool(toolName)
-
-	// Safety opt-out: a spurious retry against a destructive, non-idempotent
-	// tool could cause a real-world side effect twice. This gates only the
-	// retry; on the shared path the connection is still healed first.
-	//
-	// Fail closed on missing hints, matching the MCP spec's own defaults
-	// (destructiveHint defaults to true, idempotentHint to false, each only
-	// meaningful when readOnlyHint is false) rather than this package's
-	// unrelated Go zero-value default of false for both: an unannotated tool
-	// is common (both hints are optional per spec) and treating it as safe
-	// to retry would auto-retry an actually-destructive tool whose server
-	// simply never set the hint.
-	retryOptedOut := false
-	if state != nil {
-		if tool, ok := state.ToolMap[toolName]; ok {
-			readOnly := false
-			destructive := true
-			idempotent := false
-			if tool.Annotations != nil {
-				if tool.Annotations.ReadOnlyHint != nil {
-					readOnly = *tool.Annotations.ReadOnlyHint
-				}
-				if tool.Annotations.DestructiveHint != nil {
-					destructive = *tool.Annotations.DestructiveHint
-				}
-				if tool.Annotations.IdempotentHint != nil {
-					idempotent = *tool.Annotations.IdempotentHint
-				}
-			}
-			if !readOnly && destructive && !idempotent {
-				m.logger.Debug("%s Skipping auth-failure auto-retry for destructive, non-idempotent tool %s", MCPLogPrefix, toolName)
-				retryOptedOut = true
-			}
-		}
+	if !replayAllowed {
+		m.logger.Debug("%s Suppressing automatic replay for tool without read-only/idempotent hints: %s", MCPLogPrefix, toolName)
 	}
 
 	if !m.credStore.RequiresPerCallConnection(executionConfig) {
-		return m.recoverSharedConnection(ctx, toolName, callRequest, executionConfig, toolExecutionTimeout, retryOptedOut)
-	}
-
-	if retryOptedOut {
-		return nil, false, false
+		return m.recoverSharedConnection(ctx, toolName, callRequest, executionConfig, toolExecutionTimeout, !replayAllowed)
 	}
 
 	if state == nil {
@@ -1001,7 +1041,15 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 		// call below will surface that through the existing per-user
 		// re-auth error path on its own. Either way, still attempt the
 		// retry with whatever credential resolves.
-		m.logger.Debug("%s Forced credential refresh before retry failed for %s (retrying anyway): %v", MCPLogPrefix, executionConfig.Name, err)
+		m.logger.Debug("%s Forced credential refresh failed for %s (continuing recovery): %v", MCPLogPrefix, executionConfig.Name, err)
+	}
+	if !replayAllowed {
+		// Heal the credential for a future call without dispatching this one again.
+		return nil, false, false
+	}
+	state = m.clientManager.GetClientByName(executionConfig.Name)
+	if !toolCallReplayAllowed(state, executionConfig, toolName) {
+		return nil, false, false
 	}
 
 	conn, release, err := m.clientManager.AcquireClientConn(ctx, state)
@@ -1114,7 +1162,7 @@ func (m *ToolsManager) recoverSharedConnection(
 	if state == nil || state.ExecutionConfig == nil || state.ExecutionConfig.ID != executionConfig.ID {
 		return nil, false, false
 	}
-	if _, ok := state.ToolMap[toolName]; !ok {
+	if !toolCallReplayAllowed(state, executionConfig, toolName) {
 		return nil, false, false
 	}
 	conn, release, err := m.clientManager.AcquireClientConn(ctx, state)

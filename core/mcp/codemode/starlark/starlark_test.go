@@ -3,12 +3,18 @@
 package starlark
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -18,9 +24,76 @@ import (
 	"github.com/canonical/starlark/syntax"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// Unlike ordinary MCP tool execution, the current Code Mode nested executor
+// does not wrap CallTool in ExecuteWithRetry or auth/session recovery. Verify
+// that distinction with a real post-commit HTTP failure, not a fake executor.
+func TestMCPToolReplaySafety_CodeModeDoesNotReplay(t *testing.T) {
+	var wire, commits atomic.Int32
+	upstream := server.NewMCPServer("local-code-replay-control", "1.0.0", server.WithToolCapabilities(true))
+	upstream.AddTool(mcp.NewTool("append", mcp.WithToolAnnotation(mcp.ToolAnnotation{}), mcp.WithString("operation")), func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		n := commits.Add(1)
+		t.Logf("UPSTREAM operation=%v committed_effects=%d", req.GetArguments()["operation"], n)
+		return mcp.NewToolResultText(fmt.Sprintf("commits=%d", n)), nil
+	})
+	transport := server.NewStreamableHTTPServer(upstream)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			transport.ServeHTTP(w, r)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var envelope struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal(body, &envelope) != nil || envelope.Method != "tools/call" {
+			transport.ServeHTTP(w, r)
+			return
+		}
+		n := wire.Add(1)
+		t.Logf("WIRE attempt=%d body=%s", n, body)
+		recorder := httptest.NewRecorder()
+		transport.ServeHTTP(recorder, r)
+		if n == 1 {
+			http.Error(w, "upstream response unavailable after commit", http.StatusServiceUnavailable)
+			return
+		}
+		for k, v := range recorder.Header() {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(recorder.Code)
+		_, _ = w.Write(recorder.Body.Bytes())
+	}))
+	t.Cleanup(ts.Close)
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{BindingLevel: schemas.CodeModeBindingLevelServer, ToolExecutionTimeout: time.Second}, nil)
+	manager := codemcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, mode)
+	t.Cleanup(func() { _ = manager.Cleanup() })
+	if err := manager.AddClient(context.Background(), &schemas.MCPClientConfig{ID: "local-replay-code", Name: "replay", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(ts.URL), AuthType: schemas.MCPAuthTypeHeaders, NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"}, IsCodeModeClient: true}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	msg, bErr := manager.ExecuteChatTool(ctx, &schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("code-call-one"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr(codemcp.ToolTypeExecuteToolCode), Arguments: `{"code":"result = replay.append(operation=\"customer-operation-one\")"}`}})
+	result, _ := json.Marshal(msg)
+	t.Logf("EVIDENCE logical_requests=1 wire_calls=%d committed_effects=%d result=%s error=%v", wire.Load(), commits.Load(), result, bErr)
+	if bErr != nil {
+		t.Fatal(bErr)
+	}
+	if msg == nil || msg.ChatToolMessage == nil || msg.IsError == nil || !*msg.IsError {
+		t.Fatal("expected failed Code Mode result")
+	}
+	if wire.Load() != 1 || commits.Load() != 1 {
+		t.Fatalf("Code Mode repeated the nested call: wire=%d commits=%d", wire.Load(), commits.Load())
+	}
+}
 
 type testClientManager struct {
 	perClientCap int

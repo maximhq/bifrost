@@ -7,10 +7,43 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func BenchmarkMCPToolExecutionReplayPolicy(b *testing.B) {
+	for _, policy := range []string{"unannotated", "readonly", "idempotent"} {
+		b.Run(policy, func(b *testing.B) {
+			annotations := mcpgo.ToolAnnotation{}
+			if policy == "readonly" {
+				annotations.ReadOnlyHint = schemas.Ptr(true)
+			}
+			if policy == "idempotent" {
+				annotations.IdempotentHint = schemas.Ptr(true)
+			}
+			s := server.NewMCPServer("replay-policy-benchmark", "1.0.0", server.WithToolCapabilities(true))
+			s.AddTool(mcpgo.NewTool("echo", mcpgo.WithToolAnnotation(annotations)), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+				return mcpgo.NewToolResultText("ok"), nil
+			})
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			b.Cleanup(func() { _ = m.Cleanup() })
+			if err := m.AddClient(context.Background(), &schemas.MCPClientConfig{ID: "bench", Name: "bench", ConnectionType: schemas.MCPConnectionTypeInProcess, InProcessServer: s, ToolsToExecute: []string{"*"}}); err != nil {
+				b.Fatal(err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			call := &schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("bench-call"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("bench-echo"), Arguments: "{}"}}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := m.ExecuteChatTool(ctx, call); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
 
 // =============================================================================
 // HELPERS
