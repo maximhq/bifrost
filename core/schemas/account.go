@@ -616,6 +616,12 @@ func IsElevenlabsSoundModelFamily(ctx *BifrostContext, model string) bool {
 	return IsElevenlabsSoundModel(ResolveCanonicalModel(ctx, model))
 }
 
+// IsAzureSpeechModelFamily reports whether the current attempt resolves to an
+// Azure AI Speech model. See IsElevenlabsSoundModelFamily for alias handling.
+func IsAzureSpeechModelFamily(ctx *BifrostContext, model string) bool {
+	return IsAzureSpeechModel(ResolveCanonicalModel(ctx, model))
+}
+
 // IsMistralModelFamily reports whether the current attempt resolves to the
 // Mistral model family. See IsAnthropicModelFamily for usage notes.
 func IsMistralModelFamily(ctx *BifrostContext, model string) bool {
