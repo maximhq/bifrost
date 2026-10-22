@@ -6279,6 +6279,15 @@
           },
           "default": 100,
           "description": "New topic threshold: how many requests that matched no topic must be waiting before Warp clusters them into new topics. Between 10 and 20000; 0 resets it to the default; omitting it keeps the stored value."
+        },
+        "management_writes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["create", "update", "delete", "action"]
+          },
+          "uniqueItems": true,
+          "description": "Kinds of configuration change Warp may offer through the Bifrost MCP, each run only after the person confirms it: create (POST create operations), update (PUT and PATCH), delete (DELETE) and action (the other POSTs, such as tests and cache flushes). Reads are always offered. Empty, the default, is reads only. Every kind adds its tools to every Warp request, so turning on more grows each request's context. client.bifrost_mcp_allow_writes is the ceiling: with it off no write is offered. Omitting it keeps the stored value."
         }
       },
       "additionalProperties": false

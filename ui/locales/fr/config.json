@@ -1083,6 +1083,37 @@
 		}
 	},
 	"warp": {
+		"managementTools": {
+			"title": "Outils de configuration",
+			"description": "Warp peut lire la configuration de Bifrost. Choisissez quels types de modification il peut aussi effectuer ; chacun attend toujours la confirmation de l'utilisateur.",
+			"reads": "Lire la configuration",
+			"readsHelp": "Fournisseurs, clés virtuelles, équipes, budgets, règles de routage et le reste.",
+			"alwaysOn": "Toujours actif",
+			"size_one": "{{count}} outil · ~{{tokens}} jetons",
+			"size_other": "{{count}} outils · ~{{tokens}} jetons",
+			"kinds": {
+				"create": {
+					"label": "Créer",
+					"help": "Ajouter des clés virtuelles, des équipes, des règles de routage, etc."
+				},
+				"update": {
+					"label": "Mettre à jour",
+					"help": "Modifier des ressources existantes, comme le budget d'une clé virtuelle."
+				},
+				"delete": {
+					"label": "Supprimer",
+					"help": "Retirer des ressources. Chaque suppression indique qu'elle est irréversible."
+				},
+				"action": {
+					"label": "Autres actions",
+					"help": "Exécuter des opérations comme tester un fournisseur ou vider un cache."
+				}
+			},
+			"notLoaded": "Les types de modification peuvent être choisis une fois le Bifrost MCP chargé.",
+			"writesOff": "Les modifications sont désactivées pour tout le Bifrost MCP. Activez <link0>Autoriser les modifications de configuration via le Bifrost MCP</link0> dans les paramètres de sécurité pour les choisir pour Warp.",
+			"contextWarning": "Chaque type activé est envoyé avec chaque requête Warp : environ {{tokens}} jetons d'outils avec ces paramètres. Les modèles à fenêtre de contexte plus petite risquent de ne plus répondre.",
+			"contextReadsOnly": "La lecture ajoute environ {{tokens}} jetons d'outils à chaque requête Warp."
+		},
 		"saved": "Configuration Warp enregistrée.",
 		"badRange": "Choisissez une plage de temps de backfill valide.",
 		"backfillStarted": "Backfill d'embeddings Warp démarré.",

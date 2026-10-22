@@ -603,6 +603,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_client_config_mcp_openapi_max_spec_mb_column"}, run: migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn},
 	{IDs: []string{"add_client_config_bifrost_url_and_bifrost_mcp_columns"}, run: migrationAddClientConfigBifrostURLAndBifrostMCPColumns},
 	{IDs: []string{"add_framework_config_openapi_url_column"}, run: migrationAddFrameworkConfigOpenAPIURLColumn},
+	{IDs: []string{"add_warp_management_writes_column"}, run: migrationAddWarpManagementWritesColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -718,6 +719,28 @@ func migrationAddWarpAdditionalModelsColumn(ctx context.Context, db *gorm.DB, lo
 			// Reversible: the default model lives in its own columns, so dropping
 			// this costs the extra choices and leaves Warp answering.
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "additional_models")
+		},
+	})
+}
+
+// migrationAddWarpManagementWritesColumn adds the kinds of configuration change
+// Warp may offer through the Bifrost MCP. A row without it reads as reads only,
+// which is the default for a deployment that never chose otherwise.
+func migrationAddWarpManagementWritesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_management_writes_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "management_writes"); err != nil {
+				return fmt.Errorf("add management_writes column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: without the column Warp offers reads only.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "management_writes")
 		},
 	})
 }

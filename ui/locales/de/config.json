@@ -1083,6 +1083,37 @@
 		}
 	},
 	"warp": {
+		"managementTools": {
+			"title": "Konfigurationswerkzeuge",
+			"description": "Warp kann lesen, wie Bifrost konfiguriert ist. Wählen Sie, welche Arten von Änderungen es zusätzlich vornehmen darf; jede wartet weiterhin auf die Bestätigung durch den Benutzer.",
+			"reads": "Konfiguration lesen",
+			"readsHelp": "Provider, virtuelle Schlüssel, Teams, Budgets, Routing-Regeln und mehr.",
+			"alwaysOn": "Immer an",
+			"size_one": "{{count}} Werkzeug · ~{{tokens}} Tokens",
+			"size_other": "{{count}} Werkzeuge · ~{{tokens}} Tokens",
+			"kinds": {
+				"create": {
+					"label": "Anlegen",
+					"help": "Virtuelle Schlüssel, Teams, Routing-Regeln und mehr hinzufügen."
+				},
+				"update": {
+					"label": "Ändern",
+					"help": "Bestehende Ressourcen ändern, etwa das Budget eines virtuellen Schlüssels."
+				},
+				"delete": {
+					"label": "Löschen",
+					"help": "Ressourcen entfernen. Jedes Löschen weist darauf hin, dass es nicht rückgängig zu machen ist."
+				},
+				"action": {
+					"label": "Weitere Aktionen",
+					"help": "Vorgänge ausführen, etwa einen Provider testen oder einen Cache leeren."
+				}
+			},
+			"notLoaded": "Die Arten von Änderungen können gewählt werden, sobald der Bifrost MCP geladen ist.",
+			"writesOff": "Änderungen sind für den gesamten Bifrost MCP ausgeschaltet. Schalten Sie in den Sicherheitseinstellungen <link0>Konfigurationsänderungen über den Bifrost MCP erlauben</link0> ein, um sie für Warp zu wählen.",
+			"contextWarning": "Jede eingeschaltete Art wird mit jeder Warp-Anfrage gesendet: mit diesen Einstellungen etwa {{tokens}} Tokens an Werkzeugen. Modelle mit kleinerem Kontextfenster antworten dann möglicherweise nicht mehr.",
+			"contextReadsOnly": "Das Lesen fügt jeder Warp-Anfrage etwa {{tokens}} Tokens an Werkzeugen hinzu."
+		},
 		"saved": "Warp-Konfiguration gespeichert.",
 		"badRange": "Gültigen Backfill-Zeitraum wählen.",
 		"backfillStarted": "Warp-Embedding-Backfill gestartet.",

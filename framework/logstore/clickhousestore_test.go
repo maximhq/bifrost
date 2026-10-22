@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"os"
 	"reflect"
 	"slices"
@@ -1862,6 +1863,13 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 			return replica.AppendWarpMessages(ctx, owner, owner+"-append", []WarpMessage{{ID: owner + "-append-m", Role: "user", Content: "q", CreatedAt: now}})
 		})
 	})
+	t.Run("swap question", func(t *testing.T) {
+		seed(owner+"-swap", now, 1)
+		waitsForLock(t, func() error {
+			_, err := replica.SwapWarpQuestion(ctx, owner, owner+"-swap", owner+"-swap-m0", "", `{}`)
+			return err
+		})
+	})
 	t.Run("delete if empty", func(t *testing.T) {
 		seed(owner+"-empty", now, 0)
 		waitsForLock(t, func() error {
@@ -1889,6 +1897,138 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 			return err
 		})
 	})
+}
+
+// A question swap writes only while the stored value is the expected one, on
+// the owner's own thread, so a confirmation card is claimed once.
+// On a cluster the claim path writes with a replica quorum and reads with
+// sequential consistency, so a second Confirm answered by another replica sees
+// the first claim. Run here against one node with the store marked clustered:
+// the settings reach the server on every Warp write and swap read, and the
+// claim still holds exactly once.
+func TestClickHouseWarpSwapQuestionOnCluster(t *testing.T) {
+	require.Equal(t, clickhouse.Settings{"insert_quorum": "auto", "insert_quorum_parallel": 0}, warpReplicaSettings(true))
+	require.Equal(t, clickhouse.Settings{"select_sequential_consistency": 1}, warpReplicaSettings(false))
+	single := &ClickHouseLogStore{}
+	ctx := context.Background()
+	require.Equal(t, ctx, single.warpReplicaContext(ctx, true), "single-node Warp queries carry no replica settings")
+
+	store := trySetupClickHouseStore(t)
+	locker := &keyRecordingLocker{}
+	store.SetDistributedLocker(locker)
+	store.cluster = "warp-test-cluster"
+	t.Cleanup(func() { store.cluster = "" })
+	owner := fmt.Sprintf("user:swap-cluster-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateWarpConversation(ctx, &WarpConversation{ID: owner + "-c", OwnerID: owner, Title: "t", CreatedAt: now, UpdatedAt: now}))
+	card := WarpMessage{ID: owner + "-card", Role: "assistant", Content: "a", QuestionJSON: `{"pending":{"token":"t"}}`, CreatedAt: now}
+	require.NoError(t, store.AppendWarpMessages(ctx, owner, owner+"-c", []WarpMessage{card}))
+
+	swapped, err := store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{}`)
+	require.NoError(t, err)
+	require.True(t, swapped)
+	swapped, err = store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{"again":true}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "the second claim loses")
+
+	// With insert_quorum_parallel = 0 a replicated table takes one quorum insert
+	// at a time, so writes for different owners, under different owner locks,
+	// would fail each other; every quorum write also takes the one shared lock.
+	// The append writes twice (messages, then the thread row), the winning claim once.
+	require.Equal(t, 3, locker.count(warpQuorumWriteLockKey), "every Warp quorum write takes the shared quorum lock")
+
+	// The delete waits for every replica (lightweight_deletes_sync = 2); the server
+	// takes the setting, and the thread is gone once it returns.
+	require.NoError(t, store.DeleteWarpConversation(ctx, owner, owner+"-c"))
+	_, err = store.GetWarpConversation(ctx, owner, owner+"-c")
+	require.ErrorIs(t, err, ErrWarpConversationNotFound)
+}
+
+// A Warp history delete on a cluster waits for every replica, so once the owner's
+// lock is released no replica still shows the thread: a Confirm answered there
+// would otherwise claim the card and re-insert the message, bringing it back.
+// Other deletes, and every delete single-node, wait for the current replica only.
+func TestClickHouseWarpHistoryDeletesWaitForEveryReplica(t *testing.T) {
+	single := &ClickHouseLogStore{}
+	clustered := &ClickHouseLogStore{cluster: "warp-test-cluster"}
+	for _, table := range []string{"warp_messages", "warp_conversations"} {
+		require.Contains(t, single.chLightweightDeleteStmt(table, "id = ?"), "lightweight_deletes_sync = 1", table)
+		require.Contains(t, clustered.chLightweightDeleteStmt(table, "id = ?"), "lightweight_deletes_sync = 2", table)
+	}
+	require.Contains(t, clustered.chLightweightDeleteStmt("logs", "id = ?"), "lightweight_deletes_sync = 1", "only the Warp history tables wait for every replica")
+	require.Contains(t, clustered.chLightweightDeleteStmt("warp_topics", "id = ?"), "lightweight_deletes_sync = 1")
+}
+
+// keyRecordingLocker is a fakeDistributedLocker that counts acquisitions per key.
+type keyRecordingLocker struct {
+	fakeDistributedLocker
+	seenMu sync.Mutex
+	seen   map[string]int
+}
+
+func (k *keyRecordingLocker) Acquire(ctx context.Context, key string) (context.Context, func(), error) {
+	k.seenMu.Lock()
+	if k.seen == nil {
+		k.seen = map[string]int{}
+	}
+	k.seen[key]++
+	k.seenMu.Unlock()
+	return k.fakeDistributedLocker.Acquire(ctx, key)
+}
+
+func (k *keyRecordingLocker) count(key string) int {
+	k.seenMu.Lock()
+	defer k.seenMu.Unlock()
+	return k.seen[key]
+}
+
+// A card a later turn has overtaken is not claimed, checked under the owner's
+// lock that appends take.
+func TestClickHouseWarpSwapQuestionRefusesOvertakenCard(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	store.SetDistributedLocker(&fakeDistributedLocker{})
+	ctx := context.Background()
+	owner := fmt.Sprintf("user:swap-overtaken-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateWarpConversation(ctx, &WarpConversation{ID: owner + "-c", OwnerID: owner, Title: "t", CreatedAt: now, UpdatedAt: now}))
+	card := WarpMessage{ID: owner + "-card", Role: "assistant", Content: "a", QuestionJSON: `{"pending":{"token":"t"}}`, CreatedAt: now}
+	require.NoError(t, store.AppendWarpMessages(ctx, owner, owner+"-c", []WarpMessage{card}))
+	require.NoError(t, store.AppendWarpMessages(ctx, owner, owner+"-c", []WarpMessage{{ID: owner + "-later", Role: "user", Content: "never mind", CreatedAt: now.Add(time.Second)}}))
+
+	swapped, err := store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "an overtaken card is not claimed")
+}
+
+func TestClickHouseWarpSwapQuestion(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	owner := fmt.Sprintf("user:swap-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateWarpConversation(ctx, &WarpConversation{ID: owner + "-c", OwnerID: owner, Title: "t", CreatedAt: now, UpdatedAt: now}))
+	card := WarpMessage{ID: owner + "-card", Role: "assistant", Content: "a", QuestionJSON: `{"pending":{"token":"t"}}`, CreatedAt: now}
+	require.NoError(t, store.AppendWarpMessages(ctx, owner, owner+"-c", []WarpMessage{card}))
+
+	// Without a distributed locker the claim is refused: this process's lock
+	// cannot keep a replica sharing the ClickHouse from claiming the card too.
+	_, err := store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{}`)
+	require.ErrorIs(t, err, ErrWarpClaimNeedsSharedLock)
+	store.SetDistributedLocker(&fakeDistributedLocker{})
+
+	swapped, err := store.SwapWarpQuestion(ctx, "other", owner+"-c", card.ID, card.QuestionJSON, `{}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "another owner's thread is not touched")
+	swapped, err = store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{}`)
+	require.NoError(t, err)
+	require.True(t, swapped)
+	swapped, err = store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{"again":true}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "the second claim loses")
+
+	thread, err := store.GetWarpConversation(ctx, owner, owner+"-c")
+	require.NoError(t, err)
+	require.Len(t, thread.Messages, 1, "the re-insert replaces the card rather than adding a row")
+	require.Equal(t, `{}`, thread.Messages[0].QuestionJSON)
 }
 
 // lostLeaseLocker grants the lock but reports it lost at once, the way the

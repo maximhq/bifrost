@@ -1082,6 +1082,37 @@
 		}
 	},
 	"warp": {
+		"managementTools": {
+			"title": "設定工具",
+			"description": "Warp 可以讀取 Bifrost 的設定。請選擇它還可以進行哪些類型的變更；每項變更仍需等待使用者確認。",
+			"reads": "讀取設定",
+			"readsHelp": "供應商、虛擬金鑰、團隊、預算、路由規則等。",
+			"alwaysOn": "一律開啟",
+			"size_one": "{{count}} 個工具 · 約 {{tokens}} 個 token",
+			"size_other": "{{count}} 個工具 · 約 {{tokens}} 個 token",
+			"kinds": {
+				"create": {
+					"label": "建立",
+					"help": "新增虛擬金鑰、團隊、路由規則等。"
+				},
+				"update": {
+					"label": "更新",
+					"help": "變更現有資源，例如虛擬金鑰的預算。"
+				},
+				"delete": {
+					"label": "刪除",
+					"help": "移除資源。每次刪除都會提示無法復原。"
+				},
+				"action": {
+					"label": "其他操作",
+					"help": "執行測試供應商或清除快取等操作。"
+				}
+			},
+			"notLoaded": "Bifrost MCP 載入後即可選擇變更類型。",
+			"writesOff": "整個 Bifrost MCP 的變更已關閉。請在安全性設定中開啟<link0>允許透過 Bifrost MCP 變更設定</link0>，以便為 Warp 選擇它們。",
+			"contextWarning": "你開啟的每種類型都會隨每個 Warp 請求傳送：在這些設定下工具約為 {{tokens}} 個 token。上下文視窗較小的模型可能會停止回答。",
+			"contextReadsOnly": "讀取會為每個 Warp 請求增加約 {{tokens}} 個 token 的工具。"
+		},
 		"saved": "Warp 設定已儲存。",
 		"badRange": "請選擇有效的回填時間範圍。",
 		"backfillStarted": "已開始 Warp 嵌入回填。",

@@ -168,6 +168,40 @@ WarpConfig:
       type: boolean
       readOnly: true
       description: Whether the shared runtime vector store is connected.
+    management_writes:
+      type: array
+      items:
+        $ref: '#/WarpManagementWrite'
+      description: |
+        Kinds of configuration change Warp may offer through the Bifrost MCP,
+        each run only after the person confirms it. Reads are always offered;
+        empty, the default, is reads only.
+    management_writes_available:
+      type: boolean
+      readOnly: true
+      description: |
+        Whether the Bifrost MCP serves writes at all. It is the ceiling: with
+        client.bifrost_mcp_allow_writes off, no kind of write is offered,
+        whatever management_writes says.
+    management_tool_sizes:
+      type: array
+      readOnly: true
+      description: |
+        Per kind, how many management tools Warp could be offered and roughly
+        how many tokens their declarations add to every Warp request. Absent
+        while the Bifrost MCP is not loaded.
+      items:
+        type: object
+        properties:
+          kind:
+            type: string
+            enum: [read, create, update, delete, action]
+          tools:
+            type: integer
+          estimated_tokens:
+            type: integer
+            description: Rough estimate (declaration characters / 3).
+        required: [kind, tools, estimated_tokens]
   required:
     - configured
     - enabled
@@ -184,6 +218,16 @@ WarpConfig:
     - semantic_search_limit
     - topic_discovery_min_requests
     - vector_store_connected
+    - management_writes
+    - management_writes_available
+
+WarpManagementWrite:
+  type: string
+  enum: [create, update, delete, action]
+  description: |
+    A kind of configuration change: create (POST create operations), update
+    (PUT and PATCH), delete (DELETE) or action (the other POSTs, such as tests
+    and cache flushes).
 
 WarpConfigInput:
   type: object
@@ -345,6 +389,15 @@ WarpConfigInput:
         keeps the stored value; zero means "use the default", resolved before
         validation. 1 to 9 are refused.
 
+    management_writes:
+      type: array
+      items:
+        $ref: '#/WarpManagementWrite'
+      uniqueItems: true
+      description: |
+        Kinds of configuration change Warp may offer, each run only after the
+        person confirms it. Reads are always offered and are not a kind. Omitted
+        keeps the stored value; [] is reads only.
 WarpUnavailable:
   type: object
   description: |

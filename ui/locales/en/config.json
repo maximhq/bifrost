@@ -1054,6 +1054,37 @@
 		}
 	},
 	"warp": {
+		"managementTools": {
+			"title": "Configuration tools",
+			"description": "Warp can read how Bifrost is configured. Choose which kinds of change it may also make; each one still waits for the user to confirm it.",
+			"reads": "Read configuration",
+			"readsHelp": "Providers, virtual keys, teams, budgets, routing rules and the rest.",
+			"alwaysOn": "Always on",
+			"size_one": "{{count}} tool · ~{{tokens}} tokens",
+			"size_other": "{{count}} tools · ~{{tokens}} tokens",
+			"kinds": {
+				"create": {
+					"label": "Create",
+					"help": "Add virtual keys, teams, routing rules and more."
+				},
+				"update": {
+					"label": "Update",
+					"help": "Change existing resources, such as a virtual key's budget."
+				},
+				"delete": {
+					"label": "Delete",
+					"help": "Remove resources. Each delete says it cannot be undone."
+				},
+				"action": {
+					"label": "Other actions",
+					"help": "Run operations such as testing a provider or clearing a cache."
+				}
+			},
+			"notLoaded": "Kinds of change can be chosen once the Bifrost MCP is loaded.",
+			"writesOff": "Changes are off for the whole Bifrost MCP. Turn on <link0>Allow configuration changes through the Bifrost MCP</link0> in Security settings to choose them for Warp.",
+			"contextWarning": "Every kind you turn on is sent with each Warp request: about {{tokens}} tokens of tools with these settings. Models with a smaller context window may stop answering.",
+			"contextReadsOnly": "Reads add about {{tokens}} tokens of tools to each Warp request."
+		},
 		"saved": "Warp configuration saved.",
 		"badRange": "Choose a valid backfill time range.",
 		"backfillStarted": "Warp embedding backfill started.",

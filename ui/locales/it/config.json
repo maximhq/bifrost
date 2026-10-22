@@ -1054,6 +1054,37 @@
 		}
 	},
 	"warp": {
+		"managementTools": {
+			"title": "Strumenti di configurazione",
+			"description": "Warp può leggere come è configurato Bifrost. Scegli quali tipi di modifica può anche effettuare; ciascuno attende comunque la conferma dell'utente.",
+			"reads": "Leggere la configurazione",
+			"readsHelp": "Provider, chiavi virtuali, team, budget, regole di routing e il resto.",
+			"alwaysOn": "Sempre attivo",
+			"size_one": "{{count}} strumento · ~{{tokens}} token",
+			"size_other": "{{count}} strumenti · ~{{tokens}} token",
+			"kinds": {
+				"create": {
+					"label": "Creare",
+					"help": "Aggiungere chiavi virtuali, team, regole di routing e altro."
+				},
+				"update": {
+					"label": "Aggiornare",
+					"help": "Modificare risorse esistenti, come il budget di una chiave virtuale."
+				},
+				"delete": {
+					"label": "Eliminare",
+					"help": "Rimuovere risorse. Ogni eliminazione avvisa che non si può annullare."
+				},
+				"action": {
+					"label": "Altre azioni",
+					"help": "Eseguire operazioni come testare un provider o svuotare una cache."
+				}
+			},
+			"notLoaded": "I tipi di modifica si possono scegliere quando il Bifrost MCP è caricato.",
+			"writesOff": "Le modifiche sono disattivate per tutto il Bifrost MCP. Attiva <link0>Consenti modifiche della configurazione tramite il Bifrost MCP</link0> nelle impostazioni di sicurezza per sceglierle per Warp.",
+			"contextWarning": "Ogni tipo attivato viene inviato con ogni richiesta di Warp: circa {{tokens}} token di strumenti con queste impostazioni. I modelli con una finestra di contesto più piccola potrebbero smettere di rispondere.",
+			"contextReadsOnly": "La lettura aggiunge circa {{tokens}} token di strumenti a ogni richiesta di Warp."
+		},
 		"saved": "Configurazione Warp salvata.",
 		"badRange": "Scegli un intervallo di backfill valido.",
 		"backfillStarted": "Backfill degli embedding Warp avviato.",
