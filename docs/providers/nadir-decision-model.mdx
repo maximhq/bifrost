@@ -1,0 +1,136 @@
+---
+title: "Nadir Decision Model"
+description: "Use Nadir's hosted complexity classifier as the Complexity Router's decision model, through a custom provider on the OpenAI base format."
+icon: "signs-post"
+---
+
+## Overview
+
+[Nadir](https://getnadir.com) serves a trained prompt-complexity classifier behind OpenAI's Decisions API, at `POST https://api.getnadir.com/v1/decisions`. It answers the [Complexity Router](/features/complexity-router)'s tier question with `SIMPLE`, `MEDIUM`, or `COMPLEX` and generates no text. You add it as a [custom provider](/providers/custom-providers) on the **OpenAI** base format, then pick it as the router's decision model.
+
+| | Nadir |
+|---|---|
+| **Runs as** | A hosted API at `https://api.getnadir.com` |
+| **Models** | Any name, echoed back in the response. This page uses `nadir-bucket` |
+| **Model listing** | Turn **List Models** off: Nadir's `/v1/models` lists the chat models it proxies, not `nadir-bucket` |
+| **Auth** | A Nadir API key, sent as `Authorization: Bearer`. Without a key, requests share a limit of 10 per minute per client IP |
+| **Input** | Text only. User messages are read; other roles and image parts are ignored |
+| **Questions** | Exactly one `choice` question whose values are `SIMPLE`, `MEDIUM`, and `COMPLEX` (any case, any subset). Anything else is a `400` |
+
+<Note>
+Nadir is a trained classifier, not a prompted model. It accepts [tier guidance](/features/complexity-router#tier-guidance) (definitions, signals, examples) and ignores it, so editing the guidance does not change its answers.
+</Note>
+
+---
+
+## 1. Get a key
+
+Create an API key in the Nadir dashboard under **API Keys**. Without a key, the endpoint answers anonymously up to the per-IP limit above; past it, requests are rejected and the router leaves them unclassified. Keyless use is meant for trying the setup, not for production traffic.
+
+---
+
+## 2. Add the provider
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers** and click **Add New Provider**.
+2. In **Add Custom Provider**, set **Name** (for example `nadir`) and **Base Format** to **OpenAI**.
+3. Set **Base URL** to `https://api.getnadir.com`.
+4. Under **Allowed Request Types**, turn on **Decisions** and turn **List Models** off.
+5. Add a key with your Nadir API key, and in its **Allowed Models** type `nadir-bucket`.
+6. Save.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "nadir": {
+      "keys": [
+        {
+          "name": "nadir-key",
+          "value": "env.NADIR_API_KEY",
+          "models": ["nadir-bucket"],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "https://api.getnadir.com"
+      },
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "allowed_requests": {
+          "list_models": false,
+          "decisions": true
+        }
+      }
+    }
+  }
+}
+```
+
+To try it without a key, drop `keys` and add `"is_key_less": true` to `custom_provider_config`.
+
+</Tab>
+</Tabs>
+
+<Warning>
+**Two settings keep chat traffic off this provider.**
+
+- **List Models off.** With listing on, Bifrost reads Nadir's chat model list and treats the provider as serving those models.
+- **Allowed Models set.** A key that allows every model, on a provider that lists none, makes Bifrost treat Nadir as serving every model, so requests without a provider prefix may be tried on it first.
+</Warning>
+
+---
+
+## 3. Use it in the Complexity Router
+
+Pick the custom provider and `nadir-bucket` as the decision model in [**Complexity Router**](/features/complexity-router#choosing-the-decision-model), or set it in `config.json`:
+
+```json
+{
+  "governance": {
+    "complexity_analyzer_config": {
+      "classifier": "decision",
+      "decision": {
+        "provider": "nadir",
+        "model": "nadir-bucket",
+        "previous_message_count": 1
+      },
+      "keywords": {
+        "simple_keywords": ["fix the grammar in this sentence."],
+        "medium_keywords": ["apply a standard method to this technical question."],
+        "complex_keywords": ["design a solution under several competing constraints."]
+      }
+    }
+  }
+}
+```
+
+The `keywords` lists are required in `config.json` even when the decision model classifies; a block without them is rejected at startup. Then add a [routing rule](/features/complexity-router#routing-with-complexity_tier) for each tier you want to route.
+
+- **Timeout.** Each classification is a call to a hosted API, so it includes a network round trip. If your gateway is far from `us-east-1`, check the classification latency in the logs and raise `decision.timeout` (`1.5s` by default) if requests go unclassified.
+- **Failures.** A timeout, a rejected request, or an outage leaves the request unclassified, and it continues through normal routing.
+- **Data.** Requests sent with a key are logged to your Nadir account, including the classified text unless prompt storage is turned off in your Nadir settings. Keyless requests write no usage record.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Unrelated requests (chat, embeddings) go to Nadir | List Models is on, or the key allows every model | Turn **List Models** off and set **Allowed Models** to `nadir-bucket` |
+| `400` from Nadir | The decision request is not the router's tier question: another question type, other choice values, or several questions | Use Nadir only as the Complexity Router's decision model |
+| `401` from Nadir | The key is missing or invalid | Check the key in the Nadir dashboard |
+| `429` from Nadir | A keyless provider passed the per-IP limit | Add a key |
+| Every request logs `complexity_mechanism=skipped` | Classifications pass `decision.timeout` | Raise `decision.timeout` |
+
+---
+
+## Next Steps
+
+- **[Complexity Router](/features/complexity-router)** - Route requests by complexity with a decision model
+- **[Custom Providers](/providers/custom-providers)** - Base formats and allowed request types
+- **[Decisions](/quickstart/gateway/decisions)** - Request and response format

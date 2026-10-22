@@ -192,6 +192,7 @@
               "providers/performance",
               "providers/custom-providers",
               "providers/self-hosted-decision-models",
+              "providers/nadir-decision-model",
               "providers/custom-pricing",
               "providers/request-options",
               "providers/response-headers",
