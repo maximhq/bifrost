@@ -36,7 +36,7 @@ Use an absolute HTTP or HTTPS callback URL without credentials embedded in the U
 
   An explicit create operation registers the upstream configuration first, then saves the local configuration. If local storage fails, Bifrost attempts to remove the upstream registration and returns an error.
 
-  Get and list operations read Bifrost's stored configuration without calling the upstream agent. They return your original callback URL, omit the notification token, and include only the authentication scheme. Callback credentials are write-only.
+  Get and list operations first authorize the request through the upstream agent, then resolve Bifrost's stored callback using the gateway-minted notification token. They return your callback URL, omit notification tokens, and include only the authentication scheme. Callback credentials are write-only. The upstream must return the gateway token in its push-configuration reads; configurations registered outside Bifrost are not exposed as local callbacks.
 </Accordion>
 
 <Accordion title="Why is this stored in the configuration database?">
@@ -80,7 +80,13 @@ A `202 Accepted` response to the upstream agent means Bifrost queued the notific
   Bifrost treats any callback HTTP `2xx` response as success. Timeouts and other HTTP statuses cause retries, up to six delivery attempts. Each attempt has a 30-second timeout. Redirects are not followed.
 
   Delivery is at least once. Your callback may receive the same event again if it processed a request but Bifrost did not receive its successful response. Make callback processing idempotent. After the retry limit, the delivery stops and records the failure. A delivery whose configuration has been deleted stops without further retries.
+
+  Re-registering a configuration mints a new gateway credential. Notifications accepted under the previous registration stop rather than being redirected to the replacement callback. Duplicate detection is scoped to each registration and tenant.
 </Accordion>
+
+<Warning>
+When upgrading across the `scope_agent_push_identity` migration, stop the old gateway nodes and their push relays before migrating and starting the new nodes. Mixed-version relays do not understand the new delivery identity. Stored callbacks and credentials are retained, but legacy pending notifications without a registration binding are dead-lettered instead of guessing which callback owns their payload. Do not replay those rows manually; obtain fresh notifications from the upstream agent.
+</Warning>
 
 <Accordion title="An update never reaches my callback">
   1. Confirm the upstream agent can reach Bifrost's External Client URL and callback route.

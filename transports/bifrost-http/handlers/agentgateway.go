@@ -344,7 +344,7 @@ func (h *AgentGatewayHandler) deletePushConfig(ctx *fasthttp.RequestCtx) {
 	}
 	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
 	defer cancel()
-	deleted, err := h.manager.DeleteStoredPushConfig(workCtx, agentName, taskID, configID)
+	deleted, err := h.manager.DeleteStoredPushConfig(workCtx, agentName, string(ctx.QueryArgs().Peek("tenant")), taskID, configID)
 	if err != nil {
 		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "failed to delete agent push configuration")
 		return

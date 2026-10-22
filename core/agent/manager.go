@@ -112,9 +112,8 @@ type Store interface {
 // isolated as an interface so tests can substitute an upstream without a real
 // server. It mirrors the protocol methods the gateway forwards today, including
 // the push-config registration hop the durable push relay performs. Push-config
-// reads and the local delete bookkeeping are served from the gateway's own
-// store, so the read methods are deliberately absent. Destroy must release the
-// client's transport resources.
+// reads authorize upstream before projecting the gateway's own callback record.
+// Destroy must release the client's transport resources.
 type sdkClient interface {
 	GetTask(context.Context, *a2a.GetTaskRequest) (*a2a.Task, error)
 	ListTasks(context.Context, *a2a.ListTasksRequest) (*a2a.ListTasksResponse, error)
@@ -124,6 +123,8 @@ type sdkClient interface {
 	SubscribeToTask(context.Context, *a2a.SubscribeToTaskRequest) iter.Seq2[a2a.Event, error]
 	GetExtendedAgentCard(context.Context, *a2a.GetExtendedAgentCardRequest) (*a2a.AgentCard, error)
 	CreateTaskPushConfig(context.Context, *a2a.PushConfig) (*a2a.PushConfig, error)
+	GetTaskPushConfig(context.Context, *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error)
+	ListTaskPushConfigs(context.Context, *a2a.ListTaskPushConfigRequest) ([]*a2a.PushConfig, error)
 	DeleteTaskPushConfig(context.Context, *a2a.DeleteTaskPushConfigRequest) error
 	Destroy() error
 }
@@ -137,6 +138,7 @@ type sdkClient interface {
 type upstreamCandidate struct {
 	client    sdkClient
 	transport string
+	tenant    string
 }
 
 type clientGeneration struct {
@@ -1302,7 +1304,7 @@ func (m *Manager) buildGeneration(ctx context.Context, config runtimeConfig) (*c
 			candidateErrors = append(candidateErrors, clientErr)
 			continue
 		}
-		candidates = append(candidates, upstreamCandidate{client: client, transport: selectedTransport})
+		candidates = append(candidates, upstreamCandidate{client: client, transport: selectedTransport, tenant: iface.Tenant})
 	}
 	if len(candidates) == 0 {
 		httpClient.CloseIdleConnections()

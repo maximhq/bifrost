@@ -17,6 +17,77 @@ func createPushFixtureAgent(t *testing.T, store *RDBConfigStore) {
 	require.NoError(t, store.CreateAgentRegistration(context.Background(), &schemas.AgentRegistration{Name: "fixture", AgentCardURL: "https://example.com", Enabled: true, CreatedAt: now, UpdatedAt: now}))
 }
 
+func TestAgentPushTenantIdentity(t *testing.T) {
+	for _, order := range [][]string{{"tenant-a", "tenant-b"}, {"tenant-b", "tenant-a"}} {
+		t.Run(order[0]+"-then-"+order[1], func(t *testing.T) {
+			store := setupRDBTestStore(t)
+			createPushFixtureAgent(t, store)
+			for _, tenant := range order {
+				ctx := context.Background()
+				require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+					AgentName: "fixture", TaskID: "shared-task", ConfigID: "shared-config",
+					Tenant: tenant, URL: "https://" + tenant + ".example/callback", IngressTokenHash: tenant,
+					CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+				}))
+			}
+			ctx := context.Background()
+			_, total, err := store.ListAgentPushConfigsPaginated(ctx, schemas.AgentPushConfigQuery{Limit: 10})
+			require.NoError(t, err)
+			require.EqualValues(t, 2, total)
+			rows, err := store.ListAgentPushConfigs(ctx, "fixture", order[0], "shared-task")
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			got, err := store.GetAgentPushConfig(ctx, "fixture", order[0], "shared-task", "shared-config")
+			require.NoError(t, err)
+			require.Equal(t, order[0], got.Tenant)
+			old, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", order[0])
+			require.NoError(t, err)
+			require.NotNil(t, old)
+			deleted, err := store.DeleteAgentPushConfig(ctx, "fixture", order[0], "shared-task", "shared-config")
+			require.NoError(t, err)
+			require.True(t, deleted)
+			remaining, err := store.GetAgentPushConfig(ctx, "fixture", order[1], "shared-task", "shared-config")
+			require.NoError(t, err)
+			require.NotNil(t, remaining)
+		})
+	}
+}
+
+func TestAgentPushPendingTenantIdentity(t *testing.T) {
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	ctx := context.Background()
+	for _, tenant := range []string{"tenant-a", "tenant-b"} {
+		require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+			AgentName: "fixture", TaskID: "__bifrost_pending__:" + tenant, ConfigID: "shared-config",
+			Tenant: tenant, URL: "https://" + tenant + ".example/callback", IngressTokenHash: tenant,
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}))
+	}
+	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", "tenant-a", "__bifrost_pending__:tenant-a", "shared-task"))
+	err := store.BindAgentPushConfigTask(ctx, "fixture", "tenant-b", "__bifrost_pending__:tenant-b", "shared-task")
+	require.NoError(t, err, "pending registrations in different tenants must settle independently")
+	remaining, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", "tenant-b")
+	require.NoError(t, err)
+	require.Equal(t, "shared-task", remaining.TaskID)
+}
+
+func TestAgentPushDeleteFencesReplacement(t *testing.T) {
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	ctx := context.Background()
+	config := &schemas.AgentPushConfig{AgentName: "fixture", Tenant: "tenant", TaskID: "task", ConfigID: "config", URL: "https://callback.example", IngressTokenHash: "old", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	require.NoError(t, store.SaveAgentPushConfig(ctx, config))
+	config.IngressTokenHash = "replacement"
+	require.NoError(t, store.SaveAgentPushConfig(ctx, config))
+	deleted, err := store.DeleteAgentPushConfigByIngressTokenHash(ctx, "fixture", "old")
+	require.NoError(t, err)
+	require.False(t, deleted)
+	remaining, err := store.GetAgentPushConfig(ctx, "fixture", "tenant", "task", "config")
+	require.NoError(t, err)
+	require.Equal(t, "replacement", remaining.IngressTokenHash)
+}
+
 func TestAgentPushConfigCRUD(t *testing.T) {
 	ctx := context.Background()
 	store := setupRDBTestStore(t)
@@ -39,7 +110,7 @@ func TestAgentPushConfigCRUD(t *testing.T) {
 	// The caller's secrets must remain plaintext after the row hook encrypted its copy.
 	require.Equal(t, "client-token", config.Token.GetValue())
 
-	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "downstream-tenant", "task-1", "cfg-1")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	require.Equal(t, "downstream-tenant", got.Tenant)
@@ -60,7 +131,7 @@ func TestAgentPushConfigCRUD(t *testing.T) {
 	config.URL = "https://client.example/replaced"
 	config.IngressTokenHash = "hash-2"
 	require.NoError(t, store.SaveAgentPushConfig(ctx, config))
-	listed, err := store.ListAgentPushConfigs(ctx, "fixture", "task-1")
+	listed, err := store.ListAgentPushConfigs(ctx, "fixture", "downstream-tenant", "task-1")
 	require.NoError(t, err)
 	require.Len(t, listed, 1)
 	require.Equal(t, "https://client.example/replaced", listed[0].URL)
@@ -77,13 +148,13 @@ func TestAgentPushConfigCRUD(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"fixture"}, names)
 
-	deleted, err := store.DeleteAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	deleted, err := store.DeleteAgentPushConfig(ctx, "fixture", "downstream-tenant", "task-1", "cfg-1")
 	require.NoError(t, err)
 	require.True(t, deleted)
-	deleted, err = store.DeleteAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	deleted, err = store.DeleteAgentPushConfig(ctx, "fixture", "downstream-tenant", "task-1", "cfg-1")
 	require.NoError(t, err)
 	require.False(t, deleted)
-	gone, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	gone, err := store.GetAgentPushConfig(ctx, "fixture", "downstream-tenant", "task-1", "cfg-1")
 	require.NoError(t, err)
 	require.Nil(t, gone)
 }
@@ -119,7 +190,7 @@ func TestPendingAgentPushConfigSettlementIsExact(t *testing.T) {
 	require.NotNil(t, remaining)
 
 	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-two", "__bifrost_pending__:two", "task-two"))
-	bound, err := store.GetAgentPushConfig(ctx, "fixture", "task-two", "shared-config")
+	bound, err := store.GetAgentPushConfig(ctx, "fixture", "", "task-two", "shared-config")
 	require.NoError(t, err)
 	require.NotNil(t, bound)
 	require.Equal(t, "hash-two", bound.IngressTokenHash)
@@ -127,7 +198,7 @@ func TestPendingAgentPushConfigSettlementIsExact(t *testing.T) {
 	deleted, err = store.DeletePendingAgentPushConfig(ctx, "fixture", "hash-two", "__bifrost_pending__:two")
 	require.NoError(t, err)
 	require.False(t, deleted)
-	bound, err = store.GetAgentPushConfig(ctx, "fixture", "task-two", "shared-config")
+	bound, err = store.GetAgentPushConfig(ctx, "fixture", "", "task-two", "shared-config")
 	require.NoError(t, err)
 	require.NotNil(t, bound)
 }
@@ -138,15 +209,17 @@ func TestAgentPushDeliveryOutbox(t *testing.T) {
 	createPushFixtureAgent(t, store)
 	now := time.Now().UTC()
 	delivery := &schemas.AgentPushDelivery{
-		ID:            "digest-1",
-		AgentName:     "fixture",
-		TaskID:        "task-1",
-		ConfigID:      "cfg-1",
-		Payload:       `{"kind":"status-update"}`,
-		Status:        schemas.AgentPushDeliveryStatusPending,
-		NextAttemptAt: now,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:               "digest-1",
+		AgentName:        "fixture",
+		Tenant:           "tenant",
+		TaskID:           "task-1",
+		ConfigID:         "cfg-1",
+		IngressTokenHash: "registration-hash",
+		Payload:          `{"kind":"status-update"}`,
+		Status:           schemas.AgentPushDeliveryStatusPending,
+		NextAttemptAt:    now,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	created, err := store.CreateAgentPushDeliveryIfNotExists(ctx, delivery)
 	require.NoError(t, err)
@@ -160,6 +233,8 @@ func TestAgentPushDeliveryOutbox(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, due, 1)
 	require.Equal(t, "digest-1", due[0].ID)
+	require.Equal(t, "tenant", due[0].Tenant)
+	require.Equal(t, "registration-hash", due[0].IngressTokenHash)
 
 	for _, limit := range []int{0, -1} {
 		due, err = store.ListDueAgentPushDeliveries(ctx, now.Add(time.Second), limit)
