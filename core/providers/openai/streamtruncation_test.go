@@ -262,6 +262,7 @@ func TestChatStreamDropsUpstreamMessageObject(t *testing.T) {
 	}
 }
 
+// Deltas that carry only extra_content must reach the client, including after finish_reason.
 func TestChatStreamForwardsExtraContentOnlyDeltas(t *testing.T) {
 	extraChunk := func(extra string) string {
 		return `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
