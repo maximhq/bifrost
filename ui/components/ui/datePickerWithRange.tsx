@@ -226,6 +226,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 							<Calendar
 								autoFocus
 								mode="range"
+								timeZone={activeTimezone}
 								disabled={disabledDateRange}
 								defaultMonth={date?.from}
 								selected={date}
