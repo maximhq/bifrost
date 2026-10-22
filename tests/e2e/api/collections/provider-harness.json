@@ -276967,8 +276967,8 @@
       ]
     },
     {
-      "name": "264. Explicit-provider virtual key wildcard admission (OpenRouter)",
-      "description": "wildcard-admission: an unrestricted virtual key on an explicitly named OpenRouter provider must not require catalog membership. Nitro is a dynamic variant omitted from model lists, so these admissions were 403 model_blocked even with a live catalog. Each row creates and removes its own key. Flag-only and explicit wildcard rows cover chat, streaming, Responses and OpenAI-compatible ingress; explicit allowlist and blacklist controls remain 403. Requests use a throwaway direct provider key and must reach OpenRouter auth rejection (401 plus routing_info), not paid inference. No provider configuration or global settings are changed.",
+      "name": "264. Explicit-provider virtual key wildcard admission (OpenRouter) (#8878 / PR #8905)",
+      "description": "wildcard-admission: an unrestricted virtual key on an explicitly named OpenRouter provider must not require catalog membership. Nitro is a dynamic variant omitted from model lists, so these admissions were 403 model_blocked even with a live catalog. Each row creates and removes its own key. Flag-only and explicit wildcard rows cover chat, streaming, Responses and OpenAI-compatible ingress; explicit allowlist and blacklist controls remain 403. Requests use a throwaway direct provider key and must reach OpenRouter auth rejection (401 plus routing_info), not paid inference. No provider configuration or global settings are changed. Prerequisite: client_config.allow_direct_keys must be true. The standard integration config enables it; enable it manually on reused gateways. This folder deliberately does not mutate this security-sensitive global setting.",
       "event": [
         {
           "listen": "prerequest",
@@ -277001,25 +277001,28 @@
             "type": "text/javascript",
             "exec": [
               "var text = pm.response.text();",
-              "var body = pm.response.json();",
               "var denied = pm.request.name.indexOf('[EXPECT-403]') !== -1;",
-              "pm.test('wildcard-admission: exact expected status', function () {",
-              "  pm.expect(pm.response.code, text).to.eql(denied ? 403 : 401);",
-              "});",
-              "pm.test('wildcard-admission: policy denial or upstream rejection, not missing authentication', function () {",
-              "  if (denied) {",
-              "    pm.expect(body.type, text).to.eql('model_blocked');",
-              "  } else {",
-              "    pm.expect(((body.extra_fields || {}).routing_info || {}).provider, text).to.eql('openrouter');",
-              "  }",
-              "});",
-              "var id = pm.variables.get('openrouterWildcardVKID');",
-              "if (id) {",
-              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + encodeURIComponent(id), method: 'DELETE' }, function (err, res) {",
-              "    pm.test('wildcard-admission: remove virtual key', function () {",
-              "      pm.expect(!err && res && res.code, err ? String(err) : (res ? res.text() : 'no response')).to.eql(200);",
-              "    });",
+              "try {",
+              "  pm.test('wildcard-admission: exact expected status', function () {",
+              "    pm.expect(pm.response.code, text).to.eql(denied ? 403 : 401);",
               "  });",
+              "  pm.test('wildcard-admission: policy denial or upstream rejection, not missing authentication', function () {",
+              "    var body = pm.response.json();",
+              "    if (denied) {",
+              "      pm.expect(body.type, text).to.eql('model_blocked');",
+              "    } else {",
+              "      pm.expect(((body.extra_fields || {}).routing_info || {}).provider, text).to.eql('openrouter');",
+              "    }",
+              "  });",
+              "} finally {",
+              "  var id = pm.variables.get('openrouterWildcardVKID');",
+              "  if (id) {",
+              "    pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + encodeURIComponent(id), method: 'DELETE' }, function (err, res) {",
+              "      pm.test('wildcard-admission: remove virtual key', function () {",
+              "        pm.expect(!err && res && res.code, err ? String(err) : (res ? res.text() : 'no response')).to.eql(200);",
+              "      });",
+              "    });",
+              "  }",
               "}"
             ]
           }
@@ -277027,7 +277030,7 @@
       ],
       "item": [
         {
-          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro allow_all_providers /v1/chat/completions - wildcard-admission",
+          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro allow_all_providers /v1/chat/completions - wildcard-admission - #8878",
           "request": {
             "auth": {
               "type": "noauth"
@@ -277065,7 +277068,7 @@
           }
         },
         {
-          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro explicit wildcard /v1/chat/completions stream - wildcard-admission",
+          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro explicit wildcard /v1/chat/completions stream - wildcard-admission - #8878",
           "request": {
             "auth": {
               "type": "noauth"
@@ -277103,7 +277106,7 @@
           }
         },
         {
-          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro allow_all_providers /v1/responses - wildcard-admission",
+          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro allow_all_providers /v1/responses - wildcard-admission - #8878",
           "request": {
             "auth": {
               "type": "noauth"
@@ -277140,7 +277143,7 @@
           }
         },
         {
-          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro allow_all_providers /openai/v1/chat/completions - wildcard-admission",
+          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro allow_all_providers /openai/v1/chat/completions - wildcard-admission - #8878",
           "request": {
             "auth": {
               "type": "noauth"
@@ -277179,7 +277182,7 @@
           }
         },
         {
-          "name": "[EXPECT-403] openrouter gpt-6-luna:nitro restricted allowlist still denies /v1/chat/completions - wildcard-admission",
+          "name": "[EXPECT-403] openrouter gpt-6-luna:nitro restricted allowlist still denies /v1/chat/completions - wildcard-admission - #8878",
           "request": {
             "auth": {
               "type": "noauth"
@@ -277217,7 +277220,7 @@
           }
         },
         {
-          "name": "[EXPECT-403] openrouter gpt-6-luna:nitro wildcard blacklist still denies /v1/chat/completions - wildcard-admission",
+          "name": "[EXPECT-403] openrouter gpt-6-luna:nitro wildcard blacklist still denies /v1/chat/completions - wildcard-admission - #8878",
           "request": {
             "auth": {
               "type": "noauth"
