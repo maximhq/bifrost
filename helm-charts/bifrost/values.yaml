@@ -176,6 +176,20 @@ autoscaling:
     scaleUp:
       stabilizationWindowSeconds: 30
 
+# PodDisruptionBudget for the Bifrost pods. Off by default; when enabled it is rendered only
+# when bifrost.cluster.enabled is true.
+# minAvailable: 1 keeps at least one replica running through a voluntary disruption
+# (node drain, cluster upgrade). Other settings give less: minAvailable: 0 or maxUnavailable: "100%"
+# allow every replica to be evicted, and Kubernetes rounds percentages up. It does not apply to
+# involuntary failures. With minAvailable: 1 a single-replica release blocks node drains, so run
+# at least 2 replicas (replicaCount or autoscaling.minReplicas) before enabling it.
+# minAvailable and maxUnavailable take an integer or a percentage string such as "50%".
+# A PDB accepts only one of them: setting maxUnavailable replaces minAvailable.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
 # Additional volumes on the output Deployment definition.
 volumes: []
 
