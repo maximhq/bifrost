@@ -25,6 +25,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeyDisableContentLogging`   | `x-bf-disable-content-logging`                       | `bool`                | Per-request override for content logging; only honored when `allow_per_request_content_storage_override` is enabled in logging config |
 | `BifrostContextKeyPassthroughExtraParams`  | `x-bf-passthrough-extra-params`                      | `bool`                | Enable passthrough for extra parameters                                                                                               |
 | `BifrostContextKeyExtraHeaders`            | `x-bf-eh-*`                                          | `map[string][]string` | Custom headers forwarded to provider                                                                                                  |
+| `BifrostContextKeyRequestHeaders`          | `x-bf-lh-*`                                          | `map[string]string`   | Log metadata labels (prefix stripped), stored on the request's log entry                                                             |
 | `BifrostContextKeySkipKeySelection`        | `-`                                                  | `bool`                | Skip key selection process (Go SDK only)                                                                                              |
 | `BifrostContextKeyURLPath`                 | `-`                                                  | `string`              | Custom URL path appended to provider base URL (Go SDK only)                                                                           |
 | `BifrostContextKeyUseRawRequestBody`       | `-`                                                  | `bool`                | Use raw request body (Go SDK only, requires RawRequestBody field)                                                                     |
@@ -893,6 +894,55 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 Result:
 - Provider receives `session-id: sess-abc-123` in the request headers.
 - OTel `llm.call` span gets attribute `gen_ai.request.extra_header.session-id = "sess-abc-123"` so you can filter or group traces by session in Grafana, Datadog, Honeycomb, Langfuse, etc.
+
+### Log Metadata (x-bf-lh-\*)
+
+**Context Key:** `BifrostContextKeyRequestHeaders`  
+**Header Pattern:** `x-bf-lh-{name}`  
+**Type:** `map[string]string`  
+**Required:** No
+
+Attach labels to the request's log entry. The `x-bf-lh-` prefix is stripped and the rest becomes the metadata key, so `x-bf-lh-tenant: acme` is stored as `tenant = acme`. Works for both LLM and MCP requests and needs no configuration.
+
+Unlike [`x-bf-dim-*`](#unified-dimensions-x-bf-dim), these labels are not forwarded to other observability backends by default, and never become Prometheus labels, which makes them a good fit for high-cardinality values such as tenant or user IDs. The OTel and Maxim plugins only pick them up if their `request_headers` setting matches them (for example `x-bf-lh-*`), and then keep the full header name.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-lh-tenant: acme' \
+--header 'x-bf-lh-env: production' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+// Set the labels as request headers, keeping the x-bf-lh- prefix
+headers := map[string]string{
+    "x-bf-lh-tenant": "acme",
+    "x-bf-lh-env":    "production",
+}
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestHeaders, headers)
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+These labels are merged with [configured logging headers](/features/observability/default) and `x-bf-dim-*` dimensions into the same metadata, and you can filter logs by them. If an `x-bf-lh-*` label and an `x-bf-dim-*` dimension use the same key, the `x-bf-lh-*` value wins. If a [virtual key](/features/governance/virtual-keys) defines metadata with the same key, the virtual key's value wins, so callers cannot override attribution set on the key.
+
+<Note>
+Avoid sending secrets in `x-bf-lh-*` headers, since the values are stored in logs.
+</Note>
 
 ## Semantic Cache Options
 
