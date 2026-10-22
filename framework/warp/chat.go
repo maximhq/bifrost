@@ -190,7 +190,7 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// details from another - or hand it a nil reader it will dereference.
 	// The resolver is asked here as well: a store that scopes per read leaves
 	// nothing on the context to tell a restricted caller from an admin.
-	scope := withCallerRestriction(runCtx, ScopeFromContext(runCtx), s.callerRestriction)
+	scope := CallerScope(runCtx, s.callerRestriction)
 	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, s.governance, scope, turn.config, turn.utcOffsetMinutes, turn.timezone, turn.semantic)
 	agent.SetGovernanceExtras(s.vkDecorator, s.userGovernance)
 	agent.SetManagement(turn.management, turn.managementCatalog, s.conversations != nil)

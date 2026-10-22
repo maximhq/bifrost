@@ -86,6 +86,54 @@ logout:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
+session-me:
+  get:
+    operationId: getCaller
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | None | Any authenticated caller - exempt from RBAC |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Describe the caller
+    description: |
+      Returns who this request acts for and what it may read: whether a known
+      user is identified, their user ID, whether anything narrows what the
+      caller may read, and for a restricted caller which slice of the
+      deployment they may see.
+
+      Call it before answering "my" or "our" questions about traffic. For the
+      caller's own traffic, pass `user_id` in the `user_ids` filter of the log
+      endpoints. An unrestricted caller reads the whole deployment, so a total
+      with no filter is everyone's. A restricted caller's reads are narrowed by
+      the server whatever filters are passed.
+
+      An admin login, the setup token, or a deployment without dashboard
+      authentication is unrestricted and identifies no user.
+    tags:
+      - Session
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/session.yaml#/CallerResponse'
+      '401':
+        description: No valid credential
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 is-auth-enabled:
   get:
     operationId: isAuthEnabled

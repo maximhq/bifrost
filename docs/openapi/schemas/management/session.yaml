@@ -65,3 +65,23 @@ LogoutResponse:
     message:
       type: string
       example: Logout successful
+
+CallerResponse:
+  type: object
+  description: Who a request acts for and what it may read
+  required:
+    - identified
+    - unrestricted
+  properties:
+    identified:
+      type: boolean
+      description: Whether the request acts for a known user
+    user_id:
+      type: string
+      description: The user the request acts for, when identified
+    unrestricted:
+      type: boolean
+      description: Whether nothing narrows what the caller may read
+    visibility:
+      type: string
+      description: For a restricted caller, which slice of the deployment they may read, when the deployment can say

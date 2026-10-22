@@ -280647,6 +280647,39 @@
           }
         }
       ]
+    },
+    {
+      "name": "267. Caller identity endpoint (session-me)",
+      "description": "GET /api/session/me reports who a request acts for and what it may read, resolved the same way Warp scopes its tools, so API and management MCP clients can answer \"my\" and \"our\" questions. The harness calls it with its own admin credential (or none, when dashboard auth is off), which identifies no user and is unrestricted. Red before the change: the route did not exist.",
+      "item": [
+        {
+          "name": "openai session-me: the harness caller is described",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/session/me"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('session-me: responds 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('session-me: an admin caller identifies no user and is unrestricted', function () {",
+                  "  pm.expect(body.identified, 'identified: ' + pm.response.text()).to.equal(false);",
+                  "  pm.expect(body.unrestricted, 'unrestricted: ' + pm.response.text()).to.equal(true);",
+                  "  pm.expect(body, 'no user id for an unidentified caller: ' + pm.response.text()).to.not.have.property('user_id');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
