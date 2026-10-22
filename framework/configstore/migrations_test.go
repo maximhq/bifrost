@@ -82,12 +82,17 @@ func TestAgentPushTenantMigration(t *testing.T) {
 					status, "fixture", "task", "config", "retained-payload", status, now, now, now).Error)
 			}
 			require.NoError(t, migrationScopeAgentPushIdentity(context.Background(), db, testMigrationLogger))
-			var config struct{ Tenant, Token, AuthCredentials, IngressTokenHash string }
-			require.NoError(t, db.Raw("SELECT tenant, token, auth_credentials, ingress_token_hash FROM config_agent_push_configs").Scan(&config).Error)
+			require.NoError(t, migrationAddAgentPushTenantBoundColumn(context.Background(), db, testMigrationLogger))
+			var config struct {
+				Tenant, Token, AuthCredentials, IngressTokenHash string
+				TenantBound                                      bool
+			}
+			require.NoError(t, db.Raw("SELECT tenant, token, auth_credentials, ingress_token_hash, tenant_bound FROM config_agent_push_configs").Scan(&config).Error)
 			require.Equal(t, "", config.Tenant)
 			require.Equal(t, "unchanged-ciphertext", config.Token)
 			require.Equal(t, "unchanged-auth", config.AuthCredentials)
 			require.Equal(t, "legacy-hash", config.IngressTokenHash)
+			require.False(t, config.TenantBound)
 			require.True(t, db.Migrator().HasIndex(&tables.TableAgentPushConfig{}, "idx_push_legacy_callback"))
 			var pending tables.TableAgentPushDelivery
 			require.NoError(t, db.First(&pending, "id = ?", schemas.AgentPushDeliveryStatusPending).Error)
@@ -99,11 +104,15 @@ func TestAgentPushTenantMigration(t *testing.T) {
 			require.Equal(t, schemas.AgentPushDeliveryStatusDelivered, delivered.Status)
 			store := &RDBConfigStore{}
 			store.db.Store(db)
-			require.NoError(t, store.SaveAgentPushConfig(context.Background(), &schemas.AgentPushConfig{AgentName: "fixture", Tenant: "tenant-b", TaskID: "task", ConfigID: "config", URL: "https://b.example", IngressTokenHash: "b-hash", CreatedAt: now, UpdatedAt: now}))
+			require.NoError(t, store.SaveAgentPushConfig(context.Background(), &schemas.AgentPushConfig{AgentName: "fixture", Tenant: "tenant-b", TenantBound: true, TaskID: "task", ConfigID: "config", URL: "https://b.example", IngressTokenHash: "b-hash", CreatedAt: now, UpdatedAt: now}))
+			current, err := store.GetAgentPushConfig(context.Background(), "fixture", "tenant-b", "task", "config")
+			require.NoError(t, err)
+			require.True(t, current.TenantBound)
 			var count int64
 			require.NoError(t, db.Table("config_agent_push_configs").Count(&count).Error)
 			require.EqualValues(t, 2, count)
 			require.NoError(t, migrationScopeAgentPushIdentity(context.Background(), db, testMigrationLogger))
+			require.NoError(t, migrationAddAgentPushTenantBoundColumn(context.Background(), db, testMigrationLogger))
 		})
 	}
 }

@@ -134,10 +134,11 @@ func (TableVirtualKeyAgentGrant) TableName() string { return "governance_virtual
 // on Bifrost's push ingress. Downstream secrets are encrypted at rest when
 // encryption is enabled and are never returned by any read API.
 type TableAgentPushConfig struct {
-	AgentName string `gorm:"primaryKey;type:varchar(255);not null"`
-	Tenant    string `gorm:"primaryKey;type:varchar(255);not null;default:''"`
-	TaskID    string `gorm:"primaryKey;type:varchar(255);not null"`
-	ConfigID  string `gorm:"primaryKey;type:varchar(255);not null"`
+	AgentName   string `gorm:"primaryKey;type:varchar(255);not null"`
+	Tenant      string `gorm:"primaryKey;type:varchar(255);not null;default:''"`
+	TaskID      string `gorm:"primaryKey;type:varchar(255);not null"`
+	ConfigID    string `gorm:"primaryKey;type:varchar(255);not null"`
+	TenantBound bool   `gorm:"not null;default:false" json:"-"`
 
 	URL             string             `gorm:"type:text;not null"`
 	Token           *schemas.SecretVar `gorm:"type:text"`

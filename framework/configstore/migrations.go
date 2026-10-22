@@ -572,6 +572,21 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_rss_feeds_table"}, run: migrationAddRSSFeedsTable},
 	{IDs: []string{"add_rss_feeds_icon_url_column"}, run: migrationAddRSSFeedsIconURLColumn},
 	{IDs: []string{"scope_agent_push_identity"}, run: migrationScopeAgentPushIdentity},
+	{IDs: []string{"add_agent_push_tenant_bound_column"}, run: migrationAddAgentPushTenantBoundColumn},
+}
+
+// Legacy rows may have copied an embedded config's tenant rather than the
+// message's effective namespace. Do not enable tokenless correlation for them.
+func migrationAddAgentPushTenantBoundColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "add_agent_push_tenant_bound_column",
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableAgentPushConfig{}, "tenant_bound")
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("add_agent_push_tenant_bound_column is non-rollbackable: removing tenant binding would discard authorization metadata")
+		},
+	})
 }
 
 // migrationScopeAgentPushIdentity preserves callback rows and ciphertext while

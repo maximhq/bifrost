@@ -164,7 +164,8 @@ type AgentPushConfig struct {
 	TaskID    string `json:"task_id"`
 	ConfigID  string `json:"config_id"`
 	// Tenant is the effective upstream task namespace, resolved before registration.
-	Tenant string `json:"tenant,omitempty"`
+	Tenant      string `json:"tenant,omitempty"`
+	TenantBound bool   `json:"-"` // The tenant was resolved by the gateway, not copied from legacy metadata.
 	// URL is the downstream client's callback endpoint.
 	URL string `json:"url"`
 	// Token is the downstream client's own notification token, replayed verbatim
