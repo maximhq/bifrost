@@ -219,7 +219,7 @@ func buildResidencyTarget(provider schemas.ModelProvider, providerCfg configstor
 		baseURL = strings.TrimRight(strings.TrimSpace(networkCfg.BaseURL), "/")
 		allowPrivate = networkCfg.AllowPrivateNetwork
 		for k, v := range networkCfg.ExtraHeaders {
-			extraHeaders[k] = v
+			extraHeaders[k] = v.GetValue()
 		}
 	}
 

@@ -211,10 +211,14 @@ func TestProbeResidencyAllReadersFail(t *testing.T) {
 // virtual-model request then answers 502 for a cause the operator cannot see in their own config.
 func TestProbeKeepsOperatorAuthorizationHeader(t *testing.T) {
 	network := func(headers map[string]string) *schemas.NetworkConfig {
+		extra := map[string]schemas.SecretVar{}
+		for k, v := range headers {
+			extra[k] = *schemas.NewSecretVar(v)
+		}
 		return &schemas.NetworkConfig{
 			BaseURL:             "http://127.0.0.1:1",
 			AllowPrivateNetwork: true,
-			ExtraHeaders:        headers,
+			ExtraHeaders:        extra,
 		}
 	}
 	keys := []schemas.Key{{Value: *schemas.NewSecretVar("sk-local")}}
