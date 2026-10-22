@@ -2,6 +2,9 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,9 +12,13 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/fasthttp/router"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/openapimcp"
+	"github.com/valyala/fasthttp"
 )
 
 // repoOpenAPISpec is the spec this source tree publishes, which a release
@@ -368,5 +375,348 @@ func TestManagementMCPAllowWrites(t *testing.T) {
 	t.Setenv(ManagementMCPWritesEnv, "false")
 	if ManagementMCPAllowWrites() {
 		t.Error("false not honoured")
+	}
+}
+
+// newManagementTestEndpoint loads the repo spec into a management MCP whose tool
+// calls are served in process by root, and returns its /v1/mcp handler.
+func newManagementTestEndpoint(t *testing.T, root fasthttp.RequestHandler) *ManagementMCPHandler {
+	t.Helper()
+	SetLogger(&mockLogger{})
+	spec, err := filepath.Abs(repoOpenAPISpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewManagementMCPExecutor(root, 4<<20)
+	t.Cleanup(func() { _ = exec.Close() })
+	m := NewManagementMCP(ManagementMCPOptions{SpecSources: []string{spec}, AllowWrites: true, ExecClient: exec.Client})
+	if err := m.Load(context.Background()); err != nil {
+		t.Fatalf("loading spec: %v", err)
+	}
+	return NewManagementMCPHandler(m)
+}
+
+// postManagementMCP sends one JSON-RPC message to /v1/mcp and returns the
+// status and the decoded response (nil for an empty body).
+func postManagementMCP(t *testing.T, h *ManagementMCPHandler, body string, prepare func(*fasthttp.RequestCtx)) (int, map[string]any) {
+	t.Helper()
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.SetRequestURI("/v1/mcp")
+	req.SetBodyString(body)
+	ctx := initCtx(&req)
+	if prepare != nil {
+		prepare(ctx)
+	}
+	h.handlePost(ctx)
+	var out map[string]any
+	if len(ctx.Response.Body()) > 0 {
+		if err := json.Unmarshal(ctx.Response.Body(), &out); err != nil {
+			t.Fatalf("decoding %s: %v", ctx.Response.Body(), err)
+		}
+	}
+	return ctx.Response.StatusCode(), out
+}
+
+func callManagementTool(name string) string {
+	return `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"` + name + `","arguments":{}}}`
+}
+
+// toolCallResult returns a tools/call result's text and whether it is an error.
+func toolCallResult(t *testing.T, resp map[string]any) (string, bool) {
+	t.Helper()
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("no result in %v", resp)
+	}
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("empty content in %v", resp)
+	}
+	text, _ := content[0].(map[string]any)["text"].(string)
+	isError, _ := result["isError"].(bool)
+	return text, isError
+}
+
+func TestManagementMCPEndpoint_Protocol(t *testing.T) {
+	h := newManagementTestEndpoint(t, func(ctx *fasthttp.RequestCtx) {})
+
+	status, resp := postManagementMCP(t, h, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`, nil)
+	if status != fasthttp.StatusOK || resp["result"] == nil {
+		t.Fatalf("initialize: status %d, %v", status, resp)
+	}
+
+	status, resp = postManagementMCP(t, h, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, nil)
+	if status != fasthttp.StatusOK {
+		t.Fatalf("tools/list: status %d, %v", status, resp)
+	}
+	names := map[string]bool{}
+	for _, tool := range resp["result"].(map[string]any)["tools"].([]any) {
+		names[tool.(map[string]any)["name"].(string)] = true
+	}
+	if !names["listProviders"] || names["login"] {
+		t.Errorf("tools/list: listProviders=%v login=%v, want true/false", names["listProviders"], names["login"])
+	}
+
+	status, resp = postManagementMCP(t, h, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, nil)
+	if status != fasthttp.StatusAccepted || resp != nil {
+		t.Errorf("notification: status %d, %v; want 202 with no body", status, resp)
+	}
+}
+
+// /v1/mcp answers POST only, and GET is answered by /v1/mcp itself rather than
+// the dashboard's catch-all. /v1/mcp/tool/execute keeps its own route.
+func TestManagementMCPEndpoint_Routes(t *testing.T) {
+	h := newManagementTestEndpoint(t, func(ctx *fasthttp.RequestCtx) {})
+	r := router.New()
+	h.RegisterRoutes(r)
+	r.POST("/v1/mcp/tool/execute", func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(fasthttp.StatusTeapot) })
+	r.GET("/{filepath:*}", func(ctx *fasthttp.RequestCtx) { ctx.SetBodyString("dashboard") })
+	serve := func(method, path string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.Header.SetMethod(method)
+		req.SetRequestURI(path)
+		req.SetBodyString(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+		ctx := initCtx(&req)
+		r.Handler(ctx)
+		return ctx
+	}
+
+	get := serve(fasthttp.MethodGet, "/v1/mcp")
+	if get.Response.StatusCode() != fasthttp.StatusMethodNotAllowed || string(get.Response.Header.Peek("Allow")) != fasthttp.MethodPost {
+		t.Errorf("GET /v1/mcp: status %d, Allow %q; want 405, POST", get.Response.StatusCode(), get.Response.Header.Peek("Allow"))
+	}
+	if post := serve(fasthttp.MethodPost, "/v1/mcp"); post.Response.StatusCode() != fasthttp.StatusOK {
+		t.Errorf("POST /v1/mcp: status %d", post.Response.StatusCode())
+	}
+	if exec := serve(fasthttp.MethodPost, "/v1/mcp/tool/execute"); exec.Response.StatusCode() != fasthttp.StatusTeapot {
+		t.Errorf("POST /v1/mcp/tool/execute reached another handler: status %d", exec.Response.StatusCode())
+	}
+}
+
+func TestManagementMCPEndpoint_UnavailableUntilLoaded(t *testing.T) {
+	SetLogger(&mockLogger{})
+	h := NewManagementMCPHandler(NewManagementMCP(ManagementMCPOptions{}))
+	status, resp := postManagementMCP(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, nil)
+	if status != fasthttp.StatusServiceUnavailable {
+		t.Errorf("status %d, %v; want 503", status, resp)
+	}
+}
+
+// A tool call carries the caller's credential, Host, forwarding headers and peer
+// address into /api, and never a Cookie: a browser session cannot be ridden
+// through /v1/mcp.
+func TestManagementMCPEndpoint_ForwardsCallerButNotCookies(t *testing.T) {
+	var seen fasthttp.Request
+	var seenRemote string
+	h := newManagementTestEndpoint(t, func(ctx *fasthttp.RequestCtx) {
+		ctx.Request.CopyTo(&seen)
+		seenRemote = ctx.RemoteIP().String()
+		ctx.SetContentType("application/json")
+		ctx.SetBodyString(`"v-test"`)
+	})
+	status, resp := postManagementMCP(t, h, callManagementTool("getVersion"), func(ctx *fasthttp.RequestCtx) {
+		ctx.Request.Header.Set("Authorization", "Bearer bfst-test")
+		ctx.Request.Header.Set(SetupTokenHeader, "s3cret")
+		ctx.Request.Header.Set("X-Forwarded-For", "203.0.113.9")
+		ctx.Request.Header.SetHost("gw.example.com")
+		ctx.Request.Header.SetCookie("token", "dashboard-session")
+		ctx.Request.Header.SetCookie(SetupSessionCookie, "setup-session")
+		ctx.SetRemoteAddr(&net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 5555})
+	})
+	if status != fasthttp.StatusOK {
+		t.Fatalf("status %d, %v", status, resp)
+	}
+	if text, isError := toolCallResult(t, resp); isError || !strings.Contains(text, "v-test") {
+		t.Fatalf("tool result %q (error %v)", text, isError)
+	}
+	for header, want := range map[string]string{
+		"Authorization":   "Bearer bfst-test",
+		SetupTokenHeader:  "s3cret",
+		"X-Forwarded-For": "203.0.113.9",
+	} {
+		if got := string(seen.Header.Peek(header)); got != want {
+			t.Errorf("/api saw %s %q, want %q", header, got, want)
+		}
+	}
+	if got := string(seen.Header.Host()); got != "gw.example.com" {
+		t.Errorf("/api saw Host %q, want the caller's", got)
+	}
+	if got := string(seen.URI().Path()); got != "/api/version" {
+		t.Errorf("/api saw path %q", got)
+	}
+	if cookie := seen.Header.Peek("Cookie"); len(cookie) > 0 {
+		t.Errorf("/api saw Cookie %q, want none", cookie)
+	}
+	if seenRemote != "198.51.100.7" {
+		t.Errorf("/api saw peer %s, want the caller's", seenRemote)
+	}
+}
+
+// Tool calls are authenticated by the real OSS /api chain (setup lock, then
+// APIMiddleware), with the caller's credential and nothing else.
+func TestManagementMCPEndpoint_RealAPIChain(t *testing.T) {
+	SetLogger(&mockLogger{})
+	am := newSetupLockedAuthMiddleware("s3cret", nil)
+	r := router.New()
+	r.GET("/api/providers", am.SetupLockMiddleware()(am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetContentType("application/json")
+		ctx.SetBodyString(`{"providers":[],"total":0}`)
+	})))
+	h := newManagementTestEndpoint(t, r.Handler)
+	session, _, err := am.IssueSetupSession(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name      string
+		prepare   func(*fasthttp.RequestCtx)
+		wantError string // "" = the call succeeds
+	}{
+		{name: "no credential", wantError: "HTTP 401"},
+		{name: "wrong setup token", prepare: func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set(SetupTokenHeader, "nope") }, wantError: "HTTP 403"},
+		{name: "setup token", prepare: func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.Set(SetupTokenHeader, "s3cret") }},
+		// The same cookie authenticates a direct /api call; through /v1/mcp it is dropped.
+		{name: "setup session cookie", prepare: func(ctx *fasthttp.RequestCtx) { ctx.Request.Header.SetCookie(SetupSessionCookie, session) }, wantError: "HTTP 401"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, resp := postManagementMCP(t, h, callManagementTool("listProviders"), tc.prepare)
+			if status != fasthttp.StatusOK {
+				t.Fatalf("status %d, %v", status, resp)
+			}
+			text, isError := toolCallResult(t, resp)
+			if tc.wantError == "" && (isError || !strings.Contains(text, `"providers"`)) {
+				t.Errorf("want success, got %q (error %v)", text, isError)
+			}
+			if tc.wantError != "" && (!isError || !strings.HasPrefix(text, tc.wantError)) {
+				t.Errorf("want %s, got %q (error %v)", tc.wantError, text, isError)
+			}
+		})
+	}
+
+	direct := &fasthttp.RequestCtx{}
+	direct.Request.SetRequestURI("/api/providers")
+	direct.Request.Header.SetCookie(SetupSessionCookie, session)
+	if !runOSSAPIChain(am, direct) {
+		t.Fatalf("the setup session cookie should authenticate a direct /api call (status %d)", direct.Response.StatusCode())
+	}
+}
+
+// A virtual key is refused by /v1/mcp itself with a message saying why, in each
+// place a client can send one.
+func TestManagementMCPEndpoint_RefusesVirtualKeys(t *testing.T) {
+	reached := false
+	h := newManagementTestEndpoint(t, func(ctx *fasthttp.RequestCtx) { reached = true })
+	for name, set := range map[string]func(*fasthttp.Request){
+		"bearer":  func(req *fasthttp.Request) { req.Header.Set("Authorization", "Bearer sk-bf-abc") },
+		"x-bf-vk": func(req *fasthttp.Request) { req.Header.Set(string(schemas.BifrostContextKeyVirtualKey), "sk-bf-abc") },
+	} {
+		status, resp := postManagementMCP(t, h, callManagementTool("listProviders"), func(ctx *fasthttp.RequestCtx) { set(&ctx.Request) })
+		if status != fasthttp.StatusUnauthorized || !strings.Contains(fmt.Sprint(resp), "not a virtual key") {
+			t.Errorf("%s: status %d, %v; want 401 naming the virtual key", name, status, resp)
+		}
+	}
+	if reached {
+		t.Error("a virtual-key call reached /api")
+	}
+	status, _ := postManagementMCP(t, h, callManagementTool("getVersion"), func(ctx *fasthttp.RequestCtx) {
+		ctx.Request.Header.Set("Authorization", "Bearer bfst-not-a-vk")
+	})
+	if status != fasthttp.StatusOK {
+		t.Errorf("a non-virtual-key bearer was refused: status %d", status)
+	}
+}
+
+// BenchmarkManagementMCPToolCall measures one tools/call through /v1/mcp: the
+// JSON-RPC handling, request building and the in-process hop into /api, against
+// a root handler that answers at once.
+func BenchmarkManagementMCPToolCall(b *testing.B) {
+	SetLogger(&mockLogger{})
+	spec, err := filepath.Abs(repoOpenAPISpec)
+	if err != nil {
+		b.Fatal(err)
+	}
+	exec := NewManagementMCPExecutor(func(ctx *fasthttp.RequestCtx) {
+		ctx.SetContentType("application/json")
+		ctx.SetBodyString(`"v-bench"`)
+	}, 4<<20)
+	defer exec.Close()
+	m := NewManagementMCP(ManagementMCPOptions{SpecSources: []string{spec}, ExecClient: exec.Client})
+	if err := m.Load(context.Background()); err != nil {
+		b.Fatal(err)
+	}
+	h := NewManagementMCPHandler(m)
+	body := []byte(callManagementTool("getVersion"))
+	b.ReportAllocs()
+	for b.Loop() {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.Header.Set(SetupTokenHeader, "s3cret")
+		req.SetBody(body)
+		ctx := initCtx(&req)
+		h.handlePost(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			b.Fatalf("status %d", ctx.Response.StatusCode())
+		}
+	}
+}
+
+// ManagementMCPServedRoutes matches spec paths to a router's route templates by
+// shape, not by parameter name, per method, and a catch-all route does not make
+// every path count as served.
+func TestManagementMCPServedRoutes(t *testing.T) {
+	r := router.New()
+	noop := func(*fasthttp.RequestCtx) {}
+	r.GET("/api/providers", noop)
+	r.GET("/api/providers/{provider}", noop)
+	r.DELETE("/api/governance/virtual-keys/{id}", noop)
+	r.GET("/api/skills/serve/{skill-name}/files/{filepath:*}", noop)
+	r.GET("/{filepath:*}", noop) // the dashboard
+	served := ManagementMCPServedRoutes(r.List())
+	r.GET("/api/registered-later", noop) // the snapshot does not change
+
+	cases := []struct {
+		method, path string
+		want         bool
+	}{
+		{http.MethodGet, "/api/providers", true},
+		{http.MethodGet, "/api/providers/{provider_name}", true},
+		{http.MethodDelete, "/api/governance/virtual-keys/{vk_id}", true},
+		{http.MethodGet, "/api/governance/virtual-keys/{vk_id}", false},
+		{http.MethodGet, "/api/skills/serve/{skill-name}/files/{filepath}", true},
+		{http.MethodGet, "/api/governance/users", false},
+		{http.MethodGet, "/api/registered-later", false},
+	}
+	for _, tc := range cases {
+		if got := served(tc.method, tc.path); got != tc.want {
+			t.Errorf("served(%s %s) = %v, want %v", tc.method, tc.path, got, tc.want)
+		}
+	}
+}
+
+// With a Served filter from the gateway's router, only operations the gateway
+// routes become tools.
+func TestManagementMCPServesOnlyRoutedOperations(t *testing.T) {
+	r := router.New()
+	r.GET("/api/providers", func(*fasthttp.RequestCtx) {})
+	opts := managementTestOptions(true)
+	opts.Served = ManagementMCPServedRoutes(r.List())
+	srv, report, err := buildManagementMCPServer(readRepoSpec(t), "", opts)
+	if err != nil {
+		t.Fatalf("building server: %v", err)
+	}
+	tools := srv.ListTools()
+	if len(tools) != 1 || tools["listProviders"] == nil {
+		names := make([]string, 0, len(tools))
+		for name := range tools {
+			names = append(names, name)
+		}
+		t.Fatalf("served %v, want only listProviders", names)
+	}
+	if report.unrouted == 0 {
+		t.Error("unrouted operations were not counted")
 	}
 }

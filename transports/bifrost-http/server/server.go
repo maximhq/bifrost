@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -267,6 +268,7 @@ type BifrostHTTPServer struct {
 	WarpHandler          *handlers.WarpHandler
 	MCPServerHandler     *handlers.MCPServerHandler
 	BifrostMCP           *handlers.ManagementMCP // /api as MCP tools on /v1/mcp; its server loads after boot
+	managementMCPExec    *handlers.ManagementMCPExecutor
 	AgentGatewayHandler  *handlers.AgentGatewayHandler
 	devPprofHandler      *handlers.DevPprofHandler
 	skillsServingHandler *handlers.SkillsServingHandler
@@ -3681,12 +3683,49 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		// Explain an oversized body (413 naming the configured limit) instead of fasthttp's generic 400.
 		ErrorHandler: lib.RequestErrorHandler(maxRequestBodySizeMB, logger.Warn),
 	}
+	s.StartManagementMCP(s.Ctx, handlers.ManagementMCPEditionOSS, s.Server.Handler, s.Server.MaxRequestBodySize, commonMiddlewares...)
 	startSkillsOrphanCleanupWorker(s.Ctx, s.Config, nil)
 	// Keep the live model catalog current after boot. Without this, a model an
 	// upstream starts serving mid-uptime stays invisible until a restart or a
 	// key edit, since nothing else re-fetches list-models.
 	s.RestartLiveModelRefresher(s.Ctx)
 	return nil
+}
+
+// StartManagementMCP serves Bifrost's /api as MCP tools on /v1/mcp. Tool calls
+// are served in process through rootHandler, the handler s.Server runs, so each
+// call takes the same middleware chain as a request from the network; the build
+// passes its own because enterprise wraps the router differently. The spec loads
+// in the background, and /v1/mcp answers 503 until it has. edition picks the spec
+// and whether enterprise-only operations become tools; only operations s.Router
+// routes are served, so a plugin's routes appear only while it is loaded. Call it
+// once, after every route is registered and before the server starts.
+func (s *BifrostHTTPServer) StartManagementMCP(ctx context.Context, edition handlers.ManagementMCPEdition, rootHandler fasthttp.RequestHandler, maxRequestBodySize int, middlewares ...schemas.BifrostHTTPMiddleware) {
+	specFactory := s.HTTPClientFactory
+	if specFactory == nil {
+		specFactory = s.Config.HTTPClientFactory
+	}
+	if specFactory == nil {
+		specFactory = network.DefaultHTTPClientFactory()
+	}
+	var specClient *http.Client
+	if specFactory != nil {
+		specClient = specFactory.GetHTTPClient(network.ClientPurposeAPI)
+	} else {
+		specClient = &http.Client{}
+	}
+	s.managementMCPExec = handlers.NewManagementMCPExecutor(rootHandler, maxRequestBodySize)
+	s.BifrostMCP = handlers.NewManagementMCP(handlers.ManagementMCPOptions{
+		SpecSources: handlers.ManagementMCPSpecSources(s.Version, edition),
+		AppDir:      s.AppDir,
+		Edition:     edition,
+		AllowWrites: handlers.ManagementMCPAllowWrites(),
+		Served:      handlers.ManagementMCPServedRoutes(s.Router.List()),
+		SpecClient:  specClient,
+		ExecClient:  s.managementMCPExec.Client,
+	})
+	handlers.NewManagementMCPHandler(s.BifrostMCP).RegisterRoutes(s.Router, middlewares...)
+	s.BifrostMCP.Start(ctx)
 }
 
 func (s *BifrostHTTPServer) CloseAgentGateway() {
@@ -3746,6 +3785,10 @@ func (s *BifrostHTTPServer) Start() error {
 			logger.Error("error during graceful shutdown: %v", err)
 		} else {
 			logger.Info("server gracefully shutdown")
+		}
+		// After the server: an in-flight /v1/mcp call finishes its /api hop first.
+		if err := s.managementMCPExec.Close(); err != nil {
+			logger.Warn("error closing the management MCP executor: %v", err)
 		}
 		// Cancelling main context
 		if s.cancel != nil {
