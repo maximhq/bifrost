@@ -109,7 +109,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	byteplus: true,
 	databricks: false,
 	cloudflare: true,
-	"github-copilot": false,
+	"github-copilot": true,
 	typesafe: true,
 };
 
