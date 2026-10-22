@@ -1,4 +1,5 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
+import type { Page } from '@playwright/test'
 import { ConfigSettingsState } from './pages/config-settings.page'
 import { DefaultCoreConfig } from '../../../../ui/lib/types/config'
 
@@ -81,29 +82,34 @@ test.describe('Skills marketplace URL settings', () => {
   }
 })
 
+// Mock an unconfigured instance so the checklist is incomplete and would be visible.
+async function mockUnconfiguredInstance(page: Page, { disableOnboarding = false } = {}) {
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/config') {
+      await route.fulfill({ json: {
+        client_config: { ...DefaultCoreConfig, enforce_auth_on_inference: false, allowed_origins: [] },
+        auth_config: null,
+        framework_config: {}, is_db_connected: true, metadata: {},
+        disable_onboarding: disableOnboarding,
+      } })
+    } else if (path === '/api/version') {
+      await route.fulfill({ json: '1.0.0' })
+    } else if (path === '/api/session/is-auth-enabled') {
+      await route.fulfill({ json: { is_auth_enabled: false, has_valid_token: false, auth_type: 'none', inference_auth_enforced: false } })
+    } else if (path === '/api/keys') {
+      await route.fulfill({ json: [] })
+    } else {
+      await route.fulfill({ json: {} })
+    }
+  })
+}
+
 test.describe('Onboarding widget snooze', () => {
   test.use({ skipAutoLogin: true })
 
   test('remind me later opens a picker above the widget and snoozes it', async ({ page }) => {
-    // Mock an unconfigured instance so the checklist is incomplete and visible.
-    await page.route('**/api/**', async route => {
-      const path = new URL(route.request().url()).pathname
-      if (path === '/api/config') {
-        await route.fulfill({ json: {
-          client_config: { ...DefaultCoreConfig, enforce_auth_on_inference: false, allowed_origins: [] },
-          auth_config: null,
-          framework_config: {}, is_db_connected: true, metadata: {},
-        } })
-      } else if (path === '/api/version') {
-        await route.fulfill({ json: '1.0.0' })
-      } else if (path === '/api/session/is-auth-enabled') {
-        await route.fulfill({ json: { is_auth_enabled: false, has_valid_token: false, auth_type: 'none', inference_auth_enforced: false } })
-      } else if (path === '/api/keys') {
-        await route.fulfill({ json: [] })
-      } else {
-        await route.fulfill({ json: {} })
-      }
-    })
+    await mockUnconfiguredInstance(page)
     await page.goto('/workspace/config/client-settings')
 
     await page.getByTestId('onboarding-later').click()
@@ -113,6 +119,15 @@ test.describe('Onboarding widget snooze', () => {
     await expect(page.getByTestId('onboarding-later')).not.toBeVisible()
     const cookies = await page.context().cookies()
     expect(cookies.some(c => c.name === 'bifrost_onboarding_remind_at')).toBe(true)
+  })
+
+  test('disable_onboarding from config.json hides the checklist on an incomplete instance', async ({ page }) => {
+    await mockUnconfiguredInstance(page, { disableOnboarding: true })
+    // Wait on the request the widget's own render depends on, so the absence below is not a race with a slow load.
+    const configLoaded = page.waitForResponse(res => new URL(res.url()).pathname === '/api/config')
+    await page.goto('/workspace/config/client-settings')
+    await configLoaded
+    await expect(page.getByTestId('onboarding-later')).toHaveCount(0)
   })
 })
 

@@ -24129,6 +24129,40 @@ func TestLoadConfig_ClientConfigSyncPreservesClientMetadata(t *testing.T) {
 	assert.Equal(t, true, metadata["onboarding_dismissed"])
 }
 
+// disable_onboarding is a deployment flag read from config.json or BIFROST_DISABLE_ONBOARDING, never
+// from the store, so a stateless node keeps the setup checklist hidden across restarts. The file wins
+// over the env var when both are set.
+func TestLoadConfig_DisableOnboarding(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		file *bool
+		env  string
+		want bool
+	}{
+		{name: "unset", want: false},
+		{name: "file true", file: schemas.Ptr(true), want: true},
+		{name: "env true", env: "true", want: true},
+		{name: "env invalid", env: "yes-please", want: false},
+		{name: "file false overrides env true", file: schemas.Ptr(false), env: "true", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BIFROST_DISABLE_ONBOARDING", tc.env)
+			tempDir := createTempDir(t)
+			configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{}, tempDir)
+			configData.DisableOnboarding = tc.file
+			createConfigFile(t, tempDir, configData)
+
+			config, err := LoadConfig(ctx, tempDir)
+			require.NoError(t, err)
+			defer config.Close(ctx)
+			assert.Equal(t, tc.want, config.DisableOnboarding)
+		})
+	}
+}
+
 // TestValidateCustomProvider_BaseProviderTypes pins which base_provider_type
 // values config.json and the store accept for a custom provider: typesafe is a
 // supported base (keyed or keyless), vertex is not.

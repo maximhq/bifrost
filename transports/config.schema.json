@@ -76,6 +76,11 @@
       "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Overrides the BIFROST_ENV_LABEL environment variable when both are set.",
       "maxLength": 10
     },
+    "disable_onboarding": {
+      "type": "boolean",
+      "description": "Hides the management UI setup checklist for every user. Unlike the in-app \"hide for everyone\" action, this is read from config.json on every start and never written to the config store, so it stays in effect on stateless deployments (ephemeral container storage, provider-less log viewers). Overrides the BIFROST_DISABLE_ONBOARDING environment variable when both are set.",
+      "default": false
+    },
     "auth_config": {
       "$ref": "#/$defs/auth_config"
     },

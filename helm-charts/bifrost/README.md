@@ -4,13 +4,14 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.45
+**Latest Version:** 2.1.46
 
 ## Changelog
 
 ### Upcoming
 
 - Configurable request-body buffer pool limit via `bifrost.server.bodyBufferPoolLimitBytes`. Maps to `server.body_buffer_pool_limit_bytes` in config.json. Keep-alive connections free request-body buffers larger than this after each request instead of holding the largest body they ever read (default 4 MiB when unset; `0` means unlimited, the old behaviour).
+- Added `bifrost.disableOnboarding` (`disable_onboarding`) to hide the management UI setup checklist for every user. It is read from config.json on every start rather than the config store, so it stays in effect on stateless or provider-less deployments.
 
 ### 2.1.45
 

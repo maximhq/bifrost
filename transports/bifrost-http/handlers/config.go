@@ -218,6 +218,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 	if h.store.EnvLabel != "" {
 		mapConfig["env_label"] = h.store.EnvLabel
 	}
+	mapConfig["disable_onboarding"] = h.store.DisableOnboarding
 	if h.store.ServerConfig != nil && h.store.ServerConfig.A2AGRPCBaseDomain != "" && h.store.ServerConfig.A2AGRPCPort > 0 {
 		mapConfig["agent_gateway"] = map[string]any{
 			"grpc_base_domain": h.store.ServerConfig.A2AGRPCBaseDomain,
