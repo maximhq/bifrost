@@ -25,6 +25,7 @@ const (
 	DefaultMaxConnsPerHost            = 5000
 	MaxConnsPerHostUpperBound         = 10000
 	DefaultMaxIdleConnsPerHost        = 40
+	DefaultListModelsTimeoutInSeconds = 5 // Default timeout in seconds when querying a provider for its model list in ListAllModels
 	// HTTP2PingIntervalUpperBoundSeconds matches the sibling *_in_seconds fields
 	// on NetworkConfig (StreamIdleTimeoutInSeconds, KeepAliveTimeoutInSeconds),
 	// which cap at 3600 in config.schema.json — a sensible range for this field
@@ -78,6 +79,7 @@ type NetworkConfig struct {
 	HTTP2PingIntervalInSeconds     int                  `json:"http2_ping_interval_in_seconds,omitempty"` // Seconds of stream idle before an HTTP/2 keepalive PING (0 = disabled; only when enforce_http2)
 	BetaHeaderOverrides            map[string]bool      `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
 	AllowPrivateNetwork            bool                 `json:"allow_private_network,omitempty"`          // Allow connections to RFC 1918 private IPs (for k8s pods, LAN deployments). Link-local (169.254.x.x) is always blocked.
+	ListModelsTimeoutInSeconds     int                  `json:"list_models_timeout_in_seconds,omitempty"` // Timeout for listing models from the provider (0 = use default 5s)
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -104,6 +106,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		HTTP2PingIntervalInSeconds     int                  `json:"http2_ping_interval_in_seconds,omitempty"`
 		BetaHeaderOverrides            map[string]bool      `json:"beta_header_overrides,omitempty"`
 		AllowPrivateNetwork            bool                 `json:"allow_private_network,omitempty"`
+		ListModelsTimeoutInSeconds     int                  `json:"list_models_timeout_in_seconds,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -125,6 +128,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.HTTP2PingIntervalInSeconds = alias.HTTP2PingIntervalInSeconds
 	nc.BetaHeaderOverrides = alias.BetaHeaderOverrides
 	nc.AllowPrivateNetwork = alias.AllowPrivateNetwork
+	nc.ListModelsTimeoutInSeconds = alias.ListModelsTimeoutInSeconds
 
 	// Parse RetryBackoffInitial: string → ParseDuration, integer → milliseconds (legacy)
 	if len(alias.RetryBackoffInitial) > 0 && string(alias.RetryBackoffInitial) != "null" {
@@ -214,6 +218,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		HTTP2PingIntervalInSeconds     int               `json:"http2_ping_interval_in_seconds,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
 		AllowPrivateNetwork            bool              `json:"allow_private_network,omitempty"`
+		ListModelsTimeoutInSeconds     int               `json:"list_models_timeout_in_seconds,omitempty"`
 	}
 
 	alias := NetworkConfigAlias{
@@ -232,6 +237,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		HTTP2PingIntervalInSeconds: nc.HTTP2PingIntervalInSeconds,
 		BetaHeaderOverrides:        nc.BetaHeaderOverrides,
 		AllowPrivateNetwork:        nc.AllowPrivateNetwork,
+		ListModelsTimeoutInSeconds: nc.ListModelsTimeoutInSeconds,
 	}
 	if nc.CACertPEM != nil {
 		alias.CACertPEM = SecretVarAsString(nc.CACertPEM)
@@ -302,6 +308,7 @@ var DefaultNetworkConfig = NetworkConfig{
 	StreamIdleTimeoutInSeconds:     DefaultStreamIdleTimeoutInSeconds,
 	KeepAliveTimeoutInSeconds:      DefaultKeepAliveTimeoutInSeconds,
 	MaxConnsPerHost:                DefaultMaxConnsPerHost,
+	ListModelsTimeoutInSeconds:     DefaultListModelsTimeoutInSeconds,
 }
 
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
@@ -753,6 +760,10 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 
 	if config.NetworkConfig.KeepAliveTimeoutInSeconds <= 0 {
 		config.NetworkConfig.KeepAliveTimeoutInSeconds = DefaultKeepAliveTimeoutInSeconds
+	}
+
+	if config.NetworkConfig.ListModelsTimeoutInSeconds <= 0 {
+		config.NetworkConfig.ListModelsTimeoutInSeconds = DefaultListModelsTimeoutInSeconds
 	}
 
 	if config.NetworkConfig.MaxConnsPerHost <= 0 {

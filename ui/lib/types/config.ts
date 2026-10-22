@@ -409,6 +409,7 @@ export interface NetworkConfig {
 	insecure_skip_verify?: boolean;
 	ca_cert_pem?: SecretVar;
 	stream_idle_timeout_in_seconds?: number;
+	list_models_timeout_in_seconds?: number;
 	keep_alive_timeout_in_seconds?: number;
 	max_conns_per_host?: number;
 	enforce_http2?: boolean;

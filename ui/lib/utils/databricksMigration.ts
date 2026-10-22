@@ -233,6 +233,8 @@ const buildProviderSettings = (source: ModelProvider, warnings: string[]): Updat
 		if (net.insecure_skip_verify !== undefined) network_config.insecure_skip_verify = net.insecure_skip_verify;
 		if (net.stream_idle_timeout_in_seconds !== undefined)
 			network_config.stream_idle_timeout_in_seconds = net.stream_idle_timeout_in_seconds;
+		if (net.list_models_timeout_in_seconds !== undefined)
+			network_config.list_models_timeout_in_seconds = net.list_models_timeout_in_seconds;
 		if (net.keep_alive_timeout_in_seconds !== undefined) network_config.keep_alive_timeout_in_seconds = net.keep_alive_timeout_in_seconds;
 		if (net.max_conns_per_host !== undefined) network_config.max_conns_per_host = net.max_conns_per_host;
 		if (net.enforce_http2 !== undefined) network_config.enforce_http2 = net.enforce_http2;
