@@ -452,9 +452,9 @@ func TestSharedProbeSurvivesCallerDisconnect(t *testing.T) {
 // A dead backend must cost one probe per backoff window, not one per request: otherwise every
 // virtual-model request waits out the full timeout on a call that is already known to fail.
 func TestFailedProbeIsRemembered(t *testing.T) {
-	var hits int
+	var hits atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		hits.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
@@ -481,8 +481,8 @@ func TestFailedProbeIsRemembered(t *testing.T) {
 	if second.Authoritative {
 		t.Fatal("the backoff window answered authoritative")
 	}
-	if hits != 1 {
-		t.Fatalf("backend saw %d probes within the backoff window, want 1", hits)
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("backend saw %d probes within the backoff window, want 1", got)
 	}
 }
 
