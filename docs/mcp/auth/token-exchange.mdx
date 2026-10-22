@@ -7,9 +7,9 @@ icon: "right-left"
 
 ## Overview
 
-`auth_type: "token_exchange"` lets each caller reach an upstream MCP server **as themselves**, without Bifrost ever storing a per-user credential. On every tool call, Bifrost takes the caller's own identity-provider (IdP) token and exchanges it — via [RFC 8693 Token Exchange](https://datatracker.ietf.org/doc/html/rfc8693) or the equivalent on-behalf-of grant — for a short-lived token scoped to that MCP server's audience. The exchanged token is sent upstream; the caller's original token never is.
+`auth_type: "token_exchange"` lets each caller reach an upstream MCP server **as themselves**, without Bifrost storing a credential per user for that server. On every tool call, Bifrost takes the caller's own identity-provider (IdP) token and exchanges it, via [RFC 8693 Token Exchange](https://datatracker.ietf.org/doc/html/rfc8693) or the equivalent on-behalf-of grant, for a short-lived token scoped to that MCP server's audience. When the request carries no IdP token but was authenticated through the caller's own Bifrost sign-in, Bifrost exchanges the access token from that sign-in instead; see [Identity requirements](#identity-requirements). The exchanged token is sent upstream; the caller's original token never is.
 
-This is strictly delegated: there is no shared service-account fallback. A caller with no identity token cannot use a `token_exchange` server — see [Identity requirements](#identity-requirements).
+This is strictly delegated: there is no shared service-account fallback. A caller with neither an identity token nor a Bifrost sign-in of their own cannot use a `token_exchange` server. See [Identity requirements](#identity-requirements).
 
 <Info>Token exchange is available in **Bifrost v2.0.0 and above**.</Info>
 
@@ -18,12 +18,12 @@ Requires an **enabled SCIM identity provider** (enterprise). Token exchange runs
 </Note>
 
 <Warning>
-Requires the `/mcp` gateway's own authentication mode — a separate, global setting from any individual MCP client's `auth_type`, see [Gateway Authentication → Authentication Modes](../gateway-auth#authentication-modes) — to be **`headers`** or **`both`**. In strict **`oauth`** mode, `/mcp` accepts only Bifrost-issued OAuth tokens and rejects everything else outright, including the caller's own identity-provider token that `token_exchange` needs. This isn't a limitation to work around: `oauth` mode's entire guarantee is "Bifrost tokens only," so it and `token_exchange` are mutually exclusive by design.
+The `/mcp` gateway's own authentication mode is a separate, global setting from any MCP client's `auth_type` (see [Gateway Authentication → Authentication Modes](../gateway-auth#authentication-modes)), and it decides how callers reach a `token_exchange` server through `/mcp`. In strict **`oauth`** mode, `/mcp` accepts only Bifrost-issued OAuth tokens, so a caller cannot send their own identity-provider token there. Callers who connect in **user** mode still reach `token_exchange` servers: Bifrost exchanges the access token from their Bifrost sign-in. Virtual-key and session-mode tokens carry nothing to exchange. Use **`headers`** or **`both`** if your callers send their identity-provider token to `/mcp` directly.
 </Warning>
 
 | | Per-User OAuth (`per_user_oauth`) | Token Exchange (`token_exchange`) |
 | --- | --- | --- |
-| Who authenticates | Each end-user, via a one-time browser consent | Nobody, per call — the caller's existing IdP token is reused |
+| Who authenticates | Each end-user, via a one-time browser consent | Nobody, per call: the caller's existing IdP token, or the access token from their Bifrost sign-in, is reused |
 | Credential stored per user | Yes — an OAuth token row per `(identity, mcp_client)` | No — nothing is stored per caller; exchanged tokens are cached in memory only |
 | Upstream server sees | The user's own OAuth grant to that specific service | A token minted by your IdP representing the caller |
 | Best for | Third-party SaaS (Notion, GitHub, Sentry) that runs its own OAuth | First-party/internal MCP servers that trust your organization's IdP |
@@ -103,7 +103,7 @@ Each MCP client scopes its own exchange: which resource (`audience`) the token i
    - **Exchange Client ID** (required) / **Exchange Client Secret** (optional for public clients) — only shown when **Dedicated application** is selected
    - **Authorization Server URL** (optional) — only needed if this audience is registered on a different Authorization Server than your SSO login uses; see [Okta: per-resource Authorization Server](#okta-per-resource-authorization-server)
    - **Scopes** (optional, comma-separated) — include `offline_access` where your identity provider supports it, so exchanges issue refresh tokens and the retained admin discovery credential stays self-renewing. For Microsoft Entra ID specifically: `offline_access` is the *only* additional scope that combines with the audience's default resource access — leave it as the sole entry to keep both; any other scope here replaces the default resource scope entirely rather than adding to it, and Entra rejects a `.default` + custom-scope combination outright — if you need narrower, specific permissions instead of the audience's default access, list only named resource scopes here (e.g. `api://jira-mcp/access_as_user`), with no `.default` entry at all
-6. Click **Create** — Bifrost exchanges *your own* signed-in identity token, verifies the upstream connection, and discovers tools
+6. Click **Create**. Bifrost exchanges the access token from *your own* Bifrost sign-in, verifies the upstream connection, and discovers tools. If your sign-in has expired, the create fails and asks you to sign in to Bifrost again
 
 </Tab>
 
@@ -162,10 +162,10 @@ sequenceDiagram
     participant I as Identity Provider
     participant M as Upstream MCP Server
 
-    U->>B: Tool call, Authorization: Bearer <IdP token>
+    U->>B: Tool call, with an IdP token or a Bifrost sign-in
     B->>B: Cache lookup for (identity, mcp_client)
     alt cache miss
-        B->>I: Exchange <IdP token> for audience
+        B->>I: Exchange the IdP token, or the sign-in's access token, for audience
         I-->>B: Short-lived scoped token
     end
     B->>M: Tool call, Authorization: Bearer <exchanged token>
@@ -173,19 +173,27 @@ sequenceDiagram
     B-->>U: Result
 ```
 
-1. The caller sends a request carrying their own identity-provider token (`Authorization: Bearer <token>`), or an SSO dashboard session.
+1. The caller sends a request carrying their own identity-provider token (`Authorization: Bearer <token>`), or one authenticated through their own Bifrost sign-in: a dashboard session, a [Bifrost Edge](/edge/overview) or [Bifrost CLI](/quickstart/cli/getting-started) session, or a user-mode `/mcp` OAuth token.
 2. Bifrost checks its in-memory cache for an exchanged token already minted for this `(identity, mcp_client)` pair.
-3. On a miss, Bifrost exchanges the caller's token at the identity provider's token endpoint, scoped to the client's configured `audience`.
+3. On a miss, Bifrost exchanges the caller's token at the identity provider's token endpoint, scoped to the client's configured `audience`. A request without an identity-provider token of its own exchanges the access token from the caller's sign-in, which Bifrost refreshes first when it has expired or is about to.
 4. The exchanged token is used on an ephemeral upstream connection for that call only — nothing about it is written to the database.
 5. The cache holds the exchanged token until shortly before it expires, so repeat calls from the same caller don't re-exchange every time.
 
-If the identity provider rejects the exchange (the caller's token is invalid, revoked, or the exchange application lacks permission for the audience), the tool call fails with a message naming the identity-provider error. There is no interactive flow to complete — the caller fixes their credential and retries.
+If the identity provider rejects the exchange (the caller's token is invalid, revoked, or the exchange application lacks permission for the audience), the tool call fails with a message naming the identity-provider error. If it rejects the access token from a Bifrost sign-in, Bifrost refreshes the sign-in once and retries the exchange once before failing. When the sign-in can no longer be refreshed, the tool call fails with:
+
+```text
+Authentication required for <server>: this server uses your identity token, and your Bifrost sign-in has expired. Sign in to Bifrost again at <bifrost-url>, then retry.
+```
+
+There is no interactive flow to complete: the caller fixes their credential, or signs in to Bifrost again, and retries.
+
+If the upstream MCP server rejects an exchanged token with `401` or `403`, Bifrost discards it and exchanges again. A tool that is safe to retry is retried once with the new token. For one that is not, the error surfaces right away while the exchange runs in the background, so later calls use the new token once it succeeds. See [Auth failure recovery](../tool-execution#auth-failure-recovery).
 
 ---
 
 ## Verification
 
-Bifrost needs to prove the exchange works once before serving traffic: exchange a sample token, connect to the upstream server, and discover its tools. There is no manual token to paste — **verification always runs as the signed-in admin**, using the admin's own identity-provider token (already present on their dashboard session or API request).
+Bifrost needs to prove the exchange works once before serving traffic: exchange the admin's token, connect to the upstream server, and discover its tools. There is no manual token to paste: **verification always runs as the signed-in admin**. Bifrost exchanges the identity-provider token on the request or, when the request carries none, the access token from the admin's own Bifrost sign-in, refreshed first if needed. From the dashboard, it is always the sign-in.
 
 - **`pending_verification`** — shown for a newly created or `config.json`-declared client with no discovered tools yet. Click **Verify as me** on the client sheet.
 - **`needs_reauth`** — shown when the retained admin discovery credential (see below) has died and needs repair. Click **Re-verify as me**.
@@ -195,12 +203,12 @@ Both buttons call the same endpoint, `POST /api/mcp/client/{id}/verify-exchange`
 ![Token exchange client sheet showing the Verify as me button in pending_verification state](/media/ui-mcp-token-exchange-verify.png)
 
 <Info>
-Verification requires an identity-authenticated session or request (SSO login, or a request bearing your own IdP token). An API-key-authenticated request has no identity token to exchange and verification fails with a message asking you to sign in with your identity provider first.
+Verification requires an identity-authenticated session or request: an SSO dashboard session, or a request bearing your own IdP token. A request authenticated with an API key has nothing to exchange: `verify-exchange` returns `400` asking you to sign in with your identity provider, and a client created that way starts in `pending_verification`. If your sign-in has expired, `verify-exchange` returns `400` and creating the client returns `422`, both asking you to sign in to Bifrost again. A rejected or failed exchange returns `422` with the identity-provider error.
 </Info>
 
 ### Admin discovery credential
 
-The token exchanged during verification is retained as a client-level **admin discovery credential**, used only for periodic tool-list refresh — never for end-user tool calls, which always exchange the caller's own token. It renews automatically via the refresh token your identity provider issues alongside the exchange, provided your configured `scopes` include `offline_access` (or your provider's equivalent).
+The token exchanged during verification is retained as a client-level **admin discovery credential**, used only for periodic tool-list refresh and never for end-user tool calls, which always exchange the caller's own token or Bifrost sign-in. It renews automatically via the refresh token your identity provider issues alongside the exchange, provided your configured `scopes` include `offline_access` (or your provider's equivalent).
 
 Without a refresh token, the admin credential expires within its own lifetime and the client shows **`needs_reauth`** until an admin clicks **Re-verify as me**. End-user tool calls are unaffected either way — only the periodic tool-list refresh pauses.
 
@@ -210,13 +218,20 @@ Without a refresh token, the admin credential expires within its own lifetime an
 
 ## Identity requirements
 
-Unlike per-user OAuth and per-user headers, token exchange has **no virtual-key-only path**. A caller must present a validated identity-provider token — a virtual key alone establishes governance (budgets, rate limits, tool scoping) but carries nothing to exchange.
+Unlike per-user OAuth and per-user headers, token exchange has **no virtual-key-only path**. Every call needs a subject to exchange: the caller's own validated identity-provider token, or the access token from the caller's own Bifrost sign-in. A virtual key alone establishes governance (budgets, rate limits, tool scoping) but carries nothing to exchange.
 
-- **`Authorization: Bearer <IdP JWT>`** — validated against your SCIM identity provider, then used as the exchange subject.
-- **A dashboard SSO session** (cookie) — the session's stored identity-provider token is used automatically; no header needed.
-- **A virtual key alone** — resolves identity and governance, but a tool call against a `token_exchange` server fails: `subject_token_missing`.
+- **`Authorization: Bearer <IdP JWT>`**: validated against your SCIM identity provider, then used as the exchange subject.
+- **A dashboard SSO session** (cookie): the access token from your sign-in is used automatically; no header needed.
+- **A [Bifrost Edge](/edge/overview) or [Bifrost CLI](/quickstart/cli/getting-started) session**: the access token from your sign-in is used, including when a virtual key is attached to the request.
+- **A Bifrost-issued `/mcp` OAuth token in user mode** (see [Identity modes at consent](../gateway-auth#identity-modes-at-consent)): the access token from your sign-in is used.
+- **A virtual key alone** (even one owned by a user), **a virtual-key or session-mode `/mcp` OAuth token, or an API key**: resolves identity and governance, but a tool call against a `token_exchange` server fails: `subject_token_missing`.
+- **An identity-provider token that fails validation**: the tool call fails and names the rejected token; Bifrost does not fall back to your sign-in.
 
-Sending both an identity token and a virtual key is fine — [`dual_credential_conflict_behavior`](../gateway-auth) decides which one governance attributes the request to, while the identity token is used for the exchange either way.
+A token on the request always wins: Bifrost uses your sign-in only when the request carries no identity-provider token, and only for the user who signed in.
+
+The sign-in is your sign-in to Bifrost in the browser, the same one Bifrost Edge and Bifrost CLI sign-in go through. Bifrost exchanges its access token, never its ID token, and refreshes it when it has expired or is about to, using the refresh token from that sign-in (keep `offline_access`, the default, in your SSO login scopes). When none of your sign-ins can be refreshed any more (the refresh token expired or was revoked, or you signed out everywhere), tool calls fail saying your Bifrost sign-in has expired (see [How it works](#how-it-works) for the message). Signing in again in the browser fixes it. Signing out of one browser ends only that sign-in, and tokens Bifrost already exchanged for you keep working until they expire.
+
+Sending both an identity token and a virtual key is fine: [`dual_credential_conflict_behavior`](../gateway-auth) decides which one governance attributes the request to, while the identity token is used for the exchange either way.
 
 ---
 
