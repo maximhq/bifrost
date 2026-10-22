@@ -10,7 +10,7 @@ func TestVirtualModelDisabled(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	defer ctx.Cancel()
 	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "ordinary"}}
-	if err := engine.resolveVirtualModel(ctx, req); err != nil {
+	if err := engine.resolveVirtualModel(ctx, req, schemas.OpenAI); err != nil {
 		t.Fatal(err)
 	}
 	provider, model, _ := req.GetRequestFields()
@@ -27,7 +27,7 @@ func BenchmarkVirtualModelDisabled(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		engine.resolveVirtualModel(ctx, req)
+		engine.resolveVirtualModel(ctx, req, schemas.OpenAI)
 	}
 }
 
@@ -76,7 +76,7 @@ func TestVirtualModelDoesNotShadowAnotherProvidersModel(t *testing.T) {
 	defer ctx.Cancel()
 	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
 
-	if err := engine.resolveVirtualModel(ctx, req); err != nil {
+	if err := engine.resolveVirtualModel(ctx, req, schemas.OpenAI); err != nil {
 		t.Fatalf("a concrete request addressed to openai was refused: %v", err)
 	}
 	provider, model, _ := req.GetRequestFields()
@@ -86,7 +86,7 @@ func TestVirtualModelDoesNotShadowAnotherProvidersModel(t *testing.T) {
 	if stub.resolved != 0 {
 		t.Fatal("resolver consulted for a request addressed to another provider")
 	}
-	if schemas.GetVirtualModel(ctx) != "" {
+	if name, _ := ctx.Value(schemas.BifrostContextKeyVirtualModel).(string); name != "" {
 		t.Fatal("virtual name recorded for a request that is not a virtual model request")
 	}
 }
@@ -102,16 +102,60 @@ func TestVirtualModelResolvesForOwningProvider(t *testing.T) {
 		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: provider, Model: "qwen38"}}
 
-		if err := engine.resolveVirtualModel(ctx, req); err != nil {
+		if err := engine.resolveVirtualModel(ctx, req, provider); err != nil {
 			t.Fatalf("provider %q: %v", provider, err)
 		}
 		gotProvider, gotModel, _ := req.GetRequestFields()
 		if gotProvider != "ollama" || gotModel != "flash" {
 			t.Fatalf("provider %q: resolved to %s/%s, want ollama/flash", provider, gotProvider, gotModel)
 		}
-		if schemas.GetVirtualModel(ctx) != "qwen38" {
+		if name, _ := ctx.Value(schemas.BifrostContextKeyVirtualModel).(string); name != "qwen38" {
 			t.Fatalf("provider %q: virtual name not recorded on the context", provider)
 		}
 		ctx.Cancel()
+	}
+}
+
+// The provider on the request is not necessarily the provider the client named: the model-catalog
+// resolver and governance load balancing both fill one in for a bare name. That inferred value must
+// not be read as the client pinning a vendor, or a virtual model whose name collides with a vendor
+// model would step aside and send the request to that vendor instead, with nothing to show for it.
+// This is the case the bare-name feature exists for.
+func TestVirtualModelIgnoresProviderInferredByHooks(t *testing.T) {
+	engine, _ := stubEngine(
+		&schemas.VirtualModel{Name: "gpt-4o", Provider: "ollama", Models: []string{"flash", "27b"}},
+		&schemas.VirtualModelResolution{Provider: "ollama", Model: "flash"},
+	)
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	// req carries openai because a hook put it there; the client sent a bare name.
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+	if err := engine.resolveVirtualModel(ctx, req, ""); err != nil {
+		t.Fatalf("%v", err)
+	}
+	provider, model, _ := req.GetRequestFields()
+	if provider != "ollama" || model != "flash" {
+		t.Fatalf("a catalog-inferred provider overrode the virtual model: got %s/%s, want ollama/flash", provider, model)
+	}
+}
+
+// The client naming a provider explicitly still outranks the overlay, which is the case the previous
+// test must not regress into.
+func BenchmarkVirtualModelEnabledMiss(b *testing.B) {
+	engine, _ := stubEngine(
+		&schemas.VirtualModel{Name: "qwen38", Provider: "ollama", Models: []string{"flash"}},
+		&schemas.VirtualModelResolution{Provider: "ollama", Model: "flash"},
+	)
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	defer ctx.Cancel()
+	// Feature configured, this model not virtual: the ordinary request every caller makes.
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if err := engine.resolveVirtualModel(ctx, req, schemas.OpenAI); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

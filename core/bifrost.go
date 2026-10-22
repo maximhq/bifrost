@@ -524,24 +524,23 @@ func (bifrost *Bifrost) virtualResolver() schemas.VirtualModelResolver {
 //
 // A no-op when there is no resolver, or when the model names no virtual model -
 // which is every ordinary request.
-func (bifrost *Bifrost) resolveVirtualModel(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostError {
+//
+// requestedProvider is what the client sent, captured before the hooks ran, and it is the only
+// provider consulted here: the catalog resolver and load balancing both fill in a provider for an
+// unprefixed name, so reading it off the request would look like the client pinned a vendor and
+// step aside on exactly the bare-name case this feature exists for.
+func (bifrost *Bifrost) resolveVirtualModel(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, requestedProvider schemas.ModelProvider) *schemas.BifrostError {
 	resolver := bifrost.virtualResolver()
 	if resolver == nil || req == nil {
 		return nil
 	}
-	provider, model, _ := req.GetRequestFields()
+	_, model, _ := req.GetRequestFields()
 	virtual, ok := resolver.Lookup(model)
 	if !ok {
 		return nil
 	}
-	// A request that names a provider is addressed to that provider, and that outranks the
-	// overlay: if it is not the provider the virtual model lives on, the client wants that
-	// provider's own model of the same name. That is the usual migration shape - a virtual model
-	// named after a vendor model, with provider/model the escape hatch that pins the vendor - so
-	// the overlay leaves the request alone and the named provider answers for its own models.
-	// Refusing here made the overlay shadow a real model that has to stay reachable; the case fold
-	// is because a client spells a provider as it likes while these names are stored lowercased.
-	if provider != "" && !strings.EqualFold(string(provider), string(virtual.Provider)) {
+	// The client pinned another vendor, so it wants that vendor's own model of this name.
+	if requestedProvider != "" && !strings.EqualFold(string(requestedProvider), string(virtual.Provider)) {
 		return nil
 	}
 
@@ -5948,7 +5947,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
-	if virtualErr := bifrost.resolveVirtualModel(ctx, req); virtualErr != nil {
+	if virtualErr := bifrost.resolveVirtualModel(ctx, req, requested.Provider); virtualErr != nil {
 		// Returning before tryRequest skips the downstream log drain.
 		flushPluginLogs(ctx)
 		provider, model, _ := req.GetRequestFields()
@@ -6168,7 +6167,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
-	if virtualErr := bifrost.resolveVirtualModel(ctx, req); virtualErr != nil {
+	if virtualErr := bifrost.resolveVirtualModel(ctx, req, requested.Provider); virtualErr != nil {
 		// Returning before tryStreamRequest skips the downstream log drain.
 		flushPluginLogs(ctx)
 		provider, model, _ := req.GetRequestFields()
