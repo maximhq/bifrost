@@ -7,7 +7,7 @@ icon: "shuffle"
 This guide shows how to put NGINX in front of Bifrost for TLS termination, centralized routing, and load balancing.
 
 <Note>
-Incoming reverse-proxy behavior is configured in your infrastructure layer (NGINX/Ingress), not in `config.json`.
+Incoming reverse-proxy behavior is configured in your infrastructure layer (NGINX/Ingress), not in `config.json`. The one exception is serving Bifrost under a path prefix, which also needs `server.base_path` (see [Serving under a path prefix](#serving-under-a-path-prefix)).
 </Note>
 
 ---
@@ -137,6 +137,90 @@ ingress:
       hosts:
         - bifrost.example.com
 ```
+
+---
+
+## Serving under a path prefix
+
+By default Bifrost expects to own the whole host (`https://bifrost.example.com/`). To serve it under a path on a shared domain, for example `https://example.com/bifrost/`, set the prefix on Bifrost and route that path to it in the proxy. The prefix can be any path, including nested ones such as `/tools/llm-gw`.
+
+Set the prefix in one of three places. The flag and the environment variable take precedence over `config.json`.
+
+<Tabs>
+<Tab title="config.json">
+
+```json
+{
+  "server": {
+    "read_buffer_size": 65536,
+    "base_path": "/bifrost"
+  }
+}
+```
+
+</Tab>
+<Tab title="Environment / flag">
+
+```bash
+# Docker
+docker run -p 8080:8080 -e BIFROST_BASE_PATH=/bifrost maximhq/bifrost
+
+# NPX
+npx -y @maximhq/bifrost -base-path /bifrost
+```
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  server:
+    basePath: "/bifrost"
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: example.com
+      paths:
+        - path: /bifrost
+          pathType: Prefix
+```
+
+</Tab>
+</Tabs>
+
+What the prefix changes:
+
+- The dashboard is served at `https://example.com/bifrost/`, and its pages, API calls, WebSocket connection and static assets all use the prefix.
+- Every API and inference route is reachable under the prefix: `https://example.com/bifrost/v1/chat/completions`, `https://example.com/bifrost/openai/v1/...`. Point SDK base URLs there.
+- Server-generated URLs carry the prefix when Bifrost derives them from the request: OAuth callback URLs for MCP servers, OAuth redirects back to the dashboard, and resumable upload URLs. If you set an explicit public URL such as `client.mcp_external_client_url`, include the prefix in it yourself.
+
+Requests are accepted **with or without** the prefix, so both NGINX styles work:
+
+```nginx
+# Forward the prefix unchanged (no trailing slash on proxy_pass)
+location /bifrost/ {
+    proxy_pass http://bifrost_backend;
+    # ...same proxy_set_header and streaming settings as above
+}
+
+# Or strip it (trailing slash on proxy_pass); Bifrost still builds prefixed URLs
+location /bifrost/ {
+    proxy_pass http://bifrost_backend/;
+    # ...same proxy_set_header and streaming settings as above
+}
+```
+
+Because unprefixed paths keep working, container health checks and Kubernetes probes can stay on `/health`.
+
+<Warning>
+The first segment of the prefix must not be one Bifrost already uses, either for its own routes, such as `/api`, `/v1`, `/openai`, `/anthropic`, `/workspace` or `/health`, or for the dashboard's files, such as `/assets` or `/images`. Bifrost refuses to start with a prefix like that, because requests to it would be ambiguous.
+</Warning>
+
+<Note>
+OAuth 2.0 discovery for an issuer with a path lives at the host root, for example `https://example.com/.well-known/oauth-authorization-server/bifrost` (RFC 8414). If you use Bifrost as an OAuth authorization server for MCP clients, set `issuer_url` to the prefixed URL and route `/.well-known/` on the host to Bifrost as well.
+</Note>
 
 ---
 
