@@ -730,6 +730,8 @@ func (m *realtimeWebRTCMessages) closed() {
 	m.session.ClearRealtimeTurnHooks()
 }
 
+// newRealtimeRelayContext snapshots session-safe setup values without retaining
+// the HTTP request's cancellation or request-only plugin metadata.
 func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.BifrostContext, context.CancelFunc) {
 	relayCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	if requestCtx == nil {
@@ -782,6 +784,8 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 			relayCtx.SetValue(key, value)
 		}
 	}
+
+	applyRealtimeMiddlewareValues(relayCtx, mergeRealtimeTurnValues(nil, requestCtx))
 
 	// The relay is the request that opened it, kept alive past the request: it carries that
 	// request's grant, not a copy, the same way a realtime turn carries its session's (see
