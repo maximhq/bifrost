@@ -63,4 +63,20 @@ export default defineConfig({
 		outDir: "out",
 		emptyOutDir: true,
 	},
+	experimental: {
+		// The server may be mounted under a path prefix chosen at runtime
+		// (server.base_path). Chunks and assets loaded from JS resolve against
+		// the prefix the Go server injects into the HTML shell; CSS references
+		// stay relative to the stylesheet. The shell's own tags are rewritten
+		// by the Go server (handlers/ui.go).
+		renderBuiltUrl(filename, { hostType }) {
+			if (hostType === "js") {
+				return { runtime: `(window.__BIFROST_BASE_PATH__||"")+${JSON.stringify(`/${filename}`)}` };
+			}
+			if (hostType === "css") {
+				return { relative: true };
+			}
+			return `/${filename}`;
+		},
+	},
 });
