@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -92,7 +93,7 @@ func TestPostHookWorkerAddsRoutingCostToProviderUsageOnError(t *testing.T) {
 	}
 
 	settled := settleLimits(fixture.store, "sk-bf-acct", schemas.OpenAI, "gpt-4o", &UsageUpdate{})
-	plugin.postHookWorker(nil, bifrostErr, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, "routing-error", "", false, 0, 0, false, nil, settled.Budgets, settled.RateLimits, routingMetadata)
+	plugin.postHookWorker(nil, bifrostErr, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, "routing-error", "", false, 0, 0, false, nil, settled.Budgets, settled.RateLimits, routingMetadata, nil)
 
 	// gpt-4o testdata: 2.5e-6 input, 1e-5 output. Routing embedding:
 	// text-embedding-3-small at 2e-8/input token. Both calls are billable.
@@ -104,4 +105,26 @@ func TestPostHookWorkerAddsRoutingCostToProviderUsageOnError(t *testing.T) {
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.InDelta(c, want, fixture.cost(), 1e-12)
 	}, time.Second, 10*time.Millisecond)
+}
+
+func TestPostHookWorkerUsesCapturedFallbackCost(t *testing.T) {
+	for _, cost := range []float64{0, 0.125} {
+		t.Run(fmt.Sprint(cost), func(t *testing.T) {
+			fixture := newAccountingFixture(t)
+			plugin := &GovernancePlugin{ctx: context.Background(), tracker: fixture.tracker, modelCatalog: newOfflinePricingCatalog(t)}
+			result := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				Usage:       &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+				ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: "gpt-4o"},
+			}}
+			settled := settleLimits(fixture.store, "sk-bf-acct", schemas.OpenAI, "gpt-4o", &UsageUpdate{})
+			plugin.postHookWorker(result, nil, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, "fallback-cost", "", false, 0, 1, false, nil, settled.Budgets, settled.RateLimits, nil, &cost)
+			// In particular, an explicitly captured zero must not be replaced by
+			// the nonzero catalog price for the response's token usage.
+			assert.EventuallyWithT(t, func(c *assert.CollectT) {
+				assert.Equal(c, cost, fixture.cost())
+				assert.Equal(c, int64(150), fixture.tokens())
+				assert.Equal(c, int64(1), fixture.requests())
+			}, time.Second, 10*time.Millisecond)
+		})
+	}
 }

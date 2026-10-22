@@ -1522,6 +1522,14 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// Each provider in the fallback chain restarts its retries at 0, so the attempt's place in
 		// the chain is what tells a fallback's attempts from the primary's.
 		fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
+		var fallbackCost *float64
+		if fallbackIndex > 0 && p.modelCatalog != nil && result != nil && (!bifrost.IsStreamRequestType(requestType) || isFinalChunk) {
+			// Core decorates fallback routing metadata after the post-hook returns.
+			// Price the attempt while its response metadata is still ours to read,
+			// rather than racing that write from the asynchronous billing worker.
+			cost := p.modelCatalog.CalculateCost(result, pricingScopes)
+			fallbackCost = &cost
+		}
 		routingMetadata, _ := schemas.InitialAttemptRoutingMetadataFromContext(ctx)
 		// A live session's continuation bills its usage but was already counted as a request at admission.
 		sessionContinuation := isLiveSessionContinuation(ctx)
@@ -1537,7 +1545,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, fallbackCost)
 		}()
 	}
 
@@ -1921,7 +1929,8 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isFinalChunk: Whether the request is the final chunk
 //   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
+//   - fallbackCost: Cost captured before core decorates a fallback response, nil for other attempts
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata, fallbackCost *float64) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -1931,7 +1940,9 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 
 	if !isStreaming || (isStreaming && isFinalChunk) {
 		var cost float64
-		if p.modelCatalog != nil && result != nil {
+		if fallbackCost != nil {
+			cost = *fallbackCost
+		} else if p.modelCatalog != nil && result != nil {
 			cost = p.modelCatalog.CalculateCost(result, pricingScopes)
 		}
 		tokensUsed := 0
