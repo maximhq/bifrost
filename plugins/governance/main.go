@@ -1045,15 +1045,14 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 	if len(bases) == 0 && scoping == nil {
 		return nil, nil
 	}
-	access := grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+	access := grant.NewAccessWithModelDiscovery(bases, scoping, mode, p.modelMatcher())
 	g.SetAccess(access)
 	return access, nil
 }
 
-// modelMatcher is how an access resolves a model name against a provider's allowed-models list:
-// through the model catalog, with the provider's own configuration, so cross-provider naming and
-// provider-prefixed entries resolve exactly as they do everywhere else. Without a catalog, names
-// are matched as written.
+// modelMatcher resolves explicit model lists and provider candidates through
+// the catalog. Wildcard authorization is handled by the access itself, without
+// binding cached permissions to a request context or a particular route.
 func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
 	if p.modelCatalog == nil {
 		return nil
@@ -1804,7 +1803,7 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 			scoping = access.Scoping()
 			mode = grant.CompositionMode(access.Mode())
 		}
-		access = grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+		access = grant.NewAccessWithModelDiscovery(bases, scoping, mode, p.modelMatcher())
 	}
 	if refusal := unusablePermit(access); refusal != nil {
 		return deny(refusal.Decision, refusal.Reason)

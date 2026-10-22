@@ -2,6 +2,11 @@ package governance
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +16,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1210,6 +1216,363 @@ func TestModelMatcherReadsOnlyTheProviderItChecks(t *testing.T) {
 	assert.Zero(t, store.wholeMap, "the resource-name check does not read the whole provider map")
 }
 
+// These are the normalized pricing rows that made an unrestricted OpenRouter
+// permit reject Haiku: the bare and vendor-qualified names have different bases.
+func openRouterWildcardCatalog() *modelcatalog.ModelCatalog {
+	ds := datasheet.NewTestStore(nil)
+	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Provider: "github-copilot", Model: "claude-haiku-5.5", BaseModel: "claude-haiku-5-5", Mode: "chat"},
+		{Provider: "openrouter", Model: "anthropic/claude-haiku-5.5", BaseModel: "claude-haiku-5.5", Mode: "chat"},
+		{Provider: "openrouter", Model: "openai/gpt-6-luna", BaseModel: "gpt-6-luna", Mode: "chat"},
+	})
+	catalog := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	catalog.SetKeyConfigForProvider(schemas.OpenRouter, []schemas.Key{{ID: "or", Models: schemas.WhiteList{"*"}, Weight: 1}})
+	return catalog
+}
+
+func newOpenRouterWildcardPlugin(t testing.TB, vk *configstoreTables.TableVirtualKey) *GovernancePlugin {
+	t.Helper()
+	registry := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenRouter: {},
+	}}
+	p, err := Init(context.Background(), &Config{IsVkMandatory: boolPtr(true)}, bifrost.NewNoOpLogger(), nil,
+		&configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{*vk}}, openRouterWildcardCatalog(), nil, registry)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, p.Cleanup()) })
+	return p
+}
+
+type openRouterWildcardAccount struct {
+	keys   []schemas.Key
+	config *schemas.ProviderConfig
+}
+
+func (a *openRouterWildcardAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenRouter}, nil
+}
+
+func (a *openRouterWildcardAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return a.keys, nil
+}
+
+func (a *openRouterWildcardAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return a.config, nil
+}
+
+// Run the real core hook pipeline and OpenRouter adapter against an HTTP peer.
+// Core, not the test, stamps the caller's provider before resolving access.
+func TestOpenRouterWildcardAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		explicitRow     bool
+		keyModels       schemas.WhiteList
+		keyBlocked      schemas.BlackList
+		inheritedAccess bool
+	}{
+		{name: "inherited_access", inheritedAccess: true},
+		{name: "allow_all_providers"},
+		{name: "explicit_wildcard_row", explicitRow: true},
+		{name: "provider_key_allowlist", keyModels: schemas.WhiteList{"gpt-6-luna"}},
+		{name: "provider_key_blacklist", keyBlocked: schemas.BlackList{"claude-haiku-5.5", "anthropic/claude-haiku-5.5"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vk := buildVirtualKey("vk-or", "sk-bf-or", "OpenRouter", true)
+			vk.AllowAllProviders = true
+			if tc.explicitRow {
+				vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openrouter", []string{"*"})}
+			}
+			plugin := newOpenRouterWildcardPlugin(t, vk)
+			var calls atomic.Int32
+			var sentModel atomic.Value
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct{ Model string }
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				sentModel.Store(body.Model)
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				if _, err := w.Write([]byte(`{"error":{"code":401,"message":"wildcard request reached upstream"}}`)); err != nil {
+					t.Errorf("write upstream rejection: %v", err)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			keyModels := tc.keyModels
+			if keyModels == nil {
+				keyModels = schemas.WhiteList{"*"}
+			}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: &openRouterWildcardAccount{
+					keys: []schemas.Key{{ID: "or", Value: *schemas.NewSecretVar("placeholder"), Models: keyModels, BlacklistedModels: tc.keyBlocked, Weight: 1}},
+					config: &schemas.ProviderConfig{
+						NetworkConfig:            schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
+						ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
+					},
+				},
+				LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { client.Shutdown() })
+			for _, model := range []string{"claude-haiku-5.5", "openai/gpt-6-luna:nitro", "anthropic/claude-haiku-5.5", "gpt-6-luna"} {
+				for _, route := range []string{"chat", "chat_stream", "responses", "responses_stream"} {
+					t.Run(model+"/"+route, func(t *testing.T) {
+						before := calls.Load()
+						ctx := presentCtx("sk-bf-or")
+						if tc.inheritedAccess {
+							_, resolveErr := plugin.ResolveAccess(ctx)
+							require.NoError(t, resolveErr)
+							ctx = schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+						}
+						req := &schemas.BifrostChatRequest{Provider: schemas.OpenRouter, Model: model, Input: []schemas.ChatMessage{{
+							Role: "user", Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi")},
+						}}}
+						var requestErr *schemas.BifrostError
+						switch route {
+						case "chat":
+							_, requestErr = client.ChatCompletionRequest(ctx, req)
+						case "chat_stream":
+							_, requestErr = client.ChatCompletionStreamRequest(ctx, req)
+						case "responses":
+							_, requestErr = client.ResponsesRequest(ctx, req.ToResponsesRequest())
+						case "responses_stream":
+							_, requestErr = client.ResponsesStreamRequest(ctx, req.ToResponsesRequest())
+						}
+						require.NotNil(t, requestErr)
+						keyDenied := (tc.name == "provider_key_allowlist" && model != "gpt-6-luna") ||
+							(tc.name == "provider_key_blacklist" && (model == "claude-haiku-5.5" || model == "anthropic/claude-haiku-5.5"))
+						if keyDenied {
+							require.Equal(t, http.StatusBadRequest, *requestErr.StatusCode, requestErr.Error.Message)
+							require.Equal(t, "no_key_supports_model", *requestErr.Type)
+							require.Equal(t, before, calls.Load(), "virtual key wildcard must not bypass provider key restrictions")
+							return
+						}
+						require.Equal(t, http.StatusUnauthorized, *requestErr.StatusCode, requestErr.Error.Message)
+						require.Equal(t, before+1, calls.Load(), "an unrestricted request must reach the provider")
+						assert.Equal(t, model, sentModel.Load(), "authorization must not rewrite the model")
+					})
+				}
+			}
+		})
+	}
+}
+
+func TestOpenRouterWildcardRestrictionsAndDiscovery(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		allowed schemas.WhiteList
+		blocked schemas.BlackList
+		want    bool
+	}{
+		{"wildcard", schemas.WhiteList{"*"}, nil, true},
+		{"empty", nil, nil, false},
+		{"different_model", schemas.WhiteList{"gpt-6-luna"}, nil, false},
+		{"explicit_model", schemas.WhiteList{"claude-haiku-5.5"}, nil, true},
+		{"blacklisted", schemas.WhiteList{"*"}, schemas.BlackList{"claude-haiku-5.5"}, false},
+		{"regex_blacklisted", schemas.WhiteList{"*"}, schemas.BlackList{"regex:^claude-.*"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vk := buildVirtualKey("vk-or", "sk-bf-or", "OpenRouter", true)
+			vk.AllowAllProviders = true
+			vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{{Provider: "openrouter", AllowedModels: tc.allowed, BlacklistedModels: tc.blocked, AllowAllKeys: true}}
+			plugin := newOpenRouterWildcardPlugin(t, vk)
+			ctx := presentCtx("sk-bf-or")
+			access, err := plugin.ResolveAccess(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, access.IsModelAllowed("openrouter", "claude-haiku-5.5"))
+		})
+	}
+	vk := buildVirtualKeyWithProviders("vk-or", "sk-bf-or", "OpenRouter", []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openrouter", []string{"*"})})
+	plugin := newOpenRouterWildcardPlugin(t, vk)
+	ctx := presentCtx("sk-bf-or")
+	access, err := plugin.ResolveAccess(ctx)
+	require.NoError(t, err)
+	assert.True(t, access.IsModelAllowed("openrouter", "claude-haiku-5.5"), "authorization is independent of provider discovery")
+	assert.Empty(t, access.ProvidersForModel("claude-haiku-5.5"), "catalog miss is not an automatic provider candidate")
+	assert.NotEmpty(t, access.ProvidersForModel("gpt-6-luna"))
+	assert.False(t, access.IsModelAllowed("openai", "gpt-6-luna"), "a model allowance must not open another provider")
+	for _, provider := range []schemas.ModelProvider{"", schemas.OpenRouter, schemas.OpenAI} {
+		ctx.SetValue(schemas.BifrostContextKeyRequestedProvider, provider)
+		assert.True(t, access.IsModelAllowed("openrouter", "claude-haiku-5.5"))
+		assert.Empty(t, access.ProvidersForModel("claude-haiku-5.5"), "routing must not depend on a cached context stamp")
+	}
+}
+
+func TestOpenRouterWildcardMatcherOutlivesPluginScope(t *testing.T) {
+	vk := buildVirtualKey("vk-or", "sk-bf-or", "OpenRouter", true)
+	vk.AllowAllProviders = true
+	plugin := newOpenRouterWildcardPlugin(t, vk)
+	ctx := presentCtx("sk-bf-or")
+	ctx.SetValue(schemas.BifrostContextKeyRequestedProvider, schemas.OpenRouter)
+	scope := ctx.WithPluginScope(schemas.Ptr("governance"))
+	access, err := plugin.ResolveAccess(scope)
+	scope.ReleasePluginScope()
+	require.NoError(t, err)
+	assert.True(t, access.IsModelAllowed("openrouter", "claude-haiku-5.5"), "access must still honor the request after its hook scope ends")
+}
+
+type wildcardFallbackAccount struct {
+	*openRouterWildcardAccount
+	primary *schemas.ProviderConfig
+}
+
+func (a *wildcardFallbackAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.OpenRouter}, nil
+}
+
+func (a *wildcardFallbackAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if provider == schemas.OpenAI {
+		return a.primary, nil
+	}
+	return a.config, nil
+}
+
+func TestOpenRouterWildcardFallbackAdmission(t *testing.T) {
+	for _, restricted := range []bool{false, true} {
+		name := "wildcard"
+		if restricted {
+			name = "explicit_allowlist"
+		}
+		t.Run(name, func(t *testing.T) {
+			allowed := []string{"*"}
+			if restricted {
+				allowed = []string{"openai/gpt-6-luna"}
+			}
+			vk := buildVirtualKeyWithProviders("vk-or", "sk-bf-or", "Fallback", []configstoreTables.TableVirtualKeyProviderConfig{
+				buildProviderConfig("openai", []string{"*"}), buildProviderConfig("openrouter", allowed),
+			})
+			plugin := newOpenRouterWildcardPlugin(t, vk)
+			var primaryCalls, fallbackCalls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.HasPrefix(r.URL.Path, "/primary/") {
+					primaryCalls.Add(1)
+					w.WriteHeader(http.StatusInternalServerError)
+					if _, err := w.Write([]byte(`{"error":{"message":"primary unavailable"}}`)); err != nil {
+						t.Errorf("write primary failure: %v", err)
+					}
+					return
+				}
+				fallbackCalls.Add(1)
+				if _, err := w.Write([]byte(`{"id":"fallback","object":"chat.completion","created":1,"model":"openai/gpt-6-luna:nitro","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)); err != nil {
+					t.Errorf("write fallback completion: %v", err)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			config := func(path string) *schemas.ProviderConfig {
+				return &schemas.ProviderConfig{
+					NetworkConfig:            schemas.NetworkConfig{BaseURL: upstream.URL + path, AllowPrivateNetwork: true},
+					ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
+				}
+			}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: &wildcardFallbackAccount{openRouterWildcardAccount: &openRouterWildcardAccount{
+					keys: []schemas.Key{{ID: "or", Value: *schemas.NewSecretVar("placeholder"), Models: schemas.WhiteList{"*"}, Weight: 1}}, config: config("/fallback"),
+				}, primary: config("/primary")},
+				LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { client.Shutdown() })
+			response, requestErr := client.ChatCompletionRequest(presentCtx("sk-bf-or"), &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI, Model: "gpt-6-luna", Input: []schemas.ChatMessage{{Role: "user", Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi")}}},
+				Fallbacks: []schemas.Fallback{{Provider: schemas.OpenRouter, Model: "openai/gpt-6-luna:nitro"}},
+			})
+			assert.Equal(t, int32(1), primaryCalls.Load())
+			if restricted {
+				// Core retains the primary error when no fallback can serve.
+				require.NotNil(t, requestErr)
+				assert.Equal(t, http.StatusInternalServerError, *requestErr.StatusCode)
+				assert.Zero(t, fallbackCalls.Load())
+			} else {
+				require.Nil(t, requestErr)
+				require.NotNil(t, response)
+				assert.Equal(t, schemas.OpenRouter, response.ExtraFields.Provider)
+				assert.Equal(t, int32(1), fallbackCalls.Load())
+			}
+		})
+	}
+}
+
+func BenchmarkOpenRouterModelMatcher(b *testing.B) {
+	for _, tc := range []struct {
+		name      string
+		model     string
+		allowed   schemas.WhiteList
+		discovery bool
+	}{
+		{"explicit_wildcard_catalog_hit", "gpt-6-luna", schemas.WhiteList{"*"}, false},
+		{"explicit_wildcard_catalog_miss", "claude-haiku-5.5", schemas.WhiteList{"*"}, false},
+		{"provider_discovery", "gpt-6-luna", schemas.WhiteList{"*"}, true},
+		{"explicit_allowlist", "gpt-6-luna", schemas.WhiteList{"gpt-6-luna"}, false},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			vk := buildVirtualKeyWithProviders("vk-or", "sk-bf-or", "OpenRouter", []configstoreTables.TableVirtualKeyProviderConfig{{Provider: "openrouter", AllowedModels: tc.allowed, AllowAllKeys: true}})
+			plugin := newOpenRouterWildcardPlugin(b, vk)
+			ctx := presentCtx("sk-bf-or")
+			access, err := plugin.ResolveAccess(ctx)
+			require.NoError(b, err)
+			_ = access.IsModelAllowed("openrouter", tc.model)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if tc.discovery {
+					_ = access.ProvidersForModel(tc.model)
+				} else {
+					_ = access.IsModelAllowed("openrouter", tc.model)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkOpenRouterResolveAccess(b *testing.B) {
+	for _, named := range []bool{false, true} {
+		name := "unprefixed"
+		if named {
+			name = "explicit_provider"
+		}
+		b.Run(name, func(b *testing.B) {
+			vk := buildVirtualKeyWithProviders("vk-or", "sk-bf-or", "OpenRouter", []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openrouter", []string{"*"})})
+			plugin := newOpenRouterWildcardPlugin(b, vk)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				ctx := presentCtx("sk-bf-or")
+				if named {
+					ctx.SetValue(schemas.BifrostContextKeyRequestedProvider, schemas.OpenRouter)
+				}
+				if _, err := plugin.ResolveAccess(ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkOpenRouterPostLLMHook(b *testing.B) {
+	vk := buildVirtualKeyWithProviders("vk-or", "sk-bf-or", "OpenRouter", []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openrouter", []string{"*"})})
+	plugin := newOpenRouterWildcardPlugin(b, vk)
+	ctx := presentCtx("sk-bf-or")
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenRouter, Model: "gpt-6-luna"}}
+	require.NoError(b, plugin.PreRequestHook(ctx, req))
+	_, short, err := plugin.PreLLMHook(ctx, req)
+	require.NoError(b, err)
+	require.Nil(b, short)
+	upstreamErr := &schemas.BifrostError{StatusCode: schemas.Ptr(http.StatusUnauthorized), Error: &schemas.ErrorField{Message: "upstream rejected key"},
+		ExtraFields: schemas.BifrostErrorExtraFields{Provider: schemas.OpenRouter, OriginalModelRequested: "gpt-6-luna", ResolvedModelUsed: "gpt-6-luna", RequestType: schemas.ChatCompletionRequest}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := plugin.PostLLMHook(ctx, nil, upstreamErr); err != nil {
+			b.Fatal(err)
+		}
+	}
+	// Include the worker allocations rather than ending the sample while
+	// its asynchronous accounting is still in flight.
+	plugin.wg.Wait()
+}
+
 // A chat request is the common case the provider snapshot must not tax. Through the whole hook
 // chain, with a model catalog and a key whose allowed-models list makes the model check run, the
 // configured providers are read one at a time and the whole map is never copied.
@@ -1303,4 +1666,18 @@ func BenchmarkPreLLMHookPassthroughBodyModels(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestOpenRouterWildcardInheritedGrantDoesNotChangeDiscovery(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk-or", "sk-bf-or", "OpenRouter", []configstoreTables.TableVirtualKeyProviderConfig{{Provider: "openrouter", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true, Weight: schemas.Ptr(1.0)}})
+	plugin := newOpenRouterWildcardPlugin(t, vk)
+	parent := presentCtx("sk-bf-or")
+	parent.SetValue(schemas.BifrostContextKeyRequestedProvider, schemas.OpenRouter)
+	_, err := plugin.ResolveAccess(parent)
+	require.NoError(t, err)
+	child := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+	child.SetValue(schemas.BifrostContextKeyRequestedProvider, schemas.ModelProvider(""))
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Model: "review-uncataloged-model"}}
+	require.NoError(t, plugin.LoadBalanceProvider(child, req))
+	assert.Empty(t, req.ChatRequest.Provider, "a cached parent access must not route an unprefixed catalog miss")
 }
