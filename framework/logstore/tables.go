@@ -121,6 +121,7 @@ type SearchFilters struct {
 	ToolCallNames        []string   `json:"tool_call_names,omitempty"` // Requests whose response called ANY of these function names (matched against the tool_call_names column)
 	Objects              []string   `json:"objects,omitempty"`         // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID      string     `json:"parent_request_id,omitempty"`
+	FallbackHopsOnly     bool       `json:"-"`                        // With ParentRequestID: only the fallback hops under it (fallback_index > 0), not session units or async cost rows that share the parent.
 	RequestID            string     `json:"request_id,omitempty"`     // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
 	RootsOnly            bool       `json:"roots_only,omitempty"`     // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
 	GroupSessions        bool       `json:"group_sessions,omitempty"` // Collapse every row sharing a session_id into that session's earliest chain-root row. Layered on top of RootsOnly; see SessionGroupingActive for when it applies.

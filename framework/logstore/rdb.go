@@ -456,6 +456,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		// a self-referencing row already lists as a root (see applyRootsOnlyFilter),
 		// so without this it would also appear inside its own expansion.
 		baseQuery = baseQuery.Where("parent_request_id = ? AND id <> parent_request_id", filters.ParentRequestID)
+		if filters.FallbackHopsOnly {
+			baseQuery = baseQuery.Where("fallback_index > 0")
+		}
 	} else if filters.RootsOnly && filters.RequestID == "" {
 		// An explicit ID lookup targets exactly one row; collapsing it as a
 		// non-root would hide the very row that was pasted.
