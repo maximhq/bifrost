@@ -3039,6 +3039,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WarpHandler != nil {
 		s.WarpHandler.RegisterRoutes(s.Router, middlewares...)
 	}
+	// Per-user limits exist only where the deployment supplies a reader for them.
+	if s.WarpUserGovernanceReader != nil {
+		handlers.NewUserLimitsHandler(s.WarpUserGovernanceReader).RegisterRoutes(s.Router, middlewares...)
+	}
 	if s.Config.ConfigStore != nil && s.SidekiqRunner != nil {
 		handlers.NewSidekiqHandler(s.Config.ConfigStore, s.SidekiqRunner).RegisterRoutes(s.Router, middlewares...)
 	}
