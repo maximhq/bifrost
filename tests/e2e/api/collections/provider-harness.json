@@ -322328,6 +322328,59 @@
           }
         }
       ]
+    },
+    {
+      "name": "301. Per-user limits endpoints are Enterprise-only (user-limits)",
+      "item": [
+        {
+          "name": "[EXPECT-404] openai user-limits: GET /api/governance/users/me/limits is absent on OSS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The routes are registered only where a user governance reader exists (Enterprise access",
+                  "// profiles); the OSS gateway has none, so the path falls through to the JSON route-not-found.",
+                  "pm.test('user-limits: /me/limits is not served by the OSS gateway', function () {",
+                  "  pm.expect(pm.response.code, 'expected 404: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.response.text(), 'a JSON route-not-found, not a handler error').to.include('Route not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/users/me/limits"
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai user-limits: GET /api/governance/users/{user_id}/limits is absent on OSS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The routes are registered only where a user governance reader exists (Enterprise access",
+                  "// profiles); the OSS gateway has none, so the path falls through to the JSON route-not-found.",
+                  "pm.test('user-limits: /{user_id}/limits is not served by the OSS gateway', function () {",
+                  "  pm.expect(pm.response.code, 'expected 404: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.response.text(), 'a JSON route-not-found, not a handler error').to.include('Route not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/users/u-harness/limits"
+          }
+        }
+      ]
     }
   ]
 }
