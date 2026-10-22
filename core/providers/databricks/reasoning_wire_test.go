@@ -133,8 +133,8 @@ func TestDatabricksClaudeReasoningOverTheWire(t *testing.T) {
 		if thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(1500) {
 			t.Errorf("thinking: got %#v, want enabled with a 1500 budget", gotBody["thinking"])
 		}
-		if ceiling, _ := gotBody["max_completion_tokens"].(float64); ceiling <= 1500 {
-			t.Errorf("max_completion_tokens: got %v, want above the budget", gotBody["max_completion_tokens"])
+		if ceiling, _ := gotBody["max_tokens"].(float64); ceiling <= 1500 {
+			t.Errorf("max_tokens: got %v, want above the budget", gotBody["max_tokens"])
 		}
 	}
 
