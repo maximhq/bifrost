@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -76,6 +77,11 @@ func (s *SemanticSearcher) SearchVisible(ctx context.Context, queries []string, 
 	queries, err := normalizeSemanticQueries(queries)
 	if err != nil {
 		return SemanticSearchResult{}, err
+	}
+	if unsupported := unsupportedSemanticFilters(filters); len(unsupported) > 0 {
+		return SemanticSearchResult{}, invalidSearchQueryError(fmt.Sprintf(
+			"search by meaning cannot filter on %s. It filters on start_time, end_time, providers, models, status, virtual_key_ids, user_ids, apps, team_ids, customer_ids, business_unit_ids, min_latency, max_latency, min_cost, max_cost, session_id and content_search; drop the others, or use an exact log search for them",
+			strings.Join(unsupported, ", ")))
 	}
 	if s == nil || s.store == nil || s.vectors == nil || s.embed == nil || s.logs == nil {
 		return SemanticSearchResult{}, ErrUnavailable
@@ -190,6 +196,41 @@ func missingSessionProperty(err error) bool {
 		(strings.Contains(message, "no such prop") || strings.Contains(message, "unknown field"))
 }
 
+// ErrInvalidSearchQuery matches a search refused for its queries: none given,
+// one too long, or too many.
+var ErrInvalidSearchQuery = errors.New("invalid search query")
+
+// invalidSearchQueryError is a refused query set. Its text is what the caller
+// reads; it matches ErrInvalidSearchQuery.
+type invalidSearchQueryError string
+
+func (e invalidSearchQueryError) Error() string { return string(e) }
+
+// Is makes errors.Is(err, ErrInvalidSearchQuery) hold.
+func (e invalidSearchQueryError) Is(target error) bool { return target == ErrInvalidSearchQuery }
+
+// SearchLogs is the semantic search GET /api/logs/search serves: the search
+// semantic_search_logs runs, for the caller on ctx. ctx must carry the caller's
+// query scope and identity: the caller's visibility narrows which candidates the
+// index is asked for, and every match is reloaded through ctx, so the store
+// decides what comes back. Warp's own defaults, such as narrowing an unscoped
+// question to the asker's traffic, do not apply. It returns ErrUnavailable when
+// the log index is not set up.
+func (s *Service) SearchLogs(ctx context.Context, queries []string, filters *logstore.SearchFilters, limit int) (SemanticSearchResult, error) {
+	_, searcher := s.researchDeps()
+	if searcher == nil {
+		if _, err := normalizeSemanticQueries(queries); err != nil {
+			return SemanticSearchResult{}, err
+		}
+		return SemanticSearchResult{}, ErrUnavailable
+	}
+	if filters == nil {
+		filters = &logstore.SearchFilters{}
+	}
+	scope := withCallerRestriction(ctx, ScopeFromContext(ctx), s.callerRestriction)
+	return searcher.SearchVisible(ctx, queries, filters, scope.Visible, limit)
+}
+
 // normalizeSemanticQueries trims and de-duplicates the phrasings, and refuses
 // a set that is empty, too long or too many before any embedding is paid for.
 // Runes, not bytes, to match the schema's advertised maxLength.
@@ -201,17 +242,62 @@ func normalizeSemanticQueries(queries []string) ([]string, error) {
 			continue
 		}
 		if count := utf8.RuneCountInString(query); count > MaxSemanticQueryChars {
-			return nil, fmt.Errorf("query is %d characters; at most %d are accepted", count, MaxSemanticQueryChars)
+			return nil, invalidSearchQueryError(fmt.Sprintf("query is %d characters; at most %d are accepted", count, MaxSemanticQueryChars))
 		}
 		out = append(out, query)
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("at least one query is required")
+		return nil, invalidSearchQueryError("at least one query is required")
 	}
 	if len(out) > MaxSemanticQueries {
-		return nil, fmt.Errorf("%d queries given; at most %d are accepted", len(out), MaxSemanticQueries)
+		return nil, invalidSearchQueryError(fmt.Sprintf("%d queries given; at most %d are accepted", len(out), MaxSemanticQueries))
 	}
 	return out, nil
+}
+
+// unsupportedSemanticFilters names the filters set on filters that semantic
+// search cannot apply. The vector prefilter and matchesSemanticFilters cover
+// only the fields the index carries; any other filter would be dropped, and a
+// dropped filter widens the result without saying so.
+func unsupportedSemanticFilters(filters *logstore.SearchFilters) []string {
+	if filters == nil {
+		return nil
+	}
+	var names []string
+	add := func(set bool, name string) {
+		if set {
+			names = append(names, name)
+		}
+	}
+	add(len(filters.Aliases) > 0, "aliases")
+	add(len(filters.StopReasons) > 0, "stop_reasons")
+	add(len(filters.ToolCallNames) > 0, "tool_call_names")
+	add(len(filters.Objects) > 0, "objects")
+	add(filters.ParentRequestID != "", "parent_request_id")
+	add(filters.RequestID != "", "request_id")
+	add(filters.RootsOnly, "roots_only")
+	add(filters.GroupSessions, "group_sessions")
+	add(len(filters.SelectedKeyIDs) > 0, "selected_key_ids")
+	add(len(filters.RoutingRuleIDs) > 0, "routing_rule_ids")
+	add(len(filters.ComplexityTiers) > 0, "complexity_tiers")
+	add(len(filters.ComplexityMechanisms) > 0, "complexity_mechanisms")
+	add(len(filters.AgentNames) > 0, "agent_names")
+	add(filters.AgentCorrelationID != "", "agent_correlation_id")
+	add(len(filters.ProjectIDs) > 0, "project_ids")
+	add(len(filters.TopicIDs) > 0, "topic_ids")
+	add(len(filters.RoutingEngineUsed) > 0, "routing_engine_used")
+	add(len(filters.UserAgents) > 0, "user_agents")
+	add(filters.MinTokens != nil, "min_tokens")
+	add(filters.MaxTokens != nil, "max_tokens")
+	add(filters.MissingCostOnly, "missing_cost_only")
+	add(len(filters.CacheHitTypes) > 0, "cache_hit_types")
+	add(len(filters.ErrorTypes) > 0, "error_types")
+	add(len(filters.ErrorCodes) > 0, "error_codes")
+	add(len(filters.StatusCodes) > 0, "status_codes")
+	add(len(filters.GuardrailOutcomes) > 0, "guardrail_outcomes")
+	add(len(filters.MetadataFilters) > 0, "metadata_filters")
+	add(filters.RealtimeInputItemID != "", "realtime_input_item_id")
+	return names
 }
 
 // LogVisibility is the row ownership row-level access control grants a
