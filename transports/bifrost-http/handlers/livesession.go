@@ -499,7 +499,7 @@ func liveMiddlewareValues(snapshot map[any]any, preReqCtx *schemas.BifrostContex
 			values[k] = v
 		}
 	}
-	return values
+	return mergeRealtimeTurnValues(values, preReqCtx)
 }
 
 // liveModelChecker is the slice of *bifrost.Bifrost the controller needs; tests substitute it.

@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -9,11 +11,102 @@ import (
 
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	"github.com/valyala/fasthttp"
 )
+
+// TestRealtimeTurnMetadataIsolation checks setup snapshots and unit contexts for
+// concurrent connections, including the separate pre-request context used by Live.
+func TestRealtimeTurnMetadataIsolation(t *testing.T) {
+	type metadataKey uint8
+	const userKey metadataKey = 0
+	const requestOnlyKey metadataKey = 1
+	for i := range 12 {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			t.Parallel()
+			userID := fmt.Sprintf("user-%d", i)
+			request, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			transport := &fasthttp.RequestCtx{}
+			transport.SetUserValue(lib.FastHTTPUserValueBifrostContext, request)
+			name := "custom-plugin"
+			scoped := request.WithPluginScope(&name)
+			scoped.SetValueForRealtimeTurns(userKey, userID)
+			scoped.SetValue(requestOnlyKey, "request-only")
+			scoped.SetValueForRealtimeTurns(schemas.BifrostContextKeyTraceID, "dead-trace")
+			scoped.SetValueForRealtimeTurns(schemas.BifrostContextKeyExportTraceID, "dead-export")
+			scoped.ReleasePluginScope()
+			values := snapshotRealtimeMiddlewareValues(transport)
+			preReq := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			preReq.SetValueForRealtimeTurns(metadataKey(2), "pre-request")
+			withContext := snapshotRealtimeMiddlewareValuesWithContext(transport, preReq)
+			liveValues := liveMiddlewareValues(values, preReq)
+			cancel()
+			transport.ResetUserValues()
+			request.SetValueForRealtimeTurns(userKey, "after-snapshot")
+			for _, snapshot := range []map[any]any{values, withContext, liveValues} {
+				session := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				applyRealtimeMiddlewareValues(session, snapshot)
+				for turn := range 2 {
+					unit := newRealtimeTurnContext(session, fmt.Sprint(turn), "session", "", "", "", nil)
+					live := newLiveMeter(nil, session, schemas.OpenAI, schemas.Key{}, "session")
+					liveUnit := live.unitContext(fmt.Sprint(turn), false, "voice")
+					backendUnit := live.unitContext(fmt.Sprint(turn), false, "backend")
+					for _, ctx := range []*schemas.BifrostContext{unit, liveUnit, backendUnit} {
+						if ctx.Value(userKey) != userID || ctx.Value(requestOnlyKey) != nil {
+							t.Fatalf("unit metadata = %v, request-only = %v", ctx.Value(userKey), ctx.Value(requestOnlyKey))
+						}
+						if ctx.Value(schemas.BifrostContextKeyTraceID) != nil || ctx.Value(schemas.BifrostContextKeyExportTraceID) != nil {
+							t.Fatal("unit inherited a dead upgrade trace")
+						}
+						ctx.SetValue(userKey, "unit-local")
+					}
+				}
+				if session.Value(userKey) != userID {
+					t.Fatal("unit mutated the session's metadata")
+				}
+			}
+			if withContext[metadataKey(2)] != "pre-request" || liveValues[metadataKey(2)] != "pre-request" {
+				t.Fatal("separate pre-request context lost its opted-in metadata")
+			}
+			request.DrainPluginLogs()
+		})
+	}
+}
+
+// TestRealtimeTurnMetadataPreservesAuth verifies setup values cannot replace resolved auth.
+func TestRealtimeTurnMetadataPreservesAuth(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "resolved")
+	applyRealtimeMiddlewareValues(ctx, map[any]any{schemas.BifrostContextKeyVirtualKey: "stale"})
+	if ctx.Value(schemas.BifrostContextKeyVirtualKey) != "resolved" {
+		t.Fatal("metadata replaced the resolved credential")
+	}
+}
+
+// BenchmarkRealtimeMetadataHandoff measures the middleware and session snapshots
+// together, excluding existing context allocation and per-turn processing.
+func BenchmarkRealtimeMetadataHandoff(b *testing.B) {
+	type metadataKey uint8
+	for _, marked := range []bool{false, true} {
+		b.Run(fmt.Sprint(marked), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if marked {
+				ctx.SetValueForRealtimeTurns(metadataKey(0), "test-alice")
+			}
+			transport := &fasthttp.RequestCtx{}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				transport.ResetUserValues()
+				retainRealtimeTurnValues(transport, ctx)
+				_ = snapshotRealtimeMiddlewareValues(transport)
+			}
+		})
+	}
+}
 
 // dialRealtimeTestConn returns the server side of a live websocket connection.
 //

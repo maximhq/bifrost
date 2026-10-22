@@ -1260,21 +1260,83 @@ func snapshotRealtimeMiddlewareValuesWithContext(ctx *fasthttp.RequestCtx, bifro
 			ctx.SetUserValue(key, value)
 		}
 	}
-	return snapshotRealtimeMiddlewareValues(ctx)
+	return mergeRealtimeTurnValues(snapshotRealtimeMiddlewareValues(ctx), bifrostCtx)
 }
 
 // snapshotRealtimeMiddlewareValues retains transport middleware values for the upgraded session.
 func snapshotRealtimeMiddlewareValues(ctx *fasthttp.RequestCtx) map[any]any {
 	result := make(map[any]any)
+	if values, ok := ctx.UserValue(realtimeTurnValuesContextKey{}).(map[any]any); ok {
+		for key, value := range values {
+			result[key] = value
+		}
+	}
 	for _, key := range realtimeMiddlewareKeys {
 		if value := ctx.UserValue(key); value != nil {
 			result[key] = value
 		}
 	}
+	if bifrostCtx, ok := ctx.UserValue(lib.FastHTTPUserValueBifrostContext).(*schemas.BifrostContext); ok {
+		result = mergeRealtimeTurnValues(result, bifrostCtx)
+	}
 	if len(result) == 0 {
 		return nil
 	}
 	return result
+}
+
+// mergeRealtimeTurnValues adds plugin-opted metadata without carrying transport
+// trace handles into a session. Auth-resolved values still win when applied.
+func mergeRealtimeTurnValues(values map[any]any, ctx *schemas.BifrostContext) map[any]any {
+	if ctx == nil {
+		return values
+	}
+	if retained, ok := ctx.Value(realtimeTurnValuesContextKey{}).(map[any]any); ok {
+		if values == nil && len(retained) > 0 {
+			values = make(map[any]any, len(retained))
+		}
+		for key, value := range retained {
+			values[key] = value
+		}
+	}
+	if len(values) > 0 {
+		// Later HTTP hook contexts may overwrite or clear a key opted in earlier.
+		// Reconcile only retained keys so ordinary new values remain request-local.
+		writes := ctx.GetUserValues()
+		for key := range values {
+			if value, ok := writes[key]; ok {
+				values[key] = value
+			}
+		}
+	}
+	for key, value := range ctx.GetRealtimeTurnValues() {
+		if key == schemas.BifrostContextKeyTraceID || key == schemas.BifrostContextKeyExportTraceID {
+			continue
+		}
+		if values == nil {
+			values = make(map[any]any)
+		}
+		values[key] = value
+	}
+	return values
+}
+
+// realtimeTurnValuesContextKey carries only opted-in metadata between HTTP middleware phases.
+type realtimeTurnValuesContextKey struct{}
+
+// retainRealtimeTurnValues snapshots opt-in metadata before the hook context is
+// discarded. No context or request-owned resource is retained by this handoff.
+func retainRealtimeTurnValues(ctx *fasthttp.RequestCtx, hookCtx *schemas.BifrostContext) {
+	var values map[any]any
+	if retained, ok := ctx.UserValue(realtimeTurnValuesContextKey{}).(map[any]any); ok {
+		values = make(map[any]any, len(retained))
+		for key, value := range retained {
+			values[key] = value
+		}
+	}
+	if values = mergeRealtimeTurnValues(values, hookCtx); len(values) > 0 {
+		ctx.SetUserValue(realtimeTurnValuesContextKey{}, values)
+	}
 }
 
 // applyRealtimeMiddlewareValues restores saved middleware values to the realtime session context.

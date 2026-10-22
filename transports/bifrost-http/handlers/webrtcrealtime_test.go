@@ -273,7 +273,13 @@ func TestNewRealtimeRelayContextCarriesRequestGrant(t *testing.T) {
 }
 
 func TestNewRealtimeRelayContextCopiesValuesWithoutRequestCancellation(t *testing.T) {
+	type metadataKey uint8
+	const userKey metadataKey = 0
+	const requestOnlyKey metadataKey = 1
 	requestCtx, requestCancel := schemas.NewBifrostContextWithCancel(context.Background())
+	requestCtx.SetValueForRealtimeTurns(userKey, "test-alice")
+	requestCtx.SetValue(requestOnlyKey, "request-only")
+	requestCtx.SetValueForRealtimeTurns(schemas.BifrostContextKeyTraceID, "dead-trace")
 	requestCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
 	requestCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
 	requestCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk_test")
@@ -282,6 +288,17 @@ func TestNewRealtimeRelayContextCopiesValuesWithoutRequestCancellation(t *testin
 	defer relayCancel()
 
 	requestCancel()
+	requestCtx.SetValueForRealtimeTurns(userKey, "after-snapshot")
+	if relayCtx.Value(userKey) != "test-alice" || relayCtx.Value(requestOnlyKey) != nil {
+		t.Fatal("relay must snapshot opted-in metadata only")
+	}
+	if relayCtx.Value(schemas.BifrostContextKeyTraceID) != nil {
+		t.Fatal("relay must not retain the setup trace")
+	}
+	turn := newRealtimeTurnContext(relayCtx, "turn", "session", "", "", "", nil)
+	if turn.Value(userKey) != "test-alice" {
+		t.Fatal("WebRTC turn lost the setup metadata")
+	}
 
 	select {
 	case <-requestCtx.Done():
