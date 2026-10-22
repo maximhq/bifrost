@@ -3,8 +3,10 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -999,6 +1001,8 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 		model    string
 	}{
 		{name: "deepseek", provider: schemas.DeepSeek, model: "deepseek-v4-pro"},
+		{name: "mistral", provider: schemas.Mistral, model: "zai-glm-5-3"},
+		{name: "vertex mistral", provider: schemas.Vertex, model: "mistral-medium-3"},
 	}
 
 	for _, tt := range tests {
@@ -1828,8 +1832,10 @@ func TestToOpenAIChatRequest_ToolCallCacheControl_OpenRouterOnly(t *testing.T) {
 						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
 					}},
 				}},
-				{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_paris")},
-					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("18C")}},
+				{
+					Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_paris")},
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("18C")},
+				},
 			},
 		}
 	}
@@ -2907,6 +2913,39 @@ func gjsonExists(raw []byte, path string) bool {
 // BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat measures the DeepSeek
 // conversion with no response_format (the common case, which must not pay for
 // the downgrade) and with a json_schema response_format (which does).
+// BenchmarkToOpenAIChatRequest_BytePlusReasoning measures the BytePlus compat case against the
+// generic default branch it replaces, so the reasoning rewrite's cost is visible per request shape.
+func BenchmarkToOpenAIChatRequest_BytePlusReasoning(b *testing.B) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		effort   *string
+	}{
+		{"default_no_reasoning", schemas.Nebius, nil},
+		{"byteplus_no_reasoning", schemas.BytePlus, nil},
+		{"default_effort_low", schemas.Nebius, schemas.Ptr("low")},
+		{"byteplus_effort_low", schemas.BytePlus, schemas.Ptr("low")},
+		{"byteplus_effort_none", schemas.BytePlus, schemas.Ptr("none")},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: tc.provider,
+				Model:    "seed-2-0-lite-260228",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			}
+			if tc.effort != nil {
+				bifrostReq.Params = &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: tc.effort}}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = ToOpenAIChatRequest(ctx, bifrostReq)
+			}
+		})
+	}
+}
+
 func BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat(b *testing.B) {
 	plainBody := `{"model":"deepseek-v4-flash","messages":[{"role":"system","content":"You extract people."},{"role":"user","content":"Ada is 36."}]}`
 	for _, tc := range []struct{ name, body string }{
@@ -2921,5 +2960,57 @@ func BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat(b *testing.B) {
 				_ = ToOpenAIChatRequest(ctx, bifrostReq)
 			}
 		})
+	}
+}
+
+// TestOpenAIChatRequestUnknownFields pins which top-level chat fields count as
+// unknown: every field OpenAIChatRequest decodes (its own, ChatParameters', the
+// reasoning_* shorthands, fallbacks and extra_params) is known, anything else
+// such as Azure's data_sources is returned compacted, and a body with only
+// known fields allocates nothing.
+func TestOpenAIChatRequestUnknownFields(t *testing.T) {
+	known := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":8,` +
+		`"max_completion_tokens":8,"temperature":0.1,"top_p":1,"tools":[],"tool_choice":"auto","response_format":{"type":"text"},` +
+		`"reasoning_effort":"low","reasoning_max_tokens":5,"reasoning_display":"summarized","reasoning":{"effort":"low"},` +
+		`"prompt_cache_isolation_key":"k","fallbacks":["openai/gpt-4o"],"extra_params":{"a":1},"stream_options":{"include_usage":true},` +
+		`"web_search_options":{},"user":"u","service_tier":"auto","context_management":{}}`)
+	require.Nil(t, OpenAIChatRequestUnknownFields(known))
+	require.Nil(t, OpenAIChatRequestUnknownFields(nil))
+	allocs := testing.AllocsPerRun(100, func() { _ = OpenAIChatRequestUnknownFields(known) })
+	require.Zero(t, allocs, "a body with only known fields must not allocate")
+
+	body := []byte(`{"model":"gpt-4o","messages":[],"data_sources":[ {"type": "azure_search", "parameters": {"index_name": "idx"}} ],"x_new":7}`)
+	got := OpenAIChatRequestUnknownFields(body)
+	require.Len(t, got, 2)
+	require.Equal(t, json.RawMessage(`[{"type":"azure_search","parameters":{"index_name":"idx"}}]`), got["data_sources"])
+	require.Equal(t, json.RawMessage(`7`), got["x_new"])
+
+	// The kept names and values must not alias the body, which fasthttp reuses.
+	copy(body, strings.Repeat("x", len(body)))
+	require.Equal(t, json.RawMessage(`7`), got["x_new"])
+	require.Contains(t, got, "data_sources")
+
+	// sonic matches field names case-insensitively, so these spellings are decoded into the
+	// typed fields; forwarding them as well would send each one to the provider twice.
+	folded := []byte(`{"MODEL":"gpt-4o","Messages":[{"role":"user","content":"hi"}],"Temperature":0.2,"Reasoning_Effort":"low","data_sources":[]}`)
+	var decoded OpenAIChatRequest
+	require.NoError(t, sonic.Unmarshal(folded, &decoded))
+	require.Equal(t, "gpt-4o", decoded.Model, "precondition: sonic folds the case of MODEL")
+	require.Len(t, decoded.Messages, 1, "precondition: sonic folds the case of Messages")
+	got = OpenAIChatRequestUnknownFields(folded)
+	require.Equal(t, []string{"data_sources"}, slices.Sorted(maps.Keys(got)), "only the field sonic does not decode is unknown")
+	foldedKnown := []byte(`{"MODEL":"gpt-4o","Messages":[{"role":"user","content":"hi"}],"Temperature":0.2,"Reasoning_Effort":"low"}`)
+	require.Nil(t, OpenAIChatRequestUnknownFields(foldedKnown))
+	allocs = testing.AllocsPerRun(100, func() { _ = OpenAIChatRequestUnknownFields(foldedKnown) })
+	require.Zero(t, allocs, "case-folded known fields must not allocate either")
+}
+
+// BenchmarkOpenAIChatRequestUnknownFields measures the top-level scan on a
+// typical chat body with no unknown fields.
+func BenchmarkOpenAIChatRequestUnknownFields(b *testing.B) {
+	body := []byte(`{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi"}],"temperature":0.2,"max_tokens":64,"stream":true,"stream_options":{"include_usage":true}}`)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = OpenAIChatRequestUnknownFields(body)
 	}
 }

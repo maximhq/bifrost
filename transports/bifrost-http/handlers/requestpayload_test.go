@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
+	"mime/multipart"
 	"reflect"
 	"strings"
 	"testing"
@@ -761,6 +763,80 @@ func TestSDKFidelityPrepareDecisionRequestNullState(t *testing.T) {
 	}
 }
 
+// decisionMultipart builds a multipart /v1/decisions body from the request JSON and
+// file parts, given in order as name and bytes pairs.
+func decisionMultipart(t *testing.T, request string, files ...string) *fasthttp.RequestCtx {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormField("request")
+	require.NoError(t, err)
+	_, _ = part.Write([]byte(request))
+	for i := 0; i+1 < len(files); i += 2 {
+		file, err := writer.CreateFormFile(files[i], files[i]+".png")
+		require.NoError(t, err)
+		_, _ = file.Write([]byte(files[i+1]))
+	}
+	require.NoError(t, writer.Close())
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentType(writer.FormDataContentType())
+	ctx.Request.SetBody(buf.Bytes())
+	return ctx
+}
+
+// TestPrepareDecisionRequestMultipart pins multipart on /v1/decisions: the request
+// part decodes as a JSON body does, and each image part sent by reference takes the
+// bytes of the file part its name points at. A name in a JSON request, a name with
+// no file part, two parts naming one file, and a file nothing names are each a 400.
+func TestPrepareDecisionRequestMultipart(t *testing.T) {
+	request := func(parts string) string {
+		return `{"model":"typesafe/jev-1.14.0","input":[{"role":"user","content":[{"type":"input_text","text":{"photo":"r-a"}},` + parts + `]}],"questions":[{"type":"predicate","name":"q"}]}`
+	}
+	named := request(`{"type":"input_image","id":"r-a","name":"photo"}`)
+
+	req, mapForm, err := prepareDecisionRequest(decisionMultipart(t, named, "photo", "PNG-BYTES"), nil)
+	require.NoError(t, err)
+	assert.False(t, mapForm)
+	image := req.Input.Messages[0].Content.Parts[1]
+	assert.Equal(t, "PNG-BYTES", string(image.Data))
+	assert.Equal(t, "photo", *image.Name)
+	assert.Equal(t, schemas.Typesafe, req.Provider)
+
+	_, _, err = prepareDecisionRequest(decisionMultipart(t, request(`{"type":"input_image","id":"r-a","name":"photo","data":"QUJD"}`), "photo", "FILE"), nil)
+	require.NoError(t, err, "a file part takes precedence over data")
+
+	for name, ctx := range map[string]*fasthttp.RequestCtx{
+		"needs a multipart request":            jsonDecisionCtx(named),
+		"which the request does not carry":     decisionMultipart(t, named, "other", "x"),
+		"is not named by any input_image part": decisionMultipart(t, request(`{"type":"input_image","id":"r-a","data":"QUJD"}`), "photo", "x"),
+		"both name part":                       decisionMultipart(t, request(`{"type":"input_image","id":"r-a","name":"photo"},{"type":"input_image","id":"r-b","name":"photo"}`), "photo", "x"),
+		`requires a "request" part`:            decisionMultipartWithoutRequest(t),
+	} {
+		_, _, err := prepareDecisionRequest(ctx, nil)
+		assert.ErrorContains(t, err, name)
+	}
+}
+
+func jsonDecisionCtx(body string) *fasthttp.RequestCtx {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(body)
+	return ctx
+}
+
+func decisionMultipartWithoutRequest(t *testing.T) *fasthttp.RequestCtx {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	file, err := writer.CreateFormFile("photo", "photo.png")
+	require.NoError(t, err)
+	_, _ = file.Write([]byte("x"))
+	require.NoError(t, writer.Close())
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentType(writer.FormDataContentType())
+	ctx.Request.SetBody(buf.Bytes())
+	return ctx
+}
+
 // TestPrepareDecisionRequestPicksBodyForm pins how /v1/decisions reads its two
 // bodies: the normalized body first, and the deprecated map form only when the
 // body does not decode as it (map-form questions are an object, not a list).
@@ -896,6 +972,7 @@ func TestDecisionMapFormResponseWire(t *testing.T) {
 					{Value: schemas.DecisionScalar{Num: schemas.Ptr(2.0)}, Label: schemas.Ptr("2"), Probability: 0.5},
 				}, Legend: map[string]any{"0": "low", "2": "high"}},
 			{Type: schemas.DecisionTypeRefusal, Name: schemas.Ptr("declined")},
+			{Type: schemas.DecisionTypeBox, Name: schemas.Ptr("mug"), Box: &schemas.DecisionBox{Top: 0.25, Bottom: 0.82, Left: 0.44, Right: 0.84}, Confidence: schemas.Ptr(0.92)},
 		},
 		Usage: &schemas.BifrostLLMUsage{PromptTokens: 3, TotalTokens: 3},
 	}
@@ -910,6 +987,7 @@ func TestDecisionMapFormResponseWire(t *testing.T) {
 		"category": map[string]any{"kind": "choice", "value": "billing", "confidence": 0.8, "probabilities": map[string]any{"billing": 0.9, "bug": 0.1}, "answer_confidence": 0.97},
 		"urgency":  map[string]any{"kind": "score", "value": 1.5, "probabilities": map[string]any{"0": 0.5, "2": 0.5}, "legend": map[string]any{"0": "low", "2": "high"}},
 		"declined": map[string]any{"kind": "refusal", "value": nil},
+		"mug":      map[string]any{"kind": "box", "value": map[string]any{"top": 0.25, "bottom": 0.82, "left": 0.44, "right": 0.84}, "confidence": 0.92},
 	}, wire["answers"])
 	assert.False(t, strings.Contains(string(encoded), `"type":"noul"`), "the map form reports kind, not Typesafe's type")
 	assert.Nil(t, toDecisionMapFormResponse(nil))

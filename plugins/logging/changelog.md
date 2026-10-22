@@ -1,1 +1,1 @@
-- [feat]: snapshot virtual key metadata onto log metadata; the key's values override request-supplied entries [@jimseiwert](https://github.com/jimseiwert)
+- chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1

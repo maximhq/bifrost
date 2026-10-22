@@ -1,0 +1,175 @@
+# News Feed (RSS) Schemas
+
+RSSFeed:
+  type: object
+  required:
+    - id
+    - slug
+    - name
+    - url
+    - source
+    - enabled
+  properties:
+    id:
+      type: integer
+    slug:
+      type: string
+      description: Stable identifier. Built-in feeds use fixed slugs (`bifrost`, `openai`, `anthropic`, `gemini`, `cursor`).
+    name:
+      type: string
+    url:
+      type: string
+      description: RSS 2.0, RSS 1.0 or Atom feed URL, or a news listing page that publishes no feed.
+    icon:
+      type: string
+      description: Built-in icon key. Empty for custom feeds.
+    icon_url:
+      type: string
+      description: |
+        Custom feeds only: the logo shown for the feed, as an http(s) image URL
+        or a base64 `data:image/...` URI (PNG, JPEG, GIF, WebP, SVG or ICO,
+        under 96 KB). When empty, the feed site's favicon is shown.
+    source:
+      type: string
+      enum:
+        - builtin
+        - custom
+    enabled:
+      type: boolean
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+RSSFeedList:
+  type: object
+  required:
+    - feeds
+  properties:
+    feeds:
+      type: array
+      items:
+        $ref: '#/RSSFeed'
+
+RSSFeedCreateRequest:
+  type: object
+  required:
+    - name
+    - url
+  properties:
+    name:
+      type: string
+      maxLength: 120
+    url:
+      type: string
+      maxLength: 2048
+      description: Public http or https URL of an RSS 2.0, RSS 1.0 or Atom feed, or of a news listing page that publishes no feed (its article cards are read instead).
+    icon_url:
+      type: string
+      description: Optional logo, as an http(s) image URL or a base64 `data:image/...` URI under 96 KB.
+    enabled:
+      type: boolean
+      default: true
+
+RSSFeedUpdateRequest:
+  type: object
+  properties:
+    name:
+      type: string
+      maxLength: 120
+      description: Custom feeds only.
+    url:
+      type: string
+      maxLength: 2048
+      description: Custom feeds only.
+    icon_url:
+      type: string
+      description: Custom feeds only. An empty string removes the logo.
+    enabled:
+      type: boolean
+
+RSSItem:
+  type: object
+  required:
+    - id
+    - feed_id
+    - feed_slug
+    - feed_name
+    - feed_url
+    - title
+    - link
+    - published_at
+  properties:
+    id:
+      type: string
+      description: '`<feed_slug>:<entry guid>`; stable across fetches.'
+    feed_id:
+      type: integer
+    feed_slug:
+      type: string
+    feed_name:
+      type: string
+    feed_icon:
+      type: string
+    feed_url:
+      type: string
+    title:
+      type: string
+    link:
+      type: string
+    summary:
+      type: string
+      description: Plain-text summary, HTML stripped, at most 280 characters.
+    published_at:
+      type: string
+      format: date-time
+      description: '`0001-01-01T00:00:00Z` when the entry has no parseable date.'
+
+RSSFeedError:
+  type: object
+  required:
+    - feed_id
+    - feed_name
+    - message
+  properties:
+    feed_id:
+      type: integer
+    feed_name:
+      type: string
+    message:
+      type: string
+
+RSSItemList:
+  type: object
+  required:
+    - enabled
+    - items
+    - errors
+  properties:
+    enabled:
+      type: boolean
+      description: False when news is switched off for the gateway; items and errors are then empty.
+    items:
+      type: array
+      items:
+        $ref: '#/RSSItem'
+    errors:
+      type: array
+      items:
+        $ref: '#/RSSFeedError'
+    feed_icons:
+      type: object
+      description: Custom logo (http(s) URL or data URI) for each feed that has one, keyed by feed ID. Sent once per feed rather than on every item; omitted when no feed has a logo.
+      additionalProperties:
+        type: string
+
+RSSSettings:
+  type: object
+  required:
+    - enabled
+  properties:
+    enabled:
+      type: boolean
+      description: Whether the News tab is shown and feeds are fetched for this gateway.

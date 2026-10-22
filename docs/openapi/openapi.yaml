@@ -162,6 +162,8 @@ tags:
     description: Webhook endpoint management and signed async-job delivery history
   - name: Notifications
     description: Role-targeted dashboard notifications, delivered over the dashboard WebSocket
+  - name: News Feeds
+    description: RSS and Atom news sources shown in the News tab of the dashboard notification tray
   - name: Background Jobs
     description: Status, progress and cancellation of durable background jobs (cost recalculation, Warp log indexing, and others)
   - name: Warp
@@ -940,6 +942,10 @@ paths:
   /api/governance/rate-limits:
     $ref: "./paths/management/governance.yaml#/rate-limits"
 
+  # Governance - Budget Increase Requests (Enterprise)
+  /api/governance/budget-requests/{request_id}/approve:
+    $ref: "./paths/management/governanceextensions.yaml#/budget-request-approve"
+
   # Governance - Model Configs
   /api/governance/model-configs:
     $ref: "./paths/management/governance.yaml#/model-configs"
@@ -1348,6 +1354,16 @@ paths:
   # Notifications
   /api/notifications:
     $ref: "./paths/management/notifications.yaml#/notifications"
+
+  # News feeds
+  /api/rss/feeds:
+    $ref: "./paths/management/rssfeeds.yaml#/rss-feeds"
+  /api/rss/feeds/{id}:
+    $ref: "./paths/management/rssfeeds.yaml#/rss-feed-by-id"
+  /api/rss/items:
+    $ref: "./paths/management/rssfeeds.yaml#/rss-items"
+  /api/rss/settings:
+    $ref: "./paths/management/rssfeeds.yaml#/rss-settings"
 
   # Background jobs
   /api/sidekiq/jobs:
@@ -1796,6 +1812,12 @@ components:
       $ref: "./schemas/inference/common.yaml#/BifrostResponseExtraFields"
     BifrostCacheDebug:
       $ref: "./schemas/inference/common.yaml#/BifrostCacheDebug"
+    BifrostGuardrailMetadata:
+      $ref: "./schemas/inference/common.yaml#/BifrostGuardrailMetadata"
+    BifrostGuardrailDetection:
+      $ref: "./schemas/inference/common.yaml#/BifrostGuardrailDetection"
+    BifrostGuardrailJudgeCall:
+      $ref: "./schemas/inference/common.yaml#/BifrostGuardrailJudgeCall"
     CacheControl:
       $ref: "./schemas/inference/common.yaml#/CacheControl"
 
@@ -1878,6 +1900,8 @@ components:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputText"
     DecisionInputImage:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputImage"
+    DecisionInputImageAsset:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputImageAsset"
     DecisionMapFormRequest:
       $ref: "./schemas/inference/decisions.yaml#/DecisionMapFormRequest"
     DecisionMapFormResponse:
@@ -2207,6 +2231,12 @@ components:
       $ref: "./schemas/management/governance.yaml#/BudgetOverrideRequest"
     BudgetOverrideResponse:
       $ref: "./schemas/management/governance.yaml#/BudgetOverrideResponse"
+    ApproveBudgetRequestRequest:
+      $ref: "./schemas/management/governance.yaml#/ApproveBudgetRequestRequest"
+    BudgetRequest:
+      $ref: "./schemas/management/governance.yaml#/BudgetRequest"
+    BudgetRequestBudgetSnapshot:
+      $ref: "./schemas/management/governance.yaml#/BudgetRequestBudgetSnapshot"
     CreateRateLimitRequest:
       $ref: "./schemas/management/governance.yaml#/CreateRateLimitRequest"
     UpdateRateLimitRequest:
@@ -2405,6 +2435,23 @@ components:
       $ref: "./schemas/management/notifications.yaml#/Notification"
     NotificationList:
       $ref: "./schemas/management/notifications.yaml#/NotificationList"
+    # News feeds
+    RSSFeed:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeed"
+    RSSFeedList:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeedList"
+    RSSFeedCreateRequest:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeedCreateRequest"
+    RSSFeedUpdateRequest:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeedUpdateRequest"
+    RSSItem:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSItem"
+    RSSFeedError:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSFeedError"
+    RSSItemList:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSItemList"
+    RSSSettings:
+      $ref: "./schemas/management/rssfeeds.yaml#/RSSSettings"
     # Background jobs
     SidekiqJobStatus:
       $ref: "./schemas/management/sidekiq.yaml#/SidekiqJobStatus"

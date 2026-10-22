@@ -1273,6 +1273,7 @@ type LoggerPlugin struct {
 	closed                       atomic.Bool                    // Set during cleanup to prevent sends on closed writeQueue
 	deferredUsageSem             chan struct{}                  // Limits concurrent deferred usage DB updates
 	deferredUsageWatchSem        chan struct{}                  // Caps goroutines parked on a deferred-usage channel (see scheduleDeferredUsageUpdate)
+	heldGuardrailRows            sync.Map                       // Maps log ID -> *writeQueueEntry held until its output-monitor guardrail result lands (see holdForDeferredGuardrail)
 	droppedDeferredUsage         atomic.Int64                   // Deferred usage updates dropped because a semaphore was full
 	clusterNodeID                atomic.Value                   // Cluster node ID (string) for log attribution in clustered deployments
 	batchCtx                     context.Context                // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
@@ -2280,6 +2281,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if customerNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerNames).([]string); ok && len(customerNames) > 0 {
 		entry.CustomerNamesParsed = customerNames
 	}
+	applyGrantAttribution(ctx, entry)
 	entry.MetadataParsed = pending.InitialData.Metadata
 	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
 	entry.MetadataParsed = mergeLoadBalancerMetadata(entry.MetadataParsed, ctx)
@@ -2559,6 +2561,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 // here since storeOrEnqueueEntry is skipped; Inject's plugin-log and overhead
 // backfill is not available on this path.
 func (p *LoggerPlugin) persistCompletedEntry(ctx *schemas.BifrostContext, entry *logstore.Log, reconcileFromPartial bool) {
+	p.prepareRealtimeTranscriptLog(ctx, entry)
 	if !reconcileFromPartial {
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		return
@@ -2624,6 +2627,9 @@ func (p *LoggerPlugin) Cleanup() error {
 			p.videoSweeperCancel = nil
 		}
 		p.mu.Unlock()
+		// After closed is set, so no new row can be held behind this pass, and
+		// before the writer stops, so the released rows are drained with the rest.
+		p.releaseHeldGuardrailRows()
 		if p.cleanupTicker != nil {
 			p.cleanupTicker.Stop()
 		}
@@ -2719,6 +2725,9 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 	// reads; hidden entries serve no content back, so attach only when the
 	// content is actually visible.
 	attachLogRedactionData(ctx, entry, policy.visible())
+	// An output-monitor guardrail still evaluating the response holds the row at
+	// the writer hand-off (see holdForDeferredGuardrail).
+	entry.DeferredGuardrail, _ = schemas.DeferredGuardrailResultFromContext(ctx)
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 	if traceID == "" {
 		// Fallback: no tracing (Go SDK path), enqueue directly
@@ -2922,6 +2931,30 @@ func serializePluginLogs(logs []schemas.PluginLogEntry) string {
 	data, err := sonic.Marshal(schemas.GroupPluginLogsByName(logs))
 	if err != nil {
 		return ""
+	}
+	return string(data)
+}
+
+// appendPluginLogs appends logs to an already serialized plugin log document,
+// keeping each plugin's existing lines first. It is for lines that arrive after
+// the row was built (output-monitor guardrail results), so it runs once per such
+// row, never on the request path. An unreadable document is replaced.
+func appendPluginLogs(serialized string, logs []schemas.PluginLogEntry) string {
+	if len(logs) == 0 {
+		return serialized
+	}
+	grouped := map[string][]schemas.PluginLogEntry{}
+	if serialized != "" {
+		if err := sonic.UnmarshalString(serialized, &grouped); err != nil {
+			grouped = map[string][]schemas.PluginLogEntry{}
+		}
+	}
+	for _, entry := range logs {
+		grouped[entry.PluginName] = append(grouped[entry.PluginName], entry)
+	}
+	data, err := sonic.Marshal(grouped)
+	if err != nil {
+		return serialized
 	}
 	return string(data)
 }

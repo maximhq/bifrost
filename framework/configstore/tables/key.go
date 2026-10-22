@@ -45,6 +45,7 @@ type TableKey struct {
 	VertexRegion                  *schemas.SecretVar `gorm:"type:text" json:"vertex_region,omitempty"`
 	VertexAuthCredentials         *schemas.SecretVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
 	VertexForceSingleRegion       *bool              `gorm:"column:vertex_force_single_region" json:"vertex_force_single_region,omitempty"`
+	VertexUseSessionRouting       *bool              `gorm:"column:vertex_use_session_routing" json:"vertex_use_session_routing,omitempty"`
 	VertexAWSWorkloadIdentityJSON *string            `gorm:"type:text" json:"-"` // JSON serialized schemas.VertexAWSWorkloadIdentityConfig
 
 	// Bedrock config fields (embedded)
@@ -113,11 +114,6 @@ type TableKey struct {
 	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 
 	// GitHub Copilot config fields (embedded)
-	GithubCopilotAppID          *schemas.SecretVar `gorm:"type:text" json:"github_copilot_app_id,omitempty"`
-	GithubCopilotInstallationID *schemas.SecretVar `gorm:"type:text" json:"github_copilot_installation_id,omitempty"`
-	GithubCopilotRepositoryID   *schemas.SecretVar `gorm:"type:text" json:"github_copilot_repository_id,omitempty"`
-	GithubCopilotPrivateKey     *schemas.SecretVar `gorm:"type:text" json:"github_copilot_private_key,omitempty"`
-	GithubCopilotGithubDomain   *schemas.SecretVar `gorm:"type:text" json:"github_copilot_github_domain,omitempty"`
 
 	// oauth_key_config: the credential fields get their own encrypted columns; the
 	// non-secret settings (grant, scopes, claims, auth style) travel as one JSON column.
@@ -140,7 +136,6 @@ type TableKey struct {
 	OllamaKeyConfig        *schemas.OllamaKeyConfig        `gorm:"-" json:"ollama_key_config,omitempty"`
 	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
 	DatabricksKeyConfig    *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
-	GithubCopilotKeyConfig *schemas.GithubCopilotKeyConfig `gorm:"-" json:"github_copilot_key_config,omitempty"`
 	CloudflareKeyConfig    *schemas.CloudflareKeyConfig    `gorm:"-" json:"cloudflare_key_config,omitempty"`
 	OAuthKeyConfig         *schemas.OAuthKeyConfig         `gorm:"-" json:"oauth_key_config,omitempty"`
 }
@@ -260,6 +255,8 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 		fsr := k.VertexKeyConfig.ForceSingleRegion
 		k.VertexForceSingleRegion = &fsr
+		sr := k.VertexKeyConfig.UseSessionRouting
+		k.VertexUseSessionRouting = &sr
 		wif, err := MarshalVertexAWSWorkloadIdentityJSON(k.VertexKeyConfig.AWSWorkloadIdentity)
 		if err != nil {
 			return err
@@ -271,6 +268,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.VertexRegion = nil
 		k.VertexAuthCredentials = nil
 		k.VertexForceSingleRegion = nil
+		k.VertexUseSessionRouting = nil
 		k.VertexAWSWorkloadIdentityJSON = nil
 	}
 	if k.BedrockKeyConfig != nil {
@@ -535,48 +533,6 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.DatabricksAPIFormat = nil
 		k.DatabricksForwardGatewayTags = nil
 	}
-	// GitHub Copilot. Every SecretVar is value-copied before assignment, per the invariant
-	// above: the caller may retain the config struct pointer, and encryption mutates in
-	// place, so sharing one would corrupt the caller's in-memory config.
-	if k.GithubCopilotKeyConfig != nil {
-		if k.GithubCopilotKeyConfig.AppID.IsSet() {
-			v := k.GithubCopilotKeyConfig.AppID
-			k.GithubCopilotAppID = &v
-		} else {
-			k.GithubCopilotAppID = nil
-		}
-		if k.GithubCopilotKeyConfig.InstallationID.IsSet() {
-			v := k.GithubCopilotKeyConfig.InstallationID
-			k.GithubCopilotInstallationID = &v
-		} else {
-			k.GithubCopilotInstallationID = nil
-		}
-		if k.GithubCopilotKeyConfig.RepositoryID.IsSet() {
-			v := k.GithubCopilotKeyConfig.RepositoryID
-			k.GithubCopilotRepositoryID = &v
-		} else {
-			k.GithubCopilotRepositoryID = nil
-		}
-		if k.GithubCopilotKeyConfig.PrivateKey.IsSet() {
-			v := k.GithubCopilotKeyConfig.PrivateKey
-			k.GithubCopilotPrivateKey = &v
-		} else {
-			k.GithubCopilotPrivateKey = nil
-		}
-		if k.GithubCopilotKeyConfig.GithubDomain.IsSet() {
-			v := k.GithubCopilotKeyConfig.GithubDomain
-			k.GithubCopilotGithubDomain = &v
-		} else {
-			k.GithubCopilotGithubDomain = nil
-		}
-	} else {
-		k.GithubCopilotAppID = nil
-		k.GithubCopilotInstallationID = nil
-		k.GithubCopilotRepositoryID = nil
-		k.GithubCopilotPrivateKey = nil
-		k.GithubCopilotGithubDomain = nil
-
-	}
 	// oauth_key_config. The credential fields are value-copied into their own columns, per
 	// the invariant above; the rest is serialised with those fields cleared so no secret
 	// ever lands in the settings column.
@@ -754,23 +710,6 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.DatabricksClientSecret); err != nil {
 			return fmt.Errorf("failed to encrypt databricks client secret: %w", err)
 		}
-		// GitHub Copilot. The private key is the whole credential, so it must never sit
-		// in the database in plaintext when encryption is enabled.
-		if err := encryptSecretVarPtr(&k.GithubCopilotAppID); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot app id: %w", err)
-		}
-		if err := encryptSecretVarPtr(&k.GithubCopilotInstallationID); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot installation id: %w", err)
-		}
-		if err := encryptSecretVarPtr(&k.GithubCopilotRepositoryID); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot repository id: %w", err)
-		}
-		if err := encryptSecretVarPtr(&k.GithubCopilotPrivateKey); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot private key: %w", err)
-		}
-		if err := encryptSecretVarPtr(&k.GithubCopilotGithubDomain); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot github domain: %w", err)
-		}
 		// oauth_key_config. The client secret or private key is the whole credential.
 		if err := encryptSecretVarPtr(&k.OAuthTokenURL); err != nil {
 			return fmt.Errorf("failed to encrypt oauth token url: %w", err)
@@ -927,21 +866,6 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 			return fmt.Errorf("failed to decrypt databricks client secret: %w", err)
 		}
 		// GitHub Copilot
-		if err := decryptSecretVarPtr(&k.GithubCopilotAppID); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot app id: %w", err)
-		}
-		if err := decryptSecretVarPtr(&k.GithubCopilotInstallationID); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot installation id: %w", err)
-		}
-		if err := decryptSecretVarPtr(&k.GithubCopilotRepositoryID); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot repository id: %w", err)
-		}
-		if err := decryptSecretVarPtr(&k.GithubCopilotPrivateKey); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot private key: %w", err)
-		}
-		if err := decryptSecretVarPtr(&k.GithubCopilotGithubDomain); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot github domain: %w", err)
-		}
 		// oauth_key_config
 		if err := decryptSecretVarPtr(&k.OAuthTokenURL); err != nil {
 			return fmt.Errorf("failed to decrypt oauth token url: %w", err)
@@ -1009,7 +933,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.AzureKeyConfig = azureConfig
 	}
 	// Reconstruct Vertex config if fields are present
-	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil || (k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "") {
+	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil || k.VertexUseSessionRouting != nil || (k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "") {
 		config := &schemas.VertexKeyConfig{}
 
 		if k.VertexProjectID != nil {
@@ -1028,6 +952,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if k.VertexForceSingleRegion != nil {
 			config.ForceSingleRegion = *k.VertexForceSingleRegion
+		}
+		if k.VertexUseSessionRouting != nil {
+			config.UseSessionRouting = *k.VertexUseSessionRouting
 		}
 		if k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "" {
 			var wif schemas.VertexAWSWorkloadIdentityConfig
@@ -1176,30 +1103,6 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.DatabricksKeyConfig = databricksConfig
 	} else {
 		k.DatabricksKeyConfig = nil
-	}
-	// Reconstruct GitHub Copilot config if any field is present
-	if k.GithubCopilotAppID != nil || k.GithubCopilotInstallationID != nil ||
-		k.GithubCopilotRepositoryID != nil || k.GithubCopilotPrivateKey != nil ||
-		k.GithubCopilotGithubDomain != nil {
-		config := &schemas.GithubCopilotKeyConfig{}
-		if k.GithubCopilotAppID != nil {
-			config.AppID = *k.GithubCopilotAppID
-		}
-		if k.GithubCopilotInstallationID != nil {
-			config.InstallationID = *k.GithubCopilotInstallationID
-		}
-		if k.GithubCopilotRepositoryID != nil {
-			config.RepositoryID = *k.GithubCopilotRepositoryID
-		}
-		if k.GithubCopilotPrivateKey != nil {
-			config.PrivateKey = *k.GithubCopilotPrivateKey
-		}
-		if k.GithubCopilotGithubDomain != nil {
-			config.GithubDomain = *k.GithubCopilotGithubDomain
-		}
-		k.GithubCopilotKeyConfig = config
-	} else {
-		k.GithubCopilotKeyConfig = nil
 	}
 	// Reconstruct oauth_key_config if any part is present
 	settings := ""

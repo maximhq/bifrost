@@ -356,6 +356,10 @@
           "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Written into config.json as env_label.",
           "maxLength": 10
         },
+        "disableOnboarding": {
+          "type": "boolean",
+          "description": "Hides the management UI setup checklist for every user. Read from config.json on every start and never written to the config store, so it holds on stateless deployments. Written into config.json as disable_onboarding; overrides the BIFROST_DISABLE_ONBOARDING env var."
+        },
         "setupToken": {
           "type": "string",
           "description": "Operator-provisioned bootstrap secret required to create the very first admin account when none exists yet. Identical across every node so any node can authorize first-admin creation. Never persisted or logged; also read from the BIFROST_SETUP_TOKEN env var. Supports env.<ENV_VAR_NAME> and vault.<path> references. Renders into config.json setup_token."
@@ -859,6 +863,12 @@
               "type": "integer",
               "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
               "default": 65536
+            },
+            "bodyBufferPoolLimitBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Largest request-body buffer (bytes) a keep-alive connection keeps for reuse. Larger buffers are freed after each request; bodies above it are still served. Unset uses the 4 MiB default; 0 means unlimited. Renders into server.body_buffer_pool_limit_bytes.",
+              "default": 4194304
             },
             "pluginDownloadPrivateAllowlist": {
               "type": "array",
@@ -1473,6 +1483,17 @@
                     "enable_llm_obs": {
                       "type": "boolean",
                       "description": "Enable Datadog LLM Observability (default: true)"
+                    },
+                    "otel_llmobs_conversion": {
+                      "type": "string",
+                      "enum": ["disabled", "inherit", "enabled"],
+                      "description": "Whether Datadog builds its own LLM Observability spans from Bifrost's APM trace. 'disabled' opts the trace out so Datadog does not duplicate the spans Bifrost already sends; 'inherit' leaves the decision to upstream services on the same trace; 'enabled' opts in (default: disabled)",
+                      "default": "disabled"
+                    },
+                    "llmobs_gateway_mode": {
+                      "type": "boolean",
+                      "description": "Follow Datadog's proxy-service pattern for LLM Observability: open a workflow span per request at the gateway entrypoint so all gateway traffic is queryable as top-level spans, and export MCP tool and task spans. Changes the shape of exported LLM Observability data, so existing dashboards and breakdowns may need updating (default: false)",
+                      "default": false
                     },
                     "group_traces_by_session": {
                       "type": "boolean",
@@ -2322,6 +2343,24 @@
                   "disable_content_logging": {
                     "type": "boolean",
                     "description": "Per-key override of client.disableContentLogging for requests made with this virtual key. Omit to inherit the client setting."
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "description": "Custom key/value metadata for this virtual key (e.g. cost_center, project, owner). Copied onto every log entry the key produces, so logs and spend can be filtered by it, and it overrides request-supplied log metadata on a key collision. Keys may contain letters, digits, '.', '_' and '-' (max 256 characters) and may not be system-reserved; values are strings of at most 512 characters; at most 50 entries.",
+                    "maxProperties": 50,
+                    "propertyNames": {
+                      "pattern": "^[a-zA-Z0-9._-]{1,256}$",
+                      "not": {
+                        "anyOf": [
+                          { "const": "isAsyncRequest" },
+                          { "pattern": "^bifrost_alb_" }
+                        ]
+                      }
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "maxLength": 512
+                    }
                   },
                   "team_id": {
                     "type": "string"
@@ -4115,6 +4154,12 @@
                     "maximum": 1000,
                     "default": 0,
                     "description": "Delay in milliseconds between consecutive buffered events after block-capable streaming output guardrails allow the response. 0 sends the buffered events immediately."
+                  },
+                  "output_mode": {
+                    "type": "string",
+                    "enum": ["enforce", "monitor"],
+                    "default": "enforce",
+                    "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
                   },
                   "provider_config_ids": {
                     "type": "array",
@@ -7079,6 +7124,11 @@
           "default": 1,
           "description": "Routing weight for this key. Optional; defaults to 1 when omitted."
         },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether this key is used for routing. Set to false to keep the key configured but skip it during key selection. Optional; new keys default to true, and omitting it on an existing key keeps the stored value."
+        },
         "use_for_batch_api": {
           "type": "boolean"
         },
@@ -7153,6 +7203,11 @@
             "force_single_region": {
               "type": "boolean",
               "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
+              "default": false
+            },
+            "use_session_routing": {
+              "type": "boolean",
+              "description": "Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.",
               "default": false
             },
             "aws_workload_identity": {
@@ -7407,38 +7462,6 @@
             "client_id": ["client_secret"],
             "client_secret": ["client_id"]
           },
-          "additionalProperties": false
-        },
-        "github_copilot_key_config": {
-          "type": "object",
-          "description": "GitHub App credentials for a github-copilot provider key. Set this instead of value to mint installation tokens from a GitHub App.",
-          "properties": {
-            "app_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
-            },
-            "installation_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Installation to mint tokens for, digits only (can use env. prefix)"
-            },
-            "repository_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
-            },
-            "private_key": {
-              "type": "string",
-              "minLength": 1,
-              "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
-            },
-            "github_domain": {
-              "type": "string",
-              "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
-            }
-          },
-          "required": ["app_id", "installation_id", "repository_id", "private_key"],
           "additionalProperties": false
         },
         "cloudflare_key_config": {
@@ -8597,6 +8620,11 @@
                   "force_single_region": {
                     "type": "boolean",
                     "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
+                    "default": false
+                  },
+                  "use_session_routing": {
+                    "type": "boolean",
+                    "description": "Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.",
                     "default": false
                   },
                   "aws_workload_identity": {

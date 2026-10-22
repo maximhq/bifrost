@@ -137,7 +137,7 @@ func TestDecisionInputValidateAndImages(t *testing.T) {
 	assert.Error(t, err)
 
 	withImage := DecisionInput{Messages: []DecisionInputMessage{{Role: "user", Content: DecisionInputContent{Parts: []DecisionInputPart{
-		{Type: DecisionInputPartTypeText, Text: Ptr("look")},
+		{Type: DecisionInputPartTypeText, Text: NewDecisionText("look")},
 		{Type: DecisionInputPartTypeImage, ImageURL: Ptr("data:image/png;base64,AAAA")},
 	}}}}}
 	assert.Equal(t, DecisionInputPartTypeImage, withImage.NonTextPartType())
@@ -149,6 +149,30 @@ func TestDecisionInputValidateAndImages(t *testing.T) {
 	assert.Equal(t, "untyped", untyped.NonTextPartType(), "a part without a type is not text")
 	assert.Empty(t, DecisionInput{Messages: []DecisionInputMessage{{Role: "user", Content: DecisionInputContent{Text: Ptr("hi")}}}}.NonTextPartType())
 	assert.Empty(t, DecisionInput{Structured: []any{map[string]any{"type": "input_image"}}}.NonTextPartType())
+}
+
+// TestDecisionInputPartTextAndAssets pins that a part's text is a string, object,
+// or array on the wire, and that only an image with an ID is an asset.
+func TestDecisionInputPartTextAndAssets(t *testing.T) {
+	var input DecisionInput
+	body := `[{"role":"user","content":[{"type":"input_text","text":"plain"},{"type":"input_text","text":{"camera":"r-cam"}},{"type":"input_text","text":["a","b"]},{"type":"input_image","id":"r-cam","name":"door","data":"QUFBQQ=="},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]`
+	require.NoError(t, Unmarshal([]byte(body), &input))
+	parts := input.Messages[0].Content.Parts
+	assert.Equal(t, "plain", parts[0].Text.Value())
+	assert.Equal(t, map[string]any{"camera": "r-cam"}, parts[1].Text.Value())
+	assert.Equal(t, []any{"a", "b"}, parts[2].Text.Value())
+	assert.True(t, parts[3].IsAsset())
+	assert.Equal(t, "door", *parts[3].Name)
+	assert.Equal(t, []byte("AAAA"), parts[3].Data, "data is base64 on the wire")
+	assert.False(t, parts[4].IsAsset(), "an image without an ID is inline evidence")
+	assert.True(t, input.HasAssetParts())
+	assert.False(t, DecisionInput{Messages: []DecisionInputMessage{{Role: "user", Content: DecisionInputContent{Parts: parts[4:]}}}}.HasAssetParts())
+
+	out, err := Marshal(input)
+	require.NoError(t, err)
+	var again DecisionInput
+	require.NoError(t, Unmarshal(out, &again))
+	assert.Equal(t, input, again, "parts round-trip unchanged")
 }
 
 // TestDecisionInputMessagesKeepUnknownPartType pins that a message part of a

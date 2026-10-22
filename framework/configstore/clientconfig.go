@@ -776,6 +776,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vertexConfig.Region = *key.VertexKeyConfig.Region.RedactedIfSecret()
 			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
 			vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
+			vertexConfig.UseSessionRouting = key.VertexKeyConfig.UseSessionRouting
 			vertexConfig.AWSWorkloadIdentity = key.VertexKeyConfig.AWSWorkloadIdentity.Redacted()
 			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
 		}
@@ -901,18 +902,6 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 				databricksConfig.ClientSecret = key.DatabricksKeyConfig.ClientSecret.Redacted()
 			}
 			redactedConfig.Keys[i].DatabricksKeyConfig = databricksConfig
-		}
-
-		if key.GithubCopilotKeyConfig != nil {
-			// The private key is the whole credential, so it is redacted like any other
-			// secret rather than surfaced in a config read.
-			redactedConfig.Keys[i].GithubCopilotKeyConfig = &schemas.GithubCopilotKeyConfig{
-				AppID:          *key.GithubCopilotKeyConfig.AppID.Redacted(),
-				InstallationID: *key.GithubCopilotKeyConfig.InstallationID.Redacted(),
-				RepositoryID:   *key.GithubCopilotKeyConfig.RepositoryID.Redacted(),
-				PrivateKey:     *key.GithubCopilotKeyConfig.PrivateKey.Redacted(),
-				GithubDomain:   *key.GithubCopilotKeyConfig.GithubDomain.Redacted(),
-			}
 		}
 
 		if key.OAuthKeyConfig != nil {
@@ -1272,14 +1261,6 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	// Hash DatabricksKeyConfig
 	if key.DatabricksKeyConfig != nil {
 		data, err := sonic.Marshal(key.DatabricksKeyConfig)
-		if err != nil {
-			return "", err
-		}
-		hash.Write(data)
-	}
-	// Hash GithubCopilotKeyConfig
-	if key.GithubCopilotKeyConfig != nil {
-		data, err := sonic.Marshal(key.GithubCopilotKeyConfig)
 		if err != nil {
 			return "", err
 		}

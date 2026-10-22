@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BaseProviderNames } from "../types/config";
-import {
-	getPasswordPolicyFailures,
-	hasCopilotApiToken,
-	isRedacted,
-	isRequestTypeDisabled,
-	isValidVertexAuthCredentials,
-} from "./validation";
+import { getPasswordPolicyFailures, isRedacted, isRequestTypeDisabled, isValidVertexAuthCredentials } from "./validation";
 
 describe("isRedacted", () => {
 	it.each(["<redacted>", "<REDACTED>", "[redacted]", "[REDACTED]"])("recognizes the backend sentinel %s", (value) => {
@@ -32,27 +26,6 @@ describe("getPasswordPolicyFailures", () => {
 
 	it("accepts a strong newly entered password", () => {
 		expect(getPasswordPolicyFailures("StrongPassword1!", false)).toEqual([]);
-	});
-});
-describe("hasCopilotApiToken", () => {
-	// key.value is read as a bare string in some places in the provider form and as a
-	// SecretVar object in others, so a helper that only understands one shape reports "no
-	// token" for a key that has one, and the App-credential labels then contradict the
-	// section note telling the operator they can leave those fields blank.
-	it("recognises a bare string token", () => {
-		expect(hasCopilotApiToken("tid=abc")).toBe(true);
-	});
-
-	it("recognises a SecretVar literal token", () => {
-		expect(hasCopilotApiToken({ value: "tid=abc", ref: "" })).toBe(true);
-	});
-
-	it("recognises a SecretVar reference token", () => {
-		expect(hasCopilotApiToken({ value: "", ref: "COPILOT_TOKEN", type: "env" })).toBe(true);
-	});
-
-	it.each([undefined, null, "", "   ", { value: "", ref: "" }, { value: "  ", ref: "  " }, {}])("treats %p as no token", (input) => {
-		expect(hasCopilotApiToken(input as never)).toBe(false);
 	});
 });
 describe("isValidVertexAuthCredentials", () => {

@@ -90,11 +90,15 @@ type scopedDBLogStore interface {
 // moveErrorRawBodiesToObject sends to object storage. Content-hidden rows
 // still offload it with everything else.
 //
+// guardrail_debug backs the guardrail outcome filter (the Guardrails incidents
+// list) the same way. It holds sanitized rule metadata - rule, guardrail,
+// phase, reason, policy categories - and never matched request text.
+//
 // This applies to logs written from this change on. Rows written before it
 // hold error_details only in their object, so they stay out of the error
 // breakdowns: restoring them means one object read per failed log, with no
 // bound on the count, and is not done automatically.
-var databaseResidentPayloadFields = []string{"error_details"}
+var databaseResidentPayloadFields = []string{"error_details", "guardrail_debug"}
 
 // newHybridLogStore creates a HybridLogStore wrapping the given inner store.
 // excludeFields lists payload field DB column names that should be kept in the
@@ -208,6 +212,7 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		}
 	}
 
+	realtimeCorrection := work.kind == uploadKindLogMerge && gjson.GetBytes(work.payload, realtimeInputCorrectionField).Exists()
 	if work.kind == uploadKindLogMerge {
 		merged, ok := h.mergeIntoStoredObject(ctx, work)
 		if !ok {
@@ -220,6 +225,15 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		h.logger.Warn("objectstore: failed to upload log %s: %v", work.logID, err)
 		h.droppedUploads.Add(1)
 		return
+	}
+	if realtimeCorrection {
+		var corrected Log
+		if err := MergePayloadFromJSON(&corrected, work.payload); err == nil && corrected.InputHistory != "" {
+			_ = corrected.DeserializeFields()
+			if err := h.inner.Update(ctx, work.logID, map[string]any{"content_summary": corrected.BuildContentSummary()}); err != nil {
+				h.logger.Warn("objectstore: failed to refresh realtime input summary for log %s: %v", work.logID, err)
+			}
+		}
 	}
 	// The new object carries everything the other-format copy held, so drop
 	// that copy: a later switch back must not find it first and serve or merge
@@ -288,6 +302,11 @@ func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *upload
 	existing, foundKey, err := h.getPayload(ctx, work.key)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
+			if gjson.GetBytes(work.payload, realtimeInputCorrectionField).Exists() {
+				h.logger.Warn("objectstore: cannot correct realtime input for missing object %s", work.logID)
+				h.droppedUploads.Add(1)
+				return nil, false
+			}
 			return work.payload, true
 		}
 		h.logger.Warn("objectstore: failed to fetch payload for log %s before merge upload, leaving the stored object untouched: %v", work.logID, err)
@@ -311,6 +330,11 @@ func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *upload
 	if foundKey != work.key {
 		// The stored copy is in the other format; the merged object replaces it.
 		work.staleKey = foundKey
+	}
+	if err := mergeRealtimeInputCorrection(base, overlay); err != nil {
+		h.logger.Warn("objectstore: cannot merge realtime input correction for log %s: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
 	}
 	for k, v := range overlay {
 		if v != "" {
@@ -1401,6 +1425,20 @@ func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error 
 			}
 		}
 		h.moveErrorRawBodiesToObject(&dbEntry, upload.payload)
+		if entry.RealtimeInputCorrection != nil {
+			var corrections []*RealtimeInputCorrection
+			if prior := upload.payload[realtimeInputCorrectionField]; prior != "" {
+				if err := sonic.UnmarshalString(prior, &corrections); err != nil {
+					return err
+				}
+			}
+			corrections = append(corrections, entry.RealtimeInputCorrection)
+			encoded, err := sonic.MarshalString(corrections)
+			if err != nil {
+				return err
+			}
+			upload.payload[realtimeInputCorrectionField] = encoded
+		}
 		// Tags describe the row as the batch leaves it: the selected key, virtual
 		// key, routing rule and stream flag only arrive with the completion.
 		overlayNonZeroFields(upload.tagRow, entry)

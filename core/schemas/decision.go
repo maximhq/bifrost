@@ -41,6 +41,9 @@ const (
 	// DecisionTypeScore yields a probability-weighted rubric score over the
 	// question's level indexes, so it may fall between levels.
 	DecisionTypeScore DecisionType = "score"
+	// DecisionTypeBox yields the edges of a box around what the instructions
+	// describe in an image. Typesafe serves it.
+	DecisionTypeBox DecisionType = "box"
 	// DecisionTypeRefusal marks a question the model declined to answer. It
 	// only appears on answers.
 	DecisionTypeRefusal DecisionType = "refusal"
@@ -48,7 +51,7 @@ const (
 
 // IsQuestionType reports whether the type is valid on a question.
 func (t DecisionType) IsQuestionType() bool {
-	return t == DecisionTypePredicate || t == DecisionTypeChoice || t == DecisionTypeScore
+	return t == DecisionTypePredicate || t == DecisionTypeChoice || t == DecisionTypeScore || t == DecisionTypeBox
 }
 
 // DecisionInput is the evidence a decision is judged on. At most one member is
@@ -83,6 +86,21 @@ func (in DecisionInput) Validate() error {
 		return fmt.Errorf("decision input carries more than one of text, messages, and structured input; send exactly one")
 	}
 	return nil
+}
+
+// HasAssetParts reports whether any message part is an asset: an image sent
+// under an ID that the input, instructions, or criteria reference. Only
+// Typesafe reads references; a provider that treats every image part as
+// evidence must reject such a request rather than answer on the wrong images.
+func (in DecisionInput) HasAssetParts() bool {
+	for _, message := range in.Messages {
+		for _, part := range message.Content.Parts {
+			if part.IsAsset() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // NonTextPartType returns the type of the first message part that is not
@@ -218,12 +236,29 @@ const (
 
 // DecisionInputPart is one content part of a decision input message: text or
 // an image. A part of another type keeps only its type, by which providers
-// reject it.
+// reject it. Text is a string, or a structured value that Typesafe-family
+// models read as given.
+//
+// ID, Data, and Name are read only by Typesafe; every other provider rejects a
+// part with an ID. An image part with an ID is an asset: it is not evidence
+// itself, but Typesafe places it wherever the ID is written in the input,
+// instructions, or criteria. The asset's file is in Data (base64 on the wire),
+// and its format is read from the bytes. Name is set only for an asset that
+// arrived as a file part of a multipart request on the Typesafe route, so it
+// is sent to Typesafe as a file part again under the same name.
 type DecisionInputPart struct {
-	Type     string  `json:"type"`
-	Text     *string `json:"text,omitempty"`
-	ImageURL *string `json:"image_url,omitempty"` // base64 data URL or HTTP(S) URL
-	Detail   *string `json:"detail,omitempty"`    // image detail level: "low", "high", "auto", or "original"
+	Type     string        `json:"type"`
+	Text     *DecisionText `json:"text,omitempty"`
+	ImageURL *string       `json:"image_url,omitempty"` // inline image: base64 data URL or HTTP(S) URL
+	Detail   *string       `json:"detail,omitempty"`    // image detail level: "low", "high", "auto", or "original"
+	ID       *string       `json:"id,omitempty"`        // Typesafe asset reference
+	Data     []byte        `json:"data,omitempty"`      // Typesafe asset file
+	Name     *string       `json:"name,omitempty"`      // Typesafe multipart file part name
+}
+
+// IsAsset reports whether the part is an image sent by reference.
+func (p DecisionInputPart) IsAsset() bool {
+	return p.Type == DecisionInputPartTypeImage && p.ID != nil
 }
 
 // DecisionQuestion is one question of a decision request. Name is optional;
@@ -509,8 +544,8 @@ type DecisionProbability struct {
 }
 
 // DecisionAnswer is one answer of a decision response, in the order of the
-// request's questions. Which of Probability, Choice, and Score is set follows
-// Type; a refusal carries only Type and Name. Confidence, Probabilities, and
+// request's questions. Which of Probability, Choice, Score, and Box is set
+// follows Type; a refusal carries only Type and Name. Confidence, Probabilities, and
 // Legend carry per-answer metadata when the provider supplies it; Legend
 // echoes each score level's description verbatim, keyed by level index.
 type DecisionAnswer struct {
@@ -522,6 +557,7 @@ type DecisionAnswer struct {
 	Probabilities []DecisionProbability `json:"probabilities,omitempty"`
 	Confidence    *float64              `json:"confidence,omitempty"`
 	Legend        map[string]any        `json:"legend,omitempty"`
+	Box           *DecisionBox          `json:"box,omitempty"`
 
 	// Laya-specific fields
 	AnswerConfidence    *float64        `json:"answer_confidence,omitempty"`    // calibrated probability of the reported answer
@@ -529,6 +565,15 @@ type DecisionAnswer struct {
 	Abstention          *string         `json:"abstention,omitempty"`           // "passed" | "abstained" | "unevaluated" when min_confidence is set
 	AbstentionThreshold *float64        `json:"abstention_threshold,omitempty"` // the min_confidence the answer was gated on
 	LowConfidence       *bool           `json:"low_confidence,omitempty"`       // answer_confidence fell below abstention_threshold
+}
+
+// DecisionBox is a box answer: each edge a fraction from 0 to 1 of the image's
+// height (Top, Bottom) or width (Left, Right), measured from the top-left.
+type DecisionBox struct {
+	Top    float64 `json:"top"`
+	Bottom float64 `json:"bottom"`
+	Left   float64 `json:"left"`
+	Right  float64 `json:"right"`
 }
 
 // BifrostDecisionResponse represents the response from a decision request.

@@ -104,9 +104,11 @@ func isPostgresTransientError(err error) bool {
 // Coverage by store: the context, net.Error, driver.ErrBadConn and EOF checks
 // apply to every SQL driver. The server-side classification (SQLSTATE classes,
 // lock_timeout, pgx connect and timeout errors) is Postgres only, via
-// isPostgresTransientError; SQLite's busy/locked codes and ClickHouse exception
-// codes are not recognised, so on those stores only the driver-agnostic checks
-// fire and everything else takes the row-isolating fallback.
+// isPostgresTransientError. SQLite's SQLITE_BUSY and SQLITE_LOCKED ("database
+// is locked": another connection holds the single writer lock) are recognised
+// via isSQLiteTransientError. ClickHouse exception codes are not recognised, so
+// on that store only the driver-agnostic checks fire and everything else takes
+// the row-isolating fallback.
 //
 // Anything not recognised here (including data errors such as SQLSTATE class
 // 22 and constraint violations in class 23, serialization failures from the
@@ -124,5 +126,5 @@ func IsTransientWriteError(err error) bool {
 	if errors.As(err, &netErr) {
 		return true
 	}
-	return isPostgresTransientError(err)
+	return isPostgresTransientError(err) || isSQLiteTransientError(err)
 }

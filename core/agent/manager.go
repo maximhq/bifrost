@@ -48,6 +48,7 @@ const (
 	maxExtensionURICount     = 32
 	maxExtensionURILength    = 2048
 	oauthFetchTimeout        = 2 * time.Minute
+	maxOAuthCacheEntries     = 5000 // Bounds OAuth credentials cached per manager (about 12 MB at 2.5 KB per entry).
 )
 
 // upstreamHTTPStatusError preserves the upstream HTTP status that the SDK client
@@ -1936,6 +1937,25 @@ func (m *Manager) oauthAccessToken(ctx context.Context, credentialID string, aut
 	if m.oauthFingerprints == nil {
 		m.oauthFingerprints = make(map[string][sha256.Size]byte)
 	}
+	if _, exists := m.oauthFingerprints[credentialID]; !exists && len(m.oauthFingerprints) >= maxOAuthCacheEntries {
+		// Only new credential IDs at capacity scan the cache. Ordinary token hits
+		// stay O(1), while expired credentials are preferred over live entries.
+		for id, token := range m.oauthTokens {
+			if time.Until(token.expiresAt) <= 30*time.Second {
+				delete(m.oauthTokens, id)
+				if m.oauthFingerprints[id] == token.fingerprint {
+					delete(m.oauthFingerprints, id)
+				}
+			}
+		}
+		if len(m.oauthFingerprints) >= maxOAuthCacheEntries {
+			for id := range m.oauthFingerprints {
+				delete(m.oauthFingerprints, id)
+				delete(m.oauthTokens, id)
+				break
+			}
+		}
+	}
 	m.oauthFingerprints[credentialID] = fingerprint
 	cached, ok := m.oauthTokens[credentialID]
 	m.oauthMu.Unlock()
@@ -1956,6 +1976,12 @@ func (m *Manager) oauthAccessToken(ctx context.Context, credentialID string, aut
 		defer cancel()
 		token, expiresAt, err := m.fetchOAuthAccessToken(WithPublicTargetsOnly(fetchCtx, requiresPublicTargets(ctx)), auth)
 		if err != nil {
+			m.oauthMu.Lock()
+			if m.oauthFingerprints[credentialID] == fingerprint {
+				delete(m.oauthFingerprints, credentialID)
+				delete(m.oauthTokens, credentialID)
+			}
+			m.oauthMu.Unlock()
 			return nil, err
 		}
 		m.oauthMu.Lock()

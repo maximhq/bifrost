@@ -4635,7 +4635,7 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 		Model:                     bareModel,
 		IsStreaming:               streaming,
 		ValidateTools:             validateTools,
-		ExcludeFields:             []string{"guardrailConfig"},
+		ExcludeFields:             []string{"guardrailConfig", "additionalModelRequestFieldPaths", "additionalModelResponseFieldPaths"},
 		IncludeFields:             includeFields,
 		BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 		ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
@@ -4647,13 +4647,14 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 // invokeGuardrailHeaders adds the X-Amzn-Bedrock-Guardrail* headers InvokeModel takes in place
 // of the guardrailConfig body field that invokeBuildConfig strips. Without them the request
 // runs unguarded. The Converse-shaped lowercase trace is uppercased, as the header requires.
-func invokeGuardrailHeaders(base map[string]string, extraParams map[string]any) map[string]string {
+func invokeGuardrailHeaders(base map[string]schemas.SecretVar, extraParams map[string]any) map[string]schemas.SecretVar {
 	out := withGuardrailHeaders(base, extraParams)
 	config, _ := extraParams["guardrailConfig"].(map[string]any)
-	if trace, _ := config["trace"].(string); trace != "" && out[guardrailTraceHeader] == trace {
+	traceHeader := out[guardrailTraceHeader]
+	if trace, _ := config["trace"].(string); trace != "" && traceHeader.GetValue() == trace {
 		// out may still be the shared provider headers, so write to a copy.
 		out = maps.Clone(out)
-		out[guardrailTraceHeader] = strings.ToUpper(trace)
+		out[guardrailTraceHeader] = *schemas.NewSecretVar(strings.ToUpper(trace))
 	}
 	return out
 }
@@ -4675,12 +4676,12 @@ func responsesExtraParams(request *schemas.BifrostResponsesRequest) map[string]a
 // invokeStreamHeaders adds Accept-Encoding: identity to the static extra
 // headers so the event stream arrives frame by frame rather than as one gzip
 // burst, matching what makeStreamingRequest does for ConverseStream.
-func (provider *BedrockProvider) invokeStreamHeaders(extraParams map[string]any) map[string]string {
+func (provider *BedrockProvider) invokeStreamHeaders(extraParams map[string]any) map[string]schemas.SecretVar {
 	out := maps.Clone(invokeGuardrailHeaders(provider.networkConfig.ExtraHeaders, extraParams))
 	if out == nil {
-		out = make(map[string]string, 1)
+		out = make(map[string]schemas.SecretVar, 1)
 	}
-	out["Accept-Encoding"] = "identity"
+	out["Accept-Encoding"] = *schemas.NewSecretVar("identity")
 	return out
 }
 

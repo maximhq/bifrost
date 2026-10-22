@@ -34,6 +34,11 @@ concurrency:
 jobs:
   benchmarks:
     name: Benchmarks (${{ matrix.name }})
+    # Pull requests from outside contributors (forks, or authors who are not members
+    # or owners of maximhq) cannot get a runner until @maximhq/bifrost-admin approves
+    # the run through Review deployments. Everyone else lands on ci-trusted-branch,
+    # an environment with no protection rules that only gives the job a name.
+    environment: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.fork || !contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)) && 'pr-testing' || 'ci-trusted-branch' }}
     # CodSpeed's managed bare-metal runner for walltime benchmarks.
     # https://codspeed.io/docs/benchmarks/go
     # The org's Default runner group must "Allow public repositories", or the
@@ -42,7 +47,7 @@ jobs:
     timeout-minutes: 45
 
     env:
-      # The modules declare go 1.27.2; keep the toolchain resolution identical to
+      # The modules declare go 1.27.3; keep the toolchain resolution identical to
       # the test workflows rather than depending on the runner image default.
       GOTOOLCHAIN: auto
 
@@ -105,7 +110,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.2"
+          go-version: "1.27.3"
           cache-dependency-path: |
             core/go.sum
             framework/go.sum

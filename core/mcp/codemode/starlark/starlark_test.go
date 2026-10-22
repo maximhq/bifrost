@@ -4,11 +4,14 @@ package starlark
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/canonical/starlark/starlark"
@@ -327,23 +330,6 @@ func TestGeneratePythonErrorHints(t *testing.T) {
 			t.Error("Expected hint about syntax error")
 		}
 	})
-
-	t.Run("Attribute error hint", func(t *testing.T) {
-		hints := generatePythonErrorHints("'dict' object has no attribute 'foo'", serverKeys)
-		if len(hints) == 0 {
-			t.Error("Expected hints, got none")
-		}
-		found := false
-		for _, hint := range hints {
-			if containsAny(hint, "attribute", "brackets", "key") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Error("Expected hint about attribute access")
-		}
-	})
 }
 
 func containsAny(s string, substrs ...string) bool {
@@ -611,47 +597,96 @@ func TestExtractResultFromChatMessage(t *testing.T) {
 	})
 }
 
-func TestFormatResultForLog(t *testing.T) {
-	t.Run("Format nil result", func(t *testing.T) {
-		result := formatResultForLog(nil)
-		if result != "null" {
-			t.Errorf("Expected 'null', got '%s'", result)
-		}
-	})
+// Some servers wrap their JSON payload in a JSON string. One extra decode unwraps an object or
+// array; anything else stays what the first decode produced.
+func TestDecodeToolResult(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want interface{}
+	}{
+		{name: "wrapped object", raw: `"{\"title\":\"Example Domain\"}"`, want: map[string]interface{}{"title": "Example Domain"}},
+		{name: "wrapped array", raw: `" [1, 2]"`, want: []interface{}{float64(1), float64(2)}},
+		{name: "quoted scalar stays a string", raw: `"123"`, want: "123"},
+		{name: "quoted invalid JSON stays a string", raw: `"{not json"`, want: "{not json"},
+		{name: "a second wrap is not unwrapped", raw: `"\"{\\\"a\\\":1}\""`, want: `"{\"a\":1}"`},
+		{name: "plain text stays as sent", raw: "not json at all", want: "not json at all"},
+		{name: "bare object", raw: `{"a":1}`, want: map[string]interface{}{"a": float64(1)}},
+		{name: "bare number", raw: `42`, want: float64(42)},
+		{name: "bare bool", raw: `true`, want: true},
+		{name: "bare null", raw: `null`, want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decodeToolResult(tc.raw)
+			gotJSON, _ := sonic.Marshal(got)
+			wantJSON, _ := sonic.Marshal(tc.want)
+			if string(gotJSON) != string(wantJSON) {
+				t.Fatalf("decodeToolResult(%s) = %#v, want %#v", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
 
-	t.Run("Format string result", func(t *testing.T) {
-		result := formatResultForLog("test string")
-		if result != `"test string"` {
-			t.Errorf("Expected '\"test string\"', got '%s'", result)
-		}
-	})
+func TestExtractTextFromMCPResponseResultShapes(t *testing.T) {
+	limit := schemas.DefaultCodeModeMaxValueBytes
+	for _, tc := range []struct {
+		name   string
+		result *mcp.CallToolResult
+		want   string
+	}{
+		{
+			name:   "several JSON blocks become one array",
+			result: &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent(`{"id":1}`), &mcp.TextContent{Type: "text", Text: `{"id":2}`}}},
+			want:   `[{"id":1},{"id":2}]`,
+		},
+		{
+			name:   "mixed blocks are joined with newlines",
+			result: &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent(`{"id":1}`), mcp.NewTextContent("Found 2 files")}},
+			want:   "{\"id\":1}\nFound 2 files",
+		},
+		{
+			name:   "text next to an image keeps its own line",
+			result: &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("Found 2 files"), mcp.ImageContent{Data: "AAAA", MIMEType: "image/png"}}},
+			want:   "Found 2 files\n[Image Response: AAAA, MIME: image/png]",
+		},
+		{
+			name:   "a single block is passed through",
+			result: &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent(`{"id":1}`)}},
+			want:   `{"id":1}`,
+		},
+		{
+			name: "structured content wins over its text copy",
+			result: &mcp.CallToolResult{
+				Content:           []mcp.Content{mcp.NewTextContent(`{"title":"from text"}`)},
+				StructuredContent: map[string]any{"title": "from structured"},
+			},
+			want: `{"title":"from structured"}`,
+		},
+		{
+			name: "an error result keeps its text",
+			result: &mcp.CallToolResult{
+				Content:           []mcp.Content{mcp.NewTextContent("quota exhausted")},
+				StructuredContent: map[string]any{"code": 429},
+				IsError:           true,
+			},
+			want: "quota exhausted",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractTextFromMCPResponse(tc.result, "echo", limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
 
-	t.Run("Format map result", func(t *testing.T) {
-		input := map[string]interface{}{"key": "value"}
-		result := formatResultForLog(input)
-
-		// Parse it back to verify it's valid JSON
-		var parsed map[string]interface{}
-		err := sonic.Unmarshal([]byte(result), &parsed)
-		if err != nil {
-			t.Errorf("Result is not valid JSON: %v", err)
-		}
-
-		if parsed["key"] != "value" {
-			t.Errorf("Expected key 'value', got '%v'", parsed["key"])
-		}
-	})
-
-	t.Run("Truncate long result", func(t *testing.T) {
-		longString := ""
-		for i := 0; i < 300; i++ {
-			longString += "a"
-		}
-
-		result := formatResultForLog(longString)
-		if len(result) > 200 {
-			// Should be truncated to around 200 chars (plus quotes and ellipsis)
-			t.Logf("Result length: %d (truncated as expected)", len(result))
+	t.Run("oversized structured content is rejected", func(t *testing.T) {
+		result := &mcp.CallToolResult{StructuredContent: map[string]any{"body": strings.Repeat("x", limit)}}
+		if _, err := extractTextFromMCPResponse(result, "echo", limit); err == nil {
+			t.Fatal("oversized structured content accepted")
 		}
 	})
 }
@@ -966,74 +1001,6 @@ class Foo:
 func TestGeneratePythonErrorHintsNewCases(t *testing.T) {
 	serverKeys := []string{"Github", "SqLite"}
 
-	t.Run("try/except hint", func(t *testing.T) {
-		hints := generatePythonErrorHints("code.star:3:9: got try, want primary expression", serverKeys)
-		if len(hints) == 0 {
-			t.Fatal("Expected hints for try/except error")
-		}
-		found := false
-		for _, hint := range hints {
-			if containsAny(hint, "try/except", "exception handling") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Expected hint about try/except not being supported, got: %v", hints)
-		}
-	})
-
-	t.Run("except hint", func(t *testing.T) {
-		hints := generatePythonErrorHints("code.star:5:9: got except, want primary expression", serverKeys)
-		if len(hints) == 0 {
-			t.Fatal("Expected hints for except error")
-		}
-		found := false
-		for _, hint := range hints {
-			if containsAny(hint, "try/except", "exception handling") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Expected hint about exception handling, got: %v", hints)
-		}
-	})
-
-	t.Run("finally hint", func(t *testing.T) {
-		hints := generatePythonErrorHints("code.star:7:9: got finally, want primary expression", serverKeys)
-		if len(hints) == 0 {
-			t.Fatal("Expected hints for finally error")
-		}
-		found := false
-		for _, hint := range hints {
-			if containsAny(hint, "try/except", "exception handling") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Expected hint about exception handling, got: %v", hints)
-		}
-	})
-
-	t.Run("raise hint", func(t *testing.T) {
-		hints := generatePythonErrorHints("code.star:2:1: got raise, want primary expression", serverKeys)
-		if len(hints) == 0 {
-			t.Fatal("Expected hints for raise error")
-		}
-		found := false
-		for _, hint := range hints {
-			if containsAny(hint, "try/except", "exception handling") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Expected hint about exception handling, got: %v", hints)
-		}
-	})
-
 	t.Run("Undefined variable includes scope hint", func(t *testing.T) {
 		hints := generatePythonErrorHints("code.star:3:17: undefined: commits_n8n", serverKeys)
 		if len(hints) == 0 {
@@ -1117,6 +1084,55 @@ func TestCodeModeSandboxToolRoundTrip(t *testing.T) {
 	if len(result.Logs) != 1 || result.Logs[0] != "tool completed" {
 		t.Fatalf("logs=%v", result.Logs)
 	}
+}
+
+// json and math are predeclared so a script can parse a string result itself; a server bound
+// under either name keeps that name.
+func TestCodeModeSandboxJSONAndMathModules(t *testing.T) {
+	limits := schemas.MCPCodeModeLimits{}.WithDefaults()
+	returning := func(value interface{}) sandboxToolCaller {
+		return func(context.Context, string, string, map[string]interface{}, func(string)) (interface{}, error) {
+			return value, nil
+		}
+	}
+
+	t.Run("decode, encode and math are available", func(t *testing.T) {
+		code := "parsed = json.decode(server.echo())\nresult = [len(parsed[\"items\"]), json.encode({\"a\": 1}), math.floor(2.7)]"
+		result := runSandbox(context.Background(), limits, code, map[string][]string{"server": {"server-echo"}}, returning(`{"items":[1,2,3]}`))
+		if result.Errors != nil {
+			t.Fatalf("modules unavailable: %s", result.Errors.Message)
+		}
+		got, _ := sonic.Marshal(result.Result)
+		if string(got) != `[3,"{\"a\":1}",2]` {
+			t.Fatalf("result=%s", got)
+		}
+	})
+
+	t.Run("a server named json keeps its binding", func(t *testing.T) {
+		result := runSandbox(context.Background(), limits, "result = [json.echo(), math.floor(1.5)]", map[string][]string{"json": {"json-echo"}}, returning("from the server"))
+		if result.Errors != nil {
+			t.Fatalf("server binding lost: %s", result.Errors.Message)
+		}
+		got, _ := sonic.Marshal(result.Result)
+		if string(got) != `["from the server",1]` {
+			t.Fatalf("result=%s", got)
+		}
+	})
+
+	t.Run("decoding is charged to the memory budget", func(t *testing.T) {
+		small := limits
+		small.MaxMemoryBytes = 1 << 20
+		payload := "[" + strings.TrimSuffix(strings.Repeat("1,", 200_000), ",") + "]"
+		bindings := map[string][]string{"server": {"server-echo"}}
+		// Control: the payload itself fits, so the decode is what exceeds the budget.
+		if result := runSandbox(context.Background(), small, "result = len(server.echo())", bindings, returning(payload)); result.Errors != nil {
+			t.Fatalf("the payload alone exceeded the budget: %s", result.Errors.Message)
+		}
+		result := runSandbox(context.Background(), small, "result = len(json.decode(server.echo()))", bindings, returning(payload))
+		if result.Errors == nil || !strings.Contains(result.Errors.Message, "exceeded memory allocation limits") {
+			t.Fatalf("a 200,000-element decode was not charged to a 1 MiB budget: %+v", result)
+		}
+	})
 }
 
 func TestCodeModeSandboxCancellation(t *testing.T) {
@@ -1274,23 +1290,14 @@ func TestCodeModeResourceLink(t *testing.T) {
 	}
 }
 
-func TestCodeModeToolLogPreview(t *testing.T) {
-	// The bound has to hold after encoding: escaping turns one control byte into six, and a
-	// non-string result never reaches the input truncation at all.
-	for _, tc := range []struct {
-		name   string
-		result interface{}
-	}{
-		{name: "long string", result: strings.Repeat("x", 100_000)},
-		{name: "control bytes expand when escaped", result: strings.Repeat("\x00", 2048)},
-		{name: "non-string result", result: map[string]any{"body": strings.Repeat("\x00", 2048)}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			preview := formatResultForLog(tc.result)
-			if len(preview) > codeModeDiagnosticBytes || !strings.Contains(preview, "truncated") {
-				t.Fatalf("unbounded tool log preview: %d bytes", len(preview))
-			}
-		})
+// A tool's error text is raised into the script and reaches the model in the reply, so it stays
+// bounded and valid UTF-8 however long the server's message is.
+func TestCodeModeToolErrorTextIsBounded(t *testing.T) {
+	for _, text := range []string{strings.Repeat("x", 100_000), strings.Repeat("é", 2048)} {
+		got := truncateDiagnostic(text)
+		if len(got) > codeModeDiagnosticBytes || !strings.Contains(got, "truncated") || !utf8.ValidString(got) {
+			t.Fatalf("unbounded or invalid error text: %d bytes", len(got))
+		}
 	}
 }
 
@@ -1441,8 +1448,13 @@ func TestCodeModeUnsupportedStatementHint(t *testing.T) {
 		if result.Errors == nil {
 			t.Fatalf("expected a parse error for %q", code)
 		}
-		if !strings.Contains(strings.Join(result.Errors.Hints, "\n"), "does NOT support try/except") {
+		hints := strings.Join(result.Errors.Hints, "\n")
+		if !strings.Contains(hints, "does NOT support try/except") {
 			t.Fatalf("missing try/except hint for %q: %+v", code, result.Errors)
+		}
+		// The parse error says nothing about dicts or tool calls, so generic advice only buries the hint.
+		if strings.Contains(hints, "Access dict values with brackets") {
+			t.Fatalf("generic hints follow the try/except hint for %q:\n%s", code, hints)
 		}
 	}
 }
@@ -1722,4 +1734,557 @@ func TestReadToolFileClientCapOverridesConfiguredGlobal(t *testing.T) {
 	if !strings.Contains(content, "Never retry a write") {
 		t.Fatalf("stub lost text the client's cap allows, got:\n%s", content)
 	}
+}
+
+// A per-call client (per-user OAuth, per-user headers, token exchange) gets its tools back from
+// the config store after a restart instead of from a live tools/list. That decode turns every
+// nested schema object into *OrderedMap, where live discovery keeps plain maps, and the stubs
+// must render both the same way.
+
+func searchToolSchema() schemas.ChatTool {
+	return schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name:        "codey-search",
+			Description: schemas.Ptr("Searches the index"),
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				// A shallow wrap of plain maps, as live discovery builds it.
+				Properties: schemas.OrderedMapFromMap(map[string]interface{}{
+					"query": map[string]interface{}{"type": "string", "description": "Text to search for"},
+					"limit": map[string]interface{}{"type": "integer"},
+					"tags":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+				}),
+				Required: []string{"query"},
+			},
+		},
+	}
+}
+
+// restoreDiscoveredTool round-trips a tool the way the config store persists DiscoveredTools:
+// json.Marshal on save, sonic.Unmarshal on load (framework/configstore/tables/mcp.go).
+func restoreDiscoveredTool(t *testing.T, tool schemas.ChatTool) schemas.ChatTool {
+	t.Helper()
+	data, err := json.Marshal(map[string]schemas.ChatTool{tool.Function.Name: tool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored map[string]schemas.ChatTool
+	if err := sonic.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	return restored[tool.Function.Name]
+}
+
+func newSearchCodeMode(tool schemas.ChatTool) *StarlarkCodeMode {
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{
+		BindingLevel:         schemas.CodeModeBindingLevelServer,
+		ToolExecutionTimeout: time.Second,
+	}, nil)
+	mode.clientManager = &testClientManager{
+		clients: map[string]*schemas.MCPClientState{
+			"codey": {Name: "codey", ExecutionConfig: &schemas.MCPClientConfig{Name: "codey", IsCodeModeClient: true}},
+		},
+		tools: map[string][]schemas.ChatTool{"codey": {tool}},
+	}
+	return mode
+}
+
+func readSearchStubs(t *testing.T, mode *StarlarkCodeMode) (stub, docs string) {
+	t.Helper()
+	msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/codey.pyi"}`},
+	})
+	stub = instructionsToolResponse(t, msg, err)
+	msg, err = mode.handleGetToolDocs(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-2"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"server":"codey","tool":"search"}`},
+	})
+	docs = instructionsToolResponse(t, msg, err)
+	return stub, docs
+}
+
+func TestStubsKeepParametersOfRestoredTools(t *testing.T) {
+	restored := restoreDiscoveredTool(t, searchToolSchema())
+	// Guard the reproduction itself: the property must have the shape a restart produces.
+	prop, _ := restored.Function.Parameters.Properties.Get("tags")
+	if _, ok := prop.(*schemas.OrderedMap); !ok {
+		t.Fatalf("restore did not produce *OrderedMap property schemas, got %T", prop)
+	}
+
+	stub, docs := readSearchStubs(t, newSearchCodeMode(restored))
+
+	if !strings.Contains(stub, "def search(query: str, limit: int = None, tags: list[str] = None) -> dict") {
+		t.Fatalf("readToolFile lost the restored tool's parameters, got:\n%s", stub)
+	}
+	for _, want := range []string{
+		"def search(query: str, limit: int = None, tags: list[str] = None) -> dict:",
+		"query (str): Text to search for (required)",
+		"tags (list[str]): tags parameter (optional)",
+	} {
+		if !strings.Contains(docs, want) {
+			t.Fatalf("getToolDocs is missing %q for the restored tool, got:\n%s", want, docs)
+		}
+	}
+}
+
+func TestStubsRenderFreshAndRestoredToolsIdentically(t *testing.T) {
+	freshStub, freshDocs := readSearchStubs(t, newSearchCodeMode(searchToolSchema()))
+	restoredStub, restoredDocs := readSearchStubs(t, newSearchCodeMode(restoreDiscoveredTool(t, searchToolSchema())))
+
+	if freshStub != restoredStub {
+		t.Fatalf("readToolFile differs after a restore:\nfresh:\n%s\nrestored:\n%s", freshStub, restoredStub)
+	}
+	if freshDocs != restoredDocs {
+		t.Fatalf("getToolDocs differs after a restore:\nfresh:\n%s\nrestored:\n%s", freshDocs, restoredDocs)
+	}
+}
+
+func BenchmarkFormatPythonParams(b *testing.B) {
+	data, err := json.Marshal(map[string]schemas.ChatTool{"codey-search": searchToolSchema()})
+	if err != nil {
+		b.Fatal(err)
+	}
+	var restored map[string]schemas.ChatTool
+	if err := sonic.Unmarshal(data, &restored); err != nil {
+		b.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		params *schemas.ToolFunctionParameters
+	}{
+		{"fresh", searchToolSchema().Function.Parameters},
+		{"restored", restored["codey-search"].Function.Parameters},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = formatPythonParams(tc.params)
+			}
+		})
+	}
+}
+
+// The stubs describe the result shapes a script really gets, and steer away from printing a
+// whole response into the model's context.
+func TestStubsDescribeResultShapes(t *testing.T) {
+	stub, docs := readSearchStubs(t, newSearchCodeMode(searchToolSchema()))
+
+	for name, content := range map[string]string{"readToolFile": stub, "getToolDocs": docs} {
+		if !strings.Contains(content, "json.decode(") {
+			t.Errorf("%s does not say how to parse a str result, got:\n%s", name, content)
+		}
+		if !strings.Contains(content, "number, bool or None") {
+			t.Errorf("%s does not say a bare JSON value arrives as a scalar, got:\n%s", name, content)
+		}
+		// Most str results are plain text, and json.decode raises on those.
+		if !strings.Contains(content, "plain text raises") {
+			t.Errorf("%s does not limit json.decode to a str holding JSON, got:\n%s", name, content)
+		}
+	}
+	if strings.Contains(docs, "dict: Response from the tool") {
+		t.Errorf("getToolDocs still labels every response a dict, got:\n%s", docs)
+	}
+	if strings.Contains(docs, "Tool responses are dicts") {
+		t.Errorf("getToolDocs still claims every response is a dict, got:\n%s", docs)
+	}
+	if strings.Contains(docs, "print(result)") {
+		t.Errorf("getToolDocs still tells the model to print a whole response, got:\n%s", docs)
+	}
+}
+
+// A code mode server bound as "json" keeps that name in the sandbox, so the stubs must not point
+// the model at a json module its scripts cannot reach.
+func TestStubsOmitJSONDecodeWhenAServerTakesTheName(t *testing.T) {
+	mode := newSearchCodeMode(searchToolSchema())
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["json"] = &schemas.MCPClientState{Name: "json", ExecutionConfig: &schemas.MCPClientConfig{Name: "json", IsCodeModeClient: true}}
+	manager.tools["json"] = []schemas.ChatTool{{Function: &schemas.ChatToolFunction{Name: "json-lint"}}}
+
+	stub, docs := readSearchStubs(t, mode)
+
+	for name, content := range map[string]string{"readToolFile": stub, "getToolDocs": docs} {
+		if strings.Contains(content, "json.decode(") {
+			t.Errorf("%s points at a json module a server shadows, got:\n%s", name, content)
+		}
+		if !strings.Contains(content, "number, bool or None") {
+			t.Errorf("%s does not say a bare JSON value arrives as a scalar, got:\n%s", name, content)
+		}
+	}
+}
+
+// Indexing a str is the error a model hits when it trusts a "dict" it never checked.
+func TestGeneratePythonErrorHintsForStringResults(t *testing.T) {
+	for _, message := range []string{"string index: got string, want int", "string has no .get field or method"} {
+		hints := strings.Join(generatePythonErrorHints(message, []string{"server"}), "\n")
+		if !strings.Contains(hints, "json.decode(") || strings.Contains(hints, "brackets") {
+			t.Errorf("hints for %q do not explain a str result:\n%s", message, hints)
+		}
+		shadowed := strings.Join(generatePythonErrorHints(message, []string{"json", "server"}), "\n")
+		if strings.Contains(shadowed, "json.decode(") {
+			t.Errorf("hints for %q point at a json module a server shadows:\n%s", message, shadowed)
+		}
+	}
+}
+
+func BenchmarkExtractResultFromChatMessage(b *testing.B) {
+	for _, tc := range []struct{ name, text string }{
+		{"bare-object", `{"title":"Example Domain","url":"https://example.com","items":[1,2,3]}`},
+		{"wrapped-object", `"{\"title\":\"Example Domain\",\"url\":\"https://example.com\",\"items\":[1,2,3]}"`},
+		{"plain-text", "Found 3 results for the query, see the attached list"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			msg := &schemas.ChatMessage{Content: &schemas.ChatMessageContent{ContentStr: &tc.text}}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = extractResultFromChatMessage(msg)
+			}
+		})
+	}
+}
+
+// Each hint is keyed on a message Starlark actually produces, so every case runs a real script
+// rather than a hand-typed message that could drift from the interpreter's wording.
+func TestGeneratePythonErrorHintsMatchStarlarkMessages(t *testing.T) {
+	limits := schemas.MCPCodeModeLimits{}.WithDefaults()
+	server := map[string][]string{"srv": {"srv-get"}}
+	returning := func(value interface{}, err error) sandboxToolCaller {
+		return func(context.Context, string, string, map[string]interface{}, func(string)) (interface{}, error) {
+			return value, err
+		}
+	}
+
+	for _, tc := range []struct {
+		name     string
+		code     string
+		bindings map[string][]string
+		call     sandboxToolCaller
+		want     []string
+		notWant  []string
+	}{
+		{
+			name: "a missing dict key", code: "d = {\"a\": 1}\nx = d[\"x\"]",
+			want: []string{`The dict has no key "x"`, `r.get("x", default)`}, notWant: []string{"Check the error message above"},
+		},
+		{
+			name: "a tool error that mentions a key", code: "r = srv.get()", bindings: server, call: returning(nil, errors.New("API key not found")),
+			notWant: []string{"Dictionary key", "dict has no key"},
+		},
+		{
+			name: "an unknown tool", code: "r = srv.gett()", bindings: server,
+			want: []string{"srv has no tool gett", "readToolFile"}, notWant: []string{"Use dict access syntax"},
+		},
+		{
+			name: "an attribute read on a dict", code: "d = {\"a\": 1}\nx = d.a",
+			want: []string{`r["a"] or r.get("a", default)`},
+		},
+		{
+			name: "a function a module lacks", code: "x = json.parse(\"{}\")",
+			want: []string{"The json module has decode, encode, indent", "floor"},
+		},
+		{
+			name: "a server bound under a module's name", code: "x = json.parse()", bindings: map[string][]string{"json": {"json-get"}},
+			want: []string{"json has no tool parse"}, notWant: []string{"json module"},
+		},
+		{
+			name: "a str method Starlark lacks", code: "x = \"name\".ljust(10)",
+			want: []string{"str has no .ljust method"}, notWant: []string{"json.decode", "server's text"},
+		},
+		{
+			name: "a dict method called on a str result", code: "r = srv.get()\nx = r.get(\"a\")", bindings: server, call: returning(`{"a": 1}`, nil),
+			want: []string{"json.decode("},
+		},
+		{
+			name: "indexing a str result", code: "r = srv.get()\nx = r[\"a\"]", bindings: server, call: returning(`{"a": 1}`, nil),
+			want: []string{"json.decode("},
+		},
+		{
+			name: "an attribute read on a failed call", code: "r = srv.get()\nx = r.email", bindings: server, call: returning(toolErrorValue{message: "not found"}, nil),
+			want: []string{`hasattr(r, "error")`}, notWant: []string{"has no tool"},
+		},
+		{
+			name: "an undefined name", code: "x = youtube.search()", bindings: server,
+			want: []string{"Variable 'youtube' is not defined."},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runSandbox(context.Background(), limits, tc.code, tc.bindings, tc.call)
+			if result.Errors == nil {
+				t.Fatalf("expected an error, got result %v", result.Result)
+			}
+			hints := strings.Join(result.Errors.Hints, "\n")
+			for _, want := range tc.want {
+				if !strings.Contains(hints, want) {
+					t.Errorf("hints for %q lack %q:\n%s", result.Errors.Message, want, hints)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(hints, notWant) {
+					t.Errorf("hints for %q contain %q:\n%s", result.Errors.Message, notWant, hints)
+				}
+			}
+		})
+	}
+
+	// A name can come from tool data through getattr. The error line already carries it once, so a
+	// hint that repeated it would multiply an oversized reply; a long name gets the generic hint.
+	longName := returning(strings.Repeat("b", 100_000), nil)
+	for _, tc := range []struct{ name, code string }{
+		{name: "a long attribute name on a dict", code: "n = srv.get()\nx = getattr({\"a\": 1}, n)"},
+		{name: "a long attribute name on a server", code: "n = srv.get()\nx = getattr(srv, n)"},
+		{name: "a long method name on a str", code: "n = srv.get()\nx = getattr(\"s\", n)"},
+		{name: "a long missing key", code: "n = srv.get()\nx = {\"a\": 1}[n]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runSandbox(context.Background(), limits, tc.code, server, longName)
+			if result.Errors == nil {
+				t.Fatalf("expected an error, got result %v", result.Result)
+			}
+			if hints := strings.Join(result.Errors.Hints, "\n"); len(hints) > 1024 {
+				t.Fatalf("hints repeat the long name: %d bytes, starting %q", len(hints), hints[:200])
+			}
+		})
+	}
+}
+
+// getToolDocs describes the sandbox a script runs in: top-level control flow works, and the
+// common errors it quotes are messages Starlark really produces.
+func TestGetToolDocsMatchesTheSandbox(t *testing.T) {
+	_, docs := readSearchStubs(t, newSearchCodeMode(searchToolSchema()))
+	if strings.Contains(docs, "MUST be inside a function") {
+		t.Errorf("getToolDocs still says top-level loops must be wrapped in a function:\n%s", docs)
+	}
+	if !strings.Contains(docs, `key "x" not in dict`) {
+		t.Errorf("getToolDocs does not quote Starlark's missing-key message:\n%s", docs)
+	}
+
+	code := "total = 0\nfor i in range(3):\n    total += i\nif total == 3:\n    total += 10\nn = 0\nwhile n < 2:\n    n += 1\nresult = [total, n]"
+	result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), code, nil, nil)
+	if result.Errors != nil {
+		t.Fatalf("top-level for/if/while failed: %s", result.Errors.Message)
+	}
+}
+
+// A failed nested call reaches the script as a tool_error struct: hasattr finds .error, and
+// returned as-is it converts back to {"error": ...}. Using it as a dict raises with a hint.
+func TestCodeModeFailedCallIsAToolErrorValue(t *testing.T) {
+	limits := schemas.MCPCodeModeLimits{}.WithDefaults()
+	bindings := map[string][]string{"srv": {"srv-get"}}
+	failing := func(context.Context, string, string, map[string]interface{}, func(string)) (interface{}, error) {
+		return toolErrorValue{message: "contact 7 not found"}, nil
+	}
+
+	for _, tc := range []struct {
+		name string
+		code string
+		want string
+	}{
+		{name: "detected and read", code: "r = srv.get()\nresult = [hasattr(r, \"error\"), r.error, type(r)]", want: `[true,"contact 7 not found","struct"]`},
+		{name: "returned as-is", code: "result = srv.get()", want: `{"error":"contact 7 not found"}`},
+		{name: "a dict result has no error attribute", code: "result = hasattr({\"error\": \"x\"}, \"error\")", want: `false`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runSandbox(context.Background(), limits, tc.code, bindings, failing)
+			if result.Errors != nil {
+				t.Fatalf("unexpected error: %s", result.Errors.Message)
+			}
+			got, _ := sonic.Marshal(result.Result)
+			if string(got) != tc.want {
+				t.Fatalf("result=%s, want %s", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("indexing it raises with a hint", func(t *testing.T) {
+		result := runSandbox(context.Background(), limits, "r = srv.get()\nresult = r[\"email\"]", bindings, failing)
+		if result.Errors == nil {
+			t.Fatalf("indexing an error value succeeded: %v", result.Result)
+		}
+		if hints := strings.Join(result.Errors.Hints, "\n"); !strings.Contains(hints, `hasattr(r, "error")`) {
+			t.Fatalf("hints do not explain the failed call:\n%s", hints)
+		}
+	})
+}
+
+// The try/except hint hands the model a check to copy. Running that exact check against a failed
+// call and a successful result keeps the hint from drifting away from what a failed call is.
+func TestExceptionHandlingHintCatchesAFailedCall(t *testing.T) {
+	var variable, check string
+	for _, line := range exceptionHandlingHints() {
+		line = strings.TrimSpace(line)
+		if name, _, ok := strings.Cut(line, " = server.tool("); ok {
+			variable = name
+		}
+		if strings.HasPrefix(line, "if ") && strings.HasSuffix(line, ":") {
+			check = strings.TrimSuffix(strings.TrimPrefix(line, "if "), ":")
+		}
+	}
+	if variable == "" || check == "" {
+		t.Fatalf("the hint shows no call and check to copy: %q", exceptionHandlingHints())
+	}
+
+	limits := schemas.MCPCodeModeLimits{}.WithDefaults()
+	bindings := map[string][]string{"srv": {"srv-get"}}
+	for _, tc := range []struct {
+		name  string
+		value interface{}
+		want  bool
+	}{
+		{name: "a failed call", value: toolErrorValue{message: "contact 7 not found"}, want: true},
+		{name: "a dict result", value: map[string]interface{}{"id": 7}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := func(context.Context, string, string, map[string]interface{}, func(string)) (interface{}, error) {
+				return tc.value, nil
+			}
+			code := variable + " = srv.get()\nfailed = bool(" + check + ")\nresult = failed"
+			result := runSandbox(context.Background(), limits, code, bindings, call)
+			if result.Errors != nil {
+				t.Fatalf("the hint's check raised: %s", result.Errors.Message)
+			}
+			if result.Result != tc.want {
+				t.Fatalf("the hint's check %q gave %v, want %v", check, result.Result, tc.want)
+			}
+		})
+	}
+}
+
+// A script that calls fail() chose to stop: the hints say so instead of generic code advice.
+func TestGeneratePythonErrorHintsForFail(t *testing.T) {
+	hints := generatePythonErrorHints("fail: update failed: permission denied", []string{"crm"})
+	if len(hints) != 1 || !strings.Contains(hints[0], "fail()") {
+		t.Fatalf("hints for fail() = %q", hints)
+	}
+}
+
+// The stubs teach the failed-call check and fail(), the two halves of handling a failed call.
+func TestStubsExplainFailedCalls(t *testing.T) {
+	stub, docs := readSearchStubs(t, newSearchCodeMode(searchToolSchema()))
+
+	for name, content := range map[string]string{"readToolFile": stub, "getToolDocs": docs} {
+		for _, want := range []string{`hasattr(r, "error")`, "fail(r.error)"} {
+			if !strings.Contains(content, want) {
+				t.Errorf("%s does not mention %s, got:\n%s", name, want, content)
+			}
+		}
+	}
+}
+
+// The executeToolCode description is the one text every model reads before its first script, so
+// it must describe failed calls as values and list only names the sandbox resolves.
+func TestExecuteToolCodeDescriptionMatchesTheSandbox(t *testing.T) {
+	description := *newSearchCodeMode(searchToolSchema()).createExecuteToolCodeTool().Function.Description
+
+	for _, want := range []string{`hasattr(r, "error")`, "fail(r.error)", "json.decode", "math."} {
+		if !strings.Contains(description, want) {
+			t.Errorf("description does not mention %s:\n%s", want, description)
+		}
+	}
+	// A server bound under a module's name takes it, so the fixed text must say that for every module.
+	if shadowing := "a server named " + strings.Join(sandboxModules.Keys(), " or ") + " takes that name"; !strings.Contains(description, shadowing) {
+		t.Errorf("description does not say %q:\n%s", shadowing, description)
+	}
+	if strings.Contains(description, "cannot be caught") {
+		t.Errorf("description still says tool failures cannot be caught:\n%s", description)
+	}
+
+	_, rest, ok := strings.Cut(description, "AVAILABLE BUILTINS: ")
+	if !ok {
+		t.Fatalf("description lists no builtins:\n%s", description)
+	}
+	// Cut at the next section's label, not at a period, so a sentence inside the list fails below.
+	listedWithDot, _, _ := strings.Cut(rest, " MODULES:")
+	listed := strings.TrimSuffix(listedWithDot, ".")
+	names := strings.Split(listed, ", ")
+	if !slices.Contains(names, "fail") {
+		t.Errorf("builtins %q leave out fail", names)
+	}
+	result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "result = len(["+listed+"])", nil, nil)
+	if result.Errors != nil {
+		t.Fatalf("a listed builtin does not exist in the sandbox: %s", result.Errors.Message)
+	}
+}
+
+// A runtime error names the script lines that led to it, in the Python traceback layout, so
+// the model can fix the right line. Errors raised before the script runs already carry their
+// position and are left as they are.
+func TestCodeModeRuntimeErrorsNameTheFailingLine(t *testing.T) {
+	limits := schemas.MCPCodeModeLimits{}.WithDefaults()
+	bindings := map[string][]string{"crm": {"crm-get_contact"}}
+	errorValue := func(context.Context, string, string, map[string]interface{}, func(string)) (interface{}, error) {
+		return toolErrorValue{message: "contact 7 not found"}, nil
+	}
+	run := func(t *testing.T, code string) *ExecutionError {
+		t.Helper()
+		result := runSandbox(context.Background(), limits, code, bindings, errorValue)
+		if result.Errors == nil {
+			t.Fatalf("expected an error, got result %v", result.Result)
+		}
+		return result.Errors
+	}
+
+	t.Run("an error inside a function", func(t *testing.T) {
+		got := run(t, "def main():\n    r = crm.get_contact(id=7)\n    return r[\"email\"]\nresult = main()")
+		for _, want := range []string{
+			"Traceback (most recent call last):",
+			"code.star:4:", "in <toplevel>",
+			"code.star:3:", "in main",
+			"Error: unhandled index operation struct[string]",
+		} {
+			if !strings.Contains(got.Message, want) {
+				t.Fatalf("message lacks %q:\n%s", want, got.Message)
+			}
+		}
+	})
+
+	t.Run("fail() keeps its message and its hint", func(t *testing.T) {
+		got := run(t, "def main():\n    r = crm.get_contact(id=7)\n    if hasattr(r, \"error\"):\n        fail(\"lookup failed: \" + r.error)\nresult = main()")
+		if !strings.Contains(got.Message, "code.star:4:") || !strings.HasSuffix(got.Message, "Error: fail: lookup failed: contact 7 not found") {
+			t.Fatalf("fail() message:\n%s", got.Message)
+		}
+		if strings.Contains(got.Message, "in fail") {
+			t.Fatalf("the builtin frame leaked into the traceback:\n%s", got.Message)
+		}
+		if len(got.Hints) != 1 || !strings.Contains(got.Hints[0], "fail()") {
+			t.Fatalf("hints = %q", got.Hints)
+		}
+	})
+
+	t.Run("deep recursion keeps the outermost frame and the innermost five", func(t *testing.T) {
+		// 202 frames: <toplevel> and 201 calls of f. The outermost is kept, a marker stands in
+		// for the 196 left out, and the innermost five follow, ending where the error is.
+		got := run(t, "def f(n):\n    if n == 0:\n        return {}[\"k\"]\n    return f(n - 1)\nresult = f(200)")
+		start := strings.Index(got.Message, "Traceback (most recent call last):")
+		if start == -1 {
+			t.Fatalf("no traceback:\n%s", got.Message)
+		}
+		lines := strings.Split(got.Message[start:], "\n")
+		want := []struct{ prefix, suffix string }{
+			{"Traceback (most recent call last):", ""},
+			{"  code.star:5:", " in <toplevel>"},
+			{"  ... 196 more frames ...", ""},
+			{"  code.star:4:", " in f"},
+			{"  code.star:4:", " in f"},
+			{"  code.star:4:", " in f"},
+			{"  code.star:4:", " in f"},
+			{"  code.star:3:", " in f"},
+			{"Error: ", ""},
+		}
+		if len(lines) != len(want) {
+			t.Fatalf("traceback has %d lines, want %d:\n%s", len(lines), len(want), got.Message)
+		}
+		for i, w := range want {
+			if !strings.HasPrefix(lines[i], w.prefix) || !strings.HasSuffix(lines[i], w.suffix) {
+				t.Fatalf("line %d = %q, want %q...%q:\n%s", i, lines[i], w.prefix, w.suffix, got.Message)
+			}
+		}
+	})
+
+	t.Run("a syntax error keeps its own position", func(t *testing.T) {
+		got := run(t, "result = (")
+		if strings.Contains(got.Message, "Traceback") || !strings.Contains(got.Message, "code.star:1:") {
+			t.Fatalf("syntax error message:\n%s", got.Message)
+		}
+	})
 }

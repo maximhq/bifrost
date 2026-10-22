@@ -43,6 +43,7 @@ Every key object supports these fields:
 | `value` | string | API key value or `env.VAR_NAME` reference |
 | `models` | array | Models this key serves. `["*"]` = all models |
 | `weight` | float | Load balancing weight. Higher = more traffic |
+| `enabled` | boolean | Set to `false` to keep the key configured but skip it during key selection. Same as the **Enabled** toggle in the UI. New keys default to `true`; omitting it on an existing key keeps the stored value (for example a UI toggle) |
 | `aliases` | object | Map logical name → actual model name for this key |
 | `use_for_batch_api` | boolean | Mark key as eligible for batch API calls |
 | `oauth_key_config` | object | Mint the bearer from an OAuth token endpoint instead of carrying a static `value`. `openai` and custom providers on the `openai` base only. See below |
@@ -100,7 +101,7 @@ Per-provider `network_config` options (applies to all standard providers):
 | `retry_backoff_initial` | integer | Initial backoff in milliseconds |
 | `retry_backoff_max` | integer | Maximum backoff in milliseconds |
 | `max_conns_per_host` | integer | Max TCP connections to the provider endpoint (default: 5000) |
-| `extra_headers` | object | Static headers added to every provider request |
+| `extra_headers` | object | Static headers added to every provider request. Values may be literals or `env.VAR_NAME` / `vault.path` references; only the reference is stored. Literal values are masked in API responses and the UI once saved, while references stay visible; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400 |
 | `stream_idle_timeout_in_seconds` | integer | Idle timeout per stream chunk (default: 120) |
 | `insecure_skip_verify` | boolean | Disable TLS verification (last resort only) |
 | `ca_cert_pem` | string | PEM-encoded CA for self-signed or private CA endpoints |

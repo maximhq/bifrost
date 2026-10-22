@@ -18,6 +18,12 @@
           "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
           "default": 65536
         },
+        "body_buffer_pool_limit_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Largest request-body buffer (in bytes) a pooled keep-alive connection keeps for reuse between requests. Larger buffers are released after each request so connections do not pin their largest-ever body in memory; larger bodies are still accepted up to the max request body size. Not set uses the default (4 MiB); 0 means unlimited and keeps every buffer. Process-wide: also applies to outbound fasthttp request buffers. Deploy-time only.",
+          "default": 4194304
+        },
         "plugin_download_private_allowlist": {
           "type": "array",
           "items": {
@@ -69,6 +75,11 @@
       "type": "string",
       "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Overrides the BIFROST_ENV_LABEL environment variable when both are set.",
       "maxLength": 10
+    },
+    "disable_onboarding": {
+      "type": "boolean",
+      "description": "Hides the management UI setup checklist for every user. Unlike the in-app \"hide for everyone\" action, this is read from config.json on every start and never written to the config store, so it stays in effect on stateless deployments (ephemeral container storage, provider-less log viewers). Overrides the BIFROST_DISABLE_ONBOARDING environment variable when both are set.",
+      "default": false
     },
     "auth_config": {
       "$ref": "#/$defs/auth_config"
@@ -689,6 +700,12 @@
           "$ref": "#/$defs/provider_with_deepseek_config"
         },
         "wafer": {
+          "$ref": "#/$defs/provider"
+        },
+        "minimax": {
+          "$ref": "#/$defs/provider"
+        },
+        "byteplus": {
           "$ref": "#/$defs/provider"
         },
         "cloudflare": {
@@ -4474,7 +4491,8 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "cloudflare"
+                        "cloudflare",
+                        "byteplus"
                       ]
                     },
                     "embedding_model": {
@@ -4706,6 +4724,17 @@
                       "type": "boolean",
                       "description": "Enable LLM Observability (default: true)",
                       "default": true
+                    },
+                    "otel_llmobs_conversion": {
+                      "type": "string",
+                      "enum": ["disabled", "inherit", "enabled"],
+                      "description": "Whether Datadog builds its own LLM Observability spans from Bifrost's APM trace. 'disabled' opts the trace out so Datadog does not duplicate the spans Bifrost already sends; 'inherit' leaves the decision to upstream services on the same trace; 'enabled' opts in (default: disabled)",
+                      "default": "disabled"
+                    },
+                    "llmobs_gateway_mode": {
+                      "type": "boolean",
+                      "description": "Follow Datadog's proxy-service pattern for LLM Observability: open a workflow span per request at the gateway entrypoint so all gateway traffic is queryable as top-level spans, and export MCP tool and task spans. Changes the shape of exported LLM Observability data, so existing dashboards and breakdowns may need updating (default: false)",
+                      "default": false
                     },
                     "group_traces_by_session": {
                       "type": "boolean",
@@ -6612,7 +6641,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Additional headers to send with requests"
+          "description": "Additional headers to send with requests. A value may be a literal, an env.VAR_NAME reference, or a vault.path reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400."
         },
         "default_request_timeout_in_seconds": {
           "type": "integer",
@@ -6675,7 +6704,7 @@
           "additionalProperties": {
             "type": "boolean"
           },
-          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+          "description": "Override default beta header support per provider. For Anthropic-family providers, keys are anthropic-beta prefixes (e.g. 'redact-thinking-'); for TypeSafe-based providers, 'typesafe-danger-zone-images' controls the TypeSafe-Danger-Zone-Images header sent with image and box requests. Values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
         },
         "allow_private_network": {
           "type": "boolean",
@@ -6693,7 +6722,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Additional headers to send with requests"
+          "description": "Additional headers to send with requests. A value may be a literal, an env.VAR_NAME reference, or a vault.path reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400."
         },
         "default_request_timeout_in_seconds": {
           "type": "integer",
@@ -6756,7 +6785,7 @@
           "additionalProperties": {
             "type": "boolean"
           },
-          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+          "description": "Override default beta header support per provider. For Anthropic-family providers, keys are anthropic-beta prefixes (e.g. 'redact-thinking-'); for TypeSafe-based providers, 'typesafe-danger-zone-images' controls the TypeSafe-Danger-Zone-Images header sent with image and box requests. Values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
         },
         "allow_private_network": {
           "type": "boolean",
@@ -7045,6 +7074,11 @@
           "type": "number",
           "minimum": 0,
           "description": "Weight for load balancing"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this key is used for routing. Set to false to keep the key configured but skip it during key selection. New keys default to true; omitting it on an existing key keeps the stored value",
+          "default": true
         },
         "use_for_batch_api": {
           "type": "boolean",
@@ -7413,63 +7447,14 @@
           "$ref": "#/$defs/base_key"
         },
         {
-          "type": "object",
           "properties": {
-            "github_copilot_key_config": {
-              "type": "object",
-              "properties": {
-                "app_id": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
-                },
-                "installation_id": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Installation to mint tokens for, digits only (can use env. prefix)"
-                },
-                "repository_id": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
-                },
-                "private_key": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
-                },
-                "github_domain": {
-                  "type": "string",
-                  "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
-                }
-              },
-              "required": [
-                "app_id",
-                "installation_id",
-                "repository_id",
-                "private_key"
-              ],
-              "additionalProperties": false
+            "value": {
+              "minLength": 1,
+              "description": "A fine-grained personal access token (github_pat_), a GitHub OAuth token from Sign in with GitHub (ghu_ or gho_), or a Copilot API token with network_config.base_url (can use env. prefix)"
             }
-          }
-        },
-        {
-          "anyOf": [
-            {
-              "properties": {
-                "value": {
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "value"
-              ]
-            },
-            {
-              "required": [
-                "github_copilot_key_config"
-              ]
-            }
+          },
+          "required": [
+            "value"
           ]
         }
       ]
@@ -7752,6 +7737,11 @@
                 "force_single_region": {
                   "type": "boolean",
                   "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
+                  "default": false
+                },
+                "use_session_routing": {
+                  "type": "boolean",
+                  "description": "Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.",
                   "default": false
                 },
                 "aws_workload_identity": {
@@ -11317,6 +11307,15 @@
                 "maximum": 1000,
                 "default": 0,
                 "description": "Delay in milliseconds between consecutive buffered events after block-capable streaming output guardrails allow the response. 0 sends the buffered events immediately."
+              },
+              "output_mode": {
+                "type": "string",
+                "enum": [
+                  "enforce",
+                  "monitor"
+                ],
+                "default": "enforce",
+                "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
               },
               "provider_config_ids": {
                 "type": "array",

@@ -10,6 +10,10 @@ decisions:
 
       The map form (a `state` plus questions keyed by name) is deprecated but
       still served; a map-form request is answered in the map form.
+
+      Images sent by reference to Typesafe can also come as a multipart request:
+      the JSON in a part named `request`, and each image in its own file part,
+      named by the image part's `name`.
     tags:
     - Decisions
     requestBody:
@@ -20,6 +24,19 @@ decisions:
             oneOf:
               - $ref: '../../schemas/inference/decisions.yaml#/DecisionRequest'
               - $ref: '../../schemas/inference/decisions.yaml#/DecisionMapFormRequest'
+        multipart/form-data:
+          schema:
+            type: object
+            required:
+            - request
+            properties:
+              request:
+                type: string
+                description: The JSON request, as for `application/json` (not the map form), with each image part's `name` naming a file part of this request.
+            additionalProperties:
+              type: string
+              format: binary
+              description: An image file part, named by exactly one image part's `name`
     responses:
       '200':
         description: Successful response

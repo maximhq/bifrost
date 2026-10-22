@@ -360,6 +360,17 @@ func (s *RDBLogStore) applyAgentContextFilter(baseQuery *gorm.DB, agentNames []s
 // should be respected; this helper only adds the per-call filter
 // predicates.
 func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
+	if filters.RealtimeInputItemID != "" {
+		switch s.db.Dialector.Name() {
+		case "postgres":
+			fragment, _ := sonic.Marshal(map[string]any{"realtime_input_items": []map[string]string{{"id": filters.RealtimeInputItemID}}})
+			baseQuery = baseQuery.Where("metadata IS JSON OBJECT AND metadata::jsonb @> ?::jsonb", string(fragment))
+		case "clickhouse":
+			baseQuery = baseQuery.Where("isValidJSON(metadata) AND arrayExists(item -> JSONExtractString(item, 'id') = ?, JSONExtractArrayRaw(ifNull(metadata, '{}'), 'realtime_input_items'))", filters.RealtimeInputItemID)
+		default:
+			baseQuery = baseQuery.Where("json_valid(metadata) AND EXISTS (SELECT 1 FROM json_each(metadata, '$.realtime_input_items') AS realtime_item WHERE json_extract(realtime_item.value, '$.id') = ?)", filters.RealtimeInputItemID)
+		}
+	}
 	if len(filters.Providers) > 0 {
 		baseQuery = baseQuery.Where("provider IN ?", filters.Providers)
 	}
@@ -545,6 +556,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			baseQuery = baseQuery.Where(expr+" IN ?", codes)
 		}
 	}
+	if len(filters.GuardrailOutcomes) > 0 {
+		baseQuery = s.applyGuardrailOutcomeFilter(baseQuery, filters.GuardrailOutcomes)
+	}
 	if filters.ContentSearch != "" {
 		dialect := s.db.Dialector.Name()
 		if dialect == "postgres" {
@@ -598,6 +612,44 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		}
 	}
 	return baseQuery
+}
+
+// Guardrail outcome values accepted by SearchFilters.GuardrailOutcomes.
+const (
+	GuardrailOutcomeBlocked  = "blocked"
+	GuardrailOutcomeDetected = "detected"
+)
+
+// guardrailInterventionErrorType is the error type the guardrails plugin
+// returns when it blocks a request. Matching it keeps blocks logged before
+// interventions were recorded in guardrail_debug visible to the filter.
+const guardrailInterventionErrorType = "guardrail_intervention"
+
+// applyGuardrailOutcomeFilter keeps rows a guardrail blocked or flagged. Only
+// known outcomes reach the SQL; an unsupported dialect or an all-unknown list
+// matches nothing rather than silently returning every log.
+func (s *RDBLogStore) applyGuardrailOutcomeFilter(baseQuery *gorm.DB, outcomes []string) *gorm.DB {
+	dialect := s.db.Dialector.Name()
+	clauses := make([]string, 0, 3)
+	args := make([]any, 0, 1)
+	if slices.Contains(outcomes, GuardrailOutcomeBlocked) {
+		if expr, ok := jsonObjectFieldExpr(dialect, "error_details", "error", "type"); ok {
+			clauses = append(clauses, expr+" = ?")
+			args = append(args, guardrailInterventionErrorType)
+		}
+		if expr, ok := jsonArrayNotEmptyExpr(dialect, "guardrail_debug", "interventions"); ok {
+			clauses = append(clauses, expr)
+		}
+	}
+	if slices.Contains(outcomes, GuardrailOutcomeDetected) {
+		if expr, ok := jsonArrayNotEmptyExpr(dialect, "guardrail_debug", "detections"); ok {
+			clauses = append(clauses, expr)
+		}
+	}
+	if len(clauses) == 0 {
+		return baseQuery.Where("1 = 0")
+	}
+	return baseQuery.Where("("+strings.Join(clauses, " OR ")+")", args...)
 }
 
 // applyRootsOnlyFilter hides rows that nest under another row already present in
@@ -829,6 +881,11 @@ func (s *RDBLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
 			// the input summary already on the row.
 			if err := tx.Model(&Log{}).Where("id = ?", entry.ID).Omit("content_summary").Updates(serialized).Error; err != nil {
 				return err
+			}
+			if entry.RealtimeInputCorrection != nil {
+				if err := tx.Model(&Log{}).Where("id = ?", entry.ID).UpdateColumn("content_summary", entry.RealtimeInputCorrection.Summary).Error; err != nil {
+					return err
+				}
 			}
 			// Updates skips zero values, so a final "visible" (false) decision
 			// would never clear a hidden flag saved earlier; write it explicitly.
@@ -1602,6 +1659,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
+		// Only guardrail blocks, whose errors are bounded, are listed (see below).
 		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
 		"metadata", "cache_debug",
@@ -1617,7 +1675,21 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"has_object", "content_hidden",
 		"service_tier", "speed", "inference_geo",
 		"created_at",
+		// guardrail_debug holds only sanitized rule metadata (never matched
+		// text), so it stays small; the Guardrail Incidents view reads the
+		// rule, guardrail, phase and action of each row from it.
+		"guardrail_debug",
 	}, ", ")
+
+	// A guardrail block's error_details is the short message the guardrails
+	// plugin writes, unlike a provider error, so it is safe to list. It lets a
+	// block logged before interventions were recorded still name its reason.
+	guardrailErrorExpr := "NULL AS error_details"
+	if typeExpr, ok := jsonObjectFieldExpr(s.db.Dialector.Name(), "error_details", "error", "type"); ok {
+		guardrailErrorExpr = fmt.Sprintf("CASE WHEN %s = '%s' THEN error_details ELSE NULL END AS error_details",
+			typeExpr, guardrailInterventionErrorType)
+	}
+	baseCols += ", " + guardrailErrorExpr
 
 	var inputHistoryExpr, responsesInputExpr, outputMessageExpr string
 	switch s.db.Dialector.Name() {

@@ -132,6 +132,7 @@ export const vertexKeyConfigSchema = z
 		region: secretVarSchema.optional(),
 		auth_credentials: secretVarSchema.optional(),
 		force_single_region: z.boolean().optional(),
+		use_session_routing: z.boolean().optional(),
 		aws_workload_identity: vertexAWSWorkloadIdentitySchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.project_id), {
@@ -319,77 +320,6 @@ const isSecretVarMasked = (v: { value?: string; ref?: string; type?: string } | 
 	if (value.startsWith("env.") || value.startsWith("vault.")) return false;
 	return isRedacted(value);
 };
-
-const isLiteralDigits = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
-	if (!isSecretVarSet(v)) return true; // presence is checked separately
-	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
-	return /^\d+$/.test((v?.value ?? "").trim());
-};
-
-// GitHub issues App keys as PKCS#1 ("RSA PRIVATE KEY"); openssl can convert them to PKCS#8
-// ("PRIVATE KEY"). Nothing else signs an RS256 App JWT, so an EC or passphrase-encrypted key
-// is rejected here rather than at the first inference call.
-//
-// This checks the envelope only: the browser cannot parse DER. The server does the real
-// parse in validateProviderKeyURL, so this is a fast typo check, not the security boundary.
-// Literal backslash-n is tolerated because that is how a PEM most often arrives when it has
-// been round-tripped through JSON or an environment variable.
-const PEM_PRIVATE_KEY = /^-----BEGIN (RSA PRIVATE KEY|PRIVATE KEY)-----\s*\n([\s\S]*?)\n\s*-----END \1-----$/;
-
-const isLiteralPEM = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
-	if (!isSecretVarSet(v)) return true;
-	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
-	const body = (v?.value ?? "").replace(/\\n/g, "\n").trim();
-	const match = PEM_PRIVATE_KEY.exec(body);
-	// The back-reference makes BEGIN and END agree; the body must also carry something.
-	return !!match && match[2].trim().length > 0;
-};
-
-// githubCopilotKeyConfigComplete reports whether all four App credentials are present. It is
-// the check the outer key schema uses to decide whether this block is a real credential.
-export const githubCopilotKeyConfigComplete = (
-	data: { app_id?: unknown; installation_id?: unknown; repository_id?: unknown; private_key?: unknown } | undefined,
-): boolean => {
-	if (!data) return false;
-	const d = data as Record<string, { value?: string; ref?: string } | undefined>;
-	return isSecretVarSet(d.app_id) && isSecretVarSet(d.installation_id) && isSecretVarSet(d.repository_id) && isSecretVarSet(d.private_key);
-};
-
-// GitHub Copilot key config schema. Every field is optional because the whole block is
-// optional: a Copilot API token in `value` is the other valid auth mode. Once the operator
-// starts filling this block in, all four become required together and literals are checked
-// for shape, so a typo is caught in the form rather than at the first inference call.
-export const githubCopilotKeyConfigSchema = z
-	.object({
-		app_id: secretVarSchema.optional(),
-		installation_id: secretVarSchema.optional(),
-		repository_id: secretVarSchema.optional(),
-		private_key: secretVarSchema.optional(),
-		github_domain: secretVarSchema.optional(),
-	})
-	.superRefine((data, ctx) => {
-		const started =
-			isSecretVarSet(data.app_id) ||
-			isSecretVarSet(data.installation_id) ||
-			isSecretVarSet(data.repository_id) ||
-			isSecretVarSet(data.private_key);
-		if (!started) return;
-
-		for (const field of ["app_id", "installation_id", "repository_id", "private_key"] as const) {
-			if (!isSecretVarSet(data[field])) {
-				ctx.addIssue({ code: "custom", path: [field], message: "Required when using GitHub App credentials" });
-			}
-		}
-		if (!isLiteralDigits(data.installation_id)) {
-			ctx.addIssue({ code: "custom", path: ["installation_id"], message: "Installation ID must be numeric" });
-		}
-		if (!isLiteralDigits(data.repository_id)) {
-			ctx.addIssue({ code: "custom", path: ["repository_id"], message: "Repository ID must be numeric" });
-		}
-		if (!isLiteralPEM(data.private_key)) {
-			ctx.addIssue({ code: "custom", path: ["private_key"], message: "Private key must be a PKCS#1 or PKCS#8 PEM block" });
-		}
-	});
 
 // oauthKeyConfigComplete reports whether the block carries a usable credential for its grant.
 // It is the check the outer key schema uses to decide whether an empty key value is fine.
@@ -691,7 +621,6 @@ export const modelProviderKeySchema = z
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
 		databricks_key_config: databricksKeyConfigSchema.optional(),
-		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
 		cloudflare_key_config: cloudflareKeyConfigSchema.optional(),
 		oauth_key_config: oauthKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
@@ -731,13 +660,6 @@ export const modelProviderKeySchema = z
 					return true;
 				}
 				return isSecretVarSet(data.value);
-			}
-			// GitHub Copilot authenticates from its own key config when no API token is given.
-			// An empty block, or one carrying only github_domain, is not a credential: the
-			// nested schema permits it so token auth stays valid, so this is the only place
-			// that catches a key with no usable authentication at all.
-			if (githubCopilotKeyConfigComplete(data.github_copilot_key_config)) {
-				return true;
 			}
 			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require
 			// a top-level API key when the user explicitly chose the api_key auth method.
@@ -837,7 +759,7 @@ export const networkFormConfigSchema = z
 				z.string().length(0),
 			])
 			.optional(),
-		extra_headers: z.record(z.string(), z.string()).optional(),
+		extra_headers: z.record(z.string(), secretVarSchema).optional(),
 		default_request_timeout_in_seconds: z.coerce
 			.number("Timeout must be a number")
 			.min(1, "Timeout must be greater than 0 seconds")
@@ -1949,3 +1871,24 @@ export const setupTokenFormSchema = z.object({
 });
 
 export type SetupTokenFormSchema = z.infer<typeof setupTokenFormSchema>;
+// RSS feed added from the notification tray's Sources sheet. The server also
+// fetches the URL once and rejects anything that is not an RSS or Atom feed.
+export const rssFeedFormSchema = z.object({
+	name: z.string().trim().min(1, "Give the feed a name").max(120, "Name must be 120 characters or fewer"),
+	url: z
+		.string()
+		.trim()
+		.min(1, "Enter the feed URL")
+		.max(2048, "URL is too long")
+		.refine((value) => /^https?:\/\/[^\s/]+/i.test(value), "URL must start with http:// or https://"),
+	// Optional logo: an image URL typed in, or the data: URI of an uploaded file.
+	icon_url: z
+		.string()
+		.trim()
+		.refine(
+			(value) => value === "" || value.startsWith("data:image/") || /^https?:\/\/[^\s/]+/i.test(value),
+			"Logo must be an http(s) image URL or an uploaded image",
+		),
+});
+
+export type RSSFeedFormSchema = z.infer<typeof rssFeedFormSchema>;

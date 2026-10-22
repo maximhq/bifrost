@@ -40,6 +40,11 @@ var (
 	// ErrExchangeSubjectTokenMissing means the request carried no caller
 	// identity-provider token to use as the exchange subject.
 	ErrExchangeSubjectTokenMissing = errors.New("no caller identity-provider token available to exchange")
+	// ErrStoredSignInExpired means a request that qualified for the
+	// stored-session fallback found no usable stored sign-in: the user has
+	// none left, or it can no longer be renewed. Only signing in to Bifrost
+	// again produces a new one.
+	ErrStoredSignInExpired = errors.New("stored identity-provider sign-in has expired")
 	// ErrMCPReconnectNotApplicable signals that the reconnect operation is not
 	// meaningful for this client type — e.g. per-user OAuth clients, where
 	// each user manages their own auth and there is no shared upstream
@@ -119,7 +124,9 @@ type MCPAuthRequiredError struct {
 	// SubjectTokenMissing is true when the request carried no caller token to
 	// exchange; false means a token was present but the identity provider
 	// rejected the exchange, with ExchangeError carrying the provider's
-	// error/error_description for display.
+	// error/error_description for display. A request that fell back to the
+	// user's stored sign-in reports the same way: true when that sign-in has
+	// expired, false when the provider rejected the stored token.
 	SubjectTokenMissing bool   `json:"subject_token_missing,omitempty"`
 	ExchangeError       string `json:"exchange_error,omitempty"`
 }

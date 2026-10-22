@@ -432,6 +432,15 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// through the capability datasheet.
 	schemas.VLLM: {},
 	schemas.SGL:  {},
+	// GitHub documents no feature list, so the cells are what the first-party
+	// VS Code Copilot Chat client sends.
+	schemas.GithubCopilot: {
+		ToolSearch:             true,
+		AdvancedToolUse:        true,
+		ContextEditing:         true,
+		ContextManagementField: true,
+		InterleavedThinking:    true,
+	},
 }
 
 // ==================== REQUEST TYPES ====================

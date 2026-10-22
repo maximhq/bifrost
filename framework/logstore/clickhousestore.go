@@ -49,10 +49,11 @@ type ClickHouseLogStore struct {
 	// Cross-pod races are not covered, but a given request id is only mutated
 	// by the pod that processed it.
 	rmwLocks [chRMWShards]sync.Mutex
-	// warpLocker serializes Warp history writes across instances; rmwLocks only
-	// covers this process. Nil means single-instance behaviour. Set once at
-	// startup, before any Warp write, so it is read without synchronization.
-	warpLocker DistributedLocker
+	// locker serializes Warp history and user agent mapping writes across
+	// instances; rmwLocks only covers this process. Nil means single-instance
+	// behaviour. Set once at startup, before any such write, so it is read
+	// without synchronization.
+	locker DistributedLocker
 }
 
 // warpHistoryLockKey is the shared lock for one owner's Warp history. Hashed
@@ -63,10 +64,27 @@ func warpHistoryLockKey(ownerID string) string {
 	return "warp_history:" + hex.EncodeToString(sum[:])
 }
 
-// SetDistributedLocker gives the Warp history writes a lock every instance
-// sharing this ClickHouse honours.
+// userAgentMappingLockKey is the shared lock for one user agent mapping, hashed
+// because the id comes from the request path and the lock table caps keys at
+// 255 characters.
+func userAgentMappingLockKey(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return "user_agent_mapping:" + hex.EncodeToString(sum[:])
+}
+
+// SetDistributedLocker gives the Warp history and user agent mapping writes a
+// lock every instance sharing this ClickHouse honours.
 func (s *ClickHouseLogStore) SetDistributedLocker(locker DistributedLocker) {
-	s.warpLocker = locker
+	s.locker = locker
+}
+
+// lockShared takes the shared lock for key, or does nothing without a locker.
+// The returned context is cancelled if the lock is lost mid-write.
+func (s *ClickHouseLogStore) lockShared(ctx context.Context, key string) (context.Context, func(), error) {
+	if s.locker == nil {
+		return ctx, func() {}, nil
+	}
+	return s.locker.Acquire(ctx, key)
 }
 
 // lockWarpOwner takes the owner's shared Warp history lock, or does nothing
@@ -78,10 +96,7 @@ func (s *ClickHouseLogStore) SetDistributedLocker(locker DistributedLocker) {
 // The returned context is the one to write on: it is cancelled if the lock is
 // lost mid-write, so the write stops rather than finishing unprotected.
 func (s *ClickHouseLogStore) lockWarpOwner(ctx context.Context, ownerID string) (context.Context, func(), error) {
-	if s.warpLocker == nil {
-		return ctx, func() {}, nil
-	}
-	held, release, err := s.warpLocker.Acquire(ctx, warpHistoryLockKey(ownerID))
+	held, release, err := s.lockShared(ctx, warpHistoryLockKey(ownerID))
 	if err != nil {
 		return nil, nil, fmt.Errorf("acquire warp history lock: %w", err)
 	}
@@ -409,6 +424,9 @@ func (s *ClickHouseLogStore) BatchCreateAgentLogsIfNotExists(ctx context.Context
 // ReconcileAgentCorrelation uses ClickHouse's existing read-modify-reinsert update
 // model. Reinserted rows keep their immutable key and receive a newer version.
 func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entries []*AgentLog) error {
+	// Correlation scans must not load payload columns. A stream can have many
+	// large event bodies, while only rows missing identifiers need rewriting.
+	const correlationColumns = "id, timestamp, task_id, context_id"
 	type correlationKey struct {
 		agent string
 		id    string
@@ -429,15 +447,25 @@ func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entr
 
 	for key := range requestKeys {
 		var rows []AgentLog
-		if err := s.db.WithContext(ctx).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select(correlationColumns).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
 			return err
 		}
 		ids := make([]string, 0, len(rows))
+		complete := true
 		for i := range rows {
 			ids = append(ids, rows[i].ID)
+			if rows[i].TaskID == nil || *rows[i].TaskID == "" || rows[i].ContextID == nil || *rows[i].ContextID == "" {
+				complete = false
+			}
+			if rows[i].TaskID != nil && *rows[i].TaskID != "" {
+				taskKeys[correlationKey{agent: key.agent, id: *rows[i].TaskID}] = struct{}{}
+			}
+		}
+		if complete {
+			continue
 		}
 		unlock := s.lockRMWBatch("agent_logs", ids)
-		if err := s.db.WithContext(ctx).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select(correlationColumns).Where("agent_name = ? AND request_id = ?", key.agent, key.id).Order("timestamp, id").Find(&rows).Error; err != nil {
 			unlock()
 			return err
 		}
@@ -461,9 +489,27 @@ func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entr
 				changed = true
 			}
 			if changed {
-				if err := s.chReinsert(ctx, &rows[i]); err != nil {
+				// Reinsert the current full row, not the metadata projection, so
+				// serialized content and concurrent object-storage updates survive.
+				var full AgentLog
+				if err := s.db.WithContext(ctx).Where("id = ? AND timestamp = fromUnixTimestamp64Milli(?)", rows[i].ID, rows[i].Timestamp.UnixMilli()).First(&full).Error; err != nil {
 					unlock()
 					return err
+				}
+				changed = false
+				if (full.TaskID == nil || *full.TaskID == "") && rows[i].TaskID != nil && *rows[i].TaskID != "" {
+					full.TaskID = rows[i].TaskID
+					changed = true
+				}
+				if (full.ContextID == nil || *full.ContextID == "") && rows[i].ContextID != nil && *rows[i].ContextID != "" {
+					full.ContextID = rows[i].ContextID
+					changed = true
+				}
+				if changed {
+					if err := s.chReinsert(ctx, &full); err != nil {
+						unlock()
+						return err
+					}
 				}
 			}
 			if rows[i].TaskID != nil && *rows[i].TaskID != "" {
@@ -475,15 +521,22 @@ func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entr
 
 	for key := range taskKeys {
 		var rows []AgentLog
-		if err := s.db.WithContext(ctx).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select(correlationColumns).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
 			return err
 		}
 		ids := make([]string, 0, len(rows))
+		complete := true
 		for i := range rows {
 			ids = append(ids, rows[i].ID)
+			if rows[i].ContextID == nil || *rows[i].ContextID == "" {
+				complete = false
+			}
+		}
+		if complete {
+			continue
 		}
 		unlock := s.lockRMWBatch("agent_logs", ids)
-		if err := s.db.WithContext(ctx).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
+		if err := s.db.WithContext(ctx).Select(correlationColumns).Where("agent_name = ? AND task_id = ?", key.agent, key.id).Find(&rows).Error; err != nil {
 			unlock()
 			return err
 		}
@@ -497,8 +550,16 @@ func (s *ClickHouseLogStore) ReconcileAgentCorrelation(ctx context.Context, entr
 		if contextID != nil {
 			for i := range rows {
 				if rows[i].ContextID == nil || *rows[i].ContextID == "" {
-					rows[i].ContextID = contextID
-					if err := s.chReinsert(ctx, &rows[i]); err != nil {
+					var full AgentLog
+					if err := s.db.WithContext(ctx).Where("id = ? AND timestamp = fromUnixTimestamp64Milli(?)", rows[i].ID, rows[i].Timestamp.UnixMilli()).First(&full).Error; err != nil {
+						unlock()
+						return err
+					}
+					if full.ContextID != nil && *full.ContextID != "" {
+						continue
+					}
+					full.ContextID = contextID
+					if err := s.chReinsert(ctx, &full); err != nil {
 						unlock()
 						return err
 					}
@@ -682,6 +743,9 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 				}
 				// The overlay skips zero values; the final visibility is always written.
 				r.ContentHidden = src.ContentHidden
+				if src.RealtimeInputCorrection != nil {
+					r.ContentSummary = src.RealtimeInputCorrection.Summary
+				}
 			}
 		}
 		return s.chReinsert(ctx, &rows)
@@ -828,6 +892,59 @@ func (s *ClickHouseLogStore) chFlushProcessing(ctx context.Context, table string
 	return s.chLightweightDelete(ctx, table, where, since)
 }
 
+// UpdateUserAgentMapping re-inserts a patched copy of the mapping, since
+// ReplacingMergeTree has no in-place UPDATE. The shared lock keeps a delete on
+// another instance from landing between the read and the re-insert, which
+// would bring the deleted mapping back.
+func (s *ClickHouseLogStore) UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error {
+	ctx, release, err := s.lockShared(ctx, userAgentMappingLockKey(id))
+	if err != nil {
+		return fmt.Errorf("failed to acquire user agent mapping lock: %w", err)
+	}
+	defer release()
+	defer s.lockRMW("user_agent_mappings", id)()
+	var existing UserAgentMapping
+	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return gorm.ErrRecordNotFound
+		}
+		return fmt.Errorf("failed to update user agent mapping: %w", err)
+	}
+	existing.Pattern = mapping.Pattern
+	existing.MatchType = mapping.MatchType
+	existing.App = mapping.App
+	existing.Logo = mapping.Logo
+	existing.LogoMime = mapping.LogoMime
+	existing.IsActive = mapping.IsActive
+	existing.UpdatedAt = time.Now().UTC()
+	if err := s.chReinsert(ctx, &existing); err != nil {
+		return fmt.Errorf("failed to update user agent mapping: %w", err)
+	}
+	return nil
+}
+
+// DeleteUserAgentMapping deletes a mapping with a lightweight delete. Mutations
+// never report rows affected, so existence is checked first.
+func (s *ClickHouseLogStore) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	ctx, release, err := s.lockShared(ctx, userAgentMappingLockKey(id))
+	if err != nil {
+		return fmt.Errorf("failed to acquire user agent mapping lock: %w", err)
+	}
+	defer release()
+	defer s.lockRMW("user_agent_mappings", id)()
+	exists, err := s.chExistsWhere(ctx, "user_agent_mappings", "id = ?", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete user agent mapping: %w", err)
+	}
+	if !exists {
+		return gorm.ErrRecordNotFound
+	}
+	if err := s.chLightweightDelete(ctx, "user_agent_mappings", "id = ?", id); err != nil {
+		return fmt.Errorf("failed to delete user agent mapping: %w", err)
+	}
+	return nil
+}
+
 // DeleteLogsBatch deletes every log older than cutoff with one lightweight
 // delete per call. batchSize is ignored: a ClickHouse mutation costs the same
 // per affected part whether it matches 100 rows or all of them, so batching
@@ -913,6 +1030,14 @@ func (s *ClickHouseLogStore) Flush(ctx context.Context, since time.Time) error {
 func (s *ClickHouseLogStore) FlushMCPToolLogs(ctx context.Context, since time.Time) error {
 	if err := s.chFlushProcessing(ctx, "mcp_tool_logs", since); err != nil {
 		return fmt.Errorf("failed to cleanup old processing MCP tool logs: %w", err)
+	}
+	return nil
+}
+
+// FlushAgentLogs removes stale processing A2A log rows. See Flush.
+func (s *ClickHouseLogStore) FlushAgentLogs(ctx context.Context, since time.Time) error {
+	if err := s.chFlushProcessing(ctx, "agent_logs", since); err != nil {
+		return fmt.Errorf("failed to cleanup old processing A2A logs: %w", err)
 	}
 	return nil
 }
