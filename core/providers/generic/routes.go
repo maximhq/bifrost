@@ -115,6 +115,17 @@ func resolveUsage(base *schemas.GenericUsageConfig, override *schemas.GenericUsa
 	return out
 }
 
+// billableByDefault resolves a route's billable flag: the explicit value when set, else the
+// method default shared with unrouted operations (GET and HEAD are polls and listings, not
+// counted; everything else is). A route therefore never flips a method's billing just by
+// existing, which matters for routes imported wholesale from an OpenAPI document.
+func billableByDefault(method string, explicit *bool) bool {
+	if explicit != nil {
+		return *explicit
+	}
+	return !strings.EqualFold(method, "GET") && !strings.EqualFold(method, "HEAD")
+}
+
 func compileRoutes(cfg *schemas.GenericProviderConfig) []compiledRoute {
 	if cfg == nil || len(cfg.Routes) == 0 {
 		return nil
@@ -124,7 +135,7 @@ func compileRoutes(cfg *schemas.GenericProviderConfig) []compiledRoute {
 		compiled := compiledRoute{
 			method:   strings.ToUpper(route.Method),
 			glob:     compileGlob(route.Path),
-			billable: route.Billable == nil || *route.Billable,
+			billable: billableByDefault(route.Method, route.Billable),
 			stream:   route.Stream,
 			usage:    resolveUsage(cfg.Usage, route.Usage),
 		}

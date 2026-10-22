@@ -25938,3 +25938,30 @@ func TestValidateGenericKeys(t *testing.T) {
 	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthAWSSigV4, schemas.Key{Name: "aws"})))
 	require.NoError(t, ValidateGenericKeys(configstore.ProviderConfig{Keys: []schemas.Key{{Name: "k1"}}, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}}), "other base types are untouched")
 }
+
+// TestValidateCustomProviderUpdate_GenericAuthTypeChangeChecksKeys pins the provider update rule:
+// switching a generic provider from aws_sigv4 (keys hold AWS credentials, no value) to an
+// injecting auth type is refused while its stored keys carry no value, and allowed once they do
+// or when the new type injects nothing.
+func TestValidateCustomProviderUpdate_GenericAuthTypeChangeChecksKeys(t *testing.T) {
+	withAuth := func(authType schemas.GenericAuthType, keys ...schemas.Key) configstore.ProviderConfig {
+		return configstore.ProviderConfig{
+			Keys:          keys,
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://textract.us-east-1.amazonaws.com"},
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{
+				Auth: schemas.GenericAuthConfig{Type: authType, HeaderName: "x-api-key", AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}},
+			}},
+		}
+	}
+	awsKey := schemas.Key{Name: "aws", BedrockKeyConfig: &schemas.BedrockKeyConfig{Region: schemas.NewSecretVar("us-east-1")}}
+	existing := withAuth(schemas.GenericAuthAWSSigV4, awsKey)
+
+	err := ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthBearer, awsKey), existing, "textract")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `key "aws" has no value`)
+	require.Error(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthHeader, awsKey), existing, "textract"))
+
+	require.NoError(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthNone, awsKey), existing, "textract"), "none injects nothing")
+	require.NoError(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthAWSSigV4, awsKey), existing, "textract"), "unchanged")
+	require.NoError(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthBearer, schemas.Key{Name: "k", Value: *schemas.NewSecretVar("tvly-x")}), existing, "textract"), "a key with a value fits bearer")
+}

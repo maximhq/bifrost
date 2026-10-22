@@ -140,7 +140,7 @@ curl -X POST http://localhost:8080/api/providers/tavily/keys \
 - `aws_sigv4` signs the request with the key's `bedrock_key_config` credentials (static keys, an assumed role, or the default AWS credential chain when the key holds none). Caller signature headers (`x-amz-date`, `x-amz-security-token`, `x-amz-content-sha256`, ...) are dropped before signing; operation headers such as `X-Amz-Target` are kept.
 - `none` injects nothing. A provider with `is_key_less: true` must use it.
 - With `aws_sigv4`, a key that carries no credentials signs with the gateway's own AWS credential chain (instance role, environment, shared config), the same way Bedrock keys do. The caller chooses the operation through headers such as `X-Amz-Target`, so that role's permissions on the service are what every virtual key holder can exercise. Give such providers a dedicated key with scoped credentials or a role ARN.
-- Every auth type except `none` and `aws_sigv4` requires the key to have a value, whether the key is created through the API or declared in config.json.
+- Every auth type except `none` and `aws_sigv4` requires the key to have a value, whether the key is created through the API or declared in config.json. Changing a provider's auth type to one of those is refused while any of its stored keys has no value (for example keys that held AWS credentials for `aws_sigv4`), so the relay never sends an unauthenticated request.
 
 ### `usage`
 
@@ -155,7 +155,7 @@ Paths are [gjson](https://github.com/tidwall/gjson) paths. Tokens and cost are r
 | `units_path` | gjson path of a billable quantity (pages, credits, text). Ignored when `units_measure` is `body_bytes` |
 | `units_source` | `response` (default): a count the API reports. `request`: what the caller sent, which per-character APIs bill on |
 | `units_measure` | `value` (default): the number at the path. `chars`: the character count of the string at the path. `body_bytes`: the byte length of the whole body |
-| `cost_per_unit` | USD per unit |
+| `cost_per_unit` | USD per unit. A route may set `0` to waive the provider's unit pricing |
 | `disable_optimistic_parsing` | Read only the configured paths |
 
 **Per-unit pricing.** Most non-LLM APIs bill by quantity, and the quantity is in a different place for each:
@@ -173,7 +173,7 @@ Cost per call is `units × cost_per_unit + cost_per_request + extracted cost`. R
 
 **`ignore_provider_cost`.** On a generic provider the Pricing tab's "ignore provider cost" switch drops only what the upstream reports (`cost_path`); the flat fee and unit pricing are yours and keep applying.
 
-**What gets charged.** Every successful (2xx) call on a billable route reports usage, even when nothing could be read from the response, so it counts as one request against rate limits. Cost is `extracted cost + cost_per_request`; budgets are charged when that is above zero. Non-2xx responses and non-billable routes report nothing. Without a matching route, `GET` and `HEAD` are not billable (they are usually polls and listings); add a route with `billable: true` to count them.
+**What gets charged.** Every successful (2xx) call on a billable route reports usage, even when nothing could be read from the response, so it counts as one request against rate limits. Cost is `extracted cost + cost_per_request`; budgets are charged when that is above zero. Non-2xx responses and non-billable routes report nothing. `GET` and `HEAD` are not billable by default, with or without a route (they are usually polls and listings); add a route with `billable: true` to count them.
 
 **Streams.** Usage fields accumulate across SSE events, so an API that reports input tokens on its first event and output tokens on its last is billed for both.
 
@@ -192,11 +192,11 @@ Detection order: the matching route's `stream` flag, then `streaming.paths`, the
 | --- | --- |
 | `method` | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD` |
 | `path` | Rooted segment glob: `*` matches within a segment (`/jobs/*`), a trailing `/**` matches the prefix and everything below |
-| `billable` | `false` relays the call without counting or charging it (status polls, listings). Default `true` |
+| `billable` | `false` relays the call without counting or charging it (status polls, listings); `true` counts it. Unset keeps the method default: `GET` and `HEAD` are not billable, every other method is |
 | `stream` | Forces the streaming (`true`) or buffered (`false`) relay for this route |
 | `usage` | Field-by-field override of the provider `usage` mapping |
 
-The first matching route wins. A request matching no route uses the provider defaults and is billable.
+The first matching route wins. A request matching no route uses the provider defaults and the method default for billing, so listing every operation of an API as routes (for example from an OpenAPI import) does not start charging its polls and listings.
 
 ### `strict_routes`
 

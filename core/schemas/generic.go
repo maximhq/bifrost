@@ -185,7 +185,9 @@ func (u *GenericUsageConfig) validate(field string) error {
 	default:
 		return fmt.Errorf("%s.units_measure: unsupported value %q", field, u.UnitsMeasure)
 	}
-	if u.CostPerUnit != nil && u.UnitsMeasure != GenericUnitsBodyBytes && u.UnitsPath == "" {
+	// A zero cost_per_unit is "no unit pricing" (a route may set it to waive the provider's), so
+	// it needs no path to read a quantity from.
+	if u.CostPerUnit != nil && *u.CostPerUnit > 0 && u.UnitsMeasure != GenericUnitsBodyBytes && u.UnitsPath == "" {
 		return fmt.Errorf("%s.units_path is required with cost_per_unit unless units_measure is body_bytes", field)
 	}
 	return nil

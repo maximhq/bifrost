@@ -281854,6 +281854,56 @@
           }
         },
         {
+          "name": "262.13 GET /passthrough/generic_echo/headers - a GET route listed without a billable flag keeps the method default and is not charged (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// GET /headers is a routes[] entry with no billable flag (as an OpenAPI import produces). A route's billable",
+                  "// defaults to the method default, so this GET is relayed but neither counted nor charged: the log row carries no cost.",
+                  "pm.test('generic relay: GET route relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.passthrough_response_body !== undefined) {",
+                  "      pm.test('generic relay: unflagged GET route carries no cost', function () { pm.expect(row.cost === undefined || row.cost === null || row.cost === 0, JSON.stringify({cost: row.cost})).to.be.true; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: log row appeared', function () { pm.expect.fail('log ' + reqId + ' not found after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo/headers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo",
+                "headers"
+              ]
+            }
+          }
+        },
+        {
           "name": "262.14 POST /passthrough/generic_echo_units/post - per-unit pricing: cost on the log row is units x rate plus the flat fee (generic passthrough)",
           "event": [
             {

@@ -92,4 +92,5 @@ func TestGenericUsageConfigUnitsValidation(t *testing.T) {
 	bad(&GenericUsageConfig{UnitsPath: "pages", UnitsSource: "header", CostPerUnit: Ptr(1.0)}, "units_source")
 	bad(&GenericUsageConfig{UnitsPath: "pages", UnitsMeasure: "words", CostPerUnit: Ptr(1.0)}, "units_measure")
 	bad(&GenericUsageConfig{CostPerUnit: Ptr(1.0)}, "units_path is required")
+	ok(&GenericUsageConfig{CostPerUnit: Ptr(0.0)}) // zero is "no unit pricing" and needs no path (a route waiving the provider's)
 }

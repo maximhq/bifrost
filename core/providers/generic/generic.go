@@ -157,15 +157,14 @@ func isEventStream(contentType string) bool {
 }
 
 // resolve returns the usage mapping and billing flag for a request: the matching route's, or the
-// provider defaults. Without a route, GET and HEAD are not billable: on most APIs they are status
-// polls and listings, and charging a poll would spend a caller's allowance on nothing. A route can
-// turn that around either way.
+// provider defaults. GET and HEAD are not billable unless a route says so: on most APIs they are
+// status polls and listings, and charging a poll would spend a caller's allowance on nothing. A
+// route's explicit billable flag turns that around either way.
 func (provider *GenericProvider) resolve(method, path string) (resolvedUsage, bool, *compiledRoute) {
 	if route := provider.matchRoute(method, path); route != nil {
 		return route.usage, route.billable, route
 	}
-	billable := !strings.EqualFold(method, http.MethodGet) && !strings.EqualFold(method, http.MethodHead)
-	return provider.usage, billable, nil
+	return provider.usage, billableByDefault(method, nil), nil
 }
 
 // ModelPath implements PassthroughProvider.

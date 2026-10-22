@@ -12,6 +12,7 @@ import {
 	GenericProviderConfig,
 	GenericRouteMethods,
 	GenericUnitsMeasureLabels,
+	genericRouteBillableByDefault,
 	GenericUnitsSourceLabels,
 	ModelProvider,
 } from "@/lib/types/config";
@@ -67,7 +68,11 @@ function toFormValues(cfg: GenericProviderConfig | undefined): FormValues {
 		},
 		usage: { ...emptyUsage, ...(cfg?.usage ?? {}) },
 		streaming: { paths: cfg?.streaming?.paths ?? [], detect_from_accept_header: cfg?.streaming?.detect_from_accept_header ?? false },
-		routes: (cfg?.routes ?? []).map((r) => ({ ...r, usage: { ...emptyUsage, cost_per_request: undefined, ...(r.usage ?? {}) } })),
+		routes: (cfg?.routes ?? []).map((r) => ({
+			...r,
+			billable: r.billable ?? genericRouteBillableByDefault(r.method),
+			usage: { ...emptyUsage, cost_per_request: undefined, ...(r.usage ?? {}) },
+		})),
 		strict_routes: cfg?.strict_routes ?? false,
 	};
 }
@@ -75,7 +80,9 @@ function toFormValues(cfg: GenericProviderConfig | undefined): FormValues {
 // Empty strings are form conveniences, not config: strip them so the stored block only carries
 // what the operator set, and a usage block with nothing in it is dropped altogether.
 // keepZeroFee is set for route usage: a route's explicit 0 waives the provider fee and must be
-// sent, while the provider-level field treats 0 as "no fee" and is dropped.
+// sent, while the provider-level field treats 0 as "no fee" and is dropped. A zero cost_per_unit
+// is never sent: the form has no route-level unit pricing, and a 0 there would waive the
+// provider's unit pricing on that route.
 function cleanUsage(usage: FormValues["usage"], keepZeroFee = false) {
 	if (!usage) return undefined;
 	const out: NonNullable<GenericProviderConfig["usage"]> = {};
@@ -85,7 +92,7 @@ function cleanUsage(usage: FormValues["usage"], keepZeroFee = false) {
 	if (usage.total_tokens_path) out.total_tokens_path = usage.total_tokens_path;
 	if (usage.cost_path) out.cost_path = usage.cost_path;
 	if (usage.cost_per_request !== undefined && (keepZeroFee || usage.cost_per_request > 0)) out.cost_per_request = usage.cost_per_request;
-	if (usage.cost_per_unit !== undefined && (keepZeroFee || usage.cost_per_unit > 0)) {
+	if (usage.cost_per_unit !== undefined && usage.cost_per_unit > 0) {
 		out.cost_per_unit = usage.cost_per_unit;
 		if (usage.units_path) out.units_path = usage.units_path;
 		if (usage.units_source && usage.units_source !== "response") out.units_source = usage.units_source;
@@ -118,7 +125,9 @@ function toConfig(values: FormValues): GenericProviderConfig {
 		cfg.routes = values.routes.map((r) => ({
 			method: r.method,
 			path: r.path,
-			billable: r.billable === false ? false : undefined,
+			// Stored only when it departs from the method default, so the config stays what the operator decided.
+			billable:
+				(r.billable ?? genericRouteBillableByDefault(r.method)) === genericRouteBillableByDefault(r.method) ? undefined : r.billable,
 			stream: r.stream,
 			usage: cleanUsage(r.usage, true),
 		}));
@@ -193,7 +202,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 				routes.append({
 					method: route.method,
 					path: route.path,
-					billable: true,
+					billable: genericRouteBillableByDefault(route.method),
 					stream: undefined,
 					usage: { ...emptyUsage, cost_per_request: undefined },
 				});
@@ -345,7 +354,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 						request <code className="font-mono text-xs">model</code>, response{" "}
 						<code className="font-mono text-xs">usage.prompt_tokens|input_tokens</code>,{" "}
 						<code className="font-mono text-xs">usage.completion_tokens|output_tokens</code>,{" "}
-						<code className="font-mono text-xs">usage.total_tokens</code>, <code className="font-mono text-xs">usage.cost|cost</code>.
+						<code className="font-mono text-xs">usage.total_tokens</code>, <code className="font-mono text-xs">usage.cost</code>.
 					</p>
 					<div className="grid gap-4 md:grid-cols-2">
 						{textField("usage.model_path", "Model path", "model", "generic-usage-model-path-input")}
@@ -530,7 +539,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 								routes.append({
 									method: "POST",
 									path: "/",
-									billable: true,
+									billable: genericRouteBillableByDefault("POST"),
 									stream: undefined,
 									usage: { ...emptyUsage, cost_per_request: undefined },
 								})
@@ -619,7 +628,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 												<p className="text-sm font-medium">Billable</p>
 												<Switch
 													size="md"
-													checked={field.value !== false}
+													checked={!!field.value}
 													onCheckedChange={field.onChange}
 													disabled={disabled}
 													data-testid={`generic-route-billable-switch-${index}`}

@@ -71,7 +71,40 @@ func TestMatchRouteFirstWins(t *testing.T) {
 	_, billable, _ = provider.resolve("HEAD", "/x")
 	assert.False(t, billable)
 	_, billable, _ = provider.resolve("GET", "/jobs/9")
-	assert.True(t, billable, "a route makes any method billable")
+	assert.False(t, billable, "a route without an explicit billable keeps the method default: a GET stays unbilled")
+}
+
+// A route's billable flag is explicit or inherits the method default, so a routes list imported
+// wholesale (every operation of an OpenAPI document) does not turn polls and listings into
+// charged calls, while an explicit true on a GET still counts it.
+func TestRouteBillableInheritsMethodDefault(t *testing.T) {
+	cfg := &schemas.GenericProviderConfig{
+		Routes: []schemas.GenericRouteConfig{
+			{Method: "GET", Path: "/jobs/*"},
+			{Method: "HEAD", Path: "/jobs/*"},
+			{Method: "POST", Path: "/jobs"},
+			{Method: "DELETE", Path: "/jobs/*"},
+			{Method: "GET", Path: "/report", Billable: schemas.Ptr(true)},
+			{Method: "POST", Path: "/free", Billable: schemas.Ptr(false)},
+		},
+	}
+	provider := &GenericProvider{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(cfg.Usage, nil)}
+	cases := []struct {
+		method, path string
+		want         bool
+	}{
+		{"GET", "/jobs/1", false},
+		{"HEAD", "/jobs/1", false},
+		{"POST", "/jobs", true},
+		{"DELETE", "/jobs/1", true},
+		{"GET", "/report", true},
+		{"POST", "/free", false},
+	}
+	for _, tc := range cases {
+		_, billable, matched := provider.resolve(tc.method, tc.path)
+		require.NotNilf(t, matched, "%s %s must match a route", tc.method, tc.path)
+		assert.Equalf(t, tc.want, billable, "%s %s", tc.method, tc.path)
+	}
 }
 
 // A route may waive the provider's flat fee by setting cost_per_request to 0, and may name its

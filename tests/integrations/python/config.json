@@ -98,6 +98,10 @@
               "method": "GET",
               "path": "/get",
               "billable": false
+            },
+            {
+              "method": "GET",
+              "path": "/headers"
             }
           ]
         }

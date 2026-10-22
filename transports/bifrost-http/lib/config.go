@@ -1943,9 +1943,6 @@ func processProvider(
 	if err := providerCfgInFile.Passthrough.Validate(); err != nil {
 		return fmt.Errorf("invalid passthrough for provider %s: %w", provider, err)
 	}
-	if err := ValidateGenericKeys(providerCfgInFile); err != nil {
-		return fmt.Errorf("provider %s: %w", provider, err)
-	}
 
 	baseProvider := provider
 	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
@@ -9793,6 +9790,12 @@ func validateGenericCustomProvider(config configstore.ProviderConfig, cpc *schem
 	if cpc.IsKeyLess && cpc.GenericConfig.Auth.Type != schemas.GenericAuthNone {
 		return fmt.Errorf("custom provider validation failed: is_key_less requires generic_config.auth.type \"none\"")
 	}
+	// The keys the provider already holds (or declares in config.json) must fit the auth type: a
+	// switch from aws_sigv4 or none to an injecting type would otherwise leave valueless keys that
+	// send every request upstream with no credential at all.
+	if err := ValidateGenericKeys(config); err != nil {
+		return fmt.Errorf("custom provider validation failed: %w", err)
+	}
 	if cpc.AllowedRequests == nil {
 		cpc.AllowedRequests = &schemas.AllowedRequests{Passthrough: true, PassthroughStream: true}
 		return nil
@@ -9816,9 +9819,10 @@ func IgnoresProviderCostInCatalog(cfg configstore.ProviderConfig) bool {
 	return cfg.CustomProviderConfig == nil || cfg.CustomProviderConfig.BaseProviderType != schemas.Generic
 }
 
-// ValidateGenericKeys applies the same rule the key API enforces to keys declared in config.json:
-// a generic provider whose auth type injects the key value refuses a key without one, so the
-// relay never sends an unauthenticated request and reports a 401 nobody can explain.
+// ValidateGenericKeys applies the same rule the key API enforces to the keys a provider config
+// carries, whether declared in config.json or already stored when the auth type changes through
+// the provider API: a generic provider whose auth type injects the key value refuses a key without
+// one, so the relay never sends an unauthenticated request and reports a 401 nobody can explain.
 func ValidateGenericKeys(cfg configstore.ProviderConfig) error {
 	if !GenericKeyValueRequired(cfg.CustomProviderConfig) {
 		return nil

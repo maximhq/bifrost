@@ -620,6 +620,10 @@ export type GenericRouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "
 
 export const GenericRouteMethods: GenericRouteMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
 
+// genericRouteBillableByDefault mirrors the relay's method default: GET and HEAD are polls and
+// listings and are not counted or charged unless a route says so; every other method is.
+export const genericRouteBillableByDefault = (method: GenericRouteMethod): boolean => method !== "GET" && method !== "HEAD";
+
 // GenericRouteConfig matching Go's schemas.GenericRouteConfig
 export interface GenericRouteConfig {
 	method: GenericRouteMethod;
