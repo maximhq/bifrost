@@ -318,6 +318,8 @@ curl --location 'http://localhost:8080/v1/audio/transcriptions' \
 
 Choose between simple text output or detailed JSON responses with timestamps. The verbose JSON format provides word-level and segment-level timing information, useful for creating subtitles or analyzing speech patterns.
 
+For supported non-streaming `text`, `srt`, and `vtt` requests, the response contains the text or subtitle body directly, without an `extra_fields` JSON envelope. OpenAI-compatible transcription backends retain the upstream content type. Routing metadata is available in the `x-bifrost-*` response headers; `send_back_raw_response` is not required for these formats.
+
 ```bash
 # Text only response
 curl --location 'http://localhost:8080/v1/audio/transcriptions' \
