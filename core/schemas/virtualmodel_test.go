@@ -76,8 +76,8 @@ func TestSelectPrefersResidentOverOrder(t *testing.T) {
 	if res.ObservedAt.IsZero() {
 		t.Fatal("ObservedAt is zero, want the snapshot's observation time")
 	}
-	if len(res.Members) != 2 || res.Members[0].Model != "Flash" {
-		t.Fatalf("Members = %+v, want both candidates in configured order", res.Members)
+	if res.Reason != "first resident candidate" {
+		t.Fatalf("Reason = %q, want the resident-candidate path", res.Reason)
 	}
 }
 
@@ -137,15 +137,19 @@ func TestSelectUnansweredProbeRefusesThenFallsBackByPolicy(t *testing.T) {
 	}
 }
 
-// Candidates the adapter did not report stay unknown, never resident.
+// Candidates the adapter did not report stay unknown, never resident, so the choice falls through
+// to the first candidate rather than treating the silence as availability.
 func TestSelectTreatsAbsentCandidateAsUnknown(t *testing.T) {
-	res, err := SelectVirtualModelTarget(testVirtualModel(),
-		resident(map[string]ResidencyState{"Flash": ResidencyUnloaded}))
+	snapshot := resident(map[string]ResidencyState{"Flash": ResidencyUnloaded})
+	res, err := SelectVirtualModelTarget(testVirtualModel(), snapshot)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := res.Members[1].State; got != ResidencyUnknown {
+	if got := snapshot.StateOf("27B"); got != ResidencyUnknown {
 		t.Fatalf("absent candidate state = %q, want %q", got, ResidencyUnknown)
+	}
+	if res.Model != "Flash" {
+		t.Fatalf("Model = %q, want the first candidate, not the unreported one", res.Model)
 	}
 }
 
@@ -180,6 +184,21 @@ func TestStateOfIsCaseInsensitive(t *testing.T) {
 	}
 }
 
+// A reader that keyed an entry the way the backend wrote it, bypassing SetState, is reached by the
+// fallback scan: neither the exact key nor the lowercase form of the candidate matches it.
+func TestStateOfScansAKeyStoredUnnormalized(t *testing.T) {
+	snapshot := &ResidencySnapshot{Provider: "llama.cpp", States: map[string]ResidencyState{"Flash": ResidencyReady}}
+	if got := snapshot.StateOf("flash"); got != ResidencyReady {
+		t.Fatalf("StateOf = %q, want the scan to find the entry stored as %q", got, "Flash")
+	}
+	if got := snapshot.StateOf("Flash"); got != ResidencyReady {
+		t.Fatalf("StateOf = %q, want the exact-key hit", got)
+	}
+	if got := snapshot.StateOf("nothing"); got != ResidencyUnknown {
+		t.Fatalf("StateOf = %q, want unknown for a candidate nobody reported", got)
+	}
+}
+
 func TestSetStateNormalizesKeys(t *testing.T) {
 	snapshot := &ResidencySnapshot{Provider: "ollama"}
 	snapshot.SetState("  Qwen3:30B ", ResidencyReady)
@@ -202,9 +221,25 @@ func TestNormalizeModelErrorPolicy(t *testing.T) {
 	}
 }
 
+// Production shape: readers store keys lowercased and candidate models are usually written in
+// lowercase, so each lookup is an exact hit and selection allocates only the resolution itself.
 func BenchmarkSelectVirtualModelTarget(b *testing.B) {
+	model := &VirtualModel{Name: "qwen38", Provider: "omlx", Models: []string{"flash", "27b"}, OnProbeError: VirtualModelErrorOnProbeError}
+	states := resident(map[string]ResidencyState{"flash": ResidencyUnloaded, "27b": ResidencyReady})
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := SelectVirtualModelTarget(model, states); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Keys written the way a reader that bypassed SetState would write them, so neither lookup is an
+// exact hit: "FLASH" is reachable only through the EqualFold scan, "27b" only after normalizing the
+// candidate. That is what a snapshot keyed in mixed case costs per selection.
+func BenchmarkSelectVirtualModelTargetCaseFolded(b *testing.B) {
 	model := testVirtualModel()
-	states := resident(map[string]ResidencyState{"Flash": ResidencyUnloaded, "27B": ResidencyReady})
+	states := resident(map[string]ResidencyState{"FLASH": ResidencyUnloaded, "27b": ResidencyReady})
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		if _, err := SelectVirtualModelTarget(model, states); err != nil {

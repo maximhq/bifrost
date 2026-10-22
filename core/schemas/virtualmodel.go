@@ -214,8 +214,15 @@ func (s *ResidencySnapshot) StateOf(model string) ResidencyState {
 	if s == nil || s.States == nil {
 		return ResidencyUnknown
 	}
-	if state, ok := s.States[strings.ToLower(strings.TrimSpace(model))]; ok {
+	// SetState stores lowercased, so a candidate the operator wrote in lowercase is already a key:
+	// try it before normalizing, which would build a copy of the string for nothing.
+	if state, ok := s.States[model]; ok {
 		return state
+	}
+	if normalized := strings.ToLower(strings.TrimSpace(model)); normalized != model {
+		if state, ok := s.States[normalized]; ok {
+			return state
+		}
 	}
 	for name, state := range s.States {
 		if strings.EqualFold(name, model) {
@@ -228,22 +235,16 @@ func (s *ResidencySnapshot) StateOf(model string) ResidencyState {
 	return ResidencyUnknown
 }
 
-// VirtualModelResolution is the decision plus the evidence behind it. Members and
-// ObservedAt travel with it so a response, a log record, and the UI can show how
-// stale the knowledge was instead of asserting a pick the backend may have changed.
+// VirtualModelResolution is the decision and how stale the knowledge behind it was. ObservedAt
+// travels with it so a response or a log record can show that instead of asserting a pick the
+// backend may already have changed. Per-candidate states are read from the snapshot itself, which
+// is what the residency status route does.
 type VirtualModelResolution struct {
-	VirtualModel string              `json:"virtual_model"`
-	Provider     ModelProvider       `json:"provider"`
-	Model        string              `json:"model"`
-	Reason       string              `json:"reason"`
-	ObservedAt   time.Time           `json:"observed_at,omitempty"`
-	Members      []VirtualMemberView `json:"members,omitempty"`
-}
-
-// VirtualMemberView is one candidate's reported state, for diagnostics.
-type VirtualMemberView struct {
-	Model string         `json:"model"`
-	State ResidencyState `json:"state"`
+	VirtualModel string        `json:"virtual_model"`
+	Provider     ModelProvider `json:"provider"`
+	Model        string        `json:"model"`
+	Reason       string        `json:"reason"`
+	ObservedAt   time.Time     `json:"observed_at,omitempty"`
 }
 
 // SelectVirtualModelTarget applies the preference order to a snapshot. Pure — no
@@ -266,42 +267,38 @@ func SelectVirtualModelTarget(vm *VirtualModel, snapshot *ResidencySnapshot) (*V
 		return nil, NewVirtualModelError(500, "virtual model has no candidate models")
 	}
 
-	members := make([]VirtualMemberView, 0, len(vm.Models))
-	for _, model := range vm.Models {
-		members = append(members, VirtualMemberView{Model: model, State: snapshot.StateOf(model)})
-	}
-
+	// Read the gate before the members view: on the refuse path there is nothing to report a
+	// decision about, so no slice is built for it.
 	if snapshot == nil || !snapshot.Authoritative {
 		if vm.OnProbeError == VirtualModelFirstOnProbeError {
-			return decided(vm, vm.Models[0], "residency unknown; using first candidate per on_probe_error", members, time.Time{}), nil
+			return decided(vm, vm.Models[0], "residency unknown; using first candidate per on_probe_error", time.Time{}), nil
 		}
 		return nil, NewVirtualModelError(502, fmt.Sprintf(
 			"cannot resolve virtual model %q: %s did not report model residency", vm.Name, vm.Provider))
 	}
 
-	for _, member := range members {
-		if member.State == ResidencyReady {
-			return decided(vm, member.Model, "first resident candidate", members, snapshot.ObservedAt), nil
+	for _, model := range vm.Models {
+		if snapshot.StateOf(model) == ResidencyReady {
+			return decided(vm, model, "first resident candidate", snapshot.ObservedAt), nil
 		}
 	}
-	for _, member := range members {
-		if member.State == ResidencyLoading {
-			return decided(vm, member.Model, "no candidate resident; joining an in-progress load", members, snapshot.ObservedAt), nil
+	for _, model := range vm.Models {
+		if snapshot.StateOf(model) == ResidencyLoading {
+			return decided(vm, model, "no candidate resident; joining an in-progress load", snapshot.ObservedAt), nil
 		}
 	}
-	return decided(vm, vm.Models[0], "no candidate resident; using first candidate", members, snapshot.ObservedAt), nil
+	return decided(vm, vm.Models[0], "no candidate resident; using first candidate", snapshot.ObservedAt), nil
 }
 
 // decided assembles a resolution from a chosen candidate, carrying the snapshot's
 // observation time forward so callers can see how stale the decision was.
-func decided(vm *VirtualModel, model, reason string, members []VirtualMemberView, observed time.Time) *VirtualModelResolution {
+func decided(vm *VirtualModel, model, reason string, observed time.Time) *VirtualModelResolution {
 	return &VirtualModelResolution{
 		VirtualModel: vm.Name,
 		Provider:     vm.Provider,
 		Model:        model,
 		Reason:       reason,
 		ObservedAt:   observed,
-		Members:      members,
 	}
 }
 
