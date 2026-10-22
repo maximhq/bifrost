@@ -298889,6 +298889,422 @@
           }
         }
       ]
+    },
+    {
+      "name": "264. Warp reads configuration through the management MCP (warp-management) [SERIAL]",
+      "description": "Warp now reaches Bifrost's /api through the management MCP that serves /v1/mcp, in process and as the dashboard caller, so a question about how the deployment is configured is answered from the configuration rather than declined. The case waits for the management MCP spec to load, configures Warp as folder 119 does, asks which providers are configured, and requires the turn to call a management read (listProviders and its neighbours) that succeeded. Red before the change: Warp had no tool that reads configuration and declined the question. Requires the warp flag to be unlocked and the profile's vector store to be reachable; the flag and the previous Warp config are restored at the end.",
+      "item": [
+        {
+          "name": "openai warp-management setup: management MCP is loaded",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The management MCP loads its spec in the background after boot and answers 503 until it has.",
+                  "// Poll tools/list (carrying the setup token, as every row does) until it stops answering 503.",
+                  "var __token = pm.variables.get('setupToken');",
+                  "function __poll(attempt) {",
+                  "  pm.sendRequest({",
+                  "    url: pm.variables.replaceIn('{{baseUrl}}') + '/v1/mcp', method: 'POST',",
+                  "    header: { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': __token || '' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/list' }) }",
+                  "  }, function (err, res) {",
+                  "    if ((err || res.code === 503) && attempt < 30) { setTimeout(function () { __poll(attempt + 1); }, 1000); }",
+                  "  });",
+                  "}",
+                  "__poll(0);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('initialize is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the server advertises tools', function () {",
+                  "  pm.expect(body.result, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.result.capabilities.tools, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.result.serverInfo.name, pm.response.text()).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": {},\n    \"clientInfo\": {\n      \"name\": \"provider-harness\",\n      \"version\": \"1\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai warp-management setup: read warp feature flag",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management: feature flags list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var flag = pm.response.code === 200 ? (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0] : undefined;",
+                  "pm.test('warp-management: warp flag exists', function () {",
+                  "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "// Only a snapshot that names the warp flag is saved. Without one, setup leaves the flag alone and cleanup restores nothing.",
+                  "if (flag && typeof flag.enabled === 'boolean') {",
+                  "  pm.collectionVariables.set('warpManagementFlagWas', flag.enabled ? 'true' : 'false');",
+                  "} else {",
+                  "  pm.collectionVariables.unset('warpManagementFlagWas');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          }
+        },
+        {
+          "name": "openai warp-management setup: enable warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Never change the flag without a snapshot to restore it from.",
+                  "if (pm.collectionVariables.get('warpManagementFlagWas') === undefined) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management: warp flag enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        },
+        {
+          "name": "openai warp-management setup: read current warp config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var configWas = null;",
+                  "if (pm.response.code === 200) {",
+                  "  try { configWas = pm.response.json(); } catch (e) { configWas = null; }",
+                  "}",
+                  "var configValid = !!configWas && typeof configWas === 'object' && !Array.isArray(configWas);",
+                  "pm.test('warp-management: warp config snapshot is an object', function () {",
+                  "  pm.expect(configValid, 'not a config object: ' + pm.response.text()).to.equal(true);",
+                  "});",
+                  "// Only a config that read back as an object is saved, so cleanup never PUTs an error body over the real config.",
+                  "if (configValid) {",
+                  "  pm.collectionVariables.set('warpManagementConfigWas', pm.response.text());",
+                  "} else {",
+                  "  pm.collectionVariables.unset('warpManagementConfigWas');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-management: configure Warp with no base URL",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Never overwrite the config without a snapshot to restore it from.",
+                  "if (pm.collectionVariables.get('warpManagementConfigWas') === undefined) {",
+                  "  pm.execution.skipRequest();",
+                  "  return;",
+                  "}",
+                  "// Keep any embedding space already saved: changing it without a new namespace",
+                  "// is rejected, and the harness must not disturb an existing index.",
+                  "var was = JSON.parse(pm.collectionVariables.get('warpManagementConfigWas') || '{}');",
+                  "var body = {",
+                  "  enabled: true,",
+                  "  provider: 'openai',",
+                  "  model: 'gpt-4o-mini',",
+                  "  api_key_id: '',",
+                  "  embedding_provider: was.embedding_provider || 'openai',",
+                  "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
+                  "  embedding_dimension: was.embedding_dimension || 1536,",
+                  "  log_vector_store_namespace: was.log_vector_store_namespace || ''",
+                  "};",
+                  "pm.collectionVariables.set('warpManagementConfigBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management: config saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('warp-management: config has no base_url', function () {",
+                  "  pm.expect(pm.response.json(), 'base_url should be gone: ' + pm.response.text()).to.not.have.property('base_url');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpManagementConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini warp-management: a configuration question is answered through a management tool",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management: chat responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "// Before this change Warp had no tool that reads configuration, so it declined.",
+                  "var management = ['listProviders', 'getProvider', 'listProviderKeys', 'getConfig', 'listKeys', 'listModelsManagement', 'listModelDetailsManagement'];",
+                  "var used = (body.tool_calls || []).filter(function (call) { return management.indexOf(call.name) !== -1; });",
+                  "pm.test('warp-management: turn succeeded', function () {",
+                  "  pm.expect(body.error, 'turn failed: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.answer, 'no answer: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('warp-management: a management tool read the configuration', function () {",
+                  "  pm.expect(used.length, 'no management tool called: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(used.filter(function (call) { return !call.failed; }).length, 'every management call failed: ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "// The decline this change replaces: Warp saying it cannot see how the deployment is configured.",
+                  "var refusal = /\\b(can(?:no|')t|unable to|do(?:n't| not) have (?:access|a tool|the tools?))\\b[^.]{0,80}(configur|set ?up)/i;",
+                  "pm.test('warp-management: the answer does not decline the configuration question', function () {",
+                  "  pm.expect(refusal.test(body.answer || ''), 'declined: ' + body.answer).to.equal(false);",
+                  "});",
+                  "// The answer comes from the configuration, so it names a provider this deployment has.",
+                  "pm.sendRequest({",
+                  "  url: pm.variables.replaceIn('{{baseUrl}}') + '/api/providers', method: 'GET',",
+                  "  header: { 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || '' }",
+                  "}, function (err, res) {",
+                  "  pm.test('warp-management: the configured providers are readable', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.equal(200);",
+                  "  });",
+                  "  var names = ((res && res.code === 200 && res.json().providers) || []).map(function (p) { return String(p.name || '').toLowerCase(); }).filter(Boolean);",
+                  "  if (names.length === 0) {",
+                  "    return;",
+                  "  }",
+                  "  pm.test('warp-management: the answer names a configured provider', function () {",
+                  "    var answer = (body.answer || '').toLowerCase();",
+                  "    pm.expect(names.some(function (name) { return answer.indexOf(name) !== -1; }), 'the answer names none of ' + names.join(', ') + ': ' + body.answer).to.equal(true);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"Which providers are configured on this Bifrost deployment? Check the configuration, not the traffic logs.\"}], \"stream\": false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/chat"
+          }
+        },
+        {
+          "name": "openai warp-management cleanup: restore warp config",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Restore only a snapshot setup validated. Without one, setup did not change the config.",
+                  "if (pm.collectionVariables.get('warpManagementConfigWas') === undefined) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management: previous config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpManagementConfigWas}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai warp-management cleanup: restore warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Restore only a snapshot setup validated. Without one, setup did not change the flag.",
+                  "if (pm.collectionVariables.get('warpManagementFlagWas') === undefined) {",
+                  "  pm.execution.skipRequest();",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.set('warpManagementFlagBody', JSON.stringify({ enabled: pm.collectionVariables.get('warpManagementFlagWas') === 'true' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-management: flag restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{warpManagementFlagBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        }
+      ]
     }
   ]
 }

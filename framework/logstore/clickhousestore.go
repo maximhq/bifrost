@@ -1242,6 +1242,39 @@ func (s *ClickHouseLogStore) DeleteWarpConversation(ctx context.Context, ownerID
 	return s.chLightweightDelete(ctx, "warp_conversations", "id = ? AND owner_id = ?", id, ownerID)
 }
 
+// SwapWarpQuestion replaces one message's stored question only if it still
+// holds expected. ClickHouse has no conditional UPDATE, so the check and the
+// re-insert run under the owner's distributed lock, which every Warp write to
+// the thread takes, and this process's RMW lock. Without a locker only the RMW
+// lock applies, which serializes claims on one instance but not across them.
+func (s *ClickHouseLogStore) SwapWarpQuestion(ctx context.Context, ownerID, conversationID, messageID, expected, replacement string) (bool, error) {
+	ctx, release, err := s.lockWarpOwner(ctx, ownerID)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	defer s.lockRMW("warp_messages", messageID)()
+	owned, err := s.chExistsWhere(ctx, "warp_conversations", "id = ? AND owner_id = ?", conversationID, ownerID)
+	if err != nil || !owned {
+		return false, err
+	}
+	var message WarpMessage
+	if err := s.db.WithContext(ctx).Where("conversation_id = ? AND id = ?", conversationID, messageID).First(&message).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if message.QuestionJSON != expected {
+		return false, nil
+	}
+	message.QuestionJSON = replacement
+	if err := s.chReinsert(ctx, &message); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // DeleteWarpConversationIfEmpty removes a thread only if it has no messages.
 //
 // Held under the same locks AppendWarpMessages holds for its whole write - the

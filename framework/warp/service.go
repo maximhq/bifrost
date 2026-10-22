@@ -105,6 +105,13 @@ type Service struct {
 	// topicLimits bounds a topics run. Zero means the defaults; tests shrink
 	// them so a run crosses its thresholds on a handful of requests.
 	topicLimits topicLimits
+	// management is the gateway's management MCP, nil until the server binds it
+	// with SetManagementTools. Guarded by mu.
+	management ManagementTools
+	// usedConfirmations is the confirmation tokens this instance has seen
+	// claimed, by when; the durable claim is in the conversation store (see
+	// claimConfirmation).
+	usedConfirmations sync.Map
 }
 
 // topicLister returns the topic reader as the tool interface, or a nil
@@ -373,6 +380,29 @@ func (s *Service) SetLogReader(logs LogReader) {
 	if s.indexer != nil {
 		s.indexer.SetTopicStore(topicStoreOf(logs))
 	}
+}
+
+// SetManagementTools binds the gateway's management MCP. The gateway builds it
+// after Warp's routes are registered, so it arrives late; nil unbinds it.
+func (s *Service) SetManagementTools(tools ManagementTools) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.management = tools
+}
+
+// managementTools returns the bound management MCP and its current catalog,
+// read together so a turn never pairs a catalog with another binding.
+func (s *Service) managementTools() (ManagementTools, *ManagementCatalog) {
+	s.mu.RLock()
+	tools := s.management
+	s.mu.RUnlock()
+	if tools == nil {
+		return nil, nil
+	}
+	return tools, tools.Catalog()
 }
 
 // buildSemanticSearcher returns a searcher for the current dependencies, or nil

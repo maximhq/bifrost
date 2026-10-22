@@ -138,6 +138,16 @@ type Agent struct {
 	// agent - so the count has to arrive with the conversation or nothing caps
 	// the loop.
 	questionsAsked int
+	// management reaches the gateway's /api, with the tools its catalog offers.
+	// Both nil when the gateway has no management MCP.
+	management        ManagementTools
+	managementCatalog *ManagementCatalog
+	// canConfirm is whether a write can be held for confirmation, which needs
+	// conversation history to file the card in.
+	canConfirm bool
+	// confirmed is the write the person confirmed on this request. Run executes
+	// it before the model's first step.
+	confirmed *schemas.WarpPendingCall
 }
 
 // NewAgent assembles a loop for one request.
@@ -190,6 +200,16 @@ func (a *Agent) SetGovernanceExtras(decorator VirtualKeyDecorator, users UserGov
 	a.deps.vkDecorator = decorator
 	a.deps.userGovernance = users
 	a.tools = buildToolsFor(a.deps.semantic, users != nil)
+}
+
+// SetManagement hands the agent the gateway's management tools and the catalog
+// snapshotted for this turn. canConfirm says whether a write can be held for
+// confirmation; without it every write is refused. Called once, before Run.
+func (a *Agent) SetManagement(tools ManagementTools, catalog *ManagementCatalog, canConfirm bool) {
+	if tools == nil || catalog.Len() == 0 {
+		return
+	}
+	a.management, a.managementCatalog, a.canConfirm = tools, catalog, canConfirm
 }
 
 // accumulateUsage folds one iteration's usage into the running total.
@@ -525,6 +545,15 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		emit(Event{Type: EventError, Code: ErrUpstream, Message: err.Error()})
 		return
 	}
+	if a.managementCatalog != nil {
+		management, err := a.managementCatalog.declarations()
+		if err != nil {
+			emit(Event{Type: EventError, Code: ErrUpstream, Message: err.Error()})
+			return
+		}
+		// Clipped so the append copies: declared is the process-wide memoized set.
+		declared = append(slices.Clip(declared), management...)
+	}
 
 	emit(Event{
 		Type:     EventStart,
@@ -545,8 +574,10 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		a.deps.clock = now.In(askerLocation(a.timezone, a.utcOffsetMinutes))
 	}
 	instructions := systemInstructionsFor(a.config, toolAvailability{
-		semantic:   a.deps != nil && a.deps.semantic != nil,
-		userLimits: a.deps != nil && a.deps.userGovernance != nil,
+		semantic:         a.deps != nil && a.deps.semantic != nil,
+		userLimits:       a.deps != nil && a.deps.userGovernance != nil,
+		management:       a.managementCatalog != nil,
+		managementWrites: a.managementCatalog.hasWrites() && a.canConfirm,
 	}, timeContext{timezone: a.timezone, utcOffsetMinutes: a.utcOffsetMinutes, now: now})
 	finalInstructions := instructions + finalStepInstructions
 	conversation := append([]schemas.ResponsesMessage{}, messages...)
@@ -602,6 +633,33 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		}
 		streamedTail = text[max(0, len(text)-2):]
 		return emit(Event{Type: EventDelta, Delta: text})
+	}
+
+	// A write the person confirmed runs first, before the model sees anything,
+	// and its result joins the conversation as the result of the call the model
+	// asked for on the previous turn.
+	if a.confirmed != nil && a.management != nil {
+		// Not the token: the call id is part of what the model reads.
+		callID := "confirmed_" + a.confirmed.Tool
+		if !emit(Event{Type: EventToolCallStart, ToolID: callID, ToolName: a.confirmed.Tool, Arguments: a.confirmed.Arguments, Iteration: 0}) {
+			return
+		}
+		started := time.Now()
+		result, failed := a.callManagement(ctx, a.confirmed.Tool, a.confirmed.Arguments)
+		end := Event{Type: EventToolCallEnd, ToolID: callID, ToolName: a.confirmed.Tool, DurationMs: time.Since(started).Milliseconds(), Failed: failed}
+		if failed {
+			end.ToolError = result
+		}
+		if !emit(end) {
+			return
+		}
+		for _, message := range confirmedCallMessages(callID, a.confirmed, result) {
+			conversation = append(conversation, message)
+			conversationTokens += estimateMessageTokens(message)
+		}
+		// Ran, so the reply has a result to rest on even when /api refused it:
+		// "it was not created, because..." is the answer, not a reply to redirect.
+		calledTool = true
 	}
 
 	for iteration := 1; iteration <= a.maxIterations; iteration++ {
@@ -838,6 +896,19 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 				continue
 			}
 
+			// A write is never run here. It ends the turn with a confirmation card,
+			// the same way ask_user does, and runs only from the person's Confirm.
+			if tool, ok := a.managementCatalog.Tool(name); ok && tool.Write {
+				question, refusal := a.confirmationFor(tool, arguments)
+				if refusal != "" {
+					msg := toolResultMessage(id, `{"error":`+strconv.Quote(refusal)+`}`)
+					results[index] = &msg
+					continue
+				}
+				posedQuestion = question
+				break
+			}
+
 			// ask_user is not a query, it is the end of the turn. Whatever was
 			// already queued ahead of it below still runs - the same calls a
 			// purely sequential pass would already have finished by the time it
@@ -1030,6 +1101,10 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 func (a *Agent) executeTool(ctx context.Context, name, arguments string) (string, bool) {
 	tool, ok := toolByName(a.tools, name)
 	if !ok {
+		// Writes never reach here: the step loop turns them into a confirmation.
+		if management, found := a.managementCatalog.Tool(name); found && !management.Write {
+			return a.callManagement(ctx, name, arguments)
+		}
 		return fmt.Sprintf(`{"error":"no tool named %q is available"}`, name), true
 	}
 
@@ -1063,6 +1138,44 @@ func (a *Agent) executeTool(ctx context.Context, name, arguments string) (string
 		return fmt.Sprintf(`{"error":%q}`, misplacedArgumentHint(err, name, accepted)), true
 	}
 	return boundToolResult(noteCallerVisibility(result, a.deps.scope)), false
+}
+
+// callManagement runs one management tool as the caller on ctx and returns the
+// string handed back to the model.
+func (a *Agent) callManagement(ctx context.Context, name, arguments string) (string, bool) {
+	args := map[string]any{}
+	if strings.TrimSpace(arguments) != "" {
+		if err := sonic.UnmarshalString(arguments, &args); err != nil {
+			return fmt.Sprintf(`{"error":"arguments were not valid JSON: %s"}`, err.Error()), true
+		}
+	}
+	result, failed, err := a.management.Call(ctx, name, args)
+	if err != nil {
+		return fmt.Sprintf(`{"error":%q}`, "the call could not be made: "+err.Error()), true
+	}
+	if failed {
+		return fmt.Sprintf(`{"error":%q}`, truncateText(result, MaxToolResultBytes/2)), true
+	}
+	return boundManagementResult(result), false
+}
+
+// confirmationFor builds the card a write ends the turn with, or says why the
+// write is refused instead.
+func (a *Agent) confirmationFor(tool ManagementTool, arguments string) (*Question, string) {
+	if !a.canConfirm {
+		return nil, "not run: changes from Warp need conversation history, which this deployment does not keep. Tell the person to make this change in the dashboard."
+	}
+	if strings.TrimSpace(arguments) != "" {
+		var args map[string]any
+		if err := sonic.UnmarshalString(arguments, &args); err != nil {
+			return nil, "not run: arguments were not valid JSON: " + err.Error()
+		}
+	}
+	question, err := confirmationQuestion(tool, arguments)
+	if err != nil {
+		return nil, "not run: " + err.Error()
+	}
+	return question, ""
 }
 
 // misplacedArgumentHint is the mirror of the refusal above. That one catches a
