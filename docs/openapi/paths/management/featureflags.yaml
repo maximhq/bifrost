@@ -1,0 +1,97 @@
+# Feature flag API endpoints
+
+feature-flags:
+  get:
+    operationId: listFeatureFlags
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `FeatureFlags:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List feature flags
+    description: |
+      Returns every feature flag with its effective value and where that value comes
+      from. Flags are declared in code; a stored override for a flag this build no
+      longer declares is listed with `registered: false` and cannot be toggled.
+    tags:
+      - Configuration
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                flags:
+                  type: array
+                  items:
+                    $ref: '../../schemas/management/config.yaml#/FeatureFlagStatus'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+feature-flag-by-id:
+  put:
+    operationId: updateFeatureFlag
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `FeatureFlags:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a feature flag
+    description: |
+      Turns a feature flag on or off and persists the override so it survives restarts.
+      A flag pinned by config.json or Helm is locked and refused with 409.
+    tags:
+      - Configuration
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Feature flag ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [enabled]
+            properties:
+              enabled:
+                type: boolean
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The flag's new status
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/config.yaml#/FeatureFlagStatus'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: The flag is enterprise-only
+        $ref: '../../openapi.yaml#/components/responses/Forbidden'
+      '404':
+        description: The flag is not registered in this build
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        description: The flag is locked by config.json or Helm
+        $ref: '../../openapi.yaml#/components/responses/Conflict'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

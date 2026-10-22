@@ -65,11 +65,18 @@ virtual-keys:
         description: Filter virtual keys by team ID
         schema:
           type: string
+      - name: business_unit_id
+        in: query
+        description: >-
+          Filter virtual keys by owning business unit ID. Combined with
+          customer_id/team_id/user_id using OR.
+        schema:
+          type: string
       - name: user_id
         in: query
         description: >-
           Filter virtual keys by assigned user ID (enterprise only; matches no
-          virtual keys on OSS builds). Combined with customer_id/team_id using OR.
+          virtual keys on OSS builds). Combined with customer_id/team_id/business_unit_id using OR.
         schema:
           type: string
       - name: sort_by
@@ -93,6 +100,22 @@ virtual-keys:
       - name: exclude_access_profile_managed_virtual
         in: query
         description: If true, excludes virtual keys managed by access profiles
+        schema:
+          type: boolean
+          default: false
+      - name: exclude_assigned_virtual_keys
+        in: query
+        description: >-
+          If true, excludes virtual keys that already have a user assignment
+          (enterprise only; ignored on OSS builds).
+        schema:
+          type: boolean
+          default: false
+      - name: for_user_assignment
+        in: query
+        description: >-
+          If true, excludes virtual keys assigned to any team, customer, access
+          profile or user, for user-assignment pickers (enterprise only; ignored on OSS builds).
         schema:
           type: boolean
           default: false
@@ -349,59 +372,6 @@ virtual-keys-by-id:
           application/json:
             schema:
               $ref: "../../schemas/management/common.yaml#/MessageResponse"
-      "404":
-        description: Virtual key not found
-        content:
-          application/json:
-            schema:
-              $ref: "../../schemas/inference/common.yaml#/BifrostError"
-      "500":
-        $ref: "../../openapi.yaml#/components/responses/InternalError"
-
-virtual-keys-rotate-by-id:
-  post:
-    operationId: rotateVirtualKey
-    x-bifrost-destructive: true
-    x-mint:
-      content: |
-        **Required Permissions**
-
-        | Permission | Granted via |
-        | --- | --- |
-        | `VirtualKeys:Create` | RBAC role or API key scope |
-
-        [How permissions work](/api/procuring-api-keys#required-permissions)
-    summary: Rotate virtual key
-    description: |
-      Generates a new credential value for the virtual key while leaving its configuration,
-      assignments, budgets, and rate limits unchanged. On the node handling the request, the
-      previous credential value is invalidated before a successful response is returned.
-
-      In a clustered deployment, peer invalidation is asynchronous. Until each peer processes the
-      cluster update and reloads the virtual key, that peer may continue to accept the previous
-      value. There is no fixed upper bound when a peer is unavailable, so wait for cluster
-      convergence before treating the previous credential as revoked cluster-wide.
-
-      The new credential is returned in `virtual_key.value`. Store it securely and update clients
-      that use the previous value.
-    tags:
-      - Governance
-    parameters:
-      - name: vk_id
-        in: path
-        required: true
-        description: Virtual key ID
-        schema:
-          type: string
-    security:
-      - ManagementBearerAuth: []
-    responses:
-      "200":
-        description: Virtual key rotated successfully
-        content:
-          application/json:
-            schema:
-              $ref: "../../schemas/management/governance.yaml#/VirtualKeyResponse"
       "404":
         description: Virtual key not found
         content:
@@ -688,12 +658,23 @@ teams:
         description: Filter teams by customer ID
         schema:
           type: string
-      - name: from_memory
+      - name: limit
         in: query
-        description: If true, returns teams from in-memory cache instead of database
+        description: Maximum number of teams to return. Setting limit, offset or search returns a paginated result.
         schema:
-          type: boolean
-          default: false
+          type: integer
+          minimum: 0
+      - name: offset
+        in: query
+        description: Number of teams to skip
+        schema:
+          type: integer
+          minimum: 0
+      - name: search
+        in: query
+        description: Search teams by name
+        schema:
+          type: string
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -768,12 +749,6 @@ teams-by-id:
         description: Team ID
         schema:
           type: string
-      - name: from_memory
-        in: query
-        description: If true, returns team from in-memory cache instead of database
-        schema:
-          type: boolean
-          default: false
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -908,12 +883,23 @@ customers:
     tags:
       - Governance
     parameters:
-      - name: from_memory
+      - name: limit
         in: query
-        description: If true, returns customers from in-memory cache instead of database
+        description: Maximum number of customers to return. Setting limit, offset or search returns a paginated result.
         schema:
-          type: boolean
-          default: false
+          type: integer
+          minimum: 0
+      - name: offset
+        in: query
+        description: Number of customers to skip
+        schema:
+          type: integer
+          minimum: 0
+      - name: search
+        in: query
+        description: Search customers by name
+        schema:
+          type: string
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -988,12 +974,6 @@ customers-by-id:
         description: Customer ID
         schema:
           type: string
-      - name: from_memory
-        in: query
-        description: If true, returns customer from in-memory cache instead of database
-        schema:
-          type: boolean
-          default: false
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -1124,16 +1104,9 @@ budgets:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List budgets
     description: |
-      Returns a list of all budgets. Use the `from_memory` query parameter to get data from in-memory cache.
+      Returns a list of all budgets.
     tags:
       - Governance
-    parameters:
-      - name: from_memory
-        in: query
-        description: If true, returns budgets from in-memory cache instead of database
-        schema:
-          type: boolean
-          default: false
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -1161,16 +1134,9 @@ rate-limits:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List rate limits
     description: |
-      Returns a list of all rate limits. Use the `from_memory` query parameter to get data from in-memory cache.
+      Returns a list of all rate limits.
     tags:
       - Governance
-    parameters:
-      - name: from_memory
-        in: query
-        description: If true, returns rate limits from in-memory cache instead of database
-        schema:
-          type: boolean
-          default: false
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -1466,6 +1432,13 @@ provider-governance:
       Returns a list of all providers with their governance settings (budget and rate limits).
     tags:
       - Governance
+    parameters:
+      - name: from_memory
+        in: query
+        description: If true, returns provider governance from in-memory cache instead of database
+        schema:
+          type: boolean
+          default: false
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []

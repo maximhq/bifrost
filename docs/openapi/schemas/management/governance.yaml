@@ -137,6 +137,11 @@ CreateBudgetRequest:
     - max_limit
     - reset_duration
   properties:
+    id:
+      type: string
+      description: >
+        Updates only. ID of an existing budget on this entity to update in place; an ID that belongs to
+        another entity is rejected with 400. When omitted, an existing budget is matched by reset_duration.
     max_limit:
       type: number
     reset_duration:
@@ -158,15 +163,6 @@ CreateBudgetRequest:
             July and October all reset on calendar quarters and differ only in which quarter is
             labelled Q1.
       additionalProperties: false
-    calendar_aligned:
-      type: boolean
-      default: false
-      description: >
-        When true, usage resets at the start of each calendar period in UTC instead of on a rolling window
-        from last reset. Only valid with reset durations that use day, week, month, quarter, or year
-        suffixes (`d`, `w`, `M`, `Q`, `Y`). For example `1d` resets at midnight UTC; `1w` at Monday 00:00
-        UTC; `1M` on the first day of each month; `1Q` on the first day of the fiscal quarter; `1Y` on
-        January 1. Sub-day durations (e.g. `1h`) cannot use calendar alignment.
 
 UpdateBudgetRequest:
   type: object
@@ -193,17 +189,6 @@ UpdateBudgetRequest:
             July and October all reset on calendar quarters and differ only in which quarter is
             labelled Q1.
       additionalProperties: false
-    calendar_aligned:
-      type: [boolean, 'null']
-      description: >
-        Set to true or false to enable or disable calendar-aligned resets. Only valid with reset durations
-        that use day, week, month, quarter, or year suffixes (`d`, `w`, `M`, `Q`, `Y`); sub-day durations
-        (e.g. `1h`, `30m`) are invalid with calendar alignment and the API rejects that combination. When
-        enabling on an existing budget, alignment takes effect from the next period: the current window
-        keeps its start and its accumulated usage, and the first aligned reset happens at the next
-        boundary. Changing quarter_start_month on a calendar-aligned quarterly budget does not move
-        last_reset directly; the new definition shifts where the current window starts, so the budget
-        converges onto the new fiscal boundary on the next reset tick.
 
 BudgetOverrideRequest:
   type: object
@@ -680,6 +665,23 @@ CreateVirtualKeyRequest:
               $ref: '#/CreateBudgetRequest'
           rate_limit:
             $ref: '#/CreateRateLimitRequest'
+          model_budgets:
+            type: array
+            description: Per-model budgets and rate limits under this provider. model_name must be a concrete model (not `*`), unique within the provider; at most 100 entries.
+            maxItems: 100
+            items:
+              type: object
+              required:
+                - model_name
+              properties:
+                model_name:
+                  type: string
+                budgets:
+                  type: array
+                  items:
+                    $ref: '#/CreateBudgetRequest'
+                rate_limit:
+                  $ref: '#/CreateRateLimitRequest'
           key_ids:
             type: array
             description: Provider API key IDs allowed for this config. `["*"]` allows every key for the provider; an empty or omitted array denies all keys.
@@ -699,8 +701,23 @@ CreateVirtualKeyRequest:
               type: string
     team_id:
       type: string
+      description: Owning team. At most one of team_id, customer_id and business_unit_id may be set.
     customer_id:
       type: string
+      description: Owning customer. At most one of team_id, customer_id and business_unit_id may be set.
+    business_unit_id:
+      type: string
+      description: Owning business unit. At most one of team_id, customer_id and business_unit_id may be set.
+    agent_grants:
+      type: array
+      description: Agents this virtual key may use (empty or omitted means no agents allowed, deny-by-default). Duplicate or unknown agent names are rejected with 400.
+      items:
+        type: object
+        required:
+          - agent_name
+        properties:
+          agent_name:
+            type: string
     budgets:
       type: array
       description: Budget quotas assigned directly to this virtual key. Use this array instead of the removed singular `budget` or `budget_id` fields.
@@ -805,6 +822,23 @@ UpdateVirtualKeyRequest:
               $ref: '#/CreateBudgetRequest'
           rate_limit:
             $ref: '#/UpdateRateLimitRequest'
+          model_budgets:
+            type: array
+            description: Full desired set of per-model budgets and rate limits under this provider. model_name must be a concrete model (not `*`), unique within the provider; at most 100 entries.
+            maxItems: 100
+            items:
+              type: object
+              required:
+                - model_name
+              properties:
+                model_name:
+                  type: string
+                budgets:
+                  type: array
+                  items:
+                    $ref: '#/CreateBudgetRequest'
+                rate_limit:
+                  $ref: '#/UpdateRateLimitRequest'
           key_ids:
             type: array
             description: Provider API key IDs allowed for this config. `["*"]` allows every key for the provider; an empty or omitted array denies all keys.
@@ -824,9 +858,24 @@ UpdateVirtualKeyRequest:
             items:
               type: string
     team_id:
-      type: string
+      type: [string, 'null']
+      description: Owning team. Setting it clears customer_id and business_unit_id; null or "" clears the owner. At most one of the three owner fields may name an owner.
     customer_id:
-      type: string
+      type: [string, 'null']
+      description: Owning customer. Setting it clears team_id and business_unit_id; null or "" clears the owner.
+    business_unit_id:
+      type: [string, 'null']
+      description: Owning business unit. Setting it clears team_id and customer_id; null or "" clears the owner.
+    agent_grants:
+      type: array
+      description: Agents this virtual key may use. Omit to leave grants unchanged; send [] to clear all grants. Duplicate or unknown agent names are rejected with 400.
+      items:
+        type: object
+        required:
+          - agent_name
+        properties:
+          agent_name:
+            type: string
     budgets:
       type: array
       description: Budget quotas assigned directly to this virtual key. Replaces all direct virtual-key budgets when provided; the removed singular `budget` and `budget_id` fields are not request fields.
@@ -1130,6 +1179,12 @@ CreateTeamRequest:
       description: Budgets to create for this team; reset durations must be unique
       items:
         $ref: '#/CreateBudgetRequest'
+    rate_limit:
+      $ref: '#/CreateRateLimitRequest'
+    calendar_aligned:
+      type: boolean
+      default: false
+      description: Team-wide setting that snaps all team budget and rate-limit resets to calendar boundaries.
 
 UpdateTeamRequest:
   type: object
@@ -1144,6 +1199,12 @@ UpdateTeamRequest:
       description: Replacement set of budgets for this team; reset durations must be unique
       items:
         $ref: '#/CreateBudgetRequest'
+    rate_limit:
+      $ref: '#/UpdateRateLimitRequest'
+      description: Team rate limit. A rate limit with neither token_max_limit nor request_max_limit removes it.
+    calendar_aligned:
+      type: boolean
+      description: Team-wide calendar alignment for budget and rate-limit resets. Omit to leave unchanged.
     reset_budget_usage:
       type: boolean
       description: >
@@ -1216,8 +1277,21 @@ CreateCustomerRequest:
   properties:
     name:
       type: string
+    budgets:
+      type: array
+      description: Budgets to create for this customer; reset durations must be unique. Cannot be combined with the deprecated `budget`.
+      items:
+        $ref: '#/CreateBudgetRequest'
     budget:
       $ref: '#/CreateBudgetRequest'
+      deprecated: true
+      description: Deprecated single budget; use `budgets`.
+    rate_limit:
+      $ref: '#/CreateRateLimitRequest'
+    calendar_aligned:
+      type: boolean
+      default: false
+      description: Snap all customer budget and rate-limit resets to calendar boundaries.
 
 UpdateCustomerRequest:
   type: object
@@ -1225,8 +1299,20 @@ UpdateCustomerRequest:
   properties:
     name:
       type: string
+    budgets:
+      type: array
+      description: Replacement set of budgets for this customer; reset durations must be unique. Omit to leave unchanged, send [] to remove all. Cannot be combined with the deprecated `budget`.
+      items:
+        $ref: '#/CreateBudgetRequest'
     budget:
       $ref: '#/UpdateBudgetRequest'
+      deprecated: true
+      description: Deprecated single budget; use `budgets`.
+    rate_limit:
+      $ref: '#/UpdateRateLimitRequest'
+    calendar_aligned:
+      type: boolean
+      description: Customer-wide calendar alignment for budget and rate-limit resets. Omit to leave unchanged.
     reset_budget_usage:
       type: boolean
       description: >
@@ -2708,17 +2794,17 @@ UpdatePricingOverrideRequest:
     scope_kind:
       $ref: '#/PricingOverrideScopeKind'
     user_id:
-      type: string
-      description: Required for user* scopes
+      type: [string, 'null']
+      description: Required for user* scopes. Omit to keep the existing value; null clears it.
     virtual_key_id:
-      type: string
-      description: Required for virtual_key* scopes
+      type: [string, 'null']
+      description: Required for virtual_key* scopes. Omit to keep the existing value; null clears it.
     provider_id:
-      type: string
-      description: Required for provider, virtual_key_provider, and user_provider scopes
+      type: [string, 'null']
+      description: Required for provider, virtual_key_provider, and user_provider scopes. Omit to keep the existing value; null clears it.
     provider_key_id:
-      type: string
-      description: Required for provider_key, virtual_key_provider_key, and user_provider_key scopes
+      type: [string, 'null']
+      description: Required for provider_key, virtual_key_provider_key, and user_provider_key scopes. Omit to keep the existing value; null clears it.
     match_type:
       type: string
       enum:

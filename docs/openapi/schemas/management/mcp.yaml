@@ -329,13 +329,33 @@ MCPClientCreateRequestBase:
         ["*"] => all executable tools can be auto-executed
         [] => no tools are auto-executed
         ["tool1", "tool2"] => only specified tools can be auto-executed
-    allow_on_all_virtual_keys:
+    endpoint_slug:
+      type: string
+      description: |
+        URL-safe path segment this client is served at (/mcp/<slug>). Derived from the name
+        when omitted; rejected with 400 if no slug can be derived and 409 if it is taken.
+        Immutable after creation.
+    tool_pricing:
+      type: object
+      additionalProperties:
+        type: number
+        format: double
+      description: |
+        Per-tool cost in USD for execution.
+        Key is the tool name, value is the cost per execution.
+    allow_by_default:
       type: boolean
       default: false
       description: |
         When true, this MCP client's tools are available to all virtual keys by default,
         without requiring an explicit virtual key assignment.
         An explicit virtual key config always overrides this setting for that key.
+    allow_on_all_virtual_keys:
+      type: boolean
+      deprecated: true
+      description: |
+        Deprecated earlier name of allow_by_default, still accepted. allow_by_default
+        decides when both are sent.
     tls_config:
       type: object
       description: |
@@ -797,13 +817,19 @@ MCPClientUpdateRequest:
         Key is the tool name, value is the cost per execution.
         Example: {"read_file": 0.001, "write_file": 0.002}
         Note: Only available when updating an existing client after tools have been fetched.
-    allow_on_all_virtual_keys:
+    allow_by_default:
       type: boolean
-      default: false
       description: |
         When true, this MCP client's tools are accessible to all virtual keys without requiring
         explicit per-key assignment. All tools are allowed by default. If a virtual key has an
         explicit MCP config for this client, that config takes precedence and overrides this behaviour.
+        Omit to keep the current value.
+    allow_on_all_virtual_keys:
+      type: boolean
+      deprecated: true
+      description: |
+        Deprecated earlier name of allow_by_default, still accepted. allow_by_default
+        decides when both are sent.
     per_user_header_keys:
       type: array
       items:
@@ -955,13 +981,17 @@ MCPClientConfig:
         Per-tool cost in USD for execution.
         Key is the tool name, value is the cost per execution.
         Example: {"read_file": 0.001, "write_file": 0.002}
-    allow_on_all_virtual_keys:
+    allow_by_default:
       type: boolean
       default: false
       description: |
         When true, this MCP client's tools are accessible to all virtual keys without requiring
         explicit per-key assignment. All tools are allowed by default. If a virtual key has an
         explicit MCP config for this client, that config takes precedence and overrides this behaviour.
+    allow_on_all_virtual_keys:
+      type: boolean
+      deprecated: true
+      description: Deprecated earlier name of allow_by_default, returned with the same value.
     per_user_header_keys:
       type: array
       items:
@@ -1451,3 +1481,196 @@ MCPHeadersSubmitResponse:
     updated_at:
       type: string
       format: date-time
+
+# ─── MCP server library (catalog) ───────────────────────────────────────────
+
+MCPLibraryEntry:
+  type: object
+  description: An MCP server in the library catalog, synced from the remote source or published by the organization.
+  properties:
+    id:
+      type: integer
+    slug:
+      type: string
+      description: URL-safe identifier generated from the name
+    name:
+      type: string
+    description:
+      type: string
+    category:
+      type: string
+    connection_type:
+      $ref: '#/MCPConnectionType'
+    connection_url:
+      type: string
+      description: Server URL for http and sse entries
+    stdio_config:
+      $ref: '#/MCPStdioConfig'
+    auth_type:
+      $ref: '#/MCPAuthType'
+    required_header_keys:
+      type: array
+      items:
+        type: string
+    icon_url:
+      type: string
+    docs_url:
+      type: string
+    publisher:
+      type: string
+    tags:
+      type: array
+      items:
+        type: string
+    metadata:
+      type: object
+      additionalProperties: true
+    source:
+      type: string
+      enum: [remote, custom]
+      description: "`remote` rows come from the catalog sync; `custom` rows were published through POST /api/mcp/library and are never overwritten by the sync."
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+MCPLibraryListResponse:
+  type: object
+  description: Paginated list of MCP library entries.
+  properties:
+    servers:
+      type: array
+      items:
+        allOf:
+          - $ref: '#/MCPLibraryEntry'
+          - type: object
+            properties:
+              installed:
+                type: boolean
+                description: Whether an MCP client already installs this entry
+    count:
+      type: integer
+      description: Number of entries returned in this page
+    total_count:
+      type: integer
+      format: int64
+      description: Total number of entries matching the query (before pagination)
+    limit:
+      type: integer
+      description: Page size used for the response
+    offset:
+      type: integer
+      description: Page offset used for the response
+
+MCPLibraryFilterData:
+  type: object
+  description: Distinct facet values for filtering the MCP library.
+  properties:
+    categories:
+      type: array
+      items:
+        type: string
+    connection_types:
+      type: array
+      items:
+        type: string
+    auth_types:
+      type: array
+      items:
+        type: string
+    tags:
+      type: array
+      items:
+        type: string
+
+CreateMCPLibraryEntryRequest:
+  type: object
+  description: |
+    A custom MCP server to publish into the library. The slug is generated from
+    `name`; a name whose slug already exists is rejected with 409.
+  required:
+    - name
+    - connection_type
+  properties:
+    name:
+      type: string
+      description: Must contain at least one alphanumeric character
+    description:
+      type: string
+    category:
+      type: string
+    connection_type:
+      type: string
+      enum: [http, stdio, sse]
+    connection_url:
+      type: string
+      description: Required for http and sse entries
+    stdio_config:
+      $ref: '#/MCPStdioConfig'
+      description: Required (with a non-empty command) for stdio entries
+    auth_type:
+      $ref: '#/MCPAuthType'
+      description: Defaults to none
+    required_header_keys:
+      type: array
+      items:
+        type: string
+    icon_url:
+      type: string
+    docs_url:
+      type: string
+    publisher:
+      type: string
+    tags:
+      type: array
+      items:
+        type: string
+
+# ─── Downstream OAuth2 grants for /mcp (Bifrost as authorization server) ────
+
+OAuth2SessionRow:
+  type: object
+  description: An active OAuth2 grant issued by Bifrost to a downstream /mcp client.
+  properties:
+    id:
+      type: string
+    client_id:
+      type: string
+    client_name:
+      type: string
+    bf_mode:
+      type: string
+      enum: [user, vk, session]
+      description: Identity dimension the grant is bound to
+    bf_sub:
+      type: string
+      description: Bound identity
+    bf_sub_display:
+      type: string
+      description: Human-readable identity (the virtual key name for vk mode)
+    scope:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    last_used_at:
+      type: string
+      format: date-time
+
+OAuth2SessionsListResponse:
+  type: object
+  properties:
+    sessions:
+      type: array
+      items:
+        $ref: '#/OAuth2SessionRow'
+    count:
+      type: integer
+    total_count:
+      type: integer
+    limit:
+      type: integer
+    offset:
+      type: integer

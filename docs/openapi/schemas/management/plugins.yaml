@@ -51,6 +51,11 @@ Plugin:
       type: boolean
     path:
       type: string
+    placement:
+      type: string
+      enum: [pre_builtin, post_builtin, builtin]
+    order:
+      type: integer
     status:
       $ref: '#/PluginStatus'
       description: Current plugin status including types array (only populated for active plugins)
@@ -105,6 +110,13 @@ CreatePluginRequest:
       additionalProperties: true
     path:
       type: string
+    placement:
+      type: string
+      enum: [pre_builtin, post_builtin]
+      description: Where the plugin runs relative to the built-in plugins. An empty string is treated as unset.
+    order:
+      type: integer
+      description: Plugin execution order.
 
 UpdatePluginRequest:
   type: object
@@ -117,6 +129,13 @@ UpdatePluginRequest:
       additionalProperties: true
     path:
       type: string
+    placement:
+      type: string
+      enum: [pre_builtin, post_builtin]
+      description: Where the plugin runs relative to the built-in plugins. An empty string is treated as unset.
+    order:
+      type: integer
+      description: Plugin execution order.
 
 PluginResponse:
   type: object

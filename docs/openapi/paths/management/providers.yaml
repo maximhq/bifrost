@@ -144,8 +144,14 @@ providers-by-name:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update a provider
     description: |
-      Updates a provider's configuration. Expects ALL fields to be provided,
-      including both edited and non-edited fields. Partial updates are not supported.
+      Updates a provider's configuration. network_config and concurrency_and_buffer_size
+      are required and always replaced as a whole: send every field, including unchanged
+      ones, because an omitted field is reset. concurrency and buffer_size must be greater
+      than 0, and concurrency must not exceed buffer_size (400 otherwise). Every other
+      field is optional: an omitted field keeps its stored value, and proxy_config,
+      custom_provider_config, openai_config, prompt_cache or injected_tools sent as null
+      clears that block. A supplied block replaces the stored one entirely. Keys are
+      managed via /api/providers/{provider}/keys; a non-empty `keys` field is rejected with 400.
       Changing network_config.base_url, or turning on network_config.allow_private_network
       (with or without a base URL), requires a genuinely authenticated admin session - it is
       refused with 403 if dashboard authentication is disabled or unconfigured, even though
@@ -531,6 +537,117 @@ provider-key-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+provider-refresh-models:
+  post:
+    operationId: refreshProviderModels
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Refresh models for a provider
+    description: |
+      Re-runs model discovery (list models) across every enabled key of the provider, without
+      waiting for the periodic sync. Returns the provider's keys with the discovery status
+      this refresh produced.
+    tags:
+      - Providers
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Models refreshed successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/ListProviderKeysResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Provider not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '409':
+        description: A model refresh is already in progress for this provider
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+provider-key-refresh-models:
+  post:
+    operationId: refreshProviderKeyModels
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Refresh models for a provider key
+    description: |
+      Re-runs model discovery (list models) for one key of the provider, without waiting for
+      the periodic sync. Returns the key with the discovery status this refresh produced.
+    tags:
+      - Providers
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+      - name: key_id
+        in: path
+        required: true
+        description: Key ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Models refreshed successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/Key'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Provider or key not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '409':
+        description: A model refresh is already in progress for this provider
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 keys:
   get:
     operationId: listKeys
@@ -559,7 +676,7 @@ keys:
             schema:
               type: array
               items:
-                $ref: '../../schemas/management/providers.yaml#/Key'
+                $ref: '../../schemas/management/providers.yaml#/StoredProviderKey'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -606,9 +723,28 @@ models:
         schema:
           type: integer
           default: 5
+      - name: offset
+        in: query
+        description: Number of models to skip before applying limit. `total` counts the matches before offset and limit.
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
       - name: unfiltered
         in: query
         description: If true, return all models including those filtered out by provider-level restrictions
+        schema:
+          type: boolean
+          default: false
+      - name: include_deprecated
+        in: query
+        description: If true, include deprecated models when `query` is empty. Without a `query` they are hidden by default; with a `query` they are always included, listed after the live models.
+        schema:
+          type: boolean
+          default: false
+      - name: decisions
+        in: query
+        description: If true, return only models that can serve decision requests (/v1/decisions)
         schema:
           type: boolean
           default: false
@@ -668,9 +804,22 @@ models-details:
         schema:
           type: integer
           default: 20
+      - name: offset
+        in: query
+        description: Number of models to skip before applying limit. `total` counts the matches before offset and limit.
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
       - name: unfiltered
         in: query
         description: If true, return all models including those filtered out by provider-level restrictions
+        schema:
+          type: boolean
+          default: false
+      - name: decisions
+        in: query
+        description: If true, return only models that can serve decision requests (/v1/decisions)
         schema:
           type: boolean
           default: false
@@ -754,11 +903,6 @@ models-base:
         description: Filter models by name
         schema:
           type: string
-      - name: provider
-        in: query
-        description: Filter by provider
-        schema:
-          type: string
       - name: limit
         in: query
         description: Maximum number of results to return
@@ -775,5 +919,45 @@ models-base:
             schema:
               type: object
               additionalProperties: true
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+models-catalog:
+  put:
+    operationId: upsertModelCatalogEntries
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update model catalog attributes
+    description: |
+      Batch-updates the additional attributes stored on model catalog (pricing) entries,
+      keyed by model and provider. Every entry must name a model and provider that already
+      exist in the catalog; if any is missing, the whole batch is rejected and nothing is
+      written. An entry with an empty or omitted additional_attributes map clears that
+      entry's attributes.
+    tags:
+      - Providers
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: array
+            items:
+              $ref: '../../schemas/management/providers.yaml#/ModelPricingAttributesEntry'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '204':
+        description: Catalog entries updated successfully
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
