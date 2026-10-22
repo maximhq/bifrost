@@ -1216,6 +1216,8 @@ paths:
   # Logging
   /api/logs:
     $ref: "./paths/management/logging.yaml#/logs"
+  /api/logs/search:
+    $ref: "./paths/management/logging.yaml#/logs-search"
   /api/logs/{id}:
     $ref: "./paths/management/logging.yaml#/logs-by-id"
   /api/logs/{id}/trace:
