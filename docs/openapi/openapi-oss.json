@@ -62305,6 +62305,371 @@
         }
       }
     },
+    "/api/logs/search": {
+      "get": {
+        "operationId": "searchLogs",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Logs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Search logged conversations by meaning",
+        "description": "Finds logged conversations whose content means something close to a\nquery, such as \"users asking for a refund\", using the embedding index\nWarp keeps of your logs. Use it for topics, complaints and intents that\nno exact filter captures; for an exact phrase, `getLogs` with\n`content_search` is cheaper.\n\nPass up to 5 phrasings of the same idea as repeated `query` parameters:\neach is embedded and searched, and a log scores by its best match across\nthem, so varied wording raises recall. Each call costs one embedding\nrequest per phrasing.\n\nThe other parameters are the log filters search by meaning can apply:\ntime range, providers, models, status, virtual keys, users, teams,\ncustomers, business units, apps, latency, cost, session and\n`content_search`. Any other log filter is refused with 400 rather than\nignored. Every match is\nreloaded through the log store, so a caller sees only the logs they may\nsee. Rows are a compact projection with a content preview; fetch a full\nrow with `getLogById`.\n\nScores are Warp similarity on a 0-1 scale, (1 + cosine) / 2, so 0.5 is\nunrelated and 1 is identical. Only rows scoring at or above `threshold`\n(Warp's configured threshold, on the same scale) are returned, and a\nscore does not by itself say a row is on topic: judge rows by their\ncontent. An empty\nresult means nothing scored above the threshold, not that the topic never\ncame up; sample with `getLogs` before concluding that.\n\nRequires Warp to be enabled with an embedding model, and its log index\nto be filled. Otherwise the route returns 503.\n",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "required": true,
+            "description": "A phrasing of what to look for. Repeat the parameter for up to 5 phrasings.",
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 5,
+              "items": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Matches to return, at most 25. Defaults to, and is capped by, Warp's configured semantic search limit.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 25
+            }
+          },
+          {
+            "name": "providers",
+            "in": "query",
+            "description": "Comma-separated list of providers to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "description": "Comma-separated list of models to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_ids",
+            "in": "query",
+            "description": "Comma-separated list of team IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_ids",
+            "in": "query",
+            "description": "Comma-separated list of customer IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_ids",
+            "in": "query",
+            "description": "Comma-separated list of user IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "business_unit_ids",
+            "in": "query",
+            "description": "Comma-separated list of business unit IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_latency",
+            "in": "query",
+            "description": "Minimum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_latency",
+            "in": "query",
+            "description": "Maximum latency filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "min_cost",
+            "in": "query",
+            "description": "Minimum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "max_cost",
+            "in": "query",
+            "description": "Maximum cost filter",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "apps",
+            "in": "query",
+            "description": "Detected client apps to filter by. Send a JSON array of strings or a comma-separated list.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Exact Bifrost session ID used for key stickiness and request correlation",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "content_search",
+            "in": "query",
+            "description": "Search in request/response content",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Logged conversations matching a search by meaning, best match first",
+                  "required": [
+                    "rows",
+                    "returned",
+                    "threshold"
+                  ],
+                  "properties": {
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "A compact log row with its similarity score and a content preview",
+                        "required": [
+                          "score",
+                          "id",
+                          "timestamp",
+                          "provider",
+                          "model",
+                          "status"
+                        ],
+                        "properties": {
+                          "score": {
+                            "type": "number",
+                            "description": "Warp similarity of the row's best-matching phrasing, on a 0-1 scale, (1 + cosine) / 2"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "timestamp": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "provider": {
+                            "type": "string"
+                          },
+                          "model": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "latency_ms": {
+                            "type": "number"
+                          },
+                          "input_tokens": {
+                            "type": "integer"
+                          },
+                          "output_tokens": {
+                            "type": "integer"
+                          },
+                          "cost": {
+                            "type": "number"
+                          },
+                          "virtual_key_name": {
+                            "type": "string"
+                          },
+                          "user_id": {
+                            "type": "string"
+                          },
+                          "error_message": {
+                            "type": "string"
+                          },
+                          "error_type": {
+                            "type": "string"
+                          },
+                          "error_code": {
+                            "type": "string"
+                          },
+                          "status_code": {
+                            "type": "integer"
+                          },
+                          "routing_rule": {
+                            "type": "string"
+                          },
+                          "provider_key": {
+                            "type": "string"
+                          },
+                          "alias": {
+                            "type": "string"
+                          },
+                          "complexity_tier": {
+                            "type": "string"
+                          },
+                          "tool_calls": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "content": {
+                            "type": "string",
+                            "description": "A preview of the request and response content"
+                          },
+                          "link": {
+                            "type": "string",
+                            "description": "Dashboard path that opens this log"
+                          }
+                        }
+                      }
+                    },
+                    "returned": {
+                      "type": "integer",
+                      "description": "Number of rows returned"
+                    },
+                    "threshold": {
+                      "type": "number",
+                      "description": "The Warp similarity a row had to reach to be returned, on the same 0-1 scale as score"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No query, a query over 2000 characters, more than 5 queries, a limit outside 1-25, or a log filter search by meaning cannot apply",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Semantic search is not available because Warp, its embedding model or its log index is not set up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/logs/{id}": {
       "get": {
         "operationId": "getLogById",
