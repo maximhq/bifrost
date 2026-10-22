@@ -856,6 +856,10 @@ type ConfigStore interface {
 	// DeleteExpiredOauthUserSessions hard-deletes pending OAuth flow rows
 	// whose ExpiresAt has passed. Returns the number of rows removed.
 	DeleteExpiredOauthUserSessions(ctx context.Context) (int64, error)
+	// DeleteAbandonedOauthConfigs hard-deletes 'pending' or 'failed'
+	// oauth_configs rows older than olderThan that no MCP client, live flow,
+	// or token row references. Returns the number of rows removed.
+	DeleteAbandonedOauthConfigs(ctx context.Context, olderThan time.Duration) (int64, error)
 	// DeleteOrphanedOauthUserTokens hard-deletes token rows where status='orphaned'
 	// and updated_at is older than olderThan. Returns the number of rows removed.
 	// Scoped to auth_mode IN ('user','vk','session') — a shared token can't

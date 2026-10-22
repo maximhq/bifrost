@@ -1859,6 +1859,10 @@ func (m *MockConfigStore) DeleteExpiredOauthUserSessions(ctx context.Context) (i
 	return 0, nil
 }
 
+func (m *MockConfigStore) DeleteAbandonedOauthConfigs(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+
 func (m *MockConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
 	return 0, nil
 }

@@ -5816,3 +5816,55 @@ func TestGetVirtualKeysPaginated_MetadataFiltersAndSearch(t *testing.T) {
 		})
 	}
 }
+
+// TestDeleteAbandonedOauthConfigs pins which oauth_configs rows the sweep may
+// remove: only 'pending'/'failed' rows past the grace period with no MCP
+// client, live flow, or token pointing at them.
+func TestDeleteAbandonedOauthConfigs(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	db := store.DB().WithContext(ctx)
+	require.NoError(t, db.AutoMigrate(&tables.TableOauthConfig{}))
+
+	old := time.Now().Add(-2 * time.Hour)
+	seedConfig := func(id, status string, createdAt time.Time) {
+		require.NoError(t, db.Create(&tables.TableOauthConfig{
+			ID: id, Status: status, RedirectURI: "http://localhost/api/oauth/callback", CreatedAt: createdAt,
+		}).Error)
+	}
+	seedFlow := func(id, configID string, expiresAt time.Time) {
+		require.NoError(t, db.Create(&tables.TableMCPOauthFlow{
+			ID: id, State: "state-" + id, OauthConfigID: configID, FlowMode: "admin", Status: "pending", ExpiresAt: expiresAt,
+		}).Error)
+	}
+
+	seedConfig("abandoned-pending", "pending", old)
+	seedConfig("abandoned-failed", "failed", old)
+	seedConfig("expired-flow", "pending", old)
+	seedFlow("flow-expired", "expired-flow", old)
+	seedConfig("young-pending", "pending", time.Now())
+	seedConfig("live-flow", "pending", old)
+	seedFlow("flow-live", "live-flow", time.Now().Add(10*time.Minute))
+	seedConfig("authorized", "authorized", old)
+	seedConfig("has-token", "failed", old)
+	require.NoError(t, db.Create(&tables.TableMCPOauthToken{
+		ID: "tok-1", AuthMode: "shared", OauthConfigID: "has-token", Status: "active", AccessToken: "x", TokenType: "Bearer",
+	}).Error)
+	seedConfig("linked", "pending", old)
+	linkedID := "linked"
+	require.NoError(t, db.Create(&tables.TableMCPClient{
+		ClientID: "linked-client", Name: "linked", ConnectionType: "http", AuthType: "oauth", OauthConfigID: &linkedID,
+	}).Error)
+
+	n, err := store.DeleteAbandonedOauthConfigs(ctx, 0)
+	require.NoError(t, err)
+	assert.Zero(t, n, "non-positive grace must be a no-op")
+
+	n, err = store.DeleteAbandonedOauthConfigs(ctx, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), n)
+
+	var remaining []string
+	require.NoError(t, db.Model(&tables.TableOauthConfig{}).Order("id").Pluck("id", &remaining).Error)
+	assert.Equal(t, []string{"authorized", "has-token", "linked", "live-flow", "young-pending"}, remaining)
+}
