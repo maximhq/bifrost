@@ -4,13 +4,14 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.45
+**Latest Version:** 2.1.46
 
 ## Changelog
 
 ### Upcoming
 
 - Configurable request-body buffer pool limit via `bifrost.server.bodyBufferPoolLimitBytes`. Maps to `server.body_buffer_pool_limit_bytes` in config.json. Keep-alive connections free request-body buffers larger than this after each request instead of holding the largest body they ever read (default 4 MiB when unset; `0` means unlimited, the old behaviour).
+- Added `bifrost.scim.config.syncAllUsers` for the Okta SCIM provider, rendered as-is into `scim_config.config.syncAllUsers`. Default (unset/`true`) keeps the directory/background sync covering every app-assigned user except `SUSPENDED`/`DEPROVISIONED`; `false` narrows it to `ACTIVE` users only. The field existed on the Okta provider but was rejected by the chart's `additionalProperties: false` schema, so it could only be set from the dashboard.
 
 ### 2.1.45
 
