@@ -142260,6 +142260,105 @@
           }
         },
         {
+          "name": "databricks/databricks-meta-llama-3-3-70b-instruct /v1/chat/completions max_completion_tokens is sent as max_tokens",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Databricks Llama accepts the output ceiling as max_tokens', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  var raw = json.extra_fields && json.extra_fields.raw_request;",
+                  "  pm.expect(raw, 'raw request missing; x-bf-send-back-raw-request was not honoured: ' + pm.response.text()).to.exist;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw.max_completion_tokens, 'max_completion_tokens reached Databricks, Llama and gpt-oss endpoints reject it').to.be.undefined;",
+                  "  pm.expect(raw.max_tokens, 'max_tokens not sent: ' + JSON.stringify(raw)).to.equal(64);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-meta-llama-3-3-70b-instruct\", \"max_completion_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": \"Say hi in five words.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-gpt-oss-120b /v1/responses falls back to chat with max_tokens",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Databricks gpt-oss accepts the Responses fallback ceiling as max_tokens', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  var raw = json.extra_fields && json.extra_fields.raw_request;",
+                  "  pm.expect(raw, 'raw request missing; x-bf-send-back-raw-request was not honoured: ' + pm.response.text()).to.exist;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw.max_completion_tokens, 'max_completion_tokens reached Databricks, Llama and gpt-oss endpoints reject it').to.be.undefined;",
+                  "  pm.expect(raw.max_tokens, 'max_tokens not sent: ' + JSON.stringify(raw)).to.equal(64);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-gpt-oss-120b\", \"max_output_tokens\": 64, \"input\": \"Say hi in five words.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
           "name": "databricks/databricks-gte-large-en /v1/embeddings",
           "event": [
             {
