@@ -56,6 +56,9 @@
 		"tokenLimit": "토큰 한도",
 		"requestLimit": "요청 한도",
 		"apiStructure": "API 구조",
+		"networkTab": "네트워크",
+		"betaHeadersTab": "베타 헤더",
+		"debuggingTab": "디버깅",
 		"performance": "성능",
 		"governance": "거버넌스",
 		"betaHeaders": {
@@ -422,6 +425,7 @@
 		"allowedRequests": {
 			"types": {
 				"list_models": "모델 나열",
+				"model_retrieve": "모델 조회",
 				"text_completion": "텍스트 완성",
 				"text_completion_stream": "텍스트 완성 스트림",
 				"chat_completion": "채팅 완료",
@@ -442,7 +446,9 @@
 				"image_edit": "이미지 편집",
 				"image_edit_stream": "이미지 편집 스트림",
 				"image_variation": "이미지 변형",
-				"count_tokens": "토큰 계산"
+				"count_tokens": "토큰 계산",
+				"decisions": "의사결정",
+				"live": "라이브"
 			},
 			"title": "허용되는 요청 유형",
 			"description": "이 사용자 정의 공급자가 처리할 수 있는 요청 유형을 선택하세요.",

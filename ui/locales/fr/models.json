@@ -56,6 +56,9 @@
 		"tokenLimit": "Limite de jetons",
 		"requestLimit": "Limite de requêtes",
 		"apiStructure": "Structure de l’API",
+		"networkTab": "Réseau",
+		"betaHeadersTab": "En-têtes bêta",
+		"debuggingTab": "Débogage",
 		"performance": "Performances",
 		"governance": "Gouvernance",
 		"betaHeaders": {
@@ -422,6 +425,7 @@
 		"allowedRequests": {
 			"types": {
 				"list_models": "Lister les modèles",
+				"model_retrieve": "Récupérer un modèle",
 				"text_completion": "Complétion de texte",
 				"text_completion_stream": "Flux de complétion de texte",
 				"chat_completion": "Complétion de chat",
@@ -442,7 +446,9 @@
 				"image_edit": "Modification d’images",
 				"image_edit_stream": "Flux de modification d’images",
 				"image_variation": "Variation d’images",
-				"count_tokens": "Compter les jetons"
+				"count_tokens": "Compter les jetons",
+				"decisions": "Décisions",
+				"live": "En direct"
 			},
 			"title": "Types de requêtes autorisés",
 			"description": "Sélectionnez les types de requêtes que ce fournisseur personnalisé peut prendre en charge.",

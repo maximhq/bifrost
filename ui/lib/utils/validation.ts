@@ -205,7 +205,9 @@ const PASSWORD_REQUIREMENTS = [
  * Existing credentials are skipped only when the caller explicitly confirms
  * that the password field has not been edited.
  */
-export function getPasswordPolicyFailures(password?: string, isUnchanged = false): string[] {
+export type PasswordRequirementKey = (typeof PASSWORD_REQUIREMENTS)[number]["key"];
+
+export function getPasswordPolicyFailures(password?: string, isUnchanged = false): PasswordRequirementKey[] {
 	if (!password || isUnchanged) return [];
 	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.key);
 }

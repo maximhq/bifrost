@@ -56,6 +56,9 @@
 		"tokenLimit": "Token-Limit",
 		"requestLimit": "Anfrage-Limit",
 		"apiStructure": "API-Struktur",
+		"networkTab": "Netzwerk",
+		"betaHeadersTab": "Beta-Header",
+		"debuggingTab": "Debugging",
 		"performance": "Leistung",
 		"governance": "Zugangsverwaltung",
 		"betaHeaders": {
@@ -422,6 +425,7 @@
 		"allowedRequests": {
 			"types": {
 				"list_models": "Modelle auflisten",
+				"model_retrieve": "Modell abrufen",
 				"text_completion": "Text-Vervollständigung",
 				"text_completion_stream": "Text-Vervollständigungs-Stream",
 				"chat_completion": "Chat-Vervollständigung",
@@ -442,7 +446,9 @@
 				"image_edit": "Bildbearbeitung",
 				"image_edit_stream": "Bildbearbeitungs-Stream",
 				"image_variation": "Bildvariation",
-				"count_tokens": "Tokens zählen"
+				"count_tokens": "Tokens zählen",
+				"decisions": "Entscheidungen",
+				"live": "Live"
 			},
 			"title": "Zulässige Anfragetypen",
 			"description": "Wähle aus, welche Anfragetypen dieser benutzerdefinierte Anbieter verarbeiten kann.",

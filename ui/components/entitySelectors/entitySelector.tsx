@@ -21,10 +21,11 @@
 
 import { CheckIcon, ChevronDownIcon, PlusIcon } from "lucide-react";
 import { type ComponentType, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ParseKeys } from "i18next";
 import { useTranslation } from "react-i18next";
 import { components } from "react-select";
 
-const ENTITY_NOUN_KEYS: Record<string, string> = {
+const ENTITY_NOUN_KEYS: Partial<Record<string, ParseKeys<"common">>> = {
 	team: "entities.team",
 	teams: "entities.teams",
 	customer: "entities.customer",

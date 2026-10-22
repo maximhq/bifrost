@@ -56,6 +56,9 @@
 		"tokenLimit": "Лимит токенов",
 		"requestLimit": "Лимит запросов",
 		"apiStructure": "Структура API",
+		"networkTab": "Сеть",
+		"betaHeadersTab": "Бета-заголовки",
+		"debuggingTab": "Отладка",
 		"performance": "Производительность",
 		"governance": "Управление",
 		"betaHeaders": {
@@ -442,6 +445,7 @@
 		"allowedRequests": {
 			"types": {
 				"list_models": "Список моделей",
+				"model_retrieve": "Получение модели",
 				"text_completion": "Текстовое завершение",
 				"text_completion_stream": "Потоковое текстовое завершение",
 				"chat_completion": "Чат-завершение",
@@ -462,7 +466,9 @@
 				"image_edit": "Редактирование изображений",
 				"image_edit_stream": "Потоковое редактирование изображений",
 				"image_variation": "Вариация изображения",
-				"count_tokens": "Подсчёт токенов"
+				"count_tokens": "Подсчёт токенов",
+				"decisions": "Решения",
+				"live": "В реальном времени"
 			},
 			"title": "Разрешённые типы запросов",
 			"description": "Выберите, какие типы запросов может обрабатывать этот свой провайдер.",
