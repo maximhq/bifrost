@@ -3,6 +3,7 @@ package warp
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -658,4 +659,120 @@ func TestWarpSemanticSearchToldToJudgeRowsByContent(t *testing.T) {
 	require.Contains(t, tool.description, "several phrasings")
 	require.Contains(t, tool.schemaJSON, `"queries"`)
 	require.Contains(t, SemanticSearchGuidance, "drop every row whose content is not about the topic")
+}
+
+// GET /api/logs/search runs the same search as the tool, for the caller on the
+// context: a restricted caller's visibility fans out the vector prefilters, and
+// Warp's own default of narrowing an unscoped question to the asker's traffic
+// does not apply. Bad queries are refused before anything is embedded, and a
+// deployment without the log index says so.
+func TestWarpServiceSearchLogsForAnAPICaller(t *testing.T) {
+	reader := &semanticLogReader{logs: map[string]logstore.Log{}}
+	vectors := newFakeWarpVectorStore()
+	embedded := 0
+	executor := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		embedded++
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
+	}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
+		WithVectorStore(vectors),
+		WithEmbeddingExecutor(executor),
+		WithLogReader(reader),
+		WithCallerRestrictionResolver(func(context.Context) CallerRestriction {
+			return CallerRestriction{Restricted: true, Logs: &LogVisibility{TeamIDs: []string{"team-1"}}}
+		}),
+	)
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyUserID, "asking-user")
+
+	result, err := service.SearchLogs(ctx, []string{"refund requests"}, nil, 5)
+	require.NoError(t, err)
+	require.NotNil(t, result.Rows)
+	fields := map[string]bool{}
+	for _, queries := range vectors.calls {
+		for _, query := range queries {
+			fields[query.Field] = true
+		}
+	}
+	require.True(t, fields["team_ids"], "the caller's visibility prefilters the index")
+	require.False(t, fields["user_id"], "the API does not narrow to the asker's own traffic")
+
+	embedded = 0
+	_, err = service.SearchLogs(ctx, []string{"  "}, nil, 5)
+	require.ErrorIs(t, err, ErrInvalidSearchQuery)
+	_, err = service.SearchLogs(ctx, []string{"a", "b", "c", "d", "e", "f"}, nil, 5)
+	require.ErrorIs(t, err, ErrInvalidSearchQuery)
+	require.Zero(t, embedded, "a refused query set is never embedded")
+
+	unindexed := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader))
+	_, err = unindexed.SearchLogs(ctx, []string{"refund requests"}, nil, 5)
+	require.ErrorIs(t, err, ErrUnavailable)
+	_, err = unindexed.SearchLogs(ctx, nil, nil, 5)
+	require.ErrorIs(t, err, ErrInvalidSearchQuery, "a bad request is a 400 even where search is unavailable")
+}
+
+// A filter search by meaning cannot apply is refused, naming it, rather than
+// dropped: a dropped session_id returned other sessions' conversations. This
+// holds for the API and for Warp's tool, and nothing is embedded first.
+func TestWarpSemanticSearchRefusesFiltersItCannotApply(t *testing.T) {
+	reader := &semanticLogReader{logs: map[string]logstore.Log{}}
+	embedded := 0
+	executor := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		embedded++
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
+	}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}),
+		WithVectorStore(newFakeWarpVectorStore()),
+		WithEmbeddingExecutor(executor),
+		WithLogReader(reader),
+	)
+	_, err := service.SearchLogs(context.Background(), []string{"refunds"}, &logstore.SearchFilters{SessionID: "s-1", Objects: []string{"embedding"}, Providers: []string{"openai"}}, 5)
+	require.ErrorIs(t, err, ErrInvalidSearchQuery)
+	require.ErrorContains(t, err, "cannot filter on objects, session_id.")
+	require.NotContains(t, err.Error(), "cannot filter on providers")
+
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newFakeWarpVectorStore(), executor, reader)
+	_, err = runTool(t, SemanticSearchToolName, &ToolDeps{logManager: reader, semantic: searcher, scope: Scope{Unrestricted: true}}, map[string]any{
+		"queries": []any{"refunds"}, "filters": map[string]any{"session_id": "s-1"},
+	})
+	require.ErrorContains(t, err, "cannot filter on session_id")
+	require.Zero(t, embedded)
+}
+
+// Every SearchFilters field is either applied by search by meaning or refused
+// by name. A new field fails here until it is put on one side.
+func TestWarpSemanticFiltersClassifyEveryField(t *testing.T) {
+	applied := map[string]bool{
+		"StartTime": true, "EndTime": true, "Providers": true, "Models": true, "Status": true,
+		"VirtualKeyIDs": true, "UserIDs": true, "Apps": true, "TeamIDs": true, "CustomerIDs": true,
+		"BusinessUnitIDs": true, "MinLatency": true, "MaxLatency": true, "MinCost": true, "MaxCost": true,
+		"ContentSearch": true,
+		"RankingLimit":  true, // a ranking option, not a filter
+	}
+	typ := reflect.TypeOf(logstore.SearchFilters{})
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		var filters logstore.SearchFilters
+		value := reflect.ValueOf(&filters).Elem().Field(i)
+		switch value.Kind() {
+		case reflect.String:
+			value.SetString("x")
+		case reflect.Bool:
+			value.SetBool(true)
+		case reflect.Slice:
+			value.Set(reflect.MakeSlice(value.Type(), 1, 1))
+		case reflect.Map:
+			value.Set(reflect.MakeMapWithSize(value.Type(), 1))
+			value.SetMapIndex(reflect.New(value.Type().Key()).Elem(), reflect.New(value.Type().Elem()).Elem())
+		case reflect.Pointer:
+			value.Set(reflect.New(value.Type().Elem()))
+		default:
+			t.Fatalf("SearchFilters.%s has kind %s; teach this test to set it", field.Name, value.Kind())
+		}
+		refused := len(unsupportedSemanticFilters(&filters)) > 0
+		if refused == applied[field.Name] {
+			t.Errorf("SearchFilters.%s: refused=%v, but applied=%v", field.Name, refused, applied[field.Name])
+		}
+	}
 }

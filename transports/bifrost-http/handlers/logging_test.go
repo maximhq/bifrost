@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
+	"github.com/maximhq/bifrost/framework/warp"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
@@ -1819,4 +1820,71 @@ func TestGetLogTrace(t *testing.T) {
 	ctx = get("/api/logs/root")
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	require.NotContains(t, string(ctx.Response.Body()), "chain_length")
+}
+
+// recordingLogSearch is a LogSearcher that records what the route asked for
+// and answers with a fixed result or error.
+type recordingLogSearch struct {
+	queries []string
+	filters *logstore.SearchFilters
+	limit   int
+	hidden  any
+	result  warp.SemanticSearchResult
+	err     error
+}
+
+func (s *recordingLogSearch) SearchLogs(ctx context.Context, queries []string, filters *logstore.SearchFilters, limit int) (warp.SemanticSearchResult, error) {
+	s.queries, s.filters, s.limit = queries, filters, limit
+	s.hidden = ctx.Value(logstore.HiddenRequestTypesContextKey)
+	return s.result, s.err
+}
+
+// GET /api/logs/search passes every phrasing, the standard log filters, the
+// limit and the hidden request types to the search, and maps its refusals.
+func TestSearchLogs(t *testing.T) {
+	SetLogger(&mockLogger{})
+	search := &recordingLogSearch{result: warp.SemanticSearchResult{Rows: []warp.SemanticSearchRow{{Score: 0.71}}, Returned: 1, Threshold: 0.3}}
+	h := &LoggingHandler{
+		logManager: &dashboardLogManager{},
+		config:     &lib.Config{ClientConfig: &configstore.ClientConfig{HiddenRequestTypes: []string{"embedding"}}},
+	}
+	r := router.New()
+	h.RegisterRoutes(r)
+	get := func(path string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.SetRequestURI(path)
+		ctx := initCtx(&req)
+		r.Handler(ctx)
+		return ctx
+	}
+
+	ctx := get("/api/logs/search?query=refunds")
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), "no search wired")
+
+	h.SetLogSearch(search)
+	ctx = get("/api/logs/search?query=refund+requests&query=money+back&providers=openai,anthropic&team_ids=team-1&limit=7")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Equal(t, []string{"refund requests", "money back"}, search.queries)
+	require.Equal(t, []string{"openai", "anthropic"}, search.filters.Providers)
+	require.Equal(t, []string{"team-1"}, search.filters.TeamIDs)
+	require.Equal(t, 7, search.limit)
+	require.Equal(t, []string{"embedding"}, search.hidden, "hidden request types apply as on every log read")
+	var result warp.SemanticSearchResult
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &result))
+	require.Equal(t, 1, result.Returned)
+	require.InDelta(t, 0.3, result.Threshold, 1e-9)
+
+	for _, bad := range []string{"limit=0", "limit=26", "limit=many"} {
+		ctx = get("/api/logs/search?query=refunds&" + bad)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), bad)
+	}
+
+	search.err = fmt.Errorf("checked: %w", warp.ErrInvalidSearchQuery)
+	ctx = get("/api/logs/search")
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+
+	search.err = warp.ErrUnavailable
+	ctx = get("/api/logs/search?query=refunds")
+	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
+	require.Contains(t, string(ctx.Response.Body()), "Warp enabled")
 }

@@ -542,6 +542,113 @@ logs-by-id:
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
 
+logs-search:
+  get:
+    operationId: searchLogs
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Logs:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Search logged conversations by meaning
+    description: |
+      Finds logged conversations whose content means something close to a
+      query, such as "users asking for a refund", using the embedding index
+      Warp keeps of your logs. Use it for topics, complaints and intents that
+      no exact filter captures; for an exact phrase, `getLogs` with
+      `content_search` is cheaper.
+
+      Pass up to 5 phrasings of the same idea as repeated `query` parameters:
+      each is embedded and searched, and a log scores by its best match across
+      them, so varied wording raises recall. Each call costs one embedding
+      request per phrasing.
+
+      The other parameters are the log filters search by meaning can apply:
+      time range, providers, models, status, virtual keys, users, teams,
+      customers, business units, apps, latency, cost and `content_search`. Any
+      other log filter is refused with 400 rather than ignored. Every match is
+      reloaded through the log store, so a caller sees only the logs they may
+      see. Rows are a compact projection with a content preview; fetch a full
+      row with `getLogById`.
+
+      Scores are cosine similarity. Only rows scoring at or above `threshold`
+      (Warp's configured threshold) are returned, and a score does not by
+      itself say a row is on topic: judge rows by their content. An empty
+      result means nothing scored above the threshold, not that the topic never
+      came up; sample with `getLogs` before concluding that.
+
+      Requires Warp to be enabled with an embedding model, and its log index
+      to be filled. Otherwise the route returns 503.
+    tags:
+      - Logging
+    parameters:
+      - name: query
+        in: query
+        required: true
+        description: A phrasing of what to look for. Repeat the parameter for up to 5 phrasings.
+        style: form
+        explode: true
+        schema:
+          type: array
+          minItems: 1
+          maxItems: 5
+          items:
+            type: string
+            maxLength: 2000
+      - name: limit
+        in: query
+        description: Matches to return, at most 25. Defaults to, and is capped by, Warp's configured semantic search limit.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 25
+      - $ref: "#/_histogram-parameters/providers"
+      - $ref: "#/_histogram-parameters/models"
+      - $ref: "#/_histogram-parameters/status"
+      - $ref: "#/_histogram-parameters/virtual_key_ids"
+      - $ref: "#/_histogram-parameters/team_ids"
+      - $ref: "#/_histogram-parameters/customer_ids"
+      - $ref: "#/_histogram-parameters/user_ids"
+      - $ref: "#/_histogram-parameters/business_unit_ids"
+      - $ref: "#/_histogram-parameters/start_time"
+      - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
+      - $ref: "#/_histogram-parameters/min_latency"
+      - $ref: "#/_histogram-parameters/max_latency"
+      - $ref: "#/_histogram-parameters/min_cost"
+      - $ref: "#/_histogram-parameters/max_cost"
+      - $ref: "#/_histogram-parameters/apps"
+      - $ref: "#/_histogram-parameters/content_search"
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      "200":
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/management/logging.yaml#/LogSearchResult"
+      "400":
+        description: No query, a query over 2000 characters, more than 5 queries, a limit outside 1-25, or a log filter search by meaning cannot apply
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "503":
+        description: Semantic search is not available because Warp, its embedding model or its log index is not set up
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
+
 logs-trace-by-id:
   get:
     operationId: getLogTrace

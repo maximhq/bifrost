@@ -280196,6 +280196,457 @@
           ]
         }
       ]
+    },
+    {
+      "name": "266. Semantic log search endpoint (log-search) [SERIAL]",
+      "description": "GET /api/logs/search serves the search Warp's semantic_search_logs tool runs (the two share Service.SearchLogs and SemanticSearcher), so the management MCP and API clients can find logged conversations by meaning. Three deterministic rows require 400 for a search with no query, for more than 5 phrasings, and for a filter search by meaning cannot apply (session_id), which used to be silently ignored; before the change /api/logs/search fell through to /api/logs/{id} and returned 404. The live rows configure Warp as folder 119 does, send one conversation with a distinctive phrase, wait for its log row, then search by two phrasings of that phrase until live indexing has embedded it, and require the row among the matches at or above the threshold. Requires the warp flag to be unlocked, an embedding provider in the profile and the vector store to be reachable; the seeded log, the flag and the previous Warp config are restored at the end.",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai log-search: a search with no query is refused",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: no query returns 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: more than 5 phrasings are refused",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=a&query=b&query=c&query=d&query=e&query=f"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: six phrasings return 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] openai log-search: a filter search by meaning cannot apply is refused",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=refunds&session_id=harness-log-search-unsupported"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: session_id is refused, not ignored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'names the filter').to.include('session_id');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-search setup: read warp feature flag",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: feature flags list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var flag = (pm.response.json().flags || []).filter(function (f) { return f.id === 'warp'; })[0];",
+                  "pm.test('log-search: warp flag exists', function () {",
+                  "  pm.expect(flag, 'no warp flag: ' + pm.response.text()).to.be.an('object');",
+                  "});",
+                  "pm.collectionVariables.set('logSearchFlagWas', flag && flag.enabled ? 'true' : 'false');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          }
+        },
+        {
+          "name": "openai log-search setup: enable warp feature flag",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: warp flag enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        },
+        {
+          "name": "openai log-search setup: read current warp config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: warp config readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.set('logSearchConfigWas', pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini log-search: configure Warp with no base URL",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Keep any embedding space already saved: changing it without a new namespace",
+                  "// is rejected, and the harness must not disturb an existing index.",
+                  "var was = JSON.parse(pm.collectionVariables.get('logSearchConfigWas') || '{}');",
+                  "var body = {",
+                  "  enabled: true,",
+                  "  provider: 'openai',",
+                  "  model: 'gpt-4o-mini',",
+                  "  api_key_id: '',",
+                  "  embedding_provider: was.embedding_provider || 'openai',",
+                  "  embedding_model: was.embedding_model || 'text-embedding-3-small',",
+                  "  embedding_dimension: was.embedding_dimension || 1536,",
+                  "  log_vector_store_namespace: was.log_vector_store_namespace || ''",
+                  "};",
+                  "pm.collectionVariables.set('logSearchConfigBody', JSON.stringify(body));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: config saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('log-search: config has no base_url', function () {",
+                  "  pm.expect(pm.response.json(), 'base_url should be gone: ' + pm.response.text()).to.not.have.property('base_url');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{logSearchConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini log-search seed: a distinctive conversation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{logSearchSession}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"Write one sentence about a lighthouse keeper who collects seashells shaped like violins.\"}], \"max_tokens\": 40}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('logSearchSession', 'harness-log-search-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('logSearchId', pm.response.headers.get('x-bifrost-request-id') || '');",
+                  "pm.test('log-search seed: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-search: wait for the seeded log row",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs?session_id={{logSearchSession}}&limit=10"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search wait: list responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('logSearchTries'); return; }",
+                  "var logs = (pm.response.json().logs || []);",
+                  "var tries = Number(pm.collectionVariables.get('logSearchTries') || 0);",
+                  "if (logs.length < 1 && tries < 10) {",
+                  "  pm.collectionVariables.set('logSearchTries', tries + 1);",
+                  "  setTimeout(function () {}, 1500);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('logSearchTries');",
+                  "pm.test('log-search wait: the seeded row is logged', function () {",
+                  "  pm.expect(logs.map(function (l) { return l.id; }), 'rows: ' + pm.response.text()).to.include(pm.collectionVariables.get('logSearchId'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-search: the seeded conversation is found by meaning",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/logs/search?query=a+lighthouse+keeper+who+collects+seashells+shaped+like+violins&query=violin-shaped+shells+collected+by+a+lighthouse+keeper&limit=25"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: responds 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('logSearchTries'); return; }",
+                  "var body = pm.response.json();",
+                  "var id = pm.collectionVariables.get('logSearchId');",
+                  "var hit = (body.rows || []).filter(function (r) { return r.id === id; })[0];",
+                  "var tries = Number(pm.collectionVariables.get('logSearchTries') || 0);",
+                  "// Live indexing embeds the row after it is written; until then the search returns nothing.",
+                  "if (!hit && tries < 15) {",
+                  "  pm.collectionVariables.set('logSearchTries', tries + 1);",
+                  "  setTimeout(function () {}, 2000);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('logSearchTries');",
+                  "pm.test('log-search: the seeded row is a match above the threshold', function () {",
+                  "  pm.expect(hit, 'seeded row not found: ' + pm.response.text()).to.not.equal(undefined);",
+                  "  pm.expect(hit.score, 'score: ' + pm.response.text()).to.be.at.least(body.threshold);",
+                  "  pm.expect(body.returned, 'returned: ' + pm.response.text()).to.equal((body.rows || []).length);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-search cleanup: delete the seeded log",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/logs",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\":[\"{{logSearchId}}\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search cleanup: delete succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('logSearchId');",
+                  "pm.collectionVariables.unset('logSearchSession');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai log-search cleanup: restore warp config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: previous config restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{logSearchConfigWas}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/warp/config"
+          }
+        },
+        {
+          "name": "openai log-search cleanup: restore warp feature flag",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('logSearchFlagBody', JSON.stringify({ enabled: pm.collectionVariables.get('logSearchFlagWas') === 'true' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('log-search: flag restored', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{logSearchFlagBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/feature-flags/warp"
+          }
+        }
+      ]
     }
   ]
 }
