@@ -1774,6 +1774,7 @@ type ChatToResponsesStreamState struct {
 	ItemIDs               map[string]string   // Maps tool call ID to item ID
 	ToolCallNames         map[string]string   // Maps tool call ID to tool name
 	ToolCallIndexToID     map[uint16]string   // Maps tool call index to tool call ID (for lookups when ID is missing)
+	PendingToolArguments  map[uint16][]string // Argument fragments for an index whose ID has not arrived yet, in arrival order
 	MessageID             *string             // Message ID from first chunk
 	Model                 *string             // Model name
 	CreatedAt             int                 // Timestamp for created_at consistency
@@ -1804,6 +1805,7 @@ var chatToResponsesStreamStatePool = sync.Pool{
 			ItemIDs:               make(map[string]string),
 			ToolCallNames:         make(map[string]string),
 			ToolCallIndexToID:     make(map[uint16]string),
+			PendingToolArguments:  make(map[uint16][]string),
 			CreatedAt:             int(time.Now().Unix()),
 			CurrentOutputIndex:    0,
 			ToolCallOutputIndices: make(map[string]int),
@@ -1842,6 +1844,11 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 		state.ToolCallIndexToID = make(map[uint16]string)
 	} else {
 		clear(state.ToolCallIndexToID)
+	}
+	if state.PendingToolArguments == nil {
+		state.PendingToolArguments = make(map[uint16][]string)
+	} else {
+		clear(state.PendingToolArguments)
 	}
 	if state.ToolCallOutputIndices == nil {
 		state.ToolCallOutputIndices = make(map[string]int)
@@ -1886,6 +1893,9 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		}
 		if state.ToolCallIndexToID != nil {
 			clear(state.ToolCallIndexToID)
+		}
+		if state.PendingToolArguments != nil {
+			clear(state.PendingToolArguments)
 		}
 		if state.ToolCallOutputIndices != nil {
 			clear(state.ToolCallOutputIndices)
@@ -2177,6 +2187,28 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		state.TextItemHasContent = true
 	}
 
+	// emitToolArgumentsDelta appends one function_call_arguments.delta for a call
+	// that is already open and folds the fragment into the buffer that
+	// response.completed renders from. Shared by the entry that carries the
+	// fragment and by a fragment held until an ID arrived.
+	emitToolArgumentsDelta := func(toolCallID string, arguments string) {
+		state.ToolArgumentBuffers[toolCallID] += arguments
+		delta := arguments
+		response := &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    Ptr(state.ToolCallOutputIndices[toolCallID]),
+			ContentIndex:   Ptr(1), // Tool calls use content_index:1
+			Delta:          &delta,
+			ExtraFields:    cr.ExtraFields,
+		}
+		if itemID := state.ItemIDs[toolCallID]; itemID != "" {
+			response.ItemID = &itemID
+		}
+		responses = append(responses, response)
+		state.SequenceNumber++
+	}
+
 	// Every entry is read, not just the first. delta.tool_calls is an array on
 	// the OpenAI wire and consumers accumulate entries by index: vLLM's DeepSeek
 	// parser splits one call across two entries of the same chunk (id and name,
@@ -2197,10 +2229,19 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if id, exists := state.ToolCallIndexToID[toolCall.Index]; exists {
 				toolCallID = id
 			} else {
-				// No ID and no mapping found - skip this chunk
-				// This can happen if the stream is malformed or out of order
-				// Skip this entry rather than the whole chunk: a later entry may
-				// carry the id, and the arguments entry shares its index.
+				// No ID and no mapping yet. The entry can still be the arguments half
+				// of a call whose ID arrives in a later entry of this chunk, or in a
+				// later chunk, so the fragment is held against its index rather than
+				// dropped; it is emitted as soon as an ID establishes the mapping.
+				// Dropping it left the call open with an incomplete argument buffer --
+				// the #8898 symptom reached from the opposite entry order.
+				if toolCall.Function.Arguments != "" {
+					if state.PendingToolArguments == nil {
+						state.PendingToolArguments = make(map[uint16][]string)
+					}
+					state.PendingToolArguments[toolCall.Index] = append(state.PendingToolArguments[toolCall.Index], toolCall.Function.Arguments)
+				}
+				// Nothing else in this iteration can run without an ID.
 				continue
 			}
 		}
@@ -2328,26 +2369,21 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			}
 		}
 
+		// Fragments that arrived for this index before its ID did, in arrival
+		// order and after the output_item.added above, so a consumer never sees a
+		// delta for an item it has not been told about. They precede this
+		// entry's own fragment, which came after them on the wire.
+		if pending := state.PendingToolArguments[toolCall.Index]; len(pending) > 0 {
+			for _, fragment := range pending {
+				emitToolArgumentsDelta(toolCallID, fragment)
+			}
+			delete(state.PendingToolArguments, toolCall.Index)
+		}
+
 		// Accumulate and emit function call arguments delta
 		// This works for both chunks with ID and chunks without ID (using looked-up ID)
 		if toolCall.Function.Arguments != "" {
-			outputIndex := state.ToolCallOutputIndices[toolCallID]
-			state.ToolArgumentBuffers[toolCallID] += toolCall.Function.Arguments
-
-			itemID := state.ItemIDs[toolCallID]
-			response := &BifrostResponsesStreamResponse{
-				Type:           ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
-				SequenceNumber: state.SequenceNumber,
-				OutputIndex:    Ptr(outputIndex),
-				ContentIndex:   Ptr(contentIndex),
-				Delta:          &toolCall.Function.Arguments,
-				ExtraFields:    cr.ExtraFields,
-			}
-			if itemID != "" {
-				response.ItemID = &itemID
-			}
-			responses = append(responses, response)
-			state.SequenceNumber++
+			emitToolArgumentsDelta(toolCallID, toolCall.Function.Arguments)
 		}
 	}
 
