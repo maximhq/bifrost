@@ -252,8 +252,8 @@ OAuthKeyConfig:
   properties:
     grant_type:
       type: string
-      enum: [client_credentials, jwt_bearer]
-      description: client_credentials (RFC 6749 §4.4) or jwt_bearer (RFC 7523, Bifrost signs an assertion with private_key)
+      enum: [client_credentials, jwt_bearer, token_exchange]
+      description: client_credentials (RFC 6749 §4.4), jwt_bearer (RFC 7523, Bifrost signs an assertion with private_key) or token_exchange (RFC 8693, Bifrost exchanges the subject token read from subject_token_file, e.g. for workload identity federation)
     token_url:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
       description: Token endpoint, absolute https URL (plain http is accepted for loopback hosts only). Must not carry userinfo, a query or a fragment; send extra parameters through extra_params
@@ -273,7 +273,7 @@ OAuthKeyConfig:
       description: Scopes requested, sent space-joined
     audience:
       type: string
-      description: jwt_bearer aud claim (required for that grant); client_credentials optional audience form parameter
+      description: jwt_bearer aud claim (required for that grant); client_credentials and token_exchange optional audience parameter
     issuer:
       type: string
       minLength: 1
@@ -308,6 +308,21 @@ OAuthKeyConfig:
         jwt_bearer: seconds from issue until the assertion expires (exp = now + value); 0 or
         omitted uses the default of 300. iat is
         backdated by 30 seconds for clock skew, so the assertion's exp - iat span is this value plus 30.
+    subject_token_file:
+      type: string
+      minLength: 1
+      pattern: '^/'
+      description: token_exchange absolute path of the subject token (e.g. a Kubernetes projected service account token), re-read on every exchange
+    subject_token_type:
+      type: string
+      minLength: 1
+      default: urn:ietf:params:oauth:token-type:jwt
+      description: token_exchange RFC 8693 token type URI of the subject token
+    request_encoding:
+      type: string
+      enum: [form, json]
+      default: form
+      description: token_exchange request body encoding; OpenAI's token endpoint requires json
   additionalProperties: false
   allOf:
     - if:
@@ -329,6 +344,21 @@ OAuthKeyConfig:
           audience:
             minLength: 1
         description: jwt_bearer needs the signing key plus the non-empty iss and aud claims
+    - if:
+        required: [grant_type]
+        properties:
+          grant_type:
+            const: token_exchange
+      then:
+        required: [subject_token_file]
+        description: token_exchange needs the subject token file
+      else:
+        not:
+          anyOf:
+            - required: [subject_token_file]
+            - required: [subject_token_type]
+            - required: [request_encoding]
+        description: the token_exchange fields are refused on the other grants
 
 Key:
   type: object

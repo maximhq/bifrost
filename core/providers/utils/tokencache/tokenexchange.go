@@ -104,7 +104,7 @@ func readSubjectToken(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("subject_token_file could not be read: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxSubjectTokenBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("subject_token_file could not be read: %w", err)
