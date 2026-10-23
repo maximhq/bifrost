@@ -21,6 +21,35 @@ If an older helper already changed retention to `1`, restore your intended polic
 manually. The helpers cannot distinguish an accidental one-day value from an
 intentional one or recover logs already deleted by retention cleanup.
 
+## Immediate registration of management-created provider prefixes
+
+Folder 267 (`provider-prefix-registration`) creates a fresh custom provider per
+request with model discovery disabled and a virtual key that assigns all
+load-balancing weight to a different, already initialized provider. The first
+chat or Responses request on native and `/openai` SDK routes (unary and streaming)
+must retain the explicit new provider prefix. Eight cases expect the local
+fixture's `503`; the zero-key case expects `400 no_key_supports_model`, not a request sent to the competing provider.
+Successful keyed/keyless responses and SSE are covered by the Go server tests.
+Each harness case removes its own providers and virtual key.
+
+These cases require no real credentials and make no paid provider calls. Start
+`runners/provider-error-fixture.mjs` and an isolated gateway as described in
+[Provider 5xx failover](#provider-5xx-failover-and-429-retry-hint-propagation), setting
+`BIFROST_SETUP_TOKEN=provider-registration-local-token` on that gateway. Then run:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "267. Management-created provider prefixes route immediately (provider-prefix-registration)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791 \
+  --env-var setupToken=provider-registration-local-token \
+  --timeout-request 15000 --timeout-script 15000
+```
+
+The folder is skipped unless `providerErrorFixture=1`. Inline-script regression
+checks are included in `node tests/e2e/api/collections/collection-scripts.test.mjs`.
+
 ## Provider secret redaction
 
 The API management collection's `Provider Secret Redaction` folder covers every

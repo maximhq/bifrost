@@ -279452,6 +279452,396 @@
           }
         }
       ]
+    },
+    {
+      "name": "267. Management-created provider prefixes route immediately (provider-prefix-registration)",
+      "description": "POST /api/providers must register a custom provider prefix before the first inference, even when list_models is disabled. Each case creates a competitor, warms only that competitor through a management update, then creates a fresh target and a multi-provider virtual key giving all load-balancing weight to the competitor. Explicit target/model requests must keep the target identity. Keyless chat and Responses on native and /openai SDK routes, both unary and streaming requests, reach the local provider-error-fixture upstream-503 error; a zero-key keyed target must fail locally with no_key_supports_model instead of routing to the competitor. Each case removes its own virtual key and providers, including after partial setup failures. No real credentials or paid provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs and an isolated gateway with governance/routing enabled, and set providerErrorFixture=1 (providerErrorFixtureUrl defaults to http://127.0.0.1:8791). Run FEATURE=\"provider-prefix-registration\". Keyed and keyless successful unary/SSE bodies, concurrent initialization and persistence-failure rollback are covered by Go integration tests.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
+              "var base = pm.variables.get('baseUrl');",
+              "var fixture = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+              "var requestName = pm.info.requestName;",
+              "var noKeys = requestName.indexOf('[EXPECT-400]') !== -1;",
+              "var suffix = Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+              "var target = 'harness-registration-' + suffix;",
+              "var other = target + '-other';",
+              "pm.variables.set('registrationTarget', target);",
+              "pm.variables.set('registrationProviders', JSON.stringify([]));",
+              "pm.variables.unset('registrationVKID');",
+              "var headers = { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
+              "var admin = pm.variables.get('admin_auth_header');",
+              "var managementToken = pm.variables.get('managementApiKey');",
+              "if (!admin && managementToken) { admin = 'Bearer ' + managementToken; }",
+              "if (admin) { headers.Authorization = admin; }",
+              "function checked(label, err, res) {",
+              "  pm.test('provider-prefix-registration: ' + label, function () {",
+              "    pm.expect(!err && res && res.code, err ? String(err) : (res ? res.text() : 'no response')).to.eql(200);",
+              "  });",
+              "  return !err && res && res.code === 200;",
+              "}",
+              "function providerBody(name) {",
+              "  return { provider: name, network_config: { base_url: fixture, allow_private_network: true, max_retries: 0 }, concurrency_and_buffer_size: { concurrency: 1, buffer_size: 2 }, custom_provider_config: { base_provider_type: 'openai', is_key_less: name !== target || !noKeys, allowed_requests: { chat_completion: true, chat_completion_stream: true, responses: true, responses_stream: true } } };",
+              "}",
+              "function create(name, next) {",
+              "  pm.sendRequest({ url: base + '/api/providers', method: 'POST', header: headers, body: { mode: 'raw', raw: JSON.stringify(providerBody(name)) } }, function (err, res) {",
+              "    if (!checked('create ' + name, err, res)) { return; }",
+              "    var providers = JSON.parse(pm.variables.get('registrationProviders'));",
+              "    providers.push(name);",
+              "    pm.variables.set('registrationProviders', JSON.stringify(providers));",
+              "    next();",
+              "  });",
+              "}",
+              "create(other, function () {",
+              "  var update = providerBody(other);",
+              "  delete update.provider;",
+              "  pm.sendRequest({ url: base + '/api/providers/' + encodeURIComponent(other), method: 'PUT', header: headers, body: { mode: 'raw', raw: JSON.stringify(update) } }, function (err, res) {",
+              "    if (!checked('warm competitor through management update', err, res)) { return; }",
+              "    create(target, function () {",
+              "      var vk = { name: 'harness-registration-vk-' + suffix, is_active: true, provider_configs: [",
+              "        { provider: target, allowed_models: ['*'], key_ids: ['*'] },",
+              "        { provider: other, allowed_models: ['*'], key_ids: ['*'], weight: 1 }",
+              "      ] };",
+              "      pm.sendRequest({ url: base + '/api/governance/virtual-keys', method: 'POST', header: headers, body: { mode: 'raw', raw: JSON.stringify(vk) } }, function (err, res) {",
+              "        if (!checked('create multi-provider virtual key', err, res)) { return; }",
+              "        var key;",
+              "        try { key = res.json().virtual_key; } catch (e) {}",
+              "        var value = key && (typeof key.value === 'object' && key.value !== null ? key.value.value : key.value);",
+              "        if (key && key.id) { pm.variables.set('registrationVKID', key.id); }",
+              "        pm.test('provider-prefix-registration: virtual key response contains an id and credential', function () {",
+              "          pm.expect(!!(key && key.id && value), res.text()).to.eql(true);",
+              "        });",
+              "        if (value) { pm.request.headers.upsert({ key: 'x-bf-vk', value: value }); }",
+              "      });",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "try {",
+              "  var noKeys = pm.info.requestName.indexOf('[EXPECT-400]') !== -1;",
+              "  pm.test('provider-prefix-registration: expected failure is returned without rerouting', function () {",
+              "    pm.expect(pm.response.code, pm.response.text()).to.eql(noKeys ? 400 : 503);",
+              "  });",
+              "  pm.test('provider-prefix-registration: failure comes from credential selection or the fixture', function () {",
+              "    var body = pm.response.json();",
+              "    pm.expect(body.error && (noKeys ? body.error.type : body.error.message), pm.response.text()).to.eql(noKeys ? 'no_key_supports_model' : 'service unavailable');",
+              "  });",
+              "  pm.test('provider-prefix-registration: first inference uses the new explicit provider', function () {",
+              "    var body = pm.response.json();",
+              "    var extra = body.extra_fields || {};",
+              "    var provider = (extra.routing_info || {}).provider || extra.provider || pm.response.headers.get('x-bifrost-routing-info-provider');",
+              "    pm.expect(provider, pm.response.text()).to.eql(pm.variables.get('registrationTarget'));",
+              "  });",
+              "} finally {",
+              "  var headers = { 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
+              "  var admin = pm.variables.get('admin_auth_header');",
+              "  var managementToken = pm.variables.get('managementApiKey');",
+              "  if (!admin && managementToken) { admin = 'Bearer ' + managementToken; }",
+              "  if (admin) { headers.Authorization = admin; }",
+              "  var jobs = [];",
+              "  var id = pm.variables.get('registrationVKID');",
+              "  if (id) { jobs.push('/api/governance/virtual-keys/' + encodeURIComponent(id)); }",
+              "  var providers = JSON.parse(pm.variables.get('registrationProviders') || '[]');",
+              "  for (var i = 0; i < providers.length; i++) { jobs.push('/api/providers/' + encodeURIComponent(providers[i])); }",
+              "  function removeNext() {",
+              "    if (!jobs.length) { return; }",
+              "    var path = jobs.shift();",
+              "    pm.sendRequest({ url: pm.variables.get('baseUrl') + path, method: 'DELETE', header: headers }, function (err, res) {",
+              "      pm.test('provider-prefix-registration: cleanup ' + path, function () {",
+              "        pm.expect(!err && res && res.code, err ? String(err) : (res ? res.text() : 'no response')).to.eql(200);",
+              "      });",
+              "      removeNext();",
+              "    });",
+              "  }",
+              "  removeNext();",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "[EXPECT-503] openai upstream-503 keyless /v1/chat/completions first custom prefix - provider-prefix-registration",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{registrationTarget}}/upstream-503\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hi\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-503] openai upstream-503 keyless /v1/chat/completions stream first custom prefix - provider-prefix-registration",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{registrationTarget}}/upstream-503\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hi\"\n    }\n  ],\n  \"max_tokens\": 1,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-503] openai upstream-503 keyless /v1/responses first custom prefix - provider-prefix-registration",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{registrationTarget}}/upstream-503\",\n  \"input\": \"Hi\",\n  \"max_output_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-503] openai upstream-503 keyless /v1/responses stream first custom prefix - provider-prefix-registration",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{registrationTarget}}/upstream-503\",\n  \"input\": \"Hi\",\n  \"max_output_tokens\": 1,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai upstream-503 keyed /v1/chat/completions first custom prefix without keys - provider-prefix-registration",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{registrationTarget}}/upstream-503\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hi\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-503] openai upstream-503 keyless /openai/v1/chat/completions first custom prefix - provider-prefix-registration",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{registrationTarget}}/upstream-503\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hi\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-503] openai upstream-503 keyless /openai/v1/chat/completions stream first custom prefix - provider-prefix-registration",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{registrationTarget}}/upstream-503\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hi\"\n    }\n  ],\n  \"max_tokens\": 1,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-503] openai upstream-503 keyless /openai/v1/responses first custom prefix - provider-prefix-registration",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{registrationTarget}}/upstream-503\",\n  \"input\": \"Hi\",\n  \"max_output_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-503] openai upstream-503 keyless /openai/v1/responses stream first custom prefix - provider-prefix-registration",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{registrationTarget}}/upstream-503\",\n  \"input\": \"Hi\",\n  \"max_output_tokens\": 1,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

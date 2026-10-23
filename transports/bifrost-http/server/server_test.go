@@ -39,6 +39,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1138,6 +1139,7 @@ func newProviderRegistrationFixture(t testing.TB) *providerRegistrationFixture {
 	r := router.New()
 	handlers.NewProviderHandler(s, cfg, client).RegisterRoutes(r)
 	handlers.NewInferenceHandler(s, client, cfg).RegisterRoutes(r)
+	integrations.NewOpenAIRouter(client, cfg, s, noopTestLogger{}).RegisterRoutes(r)
 	createBody := fmt.Sprintf(`{"provider":%q,"network_config":{"base_url":%q,"allow_private_network":true,"max_retries":0},"concurrency_and_buffer_size":{"concurrency":1,"buffer_size":2},"custom_provider_config":{"base_provider_type":"openai","is_key_less":true,"allowed_requests":{"chat_completion":true,"chat_completion_stream":true,"responses":true,"responses_stream":true}}}`, target, upstream.URL)
 	return &providerRegistrationFixture{server: s, router: r, provider: target, createBody: createBody, targetCalls: &targetCalls, otherCalls: &otherCalls}
 }
@@ -1178,6 +1180,81 @@ func providerRegistrationHTTPRequest(t *testing.T, client *http.Client, url, bod
 }
 
 func TestProviderRegistration_FirstHTTPRequestHonorsPrefix(t *testing.T) {
+	for _, mode := range []string{"keyless", "keyed"} {
+		t.Run(mode, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, path, body string
+			}{
+				{"chat", "/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`},
+				{"chat_stream", "/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}],"stream":true}`},
+				{"responses", "/v1/responses", `{"model":%q,"input":"Hi"}`},
+				{"responses_stream", "/v1/responses", `{"model":%q,"input":"Hi","stream":true}`},
+				{"openai_chat", "/openai/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}]}`},
+				{"openai_chat_stream", "/openai/v1/chat/completions", `{"model":%q,"messages":[{"role":"user","content":"Hi"}],"stream":true}`},
+				{"openai_responses", "/openai/v1/responses", `{"model":%q,"input":"Hi"}`},
+				{"openai_responses_stream", "/openai/v1/responses", `{"model":%q,"input":"Hi","stream":true}`},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					fixture := newProviderRegistrationFixture(t)
+					if mode == "keyed" {
+						fixture.createBody = strings.Replace(fixture.createBody, `"is_key_less":true`, `"is_key_less":false`, 1)
+					}
+					s, target := fixture.server, fixture.provider
+					baseURL, httpClient := fixture.startGateway(t)
+					status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers", fixture.createBody, "")
+					require.Equal(t, 200, status, body)
+					assert.Zero(t, fixture.targetCalls.Load(), "provider creation must not depend on discovery")
+					assert.Zero(t, fixture.otherCalls.Load())
+					provider, model := schemas.ParseModelString(string(target)+"/registration-model", "")
+					assert.Equal(t, target, provider)
+					assert.Equal(t, "registration-model", model)
+					active, err := s.Client.GetConfiguredProviders()
+					require.NoError(t, err)
+					assert.Contains(t, active, target, "management success must publish the runtime provider")
+					var instance schemas.Provider
+					if slices.Contains(active, target) {
+						// GetProviderByKey can initialize lazily; only inspect an instance
+						// that the side-effect-free snapshot already says is active.
+						instance = s.Client.GetProviderByKey(target)
+					}
+					assert.NotNil(t, instance, "management success must publish the runtime provider")
+					if mode == "keyed" {
+						status, body = providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers/"+string(target)+"/keys", `{"name":"registration-key","value":"fixture-key","models":["registration-model"],"weight":1}`, "")
+						require.Equal(t, 200, status, body)
+						assert.Zero(t, fixture.targetCalls.Load(), "key creation must not warm the provider through discovery")
+						instance = s.Client.GetProviderByKey(target)
+					}
+					status, body = providerRegistrationHTTPRequest(t, httpClient, baseURL+tc.path, fmt.Sprintf(tc.body, string(target)+"/registration-model"), "sk-bf-registration")
+					require.Equal(t, 200, status, body)
+					assert.Contains(t, body, "registration-ok")
+					assert.EqualValues(t, 1, fixture.targetCalls.Load())
+					assert.Zero(t, fixture.otherCalls.Load(), "explicit prefix must bypass multi-provider load balancing")
+					assert.Same(t, instance, s.Client.GetProviderByKey(target), "first inference must not initialize or rebuild the provider")
+					_, err = s.ReloadProvider(context.Background(), target, false)
+					require.NoError(t, err)
+					assert.Same(t, instance, s.Client.GetProviderByKey(target), "ordinary catalog reload must not rebuild core")
+					require.NoError(t, s.RemoveProvider(context.Background(), target))
+					assert.False(t, schemas.IsKnownProvider(string(target)))
+					assert.Nil(t, s.Client.GetProviderByKey(target))
+					assert.NotContains(t, s.Config.Providers, target)
+					_, err = s.Config.ConfigStore.GetProvider(context.Background(), target)
+					assert.ErrorIs(t, err, configstore.ErrNotFound)
+				})
+			}
+		})
+	}
+}
+
+func TestProviderRegistration_WithoutKeysIsInitialized(t *testing.T) {
+	fixture := newProviderRegistrationFixture(t)
+	fixture.createBody = strings.Replace(fixture.createBody, `"is_key_less":true`, `"is_key_less":false`, 1)
+	baseURL, httpClient := fixture.startGateway(t)
+	status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers", fixture.createBody, "")
+	require.Equal(t, 200, status, body)
+	active, err := fixture.server.Client.GetConfiguredProviders()
+	require.NoError(t, err)
+	assert.Contains(t, active, fixture.provider)
+	assert.True(t, schemas.IsKnownProvider(string(fixture.provider)))
 	for _, tc := range []struct {
 		name, path, body string
 	}{
@@ -1187,61 +1264,16 @@ func TestProviderRegistration_FirstHTTPRequestHonorsPrefix(t *testing.T) {
 		{"responses_stream", "/v1/responses", `{"model":%q,"input":"Hi","stream":true}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fixture := newProviderRegistrationFixture(t)
-			s, target := fixture.server, fixture.provider
-			baseURL, httpClient := fixture.startGateway(t)
-			status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+"/api/providers", fixture.createBody, "")
-			require.Equal(t, 200, status, body)
-			assert.Zero(t, fixture.targetCalls.Load(), "provider creation must not depend on discovery")
-			assert.Zero(t, fixture.otherCalls.Load())
-			provider, model := schemas.ParseModelString(string(target)+"/registration-model", "")
-			assert.Equal(t, target, provider)
-			assert.Equal(t, "registration-model", model)
-			active, err := s.Client.GetConfiguredProviders()
-			require.NoError(t, err)
-			assert.Contains(t, active, target, "management success must publish the runtime provider")
-			var instance schemas.Provider
-			if slices.Contains(active, target) {
-				// GetProviderByKey can initialize lazily; only inspect an instance
-				// that the side-effect-free snapshot already says is active.
-				instance = s.Client.GetProviderByKey(target)
-			}
-			assert.NotNil(t, instance, "management success must publish the runtime provider")
-			status, body = providerRegistrationHTTPRequest(t, httpClient, baseURL+tc.path, fmt.Sprintf(tc.body, string(target)+"/registration-model"), "sk-bf-registration")
-			require.Equal(t, 200, status, body)
-			assert.Contains(t, body, "registration-ok")
-			assert.EqualValues(t, 1, fixture.targetCalls.Load())
-			assert.Zero(t, fixture.otherCalls.Load(), "explicit prefix must bypass multi-provider load balancing")
-			assert.Same(t, instance, s.Client.GetProviderByKey(target), "first inference must not initialize or rebuild the provider")
-			_, err = s.ReloadProvider(context.Background(), target, false)
-			require.NoError(t, err)
-			assert.Same(t, instance, s.Client.GetProviderByKey(target), "ordinary catalog reload must not rebuild core")
-			require.NoError(t, s.RemoveProvider(context.Background(), target))
-			assert.False(t, schemas.IsKnownProvider(string(target)))
-			assert.Nil(t, s.Client.GetProviderByKey(target))
-			assert.NotContains(t, s.Config.Providers, target)
-			_, err = s.Config.ConfigStore.GetProvider(context.Background(), target)
-			assert.ErrorIs(t, err, configstore.ErrNotFound)
+			status, body := providerRegistrationHTTPRequest(t, httpClient, baseURL+tc.path, fmt.Sprintf(tc.body, string(fixture.provider)+"/registration-model"), "sk-bf-registration")
+			assert.Equal(t, 400, status, body)
+			assert.Contains(t, body, "no keys found")
+			var response schemas.BifrostError
+			require.NoError(t, json.Unmarshal([]byte(body), &response))
+			assert.Equal(t, fixture.provider, response.ExtraFields.Provider)
+			assert.Zero(t, fixture.targetCalls.Load(), "registration must not bypass credential requirements")
+			assert.Zero(t, fixture.otherCalls.Load(), "missing credentials must not reroute an explicit prefix")
 		})
 	}
-}
-
-func TestProviderRegistration_WithoutKeysIsInitialized(t *testing.T) {
-	fixture := newProviderRegistrationFixture(t)
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Init(&fasthttp.Request{}, nil, nil)
-	ctx.Request.Header.SetMethod("POST")
-	ctx.Request.SetRequestURI("/api/providers")
-	ctx.Request.Header.SetContentType("application/json")
-	ctx.Request.SetBodyString(strings.Replace(fixture.createBody, `"is_key_less":true`, `"is_key_less":false`, 1))
-	fixture.router.Handler(ctx)
-	require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	active, err := fixture.server.Client.GetConfiguredProviders()
-	require.NoError(t, err)
-	assert.Contains(t, active, fixture.provider)
-	assert.True(t, schemas.IsKnownProvider(string(fixture.provider)))
-	assert.Zero(t, fixture.targetCalls.Load())
-	assert.Zero(t, fixture.otherCalls.Load())
 }
 
 func TestProviderRegistration_NewReloadDoesNotRebuildActiveProvider(t *testing.T) {
