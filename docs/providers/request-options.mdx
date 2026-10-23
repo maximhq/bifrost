@@ -851,9 +851,10 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 ```
 
 <Note>
-  When using raw request body, Bifrost bypasses its request conversion and sends
-  your payload directly to the provider. You're responsible for ensuring the
-  payload matches the provider's expected format.
+  When using raw request body, Bifrost skips its standard request conversion.
+  Provider-specific compatibility processing, such as native tool-version
+  normalization on Vertex and Bedrock, still applies. You're responsible for
+  ensuring the payload matches the provider's expected format.
 </Note>
 
 ## Custom Headers
