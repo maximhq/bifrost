@@ -915,12 +915,14 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	batchListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchListRequest)}, middlewares...)
 	batchRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchRetrieveRequest)}, middlewares...)
 	batchCancelMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchCancelRequest)}, middlewares...)
+	batchDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchDeleteRequest)}, middlewares...)
 	batchResultsMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchResultsRequest)}, middlewares...)
 
 	r.POST("/v1/batches", lib.ChainMiddlewares(h.batchCreate, batchCreateMW...))
 	r.GET("/v1/batches", lib.ChainMiddlewares(h.batchList, batchListMW...))
 	r.GET("/v1/batches/{batch_id}", lib.ChainMiddlewares(h.batchRetrieve, batchRetrieveMW...))
 	r.POST("/v1/batches/{batch_id}/cancel", lib.ChainMiddlewares(h.batchCancel, batchCancelMW...))
+	r.DELETE("/v1/batches/{batch_id}", lib.ChainMiddlewares(h.batchDelete, batchDeleteMW...))
 	r.GET("/v1/batches/{batch_id}/results", lib.ChainMiddlewares(h.batchResults, batchResultsMW...))
 
 	// File API endpoints (parameterized routes need explicit request type middleware)
@@ -3937,7 +3939,12 @@ func (h *CompletionHandler) batchList(ctx *fasthttp.RequestCtx) {
 	// Parse limit parameter
 	limit := 0
 	if limitStr := ctx.QueryArgs().Peek("limit"); len(limitStr) > 0 {
-		if n, err := strconv.Atoi(string(limitStr)); err == nil && n > 0 {
+		n, err := strconv.Atoi(string(limitStr))
+		if provider == string(schemas.OpenRouter) && (err != nil || n <= 0) {
+			SendError(ctx, fasthttp.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		if err == nil && n > 0 {
 			limit = n
 		}
 	}
@@ -3959,6 +3966,22 @@ func (h *CompletionHandler) batchList(ctx *fasthttp.RequestCtx) {
 		Limit:    limit,
 		After:    after,
 		BeforeID: before,
+	}
+
+	if bifrostBatchReq.Provider == schemas.OpenRouter {
+		bifrostBatchReq.ExtraParams = make(map[string]any)
+		if statuses := ctx.QueryArgs().PeekMulti("status"); len(statuses) > 0 {
+			values := make([]string, len(statuses))
+			for i, status := range statuses {
+				values[i] = string(status)
+			}
+			bifrostBatchReq.ExtraParams["status"] = values
+		}
+		for _, name := range []string{"created_after", "created_before"} {
+			if value := ctx.QueryArgs().Peek(name); len(value) > 0 {
+				bifrostBatchReq.ExtraParams[name] = string(value)
+			}
+		}
 	}
 
 	// Convert context
@@ -4021,6 +4044,57 @@ func (h *CompletionHandler) batchRetrieve(ctx *fasthttp.RequestCtx) {
 	}
 
 	resp, bifrostErr := h.client.BatchRetrieveRequest(bifrostCtx, bifrostBatchReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, resp)
+}
+
+// batchDelete handles terminal-batch cleanup; it is not cancellation.
+func (h *CompletionHandler) batchDelete(ctx *fasthttp.RequestCtx) {
+	// Get batch ID from URL parameter
+	batchID, ok := ctx.UserValue("batch_id").(string)
+	if !ok || batchID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "batch_id is required")
+		return
+	}
+	// Decode percent-encoding so ARN ids (e.g. Bedrock job ARNs containing a
+	// slash sent as %2F) reach the provider raw, not double-encoded.
+	if decoded, err := url.PathUnescape(batchID); err == nil {
+		batchID = decoded
+	}
+
+	// Get provider from query parameters
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+		return
+	}
+
+	// Build Bifrost batch retrieve request
+	bifrostBatchReq := &schemas.BifrostBatchDeleteRequest{
+		Provider: schemas.ModelProvider(provider),
+		BatchID:  batchID,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.BatchDeleteRequest(bifrostCtx, bifrostBatchReq)
 	if bifrostErr != nil {
 		forwardProviderHeadersFromContext(ctx, bifrostCtx)
 		SendBifrostError(ctx, bifrostErr)

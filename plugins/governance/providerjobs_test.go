@@ -1846,3 +1846,59 @@ func BenchmarkPreLLMHookResourceNameLookup(b *testing.B) {
 		})
 	}
 }
+
+func TestPreLLMHookBindsOpenRouterBatchesToTheCreatingVirtualKey(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk-mcp-stamp", mcpTestVKValue, "mcp-stamp-vk", []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openrouter", []string{"*"})})
+	plugin := newAccessTestPlugin(t, vk, nil)
+	store := newProviderObjectConfigStore(t)
+	plugin.configStore = store
+	own := "vk-mcp-stamp"
+	other := "vk-someone-else"
+	seedProviderJob(t, store, "openrouter", "batch-own", &own)
+	seedProviderJob(t, store, "openrouter", "batch-other", &other)
+	seedProviderJob(t, store, "openrouter", "batch-unowned", nil)
+
+	for _, requestType := range []schemas.RequestType{schemas.BatchRetrieveRequest, schemas.BatchCancelRequest, schemas.BatchResultsRequest, schemas.BatchDeleteRequest} {
+		t.Run(string(requestType), func(t *testing.T) {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), openRouterBatchRequest(requestType, "batch-own"))
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "the creating key reaches its own batch")
+
+			_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), openRouterBatchRequest(requestType, "batch-other"))
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "another key's batch is refused")
+			require.NotNil(t, shortCircuit.Error.StatusCode)
+			assert.Equal(t, 404, *shortCircuit.Error.StatusCode, "refused as not found, not as forbidden")
+			assert.Contains(t, shortCircuit.Error.Error.Message, "batch-other")
+
+			_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), openRouterBatchRequest(requestType, "batch-unowned"))
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "a row with no recorded key binds to nobody")
+
+			_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), openRouterBatchRequest(requestType, "batch-unknown"))
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "a batch with no row cannot be bound and stays reachable")
+
+			_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), openRouterBatchRequest(requestType, "batch-other"))
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "a request that presented no key is unrestricted")
+		})
+	}
+}
+
+func openRouterBatchRequest(requestType schemas.RequestType, id string) *schemas.BifrostRequest {
+	req := batchRequest(requestType, id)
+	if r := req.BatchRetrieveRequest; r != nil {
+		r.Provider = schemas.OpenRouter
+	}
+	if r := req.BatchCancelRequest; r != nil {
+		r.Provider = schemas.OpenRouter
+	}
+	if r := req.BatchDeleteRequest; r != nil {
+		r.Provider = schemas.OpenRouter
+	}
+	if r := req.BatchResultsRequest; r != nil {
+		r.Provider = schemas.OpenRouter
+	}
+	return req
+}

@@ -2197,6 +2197,36 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			PreCallback: extractBatchIDFromPath(handlerStore),
 		})
 	}
+	for _, path := range []string{"/v1/batches/{batch_id}", "/batches/{batch_id}", "/openai/batches/{batch_id}"} {
+		routes = append(routes, RouteConfig{
+			Type: RouteConfigTypeOpenAI, Path: pathPrefix + path, Method: "DELETE",
+			GetHTTPRequestType:     func(*fasthttp.RequestCtx) schemas.RequestType { return schemas.BatchDeleteRequest },
+			GetRequestTypeInstance: func(context.Context) interface{} { return &schemas.BifrostBatchDeleteRequest{} },
+			BatchRequestConverter: func(ctx *schemas.BifrostContext, request interface{}) (*BatchRequest, error) {
+				req, ok := request.(*schemas.BifrostBatchDeleteRequest)
+				if !ok {
+					return nil, errors.New("invalid batch delete request type")
+				}
+				return &BatchRequest{Type: schemas.BatchDeleteRequest, DeleteRequest: req}, nil
+			},
+			ErrorConverter: func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} { return err },
+			PreCallback:    extractBatchIDFromPath(handlerStore),
+		})
+		routes = append(routes, RouteConfig{
+			Type: RouteConfigTypeOpenAI, Path: pathPrefix + path + "/results", Method: "GET",
+			GetHTTPRequestType:     func(*fasthttp.RequestCtx) schemas.RequestType { return schemas.BatchResultsRequest },
+			GetRequestTypeInstance: func(context.Context) interface{} { return &schemas.BifrostBatchResultsRequest{} },
+			BatchRequestConverter: func(ctx *schemas.BifrostContext, request interface{}) (*BatchRequest, error) {
+				req, ok := request.(*schemas.BifrostBatchResultsRequest)
+				if !ok {
+					return nil, errors.New("invalid batch results request type")
+				}
+				return &BatchRequest{Type: schemas.BatchResultsRequest, ResultsRequest: req}, nil
+			},
+			ErrorConverter: func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} { return err },
+			PreCallback:    extractBatchIDFromPath(handlerStore),
+		})
+	}
 	return routes
 }
 
@@ -2500,12 +2530,35 @@ func extractBatchListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 			if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
 				if limit, err := strconv.Atoi(limitStr); err == nil {
 					listReq.Limit = limit
+					if listReq.Provider == schemas.OpenRouter && limit == 0 {
+						listReq.Limit = -1
+					}
+				} else if listReq.Provider == schemas.OpenRouter {
+					listReq.Limit = -1
 				} else {
 					// We are keeping default as 30
 					listReq.Limit = 30
 				}
 			}
 
+			if listReq.Provider == schemas.OpenRouter {
+				if before := ctx.QueryArgs().Peek("before"); len(before) > 0 {
+					listReq.BeforeID = schemas.Ptr(string(before))
+				}
+				listReq.ExtraParams = make(map[string]any)
+				if statuses := ctx.QueryArgs().PeekMulti("status"); len(statuses) > 0 {
+					values := make([]string, len(statuses))
+					for i, status := range statuses {
+						values[i] = string(status)
+					}
+					listReq.ExtraParams["status"] = values
+				}
+				for _, name := range []string{"created_after", "created_before"} {
+					if value := ctx.QueryArgs().Peek(name); len(value) > 0 {
+						listReq.ExtraParams[name] = string(value)
+					}
+				}
+			}
 			// Extract after cursor
 			if after := string(ctx.QueryArgs().Peek("after")); after != "" {
 				listReq.After = &after
@@ -2552,10 +2605,35 @@ func extractBatchIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 		case *schemas.BifrostBatchResultsRequest:
 			r.BatchID = batchIDStr
 			r.Provider = provider
+		case *schemas.BifrostBatchDeleteRequest:
+			r.BatchID = batchIDStr
+			r.Provider = provider
 		}
 
+		switch r := req.(type) {
+		case *schemas.BifrostBatchDeleteRequest:
+			r.BatchID = decodeOpenAIBatchID(r.Provider, r.BatchID)
+		case *schemas.BifrostBatchResultsRequest:
+			r.BatchID = decodeOpenAIBatchID(r.Provider, r.BatchID)
+		}
 		return nil
 	}
+}
+
+func decodeOpenAIBatchID(provider schemas.ModelProvider, id string) string {
+	switch provider {
+	case schemas.Gemini:
+		return strings.Replace(id, "batches-", "batches/", 1)
+	case schemas.Bedrock:
+		if decoded, err := base64.StdEncoding.DecodeString(id); err == nil {
+			return string(decoded)
+		}
+	case schemas.Vertex:
+		if decoded, err := base64.RawURLEncoding.DecodeString(id); err == nil {
+			return string(decoded)
+		}
+	}
+	return id
 }
 
 // extractVideoIDFromPath extracts video_id from path parameters in provider:id format.
