@@ -836,6 +836,58 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 			},
 			expectHeaders: []string{AnthropicCompactionBetaHeader},
 		},
+		// Thinking display "updates" tests
+		{
+			name:     "Anthropic gets thinking display updates header",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Model:    "claude-opus-5-5",
+				Thinking: &AnthropicThinking{Type: "adaptive", Display: new("updates")},
+			},
+			expectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
+		},
+		{
+			name:     "Vertex gets thinking display updates header",
+			provider: schemas.Vertex,
+			req: &AnthropicMessageRequest{
+				Model:    "claude-opus-5-5",
+				Thinking: &AnthropicThinking{Type: "adaptive", Display: new("updates")},
+			},
+			expectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
+		},
+		{
+			name:     "Bedrock gets thinking display updates header",
+			provider: schemas.Bedrock,
+			req: &AnthropicMessageRequest{
+				Model:    "claude-opus-5-5",
+				Thinking: &AnthropicThinking{Type: "adaptive", Display: new("updates")},
+			},
+			expectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
+		},
+		{
+			name:     "Anthropic skips thinking display updates header for summarized",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "adaptive", Display: new("summarized")},
+			},
+			unexpectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
+		},
+		{
+			name:     "Anthropic skips thinking display updates header without a display",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "adaptive"},
+			},
+			unexpectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
+		},
+		{
+			name:     "Anthropic skips thinking display updates header when thinking is disabled",
+			provider: schemas.Anthropic,
+			req: &AnthropicMessageRequest{
+				Thinking: &AnthropicThinking{Type: "disabled", Display: new("updates")},
+			},
+			unexpectHeaders: []string{AnthropicThinkingDisplayUpdatesBetaHeader},
+		},
 		// Interleaved thinking tests
 		{
 			name:     "Anthropic gets interleaved thinking header for enabled",
@@ -1001,6 +1053,24 @@ func TestAddMissingBetaHeadersToContext_PerProvider(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A client that already sends thinking-display-updates keeps it on the surfaces that ship the
+// beta. Vertex validates betas and 400s on one it does not know, so the header is only forwarded
+// where the feature flag says it is accepted.
+func TestFilterBetaHeadersForProvider_ThinkingDisplayUpdates(t *testing.T) {
+	for provider, want := range map[schemas.ModelProvider]bool{
+		schemas.Anthropic:     true,
+		schemas.Vertex:        true,
+		schemas.Bedrock:       true,
+		schemas.BedrockMantle: true,
+		schemas.Azure:         true,
+	} {
+		got := slices.Contains(FilterBetaHeadersForProvider([]string{AnthropicThinkingDisplayUpdatesBetaHeader}, provider), AnthropicThinkingDisplayUpdatesBetaHeader)
+		if got != want {
+			t.Errorf("%s: header forwarded = %v, want %v", provider, got, want)
+		}
 	}
 }
 
@@ -4488,6 +4558,13 @@ func betaHeaderCorpus() map[string]string {
 		"output_format":                        `{"model":"` + model + `","output_format":{"type":"json_schema","schema":{"type":"object"}},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
 		"diagnostics":                          `{"model":"` + model + `","diagnostics":{"cache":true},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
 		"fallback_credit_token":                `{"model":"` + model + `","fallback_credit_token":"tok_1","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+
+		// thinking.display:"updates" is read off the decoded top-level thinking object, so it
+		// agrees across both paths by construction; the corpus pins that and its negatives.
+		"thinking display updates":                         `{"model":"claude-opus-5-5","thinking":{"type":"adaptive","display":"updates"},"messages":[{"role":"user","content":"hi"}]}`,
+		"thinking display updates on enabled":              `{"model":"claude-opus-4-6","thinking":{"type":"enabled","budget_tokens":1024,"display":"updates"},"messages":[{"role":"user","content":"hi"}]}`,
+		"thinking display summarized (must NOT trigger)":   `{"model":"claude-opus-5-5","thinking":{"type":"adaptive","display":"summarized"},"messages":[{"role":"user","content":"hi"}]}`,
+		"thinking display updates but disabled (must NOT)": `{"model":"claude-opus-4-6","thinking":{"type":"disabled","display":"updates"},"messages":[{"role":"user","content":"hi"}]}`,
 
 		// --- everything at once, to catch ordering/dedup divergence ---
 		"kitchen sink": `{"model":"` + model + `","thinking":{"type":"enabled","budget_tokens":1024},` +

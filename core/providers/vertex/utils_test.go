@@ -1734,3 +1734,69 @@ func BenchmarkApplyVertexSessionRouting(b *testing.B) {
 		})
 	}
 }
+
+// Vertex reads the anthropic-beta header when it validates a beta-gated request field:
+// thinking.display "updates" still 400s ("Input should be 'summarized', 'omitted'") with the beta
+// only in the anthropic_beta body array. The non-stream chat path sends the header next to the
+// body field, as the Responses and streaming paths already do.
+func TestVertexChatCompletionSendsBetaHeader(t *testing.T) {
+	const anthropicResponse = `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	var mu sync.Mutex
+	var betaHeader, body string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		betaHeader, body = r.Header.Get("anthropic-beta"), string(raw)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(anthropicResponse))
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID:       *schemas.NewSecretVar("proj"),
+		Region:          *schemas.NewSecretVar("global"),
+		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+
+	for _, tc := range []struct {
+		name    string
+		display string
+		want    string
+	}{
+		{"updates sends the beta", "updates", anthropic.AnthropicThinkingDisplayUpdatesBetaHeader},
+		{"summarized needs no beta", "summarized", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Vertex,
+				Model:    "claude-opus-5-5",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+				Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: new("high"), Display: new(tc.display)}},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if _, bifrostErr := provider.ChatCompletion(ctx, key, req); bifrostErr != nil {
+				t.Fatalf("ChatCompletion: %s", bifrostErr.GetErrorString())
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if betaHeader != tc.want {
+				t.Errorf("anthropic-beta header = %q, want %q (body: %s)", betaHeader, tc.want, body)
+			}
+			if bodyBeta := gjson.Get(body, "anthropic_beta.0").String(); bodyBeta != tc.want {
+				t.Errorf("anthropic_beta body field = %q, want %q", bodyBeta, tc.want)
+			}
+		})
+	}
+}
