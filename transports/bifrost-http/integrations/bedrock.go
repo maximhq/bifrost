@@ -196,7 +196,7 @@ func bedrockStreamErrorConverter(ctx *schemas.BifrostContext, err *schemas.Bifro
 //   - ImageGeneration (taskType=TEXT_IMAGE, Stability AI and other providers prompt-only)
 //   - ImageEdit (taskType=INPAINTING/OUTPAINTING/BACKGROUND_REMOVAL, Stability AI image+prompt)
 //   - ImageVariation (taskType=IMAGE_VARIATION)
-//   - ResponsesRequest (messages array — Anthropic Messages, Nova, AI21)
+//   - ResponsesRequest (messages array — Anthropic Messages, Nova, AI21, Mistral)
 //   - TextCompletionRequest (prompt — Anthropic legacy, Mistral, Llama, Cohere)
 func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerStore) RouteConfig {
 	return RouteConfig{
