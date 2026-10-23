@@ -843,3 +843,38 @@ func TestApplyRequestRouting(t *testing.T) {
 	nilInfo.ApplyRequestRouting(ctx)
 	(&RoutingInfo{}).ApplyRequestRouting(nil)
 }
+
+func TestResolveFamilyAllocations(t *testing.T) {
+	for _, alias := range []*ResolvedAlias{nil, {Key: "key", Config: &AliasConfig{ModelName: Ptr("unknown"), ModelID: "anthropic.claude-sonnet-4-6"}}, {Config: &AliasConfig{ModelFamily: Ptr(ModelFamilyMistral)}}} {
+		ctx := NewBifrostContext(context.Background(), NoDeadline)
+		if alias != nil {
+			ctx.SetValue(BifrostContextKeyResolvedAlias, alias)
+		}
+		allocs := testing.AllocsPerRun(100, func() { ResolveFamily(ctx, "anthropic.claude-sonnet-4-6") })
+		if allocs != 0 {
+			t.Errorf("ResolveFamily allocated %v times for alias %+v", allocs, alias)
+		}
+	}
+}
+
+func BenchmarkResolveFamily(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		alias *ResolvedAlias
+	}{
+		{"model", nil},
+		{"alias model", &ResolvedAlias{Key: "key", Config: &AliasConfig{ModelName: Ptr("friendly"), ModelID: "mistral.mistral-large-3-675b-instruct"}}},
+		{"explicit family", &ResolvedAlias{Config: &AliasConfig{ModelFamily: Ptr(ModelFamilyMistral)}}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := NewBifrostContext(context.Background(), NoDeadline)
+			if tc.alias != nil {
+				ctx.SetValue(BifrostContextKeyResolvedAlias, tc.alias)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				ResolveFamily(ctx, "mistral.mistral-large-3-675b-instruct")
+			}
+		})
+	}
+}

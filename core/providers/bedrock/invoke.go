@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -1490,9 +1492,87 @@ func ToBedrockInvokeMessagesResponse(ctx *schemas.BifrostContext, resp *schemas.
 	if strings.Contains(model, "ai21") {
 		return toBedrockInvokeAI21Response(resp), nil
 	}
+	if schemas.IsMistralModelFamily(ctx, model) {
+		if model == "" {
+			model = schemas.ResolveCanonicalModel(ctx, model)
+		}
+		return toBedrockInvokeMistralMessagesResponse(resp, model), nil
+	}
 
 	// Default: Anthropic Messages API format (most common InvokeModel + messages use case)
 	return toBedrockInvokeAnthropicResponse(resp, model), nil
+}
+
+func toBedrockInvokeMistralResponse(id *string, created int, model string, usage *schemas.ResponsesResponseUsage) *BedrockInvokeMistralResponse {
+	out := &BedrockInvokeMistralResponse{Object: "chat.completion", Created: created, Model: model}
+	if id != nil {
+		out.ID = *id
+	}
+	if out.ID == "" {
+		out.ID = uuid.NewString()
+	}
+	if out.Created == 0 {
+		out.Created = int(time.Now().Unix())
+	}
+	if usage != nil {
+		out.Usage = &BedrockInvokeAI21Usage{PromptTokens: usage.InputTokens, CompletionTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens}
+	}
+	return out
+}
+
+func toBedrockInvokeMistralMessagesResponse(resp *schemas.BifrostResponsesResponse, model string) *BedrockInvokeMistralResponse {
+	// A cache/plugin response may omit status; unary Invoke is still terminal.
+	status := resp.Status
+	if status == nil || len(resp.Output) == 0 {
+		completed := schemas.ResponsesResponseStatusCompleted
+		status = &completed
+	}
+	message := &BedrockInvokeMistralMessage{Role: "assistant"}
+	out := toBedrockInvokeMistralResponse(resp.ID, resp.CreatedAt, model, resp.Usage)
+	out.Choices = []BedrockInvokeMistralChoice{{Message: message, FinishReason: schemas.ChatFinishReasonFromResponses(status, resp.IncompleteDetails, resp.StopReason, resp.Output)}}
+	out.GuardrailAction, out.Trace = bedrockInvokeGuardrailFields(resp)
+
+	// Borrow the common single text item. Native wire types avoid both the full
+	// Chat DTO and ChatMessage's fragment-based custom marshaler.
+	if len(resp.Output) == 1 {
+		item := resp.Output[0]
+		if (item.Type == nil || *item.Type == schemas.ResponsesMessageTypeMessage) && item.Content != nil {
+			if item.Content.ContentStr != nil {
+				message.Content = *item.Content.ContentStr
+				return out
+			}
+			if len(item.Content.ContentBlocks) == 1 && item.Content.ContentBlocks[0].Text != nil {
+				message.Content = *item.Content.ContentBlocks[0].Text
+				return out
+			}
+		}
+	}
+
+	// Converse has one answer, even when Responses separates its text and tools.
+	var text strings.Builder
+	for _, item := range resp.Output {
+		if (item.Type == nil || *item.Type == schemas.ResponsesMessageTypeMessage) && item.Content != nil {
+			if item.Content.ContentStr != nil {
+				text.WriteString(*item.Content.ContentStr)
+			} else {
+				for _, block := range item.Content.ContentBlocks {
+					if block.Text != nil {
+						text.WriteString(*block.Text)
+					}
+				}
+			}
+		}
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCall && item.ResponsesToolMessage != nil {
+			tool := item.ResponsesToolMessage
+			call := schemas.ChatAssistantMessageToolCall{Type: schemas.Ptr("function"), ID: tool.CallID, Function: schemas.ChatAssistantMessageToolCallFunction{Name: tool.Name}}
+			if tool.Arguments != nil {
+				call.Function.Arguments = *tool.Arguments
+			}
+			message.ToolCalls = append(message.ToolCalls, call)
+		}
+	}
+	message.Content = text.String()
+	return out
 }
 
 // bedrockInvokeGuardrailFields renders the guardrail outcome the way InvokeModel reports
@@ -1994,12 +2074,13 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 		return "", nil, fmt.Errorf("bifrost stream response is nil")
 	}
 
-	// Get model from the stream chunk's ExtraFields first (set on every chunk by the
-	// streaming handler), then fall back to resp.Response fields (only present on the
-	// final Completed event). Without checking resp.ExtraFields, early chunks would
-	// have model="" and Nova streams would be mis-routed through the Anthropic path.
-	model := ""
-	if resp.Response != nil {
+	// Delta events have no Response. Use the identity stamped on every chunk before
+	// falling back to the lifecycle response so all events choose the same encoder.
+	model := resp.ExtraFields.ResolvedModelUsed
+	if model == "" {
+		model = resp.ExtraFields.OriginalModelRequested
+	}
+	if model == "" && resp.Response != nil {
 		if resp.Response.Model != "" {
 			model = resp.Response.Model
 		} else {
@@ -2023,6 +2104,12 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 		}
 		return "", bedrockEvent, nil
 	}
+	if schemas.IsMistralModelFamily(ctx, model) {
+		if model == "" {
+			model = schemas.ResolveCanonicalModel(ctx, model)
+		}
+		return toBedrockInvokeMistralStreamResponse(ctx, resp, model)
+	}
 
 	// For Anthropic models (and default): serialize as Anthropic Messages API SSE events,
 	// then wrap in InvokeModelRawChunks. Some Bifrost events map to multiple Anthropic events
@@ -2043,6 +2130,205 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 	}
 
 	return "", bedrockEvent, nil
+}
+
+const bedrockInvokeMistralStreamStateKey schemas.BifrostContextKey = "bedrock-invoke-mistral-stream-state"
+
+// Only fixed-size header/index metadata lives on ctx, never stream content.
+// The HTTP stream writer calls the converter serially; the record is released on
+// the terminal event, or with ctx when the stream is cancelled.
+type bedrockInvokeMistralStreamState struct {
+	id                   string
+	created              int
+	firstToolOutputIndex int
+}
+
+// Include the stream handle to isolate attempts sharing a request ID, as the
+// provider stream-preamble manager does. Tool mappings never live on ctx.
+type bedrockInvokeMistralToolIndexKey struct {
+	requestID string
+	stream    *bedrockInvokeMistralStreamState
+}
+
+type bedrockInvokeMistralToolIndexState struct {
+	indexes     map[int]uint16
+	stopCleanup func() bool
+}
+
+// Only multi-tool streams allocate an entry. Each retains one integer mapping
+// per tool (at most 65536), not tool arguments or content. Completion, conversion
+// errors, cancellation and a new attempt all remove the entry.
+var bedrockInvokeMistralToolIndexes sync.Map // bedrockInvokeMistralToolIndexKey -> *bedrockInvokeMistralToolIndexState
+
+func mistralInvokeToolIndexKey(ctx *schemas.BifrostContext, state *bedrockInvokeMistralStreamState) bedrockInvokeMistralToolIndexKey {
+	key := bedrockInvokeMistralToolIndexKey{stream: state}
+	if ctx != nil {
+		key.requestID, _ = ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	}
+	return key
+}
+
+func (state *bedrockInvokeMistralStreamState) toolIndex(ctx *schemas.BifrostContext, outputIndex int) (uint16, error) {
+	if outputIndex < 0 {
+		return 0, fmt.Errorf("mistral invoke stream has negative tool output index")
+	}
+	if state.firstToolOutputIndex < 0 {
+		state.firstToolOutputIndex = outputIndex
+	}
+	// Text-only and single-tool streams need no mapping or manager lookup.
+	if outputIndex == state.firstToolOutputIndex {
+		return 0, nil
+	}
+	key := mistralInvokeToolIndexKey(ctx, state)
+	value, ok := bedrockInvokeMistralToolIndexes.Load(key)
+	var tools *bedrockInvokeMistralToolIndexState
+	if ok {
+		tools = value.(*bedrockInvokeMistralToolIndexState)
+	} else {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+		}
+		tools = &bedrockInvokeMistralToolIndexState{indexes: map[int]uint16{state.firstToolOutputIndex: 0}}
+		bedrockInvokeMistralToolIndexes.Store(key, tools)
+		if ctx != nil {
+			tools.stopCleanup = context.AfterFunc(ctx, func() { bedrockInvokeMistralToolIndexes.Delete(key) })
+		}
+	}
+	if index, ok := tools.indexes[outputIndex]; ok {
+		return index, nil
+	}
+	if len(tools.indexes) >= 1<<16 {
+		return 0, fmt.Errorf("mistral invoke stream exceeds supported tool call count")
+	}
+	index := uint16(len(tools.indexes))
+	tools.indexes[outputIndex] = index
+	return index, nil
+}
+
+func releaseMistralInvokeToolIndexes(ctx *schemas.BifrostContext, state *bedrockInvokeMistralStreamState) {
+	if state == nil || state.firstToolOutputIndex < 0 {
+		return
+	}
+	if value, ok := bedrockInvokeMistralToolIndexes.LoadAndDelete(mistralInvokeToolIndexKey(ctx, state)); ok {
+		if stop := value.(*bedrockInvokeMistralToolIndexState).stopCleanup; stop != nil {
+			stop()
+		}
+	}
+}
+
+func toBedrockInvokeMistralStreamResponse(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse, model string) (string, interface{}, error) {
+	switch resp.Type {
+	case schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeOutputTextDelta,
+		schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+		schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+		schemas.ResponsesStreamResponseTypeRefusalDelta,
+		schemas.ResponsesStreamResponseTypeCompleted,
+		schemas.ResponsesStreamResponseTypeIncomplete:
+	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+		if resp.Item == nil || resp.Item.Type == nil || *resp.Item.Type != schemas.ResponsesMessageTypeFunctionCall || resp.Item.ResponsesToolMessage == nil {
+			return "", nil, nil
+		}
+	default:
+		return "", nil, nil
+	}
+	if (resp.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta || resp.Type == schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta || resp.Type == schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta) && resp.Delta == nil {
+		return "", nil, nil
+	}
+	choice := BedrockInvokeMistralChoice{}
+	var usage *schemas.ResponsesResponseUsage
+	switch resp.Type {
+	case schemas.ResponsesStreamResponseTypeCreated:
+		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{Role: schemas.Ptr("assistant")}
+	case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{Content: resp.Delta}
+	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+		tool := resp.Item.ResponsesToolMessage
+		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+			Type: schemas.Ptr("function"), ID: tool.CallID,
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: tool.Name},
+		}}}
+	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: *resp.Delta},
+		}}}
+	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{Reasoning: resp.Delta}
+	case schemas.ResponsesStreamResponseTypeRefusalDelta:
+		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{Refusal: resp.Refusal}
+	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
+		status := schemas.ResponsesResponseStatusCompleted
+		fallback := string(schemas.BifrostFinishReasonStop)
+		if resp.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+			status, fallback = schemas.ResponsesResponseStatusIncomplete, string(schemas.BifrostFinishReasonLength)
+		}
+		var details *schemas.ResponsesResponseIncompleteDetails
+		var stop *string
+		var output []schemas.ResponsesMessage
+		if resp.Response != nil {
+			details, stop, output, usage = resp.Response.IncompleteDetails, resp.Response.StopReason, resp.Response.Output, resp.Response.Usage
+		}
+		choice.FinishReason = schemas.ChatFinishReasonFromResponses(&status, details, stop, output)
+		if choice.FinishReason == nil {
+			choice.FinishReason = &fallback
+		}
+		choice.Delta = &schemas.ChatStreamResponseChoiceDelta{}
+	}
+	var state *bedrockInvokeMistralStreamState
+	if ctx != nil && resp.Type != schemas.ResponsesStreamResponseTypeCreated {
+		state, _ = ctx.Value(bedrockInvokeMistralStreamStateKey).(*bedrockInvokeMistralStreamState)
+	}
+	if state == nil {
+		if ctx != nil && resp.Type == schemas.ResponsesStreamResponseTypeCreated {
+			previous, _ := ctx.Value(bedrockInvokeMistralStreamStateKey).(*bedrockInvokeMistralStreamState)
+			releaseMistralInvokeToolIndexes(ctx, previous)
+		}
+		state = &bedrockInvokeMistralStreamState{firstToolOutputIndex: -1}
+		if resp.Response != nil {
+			if resp.Response.ID != nil {
+				state.id = *resp.Response.ID
+			}
+			state.created = resp.Response.CreatedAt
+		}
+		if state.id == "" {
+			state.id = uuid.NewString()
+		}
+		if state.created == 0 {
+			state.created = int(time.Now().Unix())
+		}
+		if ctx != nil {
+			ctx.SetValue(bedrockInvokeMistralStreamStateKey, state)
+		}
+	}
+	if calls := choice.Delta.ToolCalls; len(calls) > 0 && resp.OutputIndex != nil {
+		// Responses output slots include text/reasoning. Native tool indexes are
+		// independent ordinals, reused even when argument deltas interleave.
+		index, err := state.toolIndex(ctx, *resp.OutputIndex)
+		if err != nil {
+			releaseMistralInvokeToolIndexes(ctx, state)
+			return "", nil, err
+		}
+		calls[0].Index = index
+	}
+	out := toBedrockInvokeMistralResponse(&state.id, state.created, model, usage)
+	out.Object = "chat.completion.chunk"
+	out.Choices = []BedrockInvokeMistralChoice{choice}
+	data, err := providerUtils.MarshalSorted(out)
+	if err != nil {
+		releaseMistralInvokeToolIndexes(ctx, state)
+		return "", nil, err
+	}
+	event := &BedrockStreamEvent{InvokeModelRawChunks: [][]byte{data}}
+	if resp.Type == schemas.ResponsesStreamResponseTypeCompleted || resp.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+		releaseMistralInvokeToolIndexes(ctx, state)
+		event.InvokeModelGuardrailAction, event.InvokeModelTrace = bedrockInvokeGuardrailFields(resp.Response)
+		if ctx != nil {
+			ctx.SetValue(bedrockInvokeMistralStreamStateKey, nil)
+		}
+	}
+	return "", event, nil
 }
 
 type bedrockInvokeStreamStateKeyType struct{}
