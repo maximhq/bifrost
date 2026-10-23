@@ -2,6 +2,25 @@
 
 End-to-end API tests for the Bifrost API using Postman collections and [Newman](https://www.npmjs.com/package/newman) (CLI).
 
+## Configuration helpers on reused gateways
+
+`runners/set-raw-override-config.mjs` and `runners/set-auth-config.mjs` preserve
+the current client and framework settings when enabling or disabling their feature.
+An unset `client_config.log_retention_days` is written as `365`, matching the log
+cleaner's effective default; an explicit positive value, including `1`, is kept.
+The raw-override helper does not resend dashboard credentials or write anything
+when its requested setting is already active.
+
+Run their local regression tests without a gateway or provider credentials:
+
+```bash
+node tests/e2e/api/runners/lib/content-logging-matrix.test.mjs
+```
+
+If an older helper already changed retention to `1`, restore your intended policy
+manually. The helpers cannot distinguish an accidental one-day value from an
+intentional one or recover logs already deleted by retention cleanup.
+
 ## Provider secret redaction
 
 The API management collection's `Provider Secret Redaction` folder covers every
