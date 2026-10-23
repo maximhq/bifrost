@@ -406,6 +406,26 @@ const chainRichResult = `{
   "structuredContent":{"items":[1,"two"],"nested":{"ok":true}}
 }`
 
+// BenchmarkMCPGatewayResultDecode measures the SDK decode boundary used once
+// per gateway hop; it excludes transport, discovery and gateway processing.
+func BenchmarkMCPGatewayResultDecode(b *testing.B) {
+	for _, tc := range []struct{ name, result string }{
+		{"text", `{"content":[{"type":"text","text":"ok"}]}`},
+		{"content_metadata", `{"content":[{"type":"text","text":"ok","_meta":{"part":1}}]}`},
+		{"rich", chainRichResult},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			raw := json.RawMessage(tc.result)
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := mcpgo.ParseCallToolResult(&raw); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func chainLeaf(t *testing.T, annotations mcpgo.ToolAnnotation, execute server.ToolHandlerFunc) string {
 	t.Helper()
 	leaf := server.NewMCPServer("chain-leaf", "1", server.WithToolCapabilities(false))
@@ -596,18 +616,20 @@ func TestMCPGatewayChainResponseLoss(t *testing.T) {
 					})
 					safe := policy == "readonly" || policy == "idempotent"
 					wantCalls, wantOuter := int32(1), int32(1)
-					// EOF is not classified as transient by Bifrost; 503 exercises replay.
-					if safe && fault == "503" {
+					var result struct {
+						IsError bool `json:"isError"`
+					}
+					require.NoError(t, json.Unmarshal(got, &result))
+					// 503 must exercise replay. A closed connection may surface EOF or
+					// enter recovery; safe tools may recover exactly once, with full
+					// fidelity. Unsafe tools must never execute a second time.
+					if safe && (fault == "503" || !result.IsError) {
 						wantCalls = 2
 						if link == "shared_to_local" {
 							wantOuter = 2
 						}
 						assert.JSONEq(t, chainRichResult, string(got), "successful replay must retain rich results")
 					} else {
-						var result struct {
-							IsError bool `json:"isError"`
-						}
-						require.NoError(t, json.Unmarshal(got, &result))
 						assert.True(t, result.IsError, "ambiguous failure must survive both gateways: %s", got)
 						if !safe {
 							assert.Contains(t, string(got), "execution may have succeeded")
