@@ -773,7 +773,8 @@ func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if isOpenAIDecisionDeployment(ctx, request.Model) {
+	canonicalModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+	if isOpenAIDecisionDeployment(ctx, canonicalModel) {
 		return openai.HandleOpenAIDecisionRequest(
 			ctx,
 			provider.client,
@@ -804,10 +805,10 @@ func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas
 }
 
 // isOpenAIDecisionDeployment reports whether a decision deployment serves an
-// OpenAI decisions model. Deployment names are often opaque, so the alias's model
-// name and the name the client sent are matched as well as the deployment.
-func isOpenAIDecisionDeployment(ctx *schemas.BifrostContext, model string) bool {
-	if schemas.DefaultSupportsDecisions(schemas.ResolveCanonicalModel(ctx, model)) {
+// OpenAI decisions model, by its canonical model or, when that is an opaque
+// deployment id, by the alias name the client sent.
+func isOpenAIDecisionDeployment(ctx *schemas.BifrostContext, canonicalModel string) bool {
+	if schemas.DefaultSupportsDecisions(canonicalModel) {
 		return true
 	}
 	ra := schemas.GetResolvedAlias(ctx)
