@@ -110,6 +110,52 @@ test("evaluate ignores failed tool calls when checking which tools ran", () => {
 
 // A refusal backed by describe_filter_space alone is still a refusal; one that
 // ran a real query answered the out-of-scope question.
+// A case can be answerable from one tool and no other: topics come from
+// list_topics, and reaching past it for the logs is rebuilding an answer no
+// tool holds. noDataTools cannot say that - it forbids the one tool too.
+test("toolsOnly allows the named tools and rejects any other", () => {
+  const { pm } = fakePm();
+  const lib = createWarpLib(pm);
+  assert.deepStrictEqual(lib.evaluate(answered("Refunds lead.", ["list_topics"]), { toolsOnly: ["list_topics"] }), []);
+  assert.deepStrictEqual(lib.evaluate(answered("Refunds lead.", ["list_topics", "list_topics"]), { toolsOnly: ["list_topics"] }), []);
+  assert.deepStrictEqual(lib.evaluate(answered("I can't do that yet.", []), { toolsOnly: ["list_topics"] }), []);
+  const failures = lib.evaluate(answered("Refunds lead.", ["list_topics", "query_logs", "count_logs"]), { toolsOnly: ["list_topics"] });
+  assert.strictEqual(failures.length, 1);
+  assert.match(failures[0], /called query_logs, count_logs, which this question has no use for/);
+});
+
+// A forbidden tool that was tried and failed was still reached for: the model
+// went looking past list_topics. toolsAll counts what ran; toolsOnly counts
+// every attempt.
+test("toolsOnly rejects a forbidden call even when it failed", () => {
+  const { pm } = fakePm();
+  const lib = createWarpLib(pm);
+  const failures = lib.evaluate(answered("Refunds lead.", ["list_topics", { name: "query_logs", failed: true }]), { toolsAll: ["list_topics"], toolsOnly: ["list_topics"] });
+  assert.strictEqual(failures.length, 1);
+  assert.match(failures[0], /called query_logs, which this question has no use for/);
+  // toolsAll still counts only calls that ran.
+  const missed = lib.evaluate(answered("Refunds lead.", [{ name: "list_topics", failed: true }]), { toolsAll: ["list_topics"], toolsOnly: ["list_topics"] });
+  assert.strictEqual(missed.length, 1);
+  assert.match(missed[0], /did not call list_topics/);
+});
+
+// Every topic case is answered from one list_topics call and nothing else: a
+// second call returns the same snapshot, and any other data tool is the model
+// rebuilding a breakdown the topics do not hold.
+test("topic cases allow exactly one list_topics call and no other tool", () => {
+  const { pm } = fakePm();
+  const lib = createWarpLib(pm);
+  const toolFailure = /tool calls, want at most|no use for|did not call/;
+  for (const id of ["topics-overview", "topics-past-hour", "topics-trend", "topics-drill-down", "topics-people"]) {
+    const { expect } = caseFromCollection(id);
+    const tools = (calls) => lib.evaluate(answered("x", calls), expect).filter((f) => toolFailure.test(f));
+    assert.deepStrictEqual(tools(["list_topics"]), [], `${id}: one list_topics call`);
+    assert.notDeepStrictEqual(tools(["list_topics", "list_topics"]), [], `${id}: a second list_topics call`);
+    assert.notDeepStrictEqual(tools(["list_topics", { name: "query_logs", failed: true }]), [], `${id}: a failed query_logs call`);
+    assert.notDeepStrictEqual(tools([]), [], `${id}: no list_topics call`);
+  }
+});
+
 test("noDataTools allows discovery calls and rejects data queries", () => {
   const { pm } = fakePm();
   const lib = createWarpLib(pm);
