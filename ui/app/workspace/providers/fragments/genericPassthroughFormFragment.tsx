@@ -74,7 +74,7 @@ function toFormValues(cfg: GenericProviderConfig | undefined): FormValues {
 			// until the operator touches it, so changing an imported GET to POST keeps the POST default
 			// rather than freezing the GET one as an explicit override.
 			billable: r.billable,
-			usage: { ...emptyUsage, cost_per_request: undefined, ...(r.usage ?? {}) },
+			usage: { ...emptyUsage, cost_per_request: undefined, cost_per_unit: undefined, ...(r.usage ?? {}) },
 		})),
 		strict_routes: cfg?.strict_routes ?? false,
 	};
@@ -82,11 +82,10 @@ function toFormValues(cfg: GenericProviderConfig | undefined): FormValues {
 
 // Empty strings are form conveniences, not config: strip them so the stored block only carries
 // what the operator set, and a usage block with nothing in it is dropped altogether.
-// keepZeroFee is set for route usage: a route's explicit 0 waives the provider fee and must be
-// sent, while the provider-level field treats 0 as "no fee" and is dropped. A zero cost_per_unit
-// is never sent: the form has no route-level unit pricing, and a 0 there would waive the
-// provider's unit pricing on that route.
-function cleanUsage(usage: FormValues["usage"], keepZeroFee = false) {
+// route is set for route usage: a route's explicit 0 waives the provider fee or unit price and
+// must be sent, while the provider-level fields treat 0 as "none" and drop it. Units fields the
+// form does not expose per route (set through the API or config.json) are kept as they came in.
+function cleanUsage(usage: FormValues["usage"], route = false) {
 	if (!usage) return undefined;
 	const out: NonNullable<GenericProviderConfig["usage"]> = {};
 	if (usage.model_path) out.model_path = usage.model_path;
@@ -94,13 +93,11 @@ function cleanUsage(usage: FormValues["usage"], keepZeroFee = false) {
 	if (usage.output_tokens_path) out.output_tokens_path = usage.output_tokens_path;
 	if (usage.total_tokens_path) out.total_tokens_path = usage.total_tokens_path;
 	if (usage.cost_path) out.cost_path = usage.cost_path;
-	if (usage.cost_per_request !== undefined && (keepZeroFee || usage.cost_per_request > 0)) out.cost_per_request = usage.cost_per_request;
-	if (usage.cost_per_unit !== undefined && usage.cost_per_unit > 0) {
-		out.cost_per_unit = usage.cost_per_unit;
-		if (usage.units_path) out.units_path = usage.units_path;
-		if (usage.units_source && usage.units_source !== "response") out.units_source = usage.units_source;
-		if (usage.units_measure && usage.units_measure !== "value") out.units_measure = usage.units_measure;
-	}
+	if (usage.cost_per_request !== undefined && (route || usage.cost_per_request > 0)) out.cost_per_request = usage.cost_per_request;
+	if (usage.cost_per_unit !== undefined && (route || usage.cost_per_unit > 0)) out.cost_per_unit = usage.cost_per_unit;
+	if (usage.units_path) out.units_path = usage.units_path;
+	if (usage.units_source && usage.units_source !== "response") out.units_source = usage.units_source;
+	if (usage.units_measure && usage.units_measure !== "value") out.units_measure = usage.units_measure;
 	if (usage.disable_optimistic_parsing) out.disable_optimistic_parsing = true;
 	return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -297,7 +294,8 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 				<p className="text-muted-foreground text-sm">
 					Requests to <code className="font-mono text-xs">/passthrough/{provider.name}/&lt;path&gt;</code> are relayed to{" "}
 					<code className="font-mono text-xs">{provider.network_config?.base_url || "the configured base URL"}</code> with the selected key
-					injected, and every call is logged, counted and charged.
+					injected. Every call is logged; calls on billable routes are counted and charged, and GET and HEAD are not billable unless a route
+					says so.
 				</p>
 
 				{/* Auth */}

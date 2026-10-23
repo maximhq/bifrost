@@ -111,7 +111,7 @@ func (c *GenericProviderConfig) Validate() error {
 	if err := c.Auth.validate(); err != nil {
 		return err
 	}
-	if err := c.Usage.validate("usage"); err != nil {
+	if err := c.Usage.validate("usage", nil); err != nil {
 		return err
 	}
 	if c.Streaming != nil {
@@ -128,7 +128,7 @@ func (c *GenericProviderConfig) Validate() error {
 		if err := validateGenericRouteGlob(route.Path); err != nil {
 			return fmt.Errorf("routes[%d]: %w", i, err)
 		}
-		if err := route.Usage.validate(fmt.Sprintf("routes[%d].usage", i)); err != nil {
+		if err := route.Usage.validate(fmt.Sprintf("routes[%d].usage", i), c.Usage); err != nil {
 			return err
 		}
 	}
@@ -165,7 +165,9 @@ func (a GenericAuthConfig) validate() error {
 	return nil
 }
 
-func (u *GenericUsageConfig) validate(field string) error {
+// validate checks one usage block. base is the provider block a route inherits from, so a route
+// that sets only cost_per_unit is judged on the merged units_path and units_measure.
+func (u *GenericUsageConfig) validate(field string, base *GenericUsageConfig) error {
 	if u == nil {
 		return nil
 	}
@@ -187,7 +189,16 @@ func (u *GenericUsageConfig) validate(field string) error {
 	}
 	// A zero cost_per_unit is "no unit pricing" (a route may set it to waive the provider's), so
 	// it needs no path to read a quantity from.
-	if u.CostPerUnit != nil && *u.CostPerUnit > 0 && u.UnitsMeasure != GenericUnitsBodyBytes && u.UnitsPath == "" {
+	unitsPath, unitsMeasure := u.UnitsPath, u.UnitsMeasure
+	if base != nil {
+		if unitsPath == "" {
+			unitsPath = base.UnitsPath
+		}
+		if unitsMeasure == "" {
+			unitsMeasure = base.UnitsMeasure
+		}
+	}
+	if u.CostPerUnit != nil && *u.CostPerUnit > 0 && unitsMeasure != GenericUnitsBodyBytes && unitsPath == "" {
 		return fmt.Errorf("%s.units_path is required with cost_per_unit unless units_measure is body_bytes", field)
 	}
 	return nil

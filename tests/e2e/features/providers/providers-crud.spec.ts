@@ -589,6 +589,48 @@ test.describe("Providers", () => {
           return j.custom_provider_config?.generic_config?.routes?.[0]?.path;
         }, { timeout: 10000 })
         .toBe("/search");
+
+      // Route usage fields the tab does not render (set through the API) survive a save from it:
+      // a route-level units mapping and an explicit 0 that waives the provider's unit price.
+      const configured = await page.request.put(`/api/providers/${providerData.name}`, {
+        data: {
+          network_config: { base_url: "https://api.tavily.com" },
+          custom_provider_config: {
+            base_provider_type: "generic",
+            allowed_requests: { passthrough: true, passthrough_stream: true },
+            generic_config: {
+              auth: { type: "header", header_name: "x-api-key" },
+              usage: { units_path: "usage.credits", cost_per_unit: 0.008 },
+              routes: [
+                {
+                  method: "POST",
+                  path: "/search",
+                  usage: { units_source: "request", units_measure: "chars", units_path: "query", cost_per_unit: 0 },
+                },
+              ],
+            },
+          },
+        },
+      });
+      expect(configured.ok(), await configured.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider(providerData.name);
+      await providerSettingsPage.selectConfigTab("generic");
+      await expect(page.getByTestId("generic-route-row-0")).toBeVisible();
+      await page.getByTestId("generic-passthrough-save-btn").click();
+      await expect
+        .poll(async () => {
+          const r = await page.request.get(`/api/providers/${providerData.name}`);
+          const j = (await r.json()) as {
+            custom_provider_config?: {
+              generic_config?: {
+                routes?: { usage?: { units_source?: string; units_measure?: string; units_path?: string; cost_per_unit?: number } }[];
+              };
+            };
+          };
+          return j.custom_provider_config?.generic_config?.routes?.[0]?.usage;
+        }, { timeout: 10000 })
+        .toEqual({ units_source: "request", units_measure: "chars", units_path: "query", cost_per_unit: 0 });
     });
 
     test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({

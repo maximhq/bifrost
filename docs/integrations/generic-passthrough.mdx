@@ -173,7 +173,7 @@ Cost per call is `units × cost_per_unit + cost_per_request + extracted cost`. R
 
 **`ignore_provider_cost`.** On a generic provider the Pricing tab's "ignore provider cost" switch drops only what the upstream reports (`cost_path`); the flat fee and unit pricing are yours and keep applying.
 
-**What gets charged.** Every successful (2xx) call on a billable route reports usage, even when nothing could be read from the response, so it counts as one request against rate limits. Cost is `extracted cost + cost_per_request`; budgets are charged when that is above zero. Non-2xx responses and non-billable routes report nothing. `GET` and `HEAD` are not billable by default, with or without a route (they are usually polls and listings); add a route with `billable: true` to count them.
+**What gets charged.** Every successful (2xx) call on a billable route reports usage, even when nothing could be read from the response, so it counts as one request against rate limits. Cost is `extracted cost + cost_per_request`; budgets are charged when that is above zero. Non-2xx responses and non-billable routes report no usage, so they are never charged; as on every passthrough route, a call that names a model (by default the request's `model` field) still counts as one request against rate limits. `GET` and `HEAD` are not billable by default, with or without a route (they are usually polls and listings); add a route with `billable: true` to count them.
 
 **Streams.** Each usage field keeps the last value any SSE event reported, so an API that reports input tokens on its first event and output tokens on its last is billed for both. Values are not summed: map fields that carry running totals (as OpenAI and Anthropic report them), not per-event increments.
 

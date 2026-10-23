@@ -252,8 +252,13 @@ func testUnitPricingEndToEnd(t *testing.T) {
 // injected credential to the host the upstream named and step around the base URL pinning.
 func testRedirectsAreReturnedNotFollowed(t *testing.T) {
 	elsewhere := jsonUpstream(t, http.StatusOK, `{"leaked":true}`)
+	// The upstream echoes the request query into Location (a trailing-slash redirect does this on
+	// most frameworks) and the key on its own in a second header.
 	origin := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, elsewhere.server.URL+"/landing", http.StatusTemporaryRedirect)
+		if k := r.URL.Query().Get("api_key"); k != "" {
+			w.Header().Set("X-Echo-Key", "key="+k)
+		}
+		http.Redirect(w, r, elsewhere.server.URL+"/landing?"+r.URL.RawQuery, http.StatusTemporaryRedirect)
 	})
 
 	for _, tc := range []struct {
@@ -265,18 +270,28 @@ func testRedirectsAreReturnedNotFollowed(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			provider := newProvider(t, origin, tc.cfg)
-			resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("SECRET"), relayRequest(http.MethodPost, "/x", "", `{}`, nil))
+			resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("SECRET"), relayRequest(http.MethodPost, "/x", "q=x", `{}`, nil))
 			require.Nil(t, bifrostErr)
 			assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode, "the 3xx reaches the caller")
-			assert.Equal(t, elsewhere.server.URL+"/landing", resp.Headers["Location"])
+			assert.Equal(t, elsewhere.server.URL+"/landing?q=x", resp.Headers["Location"], "the caller's query survives, the injected key does not")
 			assert.Empty(t, elsewhere.requests(), "the redirect target never sees a request, let alone the key")
+			for name, hv := range resp.Headers {
+				assert.NotContains(t, hv, "SECRET", "header %s", name)
+			}
+			if tc.cfg.Auth.Type == schemas.GenericAuthQuery {
+				assert.Equal(t, "[redacted]", resp.Headers["X-Echo-Key"], "a non-URL carrier of the key is replaced wholesale")
+			}
 
-			ch, bifrostErr := provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("SECRET"), relayRequest(http.MethodPost, "/x/stream", "", `{}`, nil))
+			ch, bifrostErr := provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("SECRET"), relayRequest(http.MethodPost, "/x/stream", "q=x", `{}`, nil))
 			require.Nil(t, bifrostErr)
 			first, ok := nextChunk(t, ch, 3*time.Second)
 			require.True(t, ok)
 			require.NotNil(t, first.BifrostPassthroughResponse)
 			assert.Equal(t, http.StatusTemporaryRedirect, first.BifrostPassthroughResponse.StatusCode, "the streaming relay behaves the same")
+			assert.Equal(t, elsewhere.server.URL+"/landing?q=x", first.BifrostPassthroughResponse.Headers["Location"])
+			for name, hv := range first.BifrostPassthroughResponse.Headers {
+				assert.NotContains(t, hv, "SECRET", "stream header %s", name)
+			}
 			drainStream(t, ch)
 			assert.Empty(t, elsewhere.requests())
 		})

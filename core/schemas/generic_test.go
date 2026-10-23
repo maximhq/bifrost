@@ -92,5 +92,13 @@ func TestGenericUsageConfigUnitsValidation(t *testing.T) {
 	bad(&GenericUsageConfig{UnitsPath: "pages", UnitsSource: "header", CostPerUnit: Ptr(1.0)}, "units_source")
 	bad(&GenericUsageConfig{UnitsPath: "pages", UnitsMeasure: "words", CostPerUnit: Ptr(1.0)}, "units_measure")
 	bad(&GenericUsageConfig{CostPerUnit: Ptr(1.0)}, "units_path is required")
+	// A route inherits units_path and units_measure from the provider block, so a rate alone is
+	// enough there; without a provider path it is the same error.
+	rate := []GenericRouteConfig{{Method: "POST", Path: "/x", Usage: &GenericUsageConfig{CostPerUnit: Ptr(0.5)}}}
+	require.NoError(t, (&GenericProviderConfig{Usage: &GenericUsageConfig{UnitsPath: "pages"}, Routes: rate}).Validate())
+	require.NoError(t, (&GenericProviderConfig{Usage: &GenericUsageConfig{UnitsMeasure: GenericUnitsBodyBytes}, Routes: rate}).Validate())
+	err := (&GenericProviderConfig{Routes: rate}).Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "routes[0].usage.units_path is required")
 	ok(&GenericUsageConfig{CostPerUnit: Ptr(0.0)}) // zero is "no unit pricing" and needs no path (a route waiving the provider's)
 }

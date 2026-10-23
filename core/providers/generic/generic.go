@@ -231,6 +231,7 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 	defer resp.Body.Close()
 
 	headers := providerUtils.ExtractPassthroughProviderResponseHeadersFromHTTP(resp)
+	redactKeyFromHeaders(headers, provider.authQuery(), key.Value.GetValue())
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	var reader io.Reader = resp.Body
@@ -296,6 +297,7 @@ func (provider *GenericProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 	}
 
 	headers := providerUtils.ExtractPassthroughProviderResponseHeadersFromHTTP(resp)
+	redactKeyFromHeaders(headers, provider.authQuery(), key.Value.GetValue())
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	params := providerUtils.PassthroughStreamParams{
