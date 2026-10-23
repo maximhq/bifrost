@@ -86,6 +86,37 @@ type MCPServerHandler struct {
 	// it is per caller. Replaced whole when the tool registry changes; a request already holding
 	// the previous one finishes against it.
 	mcpServer atomic.Pointer[server.MCPServer]
+	// tokenValidator, when set, may refuse a verified Bifrost-issued token.
+	tokenValidator MCPTokenValidator
+}
+
+// SetTokenValidator installs a check every verified Bifrost-issued token on /mcp
+// must pass, for grants whose tokens can be revoked before they expire. nil
+// removes it.
+func (h *MCPServerHandler) SetTokenValidator(validator MCPTokenValidator) {
+	h.tokenValidator = validator
+}
+
+// VerifyBifrostToken verifies a Bifrost-issued access token for audience: its
+// signature under the server's key, issuer, lifetime and audience. It lets
+// another module accept these tokens on routes /mcp does not serve.
+func (h *MCPServerHandler) VerifyBifrostToken(ctx *fasthttp.RequestCtx, rawToken, audience string) (*MCPTokenClaims, error) {
+	signingKey, err := h.config.GetOAuth2SigningKey(ctx)
+	if err != nil {
+		logger.Error("mcp: failed to load oauth2 signing key for jwt verification: %v", err)
+		return nil, fmt.Errorf("signing key unavailable")
+	}
+	claims, err := verifyBifrostJWT(ctx, rawToken, h.config, signingKey, audience)
+	if err != nil {
+		return nil, err
+	}
+	public := claims.public()
+	return &public, nil
+}
+
+// GatewayAudience identifies Bifrost's inference routes as a token audience.
+func (h *MCPServerHandler) GatewayAudience(ctx *fasthttp.RequestCtx) string {
+	return oauth2GatewayAudience(ctx, h.config)
 }
 
 // getVirtualKeyByID resolves a virtual key by its row ID for the JWT auth path,
@@ -685,6 +716,12 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			// faults ("signing key unavailable", ...) must not be mislabeled as
 			// the client's token being bad.
 			return err
+		}
+		if h.tokenValidator != nil {
+			if err := h.tokenValidator(ctx, claims.public()); err != nil {
+				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+				return err
+			}
 		}
 
 		switch schemas.MCPAuthMode(claims.BfMode) {
