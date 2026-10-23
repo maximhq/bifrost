@@ -247,6 +247,12 @@
           "        shape = 'mcp-tool-result';",
           "        // POST /v1/mcp/tool/execute answers with one tool message; its content IS the result, a tool's own error text included.",
           "        hasContent = typeof j.content === 'string' ? j.content.length > 0 : Array.isArray(j.content) && j.content.length > 0;",
+          "    } else if (j.role === 'tool' && typeof j.tool_call_id === 'string' && typeof j.content === 'string') {",
+          "        shape = 'mcp-chat-tool-result';",
+          "        hasContent = j.tool_call_id.length > 0 && j.content.length > 0;",
+          "    } else if (j.type === 'function_call_output' && typeof j.call_id === 'string' && typeof j.output === 'string') {",
+          "        shape = 'mcp-responses-tool-result';",
+          "        hasContent = j.call_id.length > 0 && j.output.length > 0;",
           "    } else if (j.jsonrpc === '2.0' && (j.result !== undefined || j.error !== undefined)) {",
           "        shape = 'mcp-jsonrpc';",
           "        // The /mcp server endpoint answers JSON-RPC: a result object is the payload, an error member is a failure.",
@@ -276761,6 +276767,412 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "263. MCP automatic replay safety (mcp replay fixture) [SERIAL]",
+      "description": "Local-only regression for #8795 / PR #8839. Start node tests/e2e/api/runners/mcp-replay-fixture.mjs on loopback :8793; copy tests/e2e/api/provider_config/mcp-replay-fixture.config.json to an isolated APP_DIR/config.json and start this branch with make dev PORT=8794 APP_DIR=<that directory>. Run only this folder with PROVIDER=openai FEATURE=\"mcp replay fixture\" BASE_URL=http://127.0.0.1:8794 INCLUDE_PREVIEW=1 DB_VERIFY=0 SKIP_STREAM_CANCEL=1. Every row is PREVIEW so the ordinary profile never calls this fixture. The openai label is a filter convention only: no model calls or provider keys. The server commits before returning its first HTTP 503 per operation. Unannotated Chat/Responses and additive-only tools must fail once with an uncertain-outcome warning; read-only and genuinely idempotent controls retry and succeed. Stats distinguish repeated wire invocations from committed mutations. Reset/cleanup require this isolated fixture, never a shared customer server. These rows do not reproduce auth recovery, cancellation or legacy SSE; Go tests cover those.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai mcp replay fixture reset counters - #8795",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "DELETE",
+            "header": [],
+            "url": "http://127.0.0.1:8793/stats"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-400] openai mcp replay fixture unknown chat post-commit 503 - #8795",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/mcp/tool/execute?format=chat",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"unknown-chat\",\"type\":\"function\",\"function\":{\"name\":\"replay_fixture-unknown\",\"arguments\":\"{\\\"operation\\\":\\\"unknown-chat\\\"}\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); });",
+                  "pm.test('replay result preserves the expected outcome', function () {",
+                  "  var text = pm.response.text();",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error.message, text).to.include('MCP tool call failed');",
+                  "  pm.expect(text, text).to.include('request failed with status 503');",
+                  "  pm.expect(text, text).to.include('execution may have succeeded; automatic replay was suppressed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai mcp replay fixture unknown chat committed-effect counter - #8795",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "http://127.0.0.1:8793/stats"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('one logical operation has the expected invocations and commits', function () {",
+                  "  var rows = pm.response.json().data.filter(function (r) { return r.operation === 'unknown-chat' && r.tool === 'unknown'; });",
+                  "  pm.expect(rows, pm.response.text()).to.have.length(1);",
+                  "  pm.expect(rows[0].invocations, pm.response.text()).to.eql(1);",
+                  "  pm.expect(rows[0].commits, pm.response.text()).to.eql(1);",
+                  "  pm.expect(rows[0].request_ids, pm.response.text()).to.have.length(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-400] openai mcp replay fixture unknown responses post-commit 503 - #8795",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/mcp/tool/execute?format=responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"call_id\":\"unknown-responses\",\"name\":\"replay_fixture-unknown\",\"arguments\":\"{\\\"operation\\\":\\\"unknown-responses\\\"}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); });",
+                  "pm.test('replay result preserves the expected outcome', function () {",
+                  "  var text = pm.response.text();",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error.message, text).to.include('MCP tool call failed');",
+                  "  pm.expect(text, text).to.include('request failed with status 503');",
+                  "  pm.expect(text, text).to.include('execution may have succeeded; automatic replay was suppressed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai mcp replay fixture unknown responses committed-effect counter - #8795",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "http://127.0.0.1:8793/stats"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('one logical operation has the expected invocations and commits', function () {",
+                  "  var rows = pm.response.json().data.filter(function (r) { return r.operation === 'unknown-responses' && r.tool === 'unknown'; });",
+                  "  pm.expect(rows, pm.response.text()).to.have.length(1);",
+                  "  pm.expect(rows[0].invocations, pm.response.text()).to.eql(1);",
+                  "  pm.expect(rows[0].commits, pm.response.text()).to.eql(1);",
+                  "  pm.expect(rows[0].request_ids, pm.response.text()).to.have.length(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-400] openai mcp replay fixture additive chat post-commit 503 - #8795",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/mcp/tool/execute?format=chat",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"additive-chat\",\"type\":\"function\",\"function\":{\"name\":\"replay_fixture-additive\",\"arguments\":\"{\\\"operation\\\":\\\"additive-chat\\\"}\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); });",
+                  "pm.test('replay result preserves the expected outcome', function () {",
+                  "  var text = pm.response.text();",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error.message, text).to.include('MCP tool call failed');",
+                  "  pm.expect(text, text).to.include('request failed with status 503');",
+                  "  pm.expect(text, text).to.include('execution may have succeeded; automatic replay was suppressed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai mcp replay fixture additive chat committed-effect counter - #8795",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "http://127.0.0.1:8793/stats"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('one logical operation has the expected invocations and commits', function () {",
+                  "  var rows = pm.response.json().data.filter(function (r) { return r.operation === 'additive-chat' && r.tool === 'additive'; });",
+                  "  pm.expect(rows, pm.response.text()).to.have.length(1);",
+                  "  pm.expect(rows[0].invocations, pm.response.text()).to.eql(1);",
+                  "  pm.expect(rows[0].commits, pm.response.text()).to.eql(1);",
+                  "  pm.expect(rows[0].request_ids, pm.response.text()).to.have.length(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai mcp replay fixture readonly chat post-commit 503 - #8795",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/mcp/tool/execute?format=chat",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"readonly-chat\",\"type\":\"function\",\"function\":{\"name\":\"replay_fixture-readonly\",\"arguments\":\"{\\\"operation\\\":\\\"readonly-chat\\\"}\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('replay result preserves the expected outcome', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, text).to.include('operation=readonly-chat');",
+                  "  pm.expect(text, text).to.not.include('automatic replay was suppressed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai mcp replay fixture readonly chat committed-effect counter - #8795",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "http://127.0.0.1:8793/stats"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('one logical operation has the expected invocations and commits', function () {",
+                  "  var rows = pm.response.json().data.filter(function (r) { return r.operation === 'readonly-chat' && r.tool === 'readonly'; });",
+                  "  pm.expect(rows, pm.response.text()).to.have.length(1);",
+                  "  pm.expect(rows[0].invocations, pm.response.text()).to.eql(2);",
+                  "  pm.expect(rows[0].commits, pm.response.text()).to.eql(0);",
+                  "  pm.expect(rows[0].request_ids, pm.response.text()).to.have.length(2);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai mcp replay fixture idempotent responses post-commit 503 - #8795",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/mcp/tool/execute?format=responses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"call_id\":\"idempotent-responses\",\"name\":\"replay_fixture-idempotent\",\"arguments\":\"{\\\"operation\\\":\\\"idempotent-responses\\\"}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('replay result preserves the expected outcome', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, text).to.include('operation=idempotent-responses');",
+                  "  pm.expect(text, text).to.not.include('automatic replay was suppressed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai mcp replay fixture idempotent responses committed-effect counter - #8795",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "http://127.0.0.1:8793/stats"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('one logical operation has the expected invocations and commits', function () {",
+                  "  var rows = pm.response.json().data.filter(function (r) { return r.operation === 'idempotent-responses' && r.tool === 'idempotent'; });",
+                  "  pm.expect(rows, pm.response.text()).to.have.length(1);",
+                  "  pm.expect(rows[0].invocations, pm.response.text()).to.eql(2);",
+                  "  pm.expect(rows[0].commits, pm.response.text()).to.eql(1);",
+                  "  pm.expect(rows[0].request_ids, pm.response.text()).to.have.length(2);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai mcp replay fixture cleanup counters - #8795",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "DELETE",
+            "header": [],
+            "url": "http://127.0.0.1:8793/stats"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('exact HTTP status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

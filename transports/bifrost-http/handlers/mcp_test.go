@@ -1,17 +1,24 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/fasthttp/router"
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -22,6 +29,99 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
+
+// Exercise both HTTP request shapes through the real handler, Bifrost SDK,
+// plugin gate, MCP manager and local upstream. A successful retry of an
+// idempotent tool is the availability control for unsafe replay suppression.
+func TestMCPInferenceReplaySafety(t *testing.T) {
+	for _, format := range []string{"chat", "responses"} {
+		for _, idempotent := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/idempotent=%t", format, idempotent), func(t *testing.T) {
+				var calls, commits atomic.Int32
+				s := server.NewMCPServer("replay-http-control", "1", server.WithToolCapabilities(true))
+				tool := mcpgo.NewTool("append", mcpgo.WithString("operation"))
+				if idempotent {
+					tool.Annotations.IdempotentHint = schemas.Ptr(true)
+				}
+				s.AddTool(tool, func(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+					n := calls.Add(1)
+					if !idempotent || n == 1 {
+						commits.Add(1)
+					}
+					return mcpgo.NewToolResultText("operation=" + req.GetArguments()["operation"].(string)), nil
+				})
+				transport := server.NewStreamableHTTPServer(s)
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method != http.MethodPost {
+						transport.ServeHTTP(w, r)
+						return
+					}
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					r.Body = io.NopCloser(bytes.NewReader(body))
+					var rpc struct{ Method string }
+					if json.Unmarshal(body, &rpc) != nil || rpc.Method != "tools/call" {
+						transport.ServeHTTP(w, r)
+						return
+					}
+					recorded := httptest.NewRecorder()
+					transport.ServeHTTP(recorded, r) // commit before losing the reply
+					if calls.Load() == 1 {
+						http.Error(w, "upstream response unavailable after commit", http.StatusServiceUnavailable)
+						return
+					}
+					for k, v := range recorded.Header() {
+						w.Header()[k] = v
+					}
+					w.WriteHeader(recorded.Code)
+					_, _ = w.Write(recorded.Body.Bytes())
+				}))
+				t.Cleanup(upstream.Close)
+				config := &lib.Config{ClientConfig: &configstore.ClientConfig{}}
+				client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{Account: lib.NewBaseAccount(config), MCPConfig: &schemas.MCPConfig{}, Logger: &mockLogger{}})
+				require.NoError(t, err)
+				t.Cleanup(client.Shutdown)
+				require.NoError(t, client.MCPManager.AddClient(t.Context(), &schemas.MCPClientConfig{ID: "replay-http-control", Name: "replay", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar(upstream.URL), AuthType: schemas.MCPAuthTypeHeaders, NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"}, ToolExecutionTimeout: 2 * time.Second}))
+				r := router.New()
+				NewMCPInferenceHandler(client, config).RegisterRoutes(r)
+				gateway := &fasthttp.Server{Handler: r.Handler}
+				ln, err := net.Listen("tcp", "127.0.0.1:0")
+				require.NoError(t, err)
+				go func() { _ = gateway.Serve(ln) }()
+				t.Cleanup(func() { _ = gateway.Shutdown(); _ = ln.Close() })
+				body := `{"id":"one-call","type":"function","function":{"name":"replay-append","arguments":"{\"operation\":\"one-operation\"}"}}`
+				if format == "responses" {
+					body = `{"call_id":"one-call","name":"replay-append","arguments":"{\"operation\":\"one-operation\"}"}`
+				}
+				httpClient := &http.Client{Timeout: 5 * time.Second}
+				resp, err := httpClient.Post("http://"+ln.Addr().String()+"/v1/mcp/tool/execute?format="+format, "application/json", bytes.NewBufferString(body))
+				require.NoError(t, err)
+				defer resp.Body.Close()
+				response, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+				t.Logf("format=%s logical_calls=1 upstream_calls=%d commits=%d HTTP=%d body=%s", format, calls.Load(), commits.Load(), resp.StatusCode, response)
+				require.Equal(t, int32(1), commits.Load())
+				if idempotent {
+					require.Equal(t, http.StatusOK, resp.StatusCode, string(response))
+					require.Equal(t, int32(2), calls.Load())
+					require.Contains(t, string(response), "one-operation")
+				} else {
+					require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(response))
+					require.Equal(t, int32(1), calls.Load())
+					var failure schemas.BifrostError
+					require.NoError(t, json.Unmarshal(response, &failure))
+					require.NotNil(t, failure.Error)
+					require.Equal(t, schemas.MCPRequestType(format+"_tool_call"), failure.ExtraFields.MCPRequestType)
+					require.Contains(t, string(response), "request failed with status 503")
+					require.Contains(t, string(response), "execution may have succeeded; automatic replay was suppressed")
+				}
+			})
+		}
+	}
+}
 
 // TestMain points the OAuth discovery/registration client at an unguarded
 // dialer for this package: the MCP OAuth tests here register against

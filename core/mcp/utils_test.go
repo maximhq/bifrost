@@ -30,7 +30,11 @@ func TestIsTransientToolCallError_TransportOnly(t *testing.T) {
 		{"HTTP 503", transport.NewError(errors.New("request failed with status 503: unavailable")), true},
 		{"HTTP 503 outranks auth text in body", transport.NewError(errors.New("request failed with status 503: downstream returned 401 unauthorized")), true},
 		{"HTTP 429", transport.NewError(errors.New("request failed with status 429: slow down")), true},
+		{"HTTP 500", transport.NewError(errors.New("request failed with status 500: unavailable")), true},
+		{"HTTP 502", transport.NewError(errors.New("request failed with status 502: unavailable")), true},
+		{"HTTP 504", transport.NewError(errors.New("request failed with status 504: unavailable")), true},
 		{"HTTP 401", transport.NewError(errors.New("request failed with status 401: try again")), false},
+		{"HTTP 403", transport.NewError(errors.New("request failed with status 403: try again")), false},
 		{"HTTP 422 with timeout text", transport.NewError(errors.New("request failed with status 422: timeout")), false},
 		{"transport reset", transport.NewError(errors.New("read: connection reset by peer")), true},
 		{"transport broken pipe", transport.NewError(errors.New("write: broken pipe")), true},
@@ -70,6 +74,11 @@ func TestToolCallReplayAllowed(t *testing.T) {
 			require.False(t, toolCallReplayAllowed(state, &schemas.MCPClientConfig{ID: "one", Name: "other"}, "one-tool"))
 			state.State = schemas.MCPConnectionStateDisabled
 			require.False(t, toolCallReplayAllowed(state, config, "one-tool"))
+			state.State = schemas.MCPConnectionStateHealthy
+			state.ExecutionConfig = &schemas.MCPClientConfig{ID: "one", Name: "one", Disabled: true}
+			require.False(t, toolCallReplayAllowed(state, config, "one-tool"))
+			state.ExecutionConfig = config
+			require.False(t, toolCallReplayAllowed(state, &schemas.MCPClientConfig{ID: "one", Name: "one", Disabled: true}, "one-tool"))
 		})
 	}
 	require.False(t, toolCallReplayAllowed(nil, config, "one-tool"))

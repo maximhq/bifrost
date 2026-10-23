@@ -1,0 +1,27 @@
+{
+  "framework": {
+    "pricing": {
+      "pricing_url": "http://127.0.0.1:8793/pricing.json",
+      "model_parameters_url": "http://127.0.0.1:8793/model-parameters.json",
+      "mcp_library_sync_interval": 0
+    }
+  },
+  "client": {
+    "enforce_auth_on_inference": false
+  },
+  "providers": {},
+  "mcp": {
+    "client_configs": [
+      {
+        "id": "local-replay-fixture",
+        "name": "replay_fixture",
+        "connection_type": "http",
+        "connection_string": "http://127.0.0.1:8793/mcp",
+        "auth_type": "headers",
+        "needs_session_stickiness": true,
+        "tools_to_execute": ["*"],
+        "tool_execution_timeout": "2s"
+      }
+    ]
+  }
+}

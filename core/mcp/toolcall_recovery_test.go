@@ -726,17 +726,24 @@ func TestMCPToolReplaySafety_RealTransports(t *testing.T) {
 		failures, calls, effects int
 		wantError, toolError     bool
 	}{
+		{name: "unannotated_success", calls: 1, effects: 1},
+		{name: "readonly_success", annotations: mcpgo.ToolAnnotation{ReadOnlyHint: schemas.Ptr(true)}, readOnly: true, calls: 1},
+		{name: "idempotent_success", annotations: mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, idempotent: true, calls: 1, effects: 1},
 		{name: "unannotated_postcommit_503", fault: "http_503", failures: 1, calls: 1, effects: 1, wantError: true},
 		{name: "additive_nonidempotent_postcommit_503", fault: "http_503", annotations: additive, failures: 1, calls: 1, effects: 1, wantError: true},
 		{name: "destructive_postcommit_503", fault: "http_503", annotations: destructive, failures: 1, calls: 1, effects: 1, wantError: true},
 		{name: "readonly_postcommit_503", fault: "http_503", annotations: mcpgo.ToolAnnotation{ReadOnlyHint: schemas.Ptr(true)}, readOnly: true, failures: 1, calls: 2},
 		{name: "idempotent_postcommit_503", fault: "http_503", annotations: mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, idempotent: true, failures: 1, calls: 2, effects: 1},
+		// Hints authorize replay; they do not enforce deduplication. This
+		// deliberately false server contract documents the remaining trust boundary.
+		{name: "misannotated_nonidempotent_can_duplicate", fault: "http_503", annotations: mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, failures: 1, calls: 2, effects: 2},
 		{name: "readonly_ignores_other_hints", fault: "http_503", annotations: mcpgo.ToolAnnotation{ReadOnlyHint: schemas.Ptr(true), DestructiveHint: schemas.Ptr(true), IdempotentHint: schemas.Ptr(false)}, readOnly: true, failures: 1, calls: 2},
 		{name: "rpc_transient_after_commit", fault: "rpc_transient", failures: 1, calls: 1, effects: 1, wantError: true},
 		{name: "idempotent_rpc_error_not_retried", fault: "rpc_transient", annotations: mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, idempotent: true, failures: 1, calls: 1, effects: 1, wantError: true},
 		{name: "rpc_unknown_after_commit", fault: "rpc_unknown", failures: 1, calls: 1, effects: 1, wantError: true},
 		{name: "rpc_domain_session_no_recovery", fault: "rpc_session", annotations: additive, failures: 1, calls: 1, effects: 1, wantError: true},
 		{name: "structured_tool_error_not_retried", fault: "tool_error", failures: 1, calls: 1, effects: 1, toolError: true},
+		{name: "idempotent_structured_tool_error_not_retried", fault: "tool_error", annotations: mcpgo.ToolAnnotation{IdempotentHint: schemas.Ptr(true)}, idempotent: true, failures: 1, calls: 1, effects: 1, toolError: true},
 		{name: "postcommit_400", fault: "http_400", failures: 1, calls: 1, effects: 1, wantError: true},
 		{name: "postcommit_429", fault: "http_429", failures: 1, calls: 1, effects: 1, wantError: true},
 		{name: "postcommit_500", fault: "http_500", failures: 1, calls: 1, effects: 1, wantError: true},
@@ -771,6 +778,11 @@ func TestMCPToolReplaySafety_RealTransports(t *testing.T) {
 					}
 				} else {
 					require.Nil(t, bErr)
+					require.NotNil(t, msg)
+					require.NotNil(t, msg.Content)
+					if !tc.toolError {
+						require.Contains(t, *msg.Content.ContentStr, "customer-operation-one")
+					}
 				}
 				if tc.toolError {
 					require.NotNil(t, msg.ChatToolMessage)
@@ -784,26 +796,40 @@ func TestMCPToolReplaySafety_RealTransports(t *testing.T) {
 func TestMCPToolReplaySafety_Recovery(t *testing.T) {
 	for _, sticky := range []bool{true, false} {
 		for _, fault := range []string{"pre_401", "pre_session", "rpc_auth", "http_401"} {
-			for _, safe := range []bool{false, true} {
-				t.Run(fmt.Sprintf("sticky=%t/%s/additive_hint=%t", sticky, fault, safe), func(t *testing.T) {
+			for _, policy := range []string{"missing", "additive", "idempotent"} {
+				t.Run(fmt.Sprintf("sticky=%t/%s/policy=%s", sticky, fault, policy), func(t *testing.T) {
 					annotations := mcpgo.ToolAnnotation{}
-					if safe {
+					if policy == "additive" {
 						annotations.DestructiveHint = schemas.Ptr(false)
 						annotations.IdempotentHint = schemas.Ptr(false)
 					}
-					f := newReplayDiagnosticFixture(t, "http-json", fault, 1, annotations, false, false)
+					idempotent := policy == "idempotent"
+					if idempotent {
+						annotations.IdempotentHint = schemas.Ptr(true)
+					}
+					f := newReplayDiagnosticFixture(t, "http-json", fault, 1, annotations, false, idempotent)
 					m, name := f.manager(t, sticky, 2*time.Second)
 					msg, bErr := replayDiagnosticCall(m, context.Background(), name)
 					f.report(t, msg, bErr)
 					wire, invoked, effects := f.snapshot()
 					calls := 1
-					require.NotNil(t, bErr, "neither absent hints nor additive-only hints authorize replay")
+					if idempotent {
+						calls++
+						require.Nil(t, bErr, "authorized recovery must preserve availability")
+						require.NotNil(t, msg)
+					} else {
+						require.NotNil(t, bErr, "neither absent hints nor additive-only hints authorize replay")
+					}
 					require.Equal(t, calls, wire)
 					if strings.HasPrefix(fault, "pre_") {
 						calls--
 					}
 					require.Equal(t, calls, invoked)
-					require.Equal(t, calls, effects)
+					wantEffects := calls
+					if idempotent {
+						wantEffects = 1
+					}
+					require.Equal(t, wantEffects, effects)
 				})
 			}
 		}
@@ -948,6 +974,10 @@ func TestMCPToolReplaySafety_AgentUsesSharedExecutor(t *testing.T) {
 		for _, message := range req.Input {
 			if message.Role == schemas.ChatMessageRoleTool {
 				toolResults++
+				require.Equal(t, call.ID, message.ToolCallID)
+				require.Equal(t, schemas.Ptr(true), message.IsError)
+				require.Contains(t, *message.Content.ContentStr, "request failed with status 503")
+				require.Contains(t, *message.Content.ContentStr, "may have succeeded")
 			}
 		}
 		require.Equal(t, 1, toolResults, "the failed execution remains one logical tool result")
@@ -985,6 +1015,11 @@ func TestMCPToolReplaySafety_ResponsesUsesSharedExecutor(t *testing.T) {
 					for _, message := range req.Input {
 						if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput {
 							toolResults++
+							require.Equal(t, call.CallID, message.CallID)
+							// The existing Chat-to-Responses adapter carries a text
+							// function_call_output, not Chat's IsError marker.
+							require.Contains(t, *message.Output.ResponsesToolCallOutputStr, "request failed with status 503")
+							require.Contains(t, *message.Output.ResponsesToolCallOutputStr, "may have succeeded")
 						}
 					}
 					require.Equal(t, 1, toolResults)
