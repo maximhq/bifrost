@@ -134,20 +134,26 @@ func IsAllDigitsASCII(s string) bool {
 	return true
 }
 
-// ParseFallbacks parses a slice of strings into a slice of Fallback structs
+// ParseFallbacks parses request-level model fallbacks. Bare models keep an empty
+// provider until core binds them to the routed primary. A slash requires a known
+// provider prefix; unknown prefixes and empty models are silently dropped.
 func ParseFallbacks(fallbacks []string) []Fallback {
 	if len(fallbacks) == 0 {
 		return nil
 	}
-	parsedFallbacks := make([]Fallback, 0, len(fallbacks))
+	var parsedFallbacks []Fallback
 	for _, fallback := range fallbacks {
 		if fallback == "" {
 			continue
 		}
 		fallbackProvider, fallbackModel := ParseModelString(fallback, "")
-		if fallbackProvider != "" && fallbackModel != "" {
-			parsedFallbacks = append(parsedFallbacks, Fallback{Provider: fallbackProvider, Model: fallbackModel})
+		if fallbackModel == "" || (fallbackProvider == "" && strings.Contains(fallback, "/")) {
+			continue
 		}
+		if parsedFallbacks == nil {
+			parsedFallbacks = make([]Fallback, 0, len(fallbacks))
+		}
+		parsedFallbacks = append(parsedFallbacks, Fallback{Provider: fallbackProvider, Model: fallbackModel})
 	}
 	return parsedFallbacks
 }
