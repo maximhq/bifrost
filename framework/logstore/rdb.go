@@ -360,6 +360,17 @@ func (s *RDBLogStore) applyAgentContextFilter(baseQuery *gorm.DB, agentNames []s
 // should be respected; this helper only adds the per-call filter
 // predicates.
 func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
+	if filters.RealtimeInputItemID != "" {
+		switch s.db.Dialector.Name() {
+		case "postgres":
+			fragment, _ := sonic.Marshal(map[string]any{"realtime_input_items": []map[string]string{{"id": filters.RealtimeInputItemID}}})
+			baseQuery = baseQuery.Where("metadata IS JSON OBJECT AND metadata::jsonb @> ?::jsonb", string(fragment))
+		case "clickhouse":
+			baseQuery = baseQuery.Where("isValidJSON(metadata) AND arrayExists(item -> JSONExtractString(item, 'id') = ?, JSONExtractArrayRaw(ifNull(metadata, '{}'), 'realtime_input_items'))", filters.RealtimeInputItemID)
+		default:
+			baseQuery = baseQuery.Where("json_valid(metadata) AND EXISTS (SELECT 1 FROM json_each(metadata, '$.realtime_input_items') AS realtime_item WHERE json_extract(realtime_item.value, '$.id') = ?)", filters.RealtimeInputItemID)
+		}
+	}
 	if len(filters.Providers) > 0 {
 		baseQuery = baseQuery.Where("provider IN ?", filters.Providers)
 	}
@@ -870,6 +881,11 @@ func (s *RDBLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
 			// the input summary already on the row.
 			if err := tx.Model(&Log{}).Where("id = ?", entry.ID).Omit("content_summary").Updates(serialized).Error; err != nil {
 				return err
+			}
+			if entry.RealtimeInputCorrection != nil {
+				if err := tx.Model(&Log{}).Where("id = ?", entry.ID).UpdateColumn("content_summary", entry.RealtimeInputCorrection.Summary).Error; err != nil {
+					return err
+				}
 			}
 			// Updates skips zero values, so a final "visible" (false) decision
 			// would never clear a hidden flag saved earlier; write it explicitly.

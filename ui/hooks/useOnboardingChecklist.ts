@@ -39,8 +39,11 @@ const authValueSet = (secretVar: { value?: string; ref?: string; type?: string }
 // core-config/keys/governance calls across both consumers automatically.
 export function useOnboardingChecklist({ skip = false }: { skip?: boolean } = {}) {
 	const { data: bifrostConfig } = useGetCoreConfigQuery({}, { skip });
-	const isDismissedForAll = bifrostConfig?.metadata?.[METADATA_DISMISSED_KEY] === true;
-	const shouldSkipChecklistQueries = skip || isDismissedForAll;
+	// disable_onboarding comes from config.json / BIFROST_DISABLE_ONBOARDING and holds on
+	// stateless deployments where the metadata flag would be lost on restart.
+	const isDismissedForAll = bifrostConfig?.disable_onboarding === true || bifrostConfig?.metadata?.[METADATA_DISMISSED_KEY] === true;
+	// Hold the checklist queries until config arrives, so a dismissed instance never fetches them.
+	const shouldSkipChecklistQueries = skip || bifrostConfig === undefined || isDismissedForAll;
 
 	const { data: allKeys } = useGetAllKeysQuery(undefined, { skip: shouldSkipChecklistQueries });
 	const { data: vksResponse } = useGetVirtualKeysQuery(undefined, {

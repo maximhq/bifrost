@@ -740,11 +740,14 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 // verifyMCPClientExchange handles
 // POST /api/mcp/client/{id}/verify-exchange. No request body: the subject of
 // the verification exchange is always the signed-in admin's own
-// identity-provider token, stamped on the request context by the auth layer.
+// identity-provider token: the one stamped on the request context by the auth
+// layer, or the one stored from the admin's sign-in when the request carries
+// none.
 //
 // Surfaced on token_exchange MCP clients in two situations, mirroring
 // verify-headers: clients sitting in pending_verification (declared in
-// config.json, or created from a session with no identity token) awaiting
+// config.json, or created by a request with no token to exchange, such as one
+// made with an API key) awaiting
 // their one-time bootstrap verification, and a voluntary refresh of an
 // already-verified client's retained admin discovery credential —
 // resubmitting always re-runs verification and retains a fresh credential,
@@ -792,18 +795,21 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// The verification subject is always the signed-in admin's own
-	// identity-provider token ("verify as yourself"); an API-key-authenticated
-	// request has none and must be retried from an identity-authenticated
-	// session.
-	subjectToken := bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyMCPInboundBearer)
-	if subjectToken == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "verification exchanges your own identity-provider token, but this request carries none: sign in with your identity provider and retry")
-		return
-	}
-
-	adminResponse, err := h.store.OAuthProvider.ExchangeAdminCredential(bifrostCtx, clientConfig, subjectToken)
+	// identity-provider token ("verify as yourself"): the one the request
+	// carries, or the one stored from the admin's sign-in. An
+	// API-key-authenticated request has neither and must be retried from an
+	// identity-authenticated session; an expired stored sign-in needs a new
+	// sign-in.
+	adminResponse, err := h.store.OAuthProvider.ExchangeAdminCredential(bifrostCtx, clientConfig)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Admin credential exchange failed: %v", err))
+		switch {
+		case errors.Is(err, schemas.ErrExchangeSubjectTokenMissing):
+			SendError(ctx, fasthttp.StatusBadRequest, "verification exchanges your own identity-provider token, but this request carries none: sign in with your identity provider and retry")
+		case errors.Is(err, schemas.ErrStoredSignInExpired):
+			SendError(ctx, fasthttp.StatusBadRequest, "verification exchanges your own identity-provider token, but your Bifrost sign-in has expired: sign in to Bifrost again and retry")
+		default:
+			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Admin credential exchange failed: %v", err))
+		}
 		return
 	}
 
@@ -2410,10 +2416,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 	// Handle token exchange: the caller's identity-provider token is exchanged
 	// per request at runtime, so nothing interactive happens at create.
-	// Verification + tool discovery run synchronously when an admin credential
-	// is available (the client-credentials fallback, or a one-time sample
-	// caller token); without either the client is parked in
-	// pending_verification for the verify-exchange endpoint.
+	// Verification + tool discovery run synchronously when the admin has a
+	// token to exchange: the request's own, or the one stored from their
+	// sign-in. Without one the client is parked in pending_verification for
+	// the verify-exchange endpoint.
 	if req.AuthType == string(schemas.MCPAuthTypeTokenExchange) {
 		if isEnterprise, _ := bifrostCtx.Value(schemas.BifrostContextKeyIsEnterprise).(bool); !isEnterprise {
 			SendError(ctx, fasthttp.StatusBadRequest, "auth_type 'token_exchange' is not supported")
@@ -2487,22 +2493,28 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 		// Resolve an admin credential for synchronous verification + tool
 		// discovery, mirroring the other per-user branches: the signed-in
-		// admin's own identity-provider token — stamped on the request
-		// context by the auth layer — is exchanged exactly like a real
-		// caller's would be ("verify as yourself"; there is no manual token
-		// input). Without one (e.g. API-key authentication) the client is
-		// created in pending_verification for verify-exchange, which the
-		// admin must hit from an identity-authenticated session. The full
-		// response is retained after activation as the admin discovery
-		// credential (see the retention block below).
+		// admin's own identity-provider token (the one the request carries,
+		// or the one stored from the admin's sign-in) is exchanged exactly
+		// like a real caller's would be ("verify as yourself"; there is no
+		// manual token input). Without one (e.g. API-key authentication) the
+		// client is created in pending_verification for verify-exchange, which
+		// the admin must hit from an identity-authenticated session. An
+		// expired stored sign-in fails the create instead, since signing in
+		// again lets it verify at once. The full response is retained after
+		// activation as the admin discovery credential (see the retention
+		// block below).
 		var adminResponse *schemas.OAuth2TokenExchangeResponse
-		sampleSubjectToken, _ := bifrostCtx.Value(schemas.BifrostContextKeyMCPInboundBearer).(string)
-		if sampleSubjectToken != "" {
-			response, exchangeErr := h.store.OAuthProvider.ExchangeAdminCredential(bifrostCtx, schemasConfig, sampleSubjectToken)
-			if exchangeErr != nil {
-				SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Admin credential exchange failed: %v", exchangeErr))
-				return
-			}
+		response, exchangeErr := h.store.OAuthProvider.ExchangeAdminCredential(bifrostCtx, schemasConfig)
+		switch {
+		case errors.Is(exchangeErr, schemas.ErrExchangeSubjectTokenMissing):
+			// Nothing to verify as: created in pending_verification.
+		case errors.Is(exchangeErr, schemas.ErrStoredSignInExpired):
+			SendError(ctx, fasthttp.StatusUnprocessableEntity, "Admin credential exchange failed: your Bifrost sign-in has expired. Sign in to Bifrost again and retry")
+			return
+		case exchangeErr != nil:
+			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Admin credential exchange failed: %v", exchangeErr))
+			return
+		default:
 			adminResponse = response
 			tools, toolNameMapping, serverInstructions, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, schemasConfig, response.AccessToken)
 			if verifyErr != nil {

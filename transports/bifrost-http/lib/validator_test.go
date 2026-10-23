@@ -3791,69 +3791,21 @@ func TestSchemaOAuthKeyConfig(t *testing.T) {
 	}
 }
 
-// TestSchemaGithubCopilotCredentialRequired pins that the schema demands one of the two
-// credential forms. core/utils.go rejects a key carrying neither, and the schema is the
-// source of truth for config fields, so it has to reject the same shape rather than
-// deferring the failure to boot.
+// TestSchemaGithubCopilotCredentialRequired pins that the schema demands a token, as
+// core/utils.go does: every way to authenticate, including Sign in with GitHub, ends with one.
 func TestSchemaGithubCopilotCredentialRequired(t *testing.T) {
 	compiled := compileSchema(t)
 
-	const appConfig = `"github_copilot_key_config": {
-		"app_id": "123456",
-		"installation_id": "87654321",
-		"repository_id": "999000111",
-		"private_key": "pem"
-	}`
-
-	valid := []struct {
-		name   string
-		config string
-	}{
-		{
-			name:   "direct token alone",
-			config: copilotKeyConfig(`"name": "k", "value": "tid=abc", "models": ["*"], "weight": 1.0`),
-		},
-		{
-			name:   "github app config alone",
-			config: copilotKeyConfig(`"name": "k", "models": ["*"], "weight": 1.0, ` + appConfig),
-		},
-		{
-			name:   "both forms together",
-			config: copilotKeyConfig(`"name": "k", "value": "tid=abc", "models": ["*"], "weight": 1.0, ` + appConfig),
-		},
+	if err := validateConfig(t, compiled, copilotKeyConfig(`"name": "k", "value": "github_pat_abc", "models": ["*"], "weight": 1.0`)); err != nil {
+		t.Fatalf("a token alone should be valid: %v", err)
 	}
-	for _, tt := range valid {
-		t.Run(tt.name, func(t *testing.T) {
-			if err := validateConfig(t, compiled, tt.config); err != nil {
-				t.Fatalf("config should be valid: %v", err)
-			}
-		})
-	}
-
-	invalid := []struct {
-		name   string
-		config string
-	}{
-		{
-			name:   "neither credential form",
-			config: copilotKeyConfig(`"name": "k", "models": ["*"], "weight": 1.0`),
-		},
-		{
-			name:   "empty token with no app config",
-			config: copilotKeyConfig(`"name": "k", "value": "", "models": ["*"], "weight": 1.0`),
-		},
-		{
-			name: "app config missing the private key",
-			config: copilotKeyConfig(`"name": "k", "models": ["*"], "weight": 1.0,
-				"github_copilot_key_config": {"app_id": "1", "installation_id": "2", "repository_id": "3"}`),
-		},
-	}
-	for _, tt := range invalid {
-		t.Run(tt.name, func(t *testing.T) {
-			if err := validateConfig(t, compiled, tt.config); err == nil {
-				t.Fatal("config should be invalid")
-			}
-		})
+	for name, key := range map[string]string{
+		"no token":       `"name": "k", "models": ["*"], "weight": 1.0`,
+		"an empty token": `"name": "k", "value": "", "models": ["*"], "weight": 1.0`,
+	} {
+		if err := validateConfig(t, compiled, copilotKeyConfig(key)); err == nil {
+			t.Errorf("%s should be invalid", name)
+		}
 	}
 }
 

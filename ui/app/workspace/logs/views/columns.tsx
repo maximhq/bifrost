@@ -844,7 +844,9 @@ export const createColumns = (
 		size: Math.min(280, Math.max(160, key.length * 8 + 48)),
 		cell: ({ row }) => {
 			const value = row.original.metadata?.[key];
-			return <TruncatedLabel className="block font-mono text-xs">{value ?? "-"}</TruncatedLabel>;
+			// Metadata can contain nested JSON, including realtime input associations.
+			const label = value == null ? "-" : typeof value === "object" ? JSON.stringify(value) : String(value);
+			return <TruncatedLabel className="block font-mono text-xs">{label}</TruncatedLabel>;
 		},
 	}));
 

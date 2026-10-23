@@ -49,10 +49,11 @@ type ClickHouseLogStore struct {
 	// Cross-pod races are not covered, but a given request id is only mutated
 	// by the pod that processed it.
 	rmwLocks [chRMWShards]sync.Mutex
-	// warpLocker serializes Warp history writes across instances; rmwLocks only
-	// covers this process. Nil means single-instance behaviour. Set once at
-	// startup, before any Warp write, so it is read without synchronization.
-	warpLocker DistributedLocker
+	// locker serializes Warp history and user agent mapping writes across
+	// instances; rmwLocks only covers this process. Nil means single-instance
+	// behaviour. Set once at startup, before any such write, so it is read
+	// without synchronization.
+	locker DistributedLocker
 }
 
 // warpHistoryLockKey is the shared lock for one owner's Warp history. Hashed
@@ -63,10 +64,27 @@ func warpHistoryLockKey(ownerID string) string {
 	return "warp_history:" + hex.EncodeToString(sum[:])
 }
 
-// SetDistributedLocker gives the Warp history writes a lock every instance
-// sharing this ClickHouse honours.
+// userAgentMappingLockKey is the shared lock for one user agent mapping, hashed
+// because the id comes from the request path and the lock table caps keys at
+// 255 characters.
+func userAgentMappingLockKey(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return "user_agent_mapping:" + hex.EncodeToString(sum[:])
+}
+
+// SetDistributedLocker gives the Warp history and user agent mapping writes a
+// lock every instance sharing this ClickHouse honours.
 func (s *ClickHouseLogStore) SetDistributedLocker(locker DistributedLocker) {
-	s.warpLocker = locker
+	s.locker = locker
+}
+
+// lockShared takes the shared lock for key, or does nothing without a locker.
+// The returned context is cancelled if the lock is lost mid-write.
+func (s *ClickHouseLogStore) lockShared(ctx context.Context, key string) (context.Context, func(), error) {
+	if s.locker == nil {
+		return ctx, func() {}, nil
+	}
+	return s.locker.Acquire(ctx, key)
 }
 
 // lockWarpOwner takes the owner's shared Warp history lock, or does nothing
@@ -78,10 +96,7 @@ func (s *ClickHouseLogStore) SetDistributedLocker(locker DistributedLocker) {
 // The returned context is the one to write on: it is cancelled if the lock is
 // lost mid-write, so the write stops rather than finishing unprotected.
 func (s *ClickHouseLogStore) lockWarpOwner(ctx context.Context, ownerID string) (context.Context, func(), error) {
-	if s.warpLocker == nil {
-		return ctx, func() {}, nil
-	}
-	held, release, err := s.warpLocker.Acquire(ctx, warpHistoryLockKey(ownerID))
+	held, release, err := s.lockShared(ctx, warpHistoryLockKey(ownerID))
 	if err != nil {
 		return nil, nil, fmt.Errorf("acquire warp history lock: %w", err)
 	}
@@ -728,6 +743,9 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 				}
 				// The overlay skips zero values; the final visibility is always written.
 				r.ContentHidden = src.ContentHidden
+				if src.RealtimeInputCorrection != nil {
+					r.ContentSummary = src.RealtimeInputCorrection.Summary
+				}
 			}
 		}
 		return s.chReinsert(ctx, &rows)
@@ -872,6 +890,59 @@ func (s *ClickHouseLogStore) chFlushProcessing(ctx context.Context, table string
 		return err
 	}
 	return s.chLightweightDelete(ctx, table, where, since)
+}
+
+// UpdateUserAgentMapping re-inserts a patched copy of the mapping, since
+// ReplacingMergeTree has no in-place UPDATE. The shared lock keeps a delete on
+// another instance from landing between the read and the re-insert, which
+// would bring the deleted mapping back.
+func (s *ClickHouseLogStore) UpdateUserAgentMapping(ctx context.Context, id string, mapping *UserAgentMapping) error {
+	ctx, release, err := s.lockShared(ctx, userAgentMappingLockKey(id))
+	if err != nil {
+		return fmt.Errorf("failed to acquire user agent mapping lock: %w", err)
+	}
+	defer release()
+	defer s.lockRMW("user_agent_mappings", id)()
+	var existing UserAgentMapping
+	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return gorm.ErrRecordNotFound
+		}
+		return fmt.Errorf("failed to update user agent mapping: %w", err)
+	}
+	existing.Pattern = mapping.Pattern
+	existing.MatchType = mapping.MatchType
+	existing.App = mapping.App
+	existing.Logo = mapping.Logo
+	existing.LogoMime = mapping.LogoMime
+	existing.IsActive = mapping.IsActive
+	existing.UpdatedAt = time.Now().UTC()
+	if err := s.chReinsert(ctx, &existing); err != nil {
+		return fmt.Errorf("failed to update user agent mapping: %w", err)
+	}
+	return nil
+}
+
+// DeleteUserAgentMapping deletes a mapping with a lightweight delete. Mutations
+// never report rows affected, so existence is checked first.
+func (s *ClickHouseLogStore) DeleteUserAgentMapping(ctx context.Context, id string) error {
+	ctx, release, err := s.lockShared(ctx, userAgentMappingLockKey(id))
+	if err != nil {
+		return fmt.Errorf("failed to acquire user agent mapping lock: %w", err)
+	}
+	defer release()
+	defer s.lockRMW("user_agent_mappings", id)()
+	exists, err := s.chExistsWhere(ctx, "user_agent_mappings", "id = ?", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete user agent mapping: %w", err)
+	}
+	if !exists {
+		return gorm.ErrRecordNotFound
+	}
+	if err := s.chLightweightDelete(ctx, "user_agent_mappings", "id = ?", id); err != nil {
+		return fmt.Errorf("failed to delete user agent mapping: %w", err)
+	}
+	return nil
 }
 
 // DeleteLogsBatch deletes every log older than cutoff with one lightweight
