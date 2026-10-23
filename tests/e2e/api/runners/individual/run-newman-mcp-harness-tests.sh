@@ -14,6 +14,13 @@
 # runner passes in as admin_auth_header. The setup token the server boots with
 # is what lets the runner create that first admin account.
 #
+# The upstream MCP servers are an mcpchaos fleet (tests/cmd/mcpconsole), built
+# and started here. Tests reach it through two collection variables: chaos_url,
+# the fleet's base URL for both its MCP endpoints and its control API, and
+# chaos_bin, the binary a STDIO client spawns to bridge to the fleet. Each test
+# resets the servers it uses through the control API, so tests do not depend on
+# one another.
+#
 # Requires a built bifrost-http binary; this runner boots its own server so the
 # state each test starts from is exactly what its assertions expect.
 
@@ -21,6 +28,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 API_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$API_DIR/../../.." && pwd)"
 cd "$API_DIR"
 
 COLLECTION="collections/mcp-harness.json"
@@ -33,6 +41,7 @@ NC='\033[0m'
 
 BIFROST_BINARY=""
 PORT="8093"
+CHAOS_PORT="8494"
 FOLDER=""
 REPORTERS="cli"
 VERBOSE=""
@@ -46,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --binary) BIFROST_BINARY="$2"; shift 2 ;;
         --port) PORT="$2"; shift 2 ;;
+        --chaos-port) CHAOS_PORT="$2"; shift 2 ;;
         --folder) FOLDER="$2"; shift 2 ;;
         --html) REPORTERS="${REPORTERS},html"; shift ;;
         --json) REPORTERS="${REPORTERS},json"; shift ;;
@@ -57,6 +67,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --binary <path>   Path to a built bifrost-http binary (required)"
             echo "  --port <port>     Port to boot the server on (default: 8093)"
+            echo "  --chaos-port <p>  Port for the mcpchaos fleet (default: 8494)"
             echo "  --folder <name>   Run only this collection folder (e.g. \"ADM\" or \"ADM-05 ...\")"
             echo "  --html            Generate HTML report"
             echo "  --json            Generate JSON report"
@@ -95,13 +106,18 @@ mkdir -p "$REPORT_DIR"
 
 SERVER_PID=""
 SERVER_DIR=""
+CHAOS_PID=""
+CHAOS_DIR=""
 
 cleanup() {
-    if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
-        kill "$SERVER_PID" 2>/dev/null || true
-        wait "$SERVER_PID" 2>/dev/null || true
-    fi
+    for pid in "$SERVER_PID" "$CHAOS_PID"; do
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        fi
+    done
     [ -n "$SERVER_DIR" ] && rm -rf "$SERVER_DIR"
+    [ -n "$CHAOS_DIR" ] && rm -rf "$CHAOS_DIR"
 }
 trap cleanup EXIT
 
@@ -114,6 +130,36 @@ if port_in_use "$PORT"; then
     echo -e "${RED}Error: port $PORT is already in use; pass --port to use another${NC}"
     exit 1
 fi
+if port_in_use "$CHAOS_PORT"; then
+    echo -e "${RED}Error: port $CHAOS_PORT is already in use; pass --chaos-port to use another${NC}"
+    exit 1
+fi
+
+# start_chaos builds mcpchaos and starts its fleet. The servers it boots with are
+# only placeholders: every test re-adds the servers it uses, which resets their
+# tools, faults, auth and counters.
+start_chaos() {
+    echo -e "${YELLOW}Building mcpchaos...${NC}"
+    CHAOS_DIR="$(mktemp -d)"
+    # GOWORK=off: the mock has its own module and is not part of the repo workspace.
+    ( cd "$REPO_ROOT/tests/cmd/mcpconsole" && GOWORK=off go build -o "$CHAOS_DIR/mcpchaos" ./cmd/mcpchaos ) || {
+        echo -e "${RED}Error: failed to build mcpchaos${NC}"; exit 1; }
+    local log="$API_DIR/$REPORT_DIR/mcpchaos.log"
+    "$CHAOS_DIR/mcpchaos" -addr "127.0.0.1:$CHAOS_PORT" -servers alpha,beta > "$log" 2>&1 &
+    CHAOS_PID=$!
+    local waited=0
+    while [ $waited -lt 40 ]; do
+        port_in_use "$CHAOS_PORT" && break
+        if ! kill -0 "$CHAOS_PID" 2>/dev/null; then
+            echo -e "${RED}mcpchaos exited during startup${NC}"; cat "$log"; exit 1
+        fi
+        sleep 0.5; waited=$((waited + 1))
+    done
+    if ! port_in_use "$CHAOS_PORT"; then
+        echo -e "${RED}mcpchaos did not become ready${NC}"; cat "$log"; exit 1
+    fi
+    echo -e "${GREEN}mcpchaos ready on :$CHAOS_PORT${NC}"
+}
 
 write_config() {
     local dir="$1"
@@ -167,6 +213,7 @@ enable_dashboard_auth() {
             echo -e "${RED}Error: could not enable dashboard auth${NC}"; exit 1; }
 }
 
+start_chaos
 start_bifrost
 enable_dashboard_auth
 
@@ -175,6 +222,8 @@ ADMIN_AUTH_HEADER="Basic $(printf '%s:%s' "$ADMIN_USERNAME" "$ADMIN_PASSWORD" | 
 cmd=(newman run "$COLLECTION"
     --env-var "base_url=http://localhost:$PORT"
     --env-var "admin_auth_header=$ADMIN_AUTH_HEADER"
+    --env-var "chaos_url=http://127.0.0.1:$CHAOS_PORT"
+    --env-var "chaos_bin=$CHAOS_DIR/mcpchaos"
     --timeout-script 60000 --timeout 120000
     -r "$REPORTERS")
 [ -n "$FOLDER" ] && cmd+=(--folder "$FOLDER")
