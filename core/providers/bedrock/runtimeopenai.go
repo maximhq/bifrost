@@ -41,7 +41,7 @@ const (
 //
 // Mantle is deliberately not wired: it accepts these headers and enforces nothing.
 func withGuardrailHeaders(base map[string]schemas.SecretVar, extraParams map[string]any) map[string]schemas.SecretVar {
-	config, _ := extraParams["guardrailConfig"].(map[string]any)
+	config, _ := extraParamObject(extraParams["guardrailConfig"])
 	identifier, _ := config["guardrailIdentifier"].(string)
 	version, _ := config["guardrailVersion"].(string)
 	if identifier == "" || version == "" {
