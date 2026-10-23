@@ -2432,6 +2432,27 @@ func TestToBifrostResponsesRequest_FallbacksRouting(t *testing.T) {
 	})
 }
 
+func TestToBifrostResponsesRequest_BareFallbacks(t *testing.T) {
+	for _, model := range []string{"anthropic/claude-sonnet-4-5", "claude-sonnet-4-5"} {
+		t.Run(model, func(t *testing.T) {
+			var req AnthropicMessageRequest
+			body := `{"model":"` + model + `","fallbacks":["foo/model","claude-haiku-4-5",{"model":"claude-opus-4-8"},"openai/gpt-4o","openai/"]}`
+			if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+				t.Fatal(err)
+			}
+			out := req.ToBifrostResponsesRequest(nil)
+			want := []schemas.Fallback{{Model: "claude-haiku-4-5"}, {Provider: schemas.OpenAI, Model: "gpt-4o"}}
+			if !slices.Equal(out.Fallbacks, want) {
+				t.Fatalf("fallbacks = %+v, want %+v", out.Fallbacks, want)
+			}
+			native, ok := out.Params.ExtraParams["fallbacks"].([]AnthropicNativeFallback)
+			if !ok || len(native) != 1 || native[0].Model != "claude-opus-4-8" {
+				t.Fatalf("native fallback changed: %#v", out.Params.ExtraParams["fallbacks"])
+			}
+		})
+	}
+}
+
 // TestAddMissingBetaHeadersToContext_ServerSideFallback verifies the beta header
 // is auto-added for native fallbacks on Anthropic and gated off on providers that
 // do not support the feature.

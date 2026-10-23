@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/gemini"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
@@ -69,6 +70,55 @@ func TestExtractAndParseFallbacks_GeminiGenerationRequest(t *testing.T) {
 	require.Len(t, bifrostReq.ResponsesRequest.Fallbacks, 1)
 	assert.Equal(t, schemas.Vertex, bifrostReq.ResponsesRequest.Fallbacks[0].Provider)
 	assert.Equal(t, "gemini-3-flash-preview", bifrostReq.ResponsesRequest.Fallbacks[0].Model)
+}
+
+func TestExtractAndParseFallbacksRequestModels(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input []string
+		want  []schemas.Fallback
+	}{
+		{name: "bare waits for routing", input: []string{"backup"}, want: []schemas.Fallback{{Model: "backup"}}},
+		{name: "mixed", input: []string{"foo/model", "backup", "openai/gpt-4o", "openai/"}, want: []schemas.Fallback{{Model: "backup"}, {Provider: schemas.OpenAI, Model: "gpt-4o"}}},
+		{name: "invalid entries clear converter fallbacks", input: []string{"foo/model", "openai/"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			incoming := &openai.OpenAIChatRequest{Model: "anthropic/primary", Fallbacks: tc.input}
+			req := &schemas.BifrostRequest{ChatRequest: incoming.ToBifrostChatRequest(nil)}
+			require.NoError(t, newTestGenericRouter().extractAndParseFallbacks(newTestBifrostContext(), incoming, req))
+			assert.Equal(t, tc.want, req.ChatRequest.Fallbacks)
+		})
+	}
+	t.Run("setter handles image edit without request type", func(t *testing.T) {
+		incoming := &openai.OpenAIImageEditRequest{Fallbacks: []string{"backup"}}
+		req := &schemas.BifrostRequest{ImageEditRequest: &schemas.BifrostImageEditRequest{Provider: schemas.OpenAI, Model: "primary"}}
+		require.NoError(t, newTestGenericRouter().extractAndParseFallbacks(newTestBifrostContext(), incoming, req))
+		assert.Equal(t, []schemas.Fallback{{Model: "backup"}}, req.ImageEditRequest.Fallbacks)
+	})
+}
+
+func BenchmarkExtractAndParseFallbacks(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		input []string
+	}{
+		{name: "none"},
+		{name: "explicit", input: []string{"anthropic/claude-haiku-4-5"}},
+		{name: "bare", input: []string{"claude-haiku-4-5"}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			incoming := &openai.OpenAIChatRequest{Fallbacks: tc.input}
+			req := &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: "primary"}}
+			ctx := newTestBifrostContext()
+			router := &GenericRouter{}
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := router.extractAndParseFallbacks(ctx, incoming, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
 
 // TestSendStreamError_PropagatesProviderStatusCode verifies that sendStreamError
