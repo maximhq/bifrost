@@ -37,12 +37,40 @@ func TestIsAuthFailureErrorText(t *testing.T) {
 		{"unrelated bad request", "400 bad request", false},
 		{"timeout text alone does not match", "context deadline exceeded", false},
 		{"empty string", "", false},
+		{"SDK numeric 401 status", "request failed with status 401: token expired", true},
+		{"SDK numeric 403 status", "request failed with status 403: access denied", true},
+		{"status code spelling", "upstream status code: 401", true},
+		{"HTTP spelling", "upstream HTTP 403", true},
+		{"401 in port", `Post "http://127.0.0.1:54010": EOF`, false},
+		{"403 in port", `Post "http://127.0.0.1:55403": EOF`, false},
+		{"401 in URL path", `Post "http://127.0.0.1:8080/tools/401": EOF`, false},
+		{"403 in request ID", "request id abc403xyz: EOF", false},
+		{"401 item count", "tool returned 401 items", false},
+		{"403 latency", "tool took 403ms", false},
+		{"longer status number", "upstream status 4030", false},
+		{"unrelated status and numeric body", "request failed with status 500: item 401 missing", false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isAuthFailureErrorText(tc.errStr); got != tc.want {
 				t.Errorf("isAuthFailureErrorText(%q) = %v, want %v", tc.errStr, got, tc.want)
+			}
+		})
+	}
+}
+
+func BenchmarkIsAuthFailureErrorText(b *testing.B) {
+	for _, tc := range []struct{ name, text string }{
+		{"auth_word", "tool call failed: 401 Unauthorized"},
+		{"status", "request failed with status 401: token expired"},
+		{"port", `Post "http://127.0.0.1:55403": EOF`},
+		{"non_auth", "tool execution panicked: division by zero"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				isAuthFailureErrorText(tc.text)
 			}
 		})
 	}
@@ -1037,6 +1065,33 @@ func TestExecuteTool_AuthFailureRetry_ReadOnly_StillRetries(t *testing.T) {
 	}
 	if got := ft.CallCount(); got != 2 {
 		t.Errorf("expected the retry to run (original + 1 retry), got %d CallTool invocations", got)
+	}
+}
+
+func TestExecuteTool_PortDigitsDoNotTriggerAuthRecovery(t *testing.T) {
+	for _, port := range []string{"54010", "55403"} {
+		t.Run(port, func(t *testing.T) {
+			// Allow replay explicitly so a false auth match would actually retry.
+			state, toolName := newAuthRetryClientState("testclient", "dotool", nil, boolPtr(true))
+			failure := fmt.Sprintf(`Post "http://127.0.0.1:%s": EOF`, port)
+			ft := &fakeCallToolTransport{callErrs: []error{errors.New(failure)}}
+			conn := client.NewClient(ft, client.WithSession())
+			cm := &authRetryClientManager{state: state, acquireConn: conn}
+			cs := &authRetryCredStore{requiresPerCall: true}
+			tm := newAuthRetryToolsManager(cm, cs)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			_, err := tm.ExecuteTool(ctx, newAuthRetryToolCallRequest(toolName), conn, state.ExecutionConfig, state.ToolNameMapping)
+			if !errors.Is(err, ErrMCPToolCallFailed) || !strings.Contains(fmt.Sprint(err), failure) {
+				t.Errorf("expected the original EOF tool-call failure, got %v", err)
+			}
+			if calls := ft.CallCount(); calls != 1 {
+				t.Errorf("EOF must not replay due to port digits: got %d calls", calls)
+			}
+			if refreshes, acquires, reconnects := cs.forceRefreshCalls.Load(), cm.acquireCalls.Load(), cm.reconnectCalls.Load(); refreshes != 0 || acquires != 0 || reconnects != 0 {
+				t.Errorf("port digits triggered auth recovery: refreshes=%d acquires=%d reconnects=%d", refreshes, acquires, reconnects)
+			}
+		})
 	}
 }
 

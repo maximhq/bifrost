@@ -475,14 +475,12 @@ func isTransientToolCallError(err error) bool {
 // isAuthFailureErrorText reports whether a raw upstream tool-call error looks
 // like an auth rejection (401/403/unauthorized/forbidden). mcp-go flattens
 // HTTP status codes into a plain error string by the time a CallTool error
-// reaches toolmanager.go — no typed status field survives — so, like
-// isTransientError above, substring matching on the same class of text is
-// the only option.
+// reaches toolmanager.go. Numeric codes must be marked as HTTP statuses:
+// bare digits also occur in ports, request IDs and tool output, where they
+// must not trigger credential refresh or replay. Keep the textual auth signals.
 //
-// This is deliberately not a reuse of isTransientError: that function matches
-// this exact substring class too, but as a PERMANENT signal (don't retry) for
-// its connection-establishment callers — the opposite polarity needed here,
-// where the same text is the POSITIVE trigger for a forced-refresh-and-retry.
+// Unlike isTransientError's permanent dial-failure classification, a match
+// here is the positive trigger for forced credential refresh and recovery.
 // A tool call that reaches this point already has a live, previously-healthy
 // connection (AcquireClientConn already succeeded once), so a 401/403 here
 // means the upstream server is actively rejecting a credential Bifrost's own
@@ -495,12 +493,11 @@ func isTransientToolCallError(err error) bool {
 // it's the upstream server's rejection text verbatim, not Bifrost's.
 func isAuthFailureErrorText(errStr string) bool {
 	lower := strings.ToLower(errStr)
-	for _, needle := range []string{"401", "403", "unauthorized", "forbidden"} {
-		if strings.Contains(lower, needle) {
-			return true
-		}
+	if strings.Contains(lower, "unauthorized") || strings.Contains(lower, "forbidden") {
+		return true
 	}
-	return false
+	status := extractHTTPStatus(lower)
+	return status == "401" || status == "403"
 }
 
 // deadSessionErrorSubstrings is what "the upstream has abandoned this MCP
