@@ -560,6 +560,40 @@ func TestOpenAIChatStructuredOutputRequestParserAndConverter(t *testing.T) {
 // to a non-native provider (e.g. Bedrock) — that happens per attempt in core
 // (clearAnthropicPassthroughForNonNativeProvider), after final provider
 // resolution.
+func TestDisableBuiltinToolRewritingIntegration(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", streaming), func(t *testing.T) {
+			var captured bool
+			route := RouteConfig{
+				Type: RouteConfigTypeOpenAI, Path: "/v1/responses", Method: fasthttp.MethodPost,
+				GetHTTPRequestType:     func(*fasthttp.RequestCtx) schemas.RequestType { return schemas.ResponsesRequest },
+				GetRequestTypeInstance: func(context.Context) interface{} { return &openai.OpenAIResponsesRequest{} },
+				RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+					captured = ctx.Value(schemas.BifrostContextKeyDisableBuiltinToolRewriting) == true
+					neutral := req.(*openai.OpenAIResponsesRequest).ToBifrostResponsesRequest(ctx)
+					converted := openai.ToOpenAIResponsesRequest(ctx, neutral)
+					require.Len(t, converted.Tools, 1)
+					assert.Equal(t, schemas.ResponsesToolTypeFunction, converted.Tools[0].Type)
+					assert.Equal(t, "web_search_custom", *converted.Tools[0].Name)
+					body, err := converted.MarshalJSON()
+					require.NoError(t, err)
+					assert.NotContains(t, string(body), `"type":"tool_search"`)
+					assert.NotContains(t, string(body), `"defer_loading":true`)
+					return nil, fmt.Errorf("stop before provider execution")
+				},
+				ErrorConverter: func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} { return err },
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.Header.Set("x-bf-disable-builtin-tool-rewriting", "true")
+			ctx.Request.SetBodyString(fmt.Sprintf(`{"model":"openai/gpt-6-sol","input":"hello","stream":%v,"tools":[{"type":"function","name":"web_search_custom","defer_loading":true,"parameters":{"type":"object","properties":{}}}]}`, streaming))
+			NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, nil).createHandler(route)(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+			assert.True(t, captured, "option did not reach the provider converter")
+		})
+	}
+}
+
 func TestCreateHandler_AnthropicRouteSetsPassthroughFlags(t *testing.T) {
 	handlerStore := &mockHandlerStore{}
 

@@ -483,6 +483,42 @@ func TestBuildAnthropicResponsesRequestBody_CountTokensMode(t *testing.T) {
 	})
 }
 
+func TestDisableBuiltinToolRewritingAnthropicConversion(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Azure, schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle} {
+		for _, raw := range []bool{false, true} {
+			for _, streaming := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/raw=%v/stream=%v", provider, raw, streaming), func(t *testing.T) {
+					var bodies [][]byte
+					for _, disabled := range []bool{false, true} {
+						ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+						ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, disabled)
+						ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, raw)
+						request := &schemas.BifrostResponsesRequest{
+							Provider: provider, Model: "claude-sonnet-4-5", Input: makeSimpleInput("hello"),
+							Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+								{Type: schemas.ResponsesToolTypeFunction, Name: new("web_search_custom"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}},
+								{Type: schemas.ResponsesToolTypeComputerUsePreview, ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768}},
+							}},
+							RawRequestBody: []byte(`{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"tools":[{"name":"web_search_custom","input_schema":{"type":"object"}},{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768}]}`),
+						}
+						body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: provider, Model: request.Model, ValidateTools: true, IsStreaming: streaming})
+						if err != nil {
+							t.Fatal(err)
+						}
+						bodies = append(bodies, body)
+					}
+					if string(bodies[0]) != string(bodies[1]) {
+						t.Fatalf("explicit tools or normal conversion changed with the opt-out:\noff: %s\non:  %s", bodies[0], bodies[1])
+					}
+					if got := gjson.GetBytes(bodies[1], "tools.0.name").String(); got != "web_search_custom" {
+						t.Errorf("caller function name = %q", got)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 	t.Run("typed_path_basic_request", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
