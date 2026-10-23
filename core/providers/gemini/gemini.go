@@ -202,6 +202,70 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 	return &geminiResponse, rawResponse, latency, providerResponseHeaders, nil
 }
 
+func (provider *GeminiProvider) completeInteractionRequest(ctx *schemas.BifrostContext, key schemas.Key, jsonBody []byte) (*geminiInteractionResponse, interface{}, time.Duration, map[string]string, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/interactions"))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	setGeminiAuthHeader(req, key.Value.GetValue())
+	req.SetBody(jsonBody)
+
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, nil, latency, nil, bifrostErr
+	}
+
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		return nil, nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
+	}
+
+	body, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
+	if decodeErr != nil {
+		return nil, nil, latency, providerResponseHeaders, decodeErr
+	}
+	if isLargeResp {
+		respOwned = false
+		return nil, nil, latency, providerResponseHeaders, nil
+	}
+
+	var interactionResponse geminiInteractionResponse
+	pt, ph := providerUtils.StartResponseParseSpan(ctx)
+	unmarshalErr := sonic.Unmarshal(body, &interactionResponse)
+	if pt != nil {
+		if unmarshalErr != nil {
+			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
+		} else {
+			pt.EndSpan(ph, schemas.SpanStatusOk, "")
+		}
+	}
+	if unmarshalErr != nil {
+		return nil, nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, unmarshalErr)
+	}
+
+	var rawResponse interface{}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		if err := sonic.Unmarshal(body, &rawResponse); err != nil {
+			return nil, nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+		}
+	}
+
+	return &interactionResponse, rawResponse, latency, providerResponseHeaders, nil
+}
+
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 func (provider *GeminiProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -1758,11 +1822,217 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	return responseChan, nil
 }
 
+func (provider *GeminiProvider) transcriptionInteraction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	interactionRequest := ToGeminiInteractionTranscriptionRequest(request, false)
+	jsonData, err := providerUtils.MarshalProviderRequest(interactionRequest)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+
+	interactionResponse, rawResponse, latency, providerResponseHeaders, bifrostErr := provider.completeInteractionRequest(ctx, key, jsonData)
+	if providerResponseHeaders != nil {
+		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+	}
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+		return &schemas.BifrostTranscriptionResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Latency:                 latency.Milliseconds(),
+				ProviderResponseHeaders: providerResponseHeaders,
+			},
+		}, nil
+	}
+
+	response := interactionResponse.ToBifrostTranscriptionResponse()
+	response.BackfillParams(request)
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonData)
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+	return response, nil
+}
+
+func (provider *GeminiProvider) transcriptionInteractionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	interactionRequest := ToGeminiInteractionTranscriptionRequest(request, true)
+	jsonBody, err := providerUtils.MarshalProviderRequest(interactionRequest)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/interactions"))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	setGeminiAuthHeader(req, key.Value.GetValue())
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.SetBody(jsonBody)
+
+	startTime := time.Now()
+	err = providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	latency := time.Since(startTime)
+	if err != nil {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		if errors.Is(err, context.Canceled) {
+			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+		responseChan := make(chan *schemas.BifrostStreamChunk)
+		providerUtils.CloseStream(ctx, responseChan)
+		return responseChan, nil
+	}
+
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
+	go func() {
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+			}
+			providerUtils.CloseStream(ctx, responseChan)
+		}()
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
+		defer stopIdleTimeout()
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
+		defer stopCancellation()
+
+		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		chunkIndex := -1
+		lastChunkTime := startTime
+		var fullTranscriptionText strings.Builder
+		var usage *geminiInteractionsUsage
+
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			data, readErr := sseReader.ReadDataLine()
+			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if readErr != io.EOF {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					provider.logger.Warn("Error reading Gemini interaction stream: %v", readErr)
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, provider.logger, postHookSpanFinalizer)
+					return
+				}
+				break
+			}
+
+			var event geminiInteractionStreamEvent
+			parseStart := time.Now()
+			decodeErr := sonic.Unmarshal(data, &event)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if decodeErr != nil {
+				provider.logger.Warn("Failed to process Gemini interaction stream event: %v", decodeErr)
+				continue
+			}
+			if event.Error != nil || event.EventType == "error" {
+				message := "Gemini interaction stream error"
+				if event.Error != nil && event.Error.Message != "" {
+					message = event.Error.Message
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(message, nil), jsonBody, data, provider.sendBackRawRequest, provider.sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
+				return
+			}
+
+			if eventUsage := geminiInteractionStreamUsage(&event); eventUsage != nil {
+				usage = eventUsage
+			}
+			deltaText := ""
+			if event.Delta != nil && (event.Delta.Type == "text" || event.Delta.Type == "") {
+				deltaText = event.Delta.Text
+			}
+			if deltaText == "" && event.Interaction != nil && fullTranscriptionText.Len() == 0 {
+				deltaText = geminiInteractionTextFromSteps(event.Interaction.Steps)
+			}
+			if deltaText == "" {
+				continue
+			}
+
+			fullTranscriptionText.WriteString(deltaText)
+			chunkIndex++
+			response := &schemas.BifrostTranscriptionStreamResponse{
+				Type:  schemas.TranscriptionStreamResponseTypeDelta,
+				Delta: &deltaText,
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					ChunkIndex: chunkIndex,
+					Latency:    time.Since(lastChunkTime).Milliseconds(),
+				},
+			}
+			lastChunkTime = time.Now()
+			if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+				response.ExtraFields.RawResponse = data
+			}
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response, nil), responseChan, postHookSpanFinalizer)
+		}
+
+		finalResponse := &schemas.BifrostTranscriptionStreamResponse{
+			Type:  schemas.TranscriptionStreamResponseTypeDone,
+			Text:  fullTranscriptionText.String(),
+			Usage: geminiInteractionUsageToTranscriptionUsage(usage),
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				ChunkIndex: chunkIndex + 1,
+				Latency:    time.Since(startTime).Milliseconds(),
+			},
+		}
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonBody)
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, finalResponse, nil), responseChan, postHookSpanFinalizer)
+	}()
+
+	return responseChan, nil
+}
+
 // Transcription performs a speech-to-text request to the Gemini API.
 func (provider *GeminiProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	// Check if transcription is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.TranscriptionRequest); err != nil {
 		return nil, err
+	}
+	if isGeminiInteractionTranscriptionModel(request.Model) {
+		return provider.transcriptionInteraction(ctx, key, request)
 	}
 
 	// Prepare request body using transcription-specific function
@@ -1817,6 +2087,9 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	// Check if transcription stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.TranscriptionStreamRequest); err != nil {
 		return nil, err
+	}
+	if isGeminiInteractionTranscriptionModel(request.Model) {
+		return provider.transcriptionInteractionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
 	// Prepare request body using transcription-specific function
