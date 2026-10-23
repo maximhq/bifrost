@@ -1231,6 +1231,14 @@ func isFallbackItem(item *schemas.ResponsesMessage) bool {
 		item.Content.ContentBlocks[0].Type == schemas.ResponsesOutputMessageContentTypeFallback
 }
 
+// getContentIndex returns the part index (content_index) relative to this output_index.
+// In the OpenAI Responses API streaming specification, content_index is the 0-based index
+// of the content part within that specific output item (e.g. within an assistant message).
+// Since Anthropic delivers one content part per content block / output item, this is always 0.
+func (state *AnthropicResponsesStreamState) getContentIndex(outputIndex int) *int {
+	return schemas.Ptr(0)
+}
+
 // getOrCreateOutputIndex returns the output index for a given content index, creating a new one if needed
 func (state *AnthropicResponsesStreamState) getOrCreateOutputIndex(contentIndex *int) int {
 	if contentIndex == nil {
@@ -1869,7 +1877,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 					SequenceNumber: sequenceNumber,
 					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
+					ContentIndex:   state.getContentIndex(outputIndex),
 					Item:           item,
 				})
 
@@ -1887,7 +1895,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
+					ContentIndex:   state.getContentIndex(outputIndex),
 					ItemID:         &itemID,
 					Part:           part,
 				})
@@ -2190,7 +2198,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(outputIndex),
-						ContentIndex:   chunk.Index,
+						ContentIndex:   state.getContentIndex(outputIndex),
 						Delta:          chunk.Delta.Text,
 					}
 					if itemID != "" {
@@ -2306,7 +2314,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						Type:           schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(outputIndex),
-						ContentIndex:   chunk.Index,
+						ContentIndex:   state.getContentIndex(outputIndex),
 						Annotation:     &annotation,
 					}
 					if itemID != "" {
@@ -2799,7 +2807,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
-						ContentIndex:   chunk.Index,
+						ContentIndex:   state.getContentIndex(outputIndex),
 						Text:           &accText,
 					}
 					if itemID != "" {
@@ -2821,7 +2829,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 						Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
-						ContentIndex:   chunk.Index,
+						ContentIndex:   state.getContentIndex(outputIndex),
 						Part:           part,
 					}
 					if itemID != "" {
@@ -2965,7 +2973,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
+					ContentIndex:   state.getContentIndex(outputIndex),
 					ItemID:         itemIDPtr,
 					Part: &schemas.ResponsesMessageContentBlock{
 						Type: schemas.ResponsesOutputMessageContentTypeText,
@@ -2982,7 +2990,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
+					ContentIndex:   state.getContentIndex(outputIndex),
 					ItemID:         itemIDPtr,
 					Delta:          &deltaText,
 				})
@@ -2992,7 +3000,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
+					ContentIndex:   state.getContentIndex(outputIndex),
 					ItemID:         itemIDPtr,
 					Text:           &doneText,
 				})
@@ -3002,7 +3010,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
+					ContentIndex:   state.getContentIndex(outputIndex),
 					ItemID:         itemIDPtr,
 					Part: &schemas.ResponsesMessageContentBlock{
 						Type: schemas.ResponsesOutputMessageContentTypeText,
