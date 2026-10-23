@@ -670,6 +670,16 @@ Test new features with limited user groups:
 
 Use your custom provider name in requests:
 
+After `POST /api/providers` succeeds, the provider is initialized and its name is
+recognized as a model prefix immediately. No warm-up request or successful model
+discovery is required, including when `list_models` is disabled or the provider
+has no keys yet. Inference still requires any credentials and operations configured
+for that provider.
+
+An explicit custom-provider prefix bypasses virtual-key provider load balancing,
+just like a built-in provider prefix. Configured routing rules and authorization
+checks still apply.
+
 ```bash
 # Request to custom provider
 curl --location 'http://localhost:8080/v1/chat/completions' \

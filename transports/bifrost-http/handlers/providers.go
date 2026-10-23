@@ -506,7 +506,21 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 
 	if err := h.reloadProviderAfterCreate(ctx, payload.Provider); err != nil {
 		logger.Warn("Failed to reload provider %s after add: %v", payload.Provider, err)
-		if rollbackErr := h.inMemoryStore.RemoveProvider(context.Background(), payload.Provider); rollbackErr != nil {
+		// A wrapping reload can fail after runtime or discovery publication.
+		// The manager owns their removal, including governance and catalog state.
+		// Inspect the active snapshot, not the getter that initializes lazily.
+		initialized := false
+		if h.client != nil {
+			active, _ := h.client.GetConfiguredProviders()
+			initialized = slices.Contains(active, payload.Provider)
+		}
+		var rollbackErr error
+		if initialized {
+			rollbackErr = h.modelsManager.RemoveProvider(context.Background(), payload.Provider)
+		} else {
+			rollbackErr = h.inMemoryStore.RemoveProvider(context.Background(), payload.Provider)
+		}
+		if rollbackErr != nil {
 			logger.Error("Failed to rollback provider %s after reload failure: %v", payload.Provider, rollbackErr)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initialize provider after add: %v (rollback failed: %v)", err, rollbackErr))
 			return
@@ -808,8 +822,10 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
+	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil && !errors.Is(err, lib.ErrNotFound) && !errors.Is(err, configstore.ErrNotFound) {
 		logger.Warn("Failed to delete models for provider %s: %v", provider, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to remove provider: %v", err))
+		return
 	}
 
 	response := ProviderResponse{

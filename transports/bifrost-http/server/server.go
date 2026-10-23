@@ -1098,11 +1098,10 @@ func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) er
 	return nil
 }
 
-// ReloadProvider reloads persisted provider settings into the live client. isNew says whether the
-// write that called it added the provider rather than edited one; the reload is the same either
-// way, and a server that wraps this one can tell an operator's edit apart by it.
+// ReloadProvider initializes newly added providers before refreshing governance
+// and model discovery. Existing providers are already rebuilt by the config
+// update path, so their catalog reload must not rebuild the client a second time.
 func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*tables.TableProvider, error) {
-	s.syncIgnoreProviderCost(provider)
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return nil, fmt.Errorf("config store not found")
 	}
@@ -1119,6 +1118,19 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 		logger.Error("failed to load provider: %v", err)
 		return nil, err
 	}
+	// Read the current keys before publishing runtime or catalog changes.
+	inMemoryKeys, err := s.Config.GetProviderKeysRaw(provider)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
+	}
+	if isNew {
+		// Prefix recognition is registered by successful core initialization,
+		// never by a list-models or inference request that happens to warm it.
+		if err := s.Client.InitializeProvider(provider); err != nil {
+			return nil, fmt.Errorf("failed to initialize provider %s: %w", provider, err)
+		}
+	}
+	s.syncIgnoreProviderCost(provider)
 
 	// Initialize updatedProvider
 	updatedProvider := providerInfo
@@ -1155,12 +1167,6 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 		}
 	}
 
-	// In-memory store holds the latest schemas.Key slice after the most recent
-	// CRUD write — read from there to avoid re-fetching + re-converting from DB.
-	inMemoryKeys, err := s.Config.GetProviderKeysRaw(provider)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
-	}
 	isKeylessProvider := providerInfo.CustomProviderConfig != nil && providerInfo.CustomProviderConfig.IsKeyLess
 	hasNoKeys := len(inMemoryKeys) == 0 && !isKeylessProvider
 
@@ -1217,29 +1223,42 @@ func (s *BifrostHTTPServer) syncIgnoreProviderCost(provider schemas.ModelProvide
 	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, err == nil && pc != nil && pc.IgnoreProviderCost)
 }
 
-// RemoveProvider removes a provider from the in-memory store
+// RemoveProvider removes runtime, configuration, discovery and governance state.
 func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
 	err := s.Client.RemoveProvider(provider)
+	removed := err == nil
 	if err != nil && !strings.Contains(err.Error(), "not found") {
 		logger.Error("failed to remove provider from client: %v", err)
 		return err
 	}
 	err = s.Config.RemoveProvider(ctx, provider)
 	if err != nil && !errors.Is(err, lib.ErrNotFound) {
-		logger.Error("failed to remove provider from config: %v. Client and config may be out of sync, please restart bifrost", err)
-		return fmt.Errorf("failed to remove provider from config: %w. Client and config may be out of sync, please restart bifrost", err)
+		configErr := fmt.Errorf("failed to remove provider from config: %w", err)
+		// Config.RemoveProvider preserves memory when persistence fails. Restore
+		// the stopped runtime too, so the retained prefix cannot be load balanced
+		// to another provider after a failed delete or creation rollback.
+		if removed {
+			if restoreErr := s.Client.InitializeProvider(provider); restoreErr != nil {
+				logger.Error("failed to restore provider %s after config removal failed: %v", provider, restoreErr)
+				return errors.Join(configErr, fmt.Errorf("failed to restore provider runtime: %w", restoreErr))
+			}
+		}
+		logger.Error("failed to remove provider from config: %v", err)
+		return configErr
 	}
-	governancePlugin, err := s.getGovernancePlugin()
-	if err != nil {
-		return err
-	}
-	governancePlugin.GetGovernanceStore().DeleteProviderInMemory(ctx, string(provider))
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
 	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 	s.Config.ModelCatalog.RemoveKeyConfigForProvider(provider)
 	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, false)
+	if s.Config.IsPluginLoaded(s.getGovernancePluginName()) {
+		governancePlugin, err := s.getGovernancePlugin()
+		if err != nil {
+			return err
+		}
+		governancePlugin.GetGovernanceStore().DeleteProviderInMemory(ctx, string(provider))
+	}
 
 	return nil
 }

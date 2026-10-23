@@ -881,6 +881,71 @@ func TestAddProvider_ReturnsErrorWhenRuntimeReloadFails(t *testing.T) {
 	}
 }
 
+type initializedProviderReloadFailure struct {
+	*mockModelsManager
+	client *bifrost.Bifrost
+	store  *lib.Config
+}
+
+func (m *initializedProviderReloadFailure) ReloadProvider(_ context.Context, provider schemas.ModelProvider, _ bool) (*configstoreTables.TableProvider, error) {
+	if err := m.client.UpdateProvider(provider); err != nil {
+		return nil, err
+	}
+	return nil, m.reloadErr
+}
+
+func (m *initializedProviderReloadFailure) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
+	if err := m.client.RemoveProvider(provider); err != nil {
+		return err
+	}
+	return m.store.RemoveProvider(ctx, provider)
+}
+
+// A wrapping reload implementation can fail after core has initialized. Rolling
+// back only the persisted config would leave a live queue and recognized prefix.
+func TestAddProvider_ReloadFailureRollsBackInitializedProvider(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	cfg := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: lib.NewBaseAccount(cfg), Logger: &mockLogger{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const provider schemas.ModelProvider = "rollback-registration"
+	defer func() {
+		if client.GetProviderByKey(provider) != nil {
+			_ = client.RemoveProvider(provider)
+		}
+		client.Shutdown()
+	}()
+	manager := &initializedProviderReloadFailure{mockModelsManager: &mockModelsManager{reloadErr: context.DeadlineExceeded}, client: client, store: cfg}
+	h := NewProviderHandler(manager, cfg, client)
+	body := []byte(`{"provider":"rollback-registration","concurrency_and_buffer_size":{"concurrency":1,"buffer_size":2},"custom_provider_config":{"base_provider_type":"openai","is_key_less":true}}`)
+	for _, fail := range []bool{true, false} {
+		if !fail {
+			manager.reloadErr = nil
+		}
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("POST")
+		ctx.Request.SetRequestURI("/api/providers")
+		ctx.Request.SetBody(body)
+		h.addProvider(ctx)
+		if fail {
+			if ctx.Response.StatusCode() != 500 {
+				t.Fatalf("expected reload failure, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if client.GetProviderByKey(provider) != nil || schemas.IsKnownProvider(string(provider)) {
+				t.Error("failed create left a runtime provider or registered prefix")
+			}
+			if _, exists := cfg.Providers[provider]; exists {
+				t.Error("failed create left provider configuration")
+			}
+		} else if ctx.Response.StatusCode() != 200 || client.GetProviderByKey(provider) == nil || !schemas.IsKnownProvider(string(provider)) {
+			t.Errorf("retry did not register the provider: status=%d body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+}
+
 // TestUpdateProvider_RejectsKeysInBody guards against a silent-discard regression
 // where `keys` is decoded into `payload.Keys` but never written to the persisted
 // `ProviderConfig`. The endpoint manages provider-level config only; key edits
