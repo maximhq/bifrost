@@ -399,7 +399,7 @@ type CreateVirtualKeyRequest struct {
 	DeleteAfterExpire *bool                   `json:"delete_after_expire,omitempty"` // Omit to inherit client.delete_expired_virtual_keys; true/false override it. Requires expires_at
 	// DisableContentLogging is the key's own content-logging decision. Omit to inherit
 	// client.disable_content_logging; true forces content off for this key's traffic, false forces
-	// it on for the log store.
+	// it on for the log store. A project a request is scoped to can override it either way.
 	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
 	// Metadata is free-form key/value attribution (cost center, owner, ...). See
 	// configstoreTables.ValidateVirtualKeyMetadata for the rules.

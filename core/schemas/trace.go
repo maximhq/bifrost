@@ -52,10 +52,11 @@ func GetBoolAttr(attrs map[string]any, key string) bool {
 	return v
 }
 
-// ContentLoggingDisabledForTrace reports whether the request behind this trace was made with a
-// virtual key that turned content logging off (AttrBifrostContentLoggingDisabled on the root
-// span). Every connector ORs this into its own disable_content_logging: the key can only tighten
-// what a connector exports, never loosen it. Nil-safe, so a connector can call it on any trace.
+// ContentLoggingDisabledForTrace reports whether governance turned content logging off for the
+// request behind this trace, through its virtual key or a project it was scoped to
+// (AttrBifrostContentLoggingDisabled on the root span). Every connector ORs this into its own
+// disable_content_logging: governance can only tighten what a connector exports, never loosen it.
+// Nil-safe, so a connector can call it on any trace.
 func ContentLoggingDisabledForTrace(t *Trace) bool {
 	if t == nil || t.RootSpan == nil {
 		return false
@@ -1250,10 +1251,12 @@ const (
 	// unlike time_to_first_chunk it includes gateway overhead. Streaming only.
 	AttrBifrostTimeToFirstTokenMs = "bifrost.response.time_to_first_token_ms"
 
-	// AttrBifrostContentLoggingDisabled is set to true on the root span when the request's virtual
-	// key turned content logging off. Connectors read it through ContentLoggingDisabledForTrace and
-	// strip content the way their own disable_content_logging would; it is never set to false, so a
-	// key that keeps content on cannot loosen a connector's own setting.
+	// AttrBifrostContentLoggingDisabled is set to true on the root span when governance turned
+	// content logging off for the request: its virtual key did, or a project it was scoped to did.
+	// Connectors read it through ContentLoggingDisabledForTrace and strip content the way their own
+	// disable_content_logging would. A key that keeps content on never writes it. It may read false
+	// when a project that keeps content on overrides a key that turned it off; a connector reads
+	// false the same as absent, so nothing can loosen a connector's own setting.
 	AttrBifrostContentLoggingDisabled = "bifrost.content_logging.disabled"
 
 	AttrBifrostProviderName        = "bifrost.provider.name"

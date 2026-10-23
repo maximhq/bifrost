@@ -9046,6 +9046,10 @@
           "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
           "default": false
         },
+        "disable_content_logging": {
+          "type": "boolean",
+          "description": "Per-project override of content logging for requests scoped to this project. Omit to inherit what the request's virtual key decides, or client.disableContentLogging when the key has no setting. The project's value overrides the virtual key's in both directions."
+        },
         "budgets": {
           "type": "array",
           "description": "Project-level spend caps. Declared without ids: on a change, a budget is matched to its stored row by reset_duration so its accumulated spend and window carry over.",

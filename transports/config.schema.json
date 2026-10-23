@@ -11656,6 +11656,10 @@
           "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
           "default": false
         },
+        "disable_content_logging": {
+          "type": "boolean",
+          "description": "Per-project override of content logging for requests scoped to this project. Omit to inherit what the request's virtual key decides, or client.disable_content_logging when the key has no setting or the request has no key. The project's value overrides the virtual key's in both directions. true keeps request and response content out of the log store and out of observability connector export for the project's traffic. false forces content into the log store even when the virtual key or client setting turns it off, and lifts a virtual key's connector stripping; each connector then follows its own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence over this value for the log store."
+        },
         "budgets": {
           "type": "array",
           "description": "Project-level spend caps. Declared without ids: on a change, a budget is matched to its stored row by reset_duration so its accumulated spend and window carry over.",
