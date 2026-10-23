@@ -493,6 +493,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "rerank"
 	case schemas.DecisionRequest:
 		return "decisions"
+	case schemas.ExtractionRequest:
+		return "extraction"
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		return "audio_speech"
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
@@ -521,7 +523,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 // Decision requests retry under chat: a model served natively on a decisions
 // endpoint carries its decision rates on its chat row (see computeDecisionCost), and
 // one answered by emulation is billed as the chat call it is. A model with
-// only a responses row stays unpriced for decisions.
+// only a responses row stays unpriced for decisions. Extraction requests retry
+// under chat too, so a model priced only on a chat row is still billed.
 // Returns false for request types with no such counterpart.
 func chatResponsesFallbackMode(reqType schemas.RequestType) (string, bool) {
 	switch reqType {
@@ -529,7 +532,7 @@ func chatResponsesFallbackMode(reqType schemas.RequestType) (string, bool) {
 		return normalizeRequestType(schemas.ChatCompletionRequest), true
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		return normalizeRequestType(schemas.ResponsesRequest), true
-	case schemas.DecisionRequest:
+	case schemas.DecisionRequest, schemas.ExtractionRequest:
 		return normalizeRequestType(schemas.ChatCompletionRequest), true
 	}
 	return "", false

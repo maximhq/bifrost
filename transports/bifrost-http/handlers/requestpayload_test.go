@@ -1001,3 +1001,43 @@ func keysOf(m map[string]any) []string {
 	}
 	return keys
 }
+
+// Cloudflare's documented Clairic body works on /v1/extractions once the model carries its
+// provider: "state" is read as the input, and every other property maps onto the request.
+func TestPrepareExtractionRequestReadsClairicBody(t *testing.T) {
+	ctx := jsonDecisionCtx(`{"model":"cloudflare/@cf/cloudflare/clairic","state":"Invoice INV-2291, net 30.","fields":{"invoice_number":{"type":"text"},"days_to_pay":{"type":"estimate","min":0,"max":120,"step":1}},"images":["data:image/png;base64,AAAA",{"content_type":"image/png","base64":"AAAA"}],"reference_date":"2026-09-02","options":{"include_quantiles":true},"fallbacks":["cloudflare/clairic"]}`)
+	req, err := prepareExtractionRequest(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, schemas.Cloudflare, req.Provider)
+	assert.Equal(t, "@cf/cloudflare/clairic", req.Model)
+	assert.Equal(t, "Invoice INV-2291, net 30.", req.Input)
+	assert.Equal(t, schemas.ExtractionFieldTypeEstimate, req.Fields["days_to_pay"].Type)
+	assert.JSONEq(t, `120`, string(req.Fields["days_to_pay"].Max))
+	require.Len(t, req.Images, 2)
+	assert.Equal(t, "data:image/png;base64,AAAA", *req.Images[0].URL)
+	assert.Equal(t, "image/png", req.Images[1].ContentType)
+	require.NotNil(t, req.Params)
+	assert.Equal(t, "2026-09-02", *req.Params.ReferenceDate)
+	assert.True(t, *req.Params.IncludeQuantiles)
+	assert.Nil(t, req.Params.ReturnStateText)
+	require.Len(t, req.Fallbacks, 1)
+	assert.Empty(t, req.ExtraParams, "Clairic's own properties are not extensions")
+
+	req, err = prepareExtractionRequest(jsonDecisionCtx(`{"model":"cloudflare/clairic","input":"Order 77.","fields":{"order_id":{"type":"text"}}}`), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "Order 77.", req.Input)
+	assert.Nil(t, req.Params)
+}
+
+func TestPrepareExtractionRequestRejectsWhatCannotBeSent(t *testing.T) {
+	const model = `"model":"cloudflare/clairic",`
+	for wantErr, body := range map[string]string{
+		"fields are required":     `{` + model + `"input":"s"}`,
+		`field "a" needs a type`:  `{` + model + `"input":"s","fields":{"a":{}}}`,
+		"not both":                `{` + model + `"input":"s","state":"s","fields":{"a":{"type":"text"}}}`,
+		"Invalid request payload": `{` + model + `"input":7,"fields":{"a":{"type":"text"}}}`,
+	} {
+		_, err := prepareExtractionRequest(jsonDecisionCtx(body), nil)
+		assert.ErrorContains(t, err, wantErr)
+	}
+}

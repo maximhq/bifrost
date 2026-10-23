@@ -77,6 +77,7 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 			{ name: "count_tokens", label: "Count Tokens" },
 			{ name: "rerank", label: "Rerank" },
 			{ name: "decisions", label: "Decisions" },
+			{ name: "extraction", label: "Extraction" },
 			{ name: "video_generation", label: "Video Generation" },
 		],
 		description:

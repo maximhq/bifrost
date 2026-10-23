@@ -637,6 +637,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeRerankCost(pricing, input.usage, input.tier)
 	case schemas.DecisionRequest:
 		cost = computeDecisionCost(pricing, input.usage, input.tier)
+	case schemas.ExtractionRequest:
+		cost = computeTextCost(pricing, input.usage, input.tier)
 	case schemas.SpeechRequest:
 		cost = computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
 	case schemas.TranscriptionRequest:
@@ -737,6 +739,9 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 
 	case result.DecisionResponse != nil && result.DecisionResponse.Usage != nil:
 		input.usage = result.DecisionResponse.Usage
+
+	case result.ExtractionResponse != nil && result.ExtractionResponse.Usage != nil:
+		input.usage = result.ExtractionResponse.Usage
 
 	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
 		input.usage = speechUsageToBifrostUsage(result.SpeechResponse.Usage)

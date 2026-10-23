@@ -12884,6 +12884,7 @@
         "embedding",
         "rerank",
         "decisions",
+        "extraction",
         "speech",
         "transcription",
         "image_generation",
@@ -13014,6 +13015,9 @@
               "type": "boolean"
             },
             "decisions": {
+              "type": "boolean"
+            },
+            "extraction": {
               "type": "boolean"
             },
             "ocr": {

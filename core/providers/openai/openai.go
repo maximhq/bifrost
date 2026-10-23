@@ -4483,6 +4483,11 @@ func HandleOpenAIRerankRequest(
 	return bifrostResponse, nil
 }
 
+// Extraction is not supported by the OpenAI provider.
+func (provider *OpenAIProvider) Extraction(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostExtractionRequest) (*schemas.BifrostExtractionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ExtractionRequest, provider.GetProviderKey())
+}
+
 // OCR is not supported by the Openai provider.
 func (provider *OpenAIProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())

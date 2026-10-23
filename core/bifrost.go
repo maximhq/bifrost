@@ -1705,6 +1705,46 @@ func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schema
 	return response.DecisionResponse, nil
 }
 
+// ExtractionRequest sends an extraction request to the specified provider.
+func (bifrost *Bifrost) ExtractionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostExtractionRequest) (*schemas.BifrostExtractionResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "extraction request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ExtractionRequest,
+			},
+		}
+	}
+	// The input may be empty when images are sent; the provider decides
+	// whether the request has anything to read.
+	if len(req.Fields) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "fields not provided for extraction request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:            schemas.ExtractionRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
+			},
+		}
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ExtractionRequest
+	bifrostReq.ExtractionRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.ExtractionResponse, nil
+}
+
 // OCRRequest sends an OCR request to the specified provider.
 func (bifrost *Bifrost) OCRRequest(ctx *schemas.BifrostContext, req *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -5718,6 +5758,12 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Model = fallback.Model
 		fallbackReq.DecisionRequest = &tmp
 	}
+	if req.ExtractionRequest != nil {
+		tmp := *req.ExtractionRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.ExtractionRequest = &tmp
+	}
 	if req.OCRRequest != nil {
 		tmp := *req.OCRRequest
 		tmp.Provider = fallback.Provider
@@ -9173,6 +9219,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.DecisionResponse = decisionResponse
+	case schemas.ExtractionRequest:
+		extractionResponse, bifrostError := provider.Extraction(req.Context, key, req.BifrostRequest.ExtractionRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ExtractionResponse = extractionResponse
 	case schemas.OCRRequest:
 		var customProviderConfig *schemas.CustomProviderConfig
 		if config != nil {
@@ -10539,6 +10591,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.EmbeddingRequest = nil
 	req.RerankRequest = nil
 	req.DecisionRequest = nil
+	req.ExtractionRequest = nil
 	req.OCRRequest = nil
 	req.SpeechRequest = nil
 	req.TranscriptionRequest = nil

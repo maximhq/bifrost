@@ -253557,6 +253557,179 @@
               ]
             }
           }
+        },
+        {
+          "name": "/v1/extractions - Clairic extracts typed fields - cloudflare/clairic",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Clairic answers each field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.answers.invoice_number.value, 'answers: ' + pm.response.text()).to.eql('INV-2291');",
+                  "  pm.expect(body.answers.total.type).to.eql('number');",
+                  "  pm.expect(body.answers.days_to_pay.type).to.eql('estimate');",
+                  "  pm.expect(body.truncated).to.eql(false);",
+                  "  pm.expect(body.usage.prompt_tokens, 'usage is what Bifrost bills: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(body.extra_fields.request_type).to.eql('extraction');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/clairic\", \"input\": \"Invoice INV-2291 from Northwind Supply, issued 2026-09-02, net 30. 4 pallets at $250.00 each, shipping $80.00.\", \"fields\": {\"invoice_number\": {\"type\": \"text\"}, \"total\": {\"type\": \"number\", \"decimals\": 2, \"unit\": \"USD\"}, \"days_to_pay\": {\"type\": \"estimate\", \"min\": 0, \"max\": 120, \"step\": 1}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/extractions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "extractions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/extractions - Cloudflare's own body with state and the full model ID - cloudflare/@cf/cloudflare/clairic",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a Clairic body written for Cloudflare works with a provider-prefixed model', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.answers.order_id.value, 'answers: ' + pm.response.text()).to.eql('77');",
+                  "  pm.expect(body.state_text, 'return_state_text was set: ' + pm.response.text()).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/@cf/cloudflare/clairic\", \"state\": \"Order 77 ships on 2026-11-03.\", \"fields\": {\"order_id\": {\"type\": \"text\"}, \"ship_date\": {\"type\": \"date\"}}, \"options\": {\"return_state_text\": true}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/extractions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "extractions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-422] /v1/extractions - a property Clairic does not define comes back as its 422 - cloudflare/clairic",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Extra params reach Clairic only under the passthrough flag; Clairic itself then rejects the unknown property.",
+                  "pm.test('Clairic validation errors are passed through', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(422);",
+                  "  pm.expect(pm.response.text()).to.include('questions');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/clairic\", \"input\": \"Invoice INV-2291.\", \"fields\": {\"invoice_number\": {\"type\": \"text\"}}, \"questions\": {\"q\": {\"type\": \"noul\"}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/extractions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "extractions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/extractions - a request without fields is refused before reaching Cloudflare",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fields are required', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('fields are required');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/clairic\", \"input\": \"Invoice INV-2291.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/extractions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "extractions"
+              ]
+            }
+          }
         }
       ]
     },

@@ -8017,3 +8017,21 @@ func TestResponsesRequest_GatewayToolSearch(t *testing.T) {
 		t.Errorf("want usage summed across both calls, got %+v", resp.Usage)
 	}
 }
+
+// ExtractionRequest refuses a request with nothing to extract before it is queued, naming the
+// request type, provider and model so the error is attributed like a provider error would be.
+func TestExtractionRequestRejectsRequestsWithoutFields(t *testing.T) {
+	b := &Bifrost{}
+	_, bifrostErr := b.ExtractionRequest(nil, nil)
+	if bifrostErr == nil || bifrostErr.Error.Message != "extraction request is nil" {
+		t.Fatalf("nil request: error = %+v", bifrostErr)
+	}
+
+	_, bifrostErr = b.ExtractionRequest(nil, &schemas.BifrostExtractionRequest{Provider: schemas.Cloudflare, Model: "clairic", Input: "Invoice INV-2291."})
+	if bifrostErr == nil || bifrostErr.Error.Message != "fields not provided for extraction request" {
+		t.Fatalf("no fields: error = %+v", bifrostErr)
+	}
+	if extra := bifrostErr.ExtraFields; extra.RequestType != schemas.ExtractionRequest || extra.Provider != schemas.Cloudflare || extra.OriginalModelRequested != "clairic" {
+		t.Errorf("error extra fields = %+v", extra)
+	}
+}

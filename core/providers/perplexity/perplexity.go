@@ -348,6 +348,11 @@ func (provider *PerplexityProvider) Decision(ctx *schemas.BifrostContext, key sc
 	return bifrostResponse, nil
 }
 
+// Extraction is not supported by the Perplexity provider.
+func (provider *PerplexityProvider) Extraction(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostExtractionRequest) (*schemas.BifrostExtractionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ExtractionRequest, provider.GetProviderKey())
+}
+
 // OCR is not supported by the Perplexity provider.
 func (provider *PerplexityProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())

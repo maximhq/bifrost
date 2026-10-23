@@ -632,6 +632,17 @@ func applyContentOutputToEntry(entry *logstore.Log, result *schemas.BifrostRespo
 	if result.RerankResponse != nil && len(result.RerankResponse.Results) > 0 {
 		entry.RerankOutputParsed = result.RerankResponse.Results
 	}
+	if result.ExtractionResponse != nil && len(result.ExtractionResponse.Answers) > 0 {
+		if answersJSON, err := sonic.Marshal(result.ExtractionResponse.Answers); err == nil {
+			answers := string(answersJSON)
+			entry.OutputMessageParsed = &schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: &answers,
+				},
+			}
+		}
+	}
 	if result.DecisionResponse != nil && len(result.DecisionResponse.Answers) > 0 {
 		if answersJSON, err := sonic.Marshal(result.DecisionResponse.Answers); err == nil {
 			answers := string(answersJSON)
@@ -2163,6 +2174,13 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 	case schemas.DecisionRequest:
 		return &schemas.BifrostResponse{
 			DecisionResponse: &schemas.BifrostDecisionResponse{
+				Usage:       usage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.ExtractionRequest:
+		return &schemas.BifrostResponse{
+			ExtractionResponse: &schemas.BifrostExtractionResponse{
 				Usage:       usage,
 				ExtraFields: extra,
 			},

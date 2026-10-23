@@ -1,0 +1,35 @@
+extractions:
+  post:
+    operationId: createExtraction
+    summary: Extract typed fields
+    description: |
+      Reads typed fields (text, numbers, dates, durations, lists, estimates,
+      forecasts) out of some text and optional images, and returns one answer
+      per field, keyed by the field's name. Served by Cloudflare's Clairic
+      (`cloudflare/clairic`).
+
+      The body is Clairic's own request with a provider-prefixed model. The
+      text to read can be sent as `input` or, as Clairic names it, `state`.
+    tags:
+    - Extractions
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/extractions.yaml#/ExtractionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/extractions.yaml#/ExtractionResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

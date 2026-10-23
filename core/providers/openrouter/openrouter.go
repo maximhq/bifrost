@@ -571,6 +571,11 @@ func (provider *OpenRouterProvider) Decision(ctx *schemas.BifrostContext, key sc
 	return bifrostResp, nil
 }
 
+// Extraction is not supported by the OpenRouter provider.
+func (provider *OpenRouterProvider) Extraction(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostExtractionRequest) (*schemas.BifrostExtractionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ExtractionRequest, provider.GetProviderKey())
+}
+
 // OCR is not supported by the Openrouter provider.
 func (provider *OpenRouterProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())

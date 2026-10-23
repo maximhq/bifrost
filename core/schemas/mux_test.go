@@ -2018,7 +2018,7 @@ func TestNormalizedUsageCoversEveryUsageBearingFamily(t *testing.T) {
 // normalizedUsageFamilies lists what NormalizedUsage reads.
 var normalizedUsageFamilies = []string{
 	"TextCompletionResponse", "ChatResponse", "ResponsesResponse", "CompactionResponse",
-	"EmbeddingResponse", "RerankResponse", "DecisionResponse", "TranscriptionResponse",
+	"EmbeddingResponse", "RerankResponse", "DecisionResponse", "ExtractionResponse", "TranscriptionResponse",
 	"SpeechResponse", "ImageGenerationResponse", "PassthroughResponse",
 }
 

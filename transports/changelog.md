@@ -11,3 +11,4 @@
 - No new database migrations in this release.
 - **MiniMax Provider** - New `minimax` provider for chat completions, Responses, image generation, async video generation, text-to-speech and speech-to-text, with `thinking` passthrough and the `base_resp` error envelope mapped to HTTP status codes
 - **BytePlus Provider** - New `byteplus` provider for BytePlus ModelArk: Seed chat completions with `reasoning_effort` mapped onto Ark's `thinking` switch, the native Responses API, embeddings through the multimodal endpoint (one call per input entry), Seedream image generation and editing, and async Seedance video generation with list support
+- **Extractions** - New `POST /v1/extractions` endpoint that reads typed fields (text, numbers, dates, durations, lists, estimates, forecasts) out of text and images, served by Cloudflare's Clairic (`cloudflare/clairic`). The body is Clairic's own request with a provider-prefixed model, and usage is billed like other inference

@@ -93,6 +93,7 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "image_variation", label: "Image Variation" },
 	{ key: "count_tokens", label: "Count Tokens" },
 	{ key: "decisions", label: "Decisions" },
+	{ key: "extraction", label: "Extraction" },
 	{ key: "live", label: "Live" },
 	{ key: "passthrough", label: "Passthrough" },
 	{ key: "passthrough_stream", label: "Passthrough Stream" },

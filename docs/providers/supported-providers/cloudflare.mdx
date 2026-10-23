@@ -1,6 +1,6 @@
 ---
 title: "Cloudflare"
-description: "Cloudflare Workers AI conversion guide - OpenAI-compatible chat, streaming, Responses, embeddings, model listing, and native Clef decisions"
+description: "Cloudflare Workers AI conversion guide - OpenAI-compatible chat, streaming, Responses, embeddings, model listing, native Clef decisions, and Clairic extractions"
 icon: "cloud"
 ---
 
@@ -11,6 +11,7 @@ Cloudflare Workers AI is a built-in Bifrost provider (`cloudflare`). Use it for:
 - **Chat and Responses** with Workers AI text models, streaming included
 - **Embeddings**, including as the embedding provider for [semantic caching](/features/semantic-caching)
 - **Decisions** with Cloudflare's Clef models (`clef`, `clef-flash`, `clef-omni`), including image inputs
+- **Extractions** with Cloudflare's Clairic model (`clairic`), including image inputs
 
 Each key carries its own Cloudflare account ID, so one provider can serve several accounts.
 
@@ -22,6 +23,7 @@ Each key carries its own Cloudflare account ID, so one provider can serve severa
 | Responses API | ✅ | ✅ | `/accounts/{account_id}/ai/v1/chat/completions` |
 | Embeddings | ✅ | - | `/accounts/{account_id}/ai/v1/embeddings` |
 | Decisions | ✅ | - | `/accounts/{account_id}/ai/run/@cf/cloudflare/{model}` |
+| Extractions | ✅ | - | `/accounts/{account_id}/ai/run/@cf/cloudflare/{model}` |
 | List Models | ✅ | - | `/accounts/{account_id}/ai/models/search` |
 | Image Generation | Not yet | Not yet | - |
 | Speech (TTS) | Not yet | Not yet | - |
@@ -194,9 +196,36 @@ A model Workers AI does not serve returns Cloudflare's own error. The [complexit
 
 ---
 
-# 5. List Models
+# 5. Extractions
 
-The model list comes from each key's Workers AI account. It includes text generation and embedding models, plus the Clef models, under Cloudflare's IDs: for example `cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct` and `cloudflare/@cf/cloudflare/clef-flash`. Models for operations Bifrost does not support yet (image, speech) are left out.
+Clairic answers [`/v1/extractions`](/quickstart/gateway/extractions). It reads typed fields (text, numbers, dates, durations, lists, estimates, forecasts) out of text and up to 4 images, with a 65,536-token context. Clairic is in preview on Workers AI.
+
+```bash
+curl http://localhost:8080/v1/extractions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "cloudflare/clairic",
+    "input": "Invoice INV-2291 from Northwind Supply, issued 2026-09-02, net 30. 4 pallets at $250.00 each, shipping $80.00.",
+    "fields": {
+      "invoice_number": { "type": "text" },
+      "due_date": { "type": "date", "instructions": "Issue date plus the net payment days" },
+      "total": { "type": "number", "decimals": 2, "unit": "USD" }
+    }
+  }'
+```
+
+You can also write the full Workers AI ID, `cloudflare/@cf/cloudflare/clairic`. The request is Clairic's [own schema](https://developers.cloudflare.com/workers-ai/models/clairic/schema-input.json): the text goes in `input` (or `state`, as Cloudflare names it), and `fields`, `images`, `reference_date` and `options` are sent as written. Differences from calling Cloudflare directly:
+
+- **The response is unwrapped.** Bifrost returns Clairic's `answers`, `truncated` and `state_text` without Cloudflare's `result` envelope, and reports `usage` in Bifrost's shape: `prompt_tokens` is Clairic's `input_tokens`, which already includes the image and schema tokens.
+- **Validation is strict.** Clairic returns a `422` for any property it does not define, so do not pass extra params to it.
+
+Clairic bills input tokens only.
+
+---
+
+# 6. List Models
+
+The model list comes from each key's Workers AI account. It includes text generation and embedding models, plus the Clef and Clairic models, under Cloudflare's IDs: for example `cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct`, `cloudflare/@cf/cloudflare/clef-flash` and `cloudflare/@cf/cloudflare/clairic`. Models for operations Bifrost does not support yet (image, speech) are left out.
 
 To list only the decision models, call `GET /api/models?provider=cloudflare&decisions=true`.
 

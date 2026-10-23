@@ -19,6 +19,21 @@ import (
 // cloudflareModelsPageSize is the largest page Workers AI's model search serves.
 const cloudflareModelsPageSize = 100
 
+// cloudflareModelNamespace prefixes Cloudflare's full IDs for its own models,
+// such as "@cf/cloudflare/clef-flash".
+const cloudflareModelNamespace = "@cf/cloudflare/"
+
+// cloudflareRunPathPrefix is where Workers AI serves Cloudflare's own models (Clef, Clairic),
+// followed by the bare model name.
+const cloudflareRunPathPrefix = "/ai/run/" + cloudflareModelNamespace
+
+// cloudflareModelName returns the bare name of one of Cloudflare's own models, which the URL
+// and the body both use: "clef-flash" and "@cf/cloudflare/clef-flash" give "clef-flash".
+// Casing is kept as sent.
+func cloudflareModelName(model string) string {
+	return strings.TrimPrefix(model, cloudflareModelNamespace)
+}
+
 // CloudflareProvider implements the Provider interface for Cloudflare Workers AI.
 type CloudflareProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
@@ -300,7 +315,7 @@ func (provider *CloudflareProvider) Decision(ctx *schemas.BifrostContext, key sc
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(accountURL + providerUtils.GetPathFromContext(ctx, cloudflareDecisionPathPrefix+clefModelName(request.Model)))
+	req.SetRequestURI(accountURL + providerUtils.GetPathFromContext(ctx, cloudflareRunPathPrefix+cloudflareModelName(request.Model)))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -341,6 +356,83 @@ func (provider *CloudflareProvider) Decision(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, respBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResp, nil
+}
+
+// Extraction runs a Clairic extraction on Workers AI. Like Clef, Clairic binds the model to the
+// URL and requires the same bare name in the body. Every model is sent as is; Workers AI rejects
+// one it does not serve, and that error is passed through.
+func (provider *CloudflareProvider) Extraction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostExtractionRequest) (*schemas.BifrostExtractionResponse, *schemas.BifrostError) {
+	accountURL, bifrostErr := provider.accountURLOrError(key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToCloudflareExtractionRequest(request), nil
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(accountURL + providerUtils.GetPathFromContext(ctx, cloudflareRunPathPrefix+cloudflareModelName(request.Model)))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+	req.SetBody(jsonData)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(ctx, parseCloudflareError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	respBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	var extractionResp CloudflareExtractionResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &extractionResp, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if !extractionResp.Success || extractionResp.Result == nil {
+		return nil, providerUtils.EnrichError(ctx, parseCloudflareError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	bifrostResp := extractionResp.Result.ToBifrostExtractionResponse()
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 	if sendBackRawRequest {

@@ -695,6 +695,17 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 	if request.DecisionRequest != nil {
 		return decisionInputLog(request.DecisionRequest.Input), []schemas.ResponsesMessage{}
 	}
+	if request.ExtractionRequest != nil {
+		input := request.ExtractionRequest.Input
+		return []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: &input,
+				},
+			},
+		}, []schemas.ResponsesMessage{}
+	}
 	if request.RerankRequest != nil {
 		query := request.RerankRequest.Query
 		return []schemas.ChatMessage{
