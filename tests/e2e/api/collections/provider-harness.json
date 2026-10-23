@@ -276491,10 +276491,15 @@
                   "  pm.expect(addition.tool.type, wire).to.eql('tool_definition');",
                   "  pm.expect(addition.tool.definition.name, wire).to.eql('get_weather');",
                   "  pm.expect(addition.tool.definition.input_schema.properties.city.type, wire).to.eql('string');",
+                  "  pm.expect(addition.tool.definition, 'neutral tool fields leaked: ' + wire).not.to.have.property('parameters');",
                   "  pm.expect(msgs[3].content[0].type, wire).to.eql('tool_use');",
                   "  pm.expect(msgs[3].content[0].name, wire).to.eql('get_weather');",
+                  "  pm.expect(msgs[3].content.length, wire).to.eql(1);",
+                  "  pm.expect(msgs[3].content[0].input, 'replay arguments changed: ' + wire).to.eql({city:'Paris'});",
                   "  pm.expect(msgs[4].content[0].type, wire).to.eql('tool_result');",
                   "  pm.expect(msgs[4].content[0].tool_use_id, wire).to.eql(msgs[3].content[0].id);",
+                  "  pm.expect(msgs[4].content.length, wire).to.eql(1);",
+                  "  pm.expect(msgs[4].content[0].content, 'replay result changed: ' + wire).to.eql('Sunny, 20 degrees Celsius. Reply with this result in one sentence.');",
                   "});"
                 ]
               }
@@ -276573,10 +276578,15 @@
                   "  pm.expect(addition.tool.type, wire).to.eql('tool_definition');",
                   "  pm.expect(addition.tool.definition.name, wire).to.eql('get_weather');",
                   "  pm.expect(addition.tool.definition.input_schema.properties.city.type, wire).to.eql('string');",
+                  "  pm.expect(addition.tool.definition, 'neutral tool fields leaked: ' + wire).not.to.have.property('parameters');",
                   "  pm.expect(msgs[3].content[0].type, wire).to.eql('tool_use');",
                   "  pm.expect(msgs[3].content[0].name, wire).to.eql('get_weather');",
+                  "  pm.expect(msgs[3].content.length, wire).to.eql(1);",
+                  "  pm.expect(msgs[3].content[0].input, 'replay arguments changed: ' + wire).to.eql({city:'Paris'});",
                   "  pm.expect(msgs[4].content[0].type, wire).to.eql('tool_result');",
                   "  pm.expect(msgs[4].content[0].tool_use_id, wire).to.eql(msgs[3].content[0].id);",
+                  "  pm.expect(msgs[4].content.length, wire).to.eql(1);",
+                  "  pm.expect(msgs[4].content[0].content, 'replay result changed: ' + wire).to.eql('Sunny, 20 degrees Celsius. Reply with this result in one sentence.');",
                   "});"
                 ]
               }

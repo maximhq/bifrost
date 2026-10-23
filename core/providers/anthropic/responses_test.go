@@ -3375,6 +3375,34 @@ func TestAnthropicRoundTrip_ToolChangesPlacementMatchesEmittedItems(t *testing.T
 			wantSystem: true,
 		},
 		{
+			name: "web search missing action",
+			after: schemas.ResponsesMessage{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr("web_search")},
+			},
+		},
+		{
+			name: "web search action missing web search payload",
+			after: schemas.ResponsesMessage{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr("web_search"), Action: &schemas.ResponsesToolMessageActionStruct{}},
+			},
+		},
+		{
+			name: "code execution missing execution payload",
+			after: schemas.ResponsesMessage{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr("code_execution")},
+			},
+		},
+		{
+			name: "MCP approval missing name",
+			after: schemas.ResponsesMessage{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeMCPApprovalRequest),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("mcptoolu_weather")},
+			},
+		},
+		{
 			name: "reasoning summary without content",
 			after: schemas.ResponsesMessage{
 				Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
@@ -3402,6 +3430,107 @@ func TestAnthropicRoundTrip_ToolChangesPlacementMatchesEmittedItems(t *testing.T
 				for _, msg := range out.Messages {
 					if msg.Role == AnthropicMessageRoleSystem {
 						t.Fatalf("skipped/user item accepted as assistant start: %+v", out.Messages)
+					}
+				}
+			}
+		})
+	}
+}
+
+// Exercise the reasoning lookahead independently of native ingress, which normally
+// combines signed thinking and the following assistant content into one turn.
+func TestAnthropicRoundTrip_ToolChangesBufferedReasoningPlacement(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, tail, roles string
+		wantNative        bool
+	}{
+		{"multiple reasoning before user", `{"type":"reasoning","summary":[{"text":"first"}]},{"type":"reasoning","summary":[{"text":"second"}]},{"role":"user","content":"next"}`, "user,system,system,assistant,user", true},
+		{"reasoning before system", `{"type":"reasoning","summary":[{"text":"first"}]},{"role":"system","content":"reminder"},{"role":"user","content":"next"}`, "user,system,system,assistant,user,user", true},
+		{"reasoning at end", `{"type":"reasoning","summary":[{"text":"first"}]}`, "user,system,system", true},
+		{"encrypted reasoning before user", `{"type":"reasoning","summary":[],"encrypted_content":"opaque"},{"role":"user","content":"next"}`, "user,system,system,assistant,user", true},
+		{"content reasoning before user", `{"type":"reasoning","content":[{"type":"reasoning_text","text":"first","signature":"sig"}]},{"role":"user","content":"next"}`, "user,system,system,assistant,user", true},
+		{"reasoning before roleless call", `{"type":"reasoning","summary":[{"text":"first"}]},{"type":"function_call","call_id":"call_1","name":"echo","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"ok"}`, "user,system,system,assistant,user", true},
+		{"multiple reasoning before result", `{"type":"reasoning","summary":[{"text":"first"}]},{"type":"reasoning","summary":[{"text":"second"}]},{"type":"function_call_output","call_id":"orphan","output":"ok"}`, "user,user", false},
+		{"reasoning before skipped search", `{"type":"reasoning","summary":[{"text":"first"}]},{"type":"tool_search_call","name":"tool_search_tool_regex"},{"role":"user","content":"next"}`, "user,assistant,user", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, req := toolChangeIngress(t, fmt.Sprintf(midConversationToolChangesBody, `{"role":"user","content":"next"}`))
+			var tail []schemas.ResponsesMessage
+			if err := schemas.Unmarshal([]byte("["+tc.tail+"]"), &tail); err != nil {
+				t.Fatal(err)
+			}
+			req.Input = append(req.Input[:3:3], tail...)
+			// A developer item joins the same consecutive system section.
+			req.Input[2].Role = schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper)
+			out, err := ToAnthropicResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := roleSeq(out.Messages); got != tc.roles {
+				t.Fatalf("roles = %s, want %s", got, tc.roles)
+			}
+			if out.System != nil || len(out.Tools) != 2 || out.Tools[0].Name != "echo" || out.Tools[1].Name != "old" {
+				t.Fatalf("tool changes must not be hoisted or applied to tools[]: %+v", out)
+			}
+			if tc.wantNative {
+				if out.Messages[1].Content.ContentBlocks[0].Type != AnthropicContentBlockTypeToolRemoval ||
+					out.Messages[2].Content.ContentBlocks[0].Type != AnthropicContentBlockTypeToolAddition {
+					t.Fatal("consecutive tool changes were lost")
+				}
+			}
+			if tc.name == "multiple reasoning before user" {
+				blocks := out.Messages[3].Content.ContentBlocks
+				if len(blocks) != 2 || blocks[0].Thinking == nil || *blocks[0].Thinking != "first" ||
+					blocks[1].Thinking == nil || *blocks[1].Thinking != "second" {
+					t.Fatalf("buffered thinking order changed: %+v", blocks)
+				}
+			}
+			if tc.name == "encrypted reasoning before user" {
+				blocks := out.Messages[3].Content.ContentBlocks
+				if len(blocks) != 1 || blocks[0].Type != AnthropicContentBlockTypeRedactedThinking || blocks[0].Data == nil || *blocks[0].Data != "opaque" {
+					t.Fatalf("encrypted thinking changed: %+v", blocks)
+				}
+			}
+		})
+	}
+}
+
+// Roleless calls must not bypass the existing host/model capability gates. Mixed
+// text/tool-change content must retain its text on the fail-soft inline path.
+func TestAnthropicRoundTrip_ToolChangesCapabilityFallback(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{schemas.Anthropic, "claude-opus-4-7"},
+		{schemas.Bedrock, "claude-opus-5-5"},
+		{schemas.BedrockMantle, "claude-opus-5-5"},
+		{schemas.Vertex, "claude-opus-5-5"},
+		{schemas.Azure, "claude-opus-5-5"},
+	} {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			ctx, req := toolChangeIngress(t, fmt.Sprintf(midConversationToolChangesBody, `{"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"echo","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"ok"}]}`))
+			req.Provider, req.Model = tc.provider, tc.model
+			req.Input[1].Content.ContentBlocks = append(req.Input[1].Content.ContentBlocks, schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("keep this reminder"),
+			})
+			out, err := ToAnthropicResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := roleSeq(out.Messages); got != "user,user,assistant,user" {
+				t.Fatalf("unsupported native system role escaped capability gate: %s", got)
+			}
+			assertInlined(t, out.Messages, out.System, "keep this reminder")
+			if len(out.Tools) != 2 || out.Tools[0].Name != "echo" || out.Tools[1].Name != "old" {
+				t.Fatalf("fallback changed tools[]: %+v", out.Tools)
+			}
+			for _, msg := range out.Messages {
+				for _, block := range msg.Content.ContentBlocks {
+					if block.Type == AnthropicContentBlockTypeToolAddition || block.Type == AnthropicContentBlockTypeToolRemoval {
+						t.Fatal("unsupported tool change escaped the inline fallback")
 					}
 				}
 			}
