@@ -1232,8 +1232,6 @@ func TestToOpenAIResponsesRequest_ToolChoicePinningClientSearchKeepsFunction(t *
 	}
 }
 
-// Deferred tools with no search tool of any kind get OpenAI's hosted tool_search
-// on models that support it; older models get the tools eagerly instead.
 func TestDisableBuiltinToolRewritingToolSearch(t *testing.T) {
 	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, schemas.BedrockMantle} {
 		for _, search := range []string{"implicit", "function", "server", "client"} {
@@ -1271,6 +1269,55 @@ func TestDisableBuiltinToolRewritingToolSearch(t *testing.T) {
 	}
 }
 
+func TestDisableBuiltinToolRewritingToolSearchHistory(t *testing.T) {
+	for _, mode := range []string{"implicit", "function", "server"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
+			tools := []schemas.ResponsesTool{deferredWeatherTool()}
+			input := []schemas.ResponsesMessage{toolSearchUserTurn()}
+			if mode == "function" {
+				tools = append(tools, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: new("ToolSearch"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}})
+				input = append(input,
+					schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: new("ToolSearch"), CallID: new("call_1"), Arguments: new(`{"query":"weather"}`)}},
+					schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("call_1"), Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: new("get_weather")}}},
+				)
+			} else {
+				input = append(input,
+					schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeToolSearchCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("call_1"), Arguments: new(`{"query":"weather"}`), ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{"get_weather"}}}},
+					schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeToolSearchOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("call_1")}, ToolSearchOutputTools: json.RawMessage(`[{"type":"function","name":"get_weather"}]`)},
+				)
+				if mode == "server" {
+					tools = append(tools, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeToolSearch, ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: new("server")}})
+				}
+			}
+			r := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-6-sol", Input: input, Params: &schemas.ResponsesParameters{Tools: tools}}
+			body, err := ToOpenAIResponsesRequest(ctx, r).MarshalJSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire := gjson.GetBytes(body, "input").Array()
+			switch mode {
+			case "implicit":
+				if len(wire) != 1 || strings.Contains(string(body), `"defer_loading":true`) || strings.Contains(string(body), `"type":"tool_search"`) {
+					t.Fatalf("implicit hosted history must be dropped without provisioning search: %s", body)
+				}
+			case "function":
+				if len(wire) != 3 || wire[1].Get("type").String() != "function_call" || wire[1].Get("name").String() != "ToolSearch" || wire[2].Get("type").String() != "function_call_output" || wire[2].Get("call_id").String() != "call_1" {
+					t.Fatalf("application search history was rewritten: %s", body)
+				}
+			case "server":
+				if len(wire) != 3 || wire[1].Get("type").String() != "tool_search_call" || wire[1].Get("execution").String() != "server" || wire[2].Get("type").String() != "tool_search_output" || wire[2].Get("tools.0.name").String() != "get_weather" {
+					t.Fatalf("explicit hosted history was not replayed exactly once: %s", body)
+				}
+			}
+			if len(r.Input) != 3 || r.Input[1].CallID == nil || *r.Input[1].CallID != "call_1" || !*r.Params.Tools[0].DeferLoading {
+				t.Fatal("shared request was mutated")
+			}
+		})
+	}
+}
+
 func BenchmarkBuiltinToolRewritingResponses(b *testing.B) {
 	for _, count := range []int{0, 1} {
 		name := "no_tools"
@@ -1290,6 +1337,8 @@ func BenchmarkBuiltinToolRewritingResponses(b *testing.B) {
 	}
 }
 
+// Deferred tools with no search tool of any kind get OpenAI's hosted tool_search
+// on models that support it; older models get the tools eagerly instead.
 func TestToOpenAIResponsesRequest_AddsHostedToolSearch(t *testing.T) {
 	tools := []schemas.ResponsesTool{
 		{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("lookup"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},

@@ -485,35 +485,61 @@ func TestBuildAnthropicResponsesRequestBody_CountTokensMode(t *testing.T) {
 
 func TestDisableBuiltinToolRewritingAnthropicConversion(t *testing.T) {
 	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Azure, schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle} {
-		for _, raw := range []bool{false, true} {
-			for _, streaming := range []bool{false, true} {
-				t.Run(fmt.Sprintf("%s/raw=%v/stream=%v", provider, raw, streaming), func(t *testing.T) {
-					var bodies [][]byte
-					for _, disabled := range []bool{false, true} {
-						ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-						ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, disabled)
-						ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, raw)
-						request := &schemas.BifrostResponsesRequest{
-							Provider: provider, Model: "claude-sonnet-4-5", Input: makeSimpleInput("hello"),
-							Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
-								{Type: schemas.ResponsesToolTypeFunction, Name: new("web_search_custom"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}},
-								{Type: schemas.ResponsesToolTypeComputerUsePreview, ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768}},
-							}},
-							RawRequestBody: []byte(`{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"tools":[{"name":"web_search_custom","input_schema":{"type":"object"}},{"type":"computer_20250124","name":"computer","display_width_px":1024,"display_height_px":768}]}`),
+		for _, api := range []string{"responses", "chat"} {
+			for _, raw := range []bool{false, true} {
+				for _, streaming := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s/%s/raw=%v/stream=%v", provider, api, raw, streaming), func(t *testing.T) {
+						var bodies [][]byte
+						for _, disabled := range []bool{false, true} {
+							ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+							ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, disabled)
+							ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, raw)
+							request := &schemas.BifrostResponsesRequest{
+								Provider: provider, Model: "claude-sonnet-4-5", Input: makeSimpleInput("hello"),
+								Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+									{Type: schemas.ResponsesToolTypeFunction, Name: new("web_search_custom"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}},
+									{Type: schemas.ResponsesToolTypeComputerUsePreview, ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{DisplayWidth: 1024, DisplayHeight: 768}},
+								}},
+								RawRequestBody: []byte(`{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"tools":[{"name":"web_search_custom","input_schema":{"type":"object"}},{"type":"computer_20251124","name":"computer","display_width_px":1024,"display_height_px":768}]}`),
+							}
+							cfg := AnthropicRequestBuildConfig{Provider: provider, Model: request.Model, ValidateTools: true, IsStreaming: streaming}
+							var body []byte
+							var err *schemas.BifrostError
+							if api == "chat" {
+								chat := request.ToChatRequest()
+								chat.RawRequestBody = request.RawRequestBody
+								chat.Params.Tools = []schemas.ChatTool{
+									{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "web_search_custom", Parameters: &schemas.ToolFunctionParameters{Type: "object"}}},
+									{Type: schemas.ChatToolType("computer_20250124"), Name: "computer", DisplayWidthPx: new(1024), DisplayHeightPx: new(768)},
+								}
+								body, err = BuildAnthropicChatRequestBody(ctx, chat, cfg)
+							} else {
+								body, err = BuildAnthropicResponsesRequestBody(ctx, request, cfg)
+							}
+							if err != nil {
+								t.Fatal(err)
+							}
+							bodies = append(bodies, body)
 						}
-						body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: provider, Model: request.Model, ValidateTools: true, IsStreaming: streaming})
-						if err != nil {
-							t.Fatal(err)
+						if string(bodies[0]) != string(bodies[1]) {
+							t.Fatalf("explicit tools or normal conversion changed with the opt-out:\noff: %s\non:  %s", bodies[0], bodies[1])
 						}
-						bodies = append(bodies, body)
-					}
-					if string(bodies[0]) != string(bodies[1]) {
-						t.Fatalf("explicit tools or normal conversion changed with the opt-out:\noff: %s\non:  %s", bodies[0], bodies[1])
-					}
-					if got := gjson.GetBytes(bodies[1], "tools.0.name").String(); got != "web_search_custom" {
-						t.Errorf("caller function name = %q", got)
-					}
-				})
+						if got := gjson.GetBytes(bodies[1], "tools.0.name").String(); got != "web_search_custom" {
+							t.Errorf("caller function name = %q", got)
+						}
+						tools := gjson.GetBytes(bodies[1], "tools").Array()
+						if len(tools) != 2 || tools[0].Get("input_schema.type").String() != "object" {
+							t.Fatalf("application or explicit native tool was dropped: %s", bodies[1])
+						}
+						wantComputer := "computer_20250124"
+						if raw && (provider == schemas.Anthropic || provider == schemas.Azure) {
+							wantComputer = "computer_20251124"
+						}
+						if tools[1].Get("type").String() != wantComputer || tools[1].Get("name").String() != "computer" || tools[1].Get("display_width_px").Int() != 1024 || tools[1].Get("display_height_px").Int() != 768 {
+							t.Errorf("explicit native tool compatibility processing changed: %s", bodies[1])
+						}
+					})
+				}
 			}
 		}
 	}

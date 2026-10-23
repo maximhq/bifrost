@@ -2595,9 +2595,40 @@ func TestBuiltinToolRewritingScopedNamespaces(t *testing.T) {
 			t.Fatal("flattened call was not restored")
 		}
 	}
-	req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeFunction, Name: new("js")}}
-	if _, err := FlattenResponsesNamespaceToolsMatching(ctx, req, []string{"web"}); err == nil || err.StatusCode == nil || *err.StatusCode != 400 {
-		t.Fatalf("ambiguous mixed namespace choice must fail closed: %v", err)
+	for _, allowed := range []bool{false, true} {
+		req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeFunction, Name: new("js")}}
+		if allowed {
+			req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeAllowedTools, Mode: new("auto"), Tools: []schemas.ResponsesToolChoiceAllowedToolDef{{Type: "function", Name: new("js")}}}}
+		}
+		if _, err := FlattenResponsesNamespaceToolsMatching(ctx, req, []string{"web"}); err == nil || err.StatusCode == nil || *err.StatusCode != 400 {
+			t.Fatalf("ambiguous mixed namespace choice must fail closed (allowed=%v): %v", allowed, err)
+		}
+	}
+}
+
+func TestBuiltinToolRewritingScopedNamespaceHistory(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.BedrockMantle, Model: "gpt-5.6-luna", Params: &schemas.ResponsesParameters{}}
+	for _, name := range []string{"web", "safe"} {
+		req.Params.Tools = append(req.Params.Tools, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeNamespace, Name: new(name), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: new("js")}}}})
+		req.Input = append(req.Input, schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{Namespace: new(name), Name: new("js"), CallID: new(name + "_call"), Arguments: new(`{"query":"local"}`)}})
+	}
+	req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeFunction, Name: new("web__js")}}
+	out, err := FlattenResponsesNamespaceToolsMatching(ctx, req, []string{"web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *out.Input[0].Name != "web__js" || out.Input[0].Namespace != nil || *out.Input[0].CallID != "web_call" || *out.Input[0].Arguments != `{"query":"local"}` {
+		t.Fatalf("reserved namespace history does not match its flattened declaration: %+v", out.Input[0].ResponsesToolMessage)
+	}
+	if out.Input[1].ResponsesToolMessage != req.Input[1].ResponsesToolMessage || *out.Input[1].Namespace != "safe" {
+		t.Fatal("retained namespace history was rewritten")
+	}
+	if *out.Params.ToolChoice.ResponsesToolChoiceStruct.Name != "web__js" {
+		t.Fatal("qualified choice was not preserved")
+	}
+	if *req.Input[0].Name != "js" || *req.Input[0].Namespace != "web" {
+		t.Fatal("shared history was mutated")
 	}
 }
 

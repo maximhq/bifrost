@@ -38,6 +38,7 @@ import (
 // testHandlerStore is a minimal HandlerStore for ctx tests.
 type testHandlerStore struct {
 	matcher              *HeaderMatcher
+	mcpHeaderAllowlist   schemas.WhiteList
 	allowDirectKeys      bool
 	extraFieldsInHeaders bool
 }
@@ -49,6 +50,9 @@ func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor      
 func (s testHandlerStore) GetAsyncJobResultTTL() int                             { return 0 }
 func (s testHandlerStore) GetKVStore() *kvstore.Store                            { return nil }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
+	if s.mcpHeaderAllowlist != nil {
+		return s.mcpHeaderAllowlist
+	}
 	return schemas.WhiteList{}
 }
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
@@ -60,20 +64,20 @@ func (s testHandlerStore) GetMCPExternalServerURL() string                 { ret
 func (s testHandlerStore) GetMCPExternalClientURL() string                 { return "" }
 
 func TestDisableBuiltinToolRewritingHeader(t *testing.T) {
-	for _, allowlist := range [][]string{nil, {"*"}} {
-		for _, value := range []string{"true", "false", "invalid", ""} {
+	for _, allowlist := range [][]string{nil, {"*"}, {"x-bf-disable-builtin-tool-rewriting"}} {
+		for _, value := range []string{"true", "false", "1", "0", "TRUE", "False", "invalid", " true ", ""} {
 			t.Run(fmt.Sprintf("allowlist=%v/value=%s", allowlist, value), func(t *testing.T) {
 				ctx := &fasthttp.RequestCtx{}
 				if value != "" {
 					ctx.Request.Header.Set("X-Bf-Disable-Builtin-Tool-Rewriting", value)
 				}
 				matcher := NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{Allowlist: allowlist})
-				converted, cancel := ConvertToBifrostContext(ctx, testHandlerStore{matcher: matcher})
+				converted, cancel := ConvertToBifrostContext(ctx, testHandlerStore{matcher: matcher, mcpHeaderAllowlist: schemas.WhiteList{"x-bf-disable-builtin-tool-rewriting"}})
 				defer cancel()
 				got := converted.Value(schemas.BifrostContextKeyDisableBuiltinToolRewriting)
 				switch value {
-				case "true", "false":
-					if got != (value == "true") {
+				case "true", "false", "1", "0", "TRUE", "False":
+					if got != (value == "true" || value == "1" || value == "TRUE") {
 						t.Errorf("option = %v, want %s", got, value)
 					}
 				default:
@@ -83,6 +87,9 @@ func TestDisableBuiltinToolRewritingHeader(t *testing.T) {
 				}
 				if extra, _ := converted.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); extra["x-bf-disable-builtin-tool-rewriting"] != nil {
 					t.Fatal("gateway option was forwarded to the provider")
+				}
+				if extra, _ := converted.Value(schemas.BifrostContextKeyMCPExtraHeaders).(map[string][]string); extra["x-bf-disable-builtin-tool-rewriting"] != nil {
+					t.Fatal("gateway option was forwarded to MCP servers")
 				}
 			})
 		}

@@ -1,4 +1,4 @@
-// Unit tests for the inline scripts in bifrost-api-management.postman_collection.json.
+// Unit tests for inline scripts in the API management and provider-harness collections.
 // Run directly: `node collection-scripts.test.mjs`.
 // No test framework needed (the tests/e2e/api dir has no test runner configured).
 //
@@ -1132,6 +1132,108 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
     variables: { replaceIn: (v) => v.split("{{run_id}}").join("run7") },
   };
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
+});
+
+
+// These are offline script tests, not live provider-harness execution.
+const providerHarness = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"));
+const builtinToolRewritingCases = providerHarness.item.find((item) => item.name.startsWith("267.")).item;
+
+function builtinToolRewritingFixture(item) {
+  const request = JSON.parse(item.request.body.raw);
+  const expectedError = item.name.includes("[EXPECT-400]");
+  if (item.name.includes("mixed namespace")) {
+    return { code: 400, body: { error: { message: 'tool_choice "js" is ambiguous between a retained and a flattened namespace; use a qualified function name' } } };
+  }
+  if (item.name.includes("Chat custom native type")) {
+    return { code: 400, body: { error: { message: "unknown native tool type" }, extra_fields: { raw_request: { additionalModelRequestFields: { tools: request.tools } } } } };
+  }
+  assert.strictEqual(expectedError, false, `missing error fixture: ${item.name}`);
+  const rawRequest = JSON.parse(JSON.stringify(request));
+  if (Array.isArray(request.input)) {
+    rawRequest.tools = request.input.find((input) => input.type === "additional_tools").tools;
+    rawRequest.input = request.input.filter((input) => input.type !== "additional_tools");
+  }
+  rawRequest.tools = rawRequest.tools.map((tool) => {
+    if (tool.type === "namespace" && tool.name === "web") {
+      return { ...tool.tools[0], name: "web__" + tool.tools[0].name };
+    }
+    if (tool.type === "web_search_custom") {
+      return { type: "custom", name: tool.name, input_schema: tool.input_schema || { type: "object" } };
+    }
+    if (tool.defer_loading && !request.tools.some((candidate) => candidate.type === "tool_search")) {
+      const { defer_loading, ...eager } = tool;
+      return eager;
+    }
+    return tool;
+  });
+  if (item.name.includes("namespace label collision")) {
+    if (rawRequest.tool_choice.type === "function") rawRequest.tool_choice.name = "web__js";
+    else rawRequest.tool_choice.tools[0].name = "web__js";
+  }
+  const calls = item.name.includes("namespace label collision") ? [{ type: "function_call", name: "js", namespace: "web", call_id: "call_1", arguments: "{}" }] : [];
+  return { code: 200, body: { status: "completed", output: calls, extra_fields: { raw_request: rawRequest } } };
+}
+
+function runBuiltinToolRewritingScript(item, fixture, textOverride) {
+  const request = JSON.parse(item.request.body.raw);
+  const text = textOverride ?? (request.stream && fixture.code === 200
+    ? "data: " + JSON.stringify({ type: "response.completed", response: fixture.body }) + "\n\n"
+    : JSON.stringify(fixture.body));
+  const ctx = sandbox({ responseCode: fixture.code, responseBody: text });
+  ctx.pm.expect = (actual, message) => {
+    const chain = redactionExpect(actual, message);
+    chain.have = chain;
+    chain.lengthOf = (expected) => assert.strictEqual(actual.length, expected, message);
+    chain.above = (expected) => assert.ok(actual > expected, message);
+    chain.deep = { equal: (expected) => assert.deepStrictEqual(actual, expected, message) };
+    return chain;
+  };
+  new Function("pm", listenScript(item, "test"))(ctx.pm);
+  return ctx.state.tests;
+}
+
+test("provider-harness: built-in tool rewriting scripts accept expected wire fixtures", () => {
+  assert.strictEqual(builtinToolRewritingCases.length, 24);
+  for (const item of builtinToolRewritingCases) {
+    const results = runBuiltinToolRewritingScript(item, builtinToolRewritingFixture(item));
+    assert.ok(results.length > 0, `${item.name} ran no assertions`);
+    assert.deepStrictEqual(results.filter((result) => !result.passed), [], item.name);
+  }
+});
+
+test("provider-harness: built-in tool rewriting scripts fail on unexpected statuses", () => {
+  for (const item of builtinToolRewritingCases) {
+    for (const code of [401, 403, 429, 500, 502, 503, 504]) {
+      const fixture = builtinToolRewritingFixture(item);
+      fixture.code = code;
+      const results = runBuiltinToolRewritingScript(item, fixture);
+      assert.ok(results.some((result) => !result.passed), `${item.name} silently accepted HTTP ${code}`);
+    }
+  }
+});
+
+test("provider-harness: built-in tool rewriting scripts reject missing raw capture and substitution", () => {
+  for (const item of builtinToolRewritingCases.filter((item) => !item.name.includes("mixed namespace"))) {
+    const missing = builtinToolRewritingFixture(item);
+    delete missing.body.extra_fields;
+    assert.ok(runBuiltinToolRewritingScript(item, missing).some((result) => !result.passed), `${item.name} accepted missing raw capture`);
+    const rewritten = builtinToolRewritingFixture(item);
+    rewritten.body.extra_fields.raw_request.tools = [{ type: "web_search" }];
+    if (rewritten.code === 400) rewritten.body.extra_fields.raw_request.toolConfig = { tools: [{ systemTool: { name: "nova_grounding" } }] };
+    assert.ok(runBuiltinToolRewritingScript(item, rewritten).some((result) => !result.passed), `${item.name} accepted tool substitution`);
+  }
+});
+
+test("provider-harness: built-in tool rewriting streams reject malformed and unterminated SSE", () => {
+  for (const item of builtinToolRewritingCases.filter((item) => JSON.parse(item.request.body.raw).stream && !item.name.includes("[EXPECT-400]"))) {
+    const fixture = builtinToolRewritingFixture(item);
+    const malformed = runBuiltinToolRewritingScript(item, fixture, "data: not-json\n\n");
+    assert.ok(malformed.some((result) => result.name === "provider response is valid and has no error" && !result.passed), item.name);
+    const unterminated = "data: " + JSON.stringify({ type: "response.output_text.delta", extra_fields: fixture.body.extra_fields }) + "\n\n";
+    const results = runBuiltinToolRewritingScript(item, fixture, unterminated);
+    assert.ok(results.some((result) => result.name === "stream reached a terminal response" && !result.passed), item.name);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

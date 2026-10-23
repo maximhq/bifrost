@@ -34,12 +34,6 @@ func makeResponsesTextFormat(schemaName string) *schemas.ResponsesTextConfig {
 	}
 }
 
-// TestAnthropicContainerRoundTrip covers issue #5707: the "container" request
-// param (string id for container reuse, or object with skills[]) must survive
-// the /v1/messages ingress-to-egress round trip. Both forms were silently
-// dropped: ToBifrostResponsesRequest never read req.Container, so a client
-// requesting container reuse got HTTP 200 with a fresh container and all
-// previously staged files missing.
 func TestBuiltinToolRewritingCustomTypesAreNotPromoted(t *testing.T) {
 	for _, typ := range []string{"web_search_custom", "web_fetch_custom", "computer_custom", "text_editor_custom", "bash_custom"} {
 		t.Run(typ, func(t *testing.T) {
@@ -64,6 +58,12 @@ func TestBuiltinToolRewritingCustomTypesAreNotPromoted(t *testing.T) {
 	}
 }
 
+// TestAnthropicContainerRoundTrip covers issue #5707: the "container" request
+// param (string id for container reuse, or object with skills[]) must survive
+// the /v1/messages ingress-to-egress round trip. Both forms were silently
+// dropped: ToBifrostResponsesRequest never read req.Container, so a client
+// requesting container reuse got HTTP 200 with a fresh container and all
+// previously staged files missing.
 func TestAnthropicContainerRoundTrip(t *testing.T) {
 	t.Run("StringForm", func(t *testing.T) {
 		req := &AnthropicMessageRequest{
