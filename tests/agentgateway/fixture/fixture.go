@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"maps"
 	"net"
 	"net/http"
 	"strconv"
@@ -185,6 +186,79 @@ type fixtureAuth struct {
 	a2asrv.PassthroughCallInterceptor
 }
 
+// Call records the upstream identity and decision without retaining credentials.
+type Call struct {
+	Caller string
+	Method string
+	Error  string
+}
+
+type credentialAuth struct {
+	a2asrv.PassthroughCallInterceptor
+	mu      sync.Mutex
+	callers map[string]string
+	store   *push.InMemoryPushConfigStore
+	shared  map[a2a.TaskID]map[string]map[string]bool
+	calls   []Call
+}
+
+func (a *credentialAuth) Before(ctx context.Context, call *a2asrv.CallContext, req *a2asrv.Request) (context.Context, any, error) {
+	key := ""
+	if call.ServiceParams() != nil {
+		for header, values := range call.ServiceParams().List() {
+			if strings.EqualFold(header, "x-bf-vk") && len(values) == 1 {
+				key = values[0]
+			}
+		}
+	}
+	caller := a.callers[key]
+	if caller == "" {
+		return ctx, nil, a2a.ErrUnauthenticated
+	}
+	call.User = a2asrv.NewAuthenticatedUser(caller, nil)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch request := req.Payload.(type) {
+	case *a2a.GetTaskPushConfigRequest:
+		if a.shared[request.TaskID][caller][request.ID] {
+			config, err := a.store.Get(ctx, request.TaskID, request.ID)
+			if err != nil {
+				return ctx, nil, err
+			}
+			if config == nil {
+				return ctx, nil, push.ErrPushConfigNotFound
+			}
+			return ctx, config, nil
+		}
+	case *a2a.ListTaskPushConfigRequest:
+		if allowed := a.shared[request.TaskID][caller]; len(allowed) > 0 {
+			configs, err := a.store.List(ctx, request.TaskID)
+			if err != nil {
+				return ctx, nil, err
+			}
+			result := &a2a.ListTaskPushConfigResponse{Configs: []*a2a.PushConfig{}}
+			for _, config := range configs {
+				if allowed[config.ID] {
+					result.Configs = append(result.Configs, config)
+				}
+			}
+			return ctx, result, nil
+		}
+	}
+	return ctx, nil, nil // The SDK's task store enforces ownership for normal operations.
+}
+
+func (a *credentialAuth) After(_ context.Context, call *a2asrv.CallContext, response *a2asrv.Response) error {
+	record := Call{Caller: call.User.Name, Method: call.Method()}
+	if response.Err != nil {
+		record.Error = response.Err.Error()
+	}
+	a.mu.Lock()
+	a.calls = append(a.calls, record)
+	a.mu.Unlock()
+	return nil
+}
+
 // Before marks fixture calls as authenticated without imposing test credentials.
 func (*fixtureAuth) Before(ctx context.Context, callCtx *a2asrv.CallContext, _ *a2asrv.Request) (context.Context, any, error) {
 	callCtx.User = &a2asrv.User{Name: "lifecycle-fixture", Authenticated: true}
@@ -223,6 +297,7 @@ type Server struct {
 	server  *http.Server
 	gate    chan struct{}
 	once    sync.Once
+	auth    *credentialAuth
 }
 
 // ReleaseCheckpoint lets a held stream proceed to its second checkpoint. Call
@@ -233,12 +308,57 @@ func (s *Server) ReleaseCheckpoint() { s.once.Do(func() { close(s.gate) }) }
 // advertises host in its Agent Card so a gateway that cannot reach loopback can
 // still dial it. Close shuts the listener down.
 func Start(bind, host string) (*Server, error) {
+	return start(bind, host, nil)
+}
+
+// StartWithCredentials authenticates forwarded virtual keys as distinct callers.
+func StartWithCredentials(bind, host string, callers map[string]string) (*Server, error) {
+	if callers == nil {
+		callers = map[string]string{}
+	}
+	return start(bind, host, maps.Clone(callers))
+}
+
+// SharePushConfigs grants only push-read access, without granting task-content access.
+func (s *Server) SharePushConfigs(task a2a.TaskID, caller string, ids ...string) {
+	s.auth.mu.Lock()
+	defer s.auth.mu.Unlock()
+	if s.auth.shared[task] == nil {
+		s.auth.shared[task] = map[string]map[string]bool{}
+	}
+	allowed := map[string]bool{}
+	for _, id := range ids {
+		allowed[id] = true
+	}
+	s.auth.shared[task][caller] = allowed
+}
+
+// Calls returns a snapshot of actual upstream caller identities and outcomes.
+func (s *Server) Calls() []Call {
+	if s.auth == nil {
+		return nil
+	}
+	s.auth.mu.Lock()
+	defer s.auth.mu.Unlock()
+	return append([]Call(nil), s.auth.calls...)
+}
+
+func start(bind, host string, callers map[string]string) (*Server, error) {
 	listener, err := net.Listen("tcp", bind)
 	if err != nil {
 		return nil, fmt.Errorf("listen for lifecycle fixture: %w", err)
 	}
 	baseURL := fmt.Sprintf("http://%s", net.JoinHostPort(host, strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)))
 	publicCard := card(baseURL)
+	store := push.NewInMemoryStore()
+	var auth *credentialAuth
+	var interceptor a2asrv.CallInterceptor = &fixtureAuth{}
+	if callers != nil {
+		auth = &credentialAuth{callers: callers, store: store, shared: map[a2a.TaskID]map[string]map[string]bool{}}
+		interceptor = auth
+		publicCard.SecuritySchemes = a2a.NamedSecuritySchemes{"callerKey": a2a.APIKeySecurityScheme{Location: a2a.APIKeySecuritySchemeLocationHeader, Name: "x-bf-vk"}}
+		publicCard.SecurityRequirements = a2a.SecurityRequirementsOptions{{"callerKey": {}}}
+	}
 	extendedCard := *publicCard
 	extendedCard.Description = "Extended static lifecycle fixture card"
 	exec := newExecutor()
@@ -248,9 +368,9 @@ func Start(bind, host string) (*Server, error) {
 		exec,
 		a2asrv.WithCapabilityChecks(&publicCard.Capabilities),
 		a2asrv.WithExtendedAgentCard(&extendedCard),
-		a2asrv.WithCallInterceptors(&fixtureAuth{}),
+		a2asrv.WithCallInterceptors(interceptor),
 		a2asrv.WithPushNotifications(
-			push.NewInMemoryStore(),
+			store,
 			push.NewHTTPPushSender(&push.HTTPSenderConfig{AllowPrivateNetworks: true, Timeout: 10 * time.Second}),
 		),
 	)
@@ -259,7 +379,7 @@ func Start(bind, host string) (*Server, error) {
 	mux.Handle("/jsonrpc", a2asrv.NewJSONRPCHandler(handler))
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(listener) }()
-	return &Server{CardURL: baseURL + a2asrv.WellKnownAgentCardPath, server: srv, gate: gate}, nil
+	return &Server{CardURL: baseURL + a2asrv.WellKnownAgentCardPath, server: srv, gate: gate, auth: auth}, nil
 }
 
 // Close stops the fixture server and drops open connections.

@@ -276766,10 +276766,10 @@
     },
     {
       "name": "263. A2A push resource authorization",
-      "description": "Opt-in local A2A authorization regression. Before running, register an agent supporting push notifications, enforce gateway authentication, grant both callers access to that agent, and preserve their different upstream credentials. The owner must create the task/configuration; the reader must be denied by the upstream matching get/list operations. Set a2aAgentName, a2aTaskId, a2aPushConfigId, a2aOwnerKey and a2aReaderKey in ENV_FILE; optional a2aDeniedErrorCode defaults to the SDK task-ownership denial (-32001). Run with INCLUDE_PREVIEW=1 and FEATURE=\"A2A push resource authorization\". Positive controls establish agent access and an existing owner-readable configuration. Never use production callbacks or credentials.",
+      "description": "Opt-in local A2A authorization regression. Before running, register an agent supporting push notifications, enforce gateway authentication, grant both callers access to that agent, and preserve their different upstream credentials. The owner must create the task/configuration; the reader must be denied by the upstream matching get/list operations. Set a2aAgentName, a2aTaskId, a2aPushConfigId, a2aOwnerKey and a2aReaderKey in ENV_FILE; optional a2aDeniedErrorCode defaults to the SDK task-ownership denial (-32001). Run with INCLUDE_PREVIEW=1 and FEATURE=\"A2A push resource authorization\". Positive controls establish agent access and an existing owner-readable configuration. Never use production callbacks or credentials. JSON-RPC and REST are covered. The REST denial cases expect the SDK ownership-policy 404 NOT_FOUND mapping. Optional a2aExpectedCallbackUrl pins the original client callback rather than merely accepting a non-empty URL. gRPC is covered by TestPushAuthorizationThroughGateway because this HTTP Postman collection has no gRPC binding. [NO-CONTENT] disables only the shared LLM text/tool-output assertion for A2A metadata and expected protocol errors; every case still asserts its exact HTTP status and A2A payload.",
       "item": [
         {
-          "name": "[PREVIEW] A2A push resource authorization - reader agent access",
+          "name": "[PREVIEW] [NO-CONTENT] A2A push resource authorization - reader agent access",
           "event": [
             {
               "listen": "prerequest",
@@ -276825,7 +276825,7 @@
           }
         },
         {
-          "name": "[PREVIEW] A2A push resource authorization - owner callback remains readable",
+          "name": "[PREVIEW] [NO-CONTENT] A2A push resource authorization - owner callback remains readable",
           "event": [
             {
               "listen": "prerequest",
@@ -276850,6 +276850,8 @@
                   "  pm.expect(response.error, pm.response.text()).to.equal(undefined);",
                   "  pm.expect(response.result.id).to.equal(pm.variables.get('a2aPushConfigId'));",
                   "  pm.expect(response.result.url).to.be.a('string').and.not.empty;",
+                  "  var expectedUrl = pm.variables.get('a2aExpectedCallbackUrl');",
+                  "  if (expectedUrl) { pm.expect(response.result.url).to.equal(expectedUrl); }",
                   "  pm.expect(response.result.token).to.equal(undefined);",
                   "  pm.expect((response.result.authentication || {}).credentials).to.equal(undefined);",
                   "});"
@@ -276897,7 +276899,7 @@
           }
         },
         {
-          "name": "[PREVIEW] A2A push resource authorization - denied get",
+          "name": "[PREVIEW] [NO-CONTENT] A2A push resource authorization - denied get",
           "event": [
             {
               "listen": "prerequest",
@@ -276968,7 +276970,7 @@
           }
         },
         {
-          "name": "[PREVIEW] A2A push resource authorization - denied list",
+          "name": "[PREVIEW] [NO-CONTENT] A2A push resource authorization - denied list",
           "event": [
             {
               "listen": "prerequest",
@@ -277035,6 +277037,266 @@
                   "language": "json"
                 }
               }
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [NO-CONTENT] A2A push resource authorization - REST owner get",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('A2A authorization fixture is configured', function () {",
+                  "  [\"a2aAgentName\", \"a2aTaskId\", \"a2aPushConfigId\", \"a2aOwnerKey\", \"a2aReaderKey\"].forEach(function (key) {",
+                  "    pm.expect(pm.variables.get(key), 'Missing fixture variable ' + key).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('REST owner receives the redacted client callback', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var config = pm.response.json();",
+                  "  pm.expect(config.id).to.equal(pm.variables.get('a2aPushConfigId'));",
+                  "  pm.expect(config.url).to.be.a('string').and.not.empty;",
+                  "  var expectedUrl = pm.variables.get('a2aExpectedCallbackUrl');",
+                  "  if (expectedUrl) { pm.expect(config.url).to.equal(expectedUrl); }",
+                  "  pm.expect(config.token).to.equal(undefined);",
+                  "  pm.expect((config.authentication || {}).credentials).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{a2aOwnerKey}}"
+              },
+              {
+                "key": "A2A-Version",
+                "value": "1.0"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/agents/a2a/{{a2aAgentName}}/rest/tasks/{{a2aTaskId}}/pushNotificationConfigs/{{a2aPushConfigId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "agents",
+                "a2a",
+                "{{a2aAgentName}}",
+                "rest",
+                "tasks",
+                "{{a2aTaskId}}",
+                "pushNotificationConfigs",
+                "{{a2aPushConfigId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [NO-CONTENT] A2A push resource authorization - REST owner list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('A2A authorization fixture is configured', function () {",
+                  "  [\"a2aAgentName\", \"a2aTaskId\", \"a2aPushConfigId\", \"a2aOwnerKey\", \"a2aReaderKey\"].forEach(function (key) {",
+                  "    pm.expect(pm.variables.get(key), 'Missing fixture variable ' + key).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('REST owner list contains the existing redacted callback', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var configs = pm.response.json().configs;",
+                  "  pm.expect(configs, pm.response.text()).to.be.an('array');",
+                  "  var matches = configs.filter(function (item) { return item.id === pm.variables.get('a2aPushConfigId'); });",
+                  "  pm.expect(matches.length, pm.response.text()).to.equal(1);",
+                  "  var config = matches[0];",
+                  "  pm.expect(config.id).to.equal(pm.variables.get('a2aPushConfigId'));",
+                  "  pm.expect(config.url).to.be.a('string').and.not.empty;",
+                  "  var expectedUrl = pm.variables.get('a2aExpectedCallbackUrl');",
+                  "  if (expectedUrl) { pm.expect(config.url).to.equal(expectedUrl); }",
+                  "  pm.expect(config.token).to.equal(undefined);",
+                  "  pm.expect((config.authentication || {}).credentials).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{a2aOwnerKey}}"
+              },
+              {
+                "key": "A2A-Version",
+                "value": "1.0"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/agents/a2a/{{a2aAgentName}}/rest/tasks/{{a2aTaskId}}/pushNotificationConfigs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "agents",
+                "a2a",
+                "{{a2aAgentName}}",
+                "rest",
+                "tasks",
+                "{{a2aTaskId}}",
+                "pushNotificationConfigs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [NO-CONTENT] A2A push resource authorization - REST denied get [EXPECT-404]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('A2A authorization fixture is configured', function () {",
+                  "  [\"a2aAgentName\", \"a2aTaskId\", \"a2aPushConfigId\", \"a2aOwnerKey\", \"a2aReaderKey\"].forEach(function (key) {",
+                  "    pm.expect(pm.variables.get(key), 'Missing fixture variable ' + key).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('REST resource denial returns no callback data', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(404);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(response.error.status).to.equal('NOT_FOUND');",
+                  "  pm.expect(response.error.code).to.equal(404);",
+                  "  pm.expect(response.url).to.equal(undefined);",
+                  "  pm.expect(response.configs).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{a2aReaderKey}}"
+              },
+              {
+                "key": "A2A-Version",
+                "value": "1.0"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/agents/a2a/{{a2aAgentName}}/rest/tasks/{{a2aTaskId}}/pushNotificationConfigs/{{a2aPushConfigId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "agents",
+                "a2a",
+                "{{a2aAgentName}}",
+                "rest",
+                "tasks",
+                "{{a2aTaskId}}",
+                "pushNotificationConfigs",
+                "{{a2aPushConfigId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [NO-CONTENT] A2A push resource authorization - REST denied list [EXPECT-404]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('A2A authorization fixture is configured', function () {",
+                  "  [\"a2aAgentName\", \"a2aTaskId\", \"a2aPushConfigId\", \"a2aOwnerKey\", \"a2aReaderKey\"].forEach(function (key) {",
+                  "    pm.expect(pm.variables.get(key), 'Missing fixture variable ' + key).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('REST resource denial returns no callback data', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(404);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.error, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(response.error.status).to.equal('NOT_FOUND');",
+                  "  pm.expect(response.error.code).to.equal(404);",
+                  "  pm.expect(response.url).to.equal(undefined);",
+                  "  pm.expect(response.configs).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{a2aReaderKey}}"
+              },
+              {
+                "key": "A2A-Version",
+                "value": "1.0"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/agents/a2a/{{a2aAgentName}}/rest/tasks/{{a2aTaskId}}/pushNotificationConfigs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "agents",
+                "a2a",
+                "{{a2aAgentName}}",
+                "rest",
+                "tasks",
+                "{{a2aTaskId}}",
+                "pushNotificationConfigs"
+              ]
             }
           }
         }

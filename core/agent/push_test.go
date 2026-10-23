@@ -746,6 +746,69 @@ func TestPushReadMissingLocalConfigKeepsNotFound(t *testing.T) {
 	require.Empty(t, result.Configs)
 }
 
+func TestPushReadsRejectInvalidUpstreamResults(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		get       bool
+		configs   []*a2a.PushConfig
+		wantIDs   []string
+		wantReads int
+	}{
+		{name: "nil get", get: true},
+		{name: "nil list"},
+		{name: "invalid list entries", configs: []*a2a.PushConfig{nil, {TaskID: "another-task", ID: "private"}, {TaskID: "task-1"}}},
+		{name: "mixed list entries", configs: []*a2a.PushConfig{
+			nil, {TaskID: "another-task", ID: "private"}, {TaskID: "task-1"},
+			{TaskID: "task-1", ID: "shared"}, {TaskID: "task-1", ID: "shared"}, {TaskID: "task-1", ID: "upstream-only"},
+		}, wantIDs: []string{"shared"}, wantReads: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			client := &fakeSDKClient{
+				getPush: func(context.Context, *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error) {
+					calls++
+					return nil, nil
+				},
+				listPush: func(context.Context, *a2a.ListTaskPushConfigRequest) ([]*a2a.PushConfig, error) {
+					calls++
+					return test.configs, nil
+				},
+			}
+			manager, handler, _ := failoverHandler(t, client)
+			store := newMemoryPushStore()
+			manager.pushStore = store
+			for _, id := range []string{"private", "shared"} {
+				require.NoError(t, store.SaveAgentPushConfig(context.Background(), &schemas.AgentPushConfig{
+					AgentName: "fixture", TaskID: "task-1", ConfigID: id, Tenant: "callback-tenant",
+					URL: "https://callback.example/events?secret=" + id, Token: schemas.NewSecretVar("token"),
+					AuthScheme: "Bearer", AuthCredentials: schemas.NewSecretVar("credential"),
+				}))
+			}
+			if test.get {
+				result, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "private"})
+				require.ErrorIs(t, err, push.ErrPushConfigNotFound)
+				require.Nil(t, result)
+			} else {
+				result, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{TaskID: "task-1"})
+				require.NoError(t, err)
+				require.NotNil(t, result.Configs)
+				ids := []string{}
+				for _, config := range result.Configs {
+					ids = append(ids, config.ID)
+					require.Equal(t, "callback-tenant", config.Tenant)
+					require.Equal(t, "https://callback.example/events?secret="+config.ID, config.URL)
+					require.Empty(t, config.Token)
+					require.Equal(t, "Bearer", config.Auth.Scheme)
+					require.Empty(t, config.Auth.Credentials)
+				}
+				require.ElementsMatch(t, test.wantIDs, ids)
+			}
+			require.Equal(t, 1, calls)
+			require.Equal(t, test.wantReads, store.readCalls, "invalid authorization results must not query local callbacks")
+		})
+	}
+}
+
 type pushAuthorizationExecutor struct{}
 
 func (pushAuthorizationExecutor) Execute(_ context.Context, ctx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {

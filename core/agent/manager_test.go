@@ -1385,6 +1385,8 @@ type fakeSDKClient struct {
 	send         func(context.Context, *a2a.SendMessageRequest) (a2a.SendMessageResult, error)
 	stream       func(context.Context, *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error]
 	extendedCard func(context.Context, *a2a.GetExtendedAgentCardRequest) (*a2a.AgentCard, error)
+	getPush      func(context.Context, *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error)
+	listPush     func(context.Context, *a2a.ListTaskPushConfigRequest) ([]*a2a.PushConfig, error)
 	destroyed    atomic.Int64
 }
 
@@ -1418,10 +1420,16 @@ func (c *fakeSDKClient) GetExtendedAgentCard(ctx context.Context, req *a2a.GetEx
 func (c *fakeSDKClient) CreateTaskPushConfig(context.Context, *a2a.PushConfig) (*a2a.PushConfig, error) {
 	return nil, a2a.ErrUnsupportedOperation
 }
-func (c *fakeSDKClient) GetTaskPushConfig(context.Context, *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error) {
+func (c *fakeSDKClient) GetTaskPushConfig(ctx context.Context, req *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error) {
+	if c.getPush != nil {
+		return c.getPush(ctx, req)
+	}
 	return nil, a2a.ErrUnsupportedOperation
 }
-func (c *fakeSDKClient) ListTaskPushConfigs(context.Context, *a2a.ListTaskPushConfigRequest) ([]*a2a.PushConfig, error) {
+func (c *fakeSDKClient) ListTaskPushConfigs(ctx context.Context, req *a2a.ListTaskPushConfigRequest) ([]*a2a.PushConfig, error) {
+	if c.listPush != nil {
+		return c.listPush(ctx, req)
+	}
 	return nil, a2a.ErrUnsupportedOperation
 }
 func (c *fakeSDKClient) DeleteTaskPushConfig(context.Context, *a2a.DeleteTaskPushConfigRequest) error {
