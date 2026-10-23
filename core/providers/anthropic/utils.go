@@ -421,6 +421,12 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			req.Thinking.BudgetTokens = nil
 		}
 	}
+	// thinking.display:"updates" is a beta value, taken per model. Where it is not taken it 400s like an
+	// unknown value ("Input should be 'summarized', 'omitted'"), so it degrades to "omitted", the nearest one.
+	if req.Thinking != nil && req.Thinking.Display != nil && *req.Thinking.Display == AnthropicThinkingDisplayUpdates &&
+		!SupportsThinkingDisplayUpdates(caps) {
+		req.Thinking.Display = new("omitted")
+	}
 	if req.InferenceGeo != nil && !caps.SupportsInferenceGeo(features.InferenceGeo) {
 		req.InferenceGeo = nil
 	}
@@ -994,6 +1000,14 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 					return nil, fmt.Errorf("strip raw thinking.budget_tokens: %w", err)
 				}
 			}
+		}
+	}
+
+	// thinking.display:"updates" — mirrors the typed path's downgrade.
+	if !SupportsThinkingDisplayUpdates(caps) && providerUtils.GetJSONField(jsonBody, "thinking.display").String() == AnthropicThinkingDisplayUpdates {
+		jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.display", "omitted")
+		if err != nil {
+			return nil, fmt.Errorf("rewrite raw thinking.display to omitted: %w", err)
 		}
 	}
 
@@ -1573,6 +1587,24 @@ func DefaultAdaptiveOnlyThinking(model string) bool {
 // param must be omitted entirely rather than sent as disabled.
 func DefaultCanDisableReasoning(model string) bool {
 	return !IsFableFamily(model) && !schemas.IsOpus55Plus(model) && !IsSonnet55Plus(model)
+}
+
+// DefaultSupportsThinkingDisplayUpdates: the adaptive-only generation takes thinking.display:"updates"
+// with its beta on every surface that ships it, and is where it does anything (only those models
+// write progress updates). Bedrock rejects it on Opus 4.6 and the 4.5 generation even with the beta,
+// and on the models that write no updates it returns what "omitted" does.
+func DefaultSupportsThinkingDisplayUpdates(model string) bool {
+	return DefaultAdaptiveOnlyThinking(model)
+}
+
+// SupportsThinkingDisplayUpdates reports whether thinking.display:"updates" may be sent for the
+// (provider, model) pair. The datasheet's supports_thinking_display_updates wins when set, so a
+// model or surface can be enabled without a release; without a row it needs the surface to ship
+// the beta (ProviderFeatures.ThinkingDisplayUpdates) and a model that takes it.
+func SupportsThinkingDisplayUpdates(caps schemas.ModelCaps) bool {
+	return caps.SupportsThinkingDisplayUpdates(
+		ProviderFeatures[caps.Provider()].ThinkingDisplayUpdates &&
+			DefaultSupportsThinkingDisplayUpdates(caps.Model()))
 }
 
 // DefaultSupportsBetweenToolsThinking: Sonnet 5.5 accepts thinking:{type:"between_tools"}
@@ -2483,6 +2515,13 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicInterleavedThinkingBetaHeader)
 		}
 	}
+	// thinking.display:"updates" needs its beta; the value means nothing with thinking off.
+	if req.Thinking != nil && (req.Thinking.Type == "adaptive" || req.Thinking.Type == "enabled") &&
+		req.Thinking.Display != nil && *req.Thinking.Display == AnthropicThinkingDisplayUpdates {
+		if !hasProvider || SupportsThinkingDisplayUpdates(caps) {
+			headers = appendUniqueHeader(headers, AnthropicThinkingDisplayUpdatesBetaHeader)
+		}
+	}
 	// Check for fast mode. Only add the beta header when both the provider
 	// supports fast mode AND the model does (Opus 4.6 and Opus 4.7+ per
 	// SupportsFastMode); otherwise sending the header guarantees a 400.
@@ -2658,6 +2697,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicMidConversationToolChangesBetaHeaderPrefix,
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix,
 	AnthropicInlineToolsBetaHeaderPrefix,
+	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix,
 }
 
 // betaHeaderProviderVersion rewrites a beta header's version date on providers
@@ -3277,6 +3317,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicMidConversationToolChangesBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvOutputConfig },
 	AnthropicInlineToolsBetaHeaderPrefix:                 func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
+	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.ThinkingDisplayUpdates },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and

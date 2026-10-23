@@ -2,6 +2,8 @@ package bedrock
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -451,5 +453,131 @@ func TestConvertChatParameters_BetweenToolsOpus5Xhigh(t *testing.T) {
 	}
 	if raw, ok := bedrockReq.AdditionalModelRequestFields.Get("thinking"); ok {
 		t.Errorf("thinking = %+v, want omitted: Opus 5 rejects disabled at xhigh", raw)
+	}
+}
+
+// thinking.display "updates" needs its beta, and on Converse the beta rides in
+// additionalModelRequestFields.anthropic_beta because Bedrock's edge consumes the outer
+// header. Where the surface carries it the value is kept and the beta added; otherwise it
+// degrades to "omitted" instead of the ValidationException "thinking.adaptive.display:
+// Input should be 'summarized', 'omitted'".
+func TestConvertChatParameters_DisplayUpdates(t *testing.T) {
+	arms := map[string]*schemas.ChatReasoning{
+		"effort arm": {Effort: new("medium"), Display: new("updates")},
+		"budget arm": {MaxTokens: new(1024), Display: new("updates")},
+	}
+	for name, reasoning := range arms {
+		for _, supported := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/supported=%v", name, supported), func(t *testing.T) {
+				prev := anthropic.ProviderFeatures[schemas.Bedrock]
+				features := prev
+				features.ThinkingDisplayUpdates = supported
+				anthropic.ProviderFeatures[schemas.Bedrock] = features
+				t.Cleanup(func() { anthropic.ProviderFeatures[schemas.Bedrock] = prev })
+
+				bifrostReq := &schemas.BifrostChatRequest{
+					Model:  adaptiveOnlyModel,
+					Params: &schemas.ChatParameters{Reasoning: reasoning},
+				}
+				bedrockReq := &BedrockConverseRequest{}
+				if err := convertChatParameters(nil, bifrostReq, bedrockReq, schemas.ResolveModelCaps(schemas.Bedrock, adaptiveOnlyModel)); err != nil {
+					t.Fatalf("convertChatParameters failed: %v", err)
+				}
+				raw, _ := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+				thinking, _ := raw.(map[string]any)
+				wantDisplay := "omitted"
+				if supported {
+					wantDisplay = anthropic.AnthropicThinkingDisplayUpdates
+				}
+				if got := thinking["display"]; got != wantDisplay {
+					t.Errorf("thinking.display = %v, want %q; thinking: %+v", got, wantDisplay, thinking)
+				}
+				betas, _ := bedrockReq.AdditionalModelRequestFields.Get("anthropic_beta")
+				if got := strings.Contains(fmt.Sprint(betas), anthropic.AnthropicThinkingDisplayUpdatesBetaHeader); got != supported {
+					t.Errorf("anthropic_beta carries %s = %v, want %v", anthropic.AnthropicThinkingDisplayUpdatesBetaHeader, got, supported)
+				}
+			})
+		}
+	}
+}
+
+// Bedrock takes "updates" with its beta on the adaptive-only generation only: Opus 4.6 (adaptive
+// thinking) and the 4.5 generation (enabled thinking) reject it. The enabled branches also carry
+// display, which they used to drop for every value, so a caller asking for hidden reasoning got the
+// default summaries. "updates" on a model that does not take it degrades to "omitted" (the models
+// that write no progress updates return the same thing); a datasheet row overrides either way.
+func TestConvertChatParameters_DisplayModelGate(t *testing.T) {
+	const (
+		opus46   = "global.anthropic.claude-opus-4-6-v1"
+		sonnet46 = "global.anthropic.claude-sonnet-4-6"
+		opus45   = "global.anthropic.claude-opus-4-5-20251101-v1:0"
+	)
+	yes, no := true, false
+	effort := &schemas.ChatReasoning{Effort: new("high")}
+	budget := &schemas.ChatReasoning{MaxTokens: new(2048)}
+	with := func(r *schemas.ChatReasoning, display string) *schemas.ChatReasoning {
+		c := *r
+		if display != "" {
+			c.Display = new(display)
+		}
+		return &c
+	}
+	cases := []struct {
+		name        string
+		model       string
+		reasoning   *schemas.ChatReasoning
+		override    *bool
+		wantType    string
+		wantDisplay string // "" = display must be absent
+		wantBeta    bool
+	}{
+		{"opus 4.6 adaptive, updates is omitted", opus46, with(effort, "updates"), nil, "adaptive", "omitted", false},
+		{"opus 4.6 adaptive, row says yes", opus46, with(effort, "updates"), &yes, "adaptive", "updates", true},
+		{"sonnet 4.6 enabled budget, updates is omitted", sonnet46, with(budget, "updates"), nil, "enabled", "omitted", false},
+		{"sonnet 4.6 enabled budget, summarized forwarded", sonnet46, with(budget, "summarized"), nil, "enabled", "summarized", false},
+		{"sonnet 4.6 enabled budget, omitted forwarded", sonnet46, with(budget, "omitted"), nil, "enabled", "omitted", false},
+		{"sonnet 4.6 enabled budget, no display stays absent", sonnet46, with(budget, ""), nil, "enabled", "", false},
+		{"sonnet 4.6 enabled budget, row says yes", sonnet46, with(budget, "updates"), &yes, "enabled", "updates", true},
+		{"opus 4.5 enabled effort, updates is omitted", opus45, with(effort, "updates"), nil, "enabled", "omitted", false},
+		{"opus 4.5 enabled effort, omitted forwarded", opus45, with(effort, "omitted"), nil, "enabled", "omitted", false},
+		{"opus 4.5 enabled effort, no display stays absent", opus45, with(effort, ""), nil, "enabled", "", false},
+		{"adaptive-only keeps updates", adaptiveOnlyModel, with(effort, "updates"), nil, "adaptive", "updates", true},
+		{"adaptive-only, row says no", adaptiveOnlyModel, with(effort, "updates"), &no, "adaptive", "omitted", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			providerUtils.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+				if tc.override != nil && p == schemas.Bedrock && m == tc.model {
+					return &schemas.ModelCapabilities{SupportsThinkingDisplayUpdates: tc.override}
+				}
+				return nil
+			})
+			t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+
+			bifrostReq := &schemas.BifrostChatRequest{
+				Model:  tc.model,
+				Params: &schemas.ChatParameters{Reasoning: tc.reasoning, MaxCompletionTokens: new(4096)},
+			}
+			bedrockReq := &BedrockConverseRequest{}
+			if err := convertChatParameters(nil, bifrostReq, bedrockReq, schemas.ResolveModelCaps(schemas.Bedrock, tc.model)); err != nil {
+				t.Fatalf("convertChatParameters failed: %v", err)
+			}
+			raw, _ := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+			thinking, _ := raw.(map[string]any)
+			if got := thinking["type"]; got != tc.wantType {
+				t.Fatalf("thinking.type = %v, want %q; thinking: %+v", got, tc.wantType, thinking)
+			}
+			display, present := thinking["display"]
+			if tc.wantDisplay == "" && present {
+				t.Errorf("thinking.display = %v, want it absent", display)
+			}
+			if tc.wantDisplay != "" && display != tc.wantDisplay {
+				t.Errorf("thinking.display = %v, want %q; thinking: %+v", display, tc.wantDisplay, thinking)
+			}
+			betas, _ := bedrockReq.AdditionalModelRequestFields.Get("anthropic_beta")
+			if got := strings.Contains(fmt.Sprint(betas), anthropic.AnthropicThinkingDisplayUpdatesBetaHeader); got != tc.wantBeta {
+				t.Errorf("anthropic_beta carries the updates beta = %v, want %v (anthropic_beta: %v)", got, tc.wantBeta, betas)
+			}
+		})
 	}
 }
