@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -376,6 +377,128 @@ func TestProviderWrites_RejectMalformedInjectedTools(t *testing.T) {
 				t.Fatalf("rejected update reloaded the provider: %v", modelsManager.reloadCalls)
 			}
 		})
+	}
+}
+
+// A passthrough block the typed payload would silently reshape must be rejected: a
+// misspelled or missing allowed_routes decodes to an empty list, which forwards no routes
+// at all, and a rule the matcher cannot honour would block routes without saying why.
+// Both write paths are covered.
+func TestProviderWrites_RejectMalformedPassthrough(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	blocks := map[string]struct{ body, reason string }{
+		"not an object":          {`[]`, "passthrough must be an object"},
+		"missing allowed_routes": {`{}`, "allowed_routes is required"},
+		"misspelled field":       {`{"allowed_route": []}`, `unknown field \"allowed_route\"`},
+		"null rule":              {`{"allowed_routes": [null]}`, "allowed_routes[0] must be an object"},
+		"unknown rule field":     {`{"allowed_routes": [{"method": "GET", "path": "/v1/files"}]}`, `unknown field \"method\"`},
+		"rule without a path":    {`{"allowed_routes": [{"methods": ["GET"]}]}`, "path must start with /"},
+		"inner double star":      {`{"allowed_routes": [{"path": "/v1/**/content"}]}`, "only allowed as the last"},
+		"unsupported method":     {`{"allowed_routes": [{"methods": ["TRACE"], "path": "/v1/files"}]}`, "unsupported method"},
+	}
+	for name, tc := range blocks {
+		t.Run("add/"+name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				modelsManager: &mockModelsManager{},
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBody([]byte(`{"provider": "mock-openai", "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}, "passthrough": ` + tc.body + `}`))
+			h.addProvider(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), tc.reason) {
+				t.Fatalf("expected passthrough rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if len(h.inMemoryStore.Providers) != 0 {
+				t.Fatal("invalid provider was persisted")
+			}
+		})
+		t.Run("update/"+name, func(t *testing.T) {
+			modelsManager := &mockModelsManager{}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					ClientConfig: &configstore.ClientConfig{},
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						"mock-openai": {
+							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+							CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+						},
+					},
+				},
+				modelsManager: modelsManager,
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			ctx.Request.SetRequestURI("/api/providers/mock-openai")
+			ctx.Request.SetBody([]byte(`{"concurrency_and_buffer_size": {"concurrency": 2, "buffer_size": 4}, "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}, "passthrough": ` + tc.body + `}`))
+			ctx.SetUserValue("provider", "mock-openai")
+			h.updateProvider(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), tc.reason) {
+				t.Fatalf("expected passthrough rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if got := h.inMemoryStore.Providers["mock-openai"].ConcurrencyAndBufferSize.Concurrency; got != 1 {
+				t.Fatalf("rejected update changed the stored provider: concurrency=%d", got)
+			}
+			if len(modelsManager.reloadCalls) != 0 {
+				t.Fatalf("rejected update reloaded the provider: %v", modelsManager.reloadCalls)
+			}
+		})
+	}
+}
+
+// A valid passthrough policy on create is stored, returned, and an update that does not
+// mention it leaves it in place.
+func TestProviderWrites_StorePassthrough(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	policy := &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+		{Methods: []string{"POST"}, Path: "/v1/chat/completions"},
+		{Methods: []string{"POST"}, Path: "/v1/models/*/predict"},
+	}}
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{ClientConfig: &configstore.ClientConfig{}, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: &mockModelsManager{},
+	}
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider:             "mock-openai",
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+		Passthrough:          policy,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+	h.addProvider(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("add status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	var created ProviderResponse
+	if err := sonic.Unmarshal(ctx.Response.Body(), &created); err != nil {
+		t.Fatalf("decode add response: %v", err)
+	}
+	if !reflect.DeepEqual(created.Passthrough, policy) {
+		t.Fatalf("add response passthrough %+v, want %+v", created.Passthrough, policy)
+	}
+	if got := h.inMemoryStore.Providers["mock-openai"].Passthrough; !reflect.DeepEqual(got, policy) {
+		t.Fatalf("stored passthrough %+v, want %+v", got, policy)
+	}
+
+	attachBifrostClient(t, h.inMemoryStore)
+	ctx = &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.Request.SetRequestURI("/api/providers/mock-openai")
+	ctx.Request.SetBody([]byte(`{"concurrency_and_buffer_size": {"concurrency": 2, "buffer_size": 4}, "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}}`))
+	ctx.SetUserValue("provider", "mock-openai")
+	h.updateProvider(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("update status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if got := h.inMemoryStore.Providers["mock-openai"].Passthrough; !reflect.DeepEqual(got, policy) {
+		t.Fatalf("an update without passthrough changed it to %+v", got)
 	}
 }
 

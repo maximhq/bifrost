@@ -201448,7 +201448,7 @@
     },
     {
       "name": "Passthrough inference route policy (inference-route-policy)",
-      "description": "x-model-provider may only repeat the passthrough route's provider. The check fails before provider calls.",
+      "description": "x-model-provider may name the route's provider, or a custom provider of the same base type that opted in with a passthrough policy. openai_passthrough_routes allows POST /v1/chat/completions and GET /v1/models; a route or method outside its allowed_routes is refused with 403 before the upstream, and openai_websearch has no policy so it is refused outright. Refusals make no provider calls.",
       "item": [
         {
           "name": "[EXPECT-400] openai inference-route-policy provider switch refused",
@@ -201500,6 +201500,252 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": []\n}"
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini passthrough-route-policy custom provider listed chat route forwarded",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-route-policy path rule forwards POST /v1/chat/completions for an opted-in custom provider', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "openai_passthrough_routes"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Say ok.\"}],\n  \"max_tokens\": 5\n}"
+            }
+          }
+        },
+        {
+          "name": "openai passthrough-route-policy custom provider listed route forwarded",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-route-policy path rule forwards GET /v1/models', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().data, pm.response.text()).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "openai_passthrough_routes"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai passthrough-route-policy custom provider unlisted route refused",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-route-policy refuses a route outside the allowlist before the upstream', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text()).to.include('passthrough route GET /v1/files is not allowed for provider openai_passthrough_routes');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-model-provider",
+                "value": "openai_passthrough_routes"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai passthrough-route-policy custom provider listed path with another method refused",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-route-policy matches the rule methods, not only the path', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text()).to.include('passthrough route POST /v1/models is not allowed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "openai_passthrough_routes"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "models"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai gpt-4o-mini passthrough-route-policy custom provider without a policy refused",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-route-policy custom provider must opt in with a policy', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text()).to.include('passthrough is not enabled for provider openai_websearch');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-model-provider",
+                "value": "openai_websearch"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Say ok.\"}],\n  \"max_tokens\": 5\n}"
             }
           }
         }

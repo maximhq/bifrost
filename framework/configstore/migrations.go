@@ -569,6 +569,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vertex_use_session_routing_column"}, run: migrationAddVertexUseSessionRoutingColumn},
 	{IDs: []string{"add_rss_feeds_table"}, run: migrationAddRSSFeedsTable},
 	{IDs: []string{"add_rss_feeds_icon_url_column"}, run: migrationAddRSSFeedsIconURLColumn},
+	{IDs: []string{"add_passthrough_json_column"}, run: migrationAddPassthroughJSONColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16303,4 +16304,31 @@ func migrationAddVertexUseSessionRoutingColumn(ctx context.Context, db *gorm.DB,
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
+}
+
+// migrationAddPassthroughJSONColumn adds the passthrough_json column to the provider
+// table, backing ProviderConfig.Passthrough.
+func migrationAddPassthroughJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_passthrough_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "PassthroughJSON")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackPassthroughJSONColumn(tx)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// rollbackPassthroughJSONColumn refuses to undo add_passthrough_json_column.
+func rollbackPassthroughJSONColumn(*gorm.DB) error {
+	return fmt.Errorf("add_passthrough_json_column is non-rollbackable: dropping passthrough_json would delete every provider's passthrough allowlist, and after a re-upgrade built-in providers would silently forward every passthrough route again; the column is additive and older binaries safely ignore it")
 }

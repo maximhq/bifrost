@@ -8004,6 +8004,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		bifrost.endCoreSpan(workerSetupSpan)
 
+		// Before key acquisition, so a refused route never touches a key or the upstream.
+		if config.Passthrough != nil && (req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest) &&
+			!passthroughRouteAllowed(config.Passthrough, req.BifrostRequest.PassthroughRequest) {
+			bifrost.sendWorkerError(req, newPassthroughRouteNotAllowedError(provider.GetProviderKey(), req.RequestType, req.BifrostRequest.PassthroughRequest))
+			continue
+		}
+
 		var keys []schemas.Key
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
 		// It is nil when no key is required (e.g. providerRequiresKey=false) or for multi-key

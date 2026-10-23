@@ -991,6 +991,78 @@ export const injectedToolsFormSchema = z
 export type InjectedToolRowSchema = z.infer<typeof injectedToolRowSchema>;
 export type InjectedToolsFormSchema = z.infer<typeof injectedToolsFormSchema>;
 
+// PASSTHROUGH_METHODS are the HTTP methods a passthrough route rule can name.
+export const PASSTHROUGH_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
+export type PassthroughMethod = (typeof PASSTHROUGH_METHODS)[number];
+
+export function isPassthroughMethod(method: string): boolean {
+	return (PASSTHROUGH_METHODS as readonly string[]).includes(method);
+}
+
+// passthroughPathIssue mirrors the server's check on a rule path and returns the first
+// problem, or undefined when the path is valid.
+export function passthroughPathIssue(path: string): string | undefined {
+	if (path === "") return "Enter a path";
+	if (!path.startsWith("/")) return "Path must start with /";
+	if (/[?#%\\[\]]/.test(path)) return "Path must not contain ?, #, %, \\, [ or ]";
+	if (path === "/") return undefined;
+	const segments = path.slice(1).split("/");
+	for (let i = 0; i < segments.length; i++) {
+		const segment = segments[i];
+		if (segment === "" || segment === "." || segment === "..") return "Path must not contain empty, . or .. segments";
+		if (segment.includes("**") && (segment !== "**" || i !== segments.length - 1)) return "** is only allowed as the last path segment";
+	}
+	return undefined;
+}
+
+// One saved passthrough rule: a path pattern with optional methods.
+export const passthroughRouteRuleSchema = z
+	.object({
+		methods: z.array(z.string()).optional(),
+		path: z.string().optional(),
+	})
+	.superRefine((rule, ctx) => {
+		rule.methods?.forEach((method, index) => {
+			if (!isPassthroughMethod(method)) {
+				ctx.addIssue({ code: "custom", path: ["methods", index], message: `Unsupported method ${method}` });
+			}
+		});
+		const issue = passthroughPathIssue(rule.path ?? "");
+		if (issue) ctx.addIssue({ code: "custom", path: ["path"], message: issue });
+	});
+
+// The saved passthrough policy, as the provider API returns and accepts it.
+export const passthroughPolicySchema = z.object({
+	allowed_routes: z.array(passthroughRouteRuleSchema),
+});
+
+// One row of the provider Passthrough tab's rule editor.
+export const passthroughRuleRowSchema = z.object({
+	methods: z.array(z.enum(PASSTHROUGH_METHODS)),
+	path: z.string(),
+});
+
+// The Passthrough tab. Rules are checked only in custom mode; the other modes ignore them.
+export const passthroughFormSchema = z
+	.object({
+		mode: z.enum(["all", "custom", "off"]),
+		rules: z.array(passthroughRuleRowSchema),
+	})
+	.superRefine((data, ctx) => {
+		if (data.mode !== "custom") return;
+		if (data.rules.length === 0) {
+			ctx.addIssue({ code: "custom", path: ["rules"], message: "Add a rule, or choose Off to forward nothing" });
+			return;
+		}
+		data.rules.forEach((rule, index) => {
+			const issue = passthroughPathIssue(rule.path);
+			if (issue) ctx.addIssue({ code: "custom", path: ["rules", index, "path"], message: issue });
+		});
+	});
+
+export type PassthroughRuleRowSchema = z.infer<typeof passthroughRuleRowSchema>;
+export type PassthroughFormSchema = z.infer<typeof passthroughFormSchema>;
+
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
 	text_completion: z.boolean(),
@@ -1024,6 +1096,8 @@ export const allowedRequestsSchema = z.object({
 	video_delete: z.boolean(),
 	video_list: z.boolean(),
 	video_remix: z.boolean(),
+	passthrough: z.boolean().optional(),
+	passthrough_stream: z.boolean().optional(),
 	count_tokens: z.boolean(),
 	list_models: z.boolean(),
 	model_retrieve: z.boolean().optional(),
@@ -1129,6 +1203,7 @@ export const addProviderRequestSchema = z.object({
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
 	injected_tools: injectedToolsConfigSchema.nullable().optional(),
+	passthrough: passthroughPolicySchema.nullable().optional(),
 });
 
 // Update provider request schema
@@ -1145,6 +1220,7 @@ export const updateProviderRequestSchema = z.object({
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
 	injected_tools: injectedToolsConfigSchema.nullable().optional(),
+	passthrough: passthroughPolicySchema.nullable().optional(),
 });
 
 // Cache config schema

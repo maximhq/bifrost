@@ -60,6 +60,8 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				ocr: provider.custom_provider_config?.allowed_requests?.ocr ?? true,
 				ocr_stream: provider.custom_provider_config?.allowed_requests?.ocr_stream ?? true,
 				decisions: provider.custom_provider_config?.allowed_requests?.decisions ?? true,
+				passthrough: provider.custom_provider_config?.allowed_requests?.passthrough ?? true,
+				passthrough_stream: provider.custom_provider_config?.allowed_requests?.passthrough_stream ?? true,
 			},
 			request_path_overrides: provider.custom_provider_config?.request_path_overrides ?? undefined,
 		},

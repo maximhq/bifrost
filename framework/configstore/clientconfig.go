@@ -660,6 +660,7 @@ type ProviderConfig struct {
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
 	InjectedTools            []schemas.InjectedTool            `json:"injected_tools,omitempty"`              // MCP tools injected and auto-executed server side
+	Passthrough              *schemas.PassthroughPolicy        `json:"passthrough,omitempty"`                 // Routes the HTTP passthrough endpoints may forward
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -683,6 +684,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		OpenAIConfig:             p.OpenAIConfig,
 		PromptCache:              p.PromptCache,
 		InjectedTools:            p.InjectedTools,
+		Passthrough:              p.Passthrough,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -975,6 +977,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash InjectedTools
 	if len(p.InjectedTools) > 0 {
 		data, err := sonic.Marshal(p.InjectedTools)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash Passthrough
+	if p.Passthrough != nil {
+		data, err := sonic.Marshal(p.Passthrough)
 		if err != nil {
 			return "", err
 		}

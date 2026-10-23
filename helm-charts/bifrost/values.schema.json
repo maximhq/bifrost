@@ -7085,6 +7085,26 @@
             "additionalProperties": false
           }
         },
+        "passthrough": {
+          "type": "object",
+          "description": "Routes the HTTP passthrough endpoints forward to this provider. Omit for the default: a built-in provider forwards every route, a custom provider forwards none. An empty allowed_routes forwards nothing",
+          "properties": {
+            "allowed_routes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "methods": { "type": "array", "items": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] }, "description": "Omit to allow any method" },
+                  "path": { "type": "string", "pattern": "^/", "description": "Path after the route prefix; * matches within one segment, a final /** matches the path and everything below it" }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["allowed_routes"],
+          "additionalProperties": false
+        },
         "custom_provider_config": {
           "type": "object",
           "description": "Custom provider configuration",

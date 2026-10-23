@@ -5021,3 +5021,29 @@ func TestDropAgentRegistrationOptionsWithoutLegacyColumns(t *testing.T) {
 	require.NoError(t, db.Model(&tables.TableAgentRegistration{}).Count(&count).Error)
 	require.EqualValues(t, 1, count)
 }
+
+// TestMigrationAddPassthroughJSONColumn_NonRollbackable pins that rolling the passthrough
+// column back is refused. passthrough_json is the only home for a provider's passthrough
+// allowlist, and a provider without one forwards every route, so the rollback must fail
+// loudly and leave the column and its policies in place.
+func TestMigrationAddPassthroughJSONColumn_NonRollbackable(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableProvider{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableProvider{}, "passthrough_json"))
+	require.NoError(t, migrationAddPassthroughJSONColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "passthrough_json"))
+
+	policy := &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{{Methods: []string{"POST"}, Path: "/v1/chat/completions"}}}
+	require.NoError(t, db.Create(&tables.TableProvider{Name: "openai", Passthrough: policy}).Error)
+
+	err := rollbackPassthroughJSONColumn(db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "passthrough_json"), "a refused rollback must leave the column intact")
+
+	var got tables.TableProvider
+	require.NoError(t, db.Where("name = ?", "openai").First(&got).Error)
+	assert.Equal(t, policy, got.Passthrough)
+}
