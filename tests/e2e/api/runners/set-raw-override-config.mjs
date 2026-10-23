@@ -5,6 +5,8 @@
 // instead of naming the real defect. The harness config.json already enables it for a
 // gateway the runner starts itself; this covers a gateway that was already running.
 
+import { normaliseRetentionDays } from "./lib/content-logging-matrix.mjs";
+
 const baseURL = (process.env.BIFROST_E2E_BASE_URL || process.env.BIFROST_BASE_URL || "http://localhost:8080").replace(/\/+$/, "");
 const mode = process.argv[2];
 const authHeader = process.env.BIFROST_E2E_AUTH_HEADER || "";
@@ -49,11 +51,8 @@ if (!!current.client_config.allow_per_request_raw_override === want) {
   process.exit(0);
 }
 
-// The server reports log_retention_days:0 by default but rejects that on write
-// (it must be >= 1), so a straight round-trip of client_config would 400.
-if (!(current.client_config.log_retention_days >= 1)) {
-  current.client_config.log_retention_days = 1;
-}
+// PUT rejects an unset retention; preserve the cleaner's effective default.
+current.client_config.log_retention_days = normaliseRetentionDays(current.client_config.log_retention_days);
 current.client_config.allow_per_request_raw_override = want;
 
 // auth_config is omitted on purpose: the handler takes it as a pointer and leaves

@@ -4,6 +4,7 @@
 // The rows below are written out by hand from the documented contract rather than derived from
 // expectedOutcome, so a change to the rule has to change both places on purpose.
 import assert from "node:assert";
+import { spawnSync } from "node:child_process";
 import { allCases, callbackEndpoints, caseID, DEFAULT_LOG_RETENTION_DAYS, expectedOutcome, groupByConfig, headerValue, logRowFailures, normaliseRetentionDays, vkDisableValue } from "./content-logging-matrix.mjs";
 
 let passed = 0;
@@ -111,6 +112,93 @@ test("an unset retention is written back as the cleaner's default, never as one 
 	assert.strictEqual(normaliseRetentionDays(30), 30);
 	assert.strictEqual(normaliseRetentionDays(1), 1);
 });
+
+// Run the real CLI entrypoints in separate processes. Only HTTP is replaced;
+// imports, argument handling, auth headers, early exits and PUT bodies are real.
+function runConfigScript(script, mode, current, failMethod = "") {
+	const bootstrap = `
+		const [script, mode, snapshot, failMethod] = process.argv.slice(1);
+		const current = JSON.parse(snapshot);
+		const calls = [];
+		process.on("exit", () => console.log("CONFIG_CALLS:" + JSON.stringify(calls)));
+		globalThis.fetch = async (url, options) => {
+			calls.push({ url, method: options.method, headers: options.headers, body: options.body && JSON.parse(options.body) });
+			return { ok: options.method !== failMethod, status: options.method === failMethod ? 500 : 200,
+				text: async () => options.method === failMethod ? "fixture failure" : JSON.stringify(options.method === "GET" ? current : {}) };
+		};
+		process.argv = [process.execPath, script, mode];
+		await import(script);
+	`;
+	const result = spawnSync(process.execPath, ["--input-type=module", "--eval", bootstrap, new URL(`../${script}`, import.meta.url).href, mode, JSON.stringify(current), failMethod], {
+		encoding: "utf8",
+		timeout: 10000,
+		env: {
+			...process.env,
+			BIFROST_E2E_BASE_URL: "http://config-fixture:8080///",
+			BIFROST_E2E_AUTH_HEADER: "Bearer fixture-admin",
+			BIFROST_E2E_SETUP_TOKEN: "fixture-setup-token",
+			BIFROST_E2E_ADMIN_USERNAME: "fixture-admin",
+			BIFROST_E2E_ADMIN_PASSWORD: "fixture-password",
+		},
+	});
+	assert.ifError(result.error);
+	const capture = result.stdout.split("\n").find((line) => line.startsWith("CONFIG_CALLS:"));
+	assert.ok(capture, result.stderr);
+	return { status: result.status, stderr: result.stderr, calls: JSON.parse(capture.slice("CONFIG_CALLS:".length)) };
+}
+
+function assertRetentionCliSave(script, mode, days) {
+	const current = {
+		client_config: { log_retention_days: days, allow_per_request_raw_override: mode !== "enable", disable_content_logging: true, allowed_origins: ["https://unchanged.example"] },
+		framework_config: { pricing_url: "https://unchanged.example/pricing.json" },
+		auth_config: { is_enabled: false, admin_username: "fixture-admin", admin_password: "<redacted>" },
+	};
+	const result = runConfigScript(script, mode, current);
+	assert.strictEqual(result.status, 0, result.stderr);
+	assert.deepStrictEqual(result.calls.map((call) => call.method), ["GET", "PUT"]);
+	const saved = result.calls[1].body;
+	const expected = { ...current.client_config, log_retention_days: days >= 1 ? days : 365 };
+	if (script === "set-raw-override-config.mjs") expected.allow_per_request_raw_override = mode === "enable";
+	assert.deepStrictEqual(saved.client_config, expected, `${script} ${mode}, retention=${days}`);
+	assert.deepStrictEqual(saved.framework_config, current.framework_config);
+	for (const call of result.calls) {
+		assert.strictEqual(call.url, "http://config-fixture:8080/api/config");
+		assert.strictEqual(call.headers.Authorization, "Bearer fixture-admin");
+		assert.strictEqual(call.headers["X-Bifrost-Setup-Token"], "fixture-setup-token");
+	}
+	if (script === "set-raw-override-config.mjs") {
+		assert.ok(!Object.hasOwn(saved, "auth_config"), "raw override must not resend admin credentials");
+	} else {
+		assert.strictEqual(saved.auth_config.is_enabled, mode === "enable");
+		assert.strictEqual(saved.auth_config.admin_password, mode === "enable" ? "fixture-password" : "<redacted>");
+	}
+}
+
+test("raw-override CLI preserves effective retention and unrelated configuration", () => {
+	for (const mode of ["enable", "disable"]) {
+		for (const days of [undefined, null, 0, -1, 1, 30, 365, 1000]) {
+			assertRetentionCliSave("set-raw-override-config.mjs", mode, days);
+		}
+	}
+});
+
+test("raw-override CLI does not write config when the requested setting is already active", () => {
+	for (const mode of ["enable", "disable"]) {
+		const result = runConfigScript("set-raw-override-config.mjs", mode, { client_config: { log_retention_days: 0, allow_per_request_raw_override: mode === "enable" } });
+		assert.strictEqual(result.status, 0, result.stderr);
+		assert.deepStrictEqual(result.calls.map((call) => call.method), ["GET"]);
+	}
+});
+
+test("raw-override CLI fails visibly on GET and PUT errors", () => {
+	for (const method of ["GET", "PUT"]) {
+		const result = runConfigScript("set-raw-override-config.mjs", "enable", { client_config: { log_retention_days: 30, allow_per_request_raw_override: false } }, method);
+		assert.strictEqual(result.status, 1);
+		assert.match(result.stderr, /failed with 500: fixture failure/);
+		assert.deepStrictEqual(result.calls.map((call) => call.method), method === "GET" ? ["GET"] : ["GET", "PUT"]);
+	}
+});
+
 
 test("raw log row: disabled content leaves the marker in no column", () => {
 	const m = "m0123456789abcdef";
