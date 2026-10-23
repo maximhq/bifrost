@@ -238,6 +238,309 @@ const OAS36 = folder("OAS-36 OAuth config validation", "Setup: PUT /api/config (
   restoreConfig("OAS-36"),
 ]);
 
+// ================================================================ OAuth server, auth gate and library tests
+
+// OAuth endpoints answer {error, error_description}.
+const O = {
+  error: (code) => A.custom(`error is ${lit(code)}`, ["var b = pm.response.json();", `pm.expect(b.error, 'body: ' + pm.response.text()).to.equal(${lit(code)});`]),
+  desc: (text) => A.custom(`error_description contains ${lit(text)}`, ["var b = pm.response.json();", `pm.expect(b.error_description, 'body: ' + pm.response.text()).to.include(${lit(text)});`]),
+  emptyBody: () => A.custom("body is empty", ["pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.equal('');"]),
+  noLocation: () => A.custom("there is no Location header", ["pm.expect(pm.response.headers.has('Location'), 'Location: ' + pm.response.headers.get('Location')).to.equal(false);"]),
+  descEquals: (text) => A.custom(`error_description is ${lit(text)}`, ["var b = pm.response.json();", `pm.expect(b.error_description, 'body: ' + pm.response.text()).to.equal(${lit(text)});`]),
+  noStore: () => A.custom("Cache-Control is no-store", ["pm.expect(pm.response.headers.get('Cache-Control')).to.equal('no-store');"]),
+};
+
+// ---------------------------------------------------------------- ADM-01
+const noCredRoutes = [
+  ["POST", "/api/mcp/client", clientBody({ name: "adm01_client" })],
+  ["GET", "/api/mcp/clients"],
+  ["PUT", "/api/mcp/client/adm01-id", {}],
+  ["DELETE", "/api/mcp/client/adm01-id"],
+  ["POST", "/api/mcp/client/adm01-id/reconnect"],
+  ["POST", "/api/mcp/client/adm01-id/refresh-tools"],
+  ["POST", "/api/mcp/client/adm01-id/reauthorize"],
+  ["POST", "/api/mcp/client/adm01-id/reregister"],
+  ["POST", "/api/mcp/client/adm01-id/complete-oauth"],
+  ["POST", "/api/mcp/client/adm01-id/initiate-verification"],
+  ["POST", "/api/mcp/client/adm01-id/verify-headers", {}],
+  ["POST", "/api/mcp/client/adm01-id/verify-exchange", {}],
+  ["GET", "/api/mcp/client/adm01-id/openapi-spec"],
+  ["POST", "/api/mcp/openapi/preview", {}],
+  ["GET", "/api/mcp/sessions"],
+  ["DELETE", "/api/mcp/sessions/adm01-id"],
+  ["POST", "/api/mcp/sessions/adm01-id/reauth"],
+  ["GET", "/api/mcp/per-user-headers/flows/adm01-id"],
+  ["PUT", "/api/mcp/per-user-headers/flows/adm01-id", {}],
+  ["DELETE", "/api/mcp/per-user-headers/credential/adm01-id"],
+  ["GET", "/api/oauth/per-user/flows/adm01-id"],
+  ["GET", "/api/oauth/per-user/flows/adm01-id/start"],
+  ["GET", "/api/oauth/config/adm01-id/status"],
+  ["DELETE", "/api/oauth/config/adm01-id"],
+];
+const ADM01 = folder("ADM-01 Every MCP admin route without a credential",
+  "Setup: dashboard auth on; requests carry no Authorization header or cookie.", [
+  request("ADM-01", "setup: record the client count", "GET", "/api/mcp/clients", {
+    asserts: [A.status(200)],
+    extraTests: ["pm.collectionVariables.set('adm01_total', pm.response.json().total_count);"],
+  }),
+  ...noCredRoutes.map(([method, path, body]) =>
+    request("ADM-01", `${method} ${path} without a credential`, method, path, { body, noAuth: true, asserts: [A.status(401), A.msgEquals("Unauthorized")] })),
+  request("ADM-01", "GET /api/oauth/callback is public", "GET", "/api/oauth/callback", { noAuth: true, asserts: [A.status(400), A.msgEquals("Missing required parameters: state and code")] }),
+  request("ADM-01", "nothing changed", "GET", "/api/mcp/clients", {
+    asserts: [A.status(200), A.custom("total_count is unchanged", [
+      "var before = Number(pm.collectionVariables.get('adm01_total'));",
+      "pm.expect(pm.response.json().total_count, 'body: ' + pm.response.text()).to.equal(before);",
+    ])],
+  }),
+]);
+
+// ---------------------------------------------------------------- LOG-41
+const LOG41 = folder("LOG-41 Read endpoints need auth", "Setup: dashboard auth on, no credential.",
+  ["/api/mcp-logs", "/api/mcp-logs/stats", "/api/mcp-logs/filterdata", "/api/mcp-logs/histogram"].map((p) =>
+    request("LOG-41", `GET ${p} without a credential`, "GET", p, { noAuth: true, asserts: [A.status(401), A.msgEquals("Unauthorized")] })));
+
+// ---------------------------------------------------------------- LIB-08, LIB-09, LIB-13
+const libDelete = (id, varName) => request(id, "teardown: delete the entry", "DELETE", `/api/mcp/library/{{${varName}}}`, { asserts: [A.status(200)] });
+const LIB08 = folder("LIB-08 Publish an HTTP custom entry", "Setup: name \"Chaos Alpha\", connection_url http://127.0.0.1:9/mcp. The folder deletes its entry at the end.", [
+  request("LIB-08", "publish \"Chaos Alpha\"", "POST", "/api/mcp/library", {
+    body: { name: "Chaos Alpha", connection_type: "http", connection_url: libURL },
+    asserts: [A.status(200), A.jsonMessage("MCP library server published successfully"),
+      A.custom("entry source, slug and auth_type", [
+        "var e = pm.response.json().entry;",
+        "pm.expect(e.source, 'body: ' + pm.response.text()).to.equal('custom');",
+        "pm.expect(e.slug).to.equal('chaos-alpha');",
+        "pm.expect(e.auth_type).to.equal('none');",
+      ])],
+    extraTests: ["pm.collectionVariables.set('lib08_id', pm.response.json().entry.id);"],
+  }),
+  request("LIB-08", "the entry is listed", "GET", "/api/mcp/library?search=Chaos%20Alpha", {
+    asserts: [A.status(200), A.custom("the list contains the entry", [
+      "var id = Number(pm.collectionVariables.get('lib08_id'));",
+      "var found = (pm.response.json().servers || []).filter(function (s) { return s.id === id; });",
+      "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);",
+    ])],
+  }),
+  libDelete("LIB-08", "lib08_id"),
+]);
+
+const stdioConfig = { command: "mcp-harness-stdio", args: ["--flag", "value"], envs: ["MCP_HARNESS_ENV"] };
+const LIB09 = folder("LIB-09 Publish a STDIO custom entry", "Setup: stdio_config with command, args, envs. The folder deletes its entry at the end.", [
+  request("LIB-09", "publish a stdio entry", "POST", "/api/mcp/library", {
+    body: { name: "LIB-09 stdio entry", connection_type: "stdio", stdio_config: stdioConfig },
+    asserts: [A.status(200), A.custom("stdio_config is echoed", [
+      "pm.expect(pm.response.json().entry.stdio_config, 'body: ' + pm.response.text()).to.eql(" + lit(stdioConfig) + ");",
+    ])],
+    extraTests: ["pm.collectionVariables.set('lib09_id', pm.response.json().entry.id);"],
+  }),
+  request("LIB-09", "filterdata includes stdio", "GET", "/api/mcp/library/filterdata", {
+    asserts: [A.status(200), A.custom("connection_types includes \"stdio\"", [
+      "pm.expect(pm.response.json().connection_types, 'body: ' + pm.response.text()).to.include('stdio');",
+    ])],
+  }),
+  libDelete("LIB-09", "lib09_id"),
+]);
+
+const LIB13 = folder("LIB-13 Delete a custom entry and republish", "Setup: a custom entry. The folder deletes the republished entry at the end.", [
+  request("LIB-13", "setup: publish a custom entry", "POST", "/api/mcp/library", {
+    body: { name: "LIB-13 entry", connection_type: "http", connection_url: libURL },
+    asserts: [A.status(200)],
+    extraTests: ["pm.collectionVariables.set('lib13_id', pm.response.json().entry.id);"],
+  }),
+  request("LIB-13", "the entry is listed before the delete", "GET", "/api/mcp/library?search=LIB-13%20entry", {
+    asserts: [A.status(200), A.custom("the list contains the entry", [
+      "var id = Number(pm.collectionVariables.get('lib13_id'));",
+      "var found = (pm.response.json().servers || []).filter(function (s) { return s.id === id; });",
+      "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);",
+    ])],
+  }),
+  request("LIB-13", "delete the entry", "DELETE", "/api/mcp/library/{{lib13_id}}", { asserts: [A.status(200), A.jsonMessage("MCP library server removed successfully")] }),
+  request("LIB-13", "the entry is not listed", "GET", "/api/mcp/library?search=LIB-13%20entry", {
+    asserts: [A.status(200), A.custom("the list does not contain the entry", [
+      "var id = Number(pm.collectionVariables.get('lib13_id'));",
+      "var found = (pm.response.json().servers || []).filter(function (s) { return s.id === id; });",
+      "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(0);",
+    ])],
+  }),
+  request("LIB-13", "republish the same name", "POST", "/api/mcp/library", {
+    body: { name: "LIB-13 entry", connection_type: "http", connection_url: libURL },
+    asserts: [A.status(200)],
+    extraTests: ["pm.collectionVariables.set('lib13_republished_id', pm.response.json().entry.id);"],
+  }),
+  libDelete("LIB-13", "lib13_republished_id"),
+]);
+
+// ---------------------------------------------------------------- OAS tests that need mode both or oauth
+// setMode switches mcp_server_auth_mode with issuer_url = base_url, or the given issuer; restoreHeaders puts it back.
+const setMode = (id, mode, issuer) => putConfig(id, `setup: switch mcp_server_auth_mode to ${mode} with issuer_url set to ${issuer || "the base URL"}`, [
+  `cc.mcp_server_auth_mode = ${lit(mode)};`,
+  `cc.oauth2_server_config = { issuer_url: ${issuer ? lit(issuer) : "pm.variables.get('base_url')"} };`,
+], [A.status(200)]);
+const restoreHeaders = (id) => putConfig(id, "teardown: restore mcp_server_auth_mode headers", ["cc.mcp_server_auth_mode = 'headers';"], [A.status(200)]);
+const withMode = (id, mode, items, issuer) => [readConfig(id), setMode(id, mode, issuer), ...items, restoreHeaders(id)];
+// OTHER_ISS is an issuer_url on another origin than the one requests go to, so a value taken from the request's
+// Host instead of issuer_url cannot match it.
+const OTHER_ISS = "https://issuer.mcp-harness.example";
+
+const BOTH = "mcp_server_auth_mode both with issuer_url set to the base URL";
+const LOOPBACK_CB = "http://127.0.0.1:9999/cb";
+const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+// name, when given, also titles the request so tests that register two clients stay distinct;
+// grantTypes, when given, is sent as grant_types.
+const register = (id, varName, redirect = LOOPBACK_CB, name, grantTypes) => request(id, name ? `setup: register the OAuth client "${name}"` : "setup: register an OAuth client", "POST", "/oauth2/register", {
+  noAuth: true, body: { client_name: name || `${id} client`, redirect_uris: [redirect], ...(grantTypes ? { grant_types: grantTypes } : {}) }, asserts: [A.status(201)],
+  extraTests: [`pm.collectionVariables.set(${lit(varName)}, pm.response.json().client_id);`],
+});
+// authorizePath builds /oauth2/authorize; values are query-safe as written.
+const authorizePath = (params) => "/oauth2/authorize?" + Object.entries(params).filter(([, v]) => v !== undefined).map(([k, v]) => `${k}=${v}`).join("&");
+const goodAuthorize = (clientVar, over = {}) => authorizePath({
+  response_type: "code", client_id: `{{${clientVar}}}`, redirect_uri: LOOPBACK_CB, state: "s1",
+  code_challenge: CHALLENGE, code_challenge_method: "S256", resource: "{{base_url}}/mcp", scope: "mcp", ...over,
+});
+const consentLocation = (issuer) => A.custom(`Location is ${issuer ? "the issuer" : "<base URL>"}/oauth/consent?flow=<id>#t=<token>`, [
+  "var loc = pm.response.headers.get('Location') || '';",
+  `var iss = ${issuer ? lit(issuer) : "pm.variables.get('base_url')"};`,
+  "pm.expect(loc.indexOf(iss + '/oauth/consent?flow='), 'Location: ' + loc).to.equal(0);",
+  "pm.expect(/\\/oauth\\/consent\\?flow=[^#&]+#t=.+$/.test(loc), 'Location: ' + loc).to.equal(true);",
+]);
+const errorRedirect = (code, desc) => A.custom(`Location carries error ${code || "(any)"}${desc ? ", error_description " + lit(desc) : ""} and state s1`, [
+  "var loc = pm.response.headers.get('Location') || '';",
+  `pm.expect(loc.indexOf(${lit(LOOPBACK_CB + "?")}), 'Location: ' + loc).to.equal(0);`,
+  "var q = {}; loc.split('?')[1].split('&').forEach(function (kv) { var p = kv.split('='); q[decodeURIComponent(p[0])] = decodeURIComponent((p[1] || '').replace(/\\+/g, ' ')); });",
+  code ? `pm.expect(q.error, 'Location: ' + loc).to.equal(${lit(code)});` : "pm.expect(q.error, 'Location: ' + loc).to.be.a('string').and.not.empty;",
+  desc ? `pm.expect(q.error_description, 'Location: ' + loc).to.equal(${lit(desc)});` : "pm.expect(q.error_description, 'Location: ' + loc).to.be.a('string').and.not.empty;",
+  "pm.expect(q.state, 'Location: ' + loc).to.equal('s1');",
+]);
+
+const OAS01 = folder("OAS-01 OAuth server hidden in headers mode", "Setup: mcp_server_auth_mode headers, set explicitly and restored at the end.", [
+  readConfig("OAS-01"),
+  putConfig("OAS-01", "setup: mcp_server_auth_mode headers", ["cc.mcp_server_auth_mode = 'headers';"], [A.status(200)]),
+  ...["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp", "/.well-known/jwks.json"].map((p) =>
+    request("OAS-01", `GET ${p} is not found`, "GET", p, { noAuth: true, asserts: [A.status(404), O.emptyBody()] })),
+  request("OAS-01", "POST /oauth2/register is not found", "POST", "/oauth2/register", { noAuth: true, body: { redirect_uris: [LOOPBACK_CB] }, asserts: [A.status(404), O.emptyBody()] }),
+  request("OAS-01", "GET /oauth2/authorize is not found", "GET", "/oauth2/authorize", { noAuth: true, noRedirect: true, asserts: [A.status(404), O.emptyBody()] }),
+  request("OAS-01", "POST /oauth2/token is not found", "POST", "/oauth2/token", { noAuth: true, asserts: [A.status(404), O.emptyBody()] }),
+  restoreConfig("OAS-01"),
+]);
+
+const prmChecks = () => [A.status(200), O.noStore(), A.custom("resource, authorization_servers, scopes and bearer methods", [
+  `var b = pm.response.json(); var iss = ${lit(OTHER_ISS)};`,
+  "pm.expect(b.resource, 'body: ' + pm.response.text()).to.equal(iss + '/mcp');",
+  "pm.expect(b.authorization_servers).to.eql([iss]);",
+  "pm.expect(b.scopes_supported).to.eql(['mcp']);",
+  "pm.expect(b.bearer_methods_supported).to.eql(['header']);",
+])];
+const OAS02 = folder("OAS-02 Protected resource metadata", `Setup: mcp_server_auth_mode both, then oauth, each with issuer_url ${OTHER_ISS} (another origin than the requests); plain, /mcp and /mcp/team suffixes.`,
+  ["both", "oauth"].flatMap((mode) => withMode("OAS-02", mode,
+    ["", "/mcp", "/mcp/team"].map((suffix) => request("OAS-02", `${mode}: GET /.well-known/oauth-protected-resource${suffix}`, "GET", `/.well-known/oauth-protected-resource${suffix}`, { noAuth: true, asserts: prmChecks() })), OTHER_ISS)));
+
+const OAS03 = folder("OAS-03 Authorization server metadata", `Setup: mcp_server_auth_mode both with issuer_url ${OTHER_ISS} (another origin than the requests).`, withMode("OAS-03", "both", [
+  request("OAS-03", "GET /.well-known/oauth-authorization-server", "GET", "/.well-known/oauth-authorization-server", {
+    noAuth: true,
+    asserts: [A.status(200), O.noStore(), A.custom("issuer, endpoints and supported values", [
+      `var b = pm.response.json(); var iss = ${lit(OTHER_ISS)};`,
+      "pm.expect(b.issuer, 'body: ' + pm.response.text()).to.equal(iss);",
+      "pm.expect(b.authorization_endpoint).to.equal(iss + '/oauth2/authorize');",
+      "pm.expect(b.token_endpoint).to.equal(iss + '/oauth2/token');",
+      "pm.expect(b.registration_endpoint).to.equal(iss + '/oauth2/register');",
+      "pm.expect(b.jwks_uri).to.equal(iss + '/.well-known/jwks.json');",
+      "pm.expect(b.response_types_supported).to.eql(['code']);",
+      "pm.expect(b.grant_types_supported).to.eql(['authorization_code', 'refresh_token']);",
+      "pm.expect(b.code_challenge_methods_supported).to.eql(['S256']);",
+      "pm.expect(b.token_endpoint_auth_methods_supported).to.eql(['none']);",
+      "pm.expect(b.authorization_response_iss_parameter_supported).to.equal(true);",
+    ])],
+  }),
+], OTHER_ISS));
+
+// oas06Checks are OAS-06's requests in one mode; clientVar keeps the client registered there.
+const oas06Checks = (p, clientVar) => [
+  request("OAS-06", `${p}control: an admin route without credentials is refused`, "GET", "/api/oauth2/sessions", { noAuth: true, noCookies: true, asserts: [A.status(401)] }),
+  request("OAS-06", `${p}register without credentials`, "POST", "/oauth2/register", {
+    noAuth: true, body: { client_name: "OAS-06 client", redirect_uris: [LOOPBACK_CB] }, asserts: [A.status(201)],
+    extraTests: [`pm.collectionVariables.set('${clientVar}', pm.response.json().client_id);`],
+  }),
+  request("OAS-06", `${p}authorize without credentials`, "GET", goodAuthorize(clientVar), { noAuth: true, noRedirect: true, asserts: [A.status(302)] }),
+  request("OAS-06", `${p}an empty token request`, "POST", "/oauth2/token", { noAuth: true, asserts: [A.status(400), O.error("unsupported_grant_type")] }),
+  request("OAS-06", `${p}protected resource metadata without credentials`, "GET", "/.well-known/oauth-protected-resource", { noAuth: true, asserts: [A.status(200)] }),
+  request("OAS-06", `${p}authorization server metadata without credentials`, "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200)] }),
+];
+const OAS06 = folder("OAS-06 Issuance endpoints are public", `Setup: ${BOTH}, dashboard auth on; the issuance and discovery requests carry no credentials.`, [
+  ...withMode("OAS-06", "both", oas06Checks("", "oas06_client")),
+]);
+
+const OAS07 = folder("OAS-07 Register a client", `Setup: ${BOTH}.`, withMode("OAS-07", "both", [
+  request("OAS-07", "register with a loopback redirect", "POST", "/oauth2/register", {
+    noAuth: true, body: { client_name: "OAS-07 client", redirect_uris: [LOOPBACK_CB] },
+    asserts: [A.status(201), A.custom("registration fields", [
+      "var b = pm.response.json();",
+      "pm.expect(b.client_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+      "pm.expect(Number.isInteger(b.client_id_issued_at), 'client_id_issued_at: ' + b.client_id_issued_at).to.equal(true);",
+      "pm.expect(b.token_endpoint_auth_method).to.equal('none');",
+      "pm.expect(b.grant_types).to.eql(['authorization_code']);",
+      "pm.expect(b.response_types).to.eql(['code']);",
+      "pm.expect(b.scope).to.equal('mcp');",
+      `pm.expect(b.redirect_uris).to.eql([${lit(LOOPBACK_CB)}]);`,
+    ])],
+  }),
+]));
+
+const repeatA = (n) => `new Array(${n + 1}).join('a')`;
+const regBodyPre = (exprBody) => [`pm.variables.set('reg_body', JSON.stringify(${exprBody}));`];
+const regRaw = (id, name, pre, asserts) => request(id, name, "POST", "/oauth2/register", { noAuth: true, raw: "{{reg_body}}", pre, asserts });
+const OAS08 = folder("OAS-08 Registration bounds", `Setup: ${BOTH}.`, withMode("OAS-08", "both", [
+  regRaw("OAS-08", "a 2049-byte client_name is rejected", regBodyPre(`{ client_name: ${repeatA(2049)}, redirect_uris: [${lit(LOOPBACK_CB)}] }`), [A.status(400), O.error("invalid_client_metadata"), O.descEquals("client_name exceeds 2048 bytes")]),
+  regRaw("OAS-08", "a 4097-byte scope is rejected", regBodyPre(`{ scope: ${repeatA(4097)}, redirect_uris: [${lit(LOOPBACK_CB)}] }`), [A.status(400), O.descEquals("scope exceeds 4096 bytes")]),
+  regRaw("OAS-08", "33 redirect_uris are rejected", regBodyPre(`{ redirect_uris: (function () { var a = []; for (var i = 0; i < 33; i++) { a.push('http://127.0.0.1:' + (9000 + i) + '/cb'); } return a; })() }`), [A.status(400), O.error("invalid_redirect_uri"), O.desc("at most 32")]),
+  regRaw("OAS-08", "a 2049-byte redirect_uri is rejected", regBodyPre(`{ redirect_uris: ['http://127.0.0.1:9999/' + ${repeatA(2049 - "http://127.0.0.1:9999/".length)}] }`), [A.status(400)]),
+  regRaw("OAS-08", "empty redirect_uris are rejected", regBodyPre(`{ redirect_uris: [] }`), [A.status(400), O.descEquals("redirect_uris is required")]),
+  request("OAS-08", "a malformed body is rejected", "POST", "/oauth2/register", { noAuth: true, raw: "{", asserts: [A.status(400), O.error("invalid_request")] }),
+  regRaw("OAS-08", "a 2048-byte client_name is accepted", regBodyPre(`{ client_name: ${repeatA(2048)}, redirect_uris: [${lit(LOOPBACK_CB)}] }`), [A.status(201)]),
+]));
+
+const OAS09 = folder("OAS-09 Redirect policy with no allowlist", `Setup: ${BOTH}, no allowed_redirect_uris.`, withMode("OAS-09", "both", [
+  ...["https://app.example/cb", "http://example.com/cb", "javascript:alert(1)", "http://localhost:1/cb#frag", "http://user@localhost:1/cb", "cursor:opaque"].map((uri) =>
+    request("OAS-09", `redirect ${uri} is rejected`, "POST", "/oauth2/register", {
+      noAuth: true, body: { redirect_uris: [uri] },
+      asserts: [A.status(400), O.error("invalid_redirect_uri"), O.descEquals("redirect_uri must be a valid local callback or an administrator-approved remote callback")],
+    })),
+  ...["http://localhost:1/cb", "http://[::1]/cb", "cursor://anysphere.cursor-mcp/oauth/callback"].map((uri) =>
+    request("OAS-09", `redirect ${uri} is accepted`, "POST", "/oauth2/register", { noAuth: true, body: { redirect_uris: [uri] }, asserts: [A.status(201)] })),
+]));
+
+const OAS11 = folder("OAS-11 Unsupported registration metadata", `Setup: ${BOTH}.`, withMode("OAS-11", "both", [
+  request("OAS-11", "client_secret_basic is rejected", "POST", "/oauth2/register", { noAuth: true, body: { redirect_uris: [LOOPBACK_CB], token_endpoint_auth_method: "client_secret_basic" }, asserts: [A.status(400), O.error("invalid_client_metadata"), O.descEquals("only token_endpoint_auth_method=none is supported")] }),
+  request("OAS-11", "client_credentials is rejected", "POST", "/oauth2/register", { noAuth: true, body: { redirect_uris: [LOOPBACK_CB], grant_types: ["client_credentials"] }, asserts: [A.status(400), O.error("invalid_client_metadata"), O.descEquals("unsupported grant_type")] }),
+  request("OAS-11", "response_types token is rejected", "POST", "/oauth2/register", { noAuth: true, body: { redirect_uris: [LOOPBACK_CB], response_types: ["token"] }, asserts: [A.status(400), O.error("invalid_client_metadata"), O.descEquals("unsupported response_type")] }),
+]));
+
+const OAS12 = folder("OAS-12 Authorize success", `Setup: mcp_server_auth_mode both with issuer_url ${OTHER_ISS}, an origin other than the one requests go to; a registered client with a loopback redirect.`, withMode("OAS-12", "both", [
+  register("OAS-12", "oas12_client"),
+  request("OAS-12", "authorize with every parameter", "GET", goodAuthorize("oas12_client", { resource: `${OTHER_ISS}/mcp` }), { noAuth: true, noRedirect: true, asserts: [A.status(302), consentLocation(OTHER_ISS)] }),
+  request("OAS-12", "authorize with resource and scope omitted", "GET", goodAuthorize("oas12_client", { resource: undefined, scope: undefined }), { noAuth: true, noRedirect: true, asserts: [A.status(302), consentLocation(OTHER_ISS)] }),
+  request("OAS-12", "authorize from a different loopback port", "GET", goodAuthorize("oas12_client", { resource: `${OTHER_ISS}/mcp`, redirect_uri: "http://127.0.0.1:1234/cb" }), { noAuth: true, noRedirect: true, asserts: [A.status(302), consentLocation(OTHER_ISS)] }),
+], OTHER_ISS));
+
+const OAS13 = folder("OAS-13 Authorize errors answered directly", `Setup: ${BOTH}; a registered client.`, withMode("OAS-13", "both", [
+  register("OAS-13", "oas13_client"),
+  request("OAS-13", "an unknown client_id", "GET", goodAuthorize("oas13_client", { client_id: "oas13-no-such-client" }), { noAuth: true, noRedirect: true, asserts: [A.status(400), O.error("invalid_client"), O.descEquals("unknown client_id"), O.noLocation()] }),
+  request("OAS-13", "a foreign redirect", "GET", goodAuthorize("oas13_client", { redirect_uri: "https://evil.example/cb" }), { noAuth: true, noRedirect: true, asserts: [A.status(400), O.error("invalid_redirect_uri"), O.descEquals("redirect_uri not registered for this client"), O.noLocation()] }),
+  ...[["state", 8193], ["scope", 4097], ["code_challenge", 129]].map(([param, n]) =>
+    request("OAS-13", `an oversized ${param}`, "GET", goodAuthorize("oas13_client", { [param]: "{{oversized}}" }), {
+      noAuth: true, noRedirect: true, pre: [`pm.variables.set('oversized', ${repeatA(n)});`],
+      asserts: [A.status(400), O.error("invalid_request"), O.descEquals("state, scope or code_challenge exceeds the maximum length"), O.noLocation()],
+    })),
+]));
+
+const OAS14 = folder("OAS-14 Authorize errors redirected", `Setup: ${BOTH}; a registered client, state s1.`, withMode("OAS-14", "both", [
+  register("OAS-14", "oas14_client"),
+  request("OAS-14", "code_challenge_method plain", "GET", goodAuthorize("oas14_client", { code_challenge_method: "plain" }), { noAuth: true, noRedirect: true, asserts: [A.status(302), errorRedirect(null, "code_challenge_method must be S256")] }),
+  request("OAS-14", "code_challenge_method missing", "GET", goodAuthorize("oas14_client", { code_challenge_method: undefined }), { noAuth: true, noRedirect: true, asserts: [A.status(302), errorRedirect(null, "code_challenge_method must be S256")] }),
+  request("OAS-14", "no code_challenge", "GET", goodAuthorize("oas14_client", { code_challenge: undefined }), { noAuth: true, noRedirect: true, asserts: [A.status(302), errorRedirect(null, null)] }),
+  request("OAS-14", "response_type token", "GET", goodAuthorize("oas14_client", { response_type: "token" }), { noAuth: true, noRedirect: true, asserts: [A.status(302), errorRedirect("unsupported_response_type", null)] }),
+  request("OAS-14", "scope \"mcp admin\"", "GET", goodAuthorize("oas14_client", { scope: "mcp%20admin" }), { noAuth: true, noRedirect: true, asserts: [A.status(302), errorRedirect("invalid_scope", null)] }),
+  request("OAS-14", "a foreign resource", "GET", goodAuthorize("oas14_client", { resource: "https://other/mcp" }), { noAuth: true, noRedirect: true, asserts: [A.status(302), errorRedirect("invalid_target", null)] }),
+]));
+
 // ================================================================ INF direct execute and code mode
 
 // execBody posts a JSON body (or raw text) to /v1/mcp/tool/execute with no admin credentials; query is appended as is.
@@ -270,12 +573,12 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM05, ADM06, ADM62, ADM73]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM05, ADM06, ADM62, ADM73]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP09]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS31, OAS36]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS11, OAS12, OAS13, OAS14, OAS31, OAS36]),
     section("INF Inference", "Inference tests.", [INF23, INF56]),
-    section("LIB MCP library", "MCP library tests.", [LIB06, LIB10, LIB16]),
-    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG27, LOG28, LOG29, LOG37, LOG40]),
+    section("LIB MCP library", "MCP library tests.", [LIB06, LIB08, LIB09, LIB10, LIB13, LIB16]),
+    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG27, LOG28, LOG29, LOG37, LOG40, LOG41]),
   ],
 };
 
