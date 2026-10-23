@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -304,8 +306,27 @@ func normalizeAnthropicToolResultContent(raw json.RawMessage) ([]BedrockContentB
 // DetectInvokeRequestType determines the request type from raw JSON body and model ID
 // without full deserialization, keeping detection logic colocated with conversion methods.
 func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
+	decodedModelID := modelID
+	if strings.Contains(modelID, "%") {
+		if unescaped, err := url.PathUnescape(modelID); err == nil {
+			decodedModelID = unescaped
+		}
+	}
 	// Messages → chat/responses path
-	if node, _ := sonic.Get(body, "messages"); node.Exists() {
+	// The node stays local: retain validation, but don't copy message content
+	// just to select a request codec.
+	if node, _ := sonic.GetWithOptions(body, ast.SearchOptions{ValidateJSON: true}, "messages"); node.Exists() {
+		// Mistral's native messages/tools already use the OpenAI chat dialect.
+		// Select its codec before the Converse decoder drops tool-call IDs, but
+		// retain the existing Converse path for toolConfig compatibility input.
+		if schemas.IsMistralModel(decodedModelID) {
+			// Only presence is needed here; the selected request codec validates
+			// JSON. Avoid validating or copying a config this detector won't use.
+			toolConfig, _ := sonic.GetWithOptions(body, ast.SearchOptions{}, "toolConfig")
+			if !toolConfig.Exists() {
+				return schemas.ChatCompletionRequest
+			}
+		}
 		if raw, err := node.Raw(); err == nil && raw != "null" && raw != "[]" {
 			return schemas.ResponsesRequest
 		}
@@ -346,12 +367,6 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 		case TaskTypeSingleEmbedding:
 			return schemas.EmbeddingRequest
 		}
-	}
-
-	// URL-decode the model ID once for all model-name checks below
-	decodedModelID := modelID
-	if unescaped, err := url.PathUnescape(modelID); err == nil {
-		decodedModelID = unescaped
 	}
 
 	// Stability AI: supports both generation (prompt-only) and edit (image+prompt)
@@ -1309,6 +1324,150 @@ func cacheControlTTLFromJSON(cacheControl gjson.Result) *string {
 // Converse TokenUsage carries no thinking-token breakdown (#7649). Requests
 // from every other ingress keep their Converse routing.
 const BedrockContextKeyAnthropicInvokeIngress schemas.BifrostContextKey = "bedrock-anthropic-invoke-ingress"
+
+// BedrockContextKeyMistralInvokeIngress selects native Invoke only for Mistral
+// requests that entered on that wire. Neutral chat/Responses stay on Converse.
+const BedrockContextKeyMistralInvokeIngress schemas.BifrostContextKey = "bedrock-mistral-invoke-ingress"
+
+// ToBedrockInvokeChatRequest builds Mistral's native chat body using the existing
+// OpenAI converter, retaining native tool choices and conversation correlation.
+func ToBedrockInvokeChatRequest(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) (*BedrockInvokeChatRequest, error) {
+	if request == nil {
+		return nil, fmt.Errorf("bifrost request is nil")
+	}
+	if len(request.Input) == 0 {
+		return nil, providerUtils.InvalidRequestErrorf("messages must not be empty")
+	}
+	if request.Params != nil {
+		for i, tool := range request.Params.Tools {
+			if tool.Type != schemas.ChatToolTypeFunction || tool.Function == nil {
+				return nil, providerUtils.InvalidRequestErrorf("tools[%d].function is required for a function tool", i)
+			}
+			if strings.TrimSpace(tool.Function.Name) == "" {
+				return nil, providerUtils.InvalidRequestErrorf("tools[%d].function.name is required", i)
+			}
+		}
+		if choice := request.Params.ToolChoice; choice != nil {
+			if choice.ChatToolChoiceStr == nil {
+				return nil, providerUtils.InvalidRequestErrorf("tool_choice must be auto, any, or none")
+			}
+			switch *choice.ChatToolChoiceStr {
+			case "auto", "none":
+			case "any", "required":
+				if len(request.Params.Tools) == 0 {
+					return nil, providerUtils.InvalidRequestErrorf("tool_choice any requires at least one tool")
+				}
+			default:
+				return nil, providerUtils.InvalidRequestErrorf("tool_choice must be auto, any, or none")
+			}
+		}
+	}
+	for i, message := range request.Input {
+		if message.Role == schemas.ChatMessageRoleTool && (message.ChatToolMessage == nil || message.ToolCallID == nil || *message.ToolCallID == "") {
+			return nil, providerUtils.InvalidRequestErrorf("messages[%d].tool_call_id is required", i)
+		}
+		if message.ChatAssistantMessage != nil {
+			for j, call := range message.ToolCalls {
+				if call.ID == nil || *call.ID == "" {
+					return nil, providerUtils.InvalidRequestErrorf("messages[%d].tool_calls[%d].id is required", i, j)
+				}
+				if call.Function.Name == nil || strings.TrimSpace(*call.Function.Name) == "" {
+					return nil, providerUtils.InvalidRequestErrorf("messages[%d].tool_calls[%d].function.name is required", i, j)
+				}
+			}
+		}
+	}
+	body := openai.ToOpenAIChatRequest(ctx, request)
+	body.MaxTokens = body.MaxCompletionTokens
+	body.MaxCompletionTokens = nil
+	if body.ToolChoice != nil && body.ToolChoice.ChatToolChoiceStr != nil && *body.ToolChoice.ChatToolChoiceStr == "required" {
+		body.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("any")}
+	}
+	if len(body.ExtraParams) > 0 {
+		body.ExtraParams = maps.Clone(body.ExtraParams)
+		// Guardrails are named by headers on Invoke, unlike Converse's body field.
+		delete(body.ExtraParams, "guardrailConfig")
+	}
+	return &BedrockInvokeChatRequest{OpenAIChatRequest: body}, nil
+}
+
+func parseInvokeChatResponse(body []byte, response *schemas.BifrostChatResponse, request []byte, rawRequest, rawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
+	rq, rs, err := providerUtils.HandleProviderResponse(body, response, request, rawRequest, rawResponse)
+	if err != nil {
+		return rq, rs, err
+	}
+	for _, field := range [...]struct{ wire, key string }{
+		{"amazon-bedrock-guardrailAction", anthropic.BedrockInvokeGuardrailActionKey},
+		{"amazon-bedrock-trace", anthropic.BedrockInvokeGuardrailTraceKey},
+	} {
+		if value := gjson.GetBytes(body, field.wire); value.Exists() {
+			if response.ExtraParams == nil {
+				response.ExtraParams = make(map[string]interface{}, 2)
+			}
+			if field.key == anthropic.BedrockInvokeGuardrailActionKey {
+				response.ExtraParams[field.key] = value.String()
+			} else {
+				response.ExtraParams[field.key] = json.RawMessage(value.Raw)
+			}
+		}
+	}
+	// Accept the documented stop_reason spelling as well as finish_reason.
+	if gjson.GetBytes(body, "choices.0.stop_reason").Type == gjson.String {
+		for i := range response.Choices {
+			if response.Choices[i].FinishReason == nil {
+				if reason := gjson.GetBytes(body, fmt.Sprintf("choices.%d.stop_reason", i)); reason.Type == gjson.String {
+					response.Choices[i].FinishReason = schemas.Ptr(reason.String())
+				}
+			}
+		}
+	}
+	return rq, rs, nil
+}
+
+// ToBedrockInvokeChatResponse returns Mistral's native choices shape. Guardrail
+// metadata is carried separately from the neutral chat fields, as on Anthropic Invoke.
+func ToBedrockInvokeChatResponse(response *schemas.BifrostChatResponse) interface{} {
+	if response == nil {
+		return nil
+	}
+	out := toBedrockInvokeMistralResponse(&response.ID, response.Created, response.Model, nil)
+	if response.Object == "chat.completion.chunk" {
+		out.Object = response.Object
+	}
+	if response.Usage != nil {
+		out.Usage = &BedrockInvokeAI21Usage{PromptTokens: response.Usage.PromptTokens, CompletionTokens: response.Usage.CompletionTokens, TotalTokens: response.Usage.TotalTokens}
+	}
+	out.Choices = make([]BedrockInvokeMistralChoice, len(response.Choices))
+	for i, choice := range response.Choices {
+		native := &out.Choices[i]
+		native.Index, native.FinishReason, native.LogProbs = choice.Index, choice.FinishReason, choice.LogProbs
+		if choice.ChatStreamResponseChoice != nil {
+			native.Delta = choice.Delta
+		} else if choice.ChatNonStreamResponseChoice != nil && choice.Message != nil {
+			message := choice.Message
+			native.Message = &BedrockInvokeMistralMessage{Role: string(message.Role)}
+			if message.Content != nil {
+				if message.Content.ContentStr != nil {
+					native.Message.Content = *message.Content.ContentStr
+				} else {
+					var text strings.Builder
+					for _, block := range message.Content.ContentBlocks {
+						if block.Text != nil {
+							text.WriteString(*block.Text)
+						}
+					}
+					native.Message.Content = text.String()
+				}
+			}
+			if message.ChatAssistantMessage != nil {
+				native.Message.ToolCalls = message.ToolCalls
+			}
+		}
+	}
+	out.GuardrailAction, _ = response.ExtraParams[anthropic.BedrockInvokeGuardrailActionKey].(string)
+	out.Trace, _ = response.ExtraParams[anthropic.BedrockInvokeGuardrailTraceKey].(json.RawMessage)
+	return out
+}
 
 // Anthropic tools are: [{"name": "...", "description": "...", "input_schema": {...}}]
 func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {

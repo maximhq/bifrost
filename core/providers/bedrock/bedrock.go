@@ -334,7 +334,7 @@ func newBedrockStreamException(providerName, excType string, payload []byte) *sc
 // completeRequest sends a request to Bedrock's API and handles the response.
 // It constructs the API URL, sets up AWS authentication, and processes the response.
 // Returns the response body, request latency, or an error if the request fails.
-func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, path string, key schemas.Key, model string) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
+func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, path string, key schemas.Key, model string, headerOverrides ...map[string]schemas.SecretVar) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	config := key.BedrockKeyConfig
 	region := resolveBedrockRegion(ctx, key, model)
 
@@ -352,7 +352,11 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	}
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	extraHeaders := provider.networkConfig.ExtraHeaders
+	if len(headerOverrides) > 0 {
+		extraHeaders = headerOverrides[0]
+	}
+	providerUtils.SetExtraHeadersHTTP(ctx, req, extraHeaders, nil)
 
 	if filtered := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Bedrock, provider.networkConfig.BetaHeaderOverrides); len(filtered) > 0 {
 		req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(filtered, ","))
@@ -1337,6 +1341,9 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
+	if ctx.Value(BedrockContextKeyMistralInvokeIngress) == true && schemas.IsMistralModelFamily(ctx, request.Model) {
+		return provider.invokeMistralChatCompletion(ctx, key, request)
+	}
 
 	surface := provider.resolveSurface(ctx, key, request.Model)
 	if surface.isMantle() {
@@ -1535,6 +1542,9 @@ func accumulateBedrockResponsesUsage(usage *schemas.ResponsesResponseUsage, bill
 func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
+	}
+	if ctx.Value(BedrockContextKeyMistralInvokeIngress) == true && schemas.IsMistralModelFamily(ctx, request.Model) {
+		return provider.invokeMistralChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
 	surface := provider.resolveSurface(ctx, key, request.Model)
@@ -4649,7 +4659,7 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 // runs unguarded. The Converse-shaped lowercase trace is uppercased, as the header requires.
 func invokeGuardrailHeaders(base map[string]schemas.SecretVar, extraParams map[string]any) map[string]schemas.SecretVar {
 	out := withGuardrailHeaders(base, extraParams)
-	config, _ := extraParams["guardrailConfig"].(map[string]any)
+	config, _ := extraParamObject(extraParams["guardrailConfig"])
 	traceHeader := out[guardrailTraceHeader]
 	if trace, _ := config["trace"].(string); trace != "" && traceHeader.GetValue() == trace {
 		// out may still be the shared provider headers, so write to a copy.
@@ -4778,6 +4788,111 @@ func (provider *BedrockProvider) invokeAnthropicResponsesStream(ctx *schemas.Bif
 	)
 }
 
+func (provider *BedrockProvider) invokeMistralChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	body, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (providerUtils.RequestBodyWithExtraParams, error) {
+		return ToBedrockInvokeChatRequest(ctx, request)
+	})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	path, _ := provider.getModelPathAndRegion(ctx, bedrockInvokeAction, request.Model, key)
+	responseBody, latency, headers, bifrostErr := provider.completeRequest(ctx, body, path, key, request.Model,
+		invokeGuardrailHeaders(provider.networkConfig.ExtraHeaders, chatExtraParams(request)))
+	if headers != nil {
+		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
+	}
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, body, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+	response := &schemas.BifrostChatResponse{}
+	pt, ph := providerUtils.StartResponseParseSpan(ctx)
+	rawRequest, rawResponse, bifrostErr := parseInvokeChatResponse(responseBody, response, body,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if pt != nil {
+		if bifrostErr != nil {
+			pt.EndSpan(ph, schemas.SpanStatusError, bifrostErr.Error.Message)
+		} else {
+			pt.EndSpan(ph, schemas.SpanStatusOk, "")
+		}
+	}
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, body, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+	response.ExtraFields = schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds(), ProviderResponseHeaders: headers, RawRequest: rawRequest, RawResponse: rawResponse}
+	return response, nil
+}
+
+func (provider *BedrockProvider) invokeMistralChatCompletionStream(ctx *schemas.BifrostContext, hooks schemas.PostHookRunner, finalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	requestURL, region := provider.invokeURL(ctx, key, request.Model, bedrockInvokeStreamAction)
+	previousFactory := ctx.Value(schemas.BifrostContextKeySSEReaderFactory)
+	ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, invokeSSEReaderFactory)
+	finish := func(parent context.Context) {
+		ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, previousFactory)
+		if finalizer != nil {
+			finalizer(parent)
+		}
+	}
+	// Only the latest guardrail outcome is retained by this stream's callbacks,
+	// never in context or a process-wide cache. It is released with the stream.
+	var outcome map[string]interface{}
+	// Native chunks may carry identity only on the first frame. Keep it stable
+	// before the shared chat loop captures it for the synthetic terminal chunk.
+	var streamID, streamModel string
+	var streamCreated int
+	headers := provider.invokeStreamHeaders(chatExtraParams(request))
+	headers["Accept"] = *schemas.NewSecretVar(bedrockInvokeStreamAccept)
+	stream, err := openai.HandleOpenAIChatCompletionStreaming(ctx, provider.mantleStreamingClient, requestURL, request,
+		openai.BearerAuthHeader(key), headers, provider.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse), provider.GetProviderKey(), hooks,
+		func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToBedrockInvokeChatRequest(ctx, request)
+		},
+		func(body []byte, response *schemas.BifrostChatResponse, requestBody []byte, rawRequest, rawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
+			rq, rs, err := parseInvokeChatResponse(body, response, requestBody, rawRequest, rawResponse)
+			if err != nil {
+				return rq, rs, err
+			}
+			if streamID == "" {
+				streamID = response.ID
+				if streamID == "" {
+					streamID = uuid.NewString()
+				}
+			}
+			if streamCreated == 0 {
+				streamCreated = response.Created
+				if streamCreated == 0 {
+					streamCreated = int(time.Now().Unix())
+				}
+			}
+			if streamModel == "" {
+				streamModel = response.Model
+				if streamModel == "" {
+					_, streamModel = parseBedrockRegionAndModel(request.Model)
+				}
+			}
+			response.ID, response.Created, response.Model = streamID, streamCreated, streamModel
+			if len(response.ExtraParams) > 0 {
+				outcome = response.ExtraParams
+			}
+			return rq, rs, err
+		},
+		func(response *fasthttp.Response) *schemas.BifrostError {
+			headers := http.Header{}
+			response.Header.VisitAll(func(k, v []byte) { headers.Add(string(k), string(v)) })
+			return parseBedrockHTTPError(response.StatusCode(), headers, response.Body())
+		}, nil,
+		func(response *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+			if response.Usage != nil && len(outcome) > 0 {
+				response.ExtraParams = outcome
+			}
+			return response
+		}, provider.invokeSigner(ctx, key, requestURL, bedrockInvokeStreamAccept, region), provider.logger, finish)
+	if err != nil {
+		ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, previousFactory)
+	}
+	return stream, err
+}
+
 // invokeEventStreamReader adapts InvokeModelWithResponseStream's AWS
 // event-stream framing to the SSEEventReader contract that the anthropic
 // streaming handlers consume. Each "chunk" frame carries {"bytes": <base64>}
@@ -4796,7 +4911,7 @@ type invokeEventStreamReader struct {
 	payloadBuf []byte
 }
 
-func newInvokeEventStreamReader(reader io.Reader) providerUtils.SSEEventReader {
+func newInvokeEventStreamReader(reader io.Reader) *invokeEventStreamReader {
 	return &invokeEventStreamReader{
 		reader:     reader,
 		decoder:    eventstream.NewDecoder(),
@@ -4804,12 +4919,21 @@ func newInvokeEventStreamReader(reader io.Reader) providerUtils.SSEEventReader {
 	}
 }
 
-// invokeSSEReaderFactory routes only the event-typed reader through the
-// event-stream decoder. The data-line reader is left nil so any caller that
-// asks for it still gets the default implementation.
+// invokeSSEReaderFactory shares AWS framing and exception handling between
+// the Anthropic event codec and the Mistral/OpenAI data codec.
 var invokeSSEReaderFactory = &providerUtils.SSEReaderFactory{
-	NewEventReader: newInvokeEventStreamReader,
+	NewEventReader: func(reader io.Reader) providerUtils.SSEEventReader { return newInvokeEventStreamReader(reader) },
+	NewDataReader:  func(reader io.Reader) providerUtils.SSEDataReader { return newInvokeEventStreamReader(reader) },
 }
+
+// ReadDataLine shares the same AWS framing/exception decoder for OpenAI-dialect
+// Invoke chunks. No native EOF is a [DONE] marker; the chat loop requires a finish reason.
+func (r *invokeEventStreamReader) ReadDataLine() ([]byte, error) {
+	_, data, err := r.ReadEvent()
+	return data, err
+}
+
+func (r *invokeEventStreamReader) SawDoneMarker() bool { return false }
 
 // invokeStreamException carries the classified *schemas.BifrostError built by
 // newBedrockStreamException through the shared anthropic stream loop, which

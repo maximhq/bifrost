@@ -1455,11 +1455,23 @@ func HandleOpenAIChatCompletionStreaming(
 
 		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
 		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
-		reader, nonSSE := providerUtils.DrainNonSSEStreamReader(resp, reader)
-		if nonSSE != nil {
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendNonSSEStreamError(ctx, postHookRunner, nonSSE, responseChan, logger, postHookSpanFinalizer)
-			return
+		// Bedrock Invoke uses this codec with an explicit AWS frame decoder.
+		// Bypass SSE sniffing only for that MIME type and an installed decoder;
+		// ordinary/custom SSE readers must still reject JSON/HTML responses.
+		factory, _ := ctx.Value(schemas.BifrostContextKeySSEReaderFactory).(*providerUtils.SSEReaderFactory)
+		binaryStream := false
+		if factory != nil && factory.NewDataReader != nil {
+			contentType, _, _ := strings.Cut(string(resp.Header.ContentType()), ";")
+			binaryStream = strings.EqualFold(strings.TrimSpace(contentType), "application/vnd.amazon.eventstream")
+		}
+		if !binaryStream {
+			var nonSSE *providerUtils.NonSSEStreamBody
+			reader, nonSSE = providerUtils.DrainNonSSEStreamReader(resp, reader)
+			if nonSSE != nil {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendNonSSEStreamError(ctx, postHookRunner, nonSSE, responseChan, logger, postHookSpanFinalizer)
+				return
+			}
 		}
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
