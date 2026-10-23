@@ -279698,6 +279698,73 @@
           }
         }
       ]
+    },
+    {
+      "name": "267. Oversized max_tokens is clamped and the thinking budget refitted (#8060) (bedrock-max-tokens-clamp)",
+      "description": "A routing rule that retargets a request sized for Opus (Claude Code sends max_tokens above 64000) onto claude-haiku-4-5 used to forward the value unchanged, and Bedrock answered 400 ValidationException. #7732 fixed that on the Anthropic-family builders; Converse builds its own body and needed its own clamp.\n\nThe clamp alone is not enough, which is what this row pins. Converse requires `budget_tokens` strictly below `max_tokens`, so lowering the total while leaving an explicit `reasoning.max_tokens` above it just trades one 400 for another. The request below sends both an oversized total (100000, clamped to the model's 64000) and a budget that no longer fits beneath it (65000), so it fails on an unfixed build in two different ways.\n\nThe budget is not echoed on the response, so the row asserts what is observable: the request is accepted, model text came back, and a reasoning item is present. The last one matters because silently dropping the budget would also produce a 200 -- the assertion is there so a fix that trades the 400 for lost thinking cannot pass.",
+      "item": [
+        {
+          "name": "bedrock/claude-haiku-4-5 /v1/responses oversized max_tokens with an explicit thinking budget - bedrock-max-tokens-clamp",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the oversized request is accepted', function () {",
+                  "  // Pre-fix this is where the bug showed: Converse forwarded max_tokens",
+                  "  // unchanged and Bedrock answered 400 ValidationException. The clamp has to",
+                  "  // bring it under the model ceiling for the request to be accepted at all.",
+                  "  pm.expect(pm.response.code, 'request failed: ' + (pm.response.text() || '')).to.be.below(400);",
+                  "});",
+                  "pm.test('the model answered rather than being truncated into silence', function () {",
+                  "  // Asserted because a clamp that lands too low would still return 200 while",
+                  "  // producing nothing usable, which is the failure mode opposite the 400.",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+                  "  var text = (body.output || []).map(function (item) {",
+                  "    return ((item.content || []).map(function (block) { return block.text || ''; }).join(''));",
+                  "  }).join('');",
+                  "  pm.expect(text, 'no model-authored text came back').to.have.length.above(0);",
+                  "});",
+                  "pm.test('the thinking budget was refitted, not left above the clamped total', function () {",
+                  "  // The clamp lowers the total; Converse requires budget_tokens strictly",
+                  "  // below it, so an unrefitted budget fails the request with a second 400.",
+                  "  // Reaching a 200 with reasoning present is the observable proof the pair",
+                  "  // was reconciled -- the budget itself is not echoed on the response.",
+                  "  var body = pm.response.json();",
+                  "  var kinds = (body.output || []).map(function (item) { return item.type; });",
+                  "  pm.expect(kinds, 'no reasoning item came back, so the refit cannot be confirmed (a dropped budget also yields 200)').to.include('reasoning');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"bedrock/claude-haiku-4-5\", \"input\": \"In two sentences, why is the sky blue? Think first.\", \"max_output_tokens\": 100000, \"reasoning\": {\"max_tokens\": 65000, \"summary\": \"auto\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -2707,6 +2707,29 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						if tokenBudget < anthropic.MinimumReasoningMaxTokens {
 							return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
 						}
+						// clampMaxTokens above may have lowered the total past the
+						// caller's budget, and Converse requires budget_tokens strictly
+						// below max_tokens -- so without this the clamp for #8060 just
+						// trades one Bedrock 400 for another. Refit the budget the same
+						// way the direct Anthropic path does (fitThinkingBudget), by
+						// re-deriving it from the effort against the total that will
+						// actually be sent. Left alone when the refit cannot succeed,
+						// which means the total is too small to carry thinking at all.
+						if inferenceConfig.MaxTokens != nil && tokenBudget >= *inferenceConfig.MaxTokens {
+							// "none" is treated as absent, not forwarded: it maps through
+							// to a budget of 0, which would fail the guard below and
+							// leave the oversized budget in place. A caller who set
+							// reasoning.max_tokens has asked for thinking, so the budget
+							// is the operative request and "high" is the same default
+							// used when no effort is given at all.
+							level := "high"
+							if effort := bifrostReq.Params.Reasoning.Effort; effort != nil && *effort != "none" {
+								level = anthropic.MapBifrostEffortToAnthropic(*effort)
+							}
+							if fitted, err := providerUtils.GetBudgetTokensFromReasoningEffort(level, anthropic.MinimumReasoningMaxTokens, *inferenceConfig.MaxTokens); err == nil && fitted >= anthropic.MinimumReasoningMaxTokens && fitted < *inferenceConfig.MaxTokens {
+								tokenBudget = fitted
+							}
+						}
 						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 							"type":          "enabled",
 							"budget_tokens": tokenBudget,
