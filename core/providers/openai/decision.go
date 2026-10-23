@@ -222,8 +222,9 @@ func (response *OpenAIDecisionResponse) ToBifrostDecisionResponse(request *schem
 // by name rather than dropped or interpreted: an input that is null or
 // structured, a top-level "state" (Typesafe's input), and any field a question,
 // choice, or level does not define. OpenAI's questions are a subset of the
-// shared ones, so the rest maps across unchanged. A model without a provider
-// prefix is OpenAI's, since this is OpenAI's route.
+// shared ones, so the rest maps across unchanged. The route fixes the wire
+// shape, not the provider: a model without a provider prefix is left for
+// routing to resolve, as on the other OpenAI-compatible routes.
 func (r *OpenAIDecisionRequest) ToBifrostDecisionRequest() (*schemas.BifrostDecisionRequest, error) {
 	if r.Input.IsEmpty() {
 		return nil, fmt.Errorf("input is required for decision")
@@ -245,7 +246,7 @@ func (r *OpenAIDecisionRequest) ToBifrostDecisionRequest() (*schemas.BifrostDeci
 		}
 		questions[i] = converted
 	}
-	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
+	provider, model := schemas.ParseModelString(r.Model, "")
 	return &schemas.BifrostDecisionRequest{
 		Provider:         provider,
 		Model:            model,
