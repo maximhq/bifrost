@@ -8124,11 +8124,11 @@
             },
             "useIdpCredentials": {
               "type": "boolean",
-              "description": "When true, performs the exchange as the SSO login application itself instead of clientId/clientSecret (which are then ignored). Renders into use_idp_credentials."
+              "description": "When true, performs the exchange as the SSO login application itself instead of clientId/clientSecret (which are then ignored). Always on for profile id_jag. Renders into use_idp_credentials."
             },
             "clientId": {
               "type": "string",
-              "description": "Identity-provider application authorized to perform exchanges for this audience. Required unless useIdpCredentials is true. Can use env./vault. prefix. Renders into client_id."
+              "description": "Identity-provider application authorized to perform exchanges for this audience. Required unless useIdpCredentials is true or profile is id_jag. Can use env./vault. prefix. Renders into client_id."
             },
             "clientSecret": {
               "type": "string",
@@ -8136,7 +8136,7 @@
             },
             "authorizationServerUrl": {
               "type": "string",
-              "description": "Overrides where the exchange request is sent, for providers that bind an audience to a specific authorization server (e.g. Okta Custom Authorization Servers). Renders into authorization_server_url."
+              "description": "Overrides where the exchange request is sent, for providers that bind an audience to a specific authorization server (e.g. Okta Custom Authorization Servers). An issuer URL, from which the token endpoint is derived, or a full token endpoint URL ending in /token, which is used as is. Renders into authorization_server_url."
             },
             "scopes": {
               "type": "array",
@@ -8144,9 +8144,96 @@
                 "type": "string"
               },
               "description": "Optional scopes to request on the exchanged token. Include 'offline_access' where supported so exchanges issue refresh tokens."
+            },
+            "profile": {
+              "type": "string",
+              "enum": ["", "id_jag"],
+              "description": "Empty (default): the identity provider issues the upstream token directly. 'id_jag' (Enterprise): Cross App Access (Okta XAA), where the identity provider issues an ID-JAG for audience from the user's SSO session and the upstream authorization server redeems it with the jwt-bearer grant. Renders into profile."
+            },
+            "resource": {
+              "type": "string",
+              "description": "id_jag only: resource indicator sent to the identity provider; set only when the IdP connection defines one. Renders into resource."
+            },
+            "resourceTokenEndpoint": {
+              "type": "string",
+              "description": "id_jag only: the upstream authorization server's token endpoint; discovered from the MCP server when empty. Renders into resource_token_endpoint."
+            },
+            "resourceClientId": {
+              "type": "string",
+              "description": "id_jag only, required: Bifrost's client ID at the upstream authorization server. Can use env./vault. prefix. Renders into resource_client_id."
+            },
+            "resourceClientSecret": {
+              "type": "string",
+              "description": "id_jag only: secret for resourceClientId; omit for a public client or with resourcePrivateKey. Can use env./vault. prefix. Renders into resource_client_secret."
+            },
+            "resourcePrivateKey": {
+              "type": "string",
+              "description": "id_jag only: PEM RSA or EC key for private_key_jwt at the upstream authorization server, instead of a secret. Can use env./vault. prefix. Renders into resource_private_key."
+            },
+            "resourceKeyId": {
+              "type": "string",
+              "description": "id_jag only: kid header of the client assertion. Requires resourcePrivateKey. Renders into resource_key_id."
+            },
+            "resourceSigningAlgorithm": {
+              "type": "string",
+              "enum": ["", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"],
+              "description": "id_jag only: client assertion algorithm; empty (default) means RS256. Requires resourcePrivateKey. Renders into resource_signing_algorithm."
+            },
+            "resourceAssertionAudience": {
+              "type": "string",
+              "description": "id_jag only: aud of the client assertion; default the upstream token endpoint. Requires resourcePrivateKey. Renders into resource_assertion_audience."
+            },
+            "resourceClientAuthMethod": {
+              "type": "string",
+              "enum": ["", "client_secret_basic", "client_secret_post"],
+              "description": "id_jag only: how resourceClientSecret is sent; empty follows discovery, else HTTP Basic. Renders into resource_client_auth_method."
             }
           },
           "required": ["audience"],
+          "allOf": [
+            {
+              "$comment": "A client secret or a private key, not both; a blank value counts as unset, as at runtime.",
+              "not": {
+                "properties": {
+                  "resourceClientSecret": { "pattern": "\\S" },
+                  "resourcePrivateKey": { "pattern": "\\S" }
+                },
+                "required": ["resourceClientSecret", "resourcePrivateKey"]
+              }
+            },
+            {
+              "if": { "properties": { "profile": { "const": "id_jag" } }, "required": ["profile"] },
+              "then": {
+                "properties": { "resourceClientId": { "pattern": "\\S" } },
+                "required": ["resourceClientId"]
+              }
+            },
+            {
+              "$comment": "resourceKeyId, resourceSigningAlgorithm and resourceAssertionAudience configure the private key's client assertion.",
+              "if": {
+                "anyOf": [
+                  { "properties": { "resourceKeyId": { "pattern": "\\S" } }, "required": ["resourceKeyId"] },
+                  { "properties": { "resourceSigningAlgorithm": { "minLength": 1 } }, "required": ["resourceSigningAlgorithm"] },
+                  { "properties": { "resourceAssertionAudience": { "pattern": "\\S" } }, "required": ["resourceAssertionAudience"] }
+                ]
+              },
+              "then": {
+                "properties": { "resourcePrivateKey": { "pattern": "\\S" } },
+                "required": ["resourcePrivateKey"]
+              }
+            },
+            {
+              "$comment": "resourceClientAuthMethod says how resourceClientSecret is sent.",
+              "if": {
+                "properties": { "resourceClientAuthMethod": { "minLength": 1 } },
+                "required": ["resourceClientAuthMethod"]
+              },
+              "then": {
+                "properties": { "resourceClientSecret": { "pattern": "\\S" } },
+                "required": ["resourceClientSecret"]
+              }
+            }
+          ],
           "additionalProperties": false
         },
         "oauthConfigId": {
