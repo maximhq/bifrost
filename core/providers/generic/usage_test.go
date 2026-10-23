@@ -222,3 +222,16 @@ func TestUnitsPricing(t *testing.T) {
 		assert.False(t, u.billsUnits(), "a route can switch unit pricing off with a zero rate")
 	})
 }
+
+// BenchmarkHasUsageEvent is the per-event gate on a generic SSE stream: it must not allocate.
+func BenchmarkHasUsageEvent(b *testing.B) {
+	u := resolveUsage(&schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01), UnitsPath: "pages", CostPerUnit: schemas.Ptr(0.1)}, nil)
+	event := []byte(`{"id":"evt_1","type":"delta","delta":{"text":"hello world"},"index":3}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if u.hasUsageEvent(event) {
+			b.Fatal("delta event must not look like usage")
+		}
+	}
+}

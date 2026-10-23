@@ -23,6 +23,7 @@ type resolvedUsage struct {
 	// ignoreUpstreamCost drops the cost_path (and the optimistic usage.cost) while the flat fee and
 	// unit pricing, which the operator configured, still apply. Set from ignore_provider_cost.
 	ignoreUpstreamCost bool
+	eventPaths         []string // every response path worth a look per SSE event; built once, see collectEventPaths
 }
 
 // compiledRoute is one routes[] entry with its glob split once at construction.
@@ -112,6 +113,7 @@ func resolveUsage(base *schemas.GenericUsageConfig, override *schemas.GenericUsa
 	}
 	apply(base)
 	apply(override)
+	out.eventPaths = out.collectEventPaths()
 	return out
 }
 

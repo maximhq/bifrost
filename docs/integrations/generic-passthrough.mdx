@@ -204,7 +204,7 @@ With `strict_routes: true`, a request that matches no `routes[]` entry is refuse
 
 ### Importing from an OpenAPI document
 
-On the Passthrough tab, **Import from an OpenAPI document** accepts a pasted document, an uploaded file, or a URL fetched by your browser. Its operations become routes (path parameters such as `{id}` become `*`), its first security scheme sets the auth type and header name, and `strict_routes` is switched on. The server URL is shown as a hint for the Network tab. The document is parsed in the browser and never sent to or stored by Bifrost; review the fields it filled in and save them like any others. The URL option works only when the vendor allows cross-origin reads of the file; otherwise paste or upload it.
+On the Passthrough tab, **Import from an OpenAPI document** accepts a pasted document, an uploaded file, or a URL fetched by your browser. Its operations become routes (a path parameter becomes `*` wherever it sits, so `/files/{id}.json` becomes `/files/*.json`, and glob characters in literal text are escaped), its first security scheme sets the auth type and header name, and `strict_routes` is switched on. The server URL is shown as a hint for the Network tab. The document is parsed in the browser and never sent to or stored by Bifrost; review the fields it filled in and save them like any others. The URL option works only when the vendor allows cross-origin reads of the file; otherwise paste or upload it.
 
 ---
 

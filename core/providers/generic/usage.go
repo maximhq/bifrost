@@ -240,23 +240,27 @@ func extractUsage(u resolvedUsage, contentType string, body []byte, initial usag
 // hasUsageEvent is the cheap gate for streams: only events that carry one of the mapped (or
 // optimistic) fields are fully parsed.
 func (u resolvedUsage) hasUsageEvent(event []byte) bool {
-	groups := [][]string{
-		u.tokenPaths(u.totalTokensPath, optimisticTotalTokenPaths),
-		u.tokenPaths(u.inputTokensPath, optimisticInputTokenPaths),
-		u.tokenPaths(u.outputTokensPath, optimisticOutputTokenPaths),
-		u.costPaths(),
-	}
-	if u.billsUnits() && u.unitsSource == schemas.GenericUnitsFromResponse && u.unitsPath != "" {
-		groups = append(groups, []string{u.unitsPath})
-	}
-	for _, group := range groups {
-		for _, p := range group {
-			if providerUtils.GetJSONField(event, p).Exists() {
-				return true
-			}
+	for _, p := range u.eventPaths {
+		if providerUtils.GetJSONField(event, p).Exists() {
+			return true
 		}
 	}
 	return false
+}
+
+// collectEventPaths lists every response path hasUsageEvent probes. It depends only on the
+// mapping, so it is built once per resolved usage (and again when ignoreUpstreamCost changes)
+// rather than per SSE event.
+func (u resolvedUsage) collectEventPaths() []string {
+	var paths []string
+	paths = append(paths, u.tokenPaths(u.totalTokensPath, optimisticTotalTokenPaths)...)
+	paths = append(paths, u.tokenPaths(u.inputTokensPath, optimisticInputTokenPaths)...)
+	paths = append(paths, u.tokenPaths(u.outputTokensPath, optimisticOutputTokenPaths)...)
+	paths = append(paths, u.costPaths()...)
+	if u.billsUnits() && u.unitsSource == schemas.GenericUnitsFromResponse && u.unitsPath != "" {
+		paths = append(paths, u.unitsPath)
+	}
+	return paths
 }
 
 // streamObserver returns the per-event observer for one stream. Each field keeps the last value

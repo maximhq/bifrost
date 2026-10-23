@@ -57,6 +57,14 @@ describe("openapiImport", () => {
 		expect(templateToGlob("/")).toBe("/");
 	});
 
+	it("templateToGlob handles parameters inside a segment and escapes glob characters", () => {
+		expect(templateToGlob("/files/{id}.json")).toBe("/files/*.json");
+		expect(templateToGlob("/v1/models/{model}:predict")).toBe("/v1/models/*:predict");
+		expect(templateToGlob("/{owner}-{repo}/issues")).toBe("/*-*/issues");
+		expect(templateToGlob("/items[0]/what?")).toBe("/items\\[0\\]/what\\?");
+		expect(templateToGlob("/a*b")).toBe("/a\\*b");
+	});
+
 	it("parses JSON and YAML documents", async () => {
 		expect((await parseOpenAPIText(JSON.stringify(petstore))).openapi).toBe("3.0.3");
 		expect((await parseOpenAPIText("openapi: 3.0.0\npaths:\n  /x:\n    get: {}\n")).openapi).toBe("3.0.0");

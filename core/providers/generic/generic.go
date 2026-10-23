@@ -88,9 +88,11 @@ func NewGenericProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	// providers off the pricing engine's ignore list so that number is not thrown away there.
 	usage := resolveUsage(cfg.Usage, nil)
 	usage.ignoreUpstreamCost = config.IgnoreProviderCost
+	usage.eventPaths = usage.collectEventPaths()
 	routes := compileRoutes(cfg)
 	for i := range routes {
 		routes[i].usage.ignoreUpstreamCost = config.IgnoreProviderCost
+		routes[i].usage.eventPaths = routes[i].usage.collectEventPaths()
 	}
 
 	return &GenericProvider{

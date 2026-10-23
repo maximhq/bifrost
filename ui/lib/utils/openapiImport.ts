@@ -36,12 +36,23 @@ export async function parseOpenAPIText(text: string): Promise<Doc> {
 	return parsed;
 }
 
-// templateToGlob turns an OpenAPI path template into a route glob: each {param} segment becomes *.
+// Characters the relay's segment matcher (Go path.Match) treats specially; a literal one in a
+// template must be escaped or the route matches something else, or nothing.
+const GLOB_META = /[*?[\]\\]/g;
+
+// templateToGlob turns an OpenAPI path template into a route glob: every {param}, whether it is
+// the whole segment ({id}) or part of one ({id}.json, {model}:predict), becomes *, and glob
+// characters in the literal text are escaped.
 export function templateToGlob(template: string): string {
 	const rooted = template.startsWith("/") ? template : "/" + template;
 	return rooted
 		.split("/")
-		.map((segment) => (/^\{[^}]+\}$/.test(segment) ? "*" : segment))
+		.map((segment) =>
+			segment
+				.split(/\{[^}]*\}/)
+				.map((literal) => literal.replace(GLOB_META, "\\$&"))
+				.join("*"),
+		)
 		.join("/");
 }
 
