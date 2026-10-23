@@ -8933,7 +8933,7 @@
             },
             "use_idp_credentials": {
               "type": "boolean",
-              "description": "When true, performs the exchange as the SSO login application itself instead of client_id/client_secret below, which are then ignored. Some providers require this: Microsoft Entra ID's on-behalf-of grant only accepts an assertion audienced to the exchanging application, and Bifrost's SSO login flow always requests a token self-audienced to the SSO application, so a separate exchange application can never receive a usable one."
+              "description": "When true, performs the exchange as the SSO login application itself instead of client_id/client_secret below, which are then ignored. Always implied by the id_jag profile, since the identity provider accepts the user's sign-in token only from the app it was issued to. Some providers require this: Microsoft Entra ID's on-behalf-of grant only accepts an assertion audienced to the exchanging application, and Bifrost's SSO login flow always requests a token self-audienced to the SSO application, so a separate exchange application can never receive a usable one."
             },
             "client_id": {
               "type": "string",
@@ -8946,7 +8946,7 @@
             },
             "authorization_server_url": {
               "type": "string",
-              "description": "Overrides where the exchange request is sent, for identity providers that bind an audience to a specific authorization server distinct from the one used for SSO login (e.g. Okta's per-resource Custom Authorization Servers). Leave empty to use the deployment's SSO login issuer, which is correct for providers with one tenant-wide token endpoint (Entra, Auth0)."
+              "description": "Overrides where the exchange request is sent, for identity providers that bind an audience to a specific authorization server distinct from the one used for SSO login (e.g. Okta's per-resource Custom Authorization Servers). Leave empty to use the deployment's SSO login issuer, which is correct for providers with one tenant-wide token endpoint (Entra, Auth0). Takes an issuer URL, from which the token endpoint is derived, or a full token endpoint URL ending in /token, which is used as is."
             },
             "scopes": {
               "type": "array",
@@ -8954,6 +8954,49 @@
                 "type": "string"
               },
               "description": "Optional scopes to request on the exchanged token. Include 'offline_access' (where the identity provider supports it) so exchanges issue refresh tokens, keeping the retained admin discovery credential self-renewing."
+            },
+            "profile": {
+              "type": "string",
+              "enum": ["", "id_jag"],
+              "description": "Empty (default): the identity provider issues the upstream token directly. 'id_jag' (Bifrost Enterprise): Cross App Access (Okta XAA) \u2014 the identity provider issues an ID-JAG for `audience` (the upstream authorization server's issuer) from the user's SSO session, and the upstream authorization server exchanges it for its own token with the jwt-bearer grant. Users must have signed in to Bifrost through the identity provider."
+            },
+            "resource": {
+              "type": "string",
+              "description": "id_jag only: resource indicator sent to the identity provider. Set it only when the identity provider's connection defines one; Okta rejects a resource it does not expect. Omitted when empty."
+            },
+            "resource_token_endpoint": {
+              "type": "string",
+              "description": "id_jag only: the upstream authorization server's token endpoint. Defaults to the endpoint discovered from the MCP server's protected resource metadata, which must list the jwt-bearer grant."
+            },
+            "resource_client_id": {
+              "type": "string",
+              "description": "id_jag only, required: Bifrost's client ID registered at the upstream authorization server. Can use env. or vault. prefix."
+            },
+            "resource_client_secret": {
+              "type": "string",
+              "description": "id_jag only: secret for resource_client_id; omit for a public client or when resource_private_key is set. Can use env. or vault. prefix."
+            },
+            "resource_private_key": {
+              "type": "string",
+              "description": "id_jag only: PEM RSA or EC private key. When set, Bifrost authenticates to the upstream authorization server with private_key_jwt (a client assertion signed with this key, audience the token endpoint) instead of a client secret. Cannot be combined with resource_client_secret. Can use env. or vault. prefix."
+            },
+            "resource_key_id": {
+              "type": "string",
+              "description": "id_jag only: kid header of the client assertion, when the upstream server selects keys by ID. Requires resource_private_key."
+            },
+            "resource_signing_algorithm": {
+              "type": "string",
+              "enum": ["", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"],
+              "description": "id_jag only: client assertion signing algorithm; empty (default) means RS256. Use an ES algorithm with an EC key. Requires resource_private_key."
+            },
+            "resource_assertion_audience": {
+              "type": "string",
+              "description": "id_jag only: aud claim of the client assertion. Defaults to the upstream token endpoint, which Okta and Entra require; set the authorization server's issuer for servers that expect it instead. Requires resource_private_key."
+            },
+            "resource_client_auth_method": {
+              "type": "string",
+              "enum": ["", "client_secret_basic", "client_secret_post"],
+              "description": "id_jag only: how resource_client_secret is sent. Empty (default) uses HTTP Basic unless the discovered metadata admits only client_secret_post. Set it when resource_token_endpoint is configured, since there is then no discovery. Requires resource_client_secret."
             }
           },
           "required": [
@@ -8961,16 +9004,44 @@
           ],
           "allOf": [
             {
-              "$comment": "client_id is required unless use_idp_credentials is true, in which case the exchange uses the SSO login application's own credentials instead.",
+              "$comment": "Bifrost authenticates to the upstream authorization server with a client secret or a private key, not both.",
+              "not": {
+                "required": ["resource_client_secret", "resource_private_key"]
+              }
+            },
+            {
+              "$comment": "The id_jag profile redeems the ID-JAG as a client of the upstream authorization server.",
+              "if": {
+                "properties": { "profile": { "const": "id_jag" } },
+                "required": ["profile"]
+              },
+              "then": { "required": ["resource_client_id"] }
+            },
+            {
+              "$comment": "client_id is required unless use_idp_credentials is true or the profile is id_jag, in which cases the exchange uses the SSO login application's own credentials instead.",
               "if": {
                 "not": {
-                  "properties": {
-                    "use_idp_credentials": {
-                      "const": true
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "use_idp_credentials": {
+                          "const": true
+                        }
+                      },
+                      "required": [
+                        "use_idp_credentials"
+                      ]
+                    },
+                    {
+                      "properties": {
+                        "profile": {
+                          "const": "id_jag"
+                        }
+                      },
+                      "required": [
+                        "profile"
+                      ]
                     }
-                  },
-                  "required": [
-                    "use_idp_credentials"
                   ]
                 }
               },
