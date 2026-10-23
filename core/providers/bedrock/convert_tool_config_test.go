@@ -109,6 +109,17 @@ func TestConvertToolConfig_KeepsBedrockSupportedServerTools(t *testing.T) {
 // though ValidateChatToolsForProvider (once aligned with the Responses-path
 // validator) keeps these tool types for Bedrock via the WebSearchNova/CodeExecNova
 // carve-out.
+func TestBuiltinToolRewritingNovaRejectsCustomPrefixes(t *testing.T) {
+	for _, typ := range []schemas.ChatToolType{"web_search_custom", "code_execution_custom"} {
+		t.Run(string(typ), func(t *testing.T) {
+			params := &schemas.ChatParameters{Tools: []schemas.ChatTool{{Type: typ, Name: "my_custom_tool"}}}
+			if out := convertToolConfig("amazon.nova-2-lite-v1:0", params); out != nil {
+				t.Fatalf("custom type became a Nova built-in: %+v", out)
+			}
+		})
+	}
+}
+
 func TestConvertToolConfig_NovaGetsWebSearchAndCodeExecution(t *testing.T) {
 	params := &schemas.ChatParameters{
 		Tools: []schemas.ChatTool{

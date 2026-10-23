@@ -2956,7 +2956,7 @@ func collectBedrockServerToolsFromFiltered(filtered []schemas.ChatTool) (serverT
 		// (toolConfig.tools[].systemTool) — tunneling them here too would send
 		// Bedrock two conflicting representations of the same tool.
 		typeStr := string(tool.Type)
-		if strings.HasPrefix(typeStr, "web_search_") || strings.HasPrefix(typeStr, "code_execution_") {
+		if schemas.IsVersionedToolType(typeStr, "web_search") || schemas.IsVersionedToolType(typeStr, "code_execution") {
 			continue
 		}
 		bytes, err := providerUtils.MarshalSorted(tool)
@@ -3238,7 +3238,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 					CachePoint: newBedrockCachePoint(tool.CacheControl.TTL),
 				})
 			}
-		} else if typeStr := string(tool.Type); strings.HasPrefix(typeStr, "web_search_") || strings.HasPrefix(typeStr, "code_execution_") {
+		} else if typeStr := string(tool.Type); schemas.IsVersionedToolType(typeStr, "web_search") || schemas.IsVersionedToolType(typeStr, "code_execution") {
 			// web_search/code_execution survive ValidateChatToolsForProvider only
 			// via the WebSearchNova/CodeExecNova carve-out — the only Bedrock
 			// models that actually support them are Nova2, via the nova_grounding /
@@ -3247,7 +3247,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 			// silently dropped, matching the pre-existing behavior for
 			// unsupported server tools.
 			systemToolName := BedrockSystemToolNovaGrounding
-			if strings.HasPrefix(typeStr, "code_execution_") {
+			if schemas.IsVersionedToolType(typeStr, "code_execution") {
 				systemToolName = BedrockSystemToolNovaCodeInterpreter
 			}
 			if bt := convertToNovaSystemTool(systemToolName, isNova2); bt != nil {

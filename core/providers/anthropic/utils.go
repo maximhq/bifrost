@@ -1961,11 +1961,11 @@ func NormalizedToolSpec(generation, baseTool string) (toolType, toolName string)
 //	web_search_20250305     -> ""
 func computerUseBaseTool(toolType string) string {
 	switch {
-	case strings.HasPrefix(toolType, "computer_"):
+	case schemas.IsVersionedToolType(toolType, "computer") || schemas.IsVersionedToolType(toolType, "computer_toolset"):
 		return "computer"
-	case strings.HasPrefix(toolType, "text_editor_"):
+	case schemas.IsVersionedToolType(toolType, "text_editor"):
 		return "text_editor"
-	case strings.HasPrefix(toolType, "bash_"):
+	case schemas.IsVersionedToolType(toolType, "bash"):
 		return "bash"
 	}
 	return ""
