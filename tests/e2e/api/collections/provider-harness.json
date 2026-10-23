@@ -279452,6 +279452,1174 @@
           }
         }
       ]
+    },
+    {
+      "name": "267. Disable implicit built-in tool rewriting (builtin-tool-rewriting)",
+      "description": "Regular and streamed Responses on OpenAI/Azure leave deferred application functions eager under the request opt-out. Mantle keeps reserved web namespace functions instead of substituting hosted web search. Responses and native Messages on Anthropic/Vertex do not promote non-versioned custom tool types. Every case inspects outbound tools via raw capture, uses tool_choice:none for compatibility probes and only returns dummy application function calls for namespace-label probes (no provider-hosted tool execution), and fails on every non-200 status. No live calls are made by preparing this collection.",
+      "item": [
+        {
+          "name": "openai/gpt-5.6-luna Responses implicit tool search disabled regular - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "try { inspect(pm.response.json()); } catch (e) { validJSON = false; }",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(1);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(tool.type).to.equal('function');",
+                  "  pm.expect(tool.name).to.equal('web_search_custom');",
+                  "  pm.expect(tool.defer_loading).to.not.equal(true);",
+                  "  pm.expect(tool.parameters.properties.query.type).to.equal('string');",
+                  "  pm.expect(tool.parameters.required).to.deep.equal(['query']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.6-luna\",\"input\":\"Do not use any tools. Reply with OK.\",\"max_output_tokens\":128,\"tools\":[{\"type\":\"function\",\"name\":\"web_search_custom\",\"description\":\"Search through the application after user approval\",\"defer_loading\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}],\"tool_choice\":\"none\",\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "openai/gpt-5.6-luna Responses implicit tool search disabled streaming - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { inspect(JSON.parse(data)); } catch (e) { validJSON = false; }",
+                  "});",
+                  "pm.test('stream reached a terminal response', function () { pm.expect(terminal, text).to.equal(true); });",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(1);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(tool.type).to.equal('function');",
+                  "  pm.expect(tool.name).to.equal('web_search_custom');",
+                  "  pm.expect(tool.defer_loading).to.not.equal(true);",
+                  "  pm.expect(tool.parameters.properties.query.type).to.equal('string');",
+                  "  pm.expect(tool.parameters.required).to.deep.equal(['query']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.6-luna\",\"input\":\"Do not use any tools. Reply with OK.\",\"max_output_tokens\":128,\"tools\":[{\"type\":\"function\",\"name\":\"web_search_custom\",\"description\":\"Search through the application after user approval\",\"defer_loading\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}],\"tool_choice\":\"none\",\"stream\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "azure/gpt-5.6-luna Responses implicit tool search disabled regular - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "try { inspect(pm.response.json()); } catch (e) { validJSON = false; }",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(1);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(tool.type).to.equal('function');",
+                  "  pm.expect(tool.name).to.equal('web_search_custom');",
+                  "  pm.expect(tool.defer_loading).to.not.equal(true);",
+                  "  pm.expect(tool.parameters.properties.query.type).to.equal('string');",
+                  "  pm.expect(tool.parameters.required).to.deep.equal(['query']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/gpt-5.6-luna\",\"input\":\"Do not use any tools. Reply with OK.\",\"max_output_tokens\":128,\"tools\":[{\"type\":\"function\",\"name\":\"web_search_custom\",\"description\":\"Search through the application after user approval\",\"defer_loading\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}],\"tool_choice\":\"none\",\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "azure/gpt-5.6-luna Responses implicit tool search disabled streaming - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { inspect(JSON.parse(data)); } catch (e) { validJSON = false; }",
+                  "});",
+                  "pm.test('stream reached a terminal response', function () { pm.expect(terminal, text).to.equal(true); });",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(1);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(tool.type).to.equal('function');",
+                  "  pm.expect(tool.name).to.equal('web_search_custom');",
+                  "  pm.expect(tool.defer_loading).to.not.equal(true);",
+                  "  pm.expect(tool.parameters.properties.query.type).to.equal('string');",
+                  "  pm.expect(tool.parameters.required).to.deep.equal(['query']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"azure/gpt-5.6-luna\",\"input\":\"Do not use any tools. Reply with OK.\",\"max_output_tokens\":128,\"tools\":[{\"type\":\"function\",\"name\":\"web_search_custom\",\"description\":\"Search through the application after user approval\",\"defer_loading\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}],\"tool_choice\":\"none\",\"stream\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna Responses reserved web namespace preserved regular - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "try { inspect(pm.response.json()); } catch (e) { validJSON = false; }",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(1);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(tool.type).to.equal('function');",
+                  "  pm.expect(tool.name).to.equal('web__lookup_local');",
+                  "  pm.expect(tool.parameters.properties.query.type).to.equal('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"input\":\"Do not use any tools. Reply with OK.\",\"max_output_tokens\":128,\"tools\":[{\"type\":\"namespace\",\"name\":\"web\",\"tools\":[{\"type\":\"function\",\"name\":\"lookup_local\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}]}],\"tool_choice\":\"none\",\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna Responses reserved web namespace preserved streaming - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { inspect(JSON.parse(data)); } catch (e) { validJSON = false; }",
+                  "});",
+                  "pm.test('stream reached a terminal response', function () { pm.expect(terminal, text).to.equal(true); });",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(1);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(tool.type).to.equal('function');",
+                  "  pm.expect(tool.name).to.equal('web__lookup_local');",
+                  "  pm.expect(tool.parameters.properties.query.type).to.equal('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"input\":\"Do not use any tools. Reply with OK.\",\"max_output_tokens\":128,\"tools\":[{\"type\":\"namespace\",\"name\":\"web\",\"tools\":[{\"type\":\"function\",\"name\":\"lookup_local\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}]}],\"tool_choice\":\"none\",\"stream\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-5 Responses custom tool type is not promoted - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "try { inspect(pm.response.json()); } catch (e) { validJSON = false; }",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(1);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(!tool.type || tool.type === 'custom', JSON.stringify(tool)).to.equal(true);",
+                  "  pm.expect(tool.name).to.equal('search_local');",
+                  "  pm.expect(tool.input_schema.type).to.equal('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-5\",\"input\":\"Do not use any tools. Reply with OK.\",\"max_output_tokens\":32,\"tools\":[{\"type\":\"web_search_custom\",\"name\":\"search_local\"}],\"tool_choice\":\"none\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-5 native Messages custom tool type is not promoted - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "try { inspect(pm.response.json()); } catch (e) { validJSON = false; }",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(1);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(!tool.type || tool.type === 'custom', JSON.stringify(tool)).to.equal(true);",
+                  "  pm.expect(tool.name).to.equal('search_local');",
+                  "  pm.expect(tool.input_schema.type).to.equal('object');",
+                  "  pm.expect(tool.input_schema.properties.query.type).to.equal('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-5\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Do not use any tools. Reply with OK.\"}],\"tools\":[{\"type\":\"web_search_custom\",\"name\":\"search_local\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}],\"tool_choice\":{\"type\":\"none\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/claude-sonnet-4-5 Responses custom tool type is not promoted - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "try { inspect(pm.response.json()); } catch (e) { validJSON = false; }",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(1);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(!tool.type || tool.type === 'custom', JSON.stringify(tool)).to.equal(true);",
+                  "  pm.expect(tool.name).to.equal('search_local');",
+                  "  pm.expect(tool.input_schema.type).to.equal('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-5\",\"input\":\"Do not use any tools. Reply with OK.\",\"max_output_tokens\":32,\"tools\":[{\"type\":\"web_search_custom\",\"name\":\"search_local\"}],\"tool_choice\":\"none\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/claude-sonnet-4-5 native Messages custom tool type is not promoted - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "try { inspect(pm.response.json()); } catch (e) { validJSON = false; }",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(1);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(!tool.type || tool.type === 'custom', JSON.stringify(tool)).to.equal(true);",
+                  "  pm.expect(tool.name).to.equal('search_local');",
+                  "  pm.expect(tool.input_schema.type).to.equal('object');",
+                  "  pm.expect(tool.input_schema.properties.query.type).to.equal('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-sonnet-4-5\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Do not use any tools. Reply with OK.\"}],\"tools\":[{\"type\":\"web_search_custom\",\"name\":\"search_local\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}],\"tool_choice\":{\"type\":\"none\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna namespace label collision forced function regular - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "try { inspect(pm.response.json()); } catch (e) { validJSON = false; }",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(2);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(tool.type).to.equal('function');",
+                  "  pm.expect(tool.name).to.equal('web__js');",
+                  "  pm.expect(rawRequest.tools[1].type).to.equal('namespace');",
+                  "  pm.expect(rawRequest.tools[1].name).to.equal('js');",
+                  "  pm.expect(rawRequest.tools[1].tools[0].name).to.equal('keep');",
+                  "  pm.expect(rawRequest.tool_choice.name).to.equal('web__js');",
+                  "});",
+                  "pm.test('function call is restored to the application namespace', function () {",
+                  "  pm.expect(calls.length, text).to.be.above(0);",
+                  "  calls.forEach(function (call) { pm.expect(call.name, JSON.stringify(call)).to.equal('js'); pm.expect(call.namespace, JSON.stringify(call)).to.equal('web'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"input\":\"Call the application js function once with an empty object. Do not call keep.\",\"max_output_tokens\":128,\"tools\":[{\"type\":\"namespace\",\"name\":\"web\",\"tools\":[{\"type\":\"function\",\"name\":\"js\",\"description\":\"An application-owned confirmation probe; return its call to the client.\",\"parameters\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}}]},{\"type\":\"namespace\",\"name\":\"js\",\"tools\":[{\"type\":\"function\",\"name\":\"keep\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}]}],\"tool_choice\":{\"type\":\"function\",\"name\":\"js\"},\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna namespace label collision allowed tools regular - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "try { inspect(pm.response.json()); } catch (e) { validJSON = false; }",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(2);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(tool.type).to.equal('function');",
+                  "  pm.expect(tool.name).to.equal('web__js');",
+                  "  pm.expect(rawRequest.tools[1].type).to.equal('namespace');",
+                  "  pm.expect(rawRequest.tools[1].name).to.equal('js');",
+                  "  pm.expect(rawRequest.tools[1].tools[0].name).to.equal('keep');",
+                  "  pm.expect(rawRequest.tool_choice.tools[0].name).to.equal('web__js');",
+                  "});",
+                  "pm.test('function call is restored to the application namespace', function () {",
+                  "  pm.expect(calls.length, text).to.be.above(0);",
+                  "  calls.forEach(function (call) { pm.expect(call.name, JSON.stringify(call)).to.equal('js'); pm.expect(call.namespace, JSON.stringify(call)).to.equal('web'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"input\":\"Call the application js function once with an empty object. Do not call keep.\",\"max_output_tokens\":128,\"tools\":[{\"type\":\"namespace\",\"name\":\"web\",\"tools\":[{\"type\":\"function\",\"name\":\"js\",\"description\":\"An application-owned confirmation probe; return its call to the client.\",\"parameters\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}}]},{\"type\":\"namespace\",\"name\":\"js\",\"tools\":[{\"type\":\"function\",\"name\":\"keep\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}]}],\"tool_choice\":{\"type\":\"allowed_tools\",\"mode\":\"required\",\"tools\":[{\"type\":\"function\",\"name\":\"js\"}]},\"stream\":false}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna namespace label collision forced function streaming - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { inspect(JSON.parse(data)); } catch (e) { validJSON = false; }",
+                  "});",
+                  "pm.test('stream reached a terminal response', function () { pm.expect(terminal, text).to.equal(true); });",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(2);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(tool.type).to.equal('function');",
+                  "  pm.expect(tool.name).to.equal('web__js');",
+                  "  pm.expect(rawRequest.tools[1].type).to.equal('namespace');",
+                  "  pm.expect(rawRequest.tools[1].name).to.equal('js');",
+                  "  pm.expect(rawRequest.tools[1].tools[0].name).to.equal('keep');",
+                  "  pm.expect(rawRequest.tool_choice.name).to.equal('web__js');",
+                  "});",
+                  "pm.test('function call is restored to the application namespace', function () {",
+                  "  pm.expect(calls.length, text).to.be.above(0);",
+                  "  calls.forEach(function (call) { pm.expect(call.name, JSON.stringify(call)).to.equal('js'); pm.expect(call.namespace, JSON.stringify(call)).to.equal('web'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"input\":\"Call the application js function once with an empty object. Do not call keep.\",\"max_output_tokens\":128,\"tools\":[{\"type\":\"namespace\",\"name\":\"web\",\"tools\":[{\"type\":\"function\",\"name\":\"js\",\"description\":\"An application-owned confirmation probe; return its call to the client.\",\"parameters\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}}]},{\"type\":\"namespace\",\"name\":\"js\",\"tools\":[{\"type\":\"function\",\"name\":\"keep\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}]}],\"tool_choice\":{\"type\":\"function\",\"name\":\"js\"},\"stream\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna namespace label collision allowed tools streaming - builtin-tool-rewriting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('request succeeded', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "var rawRequest = null;",
+                  "var validJSON = true;",
+                  "var terminal = false;",
+                  "var hasError = false;",
+                  "var calls = [];",
+                  "function inspect(value) {",
+                  "  if (value.type === 'function_call') { calls.push(value); }",
+                  "  if (value.item && value.item.type === 'function_call') { calls.push(value.item); }",
+                  "  var output = value.output || (value.response && value.response.output) || [];",
+                  "  output.forEach(function (item) { if (item.type === 'function_call') { calls.push(item); } });",
+                  "  var extra = value.extra_fields || (value.response && value.response.extra_fields);",
+                  "  if (extra && extra.raw_request) { rawRequest = extra.raw_request; }",
+                  "  if (value.error || (value.response && value.response.error)) { hasError = true; }",
+                  "  if (value.type === 'response.completed' || value.type === 'response.incomplete') { terminal = true; }",
+                  "}",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data || data === '[DONE]') { return; }",
+                  "  try { inspect(JSON.parse(data)); } catch (e) { validJSON = false; }",
+                  "});",
+                  "pm.test('stream reached a terminal response', function () { pm.expect(terminal, text).to.equal(true); });",
+                  "pm.test('provider response is valid and has no error', function () { pm.expect(validJSON, text).to.equal(true); pm.expect(hasError, text).to.equal(false); });",
+                  "if (typeof rawRequest === 'string') { try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; } }",
+                  "pm.test('outbound tools preserve application execution', function () {",
+                  "  pm.expect(rawRequest, 'raw_request missing: ' + text).to.be.an('object');",
+                  "  pm.expect(rawRequest.tools, JSON.stringify(rawRequest)).to.have.lengthOf(2);",
+                  "  var tool = rawRequest.tools[0];",
+                  "  pm.expect(tool.type).to.equal('function');",
+                  "  pm.expect(tool.name).to.equal('web__js');",
+                  "  pm.expect(rawRequest.tools[1].type).to.equal('namespace');",
+                  "  pm.expect(rawRequest.tools[1].name).to.equal('js');",
+                  "  pm.expect(rawRequest.tools[1].tools[0].name).to.equal('keep');",
+                  "  pm.expect(rawRequest.tool_choice.tools[0].name).to.equal('web__js');",
+                  "});",
+                  "pm.test('function call is restored to the application namespace', function () {",
+                  "  pm.expect(calls.length, text).to.be.above(0);",
+                  "  calls.forEach(function (call) { pm.expect(call.name, JSON.stringify(call)).to.equal('js'); pm.expect(call.namespace, JSON.stringify(call)).to.equal('web'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-disable-builtin-tool-rewriting",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"input\":\"Call the application js function once with an empty object. Do not call keep.\",\"max_output_tokens\":128,\"tools\":[{\"type\":\"namespace\",\"name\":\"web\",\"tools\":[{\"type\":\"function\",\"name\":\"js\",\"description\":\"An application-owned confirmation probe; return its call to the client.\",\"parameters\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}}]},{\"type\":\"namespace\",\"name\":\"js\",\"tools\":[{\"type\":\"function\",\"name\":\"keep\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}]}],\"tool_choice\":{\"type\":\"allowed_tools\",\"mode\":\"required\",\"tools\":[{\"type\":\"function\",\"name\":\"js\"}]},\"stream\":true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
