@@ -97,6 +97,9 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 		return "", "", fmt.Errorf("failed to fetch from %q: %w", redacted, err)
 	}
 
+	// URL inputs are preparation, not provider exchanges. Do not consume the
+	// inference observer's budget or expose signed resource URLs through it.
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyHTTPExchangeObserver, schemas.HTTPExchangeObserverFactory(nil))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceURL, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
