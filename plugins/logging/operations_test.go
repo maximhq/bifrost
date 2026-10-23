@@ -5002,3 +5002,85 @@ func TestA2ARawCaptureContentPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenRouterBatchRetrieveSettlesAndRepeatedReadsDoNotBill(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin, e := Init(context.Background(), &Config{}, testLogger{}, store, bs, newTestPricingManager(t), nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer plugin.Cleanup()
+	newRetrieve := func() *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{BatchRetrieveResponse: &schemas.BifrostBatchRetrieveResponse{ID: "batch-openrouter", Model: "openai/gpt-4o", Endpoint: string(schemas.BatchEndpointChatCompletions), Status: schemas.BatchStatusCompleted, RequestCounts: schemas.BatchRequestCounts{Total: 2, Completed: 1, Failed: 1}, Results: []schemas.BatchResultItem{{CustomID: "a", Response: &schemas.BatchResultResponse{StatusCode: 200}}, {CustomID: "b", Error: &schemas.BatchResultError{Message: "bad request"}}}, Usage: &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{TotalTokens: 12, Cost: &schemas.BifrostCost{TotalCost: 0}}}}}
+	}
+	for _, id := range []string{"poll-1", "poll-2"} {
+		entry := &logstore.Log{ID: id, Provider: "openrouter", Model: "openai/gpt-4o"}
+		plugin.accountBatchResults(entry, newRetrieve(), nil)
+		if entry.Cost != nil {
+			t.Fatal("poll must not become a second financial row")
+		}
+		if entry.BatchDebugParsed == nil || entry.BatchDebugParsed.Accounting == nil || entry.BatchDebugParsed.Accounting.Cost == nil || *entry.BatchDebugParsed.Accounting.Cost != 0 {
+			t.Fatalf("zero charge not settled: %+v", entry.BatchDebugParsed)
+		}
+	}
+	job, e := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openrouter", "batch-openrouter"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if job.AccountingStatus != cstables.ProviderJobAccountingStatusAccounted {
+		t.Fatalf("job %+v", job)
+	}
+}
+
+func TestOpenRouterBatchMissingChargeBlocksDestructiveCleanup(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin, e := Init(context.Background(), &Config{}, testLogger{}, store, bs, newTestPricingManager(t), nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer plugin.Cleanup()
+	resp := &schemas.BifrostBatchResultsResponse{BatchID: "batch-no-charge", Model: "openai/gpt-4o", Status: schemas.BatchStatusCompleted, Usage: &schemas.BatchUsage{}}
+	plugin.accountBatchResults(&logstore.Log{ID: "fetch", Provider: "openrouter", Model: "openai/gpt-4o"}, &schemas.BifrostResponse{BatchResultsResponse: resp}, nil)
+	if !resp.AccountingPending {
+		t.Fatal("cleanup must be deferred when configured accounting cannot settle the authoritative charge")
+	}
+}
+
+func TestOpenRouterBatchCleanupWaitsForAccountingCompletion(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, bs, newTestPricingManager(t), nil)
+	require.NoError(t, err)
+	defer plugin.Cleanup()
+	batchID := "batch-being-settled"
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openrouter", batchID)
+	now := time.Now().UTC()
+	require.NoError(t, bs.UpsertProviderJob(context.Background(), &cstables.TableProviderJob{
+		ID: jobID, Kind: cstables.ProviderJobKindBatch, Provider: "openrouter", JobID: batchID,
+		Model: "openai/gpt-4o", ProviderStatus: string(schemas.BatchStatusCompleted),
+		AccountingStatus: cstables.ProviderJobAccountingStatusProcessing,
+		ClaimedAt:        &now, RunnerID: schemas.Ptr("another-worker"), AggregateLogWrittenAt: &now,
+	}))
+	// Another worker wrote the final price but has not finished governance reporting
+	// or persisted the accounted marker. A losing claim may display this price;
+	// it must not authorize deletion of the provider's only settlement inputs.
+	cost := 0.123
+	require.NoError(t, store.CreateIfNotExists(context.Background(), &logstore.Log{
+		ID:        jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenRouter, batchID),
+		Timestamp: now, Object: string(schemas.BatchResultsRequest), Provider: "openrouter", Model: "openai/gpt-4o", Status: "success", Cost: &cost,
+		BatchDebugParsed: &schemas.BifrostBatchDebug{BatchID: batchID, Accounting: &schemas.BatchAccountingDebug{ModelBreakdowns: map[string]schemas.BatchModelBreakdown{
+			"openai/gpt-4o": {Model: "openai/gpt-4o", Cost: &cost},
+		}}},
+	}))
+	fetch := func() *schemas.BifrostBatchResultsResponse {
+		result := &schemas.BifrostBatchResultsResponse{BatchID: batchID, Model: "openai/gpt-4o", Status: schemas.BatchStatusCompleted,
+			Usage: &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{TotalCost: cost}}}}
+		plugin.accountBatchResults(&logstore.Log{ID: "repeat-fetch", Provider: "openrouter", Model: "openai/gpt-4o"}, &schemas.BifrostResponse{BatchResultsResponse: result}, nil)
+		return result
+	}
+	require.True(t, fetch().AccountingPending, "a known price is not proof that governance reporting completed")
+	require.NoError(t, bs.CompleteProviderJob(context.Background(), jobID, "another-worker"))
+	require.False(t, fetch().AccountingPending, "an already-accounted batch can be cleaned up without billing again")
+}
