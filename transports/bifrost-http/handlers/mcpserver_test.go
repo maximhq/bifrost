@@ -620,10 +620,9 @@ func TestMCPGatewayChainResponseLoss(t *testing.T) {
 						IsError bool `json:"isError"`
 					}
 					require.NoError(t, json.Unmarshal(got, &result))
-					// 503 must exercise replay. A closed connection may surface EOF or
-					// enter recovery; safe tools may recover exactly once, with full
-					// fidelity. Unsafe tools must never execute a second time.
-					if safe && (fault == "503" || !result.IsError) {
+					// Only safe 503 calls retry. EOF is not transient or auth-shaped,
+					// even when an ephemeral port happens to contain 401 or 403.
+					if safe && fault == "503" {
 						wantCalls = 2
 						if link == "shared_to_local" {
 							wantOuter = 2
