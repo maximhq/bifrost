@@ -1,6 +1,16 @@
 package openrouter_test
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/openrouter"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"os"
 	"strings"
 	"testing"
@@ -67,4 +77,258 @@ func TestOpenRouter(t *testing.T) {
 	t.Run("OpenRouterTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
+}
+func TestOpenRouterNativeBatchCreate(t *testing.T) {
+	for _, endpoint := range []schemas.BatchEndpoint{schemas.BatchEndpointChatCompletions, schemas.BatchEndpointResponses, schemas.BatchEndpointMessages, schemas.BatchEndpointEmbeddings} {
+		t.Run(string(endpoint), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/batches" || r.Method != "POST" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				if r.Header.Get("Authorization") != "Bearer batch-key" {
+					t.Error("missing credential")
+				}
+				body, _ := io.ReadAll(r.Body)
+				var wire map[string]any
+				if err := json.Unmarshal(body, &wire); err != nil {
+					t.Error(err)
+				}
+				if wire["model"] != "openai/gpt-4o" || wire["endpoint"] != string(endpoint) {
+					t.Errorf("request %s", body)
+				}
+				for _, field := range []string{"endpoint", "model", "completion_window"} {
+					if strings.Index(string(body), `"`+field+`"`) > strings.Index(string(body), `"requests"`) {
+						t.Errorf("%s follows requests: %s", field, body)
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(202)
+				fmt.Fprint(w, `{"id":"batch-1","object":"batch","model":"openai/gpt-4o","status":"validating","request_counts":{"total":1,"completed":0,"failed":0}}`)
+			}))
+			defer server.Close()
+			p := openrouter.NewOpenRouterProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}}, bifrost.NewNoOpLogger())
+			body := map[string]any{"input": "hello"}
+			if endpoint == schemas.BatchEndpointChatCompletions || endpoint == schemas.BatchEndpointMessages {
+				body = map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}, "max_tokens": 16}
+			}
+			q := &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenRouter, Model: schemas.Ptr("openai/gpt-4o"), Endpoint: endpoint, Requests: []schemas.BatchRequestItem{{CustomID: "request-1", Body: body}}}
+			resp, e := p.BatchCreate(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{Value: *schemas.NewSecretVar("batch-key")}, q)
+			if e != nil {
+				t.Fatalf("native create failed: %s", e.GetErrorString())
+			}
+			if resp.ID != "batch-1" || resp.Status != schemas.BatchStatusValidating {
+				t.Fatalf("response %+v", resp)
+			}
+		})
+	}
+}
+func BenchmarkOpenRouterBatchCancel(b *testing.B) {
+	p := &openrouter.OpenRouterProvider{}
+	b.ReportAllocs()
+	for b.Loop() {
+		_, e := p.BatchCancel(nil, nil, nil)
+		if e == nil {
+			b.Fatal("expected unsupported cancel")
+		}
+	}
+}
+
+const nativeBatchCompleted = `{"id":"batch-1","object":"batch","endpoint":"/v1/chat/completions","model":"openai/gpt-4o","provider":"OpenAI","completion_window":"24h","status":"completed","finalized_at":100,"request_counts":{"total":2,"completed":1,"failed":1},"usage":{"prompt_tokens":40,"completion_tokens":12,"total_tokens":52,"cost":0.001,"is_byok":true,"cost_details":{"upstream_inference_cost":0.5}},"results":[{"id":"batch-req-1","custom_id":"first","response":{"status_code":200,"request_id":"request-1","body":{"choices":[{"message":{"content":"hello"}}]}}},{"id":"batch-req-2","custom_id":"second","error":{"type":"invalid_request_error","message":"invalid max_tokens","param":"max_tokens","error_type":"invalid_request"}}]}`
+
+func TestOpenRouterNativeBatchLifecycle(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "Bearer rejected" {
+			w.WriteHeader(401)
+			fmt.Fprint(w, `{"error":{"code":401,"message":"bad credential"}}`)
+			return
+		}
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/v1/batches":
+			if r.URL.Query().Get("limit") != "10" || len(r.URL.Query()["status"]) != 2 {
+				t.Errorf("query %s", r.URL.RawQuery)
+			}
+			fmt.Fprintf(w, `{"object":"list","data":[%s],"has_more":true,"last_id":"batch-1"}`, nativeBatchCompleted)
+		case r.Method == "DELETE":
+			fmt.Fprint(w, `{"id":"batch-1","object":"batch","deletion":{"openrouter":"deleted","upstream":{"provider":"OpenAI","status":"unsupported"}}}`)
+		default:
+			fmt.Fprint(w, nativeBatchCompleted)
+		}
+	}))
+	defer server.Close()
+	p := openrouter.NewOpenRouterProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}, SendBackRawResponse: true}, bifrost.NewNoOpLogger())
+	keys := []schemas.Key{{ID: "bad", Value: *schemas.NewSecretVar("rejected")}, {ID: "good", Value: *schemas.NewSecretVar("accepted")}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	retrieved, e := p.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{BatchID: "batch-1"})
+	if e != nil {
+		t.Fatal(e.GetErrorString())
+	}
+	if retrieved.Model != "openai/gpt-4o" || retrieved.Usage.Cost.TotalCost != 0.001 || !*retrieved.Usage.IsBYOK || retrieved.Usage.CostDetails["upstream_inference_cost"] != 0.5 || *retrieved.FinalizedAt != 100 {
+		t.Fatalf("native metadata lost: %+v", retrieved)
+	}
+	if len(retrieved.Results) != 2 || retrieved.Results[0].ID != "batch-req-1" || retrieved.Results[1].Error.Param != "max_tokens" || retrieved.Results[1].Error.Type != "invalid_request_error" {
+		t.Fatalf("results %+v", retrieved.Results)
+	}
+	if retrieved.ExtraFields.RawResponse == nil {
+		t.Fatal("raw response not captured")
+	}
+	// An id pin takes precedence over a conflicting name, just as core key selection does.
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "good")
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "conflicting")
+	results, e := p.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{BatchID: "batch-1"})
+	if e != nil {
+		t.Fatal(e.GetErrorString())
+	}
+	if results.Usage.Cost.TotalCost != 0.001 || results.Results[1].CustomID != "second" {
+		t.Fatalf("results %+v", results)
+	}
+	listed, e := p.BatchList(ctx, keys, &schemas.BifrostBatchListRequest{Limit: 10, ExtraParams: map[string]any{"status": []string{"validating", "in_progress"}}})
+	if e != nil {
+		t.Fatal(e.GetErrorString())
+	}
+	if len(listed.Data) != 1 || !listed.HasMore {
+		t.Fatalf("list %+v", listed)
+	}
+	deleted, e := p.BatchDelete(ctx, keys, &schemas.BifrostBatchDeleteRequest{BatchID: "batch-1"})
+	if e != nil {
+		t.Fatal(e.GetErrorString())
+	}
+	if deleted.Status != schemas.BatchStatusDeleted || deleted.Deletion["openrouter"] != "deleted" {
+		t.Fatalf("delete %+v", deleted)
+	}
+	for _, path := range paths {
+		if strings.Contains(path, "/results") || strings.Contains(path, "/files") {
+			t.Fatalf("unexpected upstream route %s", path)
+		}
+	}
+	if len(paths) != 5 {
+		t.Fatalf("requests=%v; workspace list must not be duplicated across keys", paths)
+	}
+}
+
+func TestOpenRouterBatchValidation(t *testing.T) {
+	fresh := func() *schemas.BifrostBatchCreateRequest {
+		return &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr("openai/gpt-4o"), Endpoint: schemas.BatchEndpointChatCompletions, Requests: []schemas.BatchRequestItem{{CustomID: "a", Body: map[string]any{"messages": []any{}}}}}
+	}
+	for name, mutate := range map[string]func(*schemas.BifrostBatchCreateRequest){
+		"missing model":        func(q *schemas.BifrostBatchCreateRequest) { q.Model = nil },
+		"file input":           func(q *schemas.BifrostBatchCreateRequest) { q.InputFileID = "file-1" },
+		"duplicate id":         func(q *schemas.BifrostBatchCreateRequest) { q.Requests = append(q.Requests, q.Requests[0]) },
+		"blank id":             func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].CustomID = " " },
+		"missing body":         func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].Body = nil },
+		"mixed models":         func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].Body["model"] = "different" },
+		"mixed endpoints":      func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].URL = "/v1/responses" },
+		"completion window":    func(q *schemas.BifrostBatchCreateRequest) { q.CompletionWindow = "48h" },
+		"unsupported endpoint": func(q *schemas.BifrostBatchCreateRequest) { q.Endpoint = schemas.BatchEndpointCompletions },
+		"unsupported options": func(q *schemas.BifrostBatchCreateRequest) {
+			q.ExtraParams = map[string]any{"provider": map[string]any{"order": []string{"openai"}}}
+		},
+		"embedding options": func(q *schemas.BifrostBatchCreateRequest) {
+			q.Endpoint = schemas.BatchEndpointEmbeddings
+			q.ExtraParams = map[string]any{"provider": map[string]any{"only": []any{"openai"}}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := fresh()
+			mutate(q)
+			_, e := (&openrouter.OpenRouterProvider{}).BatchCreate(nil, schemas.Key{}, q)
+			if e == nil || e.StatusCode == nil || *e.StatusCode != 400 {
+				t.Fatalf("expected validation 400, got %+v", e)
+			}
+		})
+	}
+	q := fresh()
+	q.ExtraParams = map[string]any{"provider": map[string]any{"only": []any{"openai"}, "allow_fallbacks": false}, "callback_url": "https://example.com/hook"}
+	native, e := openrouter.ToOpenRouterBatchRequest(q)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if native.Provider["allow_fallbacks"] != false || native.CallbackURL == "" {
+		t.Fatalf("options %+v", native)
+	}
+	b, e := providerUtils.MarshalSorted(native)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, field := range []string{"provider", "callback_url", "completion_window"} {
+		if strings.Index(string(b), `"`+field+`"`) > strings.Index(string(b), `"requests"`) {
+			t.Fatalf("metadata ordering %s", b)
+		}
+	}
+}
+
+func TestOpenRouterBatchValidationFailureAndPendingResults(t *testing.T) {
+	for _, status := range []string{"failed", "validating", "completed"} {
+		t.Run(status, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"id":"batch-1","model":"openai/gpt-4o","status":%q,"request_counts":{"total":1,"completed":0,"failed":0},"results":null,"error":{"message":"request a has invalid input"}}`, status)
+			}))
+			defer server.Close()
+			p := openrouter.NewOpenRouterProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}}, bifrost.NewNoOpLogger())
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			keys := []schemas.Key{{Value: *schemas.NewSecretVar("key")}}
+			got, e := p.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{BatchID: "batch-1"})
+			if e != nil || got.Error.Message != "request a has invalid input" {
+				t.Fatalf("async failure lost %+v %v", got, e)
+			}
+			_, e = p.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{BatchID: "batch-1"})
+			if status == "failed" {
+				if e != nil {
+					t.Fatal(e.GetErrorString())
+				}
+			} else if e == nil || e.StatusCode == nil || *e.StatusCode != 409 {
+				t.Fatalf("expected pending 409, got %+v", e)
+			}
+		})
+	}
+}
+
+func BenchmarkOpenRouterBatchConversion(b *testing.B) {
+	q := &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr("openai/gpt-4o"), Endpoint: schemas.BatchEndpointChatCompletions, Requests: []schemas.BatchRequestItem{{CustomID: "a", Body: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hello"}}}}}}
+	b.ReportAllocs()
+	for b.Loop() {
+		native, e := openrouter.ToOpenRouterBatchRequest(q)
+		if e != nil {
+			b.Fatal(e)
+		}
+		if _, e := providerUtils.MarshalSorted(native); e != nil {
+			b.Fatal(e)
+		}
+	}
+}
+
+func TestOpenRouterBatchDeletePreservesUpstreamConflict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprint(w, `{"error":{"code":409,"message":"batch is still running"}}`)
+	}))
+	defer server.Close()
+	p := openrouter.NewOpenRouterProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}}, bifrost.NewNoOpLogger())
+	_, err := p.BatchDelete(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), []schemas.Key{{Value: *schemas.NewSecretVar("key")}}, &schemas.BifrostBatchDeleteRequest{BatchID: "batch-1"})
+	if err == nil || err.StatusCode == nil || *err.StatusCode != 409 || !strings.Contains(err.GetErrorString(), "still running") {
+		t.Fatalf("upstream conflict was lost: %+v", err)
+	}
+}
+
+func TestOpenRouterBatchParseFailureRetainsRawCapture(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(w, `{"id":`)
+	}))
+	defer server.Close()
+	p := openrouter.NewOpenRouterProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}, SendBackRawRequest: true, SendBackRawResponse: true,
+	}, bifrost.NewNoOpLogger())
+	_, err := p.BatchCreate(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{Value: *schemas.NewSecretVar("key")}, &schemas.BifrostBatchCreateRequest{
+		Model: schemas.Ptr("openai/gpt-4o"), Endpoint: schemas.BatchEndpointChatCompletions,
+		Requests: []schemas.BatchRequestItem{{CustomID: "a", Body: map[string]any{"messages": []any{}}}},
+	})
+	if err == nil || err.ExtraFields.RawRequest == nil || err.ExtraFields.RawResponse == nil {
+		t.Fatalf("parse error must retain configured raw captures: %+v", err)
+	}
 }
