@@ -15,11 +15,9 @@
 //   Charts              render_chart line and bar charts, expanded server-side
 //   Capabilities        files and actions Warp cannot do: say so, offer the
 //                       feature-request link, no tool loops
-//   Topics              list_topics answers what people ask about across the
-//                       deployment from the clusters Setup computed; what the
-//                       snapshot cannot show is declined with the
-//                       feature-request link (scoped surveys take a sample,
-//                       under Conversation content)
+//   Topics              list_topics answers what people ask about over a
+//                       window, with a trend per topic; what it still cannot
+//                       show is declined with the feature-request link
 //   Unanswerable        outside Bifrost's view, missing entities, secrets, PII,
 //                       its own prompt, harmful help, legal verdicts, forecasts
 //   Guardrails          out-of-scope refusals, instruction overrides, a
@@ -59,15 +57,6 @@ const DRILL_DOWN = ["get_log_detail", "get_request_trace"];
 // do not hold.
 const ONE_LIST_TOPICS = { toolsAll: ["list_topics"], toolsOnly: ["list_topics"], maxToolCalls: 1 };
 const NO_REQUEST_TYPE_FILTER = [{ pattern: '"objects"' }];
-// A survey scoped to a person or a window is answered from one query_logs
-// sample: list_topics covers the whole deployment over the last run's window
-// and cannot be narrowed, so it is not among the allowed tools.
-const SCOPED_SURVEY = {
-  toolsAll: ["query_logs"],
-  toolsOnly: ["describe_filter_space", "ask_user", "count_logs", "query_logs", "query_model_performance", "query_usage_by", "semantic_search_logs", "get_log_detail"],
-  argsMatch: [{ tool: "query_logs", pattern: '"include_content":\\s*true' }],
-  answerAll: ["sample of \\d[\\d,]* of \\d[\\d,]* requests", "not representative of the entire traffic"],
-};
 // A one-sentence decline, with room for the issue-tracker link Warp offers.
 const REFUSAL_CHARS = 600;
 // The link Warp offers after declining something it cannot do.
@@ -78,6 +67,15 @@ const CHART_BLOCK = ["```warp-chart", '"points":\\['];
 // A topic's name linked to one request: it says how many requests the topic
 // holds and opens one. Examples are linked; names are not.
 const TOPIC_NAME_LINKED = "\\|\\s*\\[[^\\]|]+\\]\\([^)]*selected_log=";
+// A survey scoped to a window or a person is a list_topics call with that
+// window and those filters; describe_filter_space may resolve a name first.
+// Setup built topics, so the query_logs sample fallback never applies, and a
+// breakdown rebuilt from the logs is the behaviour this rules out.
+const SCOPED_SURVEY = {
+  toolsAll: ["list_topics"],
+  toolsOnly: ["describe_filter_space", "ask_user", "list_topics"],
+  answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK],
+};
 // Wording of an off-topic decline - a greeting must never read like one.
 const REFUSAL_WORDING = ["only (answer|help with|discuss)", "outside (of )?(what|my)", "can['’]t help with that", "not able to help"];
 // A failures chart's "Open in Logs" must open the failures, not every request.
@@ -174,17 +172,15 @@ const FOLDERS = [
     name: "Conversation content",
     description: "Seeded prompts cover debugging, pricing/billing, and error explanations; searched through the semantic index the Setup folder backfills.",
     cases: [
-      // Topics cover the window Setup clustered, not "the last 7 days", so a
-      // survey that names a window or a person is answered from a sample.
-      { id: "content-themes", name: "Summarises what people asked about this week from a sample", ask: "What are people asking about most in the last 7 days?", expect: SCOPED_SURVEY },
-      // The sample has to be Alex Rivera's requests: the same query_logs call
-      // carries the content and the seeded user id, or it is a sample of
-      // everyone's traffic described as his.
+      // list_topics counts over any window and slice, so a survey that names a
+      // window or a person is one call with it. Its default window is the last
+      // 7 days, so the first case may leave start_time out.
+      { id: "content-themes", name: "Summarises what people asked about this week from the topics", ask: "What are people asking about most in the last 7 days?", expect: SCOPED_SURVEY },
       {
         id: "content-themes-user",
-        name: "Summarises what one user was doing from a sample",
+        name: "Summarises what one user was doing from the topics",
         ask: "What kinds of tasks was Alex Rivera doing this week?",
-        expect: { ...SCOPED_SURVEY, argsMatch: [{ tool: "query_logs", pattern: '^(?=[\\s\\S]*"include_content":\\s*true)(?=[\\s\\S]*"user_ids"[\\s\\S]*"user-alex-rivera")' }] },
+        expect: { ...SCOPED_SURVEY, argsMatch: [{ tool: "list_topics", pattern: "user-alex-rivera" }] },
       },
       { id: "content-debugging", name: "Finds debugging conversations", ask: "Find conversations about debugging code.", expect: { toolsAny: CONTENT, answerAny: ["bug|debug|panic|index|nil|get_user|code review|memory leak"] } },
       { id: "content-billing", name: "Finds pricing and billing questions", ask: "Has anyone asked about pricing or billing?", expect: { toolsAny: CONTENT, answerAny: ["refund|invoice|pricing|billing|subscription|payment"] } },
@@ -321,7 +317,7 @@ const FOLDERS = [
   {
     name: "Topics",
     description:
-      "Topic clusters are one snapshot: the clusters Setup computed over the seeded window, across the whole deployment, counted in requests. The overview case must be answered from list_topics in one call, with topic names left unlinked - a name linked to a single example says how many requests the topic holds and opens one. The rest ask for what the snapshot cannot show - a trend, every request in a topic, a count of people. A survey scoped to a window or a person is not a topic question; it is covered under Conversation content. Each must say so, offer the feature-request link, and neither call list_topics again nor rebuild a breakdown by slicing the logs with other tools.",
+      "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with topic names left unlinked - a name linked to a single example says how many requests the topic holds and opens one. What it still cannot show - every request in a topic, a count of people - is declined with the feature-request link, without rebuilding a breakdown by slicing the logs with other tools.",
     cases: [
       {
         id: "topics-overview",
@@ -330,10 +326,20 @@ const FOLDERS = [
         expect: { ...ONE_LIST_TOPICS, answerAll: ["\\brequests?\\b"], answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK] },
       },
       {
+        id: "topics-past-day",
+        name: "Lists topics for another time range in one call",
+        ask: "What topics came up in the past 24 hours, across the whole deployment?",
+        expect: {
+          ...ONE_LIST_TOPICS,
+          argsMatch: [{ tool: "list_topics", pattern: "\"start_time\"\\s*:\\s*\"-(24h|1d|1440m)\"" }],
+          answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK],
+        },
+      },
+      {
         id: "topics-trend",
-        name: "Declines a topic trend",
+        name: "Reads a topic trend off one call",
         ask: "Which topics are growing this week compared to last week, across the whole deployment?",
-        expect: { ...ONE_LIST_TOPICS, answerAll: [FEATURE_LINK], answerNone: ["\\b(grew|growing|increased|up) (by )?\\d+ ?%"] },
+        expect: { ...ONE_LIST_TOPICS, answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK] },
       },
       {
         id: "topics-drill-down",
