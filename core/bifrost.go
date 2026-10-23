@@ -2804,6 +2804,21 @@ func (bifrost *Bifrost) BatchDeleteRequest(ctx *schemas.BifrostContext, req *sch
 		ctx = bifrost.ctx
 	}
 
+	// OpenRouter deletion destroys its inline results. Run the normal result
+	// pipeline first so configured logging settles the batch before cleanup.
+	if req.Provider == schemas.OpenRouter {
+		preflight := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		defer preflight.Cancel()
+		preflight.SetValue(schemas.BifrostContextKeyRequestID, uuid.NewString())
+		results, err := bifrost.BatchResultsRequest(preflight, &schemas.BifrostBatchResultsRequest{Provider: req.Provider, BatchID: req.BatchID})
+		if err != nil {
+			return nil, err
+		}
+		if results.AccountingPending {
+			return nil, &schemas.BifrostError{StatusCode: schemas.Ptr(503), Error: &schemas.ErrorField{Message: "batch accounting is pending; retry deletion after settlement"}}
+		}
+	}
+
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.BatchDeleteRequest
 	bifrostReq.BatchDeleteRequest = req
