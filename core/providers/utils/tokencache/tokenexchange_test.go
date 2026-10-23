@@ -216,7 +216,7 @@ func TestTokenExchangeMinter(t *testing.T) {
 
 		_, bErr := mint(context.Background(), nil)
 		require.NotNil(t, bErr)
-		assert.Contains(t, bErr.Error.Message, "resolves outside the directories")
+		assert.Contains(t, bErr.Error.Message, "escapes")
 		hits, _, _ := es.snapshot()
 		assert.Zero(t, hits)
 	})

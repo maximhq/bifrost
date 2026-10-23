@@ -1124,53 +1124,24 @@ const OAuthTokenTypeJWT = "urn:ietf:params:oauth:token-type:jwt"
 // environment, so whoever can edit keys through the management API cannot widen it.
 const SubjectTokenDirsEnv = "BIFROST_SUBJECT_TOKEN_DIRS"
 
-// subjectTokenDirs returns the cleaned absolute directories in SubjectTokenDirsEnv.
-func subjectTokenDirs() []string {
-	var dirs []string
-	for _, d := range filepath.SplitList(os.Getenv(SubjectTokenDirsEnv)) {
-		if d = strings.TrimSpace(d); filepath.IsAbs(d) {
-			dirs = append(dirs, filepath.Clean(d))
-		}
-	}
-	return dirs
-}
-
-func within(path, dir string) bool {
-	return strings.HasPrefix(path, dir+string(filepath.Separator))
-}
-
-// CheckSubjectTokenFile reports whether path lies inside a directory SubjectTokenDirsEnv
-// allows, compared lexically after cleaning so ".." cannot climb out.
-func CheckSubjectTokenFile(path string) error {
-	dirs := subjectTokenDirs()
-	if len(dirs) == 0 {
-		return fmt.Errorf("oauth_key_config.subject_token_file requires the %s environment variable to list the directory that holds it", SubjectTokenDirsEnv)
-	}
+// SubjectTokenDir returns the directory listed in SubjectTokenDirsEnv that contains path,
+// compared after cleaning so ".." cannot climb out.
+func SubjectTokenDir(path string) (string, error) {
 	clean := filepath.Clean(path)
-	for _, d := range dirs {
-		if within(clean, d) {
-			return nil
+	found := false
+	for _, d := range filepath.SplitList(os.Getenv(SubjectTokenDirsEnv)) {
+		if d = strings.TrimSpace(d); !filepath.IsAbs(d) {
+			continue
+		}
+		found = true
+		if d = filepath.Clean(d); strings.HasPrefix(clean, d+string(filepath.Separator)) {
+			return d, nil
 		}
 	}
-	return fmt.Errorf("oauth_key_config.subject_token_file must be inside a directory listed in %s", SubjectTokenDirsEnv)
-}
-
-// ResolveSubjectTokenFile follows symlinks and returns the real path only when it stays inside
-// an allowed directory, so a link cannot point the read elsewhere.
-func ResolveSubjectTokenFile(path string) (string, error) {
-	if err := CheckSubjectTokenFile(path); err != nil {
-		return "", err
+	if !found {
+		return "", fmt.Errorf("oauth_key_config.subject_token_file requires the %s environment variable to list the directory that holds it", SubjectTokenDirsEnv)
 	}
-	real, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", fmt.Errorf("subject_token_file could not be read: %w", err)
-	}
-	for _, d := range subjectTokenDirs() {
-		if realDir, err := filepath.EvalSymlinks(d); err == nil && within(real, realDir) {
-			return real, nil
-		}
-	}
-	return "", fmt.Errorf("subject_token_file resolves outside the directories listed in %s", SubjectTokenDirsEnv)
+	return "", fmt.Errorf("oauth_key_config.subject_token_file must be inside a directory listed in %s", SubjectTokenDirsEnv)
 }
 
 // OAuthRequestEncoding selects how the token_exchange grant encodes its request body.
@@ -1322,7 +1293,7 @@ func (c *OAuthKeyConfig) Validate() error {
 		if !filepath.IsAbs(strings.TrimSpace(c.SubjectTokenFile)) {
 			return fmt.Errorf("oauth_key_config.subject_token_file must be an absolute path")
 		}
-		if err := CheckSubjectTokenFile(strings.TrimSpace(c.SubjectTokenFile)); err != nil {
+		if _, err := SubjectTokenDir(strings.TrimSpace(c.SubjectTokenFile)); err != nil {
 			return err
 		}
 		switch c.RequestEncoding {

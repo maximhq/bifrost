@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -91,12 +92,18 @@ func TokenExchangeMinter(cfg TokenExchangeConfig, hc *http.Client) Minter[string
 	}
 }
 
+// readSubjectToken opens the file through os.OpenInRoot, so neither ".." nor a symlink can
+// leave the allowed directory; links that stay inside it, as projected tokens do, are followed.
 func readSubjectToken(path string) (string, error) {
-	real, err := schemas.ResolveSubjectTokenFile(path)
+	dir, err := schemas.SubjectTokenDir(path)
 	if err != nil {
 		return "", err
 	}
-	f, err := os.Open(real)
+	rel, err := filepath.Rel(dir, filepath.Clean(path))
+	if err != nil {
+		return "", fmt.Errorf("subject_token_file could not be read: %w", err)
+	}
+	f, err := os.OpenInRoot(dir, rel)
 	if err != nil {
 		return "", fmt.Errorf("subject_token_file could not be read: %w", err)
 	}
