@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -225,6 +226,26 @@ func TestWarpSystemPromptSendsScopedSurveysToTheSample(t *testing.T) {
 	}
 	require.Contains(t, SemanticSearchGuidance, "An unscoped survey question goes to list_topics")
 	require.Contains(t, SemanticSearchGuidance, "A scoped survey")
+}
+
+// Discovery reads the pool from the log store and never the vector store, so
+// a deployment with no vector store still registers it and keeps the queue
+// upkeep starts it through. Only the run that pages vectors out needs one.
+func TestWarpRegisterTopicsKeepsDiscoveryWithoutAVectorStore(t *testing.T) {
+	for _, withVectors := range []bool{false, true} {
+		options := []Option{WithConfigStore(&recordingStore{row: assignTestRow()}), WithLogReader(topicTestReader(t, map[string]logstore.Log{}))}
+		if withVectors {
+			options = append(options, WithVectorStore(newFakeWarpVectorStore()))
+		}
+		service := NewService(nil, options...)
+		t.Cleanup(service.Shutdown)
+		runner := sidekiq.New(nil, nil, 1, "")
+		service.RegisterTopics(runner)
+
+		require.NotNil(t, service.topicJobs, "vector store %v: upkeep has a queue to start discovery through", withVectors)
+		_, summarized := runner.Summarize(TopicDiscoveryJobKind, "{}")
+		require.True(t, summarized, "vector store %v: discovery is registered", withVectors)
+	}
 }
 
 // responsesInputText flattens a request's input for assertions.
