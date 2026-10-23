@@ -383,7 +383,14 @@ func newBedrockInvokeHTTPTestServer(t *testing.T, handler http.HandlerFunc) stri
 	require.NoError(t, err)
 	t.Cleanup(func() { client.Shutdown() })
 	r := router.New()
-	NewBedrockRouter(client, &mockHandlerStore{}, nil, bifrost.NewNoOpLogger()).RegisterRoutes(r)
+	store := &mockHandlerStore{}
+	logger := bifrost.NewNoOpLogger()
+	NewBedrockRouter(client, store, nil, logger).RegisterRoutes(r)
+	NewLangChainRouter(client, store, nil, logger).RegisterRoutes(r)
+	NewLiteLLMRouter(client, store, nil, logger).RegisterRoutes(r)
+	NewPydanticAIRouter(client, store, nil, logger).RegisterRoutes(r)
+	NewCursorRouter(client, store, nil, logger).RegisterRoutes(r)
+	NewGenericRouter(client, store, nil, CreateOpenAIRouteConfigs("", store), nil, logger).RegisterRoutes(r)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	server := &fasthttp.Server{Handler: r.Handler}
@@ -393,8 +400,18 @@ func newBedrockInvokeHTTPTestServer(t *testing.T, handler http.HandlerFunc) stri
 }
 
 func TestBedrockMistralInvokeHTTP(t *testing.T) {
-	for _, stream := range []bool{false, true} {
-		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+	for _, route := range []struct {
+		prefix string
+		stream bool
+	}{
+		{"/bedrock", false}, {"/bedrock", true},
+		{"/langchain", false}, {"/langchain", true},
+		{"/litellm", false}, {"/litellm", true},
+		{"/pydanticai", false}, {"/pydanticai", true},
+		{"/cursor", false}, {"/cursor", true},
+	} {
+		prefix, stream := route.prefix, route.stream
+		t.Run(prefix+fmt.Sprintf("/stream=%t", stream), func(t *testing.T) {
 			var hits atomic.Int32
 			requests := make(chan []byte, 10)
 			base := newBedrockInvokeHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -455,13 +472,15 @@ func TestBedrockMistralInvokeHTTP(t *testing.T) {
 				}
 				_, _ = io.WriteString(w, `{"id":"chatcmpl-test","object":"chat.completion","model":"`+bedrockMistralInvokeModel+`","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call12345","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"SF\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}`)
 			})
-			path := "/bedrock/model/" + bedrockMistralInvokeModel + "/invoke"
+			path := prefix + "/model/" + bedrockMistralInvokeModel + "/invoke"
 			if stream {
 				path += "-with-response-stream"
 			}
 			httpClient := &http.Client{Timeout: 10 * time.Second}
 			for _, choice := range []string{"auto", "any", "none"} {
 				body := strings.Replace(bedrockMistralInvokeBody, `"tool_choice":"auto"`, `"tool_choice":"`+choice+`"`, 1)
+				// The URL chooses streaming, not the body's opposite stream flag.
+				body = strings.Replace(body, "{", fmt.Sprintf(`{"stream":%t,`, !stream), 1)
 				httpRequest, err := http.NewRequest(http.MethodPost, base+path, strings.NewReader(body))
 				require.NoError(t, err)
 				httpRequest.Header.Set("Content-Type", "application/json")
@@ -477,6 +496,7 @@ func TestBedrockMistralInvokeHTTP(t *testing.T) {
 				assert.Equal(t, choice, gjson.GetBytes(upstreamBody, "tool_choice").String())
 				assert.Equal(t, int64(256), gjson.GetBytes(upstreamBody, "max_tokens").Int())
 				assert.False(t, gjson.GetBytes(upstreamBody, "model").Exists())
+				assert.False(t, gjson.GetBytes(upstreamBody, "stream").Exists())
 				assert.False(t, gjson.GetBytes(upstreamBody, "stream_options").Exists())
 				assert.False(t, gjson.GetBytes(upstreamBody, "max_completion_tokens").Exists())
 				schema := gjson.GetBytes(upstreamBody, "tools.0.function.parameters").Raw
@@ -596,6 +616,46 @@ func TestBedrockMistralInvokeHTTPValidation(t *testing.T) {
 			})
 		}
 	}
+	assert.Zero(t, hits.Load())
+}
+
+func TestBedrockMistralNeutralHTTPStaysOnConverse(t *testing.T) {
+	paths := make(chan string, 2)
+	base := newBedrockInvokeHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		paths <- r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"output":{"message":{"role":"assistant","content":[{"text":"ok"}]}},"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}`)
+	})
+	for _, tc := range []struct{ path, body string }{
+		{"/v1/chat/completions", `{"model":"bedrock/mistral.mistral-large-3-675b-instruct","messages":[{"role":"user","content":"Hello"}]}`},
+		{"/v1/responses", `{"model":"bedrock/mistral.mistral-large-3-675b-instruct","input":"Hello"}`},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			resp, err := http.Post(base+tc.path, "application/json", strings.NewReader(tc.body))
+			require.NoError(t, err)
+			wire, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusOK, resp.StatusCode, "%s", wire)
+			assert.True(t, strings.HasSuffix(<-paths, "/converse"))
+		})
+	}
+}
+
+func TestBedrockMistralResponsesMissingToolNameHTTP(t *testing.T) {
+	var hits atomic.Int32
+	base := newBedrockInvokeHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Error(w, "must not reach AWS", http.StatusInternalServerError)
+	})
+	body := `{"model":"bedrock/mistral.mistral-large-3-675b-instruct","input":"Hello","tools":[{"type":"function","parameters":{"type":"object"}}]}`
+	resp, err := http.Post(base+"/v1/responses", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	wire, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "%s", wire)
+	assert.Contains(t, gjson.GetBytes(wire, "error.message").String(), "missing required name")
 	assert.Zero(t, hits.Load())
 }
 

@@ -279700,7 +279700,7 @@
       ]
     },
     {
-      "name": "267. Mistral native Invoke responses and tools (#8939 / #8940)",
+      "name": "267. Mistral native Invoke responses and tools (#8939 / #8940; PR #8948 / PR #8961)",
       "description": "Regressions for #8939 / #8940. Messages-based Mistral Invoke requests use the native chat codec; existing Converse-shaped toolConfig compatibility inputs retain Responses/Converse routing. Both return native chat.completion choices and chat.completion.chunk JSON inside AWS EventStream chunks. Covers /bedrock and shared routes under /langchain, /litellm, /pydanticai and /cursor, including stable stream identity, mixed-tool ordinals, finish_reason and usage. Native tool cases cover auto/any/none, tool-result replay and actionable 400 validation errors. Regional model id explicitly selects us-west-2. Unexpected statuses, including credential/region/model-access errors, must fail.",
       "item": [
         {
@@ -280791,12 +280791,33 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('mistral native invoke: native choices, not an Anthropic message or opaque 500', function () {",
+                  "pm.test('mistral native invoke: native response envelope and usage', function () {",
                   "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
                   "  var j = pm.response.json();",
-                  "  pm.expect(j.choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
-                  "  pm.expect(j.type, pm.response.text()).to.not.equal('message');",
+                  "  pm.expect(j.object, pm.response.text()).to.equal('chat.completion');",
+                  "  pm.expect(j.id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.created).to.be.a('number').above(0);",
+                  "  pm.expect(j.choices).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j).not.to.have.property('type');",
+                  "  pm.expect(j).not.to.have.property('extra_fields');",
                   "  pm.expect(j.choices[0].message.role).to.equal('assistant');",
+                  "  pm.expect(j.usage.total_tokens).to.be.a('number').above(0);",
+                  "});",
+                  "pm.test('mistral native invoke: auto preserves a tool call or a normal answer', function () {",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  if ((choice.message.tool_calls || []).length) {",
+                  "    pm.expect(choice.finish_reason, pm.response.text()).to.equal('tool_calls');",
+                  "    pm.expect(choice.message.tool_calls, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "    choice.message.tool_calls.forEach(function (call) {",
+                  "      pm.expect(call.id).to.be.a('string').that.is.not.empty;",
+                  "      pm.expect(call.type).to.equal('function');",
+                  "      pm.expect(call.function.name).to.equal('get_weather');",
+                  "      pm.expect(JSON.parse(call.function.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "    });",
+                  "  } else {",
+                  "    pm.expect(choice.finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "    pm.expect(choice.message.content).to.be.a('string').that.is.not.empty;",
+                  "  }",
                   "});"
                 ]
               }
@@ -280820,14 +280841,14 @@
               }
             },
             "url": {
-              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke",
+              "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "bedrock",
                 "model",
-                "mistral.mistral-large-3-675b-instruct",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
                 "invoke"
               ]
             }
@@ -280841,20 +280862,28 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('mistral native invoke: native choices, not an Anthropic message or opaque 500', function () {",
+                  "pm.test('mistral native invoke: native response envelope and usage', function () {",
                   "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
                   "  var j = pm.response.json();",
-                  "  pm.expect(j.choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
-                  "  pm.expect(j.type, pm.response.text()).to.not.equal('message');",
+                  "  pm.expect(j.object, pm.response.text()).to.equal('chat.completion');",
+                  "  pm.expect(j.id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.created).to.be.a('number').above(0);",
+                  "  pm.expect(j.choices).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j).not.to.have.property('type');",
+                  "  pm.expect(j).not.to.have.property('extra_fields');",
                   "  pm.expect(j.choices[0].message.role).to.equal('assistant');",
+                  "  pm.expect(j.usage.total_tokens).to.be.a('number').above(0);",
                   "});",
-                  "pm.test('mistral native invoke: forced native function with JSON arguments', function () {",
+                  "pm.test('mistral native invoke: forced function and correlation ID', function () {",
                   "  var choice = pm.response.json().choices[0];",
                   "  pm.expect(choice.finish_reason, pm.response.text()).to.equal('tool_calls');",
                   "  pm.expect(choice.message.tool_calls, pm.response.text()).to.be.an('array').that.is.not.empty;",
-                  "  var call = choice.message.tool_calls[0];",
-                  "  pm.expect(call.function.name).to.equal('get_weather');",
-                  "  pm.expect(JSON.parse(call.function.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "  choice.message.tool_calls.forEach(function (call) {",
+                  "    pm.expect(call.id).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(call.type).to.equal('function');",
+                  "    pm.expect(call.function.name).to.equal('get_weather');",
+                  "    pm.expect(JSON.parse(call.function.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "  });",
                   "});"
                 ]
               }
@@ -280878,14 +280907,14 @@
               }
             },
             "url": {
-              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke",
+              "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "bedrock",
                 "model",
-                "mistral.mistral-large-3-675b-instruct",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
                 "invoke"
               ]
             }
@@ -280899,7 +280928,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('mistral native invoke: AWS EventStream with native chat chunks and no exception', function () {",
+                  "pm.test('mistral native invoke: EventStream identity, terminal reason and usage', function () {",
                   "  var raw = pm.response.text() || '';",
                   "  pm.expect(pm.response.code, raw).to.equal(200);",
                   "  pm.expect(pm.response.headers.get('content-type') || '').to.include('amazon.eventstream');",
@@ -280909,23 +280938,45 @@
                   "  var chunks = matches.map(function (match) {",
                   "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
                   "  });",
-                  "  var name = '', args = '', text = '', finish = '', calls = 0;",
+                  "  var tools = {}, text = '', reasons = [], usage;",
+                  "  pm.expect(chunks[0].id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(chunks[0].created).to.be.a('number').above(0);",
                   "  chunks.forEach(function (chunk) {",
-                  "    pm.expect(chunk.object, JSON.stringify(chunk)).to.equal('chat.completion.chunk');",
-                  "    (chunk.choices || []).forEach(function (choice) {",
-                  "      if (choice.finish_reason) { finish = choice.finish_reason; }",
+                  "    pm.expect(chunk.object).to.equal('chat.completion.chunk');",
+                  "    pm.expect(chunk.id).to.equal(chunks[0].id);",
+                  "    pm.expect(chunk.created).to.equal(chunks[0].created);",
+                  "    pm.expect(chunk.model).to.equal(chunks[0].model);",
+                  "    pm.expect(chunk).not.to.have.property('type');",
+                  "    pm.expect(chunk).not.to.have.property('extra_fields');",
+                  "    pm.expect(chunk.choices).to.be.an('array');",
+                  "    if (chunk.usage) { usage = chunk.usage; }",
+                  "    chunk.choices.forEach(function (choice) {",
+                  "      if (choice.finish_reason !== null && choice.finish_reason !== undefined) { reasons.push(choice.finish_reason); }",
                   "      var delta = choice.delta || {};",
                   "      text += delta.content || '';",
                   "      (delta.tool_calls || []).forEach(function (call) {",
-                  "        calls++;",
-                  "        name = call.function && call.function.name || name;",
-                  "        args += call.function && call.function.arguments || '';",
+                  "        pm.expect(call.index).to.be.a('number').least(0);",
+                  "        var tool = tools[call.index] || {id: '', name: '', arguments: ''};",
+                  "        if (call.id) { tool.id = call.id; }",
+                  "        if (call.function && call.function.name) { tool.name = call.function.name; }",
+                  "        tool.arguments += call.function && call.function.arguments || '';",
+                  "        tools[call.index] = tool;",
                   "      });",
                   "    });",
                   "  });",
-                  "  pm.expect(name, raw).to.equal('get_weather');",
-                  "  pm.expect(JSON.parse(args).location).to.be.a('string').that.is.not.empty;",
-                  "  pm.expect(finish, raw).to.equal('tool_calls');",
+                  "  pm.expect(reasons, raw).to.have.lengthOf(1);",
+                  "  pm.expect(usage, raw).to.be.an('object');",
+                  "  pm.expect(usage.total_tokens).to.be.a('number').above(0);",
+                  "  pm.expect(reasons[0]).to.equal('tool_calls');",
+                  "  var indexes = Object.keys(tools).map(Number).sort(function (a, b) { return a - b; });",
+                  "  pm.expect(indexes).to.have.length.above(0);",
+                  "  indexes.forEach(function (index, ordinal) {",
+                  "    pm.expect(index).to.equal(ordinal);",
+                  "    var tool = tools[index];",
+                  "    pm.expect(tool.id).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(tool.name).to.equal('get_weather');",
+                  "    pm.expect(JSON.parse(tool.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "  });",
                   "});"
                 ]
               }
@@ -280949,14 +281000,14 @@
               }
             },
             "url": {
-              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "bedrock",
                 "model",
-                "mistral.mistral-large-3-675b-instruct",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
                 "invoke-with-response-stream"
               ]
             }
@@ -280970,18 +281021,23 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('mistral native invoke: native choices, not an Anthropic message or opaque 500', function () {",
+                  "pm.test('mistral native invoke: native response envelope and usage', function () {",
                   "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
                   "  var j = pm.response.json();",
-                  "  pm.expect(j.choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
-                  "  pm.expect(j.type, pm.response.text()).to.not.equal('message');",
+                  "  pm.expect(j.object, pm.response.text()).to.equal('chat.completion');",
+                  "  pm.expect(j.id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.created).to.be.a('number').above(0);",
+                  "  pm.expect(j.choices).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j).not.to.have.property('type');",
+                  "  pm.expect(j).not.to.have.property('extra_fields');",
                   "  pm.expect(j.choices[0].message.role).to.equal('assistant');",
+                  "  pm.expect(j.usage.total_tokens).to.be.a('number').above(0);",
                   "});",
-                  "pm.test('mistral native invoke: tool-result replay with none produces an answer, not another tool call', function () {",
+                  "pm.test('mistral native invoke: none replay returns text without tools', function () {",
                   "  var choice = pm.response.json().choices[0];",
-                  "  pm.expect(choice.finish_reason, pm.response.text()).to.not.equal('tool_calls');",
-                  "  pm.expect(choice.message.tool_calls || [], pm.response.text()).to.have.lengthOf(0);",
-                  "  pm.expect(choice.message.content, pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(choice.finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "  pm.expect(choice.message.tool_calls || []).to.have.lengthOf(0);",
+                  "  pm.expect(choice.message.content).to.be.a('string').that.is.not.empty;",
                   "});"
                 ]
               }
@@ -281005,14 +281061,14 @@
               }
             },
             "url": {
-              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke",
+              "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "bedrock",
                 "model",
-                "mistral.mistral-large-3-675b-instruct",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
                 "invoke"
               ]
             }
@@ -281026,7 +281082,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('mistral native invoke: AWS EventStream with native chat chunks and no exception', function () {",
+                  "pm.test('mistral native invoke: EventStream identity, terminal reason and usage', function () {",
                   "  var raw = pm.response.text() || '';",
                   "  pm.expect(pm.response.code, raw).to.equal(200);",
                   "  pm.expect(pm.response.headers.get('content-type') || '').to.include('amazon.eventstream');",
@@ -281036,23 +281092,38 @@
                   "  var chunks = matches.map(function (match) {",
                   "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
                   "  });",
-                  "  var name = '', args = '', text = '', finish = '', calls = 0;",
+                  "  var tools = {}, text = '', reasons = [], usage;",
+                  "  pm.expect(chunks[0].id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(chunks[0].created).to.be.a('number').above(0);",
                   "  chunks.forEach(function (chunk) {",
-                  "    pm.expect(chunk.object, JSON.stringify(chunk)).to.equal('chat.completion.chunk');",
-                  "    (chunk.choices || []).forEach(function (choice) {",
-                  "      if (choice.finish_reason) { finish = choice.finish_reason; }",
+                  "    pm.expect(chunk.object).to.equal('chat.completion.chunk');",
+                  "    pm.expect(chunk.id).to.equal(chunks[0].id);",
+                  "    pm.expect(chunk.created).to.equal(chunks[0].created);",
+                  "    pm.expect(chunk.model).to.equal(chunks[0].model);",
+                  "    pm.expect(chunk).not.to.have.property('type');",
+                  "    pm.expect(chunk).not.to.have.property('extra_fields');",
+                  "    pm.expect(chunk.choices).to.be.an('array');",
+                  "    if (chunk.usage) { usage = chunk.usage; }",
+                  "    chunk.choices.forEach(function (choice) {",
+                  "      if (choice.finish_reason !== null && choice.finish_reason !== undefined) { reasons.push(choice.finish_reason); }",
                   "      var delta = choice.delta || {};",
                   "      text += delta.content || '';",
                   "      (delta.tool_calls || []).forEach(function (call) {",
-                  "        calls++;",
-                  "        name = call.function && call.function.name || name;",
-                  "        args += call.function && call.function.arguments || '';",
+                  "        pm.expect(call.index).to.be.a('number').least(0);",
+                  "        var tool = tools[call.index] || {id: '', name: '', arguments: ''};",
+                  "        if (call.id) { tool.id = call.id; }",
+                  "        if (call.function && call.function.name) { tool.name = call.function.name; }",
+                  "        tool.arguments += call.function && call.function.arguments || '';",
+                  "        tools[call.index] = tool;",
                   "      });",
                   "    });",
                   "  });",
-                  "  pm.expect(calls, raw).to.equal(0);",
-                  "  pm.expect(text, raw).to.be.a('string').that.is.not.empty;",
-                  "  pm.expect(finish, raw).to.not.equal('tool_calls');",
+                  "  pm.expect(reasons, raw).to.have.lengthOf(1);",
+                  "  pm.expect(usage, raw).to.be.an('object');",
+                  "  pm.expect(usage.total_tokens).to.be.a('number').above(0);",
+                  "  pm.expect(Object.keys(tools)).to.have.lengthOf(0);",
+                  "  pm.expect(text).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(reasons[0]).to.be.oneOf(['stop', 'length']);",
                   "});"
                 ]
               }
@@ -281076,14 +281147,14 @@
               }
             },
             "url": {
-              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "bedrock",
                 "model",
-                "mistral.mistral-large-3-675b-instruct",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
                 "invoke-with-response-stream"
               ]
             }
@@ -281125,14 +281196,14 @@
               }
             },
             "url": {
-              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke",
+              "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "bedrock",
                 "model",
-                "mistral.mistral-large-3-675b-instruct",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
                 "invoke"
               ]
             }
@@ -281174,14 +281245,14 @@
               }
             },
             "url": {
-              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "bedrock",
                 "model",
-                "mistral.mistral-large-3-675b-instruct",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
                 "invoke-with-response-stream"
               ]
             }
@@ -281228,6 +281299,650 @@
               "path": [
                 "v1",
                 "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.24 Bedrock Mistral Large 3 /langchain/invoke native any (mistral native invoke) - #8940",
+          "description": "Pins native tools[].function ingress and response correlation through the registered SDK-host Bedrock route. Unexpected statuses must fail; no live AWS run is implied by structural validation.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: native response envelope and usage', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.object, pm.response.text()).to.equal('chat.completion');",
+                  "  pm.expect(j.id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.created).to.be.a('number').above(0);",
+                  "  pm.expect(j.choices).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j).not.to.have.property('type');",
+                  "  pm.expect(j).not.to.have.property('extra_fields');",
+                  "  pm.expect(j.choices[0].message.role).to.equal('assistant');",
+                  "  pm.expect(j.usage.total_tokens).to.be.a('number').above(0);",
+                  "});",
+                  "pm.test('mistral native invoke: forced function and correlation ID', function () {",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.finish_reason, pm.response.text()).to.equal('tool_calls');",
+                  "  pm.expect(choice.message.tool_calls, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  choice.message.tool_calls.forEach(function (call) {",
+                  "    pm.expect(call.id).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(call.type).to.equal('function');",
+                  "    pm.expect(call.function.name).to.equal('get_weather');",
+                  "    pm.expect(JSON.parse(call.function.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 128,\n  \"temperature\": 0,\n  \"tool_choice\": \"any\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the current weather in San Francisco, CA? Use get_weather.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.25 Bedrock Mistral Large 3 /langchain/invoke-with-response-stream native any (mistral native invoke) - #8940",
+          "description": "Pins native tools[].function ingress and response correlation through the registered SDK-host Bedrock route. Unexpected statuses must fail; no live AWS run is implied by structural validation.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: EventStream identity, terminal reason and usage', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('amazon.eventstream');",
+                  "  pm.expect(raw, raw).to.not.include(':exception-type');",
+                  "  var matches = raw.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, raw).to.be.above(0);",
+                  "  var chunks = matches.map(function (match) {",
+                  "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
+                  "  });",
+                  "  var tools = {}, text = '', reasons = [], usage;",
+                  "  pm.expect(chunks[0].id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(chunks[0].created).to.be.a('number').above(0);",
+                  "  chunks.forEach(function (chunk) {",
+                  "    pm.expect(chunk.object).to.equal('chat.completion.chunk');",
+                  "    pm.expect(chunk.id).to.equal(chunks[0].id);",
+                  "    pm.expect(chunk.created).to.equal(chunks[0].created);",
+                  "    pm.expect(chunk.model).to.equal(chunks[0].model);",
+                  "    pm.expect(chunk).not.to.have.property('type');",
+                  "    pm.expect(chunk).not.to.have.property('extra_fields');",
+                  "    pm.expect(chunk.choices).to.be.an('array');",
+                  "    if (chunk.usage) { usage = chunk.usage; }",
+                  "    chunk.choices.forEach(function (choice) {",
+                  "      if (choice.finish_reason !== null && choice.finish_reason !== undefined) { reasons.push(choice.finish_reason); }",
+                  "      var delta = choice.delta || {};",
+                  "      text += delta.content || '';",
+                  "      (delta.tool_calls || []).forEach(function (call) {",
+                  "        pm.expect(call.index).to.be.a('number').least(0);",
+                  "        var tool = tools[call.index] || {id: '', name: '', arguments: ''};",
+                  "        if (call.id) { tool.id = call.id; }",
+                  "        if (call.function && call.function.name) { tool.name = call.function.name; }",
+                  "        tool.arguments += call.function && call.function.arguments || '';",
+                  "        tools[call.index] = tool;",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "  pm.expect(reasons, raw).to.have.lengthOf(1);",
+                  "  pm.expect(usage, raw).to.be.an('object');",
+                  "  pm.expect(usage.total_tokens).to.be.a('number').above(0);",
+                  "  pm.expect(reasons[0]).to.equal('tool_calls');",
+                  "  var indexes = Object.keys(tools).map(Number).sort(function (a, b) { return a - b; });",
+                  "  pm.expect(indexes).to.have.length.above(0);",
+                  "  indexes.forEach(function (index, ordinal) {",
+                  "    pm.expect(index).to.equal(ordinal);",
+                  "    var tool = tools[index];",
+                  "    pm.expect(tool.id).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(tool.name).to.equal('get_weather');",
+                  "    pm.expect(JSON.parse(tool.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 128,\n  \"temperature\": 0,\n  \"tool_choice\": \"any\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the current weather in San Francisco, CA? Use get_weather.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.26 Bedrock Mistral Large 3 /litellm/invoke native any (mistral native invoke) - #8940",
+          "description": "Pins native tools[].function ingress and response correlation through the registered SDK-host Bedrock route. Unexpected statuses must fail; no live AWS run is implied by structural validation.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: native response envelope and usage', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.object, pm.response.text()).to.equal('chat.completion');",
+                  "  pm.expect(j.id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.created).to.be.a('number').above(0);",
+                  "  pm.expect(j.choices).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j).not.to.have.property('type');",
+                  "  pm.expect(j).not.to.have.property('extra_fields');",
+                  "  pm.expect(j.choices[0].message.role).to.equal('assistant');",
+                  "  pm.expect(j.usage.total_tokens).to.be.a('number').above(0);",
+                  "});",
+                  "pm.test('mistral native invoke: forced function and correlation ID', function () {",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.finish_reason, pm.response.text()).to.equal('tool_calls');",
+                  "  pm.expect(choice.message.tool_calls, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  choice.message.tool_calls.forEach(function (call) {",
+                  "    pm.expect(call.id).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(call.type).to.equal('function');",
+                  "    pm.expect(call.function.name).to.equal('get_weather');",
+                  "    pm.expect(JSON.parse(call.function.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 128,\n  \"temperature\": 0,\n  \"tool_choice\": \"any\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the current weather in San Francisco, CA? Use get_weather.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.27 Bedrock Mistral Large 3 /litellm/invoke-with-response-stream native any (mistral native invoke) - #8940",
+          "description": "Pins native tools[].function ingress and response correlation through the registered SDK-host Bedrock route. Unexpected statuses must fail; no live AWS run is implied by structural validation.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: EventStream identity, terminal reason and usage', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('amazon.eventstream');",
+                  "  pm.expect(raw, raw).to.not.include(':exception-type');",
+                  "  var matches = raw.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, raw).to.be.above(0);",
+                  "  var chunks = matches.map(function (match) {",
+                  "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
+                  "  });",
+                  "  var tools = {}, text = '', reasons = [], usage;",
+                  "  pm.expect(chunks[0].id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(chunks[0].created).to.be.a('number').above(0);",
+                  "  chunks.forEach(function (chunk) {",
+                  "    pm.expect(chunk.object).to.equal('chat.completion.chunk');",
+                  "    pm.expect(chunk.id).to.equal(chunks[0].id);",
+                  "    pm.expect(chunk.created).to.equal(chunks[0].created);",
+                  "    pm.expect(chunk.model).to.equal(chunks[0].model);",
+                  "    pm.expect(chunk).not.to.have.property('type');",
+                  "    pm.expect(chunk).not.to.have.property('extra_fields');",
+                  "    pm.expect(chunk.choices).to.be.an('array');",
+                  "    if (chunk.usage) { usage = chunk.usage; }",
+                  "    chunk.choices.forEach(function (choice) {",
+                  "      if (choice.finish_reason !== null && choice.finish_reason !== undefined) { reasons.push(choice.finish_reason); }",
+                  "      var delta = choice.delta || {};",
+                  "      text += delta.content || '';",
+                  "      (delta.tool_calls || []).forEach(function (call) {",
+                  "        pm.expect(call.index).to.be.a('number').least(0);",
+                  "        var tool = tools[call.index] || {id: '', name: '', arguments: ''};",
+                  "        if (call.id) { tool.id = call.id; }",
+                  "        if (call.function && call.function.name) { tool.name = call.function.name; }",
+                  "        tool.arguments += call.function && call.function.arguments || '';",
+                  "        tools[call.index] = tool;",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "  pm.expect(reasons, raw).to.have.lengthOf(1);",
+                  "  pm.expect(usage, raw).to.be.an('object');",
+                  "  pm.expect(usage.total_tokens).to.be.a('number').above(0);",
+                  "  pm.expect(reasons[0]).to.equal('tool_calls');",
+                  "  var indexes = Object.keys(tools).map(Number).sort(function (a, b) { return a - b; });",
+                  "  pm.expect(indexes).to.have.length.above(0);",
+                  "  indexes.forEach(function (index, ordinal) {",
+                  "    pm.expect(index).to.equal(ordinal);",
+                  "    var tool = tools[index];",
+                  "    pm.expect(tool.id).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(tool.name).to.equal('get_weather');",
+                  "    pm.expect(JSON.parse(tool.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 128,\n  \"temperature\": 0,\n  \"tool_choice\": \"any\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the current weather in San Francisco, CA? Use get_weather.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.28 Bedrock Mistral Large 3 /pydanticai/invoke native any (mistral native invoke) - #8940",
+          "description": "Pins native tools[].function ingress and response correlation through the registered SDK-host Bedrock route. Unexpected statuses must fail; no live AWS run is implied by structural validation.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: native response envelope and usage', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.object, pm.response.text()).to.equal('chat.completion');",
+                  "  pm.expect(j.id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.created).to.be.a('number').above(0);",
+                  "  pm.expect(j.choices).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j).not.to.have.property('type');",
+                  "  pm.expect(j).not.to.have.property('extra_fields');",
+                  "  pm.expect(j.choices[0].message.role).to.equal('assistant');",
+                  "  pm.expect(j.usage.total_tokens).to.be.a('number').above(0);",
+                  "});",
+                  "pm.test('mistral native invoke: forced function and correlation ID', function () {",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.finish_reason, pm.response.text()).to.equal('tool_calls');",
+                  "  pm.expect(choice.message.tool_calls, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  choice.message.tool_calls.forEach(function (call) {",
+                  "    pm.expect(call.id).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(call.type).to.equal('function');",
+                  "    pm.expect(call.function.name).to.equal('get_weather');",
+                  "    pm.expect(JSON.parse(call.function.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 128,\n  \"temperature\": 0,\n  \"tool_choice\": \"any\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the current weather in San Francisco, CA? Use get_weather.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.29 Bedrock Mistral Large 3 /pydanticai/invoke-with-response-stream native any (mistral native invoke) - #8940",
+          "description": "Pins native tools[].function ingress and response correlation through the registered SDK-host Bedrock route. Unexpected statuses must fail; no live AWS run is implied by structural validation.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: EventStream identity, terminal reason and usage', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('amazon.eventstream');",
+                  "  pm.expect(raw, raw).to.not.include(':exception-type');",
+                  "  var matches = raw.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, raw).to.be.above(0);",
+                  "  var chunks = matches.map(function (match) {",
+                  "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
+                  "  });",
+                  "  var tools = {}, text = '', reasons = [], usage;",
+                  "  pm.expect(chunks[0].id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(chunks[0].created).to.be.a('number').above(0);",
+                  "  chunks.forEach(function (chunk) {",
+                  "    pm.expect(chunk.object).to.equal('chat.completion.chunk');",
+                  "    pm.expect(chunk.id).to.equal(chunks[0].id);",
+                  "    pm.expect(chunk.created).to.equal(chunks[0].created);",
+                  "    pm.expect(chunk.model).to.equal(chunks[0].model);",
+                  "    pm.expect(chunk).not.to.have.property('type');",
+                  "    pm.expect(chunk).not.to.have.property('extra_fields');",
+                  "    pm.expect(chunk.choices).to.be.an('array');",
+                  "    if (chunk.usage) { usage = chunk.usage; }",
+                  "    chunk.choices.forEach(function (choice) {",
+                  "      if (choice.finish_reason !== null && choice.finish_reason !== undefined) { reasons.push(choice.finish_reason); }",
+                  "      var delta = choice.delta || {};",
+                  "      text += delta.content || '';",
+                  "      (delta.tool_calls || []).forEach(function (call) {",
+                  "        pm.expect(call.index).to.be.a('number').least(0);",
+                  "        var tool = tools[call.index] || {id: '', name: '', arguments: ''};",
+                  "        if (call.id) { tool.id = call.id; }",
+                  "        if (call.function && call.function.name) { tool.name = call.function.name; }",
+                  "        tool.arguments += call.function && call.function.arguments || '';",
+                  "        tools[call.index] = tool;",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "  pm.expect(reasons, raw).to.have.lengthOf(1);",
+                  "  pm.expect(usage, raw).to.be.an('object');",
+                  "  pm.expect(usage.total_tokens).to.be.a('number').above(0);",
+                  "  pm.expect(reasons[0]).to.equal('tool_calls');",
+                  "  var indexes = Object.keys(tools).map(Number).sort(function (a, b) { return a - b; });",
+                  "  pm.expect(indexes).to.have.length.above(0);",
+                  "  indexes.forEach(function (index, ordinal) {",
+                  "    pm.expect(index).to.equal(ordinal);",
+                  "    var tool = tools[index];",
+                  "    pm.expect(tool.id).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(tool.name).to.equal('get_weather');",
+                  "    pm.expect(JSON.parse(tool.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 128,\n  \"temperature\": 0,\n  \"tool_choice\": \"any\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the current weather in San Francisco, CA? Use get_weather.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.30 Bedrock Mistral Large 3 /cursor/invoke native any (mistral native invoke) - #8940",
+          "description": "Pins native tools[].function ingress and response correlation through the registered SDK-host Bedrock route. Unexpected statuses must fail; no live AWS run is implied by structural validation.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: native response envelope and usage', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.object, pm.response.text()).to.equal('chat.completion');",
+                  "  pm.expect(j.id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.created).to.be.a('number').above(0);",
+                  "  pm.expect(j.choices).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j).not.to.have.property('type');",
+                  "  pm.expect(j).not.to.have.property('extra_fields');",
+                  "  pm.expect(j.choices[0].message.role).to.equal('assistant');",
+                  "  pm.expect(j.usage.total_tokens).to.be.a('number').above(0);",
+                  "});",
+                  "pm.test('mistral native invoke: forced function and correlation ID', function () {",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.finish_reason, pm.response.text()).to.equal('tool_calls');",
+                  "  pm.expect(choice.message.tool_calls, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  choice.message.tool_calls.forEach(function (call) {",
+                  "    pm.expect(call.id).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(call.type).to.equal('function');",
+                  "    pm.expect(call.function.name).to.equal('get_weather');",
+                  "    pm.expect(JSON.parse(call.function.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 128,\n  \"temperature\": 0,\n  \"tool_choice\": \"any\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the current weather in San Francisco, CA? Use get_weather.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.31 Bedrock Mistral Large 3 /cursor/invoke-with-response-stream native any (mistral native invoke) - #8940",
+          "description": "Pins native tools[].function ingress and response correlation through the registered SDK-host Bedrock route. Unexpected statuses must fail; no live AWS run is implied by structural validation.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: EventStream identity, terminal reason and usage', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('amazon.eventstream');",
+                  "  pm.expect(raw, raw).to.not.include(':exception-type');",
+                  "  var matches = raw.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, raw).to.be.above(0);",
+                  "  var chunks = matches.map(function (match) {",
+                  "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
+                  "  });",
+                  "  var tools = {}, text = '', reasons = [], usage;",
+                  "  pm.expect(chunks[0].id).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(chunks[0].created).to.be.a('number').above(0);",
+                  "  chunks.forEach(function (chunk) {",
+                  "    pm.expect(chunk.object).to.equal('chat.completion.chunk');",
+                  "    pm.expect(chunk.id).to.equal(chunks[0].id);",
+                  "    pm.expect(chunk.created).to.equal(chunks[0].created);",
+                  "    pm.expect(chunk.model).to.equal(chunks[0].model);",
+                  "    pm.expect(chunk).not.to.have.property('type');",
+                  "    pm.expect(chunk).not.to.have.property('extra_fields');",
+                  "    pm.expect(chunk.choices).to.be.an('array');",
+                  "    if (chunk.usage) { usage = chunk.usage; }",
+                  "    chunk.choices.forEach(function (choice) {",
+                  "      if (choice.finish_reason !== null && choice.finish_reason !== undefined) { reasons.push(choice.finish_reason); }",
+                  "      var delta = choice.delta || {};",
+                  "      text += delta.content || '';",
+                  "      (delta.tool_calls || []).forEach(function (call) {",
+                  "        pm.expect(call.index).to.be.a('number').least(0);",
+                  "        var tool = tools[call.index] || {id: '', name: '', arguments: ''};",
+                  "        if (call.id) { tool.id = call.id; }",
+                  "        if (call.function && call.function.name) { tool.name = call.function.name; }",
+                  "        tool.arguments += call.function && call.function.arguments || '';",
+                  "        tools[call.index] = tool;",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "  pm.expect(reasons, raw).to.have.lengthOf(1);",
+                  "  pm.expect(usage, raw).to.be.an('object');",
+                  "  pm.expect(usage.total_tokens).to.be.a('number').above(0);",
+                  "  pm.expect(reasons[0]).to.equal('tool_calls');",
+                  "  var indexes = Object.keys(tools).map(Number).sort(function (a, b) { return a - b; });",
+                  "  pm.expect(indexes).to.have.length.above(0);",
+                  "  indexes.forEach(function (index, ordinal) {",
+                  "    pm.expect(index).to.equal(ordinal);",
+                  "    var tool = tools[index];",
+                  "    pm.expect(tool.id).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(tool.name).to.equal('get_weather');",
+                  "    pm.expect(JSON.parse(tool.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 128,\n  \"temperature\": 0,\n  \"tool_choice\": \"any\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the current weather in San Francisco, CA? Use get_weather.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke-with-response-stream"
               ]
             }
           }
