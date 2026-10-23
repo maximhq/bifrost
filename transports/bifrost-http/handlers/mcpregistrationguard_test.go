@@ -225,11 +225,11 @@ func TestMCPClientSecretReferences(t *testing.T) {
 		map[string]schemas.SecretVar{"X-Api-Key": envHeader, "X-Plain": plain},
 		schemas.NewSecretVar("https://mcp.example.com/mcp"),
 		&OAuthConfigRequest{ClientID: &plain, ClientSecret: &vaultSecret},
-		&schemas.MCPTokenExchangeConfig{ClientSecret: &envHeader},
+		&schemas.MCPTokenExchangeConfig{ClientSecret: &envHeader, ResourcePrivateKey: &vaultSecret},
 		&schemas.MCPTLSConfig{CACertPEM: &envHeader},
 		nil,
 	)
-	want := []string{"headers.X-Api-Key", "oauth_config.client_secret", "token_exchange.client_secret", "tls_config.ca_cert_pem"}
+	want := []string{"headers.X-Api-Key", "oauth_config.client_secret", "token_exchange.client_secret", "token_exchange.resource_private_key", "tls_config.ca_cert_pem"}
 	if strings.Join(refs, ",") != strings.Join(want, ",") {
 		t.Fatalf("expected %v, got %v", want, refs)
 	}
@@ -277,5 +277,37 @@ func TestAddMCPClient_SecretReferenceRejectedBeforeDial(t *testing.T) {
 	}
 	if !strings.Contains(body, "headers.X-Api-Key") {
 		t.Fatalf("expected the refusal to name headers.X-Api-Key, got %s", body)
+	}
+}
+
+// TestResourceCredentialResendRequired checks a masked id_jag resource secret or
+// key cannot follow a change of the endpoint or assertion audience it is sent
+// to, while unchanged targets and resent credentials are accepted.
+func TestResourceCredentialResendRequired(t *testing.T) {
+	endpoint, moved := "https://as.example.com/token", "https://evil.example.com/token"
+	aud, movedAud := "https://as.example.com", "https://evil.example.com"
+	existing := &schemas.MCPTokenExchangeConfig{Profile: schemas.TokenExchangeProfileIDJAG, Audience: aud, ResourceTokenEndpoint: &endpoint,
+		ResourceClientSecret: schemas.NewSecretVar("s3cret")}
+	masked := existing.ResourceClientSecret.Redacted()
+	for name, tc := range map[string]struct {
+		req     *schemas.MCPTokenExchangeConfig
+		refused bool
+	}{
+		"masked secret, same endpoint":    {req: &schemas.MCPTokenExchangeConfig{Audience: aud, ResourceTokenEndpoint: &endpoint, ResourceClientSecret: masked}},
+		"masked secret, moved endpoint":   {req: &schemas.MCPTokenExchangeConfig{Audience: aud, ResourceTokenEndpoint: &moved, ResourceClientSecret: masked}, refused: true},
+		"resent secret, moved endpoint":   {req: &schemas.MCPTokenExchangeConfig{Audience: aud, ResourceTokenEndpoint: &moved, ResourceClientSecret: schemas.NewSecretVar("s3cret")}},
+		"masked key, new assertion aud":   {req: &schemas.MCPTokenExchangeConfig{Audience: aud, ResourceTokenEndpoint: &endpoint, ResourcePrivateKey: masked, ResourceAssertionAudience: "https://as.example.com"}, refused: true},
+		"masked secret, endpoint removed": {req: &schemas.MCPTokenExchangeConfig{Audience: aud, ResourceClientSecret: masked}, refused: true},
+		// Without an explicit endpoint the audience decides where the secret goes.
+		"masked secret, moved audience": {req: &schemas.MCPTokenExchangeConfig{Audience: movedAud, ResourceTokenEndpoint: &endpoint, ResourceClientSecret: masked}, refused: true},
+		"resent secret, moved audience": {req: &schemas.MCPTokenExchangeConfig{Audience: movedAud, ResourceTokenEndpoint: &endpoint, ResourceClientSecret: schemas.NewSecretVar("s3cret")}},
+	} {
+		err := resourceCredentialResendRequired(existing, tc.req)
+		if (err != nil) != tc.refused {
+			t.Errorf("%s: err = %v, refused want %v", name, err, tc.refused)
+		}
+	}
+	if resourceCredentialResendRequired(nil, &schemas.MCPTokenExchangeConfig{}) != nil {
+		t.Error("a first token_exchange block has nothing stored to carry over")
 	}
 }
