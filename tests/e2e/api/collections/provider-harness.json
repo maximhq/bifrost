@@ -283253,6 +283253,90 @@
           }
         }
       ]
+    },
+    {
+      "name": "279. MCP OAuth discovery ignores protected resource metadata for another resource (mcp oauth resource match)",
+      "description": "Management-endpoint check with no live provider involved. When an OAuth MCP client is added without authorize/token URLs, Bifrost discovers them from the MCP server: the 401's WWW-Authenticate resource_metadata document (RFC 9728) names the authorization servers. RFC 9728 section 3.3 says that document must not be used unless its resource identifies the server being connected to; before the fix any document was trusted, so an MCP server could hand Bifrost a different resource and any authorization server, and Bifrost sent its dynamic client registration and the admin's sign-in there.\n\nPrerequisite: node tests/e2e/api/runners/mcp-oauth-resource-fixture.mjs (port 8799, override with --port and the mcpOauthResourceFixtureUrl variable). Its /mcp advertises metadata whose resource is https://other-mcp.invalid/mcp and whose authorization server is the fixture's /rogue issuer; the server origin's own authorization server metadata points at /legit. Nothing in the harness runners starts it, so the row is [PREVIEW]-tagged: run PROVIDER=mcp FEATURE=\"mcp oauth resource match\" INCLUDE_PREVIEW=1 once the fixture is up. The row names no model, so no provider fork selects it and a run without PROVIDER=mcp skips it. The harness profile allowlists 127.0.0.1 for the MCP OAuth chain (see mcp-oauth-private-allowlist).\n\nRed before the fix: the authorize URL points at /rogue/authorize and the fixture records a registration on /rogue/register. Green after: the document is ignored, discovery falls back to the server origin, the authorize URL is /legit/authorize, and only /legit/register is called. The consent is never completed, so no MCP client row is created; the pending OAuth config it leaves behind is inert.",
+      "item": [
+        {
+          "name": "[PREVIEW] POST /api/mcp/client · metadata naming another resource does not choose the authorization server - mcp oauth resource match",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The MCP server is the local fixture (node tests/e2e/api/runners/mcp-oauth-resource-fixture.mjs, port 8799).",
+                  "var FIXTURE = pm.variables.get('mcpOauthResourceFixtureUrl') || 'http://127.0.0.1:8799';",
+                  "pm.variables.set('mcpOauthResourceFixtureUrl', FIXTURE);",
+                  "pm.sendRequest({ url: FIXTURE + '/__reset', method: 'POST' }, function (err) {",
+                  "  if (err) { console.warn('mcp oauth resource match: fixture not reachable at ' + FIXTURE + ', start node tests/e2e/api/runners/mcp-oauth-resource-fixture.mjs'); }",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The fixture's /mcp advertises protected resource metadata whose resource is https://other-mcp.invalid/mcp and whose",
+                  "// authorization server is the fixture's /rogue issuer. Before the fix that document was trusted: the authorize URL",
+                  "// pointed at /rogue/authorize and dynamic client registration POSTed to /rogue/register. Now the document is ignored,",
+                  "// discovery falls back to the server origin as the authorization server, and everything goes to /legit.",
+                  "var FIXTURE = pm.variables.get('mcpOauthResourceFixtureUrl') || 'http://127.0.0.1:8799';",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "pm.test('registration starts the OAuth flow (200)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(body.status, pm.response.text()).to.eql('pending_oauth');",
+                  "});",
+                  "pm.test('authorize URL comes from the server origin, not the authorization server named by the mismatched metadata', function () {",
+                  "  var authorizeURL = String(body.authorize_url || '');",
+                  "  pm.expect(authorizeURL, pm.response.text()).to.include(FIXTURE + '/legit/authorize?');",
+                  "  pm.expect(authorizeURL).to.not.include('/rogue/');",
+                  "});",
+                  "pm.test('the resource named by the mismatched metadata is not sent as the resource indicator', function () {",
+                  "  pm.expect(decodeURIComponent(String(body.authorize_url || ''))).to.not.include('other-mcp.invalid');",
+                  "});",
+                  "pm.sendRequest({ url: FIXTURE + '/__hits', method: 'GET' }, function (err, res) {",
+                  "  pm.test('dynamic client registration went only to the server origin', function () {",
+                  "    pm.expect(err, 'start node tests/e2e/api/runners/mcp-oauth-resource-fixture.mjs').to.equal(null);",
+                  "    var hits = res.json();",
+                  "    pm.expect(hits.filter(function (h) { return h.server === 'rogue'; }), JSON.stringify(hits)).to.have.length(0);",
+                  "    pm.expect(hits.filter(function (h) { return h.server === 'legit'; }), JSON.stringify(hits)).to.have.length(1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_oauth_resource_match_{{$timestamp}}\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"{{mcpOauthResourceFixtureUrl}}/mcp\",\n  \"auth_type\": \"oauth\",\n  \"oauth_config\": {}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
