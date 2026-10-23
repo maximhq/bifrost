@@ -143,7 +143,7 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 		opts = append(opts, warp.WithCallerRestrictionResolver(resolvers.CallerRestriction))
 	}
 	if client != nil {
-		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest), warp.WithResponsesExecutor(client.ResponsesRequest))
+		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest), warp.WithResponsesExecutor(warp.StreamedResponses(client.ResponsesStreamRequest)))
 	}
 	if loggerPlugin != nil {
 		opts = append(opts, warp.WithLogReader(warpLogReader{loggerPlugin.GetPluginLogManager()}))
