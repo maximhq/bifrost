@@ -42,6 +42,16 @@ func mistralInvokeTestRequest(t *testing.T, body string) (*schemas.BifrostContex
 	return ctx, incoming.ToBifrostChatRequest(ctx)
 }
 
+func TestDetectInvokeRequestType_MistralChat(t *testing.T) {
+	for _, model := range []string{mistralInvokeTestModel, "bedrock/" + mistralInvokeTestModel, "us-west-2/" + mistralInvokeTestModel, "bedrock%2F" + mistralInvokeTestModel} {
+		assert.Equal(t, schemas.ChatCompletionRequest, DetectInvokeRequestType([]byte(mistralInvokeTestBody), model), model)
+		assert.Equal(t, schemas.TextCompletionRequest, DetectInvokeRequestType([]byte(`{"prompt":"Hello","max_tokens":8}`), model), model)
+	}
+	for _, model := range []string{"anthropic.claude-sonnet-4-6", "amazon.nova-lite-v1:0", "ai21.jamba-1-5-large-v1:0"} {
+		assert.Equal(t, schemas.ResponsesRequest, DetectInvokeRequestType([]byte(`{"messages":[{"role":"user","content":"Hello"}]}`), model), model)
+	}
+}
+
 func TestToBedrockInvokeChatRequest_Mistral(t *testing.T) {
 	for _, choice := range []string{"auto", "any", "none"} {
 		t.Run(choice, func(t *testing.T) {
