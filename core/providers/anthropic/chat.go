@@ -1020,12 +1020,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 							for _, block := range toolMsg.Content.ContentBlocks {
 								// Anthropic rejects cache_control nested inside tool_result.content
 								// ("cache_control may not be specified within `tool_result.content`.
-								// Instead, place it directly on `tool_result`"), so hoist the first
-								// one found onto the tool_result block itself rather than copying it
-								// onto the nested block -- mirrors the same hoist-to-outer-level
-								// pattern already used for Bedrock's nested cachePoint
-								// (core/providers/bedrock/responses.go).
-								if block.CacheControl != nil && toolResult.CacheControl == nil {
+								// Instead, place it directly on `tool_result`"), so hoist it onto the
+								// tool_result block itself rather than copying it onto the nested
+								// block -- mirrors the same hoist-to-outer-level pattern already used
+								// for Bedrock's nested cachePoint (core/providers/bedrock/responses.go).
+								// The hoisted marker ends where the last nested block ends, so the
+								// last marker found is the one kept.
+								if block.CacheControl != nil {
 									toolResult.CacheControl = block.CacheControl
 								}
 								if block.Text != nil && *block.Text != "" {
