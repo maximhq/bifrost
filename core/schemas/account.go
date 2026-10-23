@@ -1112,10 +1112,7 @@ const (
 	// OAuthGrantJWTBearer is the JWT bearer assertion grant (RFC 7523): Bifrost signs an
 	// assertion with the configured private key and exchanges it for an access token.
 	OAuthGrantJWTBearer OAuthGrantType = "jwt_bearer"
-	// OAuthGrantTokenExchange is the token exchange grant (RFC 8693): Bifrost reads a subject
-	// token issued to the workload (a Kubernetes projected service account token, for example)
-	// from a file and exchanges it for an access token. This is how workload identity
-	// federation with OpenAI is configured.
+	// OAuthGrantTokenExchange is the token exchange grant (RFC 8693), used for workload identity federation.
 	OAuthGrantTokenExchange OAuthGrantType = "token_exchange"
 )
 
@@ -1281,8 +1278,7 @@ func (c *OAuthKeyConfig) Validate() error {
 	default:
 		return fmt.Errorf("oauth_key_config.grant_type must be client_credentials, jwt_bearer or token_exchange")
 	}
-	// The token_exchange fields would be silently ignored on another grant, which reads as a
-	// working key that sends something else.
+	// Refused rather than ignored: a stray field reads as a working key that sends something else.
 	if c.GrantType != OAuthGrantTokenExchange && (c.SubjectTokenFile != "" || c.SubjectTokenType != "" || c.RequestEncoding != "") {
 		return fmt.Errorf("oauth_key_config.subject_token_file, subject_token_type and request_encoding apply to the token_exchange grant only")
 	}

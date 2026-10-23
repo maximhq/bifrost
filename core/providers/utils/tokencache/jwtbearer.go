@@ -57,8 +57,7 @@ type tokenResponse struct {
 	ErrorDescription string     `json:"error_description"`
 }
 
-// tokenError is the error field of a token response: the RFC 6749 §5.2 code string, or the
-// {"code", "message"} object OpenAI's token endpoint returns, flattened to "code message".
+// tokenError accepts the RFC 6749 error string or OpenAI's {"code", "message"} object.
 type tokenError string
 
 func (e *tokenError) UnmarshalJSON(data []byte) error {
@@ -193,8 +192,7 @@ func postTokenRequest(ctx context.Context, hc *http.Client, tokenURL string, for
 	return postToken(ctx, hc, tokenURL, []byte(form.Encode()), "application/x-www-form-urlencoded", submitted)
 }
 
-// postToken posts an encoded body to the token endpoint and reads the access token. submitted
-// lists the credential values the body carries, scrubbed from any error the endpoint returns.
+// postToken scrubs the submitted values from any error the endpoint returns.
 func postToken(ctx context.Context, hc *http.Client, tokenURL string, body []byte, contentType string, submitted []string) (string, time.Time, *schemas.BifrostError) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(body))
 	if err != nil {

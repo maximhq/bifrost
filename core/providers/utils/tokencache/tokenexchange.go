@@ -15,15 +15,12 @@ import (
 )
 
 const (
-	// tokenExchangeGrantType is the RFC 8693 grant_type value.
 	tokenExchangeGrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
-	// maxSubjectTokenBytes caps the subject token file; a projected service account token is
-	// around a kilobyte.
+	// A projected service account token is about a kilobyte.
 	maxSubjectTokenBytes = 64 * 1024
 )
 
-// TokenExchangeConfig is what one RFC 8693 token exchange needs: Bifrost reads the subject
-// token the platform issued to the workload and posts it to TokenURL for an access token.
+// TokenExchangeConfig configures one RFC 8693 exchange of a workload's subject token.
 type TokenExchangeConfig struct {
 	TokenURL         string                       // Token endpoint
 	SubjectTokenFile string                       // File holding the subject token, re-read on every exchange
@@ -35,10 +32,7 @@ type TokenExchangeConfig struct {
 	RefreshMargin    time.Duration                // How long before expiry to re-mint (default DefaultRefreshMargin)
 }
 
-// TokenExchangeMinter returns a Minter that exchanges the workload's subject token. The file
-// is read on every mint, not cached: platforms rotate it in place (a Kubernetes projected
-// token is rewritten well before it expires), and some token endpoints refuse a subject
-// token they have already seen.
+// TokenExchangeMinter re-reads the subject token file on every mint: platforms rotate it in place.
 func TokenExchangeMinter(cfg TokenExchangeConfig, hc *http.Client) Minter[string] {
 	margin := cfg.RefreshMargin
 	if margin <= 0 {
@@ -67,8 +61,7 @@ func TokenExchangeMinter(cfg TokenExchangeConfig, hc *http.Client) Minter[string
 		if len(cfg.Scopes) > 0 {
 			params["scope"] = strings.Join(cfg.Scopes, " ")
 		}
-		// The subject token and every extra parameter must never come back through an endpoint
-		// error; the fixed protocol values are not credentials and stay readable.
+		// Everything but the fixed protocol values may be a credential.
 		var submitted []string
 		for k, v := range params {
 			if k != "grant_type" && k != "subject_token_type" && k != "scope" {
@@ -98,7 +91,6 @@ func TokenExchangeMinter(cfg TokenExchangeConfig, hc *http.Client) Minter[string
 	}
 }
 
-// readSubjectToken reads and trims the subject token file.
 func readSubjectToken(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {

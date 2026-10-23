@@ -18,8 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// exchangeServer records each token request's content type and parameters, whichever
-// encoding it arrived in.
+// exchangeServer records each token request, form or JSON.
 type exchangeServer struct {
 	*httptest.Server
 	mu          sync.Mutex
@@ -169,8 +168,6 @@ func TestTokenExchangeMinter(t *testing.T) {
 		})
 	}
 
-	// OpenAI nests its error under "error" instead of the RFC 6749 code/description pair; the
-	// reason must still reach the operator, scrubbed of what the request sent.
 	t.Run("an OpenAI-shaped error keeps its reason and drops the subject token", func(t *testing.T) {
 		es := newExchangeServer(t)
 		es.status = http.StatusUnauthorized

@@ -31,8 +31,6 @@ describe("oauthKeyConfigSchema", () => {
 		expect(result.success).toBe(true);
 	});
 
-	// A token_exchange key is configured through the API or config.json; editing it in the
-	// dashboard must keep its fields rather than strip them as unknown keys.
 	it("accepts and keeps a token exchange block", () => {
 		const block = {
 			_auth_type: "oauth" as const,

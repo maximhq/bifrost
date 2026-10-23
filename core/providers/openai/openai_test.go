@@ -151,9 +151,7 @@ func TestOAuthKeyConfigMintsBearer(t *testing.T) {
 	}
 }
 
-// TestOAuthKeyConfigTokenExchangeMintsBearer pins workload identity federation with OpenAI
-// end to end through the provider: the subject token is read from a file, exchanged as the
-// JSON RFC 8693 request OpenAI's token endpoint expects, and the result is sent as the bearer.
+// Workload identity federation end to end: subject token file → JSON token exchange → bearer.
 func TestOAuthKeyConfigTokenExchangeMintsBearer(t *testing.T) {
 	t.Parallel()
 	var (
