@@ -696,15 +696,7 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		return decisionInputLog(request.DecisionRequest.Input), []schemas.ResponsesMessage{}
 	}
 	if request.ExtractionRequest != nil {
-		input := request.ExtractionRequest.Input
-		return []schemas.ChatMessage{
-			{
-				Role: schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{
-					ContentStr: &input,
-				},
-			},
-		}, []schemas.ResponsesMessage{}
+		return extractionInputLog(request.ExtractionRequest), []schemas.ResponsesMessage{}
 	}
 	if request.RerankRequest != nil {
 		query := request.RerankRequest.Query
@@ -764,6 +756,46 @@ func redactEmbeddingMediaData(items []schemas.EmbeddingInputItem) []schemas.Embe
 // logs UI shows their text and inline images the same way. A part of a type
 // the schema does not model is kept as its type name, and a message without a
 // role is the user's.
+// extractionLogParams is what an extraction row logs as its params: the field
+// specs and the request settings, such as the reference date that anchors
+// dates written without a year, so two rows with the same input can be told
+// apart.
+type extractionLogParams struct {
+	Fields map[string]schemas.ExtractionFieldSpec `json:"fields"`
+	Params *schemas.ExtractionParameters          `json:"params,omitempty"`
+}
+
+// extractionInputLog logs an extraction's input as one user message: the text
+// alone, or, when images were sent, a text block (if any text was sent) followed
+// by one image block per image, as a decision's image parts are logged.
+func extractionInputLog(request *schemas.BifrostExtractionRequest) []schemas.ChatMessage {
+	input := request.Input
+	if len(request.Images) == 0 {
+		return []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: &input},
+		}}
+	}
+	blocks := make([]schemas.ChatContentBlock, 0, len(request.Images)+1)
+	if input != "" {
+		blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: &input})
+	}
+	for _, image := range request.Images {
+		url := "data:" + image.ContentType + ";base64," + image.Base64
+		if image.URL != nil {
+			url = *image.URL
+		}
+		blocks = append(blocks, schemas.ChatContentBlock{
+			Type:           schemas.ChatContentBlockTypeImage,
+			ImageURLStruct: &schemas.ChatInputImage{URL: url},
+		})
+	}
+	return []schemas.ChatMessage{{
+		Role:    schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{ContentBlocks: blocks},
+	}}
+}
+
 func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 	if input.Messages == nil {
 		var text string

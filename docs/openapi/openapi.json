@@ -117291,6 +117291,7 @@
       },
       "ExtractionFieldSpec": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
           "type"
         ],

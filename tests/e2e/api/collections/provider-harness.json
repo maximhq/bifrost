@@ -253692,7 +253692,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] /v1/extractions - a request without fields is refused before reaching Cloudflare",
+          "name": "[EXPECT-400] /v1/extractions - a request without fields is refused before reaching Cloudflare - cloudflare/clairic",
           "event": [
             {
               "listen": "test",
