@@ -4382,7 +4382,7 @@ func (provider *OpenAIProvider) Decision(ctx *schemas.BifrostContext, key schema
 		provider.client,
 		provider.buildRequestURL(ctx, openAIDecisionsPath, schemas.DecisionRequest),
 		request,
-		key,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),

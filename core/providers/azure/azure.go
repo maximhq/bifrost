@@ -752,10 +752,18 @@ func (provider *AzureProvider) Rerank(ctx *schemas.BifrostContext, key schemas.K
 // (Microsoft-Decision-1). It takes no api-version.
 const azureDecisionPath = "/providers/microsoft/v1/systemone"
 
-// Decision runs a decision on a Microsoft decision model deployment. The body and
-// response are Typesafe's systemone shapes, so Typesafe's handler is reused; the
-// model is the deployment name, sent as is, and a deployment that does not serve
-// decisions is rejected by Azure with its own error.
+// azureOpenAIDecisionPath is where a resource serves OpenAI's decisions models
+// (gpt-6-luna) in OpenAI's decisions shape. Like the other /openai/v1 routes it
+// takes no api-version.
+const azureOpenAIDecisionPath = "/openai/v1/decisions"
+
+// Decision runs a decision on a decision model deployment. A deployment of an
+// OpenAI decisions model (gpt-6-luna) is served on /openai/v1/decisions in
+// OpenAI's shape, so OpenAI's handler is reused; any other deployment is taken
+// for a Microsoft decision model, whose body and response are Typesafe's
+// systemone shapes, so Typesafe's handler is reused. Either way the model is the
+// deployment name, sent as is, and a deployment that does not serve decisions is
+// rejected by Azure with its own error.
 func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
@@ -764,6 +772,20 @@ func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas
 	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+	if isOpenAIDecisionDeployment(ctx, request.Model) {
+		return openai.HandleOpenAIDecisionRequest(
+			ctx,
+			provider.client,
+			endpoint+providerUtils.GetPathFromContext(ctx, azureOpenAIDecisionPath),
+			request,
+			authHeaders,
+			provider.networkConfig.ExtraHeaders,
+			provider.GetProviderKey(),
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+			provider.logger,
+		)
 	}
 	return typesafe.HandleTypesafeDecisionRequest(
 		ctx,
@@ -779,6 +801,17 @@ func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		false,
 	)
+}
+
+// isOpenAIDecisionDeployment reports whether a decision deployment serves an
+// OpenAI decisions model. Deployment names are often opaque, so the alias's model
+// name and the name the client sent are matched as well as the deployment.
+func isOpenAIDecisionDeployment(ctx *schemas.BifrostContext, model string) bool {
+	if schemas.DefaultSupportsDecisions(schemas.ResolveCanonicalModel(ctx, model)) {
+		return true
+	}
+	ra := schemas.GetResolvedAlias(ctx)
+	return ra != nil && schemas.DefaultSupportsDecisions(ra.Key)
 }
 
 // OCR is not supported by the Azure provider.
