@@ -1240,14 +1240,16 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 		cm.ChatAssistantMessage = &assistantMsg
 	}
 
-	cm.MoveThinkingBlocksToReasoningDetails()
+	cm.MoveThinkingBlocksToReasoningDetails(gjson.GetBytes(data, "reasoning_details").Exists())
 	return nil
 }
 
 // MoveThinkingBlocksToReasoningDetails moves an assistant message's thinking and
 // redacted_thinking content blocks onto ReasoningDetails, which every provider
-// converter replays. Reasoning details sent explicitly are kept and the blocks dropped.
-func (cm *ChatMessage) MoveThinkingBlocksToReasoningDetails() {
+// converter replays. When the client sent reasoning_details (detailsSent), those are
+// kept as sent and the blocks are dropped; otherwise the blocks replace any details
+// derived from reasoning text.
+func (cm *ChatMessage) MoveThinkingBlocksToReasoningDetails(detailsSent bool) {
 	if cm.Role != ChatMessageRoleAssistant || cm.Content == nil {
 		return
 	}
@@ -1270,12 +1272,13 @@ func (cm *ChatMessage) MoveThinkingBlocksToReasoningDetails() {
 	} else {
 		cm.Content = &ChatMessageContent{ContentBlocks: kept}
 	}
+	if detailsSent {
+		return
+	}
 	if cm.ChatAssistantMessage == nil {
 		cm.ChatAssistantMessage = &ChatAssistantMessage{}
 	}
-	if len(cm.ChatAssistantMessage.ReasoningDetails) == 0 {
-		cm.ChatAssistantMessage.ReasoningDetails = details
-	}
+	cm.ChatAssistantMessage.ReasoningDetails = details
 }
 
 // ChatMessageContent represents a content in a message.

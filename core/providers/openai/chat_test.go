@@ -3052,4 +3052,20 @@ func TestConvertOpenAIMessagesToBifrostMessages_ThinkingContentBlocks(t *testing
 	require.Equal(t, schemas.BifrostReasoningDetailsTypeText, detail.Type)
 	require.Equal(t, "I multiply.", *detail.Text)
 	require.Equal(t, "SIG1", *detail.Signature)
+	require.NotNil(t, converted[0].ChatAssistantMessage.Reasoning,
+		"moved thinking text must reach Reasoning like reasoning_details text does")
+	require.Equal(t, "I multiply.", *converted[0].ChatAssistantMessage.Reasoning)
+}
+
+func TestConvertOpenAIMessagesToBifrostMessages_EmptyReasoningDetailsWinOverThinkingBlocks(t *testing.T) {
+	var msg OpenAIMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`{"role":"assistant","reasoning_details":[],
+		"content":[{"type":"thinking","thinking":"t","signature":"s"},{"type":"text","text":"hi"}]}`), &msg))
+
+	converted := ConvertOpenAIMessagesToBifrostMessages([]OpenAIMessage{msg})
+	require.Len(t, converted, 1)
+	require.NotNil(t, converted[0].ChatAssistantMessage)
+	require.Empty(t, converted[0].ChatAssistantMessage.ReasoningDetails, "the empty array should be kept as sent")
+	require.Len(t, converted[0].Content.ContentBlocks, 1)
+	require.Equal(t, schemas.ChatContentBlockTypeText, converted[0].Content.ContentBlocks[0].Type)
 }
