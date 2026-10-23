@@ -21,6 +21,7 @@ type FireworksProvider struct {
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	disableStore        bool                  // Whether to force store=false on outgoing Responses API requests
 }
 
 // NewFireworksProvider creates a new Fireworks AI provider instance.
@@ -58,6 +59,7 @@ func NewFireworksProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
+		disableStore:        config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
 	}, nil
 }
 
@@ -69,6 +71,17 @@ func (provider *FireworksProvider) GetProviderKey() schemas.ModelProvider {
 // anthropicHeaders builds the auth headers for Fireworks' Anthropic-compatible endpoint.
 func (provider *FireworksProvider) anthropicHeaders(key schemas.Key) map[string]string {
 	return openai.BearerAuthHeader(key)
+}
+
+// applyDisableStore forces store=false when disable_store is set, since Fireworks retains Responses API conversations by default.
+func (provider *FireworksProvider) applyDisableStore(request *schemas.BifrostResponsesRequest) {
+	if !provider.disableStore {
+		return
+	}
+	if request.Params == nil {
+		request.Params = &schemas.ResponsesParameters{}
+	}
+	request.Params.Store = schemas.Ptr(false)
 }
 
 // ListModels lists models for Fireworks AI from each key's configured models and aliases.
@@ -254,6 +267,8 @@ func (provider *FireworksProvider) Responses(ctx *schemas.BifrostContext, key sc
 		)
 	}
 
+	provider.applyDisableStore(request)
+
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -304,6 +319,8 @@ func (provider *FireworksProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 			postHookSpanFinalizer,
 		)
 	}
+
+	provider.applyDisableStore(request)
 
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
