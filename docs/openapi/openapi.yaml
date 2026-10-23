@@ -2387,6 +2387,14 @@ components:
       $ref: "./schemas/management/auditlogs.yaml#/AuditFilterDataResponse"
     AuditVerifyResult:
       $ref: "./schemas/management/auditlogs.yaml#/AuditVerifyResult"
+    AuditSeverity:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditSeverity"
+    AuditAuthMethod:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditAuthMethod"
+    AuditFieldChange:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditFieldChange"
+    AuditChangeSet:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditChangeSet"
 
     # API Keys
     APIKey:
