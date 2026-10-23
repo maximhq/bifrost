@@ -4,7 +4,7 @@ import { useGetUserAccessProfilesQuery } from "@enterprise/lib/store/apis/access
 import { useGetVirtualKeyUsersQuery } from "@enterprise/lib/store/apis/virtualKeyUsersApi";
 import { UserAccessProfile } from "@enterprise/lib/types/accessProfile";
 import { User } from "@enterprise/lib/types/user";
-import { hasProfileRateLimit, resolveDisplayRateLimit } from "./useVirtualKeyUsage.utils";
+import { hasProfileRateLimit, resolveDisplayRateLimit, virtualKeyManagement } from "./useVirtualKeyUsage.utils";
 
 /**
  * The assignee fields every caller actually reads. Narrower than User on purpose: the
@@ -30,6 +30,10 @@ export type VirtualKeyAssignee = Pick<User, "id" | "name" | "email">;
 export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	assignedUsers: VirtualKeyAssignee[];
 	isManagedByProfile: boolean;
+	/** Managed through the profile of the team, business unit or customer that owns it. */
+	isOwnerGoverned: boolean;
+	/** A user's managed key: locked except for its name and description. */
+	isUserProfileManaged: boolean;
 	managingProfile: UserAccessProfile | undefined;
 	hasApRateLimit: boolean;
 	displayBudgets: Budget[] | undefined;
@@ -62,6 +66,9 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	// display-only — it resolves the profile name/actions when the caller can view access
 	// profiles; without that permission the VK is still locked, just without the profile name.
 	const isManagedByProfile = vk?.is_access_profile_managed ?? false;
+	// Which kind of management: a user's managed key stays locked, while a key its owner's profile
+	// governs is still the owner's to edit, unassign and delete (see virtualKeyManagement).
+	const { isOwnerGoverned, isUserProfileManaged } = virtualKeyManagement(vk);
 
 	const displayBudgets: Budget[] | undefined = managingProfile
 		? (managingProfile.budgets ?? []).map((line) => ({
@@ -98,5 +105,15 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 			displayRateLimit?.request_max_limit != null &&
 			displayRateLimit.request_current_usage >= displayRateLimit.request_max_limit);
 
-	return { assignedUsers, isManagedByProfile, managingProfile, hasApRateLimit, displayBudgets, displayRateLimit, isExhausted };
+	return {
+		assignedUsers,
+		isManagedByProfile,
+		isOwnerGoverned,
+		isUserProfileManaged,
+		managingProfile,
+		hasApRateLimit,
+		displayBudgets,
+		displayRateLimit,
+		isExhausted,
+	};
 }

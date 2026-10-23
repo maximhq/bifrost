@@ -274,10 +274,10 @@ function VKActiveSwitch({
 	hasUpdateAccess: boolean;
 	onToggle: (vk: VirtualKey, checked: boolean) => Promise<void>;
 }) {
-	const { isManagedByProfile } = useVirtualKeyUsage(vk);
-	// Managed takes precedence: an access-profile-managed VK can't be toggled here even by a
-	// caller who does have update access.
-	const disabledReason = isManagedByProfile
+	const { isUserProfileManaged } = useVirtualKeyUsage(vk);
+	// A user's managed key can't be toggled here even by a caller who does have update access. A
+	// key its owner's access profile governs is still the owner's key, toggled like any other.
+	const disabledReason = isUserProfileManaged
 		? "This virtual key is managed by an access profile. Enable or disable it from the profile."
 		: !hasUpdateAccess
 			? "You don't have permission to update virtual keys."
@@ -325,7 +325,9 @@ function VKActionsMenu({
 	onDelete: (vkId: string) => void;
 }) {
 	const [isOpen, setIsOpen] = useState(false);
-	const { isManagedByProfile } = useVirtualKeyUsage(vk);
+	// Only a user's managed key is locked against delete; a key its owner's profile governs is the
+	// owner's key, deleted like any other.
+	const { isUserProfileManaged } = useVirtualKeyUsage(vk);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 
 	return (
@@ -367,7 +369,7 @@ function VKActionsMenu({
 							hasDeleteAccess,
 							"delete",
 							"virtual keys",
-							isManagedByProfile ? "This virtual key is managed by an access profile and can't be deleted here." : undefined,
+							isUserProfileManaged ? "This virtual key is managed by an access profile and can't be deleted here." : undefined,
 						)}
 						variant="destructive"
 						className="cursor-pointer"
