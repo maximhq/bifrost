@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"mime"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -3560,6 +3561,10 @@ func ToBedrockError(bifrostErr *schemas.BifrostError) *BedrockError {
 	bedrockErr := &BedrockError{
 		Message: message,
 	}
+	if bifrostErr.ExtraFields.ErrorType == schemas.ErrorTypeCallerInvalidRequest {
+		bedrockErr.Type = "ValidationException"
+		return bedrockErr
+	}
 
 	// Map error type/code
 	if bifrostErr.Error != nil && bifrostErr.Error.Code != nil {
@@ -3567,6 +3572,8 @@ func ToBedrockError(bifrostErr *schemas.BifrostError) *BedrockError {
 		bedrockErr.Code = bifrostErr.Error.Code
 	} else if bifrostErr.Type != nil {
 		bedrockErr.Type = *bifrostErr.Type
+	} else if bifrostErr.EffectiveHTTPStatus() == http.StatusBadRequest {
+		bedrockErr.Type = "ValidationException"
 	} else {
 		bedrockErr.Type = "InternalServerError"
 	}
