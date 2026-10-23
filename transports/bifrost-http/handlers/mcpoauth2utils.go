@@ -68,6 +68,12 @@ func oauth2MCPResourceURL(ctx *fasthttp.RequestCtx, store *lib.Config) string {
 	return strings.TrimRight(oauth2IssuerURL(ctx, store), "/") + "/mcp"
 }
 
+// oauth2GatewayAudience identifies Bifrost's inference routes as a resource:
+// the gateway itself, so the issuer URL without a trailing slash.
+func oauth2GatewayAudience(ctx *fasthttp.RequestCtx, store *lib.Config) string {
+	return strings.TrimRight(oauth2IssuerURL(ctx, store), "/")
+}
+
 // oauth2ServerCfg returns the OAuth2 AS-specific config under the read lock,
 // falling back to sensible defaults when not yet configured.
 func oauth2ServerCfg(store *lib.Config) *configtables.OAuth2ServerConfig {
