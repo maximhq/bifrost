@@ -152,9 +152,9 @@ Paths are [gjson](https://github.com/tidwall/gjson) paths. Tokens and cost are r
 | `input_tokens_path`, `output_tokens_path`, `total_tokens_path` | Response body paths for tokens |
 | `cost_path` | Response body path for a provider-reported USD cost; an array of numbers is summed |
 | `cost_per_request` | Flat USD fee added to every billable call. A route may set `0` to waive the provider fee |
-| `units_path` | gjson path of a billable quantity (pages, credits, text). Ignored when `units_measure` is `body_bytes` |
+| `units_path` | gjson path of a billable quantity (pages, credits, text). Ignored when `units_measure` is `body_bytes` or `body_chars` |
 | `units_source` | `response` (default): a count the API reports. `request`: what the caller sent, which per-character APIs bill on |
-| `units_measure` | `value` (default): the number at the path. `chars`: the character count of the string at the path. `body_bytes`: the byte length of the whole body |
+| `units_measure` | `value` (default): the number at the path. `chars`: the character count of the JSON string at the path (the body must be JSON). `body_bytes`: the byte length of the whole body. `body_chars`: the character count of the whole body, any content type |
 | `cost_per_unit` | USD per unit. A route may set `0` to waive the provider's unit pricing |
 | `disable_optimistic_parsing` | Read only the configured paths |
 
@@ -165,9 +165,9 @@ Paths are [gjson](https://github.com/tidwall/gjson) paths. Tokens and cost are r
 | AWS Textract | page | `units_path: DocumentMetadata.Pages`, `cost_per_unit: 0.0015` (response) |
 | Tavily | API credit | `units_path: usage.credits`, `cost_per_unit: 0.008` (response; send `include_usage: true`) |
 | AWS Translate | character of input, spaces included | `units_source: request`, `units_measure: chars`, `units_path: Text`, `cost_per_unit: 0.000015` |
-| Azure TTS (neural voices) | character of SSML | `units_source: request`, `units_measure: body_bytes`, `cost_per_unit: 0.000016` |
+| Azure TTS (neural voices) | character of SSML, markup included | `units_source: request`, `units_measure: body_chars`, `cost_per_unit: 0.000016` (the body is `application/ssml+xml`, so `chars` with a path cannot read it, and `body_bytes` would over-count multi-byte text) |
 
-Cost per call is `units × cost_per_unit + cost_per_request + extracted cost`. Request-side quantities count what the upstream itself bills on: a caller cannot send less text than it wants translated, and padding the text raises the upstream bill as much as the Bifrost charge. A quantity that is missing, negative or not JSON (unless the measure is `body_bytes`) adds nothing. On an SSE stream a response-side quantity is read per event and the last value reported wins (map a field that carries a running total); `body_bytes` on the response side is read from buffered responses only. A request-side quantity is known before the upstream answers and is kept on every path; an unframed stream (audio) reports it on its final chunk. Azure TTS Avatar bills per second of a batch job, which no synchronous relay can see; use a flat fee for it.
+Cost per call is `units × cost_per_unit + cost_per_request + extracted cost`. Request-side quantities count what the upstream itself bills on: a caller cannot send less text than it wants translated, and padding the text raises the upstream bill as much as the Bifrost charge. A quantity that is missing, negative or not JSON (unless the measure is `body_bytes` or `body_chars`, which read the whole body whatever its type) adds nothing. On an SSE stream a response-side quantity is read per event and the last value reported wins (map a field that carries a running total); `body_bytes` and `body_chars` on the response side are read from buffered responses only. A request-side quantity is known before the upstream answers and is kept on every path; an unframed stream (audio) reports it on its final chunk. Azure TTS Avatar bills per second of a batch job, which no synchronous relay can see; use a flat fee for it.
 
 **Optimistic defaults.** With no mapping, Bifrost reads the shapes most APIs borrow: request `model`; response `usage.prompt_tokens` or `usage.input_tokens`, `usage.completion_tokens` or `usage.output_tokens`, `usage.total_tokens`; cost `usage.cost`. A root-level `cost` is never read by default, since on many APIs it is a product price rather than a bill. Naming any token path turns the optimistic token lookup off, so a half-mapped response is never topped up from a block you did not map. `disable_optimistic_parsing` also stops the default `model` lookup. Negative numbers are ignored. Bodies are scanned when their `Content-Type` is any JSON media type, including `application/x-amz-json-1.1`.
 

@@ -282141,6 +282141,61 @@
               ]
             }
           }
+        },
+        {
+          "name": "262.17 PUT /passthrough/generic_echo_units/put - body_chars bills request characters, not bytes: multi-byte text costs per character (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_units routes PUT /put to units_source request, units_measure body_chars at $0.001 per",
+                  "// character with the flat fee waived. The text/plain body 'héllo wörld' is 11 characters and 13 UTF-8",
+                  "// bytes, so the log row must cost 0.011; 0.013 would mean bytes were counted.",
+                  "pm.test('generic relay: body_chars request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.passthrough_response_body !== undefined && row.cost !== undefined && row.cost !== null) {",
+                  "      pm.test('generic relay: cost is characters x rate', function () { pm.expect(row.cost, JSON.stringify({cost: row.cost})).to.be.closeTo(0.011, 1e-6); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: log row with cost appeared', function () { pm.expect.fail('log ' + reqId + ' has no cost after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "text/plain; charset=utf-8"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "héllo wörld"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_units/put",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_units",
+                "put"
+              ]
+            }
+          }
         }
       ]
     }

@@ -2,6 +2,7 @@ package generic
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -126,7 +127,7 @@ func (f usageFields) any() bool {
 
 // billsUnits reports whether the mapping prices a quantity.
 func (u resolvedUsage) billsUnits() bool {
-	return u.costPerUnit > 0 && (u.unitsPath != "" || u.unitsMeasure == schemas.GenericUnitsBodyBytes)
+	return u.costPerUnit > 0 && (u.unitsPath != "" || u.unitsMeasure == schemas.GenericUnitsBodyBytes || u.unitsMeasure == schemas.GenericUnitsBodyChars)
 }
 
 // measureUnits reads the billable quantity from a body per the mapping's measure.
@@ -134,6 +135,11 @@ func (u resolvedUsage) measureUnits(contentType string, body []byte) (float64, b
 	switch u.unitsMeasure {
 	case schemas.GenericUnitsBodyBytes:
 		return float64(len(body)), len(body) > 0
+	case schemas.GenericUnitsBodyChars:
+		// What per-character APIs bill (Azure Speech counts characters of the SSML): runes, not
+		// bytes, so multi-byte text is not over-counted. Any content type, invalid UTF-8 counts
+		// byte-wise as Go does.
+		return float64(utf8.RuneCount(body)), len(body) > 0
 	case schemas.GenericUnitsChars:
 		if !(isJSONContentType(contentType) || (contentType == "" && gjson.ValidBytes(body))) {
 			return 0, false

@@ -14,6 +14,7 @@ import {
 	GenericUnitsMeasureLabels,
 	genericRouteBillableByDefault,
 	GenericUnitsSourceLabels,
+	genericUnitsMeasureReadsWholeBody,
 	ModelProvider,
 } from "@/lib/types/config";
 import { genericProviderConfigSchema } from "@/lib/types/schemas";
@@ -21,7 +22,7 @@ import { importOpenAPI, parseOpenAPIText, type OpenAPIImport } from "@/lib/utils
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -163,10 +164,13 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 
 	useEffect(() => {
 		form.reset(toFormValues(genericConfig));
+		setStreamingPathsText((genericConfig?.streaming?.paths ?? []).join("\n"));
 	}, [form, provider.name, genericConfig]);
 
 	const authType = form.watch("auth.type");
-	const streamingPathsText = useMemo(() => (form.watch("streaming.paths") ?? []).join("\n"), [form.watch("streaming.paths")]);
+	// The textarea keeps its own text so a newline the operator just typed survives until the next
+	// glob is written; the form value only ever holds the non-empty lines.
+	const [streamingPathsText, setStreamingPathsText] = useState(() => (genericConfig?.streaming?.paths ?? []).join("\n"));
 
 	const onSubmit = (values: FormValues) => {
 		updateProvider(
@@ -446,7 +450,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 									</FormItem>
 								)}
 							/>
-							{form.watch("usage.units_measure") !== "body_bytes" &&
+							{!genericUnitsMeasureReadsWholeBody(form.watch("usage.units_measure")) &&
 								textField(
 									"usage.units_path",
 									"Units path",
@@ -490,28 +494,40 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 				{/* Streaming */}
 				<section className="space-y-4">
 					<h3 className="text-sm font-semibold">Streaming</h3>
-					<FormItem>
-						<FormLabel>Streaming paths</FormLabel>
-						<FormControl>
-							<Textarea
-								placeholder={"/v1/stream/**\n/events/*"}
-								data-testid="generic-streaming-paths-textarea"
-								disabled={disabled}
-								value={streamingPathsText}
-								onChange={(e) =>
-									form.setValue(
-										"streaming.paths",
-										e.target.value.split("\n").map((l) => l.trim()),
-										{ shouldDirty: true },
-									)
-								}
-								rows={3}
-							/>
-						</FormControl>
-						<FormDescription>
-							One rooted glob per line; a trailing /** matches everything below. These routes are always served as streams.
-						</FormDescription>
-					</FormItem>
+					<FormField
+						control={form.control}
+						name="streaming.paths"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Streaming paths</FormLabel>
+								<FormControl>
+									<Textarea
+										placeholder={"/v1/stream/**\n/events/*"}
+										data-testid="generic-streaming-paths-textarea"
+										disabled={disabled}
+										value={streamingPathsText}
+										onChange={(e) => {
+											// Blank lines (a trailing newline while typing) are not globs; keep them out of the
+											// value so they can never fail validation, and keep the raw text so the caret stays put.
+											setStreamingPathsText(e.target.value);
+											field.onChange(
+												e.target.value
+													.split("\n")
+													.map((l) => l.trim())
+													.filter((l) => l !== ""),
+											);
+										}}
+										onBlur={field.onBlur}
+										rows={3}
+									/>
+								</FormControl>
+								<FormDescription>
+									One rooted glob per line; a trailing /** matches everything below. These routes are always served as streams.
+								</FormDescription>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
 					{switchField(
 						"streaming.detect_from_accept_header",
 						"Stream on Accept: text/event-stream",

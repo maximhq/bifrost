@@ -59,6 +59,7 @@ const (
 	GenericUnitsValue     GenericUnitsMeasure = "value"      // default: the number at units_path
 	GenericUnitsChars     GenericUnitsMeasure = "chars"      // the character count of the string at units_path
 	GenericUnitsBodyBytes GenericUnitsMeasure = "body_bytes" // the byte length of the whole body; units_path is ignored
+	GenericUnitsBodyChars GenericUnitsMeasure = "body_chars" // the character (rune) count of the whole body, any content type; units_path is ignored
 )
 
 // GenericUsageConfig maps a relayed request/response onto usage and cost. Paths are gjson paths;
@@ -72,7 +73,7 @@ type GenericUsageConfig struct {
 	CostPerRequest           *float64            `json:"cost_per_request,omitempty"`   // flat USD fee added to every billable call; a route may set 0 to waive the provider fee
 	UnitsPath                string              `json:"units_path,omitempty"`         // path of the billable quantity (pages, credits, text)
 	UnitsSource              GenericUnitsSource  `json:"units_source,omitempty"`       // response (default) or request
-	UnitsMeasure             GenericUnitsMeasure `json:"units_measure,omitempty"`      // value (default), chars or body_bytes
+	UnitsMeasure             GenericUnitsMeasure `json:"units_measure,omitempty"`      // value (default), chars, body_bytes or body_chars
 	CostPerUnit              *float64            `json:"cost_per_unit,omitempty"`      // USD per unit; cost += units * cost_per_unit
 	DisableOptimisticParsing bool                `json:"disable_optimistic_parsing"`   // only the configured paths are read
 }
@@ -183,7 +184,7 @@ func (u *GenericUsageConfig) validate(field string, base *GenericUsageConfig) er
 		return fmt.Errorf("%s.units_source: unsupported value %q", field, u.UnitsSource)
 	}
 	switch u.UnitsMeasure {
-	case "", GenericUnitsValue, GenericUnitsChars, GenericUnitsBodyBytes:
+	case "", GenericUnitsValue, GenericUnitsChars, GenericUnitsBodyBytes, GenericUnitsBodyChars:
 	default:
 		return fmt.Errorf("%s.units_measure: unsupported value %q", field, u.UnitsMeasure)
 	}
@@ -198,10 +199,15 @@ func (u *GenericUsageConfig) validate(field string, base *GenericUsageConfig) er
 			unitsMeasure = base.UnitsMeasure
 		}
 	}
-	if u.CostPerUnit != nil && *u.CostPerUnit > 0 && unitsMeasure != GenericUnitsBodyBytes && unitsPath == "" {
-		return fmt.Errorf("%s.units_path is required with cost_per_unit unless units_measure is body_bytes", field)
+	if u.CostPerUnit != nil && *u.CostPerUnit > 0 && !unitsMeasureIsWholeBody(unitsMeasure) && unitsPath == "" {
+		return fmt.Errorf("%s.units_path is required with cost_per_unit unless units_measure is body_bytes or body_chars", field)
 	}
 	return nil
+}
+
+// unitsMeasureIsWholeBody reports whether a measure reads the whole body and so needs no path.
+func unitsMeasureIsWholeBody(m GenericUnitsMeasure) bool {
+	return m == GenericUnitsBodyBytes || m == GenericUnitsBodyChars
 }
 
 // validateGenericRouteGlob accepts a rooted segment glob: "/a/*/b", "/a/**". path.Match reports

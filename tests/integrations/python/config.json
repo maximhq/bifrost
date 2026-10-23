@@ -221,7 +221,19 @@
             "units_path": "json.pages",
             "cost_per_unit": 0.001,
             "cost_per_request": 0.01
-          }
+          },
+          "routes": [
+            {
+              "method": "PUT",
+              "path": "/put",
+              "usage": {
+                "units_source": "request",
+                "units_measure": "body_chars",
+                "cost_per_unit": 0.001,
+                "cost_per_request": 0
+              }
+            }
+          ]
         }
       },
       "network_config": {

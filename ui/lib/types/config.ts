@@ -582,7 +582,7 @@ export interface GenericAuthConfig {
 }
 
 export type GenericUnitsSource = "response" | "request";
-export type GenericUnitsMeasure = "value" | "chars" | "body_bytes";
+export type GenericUnitsMeasure = "value" | "chars" | "body_bytes" | "body_chars";
 
 export const GenericUnitsSourceLabels: Record<GenericUnitsSource, string> = {
 	response: "Response body (a count the API reports)",
@@ -593,7 +593,11 @@ export const GenericUnitsMeasureLabels: Record<GenericUnitsMeasure, string> = {
 	value: "Number at the path",
 	chars: "Characters of the string at the path",
 	body_bytes: "Bytes of the whole body",
+	body_chars: "Characters of the whole body (any content type)",
 };
+
+// genericUnitsMeasureReadsWholeBody reports whether a measure needs no units path.
+export const genericUnitsMeasureReadsWholeBody = (m: GenericUnitsMeasure | undefined): boolean => m === "body_bytes" || m === "body_chars";
 
 // GenericUsageConfig matching Go's schemas.GenericUsageConfig (gjson paths)
 export interface GenericUsageConfig {

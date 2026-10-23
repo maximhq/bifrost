@@ -1126,15 +1126,21 @@ export const genericUsageConfigSchema = z
 		cost_per_request: z.number().min(0, "Cost per request must not be negative").optional(),
 		units_path: gjsonPath,
 		units_source: z.enum(["response", "request"]).optional(),
-		units_measure: z.enum(["value", "chars", "body_bytes"]).optional(),
+		units_measure: z.enum(["value", "chars", "body_bytes", "body_chars"]).optional(),
 		cost_per_unit: z.number().min(0, "Cost per unit must not be negative").optional(),
 		disable_optimistic_parsing: z.boolean().optional(),
 	})
 	.superRefine((usage, ctx) => {
-		if (usage.cost_per_unit && usage.cost_per_unit > 0 && usage.units_measure !== "body_bytes" && !usage.units_path) {
+		if (
+			usage.cost_per_unit &&
+			usage.cost_per_unit > 0 &&
+			usage.units_measure !== "body_bytes" &&
+			usage.units_measure !== "body_chars" &&
+			!usage.units_path
+		) {
 			ctx.addIssue({
 				code: "custom",
-				message: "Units path is required unless the measure is bytes of the whole body",
+				message: "Units path is required unless the measure reads the whole body",
 				path: ["units_path"],
 			});
 		}

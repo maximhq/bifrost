@@ -2,6 +2,7 @@ package generic
 
 import (
 	"testing"
+	"unicode/utf8"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -175,6 +176,19 @@ func TestUnitsPricing(t *testing.T) {
 		require.NotNil(t, usage.Cost)
 		assert.InDelta(t, float64(len(ssml))*16.0/1_000_000, usage.Cost.TotalCost, 1e-12)
 		assert.Equal(t, usage.Cost.TotalCost, u.defaultUsage(initial).Cost.TotalCost, "the streaming fallback carries the same request-side quantity")
+	})
+	t.Run("request body chars: multi-byte SSML billed per character, not per byte", func(t *testing.T) {
+		u := resolveUsage(&schemas.GenericUsageConfig{UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsBodyChars, CostPerUnit: schemas.Ptr(16.0 / 1_000_000)}, nil)
+		ssml := []byte(`<speak xml:lang='ja-JP'><voice name='ja-JP-NanamiNeural'>こんにちは、世界</voice></speak>`)
+		require.Greater(t, len(ssml), utf8.RuneCount(ssml), "the fixture must contain multi-byte characters")
+		initial := u.requestUnits("application/ssml+xml", ssml)
+		assert.True(t, initial.hasUnits)
+		assert.InDelta(t, float64(utf8.RuneCount(ssml)), initial.units, 0, "characters, not bytes")
+		usage := extractUsage(u, "audio/mpeg", []byte("ID3binary"), initial)
+		require.NotNil(t, usage.Cost)
+		assert.InDelta(t, float64(utf8.RuneCount(ssml))*16.0/1_000_000, usage.Cost.TotalCost, 1e-12)
+		plain := resolveUsage(&schemas.GenericUsageConfig{UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsBodyChars, CostPerUnit: schemas.Ptr(1.0)}, nil)
+		assert.InDelta(t, 11, plain.requestUnits("text/plain", []byte("héllo wörld")).units, 0, "any content type")
 	})
 	t.Run("units add to fee and extracted cost", func(t *testing.T) {
 		u := resolveUsage(&schemas.GenericUsageConfig{UnitsPath: "usage.credits", CostPerUnit: schemas.Ptr(0.008), CostPerRequest: schemas.Ptr(0.001), CostPath: "usage.cost"}, nil)

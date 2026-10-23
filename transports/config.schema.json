@@ -13438,7 +13438,7 @@
         },
         "units_path": {
           "type": "string",
-          "description": "gjson path of the billable quantity, e.g. DocumentMetadata.Pages (response) or Text (request). Ignored when units_measure is body_bytes"
+          "description": "gjson path of the billable quantity, e.g. DocumentMetadata.Pages (response) or Text (request). Ignored when units_measure is body_bytes or body_chars"
         },
         "units_source": {
           "type": "string",
@@ -13453,9 +13453,10 @@
           "enum": [
             "value",
             "chars",
-            "body_bytes"
+            "body_bytes",
+            "body_chars"
           ],
-          "description": "value: the number at units_path (default); chars: the character count of the string at units_path; body_bytes: the byte length of the whole body"
+          "description": "value: the number at units_path (default); chars: the character count of the JSON string at units_path; body_bytes: the byte length of the whole body; body_chars: the character count of the whole body, any content type (what per-character APIs such as Azure Speech bill)"
         },
         "cost_per_unit": {
           "type": "number",

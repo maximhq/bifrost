@@ -569,13 +569,13 @@ GenericUsageConfig:
       minimum: 0
     units_path:
       type: string
-      description: gjson path of the billable quantity (pages, credits, text); ignored for body_bytes
+      description: gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars
     units_source:
       type: string
       enum: [response, request]
     units_measure:
       type: string
-      enum: [value, chars, body_bytes]
+      enum: [value, chars, body_bytes, body_chars]
     cost_per_unit:
       type: number
       minimum: 0

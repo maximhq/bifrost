@@ -101,4 +101,5 @@ func TestGenericUsageConfigUnitsValidation(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "routes[0].usage.units_path is required")
 	ok(&GenericUsageConfig{CostPerUnit: Ptr(0.0)}) // zero is "no unit pricing" and needs no path (a route waiving the provider's)
+	ok(&GenericUsageConfig{UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsBodyChars, CostPerUnit: Ptr(0.000016)}) // body_chars reads the whole body and needs no path
 }
