@@ -1,11 +1,51 @@
 package schemas
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDocumentCitationsDeepCopyIsolation(t *testing.T) {
+	const content = `[{"type":"text","text":"Budget: $4.2M."}]`
+	chat := ChatMessage{Role: ChatMessageRoleUser, Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+		Type: ChatContentBlockTypeFile, File: &ChatInputFile{FileContent: json.RawMessage(content)},
+		Citations: &Citations{Enabled: Ptr(true)},
+	}}}}
+	copiedChat := DeepCopyChatMessage(chat)
+	require.Equal(t, chat, copiedChat)
+	copiedChat.Content.ContentBlocks[0].File.FileContent[0] = ' '
+	*copiedChat.Content.ContentBlocks[0].Citations.Enabled = false
+	require.Equal(t, content, string(chat.Content.ContentBlocks[0].File.FileContent))
+	require.True(t, *chat.Content.ContentBlocks[0].Citations.Enabled)
+
+	responses := chat.ToResponsesMessages()[0]
+	copiedResponses := DeepCopyResponsesMessage(responses)
+	require.Equal(t, responses, copiedResponses)
+	copiedResponses.Content.ContentBlocks[0].FileContent[0] = ' '
+	*copiedResponses.Content.ContentBlocks[0].Citations.Enabled = false
+	require.Equal(t, content, string(responses.Content.ContentBlocks[0].FileContent))
+	require.True(t, *responses.Content.ContentBlocks[0].Citations.Enabled)
+
+	output := ResponsesMessage{Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{
+		Type: ResponsesOutputMessageContentTypeText,
+		ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{Annotations: []ResponsesOutputMessageContentTextAnnotation{{
+			Type: "content_block_location", Index: Ptr(0), StartBlockIndex: Ptr(0), EndBlockIndex: Ptr(1),
+			SourceContent: []string{"Budget: ", "$4.2M."}, Source: Ptr("pack"),
+		}}},
+	}}}}
+	copiedOutput := DeepCopyResponsesMessage(output)
+	require.Equal(t, output, copiedOutput)
+	annotation := &copiedOutput.Content.ContentBlocks[0].Annotations[0]
+	annotation.SourceContent[0] = "changed"
+	*annotation.StartBlockIndex = 99
+	*annotation.Source = "changed"
+	require.Equal(t, []string{"Budget: ", "$4.2M."}, output.Content.ContentBlocks[0].Annotations[0].SourceContent)
+	require.Zero(t, *output.Content.ContentBlocks[0].Annotations[0].StartBlockIndex)
+	require.Equal(t, "pack", *output.Content.ContentBlocks[0].Annotations[0].Source)
+}
 
 func TestSanitizeImageURLDefaultRejectsNonHTTPSchemes(t *testing.T) {
 	// The no-args overload must keep the historical http/https-only policy. Providers

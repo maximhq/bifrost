@@ -284,6 +284,42 @@ func TestDocumentCitationsUnsupportedContentIsBadRequest(t *testing.T) {
 	}
 }
 
+func TestDocumentCitationsCustomToolResultThroughChatMux(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		for _, directHelper := range []bool{true, false} {
+			t.Run(fmt.Sprintf("enabled=%t/directHelper=%t", enabled, directHelper), func(t *testing.T) {
+				tool := schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_document")},
+					Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+						Type:      schemas.ChatContentBlockTypeFile,
+						File:      &schemas.ChatInputFile{Filename: schemas.Ptr("pack"), FileContent: json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."}]`)},
+						Citations: &schemas.Citations{Enabled: &enabled},
+					}}},
+				}
+				message := tool.ToResponsesMessages()[0]
+				if directHelper {
+					message = *tool.ToResponsesToolMessage()
+				}
+				req := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "global.anthropic.claude-haiku-5-5", Input: []schemas.ResponsesMessage{message}}
+				out, err := bedrock.ToBedrockResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+				if !enabled {
+					bad, ok := providerUtils.AsBifrostBadRequestError(err)
+					require.True(t, ok, "invalid tool-result document must not be silently dropped: %v", err)
+					require.Equal(t, 400, *bad.StatusCode)
+					require.Contains(t, bad.Error.Message, "citations.enabled")
+					return
+				}
+				require.NoError(t, err)
+				wire, err := providerUtils.MarshalSorted(out)
+				require.NoError(t, err)
+				doc := gjson.GetBytes(wire, "messages.0.content.0.toolResult.content.0.document")
+				require.Equal(t, "Budget: $4.2M.", doc.Get("source.content.0.text").Str, "%s", wire)
+				require.True(t, doc.Get("citations.enabled").Bool(), "%s", wire)
+				require.False(t, doc.Get("format").Exists(), "%s", wire)
+			})
+		}
+	}
+}
+
 func TestDocumentCitationsResponseRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
 		location, kind, start, end string
@@ -338,6 +374,68 @@ func TestDocumentCitationsInvalidSources(t *testing.T) {
 		_, err := bedrock.ToBedrockResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &req)
 		_, ok := providerUtils.AsBifrostBadRequestError(err)
 		require.True(t, ok, "%s must be a 400, got %v", content, err)
+	}
+}
+
+func TestDocumentCitationsCustomContentForms(t *testing.T) {
+	for name, content := range map[string]string{
+		"string":            `"Budget: $4.2M.\nAudit: \"March\"."`,
+		"text blocks":       `[{"type":"text","text":"Budget: $4.2M.\nAudit: \"March\"."}]`,
+		"input text blocks": `[{"type":"input_text","text":"Budget: $4.2M.\nAudit: \"March\"."}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var req schemas.BifrostResponsesRequest
+			require.NoError(t, json.Unmarshal([]byte(`{"provider":"bedrock","model":"global.anthropic.claude-haiku-5-5","input":[{"role":"user","content":[{"type":"input_file","filename":"pack","file_content":`+content+`,"citations":{"enabled":true}}]}]}`), &req))
+			for _, route := range []string{"responses", "chat"} {
+				var out *bedrock.BedrockConverseRequest
+				var err error
+				if route == "chat" {
+					out, err = bedrock.ToBedrockChatCompletionRequest(ctx, req.ToChatRequest())
+				} else {
+					out, err = bedrock.ToBedrockResponsesRequest(ctx, &req)
+				}
+				require.NoError(t, err, route)
+				wire, err := providerUtils.MarshalSorted(out)
+				require.NoError(t, err)
+				// Document-only messages may get a companion text placeholder.
+				var doc gjson.Result
+				gjson.GetBytes(wire, "messages.0.content").ForEach(func(_, block gjson.Result) bool {
+					if block.Get("document").Exists() {
+						doc = block.Get("document")
+					}
+					return true
+				})
+				require.Equal(t, "Budget: $4.2M.\nAudit: \"March\".", doc.Get("source.content.0.text").Str, route)
+				require.Len(t, doc.Get("source.content").Array(), 1, route)
+				require.True(t, doc.Get("citations.enabled").Bool(), route)
+				require.False(t, doc.Get("format").Exists(), route)
+			}
+		})
+	}
+}
+
+func TestDocumentCitationsConflictingSources(t *testing.T) {
+	for name, extra := range map[string]string{
+		"data":       `,"file_data":"QnVkZ2V0Lg=="`,
+		"empty data": `,"file_data":""`,
+		"URL":        `,"file_url":"https://example.test/pack.txt"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var req schemas.BifrostResponsesRequest
+			require.NoError(t, json.Unmarshal([]byte(`{"provider":"bedrock","model":"global.anthropic.claude-haiku-5-5","input":[{"role":"user","content":[{"type":"input_file","file_content":"Budget."`+extra+`,"citations":{"enabled":true}}]}]}`), &req))
+			_, err := bedrock.ToBedrockResponsesRequest(ctx, &req)
+			bad, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "got %v", err)
+			require.Equal(t, 400, *bad.StatusCode)
+			require.Contains(t, bad.Error.Message, "cannot be combined")
+			_, err = bedrock.ToBedrockChatCompletionRequest(ctx, req.ToChatRequest())
+			bad, ok = providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "chat got %v", err)
+			require.Equal(t, 400, *bad.StatusCode)
+			require.Contains(t, bad.Error.Message, "cannot be combined")
+		})
 	}
 }
 

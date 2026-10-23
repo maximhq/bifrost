@@ -140,6 +140,89 @@ func TestDocumentCitationsDoneEventsDoNotShareText(t *testing.T) {
 	require.Equal(t, "$4.2M.", *events[2].Item.Content.ContentBlocks[0].Text)
 }
 
+func TestDocumentCitationsStreamClosesTextBeforeTool(t *testing.T) {
+	for _, citationOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("citationOnly=%t", citationOnly), func(t *testing.T) {
+			state := bedrock.NewBedrockResponsesStreamState()
+			state.Model = schemas.Ptr("global.anthropic.claude-haiku-5-5")
+			var events []*schemas.BifrostResponsesStreamResponse
+			emit := func(chunk *bedrock.BedrockStreamEvent) {
+				out, err, _ := chunk.ToBifrostResponsesStream(len(events), state)
+				require.Nil(t, err)
+				events = append(events, out...)
+			}
+			emit(&bedrock.BedrockStreamEvent{Role: schemas.Ptr("assistant")})
+			for i := range 2 {
+				emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(2), Delta: &bedrock.BedrockContentBlockDelta{
+					Citation: &bedrock.BedrockCitation{Title: schemas.Ptr("pack"), Source: schemas.Ptr("fixture-source"),
+						SourceContent: []bedrock.BedrockDocumentContentBlock{{Text: schemas.Ptr("Budget.")}},
+						Location: bedrock.BedrockCitationLocation{DocumentChunk: &bedrock.BedrockDocumentCitationLocation{
+							DocumentIndex: schemas.Ptr(0), Start: schemas.Ptr(i), End: schemas.Ptr(i + 1),
+						}},
+					},
+				}})
+			}
+			text := ""
+			if !citationOnly {
+				text = "$4.2M."
+				emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(2), Delta: &bedrock.BedrockContentBlockDelta{Text: &text}})
+			}
+			// No explicit text stop: the next tool start must close cited text.
+			emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(3), Start: &bedrock.BedrockContentBlockStart{
+				ToolUse: &bedrock.BedrockToolUseStart{ToolUseID: "call_audit", Name: "audit"},
+			}})
+			emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(3), Delta: &bedrock.BedrockContentBlockDelta{
+				ToolUse: &bedrock.BedrockToolUseDelta{Input: "{}"},
+			}})
+			events = append(events, bedrock.FinalizeBedrockStream(state, len(events), &schemas.ResponsesResponseUsage{}, nil)...)
+			annotations, textDone, partDone, itemDone := 0, 0, 0, 0
+			for i, event := range events {
+				require.Equal(t, i, event.SequenceNumber)
+				if event.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded && event.Item.Type != nil && *event.Item.Type == schemas.ResponsesMessageTypeFunctionCall {
+					require.Equal(t, 1, itemDone, "cited text must close before tool initialization")
+				}
+				if event.Type == schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded {
+					require.Equal(t, annotations, *event.AnnotationIndex)
+					annotations++
+				}
+				if event.Type == schemas.ResponsesStreamResponseTypeOutputTextDone {
+					textDone++
+					require.Equal(t, text, *event.Text)
+				}
+				if event.Type == schemas.ResponsesStreamResponseTypeContentPartDone && *event.OutputIndex == 0 {
+					partDone++
+					require.Len(t, event.Part.Annotations, 2)
+				}
+				if event.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && *event.Item.Type == schemas.ResponsesMessageTypeMessage {
+					itemDone++
+					require.Len(t, event.Item.Content.ContentBlocks, 1, "citation-only content must survive completion")
+					require.Len(t, event.Item.Content.ContentBlocks[0].Annotations, 2)
+				}
+				if event.ContentIndex != nil && event.OutputIndex != nil && *event.OutputIndex == 0 {
+					require.Zero(t, *event.ContentIndex)
+					native, err := bedrock.ToBedrockConverseStreamResponse(event)
+					require.NoError(t, err)
+					if native != nil && native.ContentBlockIndex != nil {
+						require.Equal(t, 2, *native.ContentBlockIndex)
+					}
+				}
+			}
+			require.Equal(t, 2, annotations)
+			require.Equal(t, 1, textDone)
+			require.Equal(t, 1, partDone)
+			require.Equal(t, 1, itemDone, "EOF must not re-close the text item")
+			completed := events[len(events)-1]
+			require.Equal(t, schemas.ResponsesStreamResponseTypeCompleted, completed.Type)
+			require.Len(t, completed.Response.Output, 2)
+			block := completed.Response.Output[0].Content.ContentBlocks[0]
+			require.Equal(t, text, *block.Text)
+			require.Len(t, block.Annotations, 2)
+			require.Equal(t, "fixture-source", *block.Annotations[0].Source)
+			require.Equal(t, []string{"Budget."}, block.Annotations[1].SourceContent)
+		})
+	}
+}
+
 func TestDocumentCitationsStreamClosesReasoningBeforeText(t *testing.T) {
 	state := bedrock.NewBedrockResponsesStreamState()
 	state.Model = schemas.Ptr("global.anthropic.claude-sonnet-5-5")

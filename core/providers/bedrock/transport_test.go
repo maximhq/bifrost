@@ -146,6 +146,48 @@ func TestDocumentCitationsPooledStateReset(t *testing.T) {
 	releaseBedrockResponsesStreamState(state)
 }
 
+func TestDocumentCitationsInvalidRequestsDoNotDispatch(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	provider := newTestProviderWithServer(t, server)
+	for _, tc := range []struct{ name, fields, message string }{
+		{"missing citations", `"file_content":"Budget."`, "citations.enabled"},
+		{"empty citations", `"file_content":"Budget.","citations":{}`, "citations.enabled"},
+		{"disabled citations", `"file_content":"Budget.","citations":{"enabled":false}`, "citations.enabled"},
+		{"null content", `"file_content":null,"citations":{"enabled":true}`, "cannot be null"},
+		{"empty blocks", `"file_content":[],"citations":{"enabled":true}`, "non-empty array"},
+		{"non-text block", `"file_content":[{"type":"input_image"}],"citations":{"enabled":true}`, "only text blocks"},
+		{"conflicting data", `"file_content":"Budget.","file_data":"QnVkZ2V0Lg==","citations":{"enabled":true}`, "cannot be combined"},
+		{"conflicting URL", `"file_content":"Budget.","file_url":"https://example.test/pack.txt","citations":{"enabled":true}`, "cannot be combined"},
+	} {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, streaming), func(t *testing.T) {
+				var req schemas.BifrostResponsesRequest
+				require.NoError(t, json.Unmarshal([]byte(`{"provider":"bedrock","model":"global.anthropic.claude-haiku-5-5","input":[{"role":"user","content":[{"type":"input_file","filename":"pack",`+tc.fields+`}]}]}`), &req))
+				var bad *schemas.BifrostError
+				if streaming {
+					stream, err := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), &req)
+					require.Nil(t, stream, "invalid request must not start a stream")
+					bad = err
+				} else {
+					response, err := provider.Responses(testBedrockCtx(), testBedrockKey(), &req)
+					require.Nil(t, response)
+					bad = err
+				}
+				require.NotNil(t, bad)
+				require.NotNil(t, bad.StatusCode)
+				require.Equal(t, 400, *bad.StatusCode)
+				require.Contains(t, bad.Error.Message, tc.message)
+				require.Zero(t, calls.Load(), "invalid document must fail before HTTP dispatch")
+			})
+		}
+	}
+}
+
 func BenchmarkDocumentCitationsConversion(b *testing.B) {
 	req := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "global.anthropic.claude-haiku-5-5",
 		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),

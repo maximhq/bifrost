@@ -36,6 +36,19 @@ func TestCustomDocumentContentRoundTrip(t *testing.T) {
 			if got := out.Messages[0].Content.ContentBlocks[0].Source.SourceObj; got.Type != "content" || string(got.Content) != content {
 				t.Fatalf("custom document chunks changed: %+v", got)
 			}
+			chat, err := ToAnthropicChatRequest(ctx, req.ToChatRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var block AnthropicContentBlock
+			for _, candidate := range chat.Messages[0].Content.ContentBlocks {
+				if candidate.Type == AnthropicContentBlockTypeDocument {
+					block = candidate
+				}
+			}
+			if block.Source == nil || block.Source.SourceObj == nil || block.Source.SourceObj.Type != "content" || string(block.Source.SourceObj.Content) != content || block.Title == nil || *block.Title != "pack" || block.Citations == nil || block.Citations.Config == nil || block.Citations.Config.Enabled == nil || !*block.Citations.Config.Enabled {
+				t.Fatalf("chat conversion lost custom content, title or citation setting: %+v", block)
+			}
 		}
 	}
 }
