@@ -5,6 +5,7 @@ import { createBaseQueryWithRefresh } from "@enterprise/lib/store/utils/baseQuer
 import { clearOAuthStorage } from "@enterprise/lib/store/utils/tokenManager";
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 import { getActiveTempToken, getSuppressGlobal401 } from "./tempToken";
+import { getCurrentAppPath, stripBasePath, withBasePath } from "@/lib/utils/basePath";
 
 // Auth tokens are now stored in HTTP-only cookies (set by server)
 // No client-side token needed — handled by credentials: "include"
@@ -87,9 +88,9 @@ const baseQueryWithErrorHandling: typeof baseQueryWithRefresh = async (args: any
 				return result;
 			}
 			clearAuthStorage();
-			if (typeof window !== "undefined" && !window.location.pathname.includes("/login")) {
-				const goto = window.location.pathname + window.location.search;
-				window.location.href = `/login?goto=${encodeURIComponent(goto)}`;
+			if (typeof window !== "undefined" && !stripBasePath(window.location.pathname).includes("/login")) {
+				const goto = getCurrentAppPath();
+				window.location.href = withBasePath(`/login?goto=${encodeURIComponent(goto)}`);
 			}
 			return result;
 		}

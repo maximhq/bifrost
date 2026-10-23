@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { Check } from "lucide-react";
 import type { HarnessPlatform } from "./types";
+import { withBasePath } from "@/lib/utils/basePath";
 
 interface PlatformSelectProps {
 	platform: HarnessPlatform;
@@ -9,9 +10,9 @@ interface PlatformSelectProps {
 
 export function PlatformSelect({ platform, onPlatformChange }: PlatformSelectProps) {
 	const platforms: Array<{ value: HarnessPlatform; label: string; icon: string }> = [
-		{ value: "macos", label: "macOS", icon: "/images/platforms/mac.svg" },
-		{ value: "windows", label: "Windows", icon: "/images/platforms/windows.svg" },
-		{ value: "linux", label: "Linux", icon: "/images/platforms/linux.svg" },
+		{ value: "macos", label: "macOS", icon: withBasePath("/images/platforms/mac.svg") },
+		{ value: "windows", label: "Windows", icon: withBasePath("/images/platforms/windows.svg") },
+		{ value: "linux", label: "Linux", icon: withBasePath("/images/platforms/linux.svg") },
 	];
 
 	return (

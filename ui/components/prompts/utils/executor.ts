@@ -1,6 +1,7 @@
 import { Message, type CompletionUsage, type ToolCall, type VariableMap, replaceVariablesInMessages } from "@/lib/message";
 import { getErrorMessage } from "@/lib/store";
 import type { ModelParams } from "@/lib/types/prompts";
+import { getExampleBaseUrl } from "@/lib/utils/port";
 
 export interface ExecutionConfig {
 	provider: string;
@@ -12,11 +13,7 @@ export interface ExecutionConfig {
 }
 
 function getBaseUrl() {
-	if (process.env.NODE_ENV === "development") {
-		return "http://localhost:8080";
-	} else {
-		return "";
-	}
+	return getExampleBaseUrl();
 }
 
 function buildHeaders(config: Pick<ExecutionConfig, "apiKeyId" | "customHeaders">): Record<string, string> {

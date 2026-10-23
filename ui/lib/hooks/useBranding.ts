@@ -2,13 +2,14 @@ import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useGetBrandingQuery, type BrandingState } from "@/lib/store/apis/brandingApi";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { useEffect } from "react";
+import { withBasePath } from "@/lib/utils/basePath";
 
 /** Bundled Bifrost assets. These are the OSS values and the fallback for every
  * slot an enterprise deployment has not overridden. */
-const DEFAULT_LOGO_LIGHT = "/bifrost-logo.webp";
-const DEFAULT_LOGO_DARK = "/bifrost-logo-dark.webp";
-const DEFAULT_ICON_LIGHT = "/bifrost-icon.webp";
-const DEFAULT_ICON_DARK = "/bifrost-icon-dark.webp";
+const DEFAULT_LOGO_LIGHT = withBasePath("/bifrost-logo.webp");
+const DEFAULT_LOGO_DARK = withBasePath("/bifrost-logo-dark.webp");
+const DEFAULT_ICON_LIGHT = withBasePath("/bifrost-icon.webp");
+const DEFAULT_ICON_DARK = withBasePath("/bifrost-icon-dark.webp");
 
 /**
  * Resolves a branding asset URL returned by the API against the current API

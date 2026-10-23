@@ -10,9 +10,10 @@ import { BookIcon, Globe, Radio, Terminal, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { MCPLibraryDeleteDialog } from "./mcpLibraryDeleteDialog";
+import { withBasePath } from "@/lib/utils/basePath";
 
 const MAX_VISIBLE_TAGS = 3;
-export const MCP_ICON_FALLBACK = "/images/mcp.svg";
+export const MCP_ICON_FALLBACK = withBasePath("/images/mcp.svg");
 
 /** Map connection_type to a human-friendly transport label. */
 export function transportLabel(connectionType: string): string {
@@ -97,7 +98,7 @@ export function MCPLibraryServerCard({ server, isInstalled, canCreateMCPClient, 
 								}}
 							/>
 						) : (
-							<img src={"/images/mcp.svg"} alt="" className="h-full w-full object-contain p-1.5" />
+							<img src={withBasePath("/images/mcp.svg")} alt="" className="h-full w-full object-contain p-1.5" />
 						)}
 					</div>
 					<div className="min-w-0 flex-1 space-y-1">

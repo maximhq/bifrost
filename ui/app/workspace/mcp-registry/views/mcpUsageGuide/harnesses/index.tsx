@@ -7,6 +7,7 @@ import { CursorHarnessInstall } from "./cursorHarnessInstall";
 import { OpenCodeHarnessInstall } from "./opencodeHarnessInstall";
 import { VSCodeHarnessInstall } from "./vscodeHarnessInstall";
 import { WindsurfHarnessInstall } from "./windsurfHarnessInstall";
+import { withBasePath } from "@/lib/utils/basePath";
 
 export { AntigravityHarnessInstall, AntigravityIcon } from "./antigravityHarnessInstall";
 export { ClaudeCodeHarnessInstall } from "./claudeCodeHarnessInstall";
@@ -34,48 +35,48 @@ export const HARNESSES: HarnessDefinition[] = [
 	{
 		id: "claude-code",
 		label: "Claude Code",
-		icon: logoIcon("/images/harness/claudecode.svg"),
+		icon: logoIcon(withBasePath("/images/harness/claudecode.svg")),
 		Install: ClaudeCodeHarnessInstall,
 	},
 	{
 		id: "cursor",
 		label: "Cursor",
-		icon: logoIcon("/images/harness/cursor.svg"),
+		icon: logoIcon(withBasePath("/images/harness/cursor.svg")),
 		usesPlatform: true,
 		Install: CursorHarnessInstall,
 	},
 	{
 		id: "codex",
 		label: "Codex",
-		icon: logoIcon("/images/harness/codex.svg"),
+		icon: logoIcon(withBasePath("/images/harness/codex.svg")),
 		usesPlatform: true,
 		Install: CodexHarnessInstall,
 	},
 	{
 		id: "vscode",
 		label: "VS Code",
-		icon: logoIcon("/images/harness/vscode.svg"),
+		icon: logoIcon(withBasePath("/images/harness/vscode.svg")),
 		usesPlatform: true,
 		Install: VSCodeHarnessInstall,
 	},
 	{
 		id: "opencode",
 		label: "OpenCode",
-		icon: logoIcon("/images/harness/opencode.svg"),
+		icon: logoIcon(withBasePath("/images/harness/opencode.svg")),
 		usesPlatform: true,
 		Install: OpenCodeHarnessInstall,
 	},
 	{
 		id: "windsurf",
 		label: "Windsurf (Devin)",
-		icon: logoIcon("/images/harness/windsurf.svg"),
+		icon: logoIcon(withBasePath("/images/harness/windsurf.svg")),
 		usesPlatform: true,
 		Install: WindsurfHarnessInstall,
 	},
 	{
 		id: "antigravity",
 		label: "Antigravity",
-		icon: logoIcon("/images/harness/antigravity.svg"),
+		icon: logoIcon(withBasePath("/images/harness/antigravity.svg")),
 		usesPlatform: true,
 		Install: AntigravityHarnessInstall,
 	},

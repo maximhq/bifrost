@@ -5,6 +5,7 @@ import { buildAntigravityConfig } from "../commandBuilders";
 import { HarnessCommandSection } from "../harnessCommandSection";
 import type { HarnessInstallProps } from "../types";
 import { getRegistrationLabel, getUserHomePrefix } from "../utils";
+import { withBasePath } from "@/lib/utils/basePath";
 
 export function AntigravityIcon({ className }: { className?: string }) {
 	return <Orbit className={cn("text-muted-foreground", className)} />;
@@ -40,7 +41,7 @@ export function AntigravityHarnessInstall({
 			emptyMessage={emptyMessage}
 			harnessName="Antigravity"
 			label="Config"
-			logoSrc="/images/harness/antigravity.svg"
+			logoSrc={withBasePath("/images/harness/antigravity.svg")}
 			registrationLabel={`${configPath} · ${getRegistrationLabel(serverScope, selectedServers)}`}
 		/>
 	);

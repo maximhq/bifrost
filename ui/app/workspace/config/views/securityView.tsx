@@ -23,6 +23,7 @@ import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { withBasePath } from "@/lib/utils/basePath";
 
 // Go duration string: one or more <number><unit> segments, e.g. "5m", "1h30m".
 const COOLDOWN_PATTERN = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
@@ -314,7 +315,7 @@ export default function SecurityView() {
 			// session cookie (logout clears it) and sign in with the new admin account.
 			if (showPasswordSection && authConfig.is_enabled && hasUsername && hasPassword && authorizedBySetupToken) {
 				await fetch(`${getApiBaseUrl()}/session/logout`, { method: "POST", credentials: "include" }).catch(() => undefined);
-				window.location.href = "/login";
+				window.location.href = withBasePath("/login");
 			}
 		} catch (error) {
 			const message = getErrorMessage(error);

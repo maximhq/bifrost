@@ -46,6 +46,7 @@ import { RefreshTokenStatus } from "@/components/refreshTokenStatus";
 import { ScopeChips } from "@/components/scopeChips";
 import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCcw, Trash2, UserRound } from "lucide-react";
 import { useState } from "react";
+import { withBasePath } from "@/lib/utils/basePath";
 
 interface SessionsTableProps {
 	sessions: MCPSessionRow[];
@@ -443,7 +444,7 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 									row.auth_kind === "headers"
 										? `/workspace/mcp-sessions/auth?flow=${row.id}&kind=headers`
 										: `/workspace/mcp-sessions/auth?flow=${row.id}`;
-								window.location.href = url;
+								window.location.href = withBasePath(url);
 							}}
 						>
 							<ExternalLink className="h-4 w-4" />
