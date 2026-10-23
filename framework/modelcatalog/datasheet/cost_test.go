@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -276,6 +277,132 @@ func TestCalculateCost_LiveOverrideOnlyPricing(t *testing.T) {
 	}))
 
 	assert.InDelta(t, 0.03, s.CalculateCost(liveVoiceWindow("gpt-live-1", 30), nil), 1e-12)
+}
+
+// advisorCostFixture prices an executor (haiku-class rates) and an advisor model (opus-class rates)
+// and builds the response a route returns for 1000/500 executor tokens plus one advisor pass of
+// 2000/1000 tokens. The advisor pass appears only in usage.iterations[], as the provider sends it.
+func advisorCostFixture(t testing.TB, route string, iterations string) (*Store, *schemas.BifrostResponse) {
+	t.Helper()
+	executor := chatPricing(0.000001, 0.000005)
+	executor.Provider, executor.Model = "anthropic", "claude-haiku-4-5"
+	advisor := chatPricing(0.000005, 0.000025)
+	advisor.Provider, advisor.Model = "anthropic", "claude-opus-4-8"
+	store := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(executor.Model, executor.Provider, executor.Mode): executor,
+		makeKey(advisor.Model, advisor.Provider, advisor.Mode):    advisor,
+	})
+	usageJSON := `{"input_tokens":1000,"output_tokens":500` + iterations + `}`
+	extra := schemas.BifrostResponseExtraFields{RequestType: schemas.ResponsesRequest, RoutingInfo: routingInfoFor(schemas.Anthropic, executor.Model)}
+	switch route {
+	case "passthrough":
+		extra.RequestType = schemas.PassthroughRequest
+		extra.PassthroughPath = "/v1/messages"
+		usage := anthropic.ExtractAnthropicPassthroughUsage("/v1/messages", nil, []byte(`{"usage":`+usageJSON+`}`))
+		require.NotNil(t, usage)
+		return store, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: usage, ExtraFields: extra}}
+	}
+	var native anthropic.AnthropicUsage
+	require.NoError(t, json.Unmarshal([]byte(usageJSON), &native))
+	usage := anthropic.ConvertAnthropicUsageToBifrostUsage(&native)
+	if route == "responses_stream" {
+		extra.RequestType = schemas.ResponsesStreamRequest
+		return store, &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Response: &schemas.BifrostResponsesResponse{Usage: usage}, ExtraFields: extra}}
+	}
+	return store, &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Usage: usage, ExtraFields: extra}}
+}
+
+// An advisor pass is billed by the provider at the advisor model's rate and reported only in
+// usage.iterations[]; the top-level usage mirrors the executor passes. The request's cost is the
+// executor tokens at the executor rate plus each advisor pass at its own model's rate, on every route
+// that carries the breakdown, and an iterations list naming only executor passes adds nothing.
+func TestCalculateCost_AnthropicAdvisorIterations(t *testing.T) {
+	const executorCost = 1000*0.000001 + 500*0.000005 // 0.0035
+	const advisorPass = `,"iterations":[{"type":"message","input_tokens":1000,"output_tokens":500},{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`
+	for _, route := range []string{"responses", "responses_stream", "passthrough"} {
+		t.Run(route+": advisor pass priced at the advisor rate", func(t *testing.T) {
+			store, result := advisorCostFixture(t, route, advisorPass)
+			assert.InDelta(t, executorCost+2000*0.000005+1000*0.000025, store.CalculateCost(result, nil), 1e-12)
+		})
+		t.Run(route+": executor-only iterations are not counted twice", func(t *testing.T) {
+			store, result := advisorCostFixture(t, route, `,"iterations":[{"type":"message","input_tokens":1000,"output_tokens":500}]`)
+			assert.InDelta(t, executorCost, store.CalculateCost(result, nil), 1e-12)
+		})
+		t.Run(route+": no iterations", func(t *testing.T) {
+			store, result := advisorCostFixture(t, route, "")
+			assert.InDelta(t, executorCost, store.CalculateCost(result, nil), 1e-12)
+		})
+		t.Run(route+": an advisor model without pricing is priced at the executor rate, not as free", func(t *testing.T) {
+			store, result := advisorCostFixture(t, route, `,"iterations":[{"type":"advisor_message","model":"claude-unpriced-9","input_tokens":2000,"output_tokens":1000}]`)
+			assert.InDelta(t, executorCost+2000*0.000001+1000*0.000005, store.CalculateCost(result, nil), 1e-12)
+		})
+	}
+}
+
+// Priority Tier is a per-model commitment that does not extend from the executor to its advisor, and
+// iterations report no tier, so an advisor pass is billed at standard rates while the executor keeps its own.
+func TestCalculateCost_AnthropicAdvisorPassIgnoresExecutorPriorityTier(t *testing.T) {
+	store, result := advisorCostFixture(t, "responses", `,"iterations":[{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`)
+	for key, rates := range map[string][2]float64{
+		makeKey("claude-haiku-4-5", "anthropic", "chat"): {0.000002, 0.00001},
+		makeKey("claude-opus-4-8", "anthropic", "chat"):  {0.00001, 0.00005},
+	} {
+		row := store.pricingData[key]
+		row.InputCostPerTokenPriority, row.OutputCostPerTokenPriority = bifrost.Ptr(rates[0]), bifrost.Ptr(rates[1])
+		store.pricingData[key] = row
+	}
+	result.ResponsesResponse.ServiceTier = schemas.Ptr(schemas.BifrostServiceTierPriority)
+
+	const executorAtPriority = 1000*0.000002 + 500*0.00001
+	const advisorAtStandard = 2000*0.000005 + 1000*0.000025
+	assert.InDelta(t, executorAtPriority+advisorAtStandard, store.CalculateCost(result, nil), 1e-12)
+}
+
+// A Responses stream cut after message_delta is billed from a bare usage (BifrostError BilledUsage),
+// which must price the advisor passes that delta reported, like the response path does.
+func TestCalculateCostForUsage_AnthropicAdvisorIterations(t *testing.T) {
+	const executorCost = 1000*0.000001 + 500*0.000005
+	store, _ := advisorCostFixture(t, "responses", "")
+	advisorPass := schemas.ResponsesResponseUsage{Type: schemas.Ptr("advisor_message"), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: 2000, OutputTokens: 1000}
+	executorPass := schemas.ResponsesResponseUsage{Type: schemas.Ptr("message"), InputTokens: 1000, OutputTokens: 500}
+	usage := func(iterations ...schemas.ResponsesResponseUsage) *schemas.BifrostLLMUsage {
+		return &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500, Iterations: iterations}
+	}
+	for _, requestType := range []schemas.RequestType{schemas.ResponsesStreamRequest, schemas.ResponsesRequest} {
+		t.Run(string(requestType)+": advisor pass priced at the advisor rate", func(t *testing.T) {
+			got := store.CalculateCostForUsage(usage(executorPass, advisorPass), schemas.Anthropic, "claude-haiku-4-5", requestType, nil)
+			assert.InDelta(t, executorCost+2000*0.000005+1000*0.000025, got, 1e-12)
+		})
+		t.Run(string(requestType)+": executor-only iterations are not counted twice", func(t *testing.T) {
+			got := store.CalculateCostForUsage(usage(executorPass), schemas.Anthropic, "claude-haiku-4-5", requestType, nil)
+			assert.InDelta(t, executorCost, got, 1e-12)
+		})
+	}
+}
+
+func BenchmarkCalculateCostAdvisorIterations(b *testing.B) {
+
+	cases := []struct{ name, iterations string }{
+		{"no_iterations", ""},
+		{"advisor_pass", `,"iterations":[{"type":"message","input_tokens":1000,"output_tokens":500},{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`},
+	}
+	for _, tc := range cases {
+		store, result := advisorCostFixture(b, "responses", tc.iterations)
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = store.CalculateCost(result, nil)
+			}
+		})
+		// The cancelled-stream path prices the same usage from BilledUsage.
+		billed := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500, Iterations: result.ResponsesResponse.Usage.Iterations}
+		b.Run("bare_usage_"+tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = store.CalculateCostForUsage(billed, schemas.Anthropic, "claude-haiku-4-5", schemas.ResponsesStreamRequest, nil)
+			}
+		})
+	}
 }
 
 // chatPricing returns a TableModelPricing with the given per-token rates.

@@ -4200,6 +4200,7 @@ func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schem
 		costCopy := *usage.Cost
 		usageCopy.Cost = &costCopy
 	}
+	usageCopy.Iterations = slices.Clone(usage.Iterations)
 	bifrostErr.ExtraFields.BilledUsage = &usageCopy
 }
 

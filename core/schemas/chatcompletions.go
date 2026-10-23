@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -1986,7 +1987,8 @@ type BifrostLLMUsage struct {
 	// Carried here for the same reason as the two above: the bare-usage billing path
 	// (CalculateCostForUsage) never sees RoutingInfo, so without it a fallback-served
 	// turn is priced at the requested model's rates.
-	ServerSideFallbackModel *string `json:"-"`
+	ServerSideFallbackModel *string                  `json:"-"`
+	Iterations              []ResponsesResponseUsage `json:"-"` // Anthropic per-pass usage, so an interrupted stream still bills its advisor passes
 }
 
 // NormalizeReasoningTokens folds a top-level reasoning_tokens into CompletionTokensDetails, keeping a nested value if set.
@@ -2174,6 +2176,9 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 
 	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
 	merged.Cost = base.Cost.Add(add.Cost)
+	if len(base.Iterations)+len(add.Iterations) > 0 {
+		merged.Iterations = append(slices.Clone(base.Iterations), add.Iterations...)
+	}
 
 	return merged
 }

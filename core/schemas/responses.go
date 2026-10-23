@@ -495,9 +495,11 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 		}
 	}
 
-	// Usage - ensure token details exist
-	result.Usage = resp.Usage
-	if result.Usage != nil {
+	// Usage - ensure token details exist. Shaped on a copy: governance prices the caller's
+	// response concurrently, and its iterations carry the advisor passes.
+	if resp.Usage != nil {
+		usage := *resp.Usage
+		result.Usage = &usage
 		result.Usage.Iterations = nil
 		result.Usage.Type = nil
 		if result.Usage.InputTokensDetails == nil {
