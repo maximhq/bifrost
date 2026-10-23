@@ -5,17 +5,22 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -437,6 +442,283 @@ type mockHandlerStore struct {
 type mockCustomProvider struct {
 	base        schemas.ModelProvider
 	passthrough bool
+}
+
+const bedrockMistralInvokeModel = "mistral.mistral-large-3-675b-instruct"
+const bedrockMistralInvokeBody = `{"max_tokens":256,"temperature":0,"tool_choice":"auto","messages":[{"role":"user","content":"What is the weather in San Francisco? Use the tool."}],"tools":[{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"location":{"type":"string"},"unit":{"type":"string"}},"required":["location"]}}}]}`
+
+// A real Bedrock provider pointed at a local TLS endpoint: no provider replacement,
+// short-circuit plugin, or AWS credentials are needed to exercise the complete route.
+type bedrockInvokeTestAccount struct {
+	host string
+	ca   string
+}
+
+func (bedrockInvokeTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Bedrock}, nil
+}
+func (a bedrockInvokeTestAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "invoke-test", Weight: 1, Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("test-token"),
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{Region: schemas.NewSecretVar("us-west-2"),
+			Endpoints: &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(a.host)}}}}, nil
+}
+func (a bedrockInvokeTestAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	nc.CACertPEM = schemas.NewSecretVar(a.ca)
+	nc.AllowPrivateNetwork = true
+	nc.MaxRetries = 0
+	nc.DefaultRequestTimeoutInSeconds = 5
+	return &schemas.ProviderConfig{NetworkConfig: nc,
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4}}, nil
+}
+
+func newBedrockInvokeHTTPTestServer(t *testing.T, handler http.HandlerFunc) string {
+	t.Helper()
+	upstream := httptest.NewTLSServer(handler)
+	t.Cleanup(upstream.Close)
+	ca := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: upstream.Certificate().Raw}))
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: bedrockInvokeTestAccount{host: strings.TrimPrefix(upstream.URL, "https://"), ca: ca}, Logger: bifrost.NewNoOpLogger(),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { client.Shutdown() })
+	r := router.New()
+	NewBedrockRouter(client, &mockHandlerStore{}, nil, bifrost.NewNoOpLogger()).RegisterRoutes(r)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := &fasthttp.Server{Handler: r.Handler}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Shutdown() })
+	return "http://" + listener.Addr().String()
+}
+
+func TestBedrockMistralInvokeHTTP(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			var hits atomic.Int32
+			requests := make(chan []byte, 10)
+			base := newBedrockInvokeHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, err.Error(), 500)
+					return
+				}
+				requests <- body
+				wantPath := "/model/" + bedrockMistralInvokeModel + "/invoke"
+				if stream {
+					wantPath += "-with-response-stream"
+				}
+				if r.URL.Path != wantPath {
+					w.WriteHeader(400)
+					_, _ = io.WriteString(w, `{"__type":"ValidationException","message":"expected native Invoke route"}`)
+					return
+				}
+				if !strings.Contains(string(body), `"function"`) || gjson.GetBytes(body, "tools.0.function.name").String() != "get_weather" {
+					http.Error(w, "native tools missing", 400)
+					return
+				}
+				if r.Header.Get(bedrock.GuardrailIdentifierHeader) != "gr-test" || r.Header.Get(bedrock.GuardrailVersionHeader) != "1" {
+					http.Error(w, "guardrail headers missing", 400)
+					return
+				}
+				none := gjson.GetBytes(body, "tool_choice").String() == "none"
+				w.Header().Set("x-amzn-requestid", "invoke-request")
+				if stream {
+					w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+					encoder := eventstream.NewEncoder()
+					chunks := []string{
+						`{"id":"chatcmpl-test","object":"chat.completion.chunk","model":"` + bedrockMistralInvokeModel + `","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call12345","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}`,
+						`{"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"location\":\"SF\"}"}}]}}]}`,
+						`{"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}`,
+					}
+					if none {
+						chunks = []string{
+							`{"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"sunny"}}]}`,
+							`{"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}`,
+						}
+					}
+					chunks[len(chunks)-1] = strings.TrimSuffix(chunks[len(chunks)-1], "}") + `,"amazon-bedrock-guardrailAction":"NONE","amazon-bedrock-trace":{"guardrail":{"inputAssessment":{}}}}`
+					for _, chunk := range chunks {
+						payload, _ := sonic.Marshal(bedrock.BedrockInvokeStreamChunkEvent{Bytes: []byte(chunk)})
+						_ = encoder.Encode(w, eventstream.Message{Headers: eventstream.Headers{
+							{Name: ":message-type", Value: eventstream.StringValue("event")},
+							{Name: ":event-type", Value: eventstream.StringValue("chunk")},
+						}, Payload: payload})
+					}
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if none {
+					_, _ = io.WriteString(w, `{"object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"sunny"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20},"amazon-bedrock-guardrailAction":"NONE","amazon-bedrock-trace":{"guardrail":{"inputAssessment":{}}}}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"id":"chatcmpl-test","object":"chat.completion","model":"`+bedrockMistralInvokeModel+`","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call12345","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"SF\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}`)
+			})
+			path := "/bedrock/model/" + bedrockMistralInvokeModel + "/invoke"
+			if stream {
+				path += "-with-response-stream"
+			}
+			httpClient := &http.Client{Timeout: 10 * time.Second}
+			for _, choice := range []string{"auto", "any", "none"} {
+				body := strings.Replace(bedrockMistralInvokeBody, `"tool_choice":"auto"`, `"tool_choice":"`+choice+`"`, 1)
+				httpRequest, err := http.NewRequest(http.MethodPost, base+path, strings.NewReader(body))
+				require.NoError(t, err)
+				httpRequest.Header.Set("Content-Type", "application/json")
+				httpRequest.Header.Set(bedrock.GuardrailIdentifierHeader, "gr-test")
+				httpRequest.Header.Set(bedrock.GuardrailVersionHeader, "1")
+				resp, err := httpClient.Do(httpRequest)
+				require.NoError(t, err)
+				wire, err := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				require.NoError(t, err)
+				require.Equal(t, 200, resp.StatusCode, "%s: %s", choice, wire)
+				upstreamBody := <-requests
+				assert.Equal(t, choice, gjson.GetBytes(upstreamBody, "tool_choice").String())
+				assert.Equal(t, int64(256), gjson.GetBytes(upstreamBody, "max_tokens").Int())
+				assert.False(t, gjson.GetBytes(upstreamBody, "model").Exists())
+				assert.False(t, gjson.GetBytes(upstreamBody, "stream_options").Exists())
+				assert.False(t, gjson.GetBytes(upstreamBody, "max_completion_tokens").Exists())
+				schema := gjson.GetBytes(upstreamBody, "tools.0.function.parameters").Raw
+				assert.Less(t, strings.Index(schema, `"location"`), strings.Index(schema, `"unit"`), "property order must survive")
+				if !stream {
+					if choice == "none" {
+						assert.Equal(t, "stop", gjson.GetBytes(wire, "choices.0.finish_reason").String())
+						assert.False(t, gjson.GetBytes(wire, "choices.0.message.tool_calls").Exists())
+					} else {
+						assert.Equal(t, "tool_calls", gjson.GetBytes(wire, "choices.0.finish_reason").String())
+						assert.Equal(t, "get_weather", gjson.GetBytes(wire, "choices.0.message.tool_calls.0.function.name").String())
+					}
+					if choice == "none" {
+						assert.Equal(t, "NONE", gjson.GetBytes(wire, "amazon-bedrock-guardrailAction").String())
+						assert.True(t, gjson.GetBytes(wire, "amazon-bedrock-trace.guardrail").Exists())
+					}
+					assert.Equal(t, int64(20), gjson.GetBytes(wire, "usage.total_tokens").Int())
+					assert.False(t, gjson.GetBytes(wire, "type").Exists())
+				} else {
+					decoder := eventstream.NewDecoder()
+					reader := bytes.NewReader(wire)
+					var args strings.Builder
+					var finish string
+					var usage int64
+					var toolName string
+					var action string
+					for reader.Len() > 0 {
+						frame, err := decoder.Decode(reader, nil)
+						require.NoError(t, err)
+						require.Equal(t, "chunk", frame.Headers.Get(":event-type").String())
+						var chunk bedrock.BedrockInvokeStreamChunkEvent
+						require.NoError(t, sonic.Unmarshal(frame.Payload, &chunk))
+						if value := gjson.GetBytes(chunk.Bytes, "amazon-bedrock-guardrailAction").String(); value != "" {
+							action = value
+						}
+						assert.Equal(t, "chat.completion.chunk", gjson.GetBytes(chunk.Bytes, "object").String())
+						args.WriteString(gjson.GetBytes(chunk.Bytes, "choices.0.delta.tool_calls.0.function.arguments").String())
+						if name := gjson.GetBytes(chunk.Bytes, "choices.0.delta.tool_calls.0.function.name").String(); name != "" {
+							toolName = name
+						}
+						if reason := gjson.GetBytes(chunk.Bytes, "choices.0.finish_reason").String(); reason != "" {
+							finish = reason
+						}
+						if count := gjson.GetBytes(chunk.Bytes, "usage.total_tokens").Int(); count > 0 {
+							usage = count
+						}
+					}
+					if choice == "none" {
+						assert.Empty(t, toolName)
+						assert.Empty(t, args.String())
+						assert.Equal(t, "stop", finish)
+					} else {
+						assert.Equal(t, "get_weather", toolName)
+						assert.JSONEq(t, `{"location":"SF"}`, args.String())
+						assert.Equal(t, "tool_calls", finish)
+					}
+					assert.Equal(t, "NONE", action)
+					assert.Equal(t, int64(20), usage)
+				}
+			}
+			// Replay remains native, including when none forbids another tool call.
+			replay := `{"tool_choice":"none","tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}],"messages":[{"role":"system","content":"Weather assistant"},{"role":"user","content":"Weather?"},{"role":"assistant","tool_calls":[{"id":"call12345","function":{"name":"get_weather","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call12345","content":"sunny"}]}`
+			httpRequest, err := http.NewRequest(http.MethodPost, base+path, strings.NewReader(replay))
+			require.NoError(t, err)
+			httpRequest.Header.Set("Content-Type", "application/json")
+			httpRequest.Header.Set(bedrock.GuardrailIdentifierHeader, "gr-test")
+			httpRequest.Header.Set(bedrock.GuardrailVersionHeader, "1")
+			resp, err := httpClient.Do(httpRequest)
+			require.NoError(t, err)
+			wire, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			require.NoError(t, err)
+			require.Equal(t, 200, resp.StatusCode, "%s", wire)
+			replayed := <-requests
+			assert.Equal(t, "system", gjson.GetBytes(replayed, "messages.0.role").String())
+			assert.Equal(t, "call12345", gjson.GetBytes(replayed, "messages.2.tool_calls.0.id").String())
+			assert.Equal(t, "tool", gjson.GetBytes(replayed, "messages.3.role").String())
+			assert.Equal(t, "call12345", gjson.GetBytes(replayed, "messages.3.tool_call_id").String())
+			assert.Equal(t, int32(4), hits.Load())
+		})
+	}
+}
+
+func TestBedrockMistralInvokeHTTPValidation(t *testing.T) {
+	var hits atomic.Int32
+	base := newBedrockInvokeHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) { hits.Add(1); http.Error(w, "must not reach AWS", 500) })
+	for _, route := range []string{"invoke", "invoke-with-response-stream"} {
+		for _, tc := range []struct{ body, want string }{
+			{`{"messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"parameters":{}}}]}`, "tools[0].function.name"},
+			{`{"messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":" "}}]}`, "tools[0].function.name"},
+			{`{"messages":[{"role":"user","content":"x"}],"tools":[{"name":"get_weather","input_schema":{}}]}`, "tools[0]"},
+			{`{"messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":null}]}`, "tools[0].function"},
+			{`{"messages":[{"role":"user","content":"x"}],"tool_choice":"invalid"}`, "tool_choice"},
+			{`{"messages":[{"role":"user","content":"x"}],"tool_choice":"any"}`, "tool_choice"},
+			{`{"messages":[{"role":"tool","content":"sunny"}]}`, "tool_call_id"},
+		} {
+			t.Run(route+"/"+tc.want+"/"+tc.body, func(t *testing.T) {
+				resp, err := http.Post(base+"/bedrock/model/"+bedrockMistralInvokeModel+"/"+route, "application/json", strings.NewReader(tc.body))
+				require.NoError(t, err)
+				wire, err := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				require.NoError(t, err)
+				assert.Equal(t, 400, resp.StatusCode, "%s", wire)
+				assert.Equal(t, "ValidationException", gjson.GetBytes(wire, "__type").String())
+				assert.Contains(t, gjson.GetBytes(wire, "message").String(), tc.want)
+			})
+		}
+	}
+	assert.Zero(t, hits.Load())
+}
+
+func BenchmarkBedrockInvokeRequestConversion(b *testing.B) {
+	for _, tc := range []struct{ name, model, body string }{
+		{"anthropic_no_tools", "anthropic.claude-sonnet-4-6", `{"messages":[{"role":"user","content":"Hello"}],"max_tokens":256}`},
+		{"anthropic_tools", "anthropic.claude-sonnet-4-6", `{"messages":[{"role":"user","content":"Hello"}],"tools":[{"name":"get_weather","input_schema":{"type":"object"}}],"tool_choice":{"type":"auto"}}`},
+		{"nova", "amazon.nova-lite-v1:0", `{"messages":[{"role":"user","content":[{"text":"Hello"}]}]}`},
+		{"mistral_tools", bedrockMistralInvokeModel, bedrockMistralInvokeBody},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			route := createBedrockInvokeRouteConfig("/bedrock", nil)
+			httpCtx := &fasthttp.RequestCtx{}
+			httpCtx.SetUserValue("modelId", tc.model)
+			httpCtx.Request.SetBodyString(tc.body)
+			httpCtx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, route.GetHTTPRequestType(httpCtx))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, route.GetHTTPRequestType(httpCtx))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				req := route.GetRequestTypeInstance(httpCtx)
+				if err := sonic.Unmarshal([]byte(tc.body), req); err != nil {
+					b.Fatal(err)
+				}
+				if err := route.PreCallback(httpCtx, ctx, req); err != nil {
+					b.Fatal(err)
+				}
+				if _, err := route.RequestConverter(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
 
 func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
