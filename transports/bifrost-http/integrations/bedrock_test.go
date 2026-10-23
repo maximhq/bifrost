@@ -36,9 +36,14 @@ import (
 func TestBedrockInvokeMistralWire(t *testing.T) {
 	const model = "mistral.mistral-large-3-675b-instruct"
 	for _, prefix := range []string{"/bedrock", "/langchain", "/litellm", "/pydanticai", "/cursor"} {
-		for _, stop := range []string{"end_turn", "max_tokens", "tool_use"} {
+		for _, scenario := range []struct {
+			name       string
+			stop       string
+			mixedTools bool
+		}{{"end_turn", "end_turn", false}, {"max_tokens", "max_tokens", false}, {"tool_use", "tool_use", false}, {"mixed tools", "tool_use", true}} {
+			stop := scenario.stop
 			for _, suffix := range []string{"invoke", "invoke-with-response-stream"} {
-				t.Run(prefix+"/"+stop+"/"+suffix, func(t *testing.T) {
+				t.Run(prefix+"/"+scenario.name+"/"+suffix, func(t *testing.T) {
 					captured := make(chan *http.Request, 1)
 					upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						body, err := io.ReadAll(r.Body)
@@ -48,12 +53,19 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 						}
 						assert.Equal(t, int64(256), gjson.GetBytes(body, "inferenceConfig.maxTokens").Int())
 						assert.Equal(t, "Hello", gjson.GetBytes(body, "messages.0.content.0.text").String())
+						if stop == "tool_use" {
+							assert.Equal(t, "weather", gjson.GetBytes(body, "toolConfig.tools.0.toolSpec.name").String())
+							assert.Equal(t, "time", gjson.GetBytes(body, "toolConfig.tools.1.toolSpec.name").String())
+						}
 						captured <- r
 						content := `[{"text":"hello"}]`
 						delta := `{"text":"hello"}`
 						if stop == "tool_use" {
 							content = `[{"toolUse":{"toolUseId":"call_1","name":"weather","input":{}}}]`
 							delta = `{"toolUse":{"input":"{}"}}`
+							if scenario.mixedTools {
+								content = `[{"text":"checking"},{"toolUse":{"toolUseId":"call_1","name":"weather","input":{}}},{"text":"and time"},{"toolUse":{"toolUseId":"call_2","name":"time","input":{}}}]`
+							}
 						}
 						if !strings.HasSuffix(r.URL.Path, "/converse-stream") {
 							w.Header().Set("Content-Type", "application/json")
@@ -66,6 +78,23 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 							frames = append(frames, [2]string{"contentBlockStart", `{"contentBlockIndex":0,"start":{"toolUse":{"toolUseId":"call_1","name":"weather"}}}`})
 						}
 						frames = append(frames, [2]string{"contentBlockDelta", `{"contentBlockIndex":0,"delta":` + delta + `}`}, [2]string{"contentBlockStop", `{"contentBlockIndex":0}`}, [2]string{"messageStop", `{"stopReason":"` + stop + `"}`}, [2]string{"metadata", `{"usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`})
+						if scenario.mixedTools {
+							frames = [][2]string{
+								{"messageStart", `{"role":"assistant"}`},
+								{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"checking"}}`},
+								{"contentBlockStop", `{"contentBlockIndex":0}`},
+								{"contentBlockStart", `{"contentBlockIndex":1,"start":{"toolUse":{"toolUseId":"call_1","name":"weather"}}}`},
+								{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{}"}}}`},
+								{"contentBlockStop", `{"contentBlockIndex":1}`},
+								{"contentBlockDelta", `{"contentBlockIndex":2,"delta":{"text":"and time"}}`},
+								{"contentBlockStop", `{"contentBlockIndex":2}`},
+								{"contentBlockStart", `{"contentBlockIndex":3,"start":{"toolUse":{"toolUseId":"call_2","name":"time"}}}`},
+								{"contentBlockDelta", `{"contentBlockIndex":3,"delta":{"toolUse":{"input":"{}"}}}`},
+								{"contentBlockStop", `{"contentBlockIndex":3}`},
+								{"messageStop", `{"stopReason":"tool_use"}`},
+								{"metadata", `{"usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`},
+							}
+						}
 						for _, frame := range frames {
 							err := eventstream.NewEncoder().Encode(w, eventstream.Message{Headers: eventstream.Headers{{Name: ":message-type", Value: eventstream.StringValue("event")}, {Name: ":event-type", Value: eventstream.StringValue(frame[0])}}, Payload: []byte(frame[1])})
 							if err != nil {
@@ -95,6 +124,11 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 					httpCtx := &fasthttp.RequestCtx{}
 					httpCtx.SetUserValue("modelId", model)
 					httpCtx.Request.SetBodyString(`{"max_tokens":256,"temperature":0,"messages":[{"role":"user","content":"Hello"}]}`)
+					if stop == "tool_use" {
+						// Use the existing Converse-shaped toolConfig compatibility input.
+						// Native tools[].function ingress is independently tracked in #8940.
+						httpCtx.Request.SetBodyString(`{"max_tokens":256,"temperature":0,"messages":[{"role":"user","content":"Hello"}],"toolConfig":{"tools":[{"toolSpec":{"name":"weather","description":"Get weather","inputSchema":{"json":{"type":"object","properties":{}}}}},{"toolSpec":{"name":"time","description":"Get time","inputSchema":{"json":{"type":"object","properties":{}}}}}]}}`)
+					}
 					typ := route.GetHTTPRequestType(httpCtx)
 					require.Equal(t, schemas.ResponsesRequest, typ)
 					ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, typ)
@@ -148,6 +182,24 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 						assert.False(t, gjson.GetBytes(raw, "type").Exists(), "%s", raw)
 						assert.False(t, gjson.GetBytes(raw, "extra_fields").Exists())
 						require.Len(t, gjson.GetBytes(raw, "choices").Array(), 1)
+					}
+
+					if scenario.mixedTools {
+						if suffix == "invoke" {
+							calls := gjson.GetBytes(payloads[0], "choices.0.message.tool_calls").Array()
+							require.Len(t, calls, 2)
+							assert.Equal(t, "call_1", calls[0].Get("id").String())
+							assert.Equal(t, "call_2", calls[1].Get("id").String())
+							assert.Equal(t, "checkingand time", gjson.GetBytes(payloads[0], "choices.0.message.content").String())
+						} else {
+							var indexes []int64
+							for _, raw := range payloads {
+								for _, call := range gjson.GetBytes(raw, "choices.0.delta.tool_calls").Array() {
+									indexes = append(indexes, call.Get("index").Int())
+								}
+							}
+							assert.Equal(t, []int64{0, 0, 1, 1}, indexes)
+						}
 					}
 					last := payloads[len(payloads)-1]
 					finish := map[string]string{"end_turn": "stop", "max_tokens": "length", "tool_use": "tool_calls"}[stop]
