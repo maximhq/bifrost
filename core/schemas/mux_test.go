@@ -1981,6 +1981,9 @@ func TestNormalizedUsageCoversEveryUsageBearingFamily(t *testing.T) {
 		"TranscriptionStreamResponse":   "accumulated into TranscriptionResponse",
 		"ImageGenerationStreamResponse": "accumulated into ImageGenerationResponse",
 		"VideoGenerationResponse":       "never wired to logging or spans",
+		"BatchCreateResponse":           "deferred usage is settled by the provider-job engine",
+		"BatchRetrieveResponse":         "polling observes a batch; it does not consume its tokens again",
+		"BatchResultsResponse":          "result retrieval observes already-settled batch usage",
 	}
 
 	rt := reflect.TypeOf(BifrostResponse{})
@@ -2355,5 +2358,20 @@ func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
 	}
 	if got[0].Role != ChatMessageRoleUser {
 		t.Fatalf("expected the surviving message to be the user turn, got role %q", got[0].Role)
+	}
+}
+
+// A batch's usage is a snapshot of deferred provider work, not usage of this
+// metadata call. Generic request billing must leave it to the settlement engine.
+func TestNormalizedBatchUsageRemainsDeferred(t *testing.T) {
+	usage := &BatchUsage{BifrostLLMUsage: BifrostLLMUsage{TotalTokens: 100, Cost: &BifrostCost{TotalCost: 1}}}
+	for _, response := range []*BifrostResponse{
+		{BatchCreateResponse: &BifrostBatchCreateResponse{Usage: usage}},
+		{BatchRetrieveResponse: &BifrostBatchRetrieveResponse{Usage: usage}},
+		{BatchResultsResponse: &BifrostBatchResultsResponse{Usage: usage}},
+	} {
+		if response.NormalizedUsage() != nil {
+			t.Fatal("batch metadata must not be charged as another inference request")
+		}
 	}
 }
