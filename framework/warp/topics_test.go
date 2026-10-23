@@ -332,6 +332,7 @@ func TestWarpListTopicsToolReturnsSortedTopics(t *testing.T) {
 	require.Contains(t, out["links"], "one example request")
 	require.Contains(t, out["counts"], "count requests")
 	require.Contains(t, out["cannot_answer"], "a different time range")
+	require.Contains(t, out["cannot_answer"], "one query_logs sample", "a scoped survey that reached list_topics is pointed at the sample, not declined")
 }
 
 func TestWarpListTopicsToolHintsWhenNothingComputed(t *testing.T) {
@@ -372,6 +373,26 @@ func TestWarpSystemPromptSaysWhatTopicsCannotAnswer(t *testing.T) {
 	}
 	require.Contains(t, content, "Leave a topic's name unlinked")
 	require.Contains(t, content, `say "requests" when you report them`)
+}
+
+// Topics cover the whole deployment over the last run's window, so only an
+// unscoped survey can be answered from them. A survey scoped to a person, team
+// or time range ("what kinds of tasks was Rohan doing") was sent to list_topics
+// first and then told not to sample, leaving it with no answer at all. It takes
+// the bounded query_logs sample, with the sample sentence, in both setups.
+func TestWarpSystemPromptSendsScopedSurveysToTheSample(t *testing.T) {
+	for _, semantic := range []bool{true, false} {
+		content := systemInstructions(&schemas.WarpConfig{}, semantic)
+		require.Contains(t, content, "An unscoped survey")
+		require.Contains(t, content, "A survey scoped to a user, team, customer, model, app or time range never goes to list_topics")
+		require.Contains(t, content, "filled in from returned and total_matching")
+		// query_usage_by has no model dimension and refuses one, so the sample's
+		// shape comes from the tool that owns the per-model split.
+		require.Contains(t, content, "query_model_performance for the models in it")
+		require.NotContains(t, content, "query_usage_by with dimension model")
+	}
+	require.Contains(t, SemanticSearchGuidance, "An unscoped survey question goes to list_topics")
+	require.Contains(t, SemanticSearchGuidance, "A scoped survey")
 }
 
 // responsesInputText flattens a request's input for assertions.

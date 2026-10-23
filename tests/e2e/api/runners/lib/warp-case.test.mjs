@@ -146,7 +146,7 @@ test("topic cases allow exactly one list_topics call and no other tool", () => {
   const { pm } = fakePm();
   const lib = createWarpLib(pm);
   const toolFailure = /tool calls, want at most|no use for|did not call/;
-  for (const id of ["topics-overview", "topics-past-hour", "topics-trend", "topics-drill-down", "topics-people"]) {
+  for (const id of ["topics-overview", "topics-trend", "topics-drill-down", "topics-people"]) {
     const { expect } = caseFromCollection(id);
     const tools = (calls) => lib.evaluate(answered("x", calls), expect).filter((f) => toolFailure.test(f));
     assert.deepStrictEqual(tools(["list_topics"]), [], `${id}: one list_topics call`);
@@ -154,6 +154,36 @@ test("topic cases allow exactly one list_topics call and no other tool", () => {
     assert.notDeepStrictEqual(tools(["list_topics", { name: "query_logs", failed: true }]), [], `${id}: a failed query_logs call`);
     assert.notDeepStrictEqual(tools([]), [], `${id}: no list_topics call`);
   }
+});
+
+// A survey scoped to a window or a person is answered from one query_logs
+// sample, never from list_topics, and says it is a sample.
+test("scoped survey cases take the sample, say so, and never call list_topics", () => {
+  const { pm } = fakePm();
+  const lib = createWarpLib(pm);
+  const sample = { name: "query_logs", arguments: '{"include_content": true, "limit": 25}' };
+  const userSample = { name: "query_logs", arguments: '{"include_content": true, "limit": 25, "filters": {"user_ids": ["user-alex-rivera"]}}' };
+  const disclaimer = "Mostly debugging. This is based on a sample of 25 of 1,204 requests and is not representative of the entire traffic.";
+  for (const id of ["content-themes", "content-themes-user"]) {
+    const { expect } = caseFromCollection(id);
+    // A user survey's sample has to be that user's requests; the window survey takes any.
+    const ok = id === "content-themes-user" ? userSample : sample;
+    assert.deepStrictEqual(lib.evaluate(answered(disclaimer, ["describe_filter_space", ok]), expect), [], `${id}: one sample with the sentence`);
+    // The model split comes from query_model_performance, which the cases allow.
+    assert.deepStrictEqual(lib.evaluate(answered(disclaimer, [ok, "query_model_performance"]), expect), [], `${id}: a per-model split beside the sample`);
+    assert.notDeepStrictEqual(lib.evaluate(answered(disclaimer, ["list_topics", ok]), expect), [], `${id}: list_topics`);
+    assert.notDeepStrictEqual(lib.evaluate(answered("Mostly debugging.", [ok]), expect), [], `${id}: no sample sentence`);
+    assert.notDeepStrictEqual(lib.evaluate(answered(disclaimer, [{ name: "query_logs", arguments: '{"limit": 25}' }]), expect), [], `${id}: no content`);
+  }
+  // On the same call as the content: a sample of everyone, or a user filter on
+  // a different call, does not describe what this user was doing.
+  const { expect } = caseFromCollection("content-themes-user");
+  assert.notDeepStrictEqual(lib.evaluate(answered(disclaimer, [sample]), expect), [], "content-themes-user: a sample of everyone");
+  assert.notDeepStrictEqual(
+    lib.evaluate(answered(disclaimer, [sample, { name: "query_logs", arguments: '{"limit": 5, "filters": {"user_ids": ["user-alex-rivera"]}}' }]), expect),
+    [],
+    "content-themes-user: the user filter on a different call from the content",
+  );
 });
 
 test("noDataTools allows discovery calls and rejects data queries", () => {

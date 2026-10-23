@@ -422,7 +422,8 @@ func listTopicsTool() Tool {
 				out["scope"] = "every indexed request in the topic window, across all users, teams and customers"
 				out["cannot_answer"] = "These topics are one snapshot, over the window above. There are no topics for a different time range, " +
 					"for one team, customer, user, model or app, no trend for a topic, no list of every request in a topic, and no cost, latency or errors per topic. " +
-					"Asked for one of those, say it is not available yet; do not approximate it from other tools."
+					"A survey scoped to a time range, team, customer, user, model or app is answered from one query_logs sample instead, as the prompt describes. " +
+					"Asked for any other of those, say it is not available yet; do not approximate it from other tools."
 				out["counts"] = "size, share and total_clustered count requests. Every model call is one request, so a chat of five turns " +
 					"or an agent making five calls is five. Say requests, not conversations or people."
 				out["links"] = "Each entry of example_links opens one example request from its topic, not the topic. " +
