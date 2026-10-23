@@ -21558,6 +21558,21 @@ func TestRemoveProvider_NotFound(t *testing.T) {
 	}
 }
 
+func TestRemoveProvider_MissingDBRowClearsMemory(t *testing.T) {
+	initTestLogger()
+	store := &mockConfigStoreDeleteProvider{
+		MockConfigStore:   *NewMockConfigStore(),
+		deleteProviderErr: configstore.ErrNotFound,
+	}
+	cfg := &Config{ConfigStore: store, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{"removed-provider": {}}}
+	if err := cfg.RemoveProvider(context.Background(), "removed-provider"); err != nil {
+		t.Fatalf("already absent persistence should be an idempotent removal: %v", err)
+	}
+	if _, exists := cfg.Providers["removed-provider"]; exists {
+		t.Error("missing database row left stale in-memory configuration")
+	}
+}
+
 func TestRemoveProvider_DBError_DoesNotRemoveFromMemory(t *testing.T) {
 	initTestLogger()
 	mockStore := &mockConfigStoreDeleteProvider{
