@@ -551,6 +551,7 @@ func TestWarpLogsLinkPerFilterArgument(t *testing.T) {
 		"user_ids":              {arg: []any{"u-1", "u-2"}, want: "u-1,u-2"},
 		"business_unit_ids":     {arg: []any{"bu-1"}, want: "bu-1"},
 		"project_ids":           {arg: []any{"proj-1"}, want: "proj-1"},
+		"topic_ids":             {arg: []any{"topic-1"}, want: "topic-1"},
 		"apps":                  {arg: []any{"support-widget"}, want: "support-widget"},
 		"min_latency":           {arg: float64(400), want: "400"},
 		"max_latency":           {arg: 1500.5, want: "1500.5"},
@@ -689,10 +690,10 @@ func TestWarpEveryFilteredToolLinksItsFilters(t *testing.T) {
 			require.NotContains(t, cases, tool.name)
 			continue
 		}
-		// list_topics counts the window's requests by topic, and the Logs page
-		// cannot filter by topic: a link to the window alone would open a
-		// different set than any of its rows counts. Its own test pins that
-		// it offers example links instead.
+		// list_topics counts the window's requests by topic, and a link to the
+		// window alone would open every request, indexed or not - a different
+		// set than any of its rows counts. Each row links to its own topic's
+		// requests instead, which its own test pins.
 		if tool.name == "list_topics" {
 			require.NotContains(t, cases, tool.name)
 			continue

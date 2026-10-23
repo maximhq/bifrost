@@ -1109,6 +1109,9 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.ErrorTypes) == 0 && len(f.ErrorCodes) == 0 && len(f.StatusCodes) == 0 &&
 		len(f.GuardrailOutcomes) == 0 &&
 		len(f.UserAgents) == 0 &&
+		// A topic is a membership test against the assignments table, which
+		// the hourly view does not carry.
+		len(f.TopicIDs) == 0 &&
 		len(f.TeamIDs) == 0 &&
 		len(f.BusinessUnitIDs) == 0 &&
 		len(f.CustomerIDs) == 0 &&

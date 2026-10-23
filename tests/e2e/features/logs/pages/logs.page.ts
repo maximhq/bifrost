@@ -179,6 +179,31 @@ export class LogsPage extends BasePage {
     await waitForNetworkIdle(this.page)
   }
 
+  /**
+   * Filter logs by a Warp topic. Topics are keyed by id and shown by name:
+   * the sidebar offers only what the server listed, so there is no
+   * custom-entry flow. The sidebar renders open at desktop widths, so the
+   * "Topics" toggle is located first and the sidebar is only expanded when
+   * the toggle is not visible.
+   */
+  async filterByTopic(id: string): Promise<void> {
+    await this.dismissToasts()
+
+    const toggle = this.page.locator('[data-testid="topics-filter-toggle"]')
+    if (!(await toggle.isVisible().catch(() => false))) {
+      await this.filtersButton.first().waitFor({ state: 'visible' })
+      await this.filtersButton.first().click()
+      await toggle.waitFor({ state: 'visible', timeout: 5000 })
+    }
+    await toggle.click()
+
+    const checkbox = this.page.locator(`[data-testid="topics-filter-checkbox-${id}"]`)
+    await checkbox.waitFor({ state: 'visible', timeout: 5000 })
+    await checkbox.click()
+
+    await waitForNetworkIdle(this.page)
+  }
+
   async filterByStatus(status: 'success' | 'error' | 'processing'): Promise<void> {
     await this.dismissToasts()
     // Status is a checkbox group in the filter sidebar.

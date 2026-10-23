@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -48,6 +49,52 @@ type LoggingHandler struct {
 	// in which case the recalculate-cost endpoints return 503.
 	sidekiqRunner *sidekiq.Runner
 	sidekiqStore  SidekiqJobStore
+
+	// topics lists Warp's topics for the topics filter dimension. Nil until
+	// SetTopicLister wires it, in which case the dimension is empty.
+	topics warp.TopicLister
+}
+
+// SetTopicLister wires the Warp topic reader the topics filter dimension
+// lists from.
+func (h *LoggingHandler) SetTopicLister(topics warp.TopicLister) {
+	h.topics = topics
+}
+
+// topicFilterWindow is how far back the topics filter dimension looks for a
+// topic with requests. Warp's upkeep retires a topic silent for this long, so
+// the window holds exactly the topics still in use.
+const topicFilterWindow = 30 * 24 * time.Hour
+
+// topicFilterData lists the topics a caller may filter the logs by: those
+// with a request they may see in the last month, by name, largest first,
+// narrowed to the ones whose name contains query. The reader narrows before it
+// applies limit, so a matching topic outside the largest few is still found.
+//
+// It reads through Warp's own topic reader rather than the topic rows, so a
+// restricted caller is offered only the topics their own requests fall under,
+// as Warp's list_topics shows them (see TopicReader.ListTopics).
+func topicFilterData(ctx context.Context, topics warp.TopicLister, limit int, query string) ([]logging.KeyPair, error) {
+	if topics == nil {
+		return []logging.KeyPair{}, nil
+	}
+	end := time.Now().UTC()
+	start := end.Add(-topicFilterWindow)
+	list, err := topics.ListTopics(ctx, warp.TopicQuery{
+		Filter: logstore.WarpTopicAssignmentFilter{StartTime: &start, EndTime: &end}, Limit: limit,
+		NameContains: strings.ToLower(strings.TrimSpace(query)),
+	})
+	if err != nil {
+		if errors.Is(err, warp.ErrUnavailable) {
+			return []logging.KeyPair{}, nil
+		}
+		return nil, err
+	}
+	pairs := make([]logging.KeyPair, 0, len(list.Topics))
+	for _, topic := range list.Topics {
+		pairs = append(pairs, logging.KeyPair{ID: topic.ID, Name: topic.Label})
+	}
+	return pairs, nil
 }
 
 // SidekiqJobStore is the narrow read surface the recalculate-cost endpoints need
@@ -196,6 +243,7 @@ const (
 	filterDimUsers          = "users"
 	filterDimBusinessUnits  = "business_units"
 	filterDimProjects       = "projects"
+	filterDimTopics         = "topics"
 	filterDimMetadataKeys   = "metadata_keys"
 )
 
@@ -212,7 +260,7 @@ var allFilterDimensions = []string{
 	filterDimModels, filterDimAliases, filterDimSelectedKeys, filterDimVirtualKeys,
 	filterDimRoutingRules, filterDimRoutingEngines, filterDimStopReasons, filterDimToolCallNames, filterDimApps,
 	filterDimUserAgents, filterDimTeams, filterDimCustomers, filterDimUsers,
-	filterDimBusinessUnits, filterDimProjects, filterDimMetadataKeys,
+	filterDimBusinessUnits, filterDimProjects, filterDimTopics, filterDimMetadataKeys,
 }
 
 var allMCPFilterDimensions = []string{
@@ -712,6 +760,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
 		filters.ProjectIDs = parseCommaSeparated(projectIDs)
 	}
+	parseTopicIDsFilter(ctx, filters)
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
@@ -1003,6 +1052,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
 		filters.ProjectIDs = parseCommaSeparated(projectIDs)
 	}
+	parseTopicIDsFilter(ctx, filters)
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
@@ -1252,6 +1302,13 @@ func parseGuardrailOutcomesFilter(ctx *fasthttp.RequestCtx, filters *logstore.Se
 	}
 }
 
+// parseTopicIDsFilter reads the Warp topics a query narrows to.
+func parseTopicIDsFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	if topicIDs := string(ctx.QueryArgs().Peek("topic_ids")); topicIDs != "" {
+		filters.TopicIDs = parseCommaSeparated(topicIDs)
+	}
+}
+
 // parseHistogramFilters extracts common filter parameters from query args
 func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	filters := &logstore.SearchFilters{}
@@ -1298,6 +1355,7 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
 		filters.ProjectIDs = parseCommaSeparated(projectIDs)
 	}
+	parseTopicIDsFilter(ctx, filters)
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
@@ -2132,6 +2190,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		users          []logging.KeyPair
 		businessUnits  []logging.KeyPair
 		projects       []logging.KeyPair
+		topics         []logging.KeyPair
 		metadataKeys   map[string][]string
 		mu             sync.Mutex
 	)
@@ -2321,6 +2380,18 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 			return nil
 		})
 	}
+	if _, ok := want[filterDimTopics]; ok {
+		g.Go(func() error {
+			result, err := topicFilterData(gCtx, h.topics, defaultFilterDataLimit, query)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			topics = result
+			mu.Unlock()
+			return nil
+		})
+	}
 	if _, ok := want[filterDimMetadataKeys]; ok {
 		g.Go(func() error {
 			result, err := h.logManager.GetAvailableMetadataKeys(gCtx, defaultFilterDataLimit, query)
@@ -2478,6 +2549,9 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	}
 	if _, ok := want[filterDimProjects]; ok {
 		payload[filterDimProjects] = projects
+	}
+	if _, ok := want[filterDimTopics]; ok {
+		payload[filterDimTopics] = topics
 	}
 	if _, ok := want[filterDimMetadataKeys]; ok {
 		if metadataKeys == nil {
