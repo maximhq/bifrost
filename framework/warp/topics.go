@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
 // Topic clusters.
@@ -997,12 +998,86 @@ func (s *Service) BuildTopicsJobMeta(ctx context.Context, start, end time.Time) 
 	if !end.After(start) {
 		return "", fmt.Errorf("%w: end_time must be after start_time", ErrInvalidConfig)
 	}
+	// A run seeds the topics for an embedding model, once. After that they
+	// are kept up to date as requests are indexed: each is filed under its
+	// topic, what matches none is discovered from the pool, and upkeep retires
+	// the stale and merges the alike. A second run would replace all of that
+	// with one window's clustering. Should upkeep ever retire every topic, the
+	// model is back to having none and can be seeded again.
+	signature := embeddingConfigSignature(config)
+	seeded, err := countSeededTopics(ctx, s.topicStore(), signature)
+	if err != nil {
+		return "", err
+	}
+	if seeded > 0 {
+		return "", fmt.Errorf("%w: %d topic(s) are kept up to date as requests are indexed", ErrTopicsAlreadyBuilt, seeded)
+	}
 	return marshalBackfillMeta(BackfillJobMeta{
 		StartTime:       start.UTC(),
 		EndTime:         end.UTC(),
-		ConfigSignature: embeddingConfigSignature(config),
+		ConfigSignature: signature,
 		Namespace:       config.EffectiveLogVectorStoreNamespace(),
 	})
+}
+
+// countSeededTopics counts the active topics an embedding model's requests are
+// filed under, which is what makes a seed run for it a replacement.
+func countSeededTopics(ctx context.Context, store logstore.WarpTopicStore, signature string) (int, error) {
+	seeded, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{
+		Kinds: []string{logstore.WarpTopicKindTopic}, Statuses: []string{logstore.WarpTopicStatusActive}, EmbeddingSignature: signature, OmitCentroids: true,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("read topics: %w", err)
+	}
+	return len(seeded), nil
+}
+
+// topicsIndexedProbePage is how many vectors HasIndexedRequests reads per page.
+const topicsIndexedProbePage = 100
+
+// HasIndexedRequests reports whether the configured namespace holds any of
+// Warp's log vectors, for the settings page to ask for a backfill before a
+// seed run that would have nothing to cluster.
+//
+// Small pages are read until one holds a Warp log vector or the namespace runs
+// out. A store that applies the filter answers on the first; one that does not
+// can fill a page with other entries, which is why warp_log is checked on what
+// comes back, as the topics run checks it, and the next page read. An error is
+// returned as one, not as "nothing indexed": a store that cannot say must not
+// lock the seed run away on a guess.
+func (s *Service) HasIndexedRequests(ctx context.Context) (bool, error) {
+	s.mu.RLock()
+	vectors := s.vectorStore
+	s.mu.RUnlock()
+	if vectors == nil {
+		return false, ErrNoVectorStore
+	}
+	config, err := s.Config(ctx)
+	if err != nil {
+		return false, err
+	}
+	namespace := config.EffectiveLogVectorStoreNamespace()
+	isLog := []vectorstore.Query{{Field: "warp_log", Operator: vectorstore.QueryOperatorEqual, Value: true}}
+	var cursor *string
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		results, next, err := vectors.GetAll(ctx, namespace, isLog, []string{"log_id", "warp_log"}, cursor, topicsIndexedProbePage)
+		if err != nil {
+			return false, fmt.Errorf("read log vectors: %w", err)
+		}
+		for _, result := range results {
+			if propertyBool(result.Properties["warp_log"]) {
+				return true, nil
+			}
+		}
+		// A cursor that does not move would read the same page forever.
+		if len(results) == 0 || next == nil || *next == "" || (cursor != nil && *next == *cursor) {
+			return false, nil
+		}
+		cursor = next
+	}
 }
 
 // topicVector is one indexed request as the clustering sees it. The
@@ -1042,6 +1117,19 @@ func (s *Service) RunTopicsJob(ctx context.Context, job tables.TableSidekiqJob, 
 	topicStore := s.topicStore()
 	if topicStore == nil {
 		return snapshot(), fmt.Errorf("%w: the log store cannot keep topics", ErrUnavailable)
+	}
+	// Admission refuses a seed run once topics exist, but its lock is one
+	// process's: another instance sharing the job store can queue a run too.
+	// The partition runs them one after another, so checking again here is
+	// what holds, and a run queued behind one that seeded leaves its topics be.
+	seeded, err := countSeededTopics(ctx, topicStore, meta.ConfigSignature)
+	if err != nil {
+		meta.LastError = err.Error()
+		return snapshot(), err
+	}
+	if seeded > 0 {
+		meta.Message = fmt.Sprintf("%d topic(s) were already built for this embedding model, so this run left them as they are.", seeded)
+		return snapshot(), progress(snapshot())
 	}
 
 	// 1-3. Read the window, cluster it in batches, merge the batches' clusters,
@@ -1118,10 +1206,12 @@ func (s *Service) RunTopicsJob(ctx context.Context, job tables.TableSidekiqJob, 
 	}
 	clusters, meta.MergedByName = joinTopicsByName(clusters)
 
-	// 5. Write the topics, then every request's place among them, then retire
-	// the previous topics. In that order, so there is no moment with no
-	// topics, and a run that cannot finish writing retires what it wrote and
-	// leaves the previous topics as they were.
+	// 5. Write the topics, then every request's place among them, then make
+	// the topics active, then retire the previous topics. In that order, so
+	// there is no moment with no topics, and a run that cannot finish writing
+	// retires what it wrote and leaves the previous topics as they were. The
+	// topics are written as seeding and only made active at the end, so what a
+	// failed run could not retire is never counted as a finished seed.
 	if err := checkpoint(fmt.Sprintf("Writing %d topic(s).", len(clusters))); err != nil {
 		return snapshot(), err
 	}
@@ -1137,6 +1227,9 @@ func (s *Service) RunTopicsJob(ctx context.Context, job tables.TableSidekiqJob, 
 		return snapshot(), fmt.Errorf("read previous topics: %w", err)
 	}
 	written, err := writeTopics(ctx, topicStore, &meta, run, clusters, limits.write)
+	if err == nil {
+		err = setTopicsStatus(ctx, topicStore, written, logstore.WarpTopicStatusActive)
+	}
 	if err != nil {
 		meta.LastError = err.Error()
 		meta.Message = "Could not write the new topics; the previous topics were kept."
@@ -1229,7 +1322,7 @@ func writeTopics(ctx context.Context, store logstore.WarpTopicStore, meta *Backf
 		topic := logstore.WarpTopic{
 			ID: uuid.NewString(), Kind: logstore.WarpTopicKindTopic, Label: cluster.label,
 			Centroid: logstore.EncodeWarpVector(cluster.centroid()), AssignFloor: float64(run.floor), Cohesion: cluster.cohesion(),
-			EmbeddingSignature: meta.ConfigSignature, Status: logstore.WarpTopicStatusActive, CreatedAt: now,
+			EmbeddingSignature: meta.ConfigSignature, Status: logstore.WarpTopicStatusSeeding, CreatedAt: now,
 		}
 		if err := topic.SetExampleLogIDs(cluster.sampleIDs); err != nil {
 			return nil, fmt.Errorf("encode topic examples: %w", err)
@@ -1379,11 +1472,16 @@ func restoreTopicAssignments(ctx context.Context, store logstore.WarpTopicStore,
 // retireTopics marks topics as taking nothing new. Their rows stay, so the
 // assignments written against them still resolve.
 func retireTopics(ctx context.Context, store logstore.WarpTopicStore, topics []logstore.WarpTopic) error {
+	return setTopicsStatus(ctx, store, topics, logstore.WarpTopicStatusRetired)
+}
+
+// setTopicsStatus rewrites topics' rows with status.
+func setTopicsStatus(ctx context.Context, store logstore.WarpTopicStore, topics []logstore.WarpTopic, status string) error {
 	if len(topics) == 0 {
 		return nil
 	}
 	for index := range topics {
-		topics[index].Status = logstore.WarpTopicStatusRetired
+		topics[index].Status = status
 	}
 	return store.UpsertWarpTopics(ctx, topics)
 }
