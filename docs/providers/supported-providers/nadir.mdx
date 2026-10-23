@@ -151,16 +151,17 @@ Lists the models available to your key. Nadir requires authentication on `/v1/mo
 
 Nadir answers [`/v1/decisions`](/quickstart/gateway/decisions) with its complexity classifier, so it can be the [complexity router's](/features/complexity-router#choosing-the-decision-model) decision model. Nadir returns only the tier. Bifrost still calls the model that tier maps to, through your own providers and keys, so the prompt is sent to Nadir for classification and the completion never runs there.
 
-With a Nadir key configured as in [Setup & Configuration](#setup--configuration), point the decision model at it:
+With a Nadir key configured as in [Setup & Configuration](#setup--configuration), point the decision model at it. `PUT` replaces the whole [complexity router configuration](/features/complexity-router), so read the current one, change the classifier and decision model, and write it back:
 
 ```bash
-curl -X PUT http://localhost:8080/api/routing/complexity-analyzer-config \
-  -H "Content-Type: application/json" \
-  -d '{
-    "classifier": "decision",
-    "decision": { "provider": "nadir", "model": "auto", "previous_message_count": 1, "timeout": "1.5s" }
-  }'
+curl -s http://localhost:8080/api/routing/complexity-analyzer-config \
+  | jq '.classifier = "decision"
+        | .decision = ((.decision // {}) + {"provider": "nadir", "model": "auto"})' \
+  | curl -X PUT http://localhost:8080/api/routing/complexity-analyzer-config \
+      -H "Content-Type: application/json" -d @-
 ```
+
+This keeps your keyword lists, session pinning, and any other saved settings, including the decision model's history window and timeout.
 
 In the UI, pick **Nadir** as the decision provider; the model is shown as `auto` and is not a choice.
 

@@ -4488,7 +4488,6 @@
                         "cerebras",
                         "deepseek",
                         "vllm",
-                        "nadir",
                         "parasail",
                         "perplexity",
                         "replicate",
