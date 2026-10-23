@@ -2712,6 +2712,47 @@ func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
 	assert.NotEqual(t, onHash, offHash)
 }
 
+// TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip pins that the two
+// access-profile user-key settings persist independently, and that only an opt-in is hashed so a
+// config written before the fields existed keeps its hash.
+func TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	off := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &off))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyCreation)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyDeletion)
+
+	creationOnly := off
+	creationOnly.SkipAccessProfileUserVirtualKeyCreation = true
+	require.NoError(t, store.UpdateClientConfig(ctx, &creationOnly))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.SkipAccessProfileUserVirtualKeyCreation)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyDeletion, "the settings are independent")
+
+	deletionOnly := off
+	deletionOnly.SkipAccessProfileUserVirtualKeyDeletion = true
+	require.NoError(t, store.UpdateClientConfig(ctx, &deletionOnly))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyCreation, "the settings are independent")
+	assert.True(t, result.SkipAccessProfileUserVirtualKeyDeletion)
+
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	creationHash, err := creationOnly.GenerateClientConfigHash()
+	require.NoError(t, err)
+	deletionHash, err := deletionOnly.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, offHash, creationHash)
+	assert.NotEqual(t, offHash, deletionHash)
+	assert.NotEqual(t, creationHash, deletionHash)
+}
+
 func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
