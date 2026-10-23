@@ -276968,7 +276968,7 @@
     },
     {
       "name": "264. Explicit-provider virtual key wildcard admission (OpenRouter) (#8878 / PR #8905)",
-      "description": "wildcard-admission: an unrestricted virtual key on an explicitly named OpenRouter provider must not require catalog membership. Nitro is a dynamic variant omitted from model lists, so these admissions were 403 model_blocked even with a live catalog. Each row creates and removes its own key. Flag-only and explicit wildcard rows cover chat, streaming, Responses and OpenAI-compatible ingress; explicit allowlist and blacklist controls remain 403. Requests use a throwaway direct provider key and must reach OpenRouter auth rejection (401 plus routing_info), not paid inference. No provider configuration or global settings are changed. Prerequisite: client_config.allow_direct_keys must be true. The standard integration config enables it; enable it manually on reused gateways. This folder deliberately does not mutate this security-sensitive global setting.",
+      "description": "wildcard-admission: an unrestricted virtual key on an explicitly named OpenRouter provider must not require catalog membership. Nitro is a dynamic variant omitted from model lists, so these admissions were 403 model_blocked even with a live catalog. Each row creates and removes its own key. Flag-only and explicit wildcard rows cover chat, streaming, Responses and OpenAI-compatible ingress; explicit allowlist and blacklist controls remain 403. Requests use a throwaway direct provider key and must reach OpenRouter auth rejection (401 plus routing_info), not paid inference. No provider configuration or global settings are changed. Prerequisite: client_config.allow_direct_keys must be true. The standard integration config enables it; enable it manually on reused gateways. This folder deliberately does not mutate this security-sensitive global setting. The bare claude-haiku-5.5 case reproduces the original inconsistent-base-model lookup; the Responses streaming case independently pins admission on that streaming route.",
       "event": [
         {
           "listen": "prerequest",
@@ -277253,6 +277253,81 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openrouter claude-haiku-5.5 allow_all_providers /v1/chat/completions - wildcard-admission - #8878",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-or-v1-harness-wildcard-invalid"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/claude-haiku-5.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hi\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] openrouter gpt-6-luna:nitro allow_all_providers /v1/responses stream - wildcard-admission - #8878",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer sk-or-v1-harness-wildcard-invalid"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-6-luna:nitro\",\n  \"input\": \"Hi\",\n  \"max_output_tokens\": 1,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
               ]
             }
           }
