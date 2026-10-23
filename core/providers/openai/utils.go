@@ -397,3 +397,67 @@ func toolChoiceAnySupported(provider schemas.ModelProvider, model string) bool {
 		return false
 	}
 }
+
+// wrapSystemReminder renders system text for a user turn, matching the Anthropic converter's fallback.
+func wrapSystemReminder(text string) string {
+	return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+}
+
+// inlineChatMidConversationSystem rewrites system / developer messages after the leading run as
+// user turns, prefixed with <system-reminder>
+func inlineChatMidConversationSystem(messages []OpenAIMessage) []OpenAIMessage {
+	leading := true
+	for i := range messages {
+		m := &messages[i]
+		isSystem := m.Role == schemas.ChatMessageRoleSystem || m.Role == schemas.ChatMessageRoleDeveloper
+		if leading && isSystem {
+			continue
+		}
+		leading = false
+		if !isSystem || m.Content == nil {
+			continue
+		}
+		content := &schemas.ChatMessageContent{}
+		if m.Content.ContentStr != nil {
+			content.ContentStr = new(wrapSystemReminder(*m.Content.ContentStr))
+		}
+		for _, block := range m.Content.ContentBlocks {
+			if block.Text != nil {
+				block.Text = new(wrapSystemReminder(*block.Text))
+			}
+			content.ContentBlocks = append(content.ContentBlocks, block)
+		}
+		*m = OpenAIMessage{Name: m.Name, Role: schemas.ChatMessageRoleUser, Content: content}
+	}
+	return messages
+}
+
+func inlineResponsesMidConversationSystem(messages []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	leading := true
+	for i := range messages {
+		m := &messages[i]
+		isSystem := m.Role != nil &&
+			(*m.Role == schemas.ResponsesInputMessageRoleSystem || *m.Role == schemas.ResponsesInputMessageRoleDeveloper) &&
+			(m.Type == nil || *m.Type == schemas.ResponsesMessageTypeMessage)
+		if leading && isSystem {
+			continue
+		}
+		leading = false
+		if !isSystem || m.Content == nil {
+			continue
+		}
+		content := &schemas.ResponsesMessageContent{}
+		if m.Content.ContentStr != nil {
+			content.ContentStr = schemas.Ptr(wrapSystemReminder(*m.Content.ContentStr))
+		}
+		for _, block := range m.Content.ContentBlocks {
+			if block.Text != nil {
+				block.Text = schemas.Ptr(wrapSystemReminder(*block.Text))
+			}
+			content.ContentBlocks = append(content.ContentBlocks, block)
+		}
+		m.Role = schemas.Ptr(schemas.ResponsesInputMessageRoleUser)
+		m.Content = content
+	}
+	return messages
+}

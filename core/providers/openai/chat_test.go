@@ -3014,3 +3014,47 @@ func BenchmarkOpenAIChatRequestUnknownFields(b *testing.B) {
 		_ = OpenAIChatRequestUnknownFields(body)
 	}
 }
+
+// TestToOpenAIChatRequest_MidConversationSystemFromDatasheet pins that a datasheet row with
+// supports_mid_conversation_system_messages=false turns system/developer messages after the
+// leading run into <system-reminder> user turns, and that a silent row leaves them alone.
+func TestToOpenAIChatRequest_MidConversationSystemFromDatasheet(t *testing.T) {
+	const model = "accounts/fireworks/models/qwen3p8-max"
+	input := []schemas.ChatMessage{
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("be brief")}},
+		{Role: schemas.ChatMessageRoleDeveloper, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("no emoji")}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+		{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("answer in french"), CacheControl: &schemas.CacheControl{Type: "ephemeral"}},
+		}}},
+		{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("how are you")}},
+	}
+	newReq := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{Provider: schemas.Fireworks, Model: model, Input: slices.Clone(input)}
+	}
+
+	t.Run("datasheet_false_inlines_mid_conversation_system", func(t *testing.T) {
+		installCapabilityRecord(t, model, &schemas.ModelCapabilities{SupportsMidConversationSystem: schemas.Ptr(false)})
+		req := newReq()
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+		require.Len(t, out.Messages, 6)
+		require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[0].Role)
+		// Fireworks Qwen sends developer as system by default (supports_developer_role).
+		require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[1].Role)
+		inlined := out.Messages[4]
+		require.Equal(t, schemas.ChatMessageRoleUser, inlined.Role)
+		require.Len(t, inlined.Content.ContentBlocks, 1)
+		require.Equal(t, "<system-reminder>\nanswer in french\n</system-reminder>\n", *inlined.Content.ContentBlocks[0].Text)
+		require.NotNil(t, inlined.Content.ContentBlocks[0].CacheControl)
+		// The caller's input is not rewritten.
+		require.Equal(t, schemas.ChatMessageRoleSystem, req.Input[4].Role)
+		require.Equal(t, "answer in french", *req.Input[4].Content.ContentBlocks[0].Text)
+	})
+
+	t.Run("datasheet_silent_keeps_mid_conversation_system", func(t *testing.T) {
+		installCapabilityRecord(t, model, nil)
+		out := ToOpenAIChatRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newReq())
+		require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[4].Role)
+	})
+}
