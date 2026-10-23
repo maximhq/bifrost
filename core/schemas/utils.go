@@ -2468,11 +2468,19 @@ func IsMicrosoftDecisionModel(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "microsoft-decision")
 }
 
-// IsDatabricksDecisionModel checks if the model is Databricks' ai_decide AI Function,
-// served on the workspace's AI Functions endpoint rather than a serving endpoint. It is a
-// single function, so the match is on the exact name.
+// IsDatabricksDecisionModel checks if the model answers decisions natively on Databricks:
+// the ai_decide AI Function, served on the workspace's AI Functions endpoint and matched
+// on its exact name, or a System One model (see IsDatabricksSystemOneModel).
 func IsDatabricksDecisionModel(model string) bool {
-	return strings.EqualFold(model, "ai_decide")
+	return strings.EqualFold(model, "ai_decide") || IsDatabricksSystemOneModel(model)
+}
+
+// IsDatabricksSystemOneModel checks if the model is a System One model that a workspace's
+// Unity Gateway serves on its systemone endpoint rather than a serving endpoint: an
+// OpenJev model, by its Unity Catalog name ("system.ai.openjev-qwen35-4b") or the name
+// it reports ("databricks-openjev-qwen35-4b"). Later versions share the name.
+func IsDatabricksSystemOneModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "openjev")
 }
 
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports

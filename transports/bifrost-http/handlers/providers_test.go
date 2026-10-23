@@ -1730,15 +1730,15 @@ func TestListModels_DecisionsAzureListsDecisionModels(t *testing.T) {
 	}
 }
 
-// TestListModels_DecisionsDatabricksListsAIDecide pins that a decisions listing on
-// Databricks offers ai_decide, the one model its Decision serves natively, and not the
-// workspace's serving endpoints.
-func TestListModels_DecisionsDatabricksListsAIDecide(t *testing.T) {
+// TestListModels_DecisionsDatabricksListsDecisionModels pins that a decisions listing on
+// Databricks offers the models its Decision serves natively, ai_decide and the OpenJev
+// System One models, and not the workspace's serving endpoints.
+func TestListModels_DecisionsDatabricksListsDecisionModels(t *testing.T) {
 	SetLogger(&mockLogger{})
 	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
-	listed := []string{"ai_decide", "databricks-claude-sonnet-4", "databricks-gpt-oss-120b"}
+	listed := []string{"ai_decide", "system.ai.openjev-qwen35-4b", "databricks-claude-sonnet-4", "databricks-gpt-oss-120b"}
 	h := providerHandlerForTest(schemas.Databricks, []schemas.Key{{ID: "key-a"}}, listed, listed)
 
 	ctx := &fasthttp.RequestCtx{}
@@ -1757,7 +1757,7 @@ func TestListModels_DecisionsDatabricksListsAIDecide(t *testing.T) {
 	for _, model := range resp.Models {
 		names = append(names, model.Name)
 	}
-	if want := []string{"ai_decide"}; !slices.Equal(names, want) {
+	if want := []string{"ai_decide", "system.ai.openjev-qwen35-4b"}; !slices.Equal(names, want) {
 		t.Fatalf("expected %v, got %v", want, names)
 	}
 }

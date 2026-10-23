@@ -258,11 +258,20 @@ func TestIsMicrosoftDecisionModel(t *testing.T) {
 }
 
 func TestIsDatabricksDecisionModel(t *testing.T) {
-	for _, model := range []string{"ai_decide", "AI_DECIDE"} {
+	for _, model := range []string{"ai_decide", "AI_DECIDE", "system.ai.openjev-qwen35-4b"} {
 		assert.True(t, IsDatabricksDecisionModel(model), model)
 	}
 	for _, model := range []string{"databricks/ai_decide", "ai-decide", "ai_decide_v2", "ai_classify", "databricks-claude-sonnet-4", ""} {
 		assert.False(t, IsDatabricksDecisionModel(model), model)
+	}
+}
+
+func TestIsDatabricksSystemOneModel(t *testing.T) {
+	for _, model := range []string{"system.ai.openjev-qwen35-4b", "databricks-openjev-qwen35-4b", "System.AI.OpenJev-Qwen35-4B"} {
+		assert.True(t, IsDatabricksSystemOneModel(model), model)
+	}
+	for _, model := range []string{"ai_decide", "databricks-claude-sonnet-4", "jev-1.13", "typesafe/jev-latest", ""} {
+		assert.False(t, IsDatabricksSystemOneModel(model), model)
 	}
 }
 

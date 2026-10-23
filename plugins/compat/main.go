@@ -287,7 +287,7 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 // families the providers recognize by name (gpt-6-luna on OpenAI, Typesafe's
 // typesafe/ models, Clef on Cloudflare, deciders on Perplexity, System One
 // models on Ollama, Microsoft's decision models and gpt-6-luna on Azure,
-// ai_decide on Databricks). gpt-6-luna is native by name only on OpenAI and
+// ai_decide and OpenJev models on Databricks). gpt-6-luna is native by name only on OpenAI and
 // Azure (its /openai/v1/decisions route): another provider hosting it
 // (OpenRouter's gpt-6-luna chat models) serves it as a chat model, so it is
 // emulated unless that provider's datasheet row says otherwise (OpenRouter's

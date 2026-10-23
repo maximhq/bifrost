@@ -29,7 +29,7 @@ Write models as `provider/model` to pick the provider explicitly. Switching prov
 | [Perplexity](/providers/supported-providers/perplexity#3-decisions) | `perplexity/pplx-decider-v1.1-27b`, `perplexity/pplx-decider-v1-27b` | `/v1/decisions` | Yes |
 | [Ollama](/providers/supported-providers/ollama#6-decisions) | `ollama/nimble`, `ollama/clef-flash`, `ollama/tev1:0.8b` | `/v1/decisions` | Yes, base64 only |
 | [Azure](/providers/supported-providers/azure#10-decisions) | `azure/Microsoft-Decision-1` (a key alias maps it to your deployment) | `/v1/decisions` | No |
-| [Databricks](/providers/supported-providers/databricks#decisions) | `databricks/ai_decide` | `/v1/decisions` | No |
+| [Databricks](/providers/supported-providers/databricks#decisions) | `databricks/ai_decide`, `databricks/system.ai.openjev-qwen35-4b` | `/v1/decisions` | No |
 | [Laya, Nimble](/providers/self-hosted-decision-models) | `laya/english`, `nimble/nimble-latest` | `/v1/decisions` | No |
 
 Every provider also answers on `/openai/v1/decisions` and `/typesafe/v1/systemone` when you send a `provider/model` name, so an OpenAI or TypeSafe SDK can reach any of them. Each provider page covers its setup.
