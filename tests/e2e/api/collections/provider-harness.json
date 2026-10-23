@@ -279309,6 +279309,149 @@
           }
         }
       ]
+    },
+    {
+      "name": "266. Extra-content-only chat stream deltas (extra content deltas)",
+      "description": "Local fixture regression, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1. The fixture model upstream-extra-content streams a text answer plus two chunks whose delta carries only extra_content (provider metadata, no text): one before finish_reason and one after it. Before the fix the OpenAI stream handler dropped both, because its forward check did not count extra_content. Both cases assert the two extra_content payloads arrive in order and the stream still ends with finish_reason stop and [DONE]. Setup and scoped run commands are in tests/e2e/api/README.md under Extra-content-only stream deltas.",
+      "item": [
+        {
+          "name": "266.1 openai openai/upstream-extra-content forwards extra_content-only deltas (extra content deltas)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var extras = [];",
+                  "var finish = null;",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0 || line === 'data: [DONE]') { return; }",
+                  "  var chunk = JSON.parse(line.slice(6));",
+                  "  var choice = chunk.choices && chunk.choices[0];",
+                  "  if (!choice) { return; }",
+                  "  if (choice.delta && choice.delta.extra_content) { extras.push(JSON.stringify(choice.delta.extra_content)); }",
+                  "  if (choice.finish_reason) { finish = choice.finish_reason; }",
+                  "});",
+                  "pm.test('stream completes with the fixture text', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "  pm.expect(finish, 'finish_reason missing: ' + raw).to.equal('stop');",
+                  "  pm.expect(raw, 'completion missing: ' + raw).to.include('[DONE]');",
+                  "});",
+                  "pm.test('extra_content-only deltas reach the client in order, including the one after finish_reason', function () {",
+                  "  pm.expect(extras, 'extra_content deltas dropped: ' + raw).to.eql(['{\"spans\":[[0,5,[1,2,3,4]]]}', '{\"spans\":[[0,5]]}']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-extra-content\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "266.2 openai upstream-extra-content forwards extra_content-only deltas on the OpenAI SDK route (extra content deltas)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var extras = [];",
+                  "var finish = null;",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0 || line === 'data: [DONE]') { return; }",
+                  "  var chunk = JSON.parse(line.slice(6));",
+                  "  var choice = chunk.choices && chunk.choices[0];",
+                  "  if (!choice) { return; }",
+                  "  if (choice.delta && choice.delta.extra_content) { extras.push(JSON.stringify(choice.delta.extra_content)); }",
+                  "  if (choice.finish_reason) { finish = choice.finish_reason; }",
+                  "});",
+                  "pm.test('stream completes with the fixture text', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "  pm.expect(finish, 'finish_reason missing: ' + raw).to.equal('stop');",
+                  "  pm.expect(raw, 'completion missing: ' + raw).to.include('[DONE]');",
+                  "});",
+                  "pm.test('extra_content-only deltas reach the client in order, including the one after finish_reason', function () {",
+                  "  pm.expect(extras, 'extra_content deltas dropped: ' + raw).to.eql(['{\"spans\":[[0,5,[1,2,3,4]]]}', '{\"spans\":[[0,5]]}']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"upstream-extra-content\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
