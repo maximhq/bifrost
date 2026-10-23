@@ -207,6 +207,15 @@ func TestPreRequestHook(t *testing.T) {
 			wantFallbacks: callerFallbacks,
 		},
 		{
+			// solo-model is cataloged on OpenAI only, but a bare fallback must
+			// inherit the selected primary (Anthropic) later in core, not be
+			// looked up independently or replaced with inferred candidates here.
+			name:          "bare caller fallbacks wait for core binding after the primary is resolved",
+			req:           chat("", "shared-model", schemas.ParseFallbacks([]string{"foo/model", "solo-model"})),
+			wantProvider:  schemas.Anthropic,
+			wantFallbacks: []schemas.Fallback{{Model: "solo-model"}},
+		},
+		{
 			name:         "a model only one provider serves gets no fallbacks",
 			req:          chat("", "solo-model", nil),
 			wantProvider: schemas.OpenAI,

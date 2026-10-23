@@ -19,13 +19,18 @@ func jsonImageEditCtx(body string) *fasthttp.RequestCtx {
 	return ctx
 }
 
-func multipartImageEditCtx(t *testing.T, fields map[string]string, files map[string][]byte) *fasthttp.RequestCtx {
+func multipartImageEditCtx(t *testing.T, fields map[string]string, files map[string][]byte, repeatedFields ...[2]string) *fasthttp.RequestCtx {
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	for k, v := range fields {
 		if err := writer.WriteField(k, v); err != nil {
 			t.Fatalf("write field %s: %v", k, err)
+		}
+	}
+	for _, field := range repeatedFields {
+		if err := writer.WriteField(field[0], field[1]); err != nil {
+			t.Fatalf("write field %s: %v", field[0], err)
 		}
 	}
 	for name, content := range files {
@@ -90,6 +95,43 @@ func TestPrepareImageEditRequest_BareFallbacks(t *testing.T) {
 		if !slices.Equal(req.Fallbacks, want) {
 			t.Fatalf("fallbacks = %+v, want %+v", req.Fallbacks, want)
 		}
+	}
+}
+
+func TestPrepareImageVariationRequest_Fallbacks(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		fallbacks []string
+		want      []schemas.Fallback
+	}{
+		{name: "absent"},
+		{name: "mixed", fallbacks: []string{"foo/model", "backup", "openai/dall-e-2", "openai/", ""}, want: []schemas.Fallback{{Model: "backup"}, {Provider: schemas.OpenAI, Model: "dall-e-2"}}},
+		{name: "invalid-only", fallbacks: []string{"foo/model", "openai/", ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			image := []byte("variation-image")
+			var fields [][2]string
+			for _, fallback := range tc.fallbacks {
+				fields = append(fields, [2]string{"fallbacks", fallback})
+			}
+			// Repeated multipart values must retain their order, not become a JSON string.
+			ctx := multipartImageEditCtx(t, map[string]string{"model": "openai/dall-e-2", "n": "1"}, map[string][]byte{"image": image}, fields...)
+			ctx.Request.SetRequestURI("/v1/images/variations")
+			t.Cleanup(ctx.Request.RemoveMultipartFormFiles)
+			req, err := prepareImageVariationRequest(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(req.Fallbacks, tc.want) {
+				t.Fatalf("fallbacks = %+v, want %+v", req.Fallbacks, tc.want)
+			}
+			if req.Provider != schemas.OpenAI || req.Model != "dall-e-2" || !bytes.Equal(req.Input.Image.Image, image) || req.Params.N == nil || *req.Params.N != 1 {
+				t.Fatalf("fallback parsing changed the variation payload: %+v", req)
+			}
+			if _, ok := req.Params.ExtraParams["fallbacks"]; ok {
+				t.Fatal("gateway fallbacks leaked into provider extra parameters")
+			}
+		})
 	}
 }
 

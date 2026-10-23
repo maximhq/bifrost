@@ -147,11 +147,15 @@ func TestRequestFallbackHTTP(t *testing.T) {
 			for _, streaming := range []bool{false, true} {
 				for _, tc := range []struct {
 					name, fallbacks string
+					primary         string
 					status          int
 					models          []string
 				}{
 					{name: "bare", fallbacks: `["foo/model","claude-haiku-4-5","anthropic/"]`, status: http.StatusOK, models: []string{"claude-sonnet-4-5", "claude-haiku-4-5"}},
 					{name: "unknown-only", fallbacks: `["foo/model","anthropic/"]`, status: http.StatusNotFound, models: []string{"claude-sonnet-4-5"}},
+					{name: "explicit", fallbacks: `["foo/model","anthropic/claude-haiku-4-5"]`, status: http.StatusOK, models: []string{"claude-sonnet-4-5", "claude-haiku-4-5"}},
+					{name: "exhausted-bare", fallbacks: `["foo/model","claude-missing-backup"]`, status: http.StatusNotFound, models: []string{"claude-sonnet-4-5", "claude-missing-backup"}},
+					{name: "primary-success", primary: "claude-haiku-4-5", fallbacks: `["foo/model","claude-missing-backup"]`, status: http.StatusOK, models: []string{"claude-haiku-4-5"}},
 				} {
 					t.Run(fmt.Sprintf("%s/prefix=%s/stream=%t/%s", route.path, prefix, streaming, tc.name), func(t *testing.T) {
 						mu.Lock()
@@ -161,6 +165,9 @@ func TestRequestFallbackHTTP(t *testing.T) {
 						plugin.preRequests, plugin.attempts = 0, 0
 						plugin.mu.Unlock()
 						model := prefix + "claude-sonnet-4-5"
+						if tc.primary != "" {
+							model = prefix + tc.primary
+						}
 						path := route.path
 						body := `{"model":"` + model + `","fallbacks":` + tc.fallbacks + `,"stream":` + strconv.FormatBool(streaming)
 						switch route.shape {
@@ -193,11 +200,16 @@ func TestRequestFallbackHTTP(t *testing.T) {
 							if !strings.Contains(string(data), "fallback-ok") {
 								t.Fatalf("no fallback content: %s", data)
 							}
+							isFallback, fallbackIndex := "true", "1"
+							if tc.primary != "" {
+								// Primary success omits fallback-only response headers.
+								isFallback, fallbackIndex = "", ""
+							}
 							for header, want := range map[string]string{
 								lib.HeaderBifrostRoutingInfoProvider:   "anthropic",
 								lib.HeaderBifrostRoutingInfoModel:      "claude-haiku-4-5",
-								lib.HeaderBifrostRoutingInfoIsFallback: "true",
-								lib.HeaderBifrostFallbackIndex:         "1",
+								lib.HeaderBifrostRoutingInfoIsFallback: isFallback,
+								lib.HeaderBifrostFallbackIndex:         fallbackIndex,
 							} {
 								if got := resp.Header.Get(header); got != want {
 									t.Errorf("%s = %q, want %q", header, got, want)
