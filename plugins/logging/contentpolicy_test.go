@@ -234,3 +234,35 @@ func TestA2AEventBodyDemandOnlyDeclinesStableSuppression(t *testing.T) {
 	_, required := plugin.A2AEventBodyDemand(nil)
 	assert.True(t, required)
 }
+
+func TestA2AEventBodyDemandPreservesLivePolicyChanges(t *testing.T) {
+	for _, hiddenRetention := range []bool{false, true} {
+		name := "global content enabled"
+		if hiddenRetention {
+			name = "hidden retention enabled"
+		}
+		t.Run(name, func(t *testing.T) {
+			disabled, retain := true, false
+			plugin := policyTestPlugin(&disabled, &retain, hiddenRetention)
+			plugin.writeQueue = make(chan *writeQueueEntry, 1)
+			ctx := policyCtx(false, nil)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "live-policy-operation")
+			if hiddenRetention {
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+			}
+			owner, required := plugin.A2AEventBodyDemand(ctx)
+			assert.Same(t, plugin, owner)
+			assert.True(t, required, "a live policy must not discard bodies for the whole operation")
+			if hiddenRetention {
+				retain = true
+			} else {
+				disabled = false
+			}
+			body := `{"messageId":"later-event","parts":[{"text":"retained"}]}`
+			plugin.ObserveA2AEvent(ctx, &schemas.BifrostA2AEvent{Sequence: 2, Body: &body})
+			entry := (<-plugin.writeQueue).agentLog
+			assert.Equal(t, &body, entry.EventBody)
+			assert.Equal(t, hiddenRetention, entry.ContentHidden)
+		})
+	}
+}

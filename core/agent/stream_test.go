@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"net/http"
 	"net/http/httptest"
@@ -157,6 +158,8 @@ type streamBodyDemandPipeline struct {
 	required    bool
 	panicDemand bool
 	demandCalls int
+	postCalls   int
+	postError   *schemas.BifrostError
 	observed    []*schemas.BifrostA2AEvent
 	onEvent     func(*schemas.BifrostA2AEvent)
 }
@@ -167,6 +170,8 @@ func (p *streamBodyDemandPipeline) RunA2APreHooks(_ *schemas.BifrostContext, req
 }
 
 func (p *streamBodyDemandPipeline) RunA2APostHooks(_ *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, err *schemas.BifrostError, _ int) (*schemas.BifrostA2AResponse, *schemas.BifrostError) {
+	p.postCalls++
+	p.postError = err
 	return resp, err
 }
 
@@ -294,6 +299,53 @@ func TestStreamObservationSerializesOnlyRequiredBodies(t *testing.T) {
 			forwardUpstreamStream(ctx, handler, handler.envelope(schemas.A2ARequestTypeSendStreamingMessage), call)(func(a2a.Event, error) bool { return false })
 			require.Zero(t, encodes.Load())
 		})
+	}
+}
+
+func TestStreamObservationMetadataErrorsDoNotSerialize(t *testing.T) {
+	for _, requestType := range []schemas.A2ARequestType{schemas.A2ARequestTypeSendStreamingMessage, schemas.A2ARequestTypeSubscribeToTask} {
+		for _, acceptedBeforeError := range []int{0, 1} {
+			t.Run(fmt.Sprintf("%s/accepted_%d", requestType, acceptedBeforeError), func(t *testing.T) {
+				_, _, manager := streamingGateway(t)
+				pipeline := &streamBodyDemandPipeline{}
+				manager.SetPluginPipeline(func() PluginPipeline { return pipeline }, nil)
+				runtime, ok := manager.runtimes.load("tasks")
+				require.True(t, ok)
+				handler := &proxyRequestHandler{runtime: runtime, manager: manager, config: runtime.config}
+				var encodes atomic.Int64
+				event := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("accepted"))
+				event.Metadata = map[string]any{"probe": observationMarshalProbe{&encodes}}
+				upstreamError := context.DeadlineExceeded
+				call := func(context.Context, sdkClient) iter.Seq2[a2a.Event, error] {
+					return func(yield func(a2a.Event, error) bool) {
+						if acceptedBeforeError > 0 && !yield(event, nil) {
+							return
+						}
+						yield(nil, upstreamError)
+					}
+				}
+				accepted, failures := 0, 0
+				for forwarded, err := range forwardUpstreamStream(context.Background(), handler, handler.envelope(requestType), call) {
+					if err != nil {
+						require.ErrorIs(t, err, upstreamError)
+						require.Nil(t, forwarded)
+						failures++
+					} else {
+						require.Same(t, event, forwarded)
+						accepted++
+					}
+				}
+				require.Equal(t, acceptedBeforeError, accepted)
+				require.Equal(t, 1, failures, "upstream error must not be duplicated at gate completion")
+				require.Zero(t, encodes.Load())
+				require.Len(t, pipeline.observed, acceptedBeforeError, "error yields must not create event observations")
+				require.Equal(t, 1, pipeline.demandCalls)
+				require.Equal(t, 1, pipeline.postCalls)
+				require.NotNil(t, pipeline.postError)
+				require.Equal(t, requestType, pipeline.postError.ExtraFields.A2ARequestType)
+				require.Zero(t, leaseCount(t, manager, "tasks"))
+			})
+		}
 	}
 }
 

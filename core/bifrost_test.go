@@ -36,6 +36,7 @@ type a2aBodyDemandTestPlugin struct {
 	required     bool
 	panicDemand  bool
 	invalidOwner bool
+	foreignOwner bool
 	demandCalls  int
 	bodies       []*string
 }
@@ -59,7 +60,21 @@ func (p *a2aBodyDemandTestPlugin) A2AEventBodyDemand(_ *schemas.BifrostContext) 
 	if p.invalidOwner {
 		return nil, false
 	}
+	if p.foreignOwner {
+		return &a2aBodyDemandTestPlugin{name: "different-instance"}, false
+	}
 	return p, p.required
+}
+
+// An observer implemented by a slice-containing value cannot be compared by
+// interface equality. The demand guard must recover and keep the full body.
+type nonComparableA2ABodyObserver struct {
+	*a2aBodyDemandTestPlugin
+	state []byte
+}
+
+func (p nonComparableA2ABodyObserver) A2AEventBodyDemand(*schemas.BifrostContext) (schemas.A2AEventObserver, bool) {
+	return p, false
 }
 
 type legacyA2ABodyObserver struct {
@@ -92,11 +107,16 @@ func TestA2AEventBodyDemandPreservesUnknownAndWrappedObservers(t *testing.T) {
 		{name: "legacy consumer", kind: "legacy", required: true},
 		{name: "promoted declaration", kind: "wrapped", required: true},
 		{name: "invalid owner", kind: "invalid", required: true},
+		{name: "different owner instance", kind: "foreign", required: true},
+		{name: "non-comparable observer", kind: "non-comparable", required: true},
 		{name: "panic", kind: "panic", required: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			base := &a2aBodyDemandTestPlugin{name: "test", required: test.kind == "full", panicDemand: test.kind == "panic", invalidOwner: test.kind == "invalid"}
+			base := &a2aBodyDemandTestPlugin{name: "test", required: test.kind == "full", panicDemand: test.kind == "panic", invalidOwner: test.kind == "invalid", foreignOwner: test.kind == "foreign"}
 			var plugin schemas.A2APlugin = base
+			if test.kind == "non-comparable" {
+				plugin = nonComparableA2ABodyObserver{a2aBodyDemandTestPlugin: base, state: []byte("state")}
+			}
 			if test.kind == "legacy" {
 				plugin = &legacyA2ABodyObserver{A2APlugin: base, observer: base}
 			}
