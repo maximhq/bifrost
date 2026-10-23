@@ -15,6 +15,7 @@ import (
 // filter blocked, as captured for a streamed request (vercel/ai#4220).
 const azureChatPromptBlockedBody = `{"error":{"message":"The response was filtered due to the prompt triggering Azure OpenAI's content management policy. Please modify your prompt and retry. To learn more about our content filtering policies please read our documentation: https://go.microsoft.com/fwlink/?linkid=2198766","type":null,"param":"prompt","code":"content_filter","status":400,"innererror":{"code":"ResponsibleAIPolicyViolation","content_filter_result":{"hate":{"filtered":true,"severity":"low"},"jailbreak":{"filtered":false,"detected":false},"self_harm":{"filtered":false,"severity":"safe"},"sexual":{"filtered":false,"severity":"safe"},"violence":{"filtered":true,"severity":"medium"}}}}}`
 
+// newAzureErrorResponse builds the reply Azure sends for an error: the status and a JSON error body.
 func newAzureErrorResponse(status int, body string) *fasthttp.Response {
 	resp := &fasthttp.Response{}
 	resp.SetStatusCode(status)
@@ -23,10 +24,12 @@ func newAzureErrorResponse(status int, body string) *fasthttp.Response {
 	return resp
 }
 
+// filteredCategory is how parseAzureError reports a severity-scored category Azure filtered.
 func filteredCategory(name, severity string) schemas.ContentFilterCategory {
 	return schemas.ContentFilterCategory{Category: name, Severity: schemas.Ptr(severity), Filtered: true}
 }
 
+// detectedCategory is how parseAzureError reports a detector, such as jailbreak or profanity, that Azure filtered.
 func detectedCategory(name string) schemas.ContentFilterCategory {
 	return schemas.ContentFilterCategory{Category: name, Filtered: true, Detected: schemas.Ptr(true)}
 }

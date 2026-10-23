@@ -579,6 +579,8 @@ const (
 	azureResponsesContentFilterBody = `{"error":{"message":"The response was filtered due to the prompt triggering Azure OpenAI's content management policy.","type":"invalid_request_error","param":"prompt","code":"content_filter","innererror":{"code":"ContentFiltered"},"content_filters":[{"blocked":true,"source_type":"prompt","content_filter_results":{"self_harm":{"filtered":true,"severity":"medium"}}}]}}`
 )
 
+// assertAzureContentFilterError checks that a blocked prompt came back as Azure's 400
+// content_filter error carrying exactly the want categories.
 func assertAzureContentFilterError(t *testing.T, bifrostErr *schemas.BifrostError, want []schemas.ContentFilterCategory) {
 	t.Helper()
 	if bifrostErr == nil || bifrostErr.Error == nil {

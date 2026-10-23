@@ -83,7 +83,7 @@ ErrorField:
       type: string
     content_filter_details:
       type: object
-      description: Set when the provider's content filter blocked the request (Azure OpenAI code content_filter). Lists only the categories that caused the block; the provider's raw body is never included.
+      description: Set when the provider's content filter blocked the request (Azure OpenAI code content_filter). Lists only the categories that caused the block, and never contains the provider's raw body. Whether that body is returned in extra_fields.raw_response still follows send_back_raw_response or the x-bf-send-back-raw-response header.
       required:
         - categories
       properties:

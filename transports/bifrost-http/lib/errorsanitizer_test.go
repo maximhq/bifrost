@@ -79,8 +79,9 @@ func TestSanitizeBifrostErrorForClientPreservesNonSensitiveServerMessage(t *test
 	}
 }
 
-// A provider's content-filter classification is meant for the caller (#8799), so the
-// sanitizer's copy of the error must keep it.
+// TestSanitizeBifrostErrorForClientPreservesContentFilterDetails pins that the sanitizer's
+// copy of the error keeps a provider's content-filter classification, which is meant for
+// the caller (#8799).
 func TestSanitizeBifrostErrorForClientPreservesContentFilterDetails(t *testing.T) {
 	statusCode := fasthttp.StatusBadRequest
 	details := &schemas.ContentFilterDetails{Categories: []schemas.ContentFilterCategory{

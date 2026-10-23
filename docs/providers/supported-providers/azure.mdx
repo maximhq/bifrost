@@ -707,7 +707,7 @@ When Azure's content filter blocks a prompt, Azure answers `400` with code `cont
 ```
 
 - Only the categories Azure **filtered** are listed. Each has its `category` name, a `severity` for the severity-scored categories (`hate`, `sexual`, `violence`, `self_harm`), and `detected` for detectors such as `jailbreak`, `profanity` and protected material.
-- Nothing else from Azure's classification is returned: no inner error code, unfiltered categories, blocklist names, citations or offsets. Azure's full error body is still only returned with `send_back_raw_response`.
+- Nothing else from Azure's classification goes into `content_filter_details`: no inner error code, unfiltered categories, blocklist names, citations or offsets. Azure's full error body is returned in `extra_fields.raw_response` only when `send_back_raw_response` is on, or when a request sets the `x-bf-send-back-raw-response` header.
 - The categories are read from `innererror.content_filter_result` on Chat Completions and Text Completions, and from `content_filters` on the [Responses API](#2-responses-api). Streaming requests get the same error: Azure blocks the prompt before the stream starts, so the reply is a `400` JSON body, not an SSE event.
 - A `content_filter` error that carries no classification is returned as before, without `content_filter_details`.
 - The field is returned on `/v1/chat/completions`, `/v1/completions`, `/v1/responses` and the OpenAI and Azure SDK drop-in routes, and as `BifrostError.Error.ContentFilterDetails` in the Go SDK. The Anthropic, GenAI, Bedrock and Cohere drop-in routes return their SDK's own error shape, which has no field for it.

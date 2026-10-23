@@ -47,9 +47,10 @@ func TestPopulateExtraFieldsOverwritesChangedFields(t *testing.T) {
 	}
 }
 
-// The log store and a gateway chained in front of Bifrost both read errors back through
-// ErrorField.UnmarshalJSON, so a provider's content-filter classification must survive an
-// encode and decode, and an error without one must encode exactly as before (#8799).
+// TestErrorFieldContentFilterDetailsRoundTrip pins that a provider's content-filter
+// classification survives an encode and decode, since the log store and a gateway chained
+// in front of Bifrost both read errors back through ErrorField.UnmarshalJSON, and that an
+// error without one encodes exactly as before (#8799).
 func TestErrorFieldContentFilterDetailsRoundTrip(t *testing.T) {
 	field := &ErrorField{
 		Code:    Ptr("content_filter"),
