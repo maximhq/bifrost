@@ -178172,6 +178172,13 @@
                   "    pm.expect(l.app, 'row not labelled Warp: ' + JSON.stringify([l.app, l.user_agent])).to.equal('Warp');",
                   "    pm.expect(l.provider, 'row not on the configured provider: ' + l.provider).to.equal('openai');",
                   "  });",
+                  "});",
+                  "// Warp calls its model over the streaming responses path, so each call is its own responses_stream row.",
+                  "pm.test('warp-inprocess: model calls run over the responses stream', function () {",
+                  "  pm.expect(logs.length, 'no log rows to check: ' + pm.response.text()).to.be.at.least(1);",
+                  "  logs.forEach(function (l) {",
+                  "    pm.expect(l.object, 'row not a responses stream: ' + JSON.stringify([l.id, l.object])).to.equal('responses_stream');",
+                  "  });",
                   "});"
                 ]
               }

@@ -47,6 +47,10 @@ const (
 	// WarpTopicStatusRetired topics take nothing new: their traffic stopped, or
 	// the embedding model they were built with was replaced.
 	WarpTopicStatusRetired = "retired"
+	// WarpTopicStatusSeeding topics belong to a seed run still writing. The
+	// run makes them active once it has written all of them, so a seed that
+	// fails partway never reads as one that finished.
+	WarpTopicStatusSeeding = "seeding"
 )
 
 // warpTopicWriteBatch bounds one multi-row statement. The widest row here has
@@ -267,15 +271,22 @@ type WarpTopicStore interface {
 	// DeleteWarpTopicUnmatchedBatch deletes up to batchSize pool rows whose log
 	// was created before cutoff, for the retention cleaner.
 	DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+	// DeleteWarpTopicUnmatchedExcept drops every pool row embedded by a model
+	// other than embeddingSignature: once the embedding model changes, those
+	// vectors mean nothing and would never be clustered.
+	DeleteWarpTopicUnmatchedExcept(ctx context.Context, embeddingSignature string) (deletedCount int64, err error)
+
+	// DeleteWarpTopics removes topic and theme rows outright, for the upkeep
+	// that prunes rows retired long enough ago that nothing reads them.
+	DeleteWarpTopics(ctx context.Context, ids []string) error
 
 	// ListLogsForWarpTopics returns the assignment columns of the given logs:
 	// everything an assignment copies from its log, with TopicID, Similarity
 	// and AssignedAt left for the caller to fill. from and to bound the logs'
 	// timestamps when non-zero, which lets a time-ordered store skip the rest.
 	//
-	// It is not narrowed by any access scope. It exists for the background job
-	// that assigns every request, and must not be reachable from a request
-	// made on a user's behalf.
+	// It is narrowed by the caller's access scope, as every log read is. The
+	// jobs that file requests under topics carry none, so they read every log.
 	ListLogsForWarpTopics(ctx context.Context, logIDs []string, from, to time.Time) ([]WarpTopicAssignment, error)
 }
 
@@ -673,6 +684,40 @@ func (s *RDBLogStore) DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff 
 	return s.deleteExpiredBatchByKey(ctx, "warp_topic_unmatched", "log_id", "created_at", cutoff, batchSize)
 }
 
+// DeleteWarpTopicUnmatchedExcept drops the pool rows of every other embedding
+// model.
+func (s *RDBLogStore) DeleteWarpTopicUnmatchedExcept(ctx context.Context, embeddingSignature string) (int64, error) {
+	result := s.db.WithContext(ctx).Where("embedding_signature <> ?", embeddingSignature).Delete(&WarpTopicUnmatched{})
+	return result.RowsAffected, result.Error
+}
+
+// DeleteWarpTopics removes topic and theme rows outright.
+func (s *RDBLogStore) DeleteWarpTopics(ctx context.Context, ids []string) error {
+	for chunk := range slices.Chunk(ids, warpTopicWriteBatch) {
+		if err := s.db.WithContext(ctx).Where("id IN ?", chunk).Delete(&WarpTopic{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteWarpTopicRowsForLogs removes what the topic tables hold about logs
+// that are being deleted: their place among the topics, and their wait in
+// the pool. Called by the log deletes, so a deleted request neither counts
+// toward a topic nor turns up in a discovery. tx is the transaction the log
+// delete runs in, so a failure here rolls the log delete back too.
+func deleteWarpTopicRowsForLogs(tx *gorm.DB, ids []string) error {
+	for chunk := range slices.Chunk(ids, warpTopicWriteBatch) {
+		if err := tx.Where("log_id IN ?", chunk).Delete(&WarpTopicAssignment{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("log_id IN ?", chunk).Delete(&WarpTopicUnmatched{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // WarpTopicAssignmentFromLog projects a log onto the assignment columns, for a
 // caller that holds the log row already. It is the in-process twin of
 // warpTopicLogColumns and copies exactly what that does, with TopicID,
@@ -723,14 +768,12 @@ const warpTopicLogColumns = "id AS log_id, timestamp, created_at, " +
 	"COALESCE(latency, 0) AS latency, " +
 	"COALESCE(total_tokens, 0) AS total_tokens"
 
-// ListLogsForWarpTopics returns the assignment columns of the given logs.
-//
-// This reads through s.db, not ScopedDB, on purpose: the job that calls it
-// assigns every request, whoever owns it. See WarpTopicStore.
+// ListLogsForWarpTopics returns the assignment columns of the given logs,
+// within the caller's access scope.
 func (s *RDBLogStore) ListLogsForWarpTopics(ctx context.Context, logIDs []string, from, to time.Time) ([]WarpTopicAssignment, error) {
 	rows := make([]WarpTopicAssignment, 0, len(logIDs))
 	for chunk := range slices.Chunk(logIDs, warpTopicWriteBatch) {
-		query := s.db.WithContext(ctx).Table("logs").Select(warpTopicLogColumns).Where("id IN ?", chunk)
+		query := s.ScopedDB(ctx).Table("logs").Select(warpTopicLogColumns).Where("id IN ?", chunk)
 		if !from.IsZero() {
 			placeholder, arg := warpTopicTimeArg(s.db, from)
 			query = query.Where("timestamp >= "+placeholder, arg)

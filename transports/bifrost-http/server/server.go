@@ -2934,6 +2934,17 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if loggingHandler != nil {
 		loggingHandler.SetTopicLister(s.WarpHandler.Service())
 	}
+	// Read at each sweep rather than once: the cleaner is built in Bootstrap,
+	// after this, and its retention can change at runtime.
+	s.WarpHandler.Service().SetLogRetention(func() int {
+		if s.LogsCleaner == nil {
+			return 0
+		}
+		return s.LogsCleaner.RetentionDays()
+	})
+	// config.json's warp section saves through the service, so it is validated and provisions its
+	// vector namespace exactly like a save from the settings page.
+	s.Config.ApplyWarpFileConfig(s.Ctx, s.WarpHandler.Service())
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware

@@ -725,6 +725,65 @@ func TestLogSubscribersComposeAndUnsubscribe(t *testing.T) {
 	}
 }
 
+// A delete a caller makes through the manager is announced to every
+// subscriber once the store has done it, with the ids; a delete the store
+// refused announces nothing, since nothing was deleted.
+func TestLogDeleteSubscribersAreToldWhatWasDeleted(t *testing.T) {
+	store := newTestStore(t)
+	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
+	plugin := &LoggerPlugin{ctx: context.Background(), store: store, logger: testLogger{}}
+	for _, id := range []string{"one", "two", "three"} {
+		require.NoError(t, store.Create(context.Background(), &logstore.Log{ID: id, Timestamp: time.Now(), Object: "chat.completion", Status: "success"}))
+	}
+	var first, second [][]string
+	unsubscribeFirst := plugin.SubscribeLogDeleteCallback(func(_ context.Context, ids []string) { first = append(first, ids) })
+	plugin.SubscribeLogDeleteCallback(func(_ context.Context, ids []string) { second = append(second, ids) })
+	manager := plugin.GetPluginLogManager()
+
+	require.NoError(t, manager.DeleteLogs(context.Background(), []string{"one", "two"}))
+	unsubscribeFirst()
+	unsubscribeFirst()
+	require.NoError(t, manager.DeleteLog(context.Background(), "three"))
+
+	require.Equal(t, [][]string{{"one", "two"}}, first)
+	require.Equal(t, [][]string{{"one", "two"}, {"three"}}, second)
+	_, err := store.FindByID(context.Background(), "three")
+	require.ErrorIs(t, err, logstore.ErrNotFound, "the store deleted it before anyone was told")
+
+	// Nothing to delete, nothing to announce.
+	require.NoError(t, manager.DeleteLogs(context.Background(), nil))
+	require.Len(t, second, 2)
+}
+
+// failingDeleteStore fails every log delete with err.
+type failingDeleteStore struct {
+	logstore.LogStore
+	err error
+}
+
+func (s failingDeleteStore) DeleteLog(context.Context, string) error    { return s.err }
+func (s failingDeleteStore) DeleteLogs(context.Context, []string) error { return s.err }
+
+// A partial delete removed the logs, so subscribers hear of it and the caller
+// still gets the error; a delete that failed before the logs went announces
+// nothing.
+func TestLogDeleteSubscribersAreToldOfPartialDeletes(t *testing.T) {
+	partial := fmt.Errorf("%w: cleanup failed", logstore.ErrPartialLogDelete)
+	plugin := &LoggerPlugin{ctx: context.Background(), store: failingDeleteStore{err: partial}, logger: testLogger{}}
+	var told [][]string
+	plugin.SubscribeLogDeleteCallback(func(_ context.Context, ids []string) { told = append(told, ids) })
+	manager := plugin.GetPluginLogManager()
+
+	require.ErrorIs(t, manager.DeleteLogs(context.Background(), []string{"one", "two"}), logstore.ErrPartialLogDelete)
+	require.ErrorIs(t, manager.DeleteLog(context.Background(), "three"), logstore.ErrPartialLogDelete)
+	require.Equal(t, [][]string{{"one", "two"}, {"three"}}, told)
+
+	plugin.store = failingDeleteStore{err: errors.New("log delete failed")}
+	require.Error(t, manager.DeleteLogs(context.Background(), []string{"four"}))
+	require.Error(t, manager.DeleteLog(context.Background(), "five"))
+	require.Len(t, told, 2)
+}
+
 func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 	store := newTestStore(t)
 	loggingHeaders := []string{"x-custom-log"}

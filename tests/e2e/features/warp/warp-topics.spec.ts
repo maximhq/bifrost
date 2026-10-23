@@ -21,8 +21,13 @@ const configuredWarp = {
   log_vector_store_namespace: 'BifrostWarpLogs',
   semantic_search_threshold: 0.7,
   semantic_search_limit: 10,
+  topic_discovery_min_requests: 250,
   vector_store_connected: true,
 }
+
+// Live filing before any topic exists, and after a seed run built them.
+const unseeded = { active_topics: 0, themes: 0, pooled: 0, requests_24h: 0, unmatched_24h: 0, unmatched_share_24h: 0 }
+const seeded = { active_topics: 95, themes: 12, pooled: 340, requests_24h: 1000, unmatched_24h: 80, unmatched_share_24h: 0.08 }
 
 const idle = { status: 'idle' }
 
@@ -59,6 +64,12 @@ const runningRun = {
 
 interface TopicsMock {
   config?: object
+  // health answers the topics block of GET /log-index/status; no topics yet
+  // unless a test says otherwise.
+  health?: object
+  // indexed answers has_indexed_requests; absent unless a test sets it, as
+  // when the vector store cannot say.
+  indexed?: boolean
   // status answers GET /topics/status. A function, so a test can change what
   // the next poll sees.
   status: () => object
@@ -83,6 +94,19 @@ async function mockWarpTopics(page: Page, mock: TopicsMock) {
   await page.route('**/api/warp/log-index/backfill/status**', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(idle) }),
   )
+  await page.route('**/api/warp/log-index/status', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        state: 'ready',
+        vector_store_connected: true,
+        embedding_configured: true,
+        topics: mock.health ?? unseeded,
+        ...(mock.indexed === undefined ? {} : { has_indexed_requests: mock.indexed }),
+      }),
+    }),
+  )
   await page.route('**/api/warp/log-index/topics/status**', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mock.status()) }),
   )
@@ -105,7 +129,7 @@ async function mockWarpTopics(page: Page, mock: TopicsMock) {
 
 test.describe('Warp topic clusters', () => {
   test('shows how the last run ended', async ({ page }) => {
-    await mockWarpTopics(page, { status: () => completedRun })
+    await mockWarpTopics(page, { status: () => completedRun, health: seeded })
     await page.goto('/workspace/config/warp')
 
     const status = page.getByTestId('warp-topics-status')
@@ -114,11 +138,70 @@ test.describe('Warp topic clusters', () => {
     // Counted in requests: every model call is one, so "conversations" would overstate it.
     await expect(status).toContainText('7015 requests read')
     await expect(status).toContainText('95 topics written · 12 themes')
+    // Live filing, read from the index status rather than the run.
+    const health = page.getByTestId('warp-topics-health')
+    await expect(health).toContainText('95 active topics in 12 themes')
+    await expect(health).toContainText('340 requests waiting for a topic')
+    await expect(health).toContainText("8% of the last day's 1000 requests matched no topic")
     await expect(status).toContainText('Merged 2 near-duplicate cluster(s)')
     await expect(status).not.toContainText('fell back')
     await expect(status).not.toContainText('Latest error')
-    await expect(page.getByTestId('warp-topics-start-btn')).toBeEnabled()
+    // Seeded: the topics keep themselves current, so there is no run to start.
+    await expect(page.getByTestId('warp-topics-seeded')).toContainText('keep themselves up to date')
+    await expect(page.getByTestId('warp-topics-start-btn')).toHaveCount(0)
+    await expect(page.getByTestId('warp-topics-range')).toHaveCount(0)
     await expect(page.getByTestId('warp-topics-cancel-btn')).toHaveCount(0)
+  })
+
+  test('offers the seed run until topics exist', async ({ page }) => {
+    await mockWarpTopics(page, { status: () => idle })
+    await page.goto('/workspace/config/warp')
+
+    await expect(page.getByTestId('warp-topics-seeded')).toHaveCount(0)
+    await expect(page.getByTestId('warp-topics-start-btn')).toHaveText('Seed topics')
+    await expect(page.getByTestId('warp-topics-start-btn')).toBeEnabled()
+  })
+
+  test('asks for a backfill before seeding an empty index', async ({ page }) => {
+    await mockWarpTopics(page, { status: () => idle, indexed: false })
+    await page.goto('/workspace/config/warp')
+
+    await expect(page.getByTestId('warp-topics-needs-backfill')).toContainText('Backfill a window above first')
+    await expect(page.getByTestId('warp-topics-start-btn')).toBeDisabled()
+  })
+
+  test('seeds once something is indexed', async ({ page }) => {
+    await mockWarpTopics(page, { status: () => idle, indexed: true })
+    await page.goto('/workspace/config/warp')
+
+    await expect(page.getByTestId('warp-topics-needs-backfill')).toHaveCount(0)
+    await expect(page.getByTestId('warp-topics-start-btn')).toBeEnabled()
+  })
+
+  test('explains how topics are built and kept up to date', async ({ page }) => {
+    await mockWarpTopics(page, { status: () => idle })
+    await page.goto('/workspace/config/warp')
+
+    await page.getByTestId('warp-topics-info').hover()
+    const info = page.getByTestId('warp-topics-info-content').first()
+    await expect(info).toContainText('Seed, once.')
+    await expect(info).toContainText('once per embedding model')
+    await expect(info).toContainText('Filed as they arrive.')
+    await expect(info).toContainText('new topic threshold')
+  })
+
+  test('saves how many unmatched requests start a discovery', async ({ page }) => {
+    await mockWarpTopics(page, { status: () => idle, health: seeded })
+    await page.goto('/workspace/config/warp')
+
+    const field = page.getByTestId('warp-topic-discovery-min-requests-input')
+    await expect(field).toHaveValue('250')
+    await field.fill('5')
+    await expect(page.getByTestId('warp-save-btn')).toBeDisabled()
+    await field.fill('40')
+    const saved = page.waitForRequest((request) => request.url().includes('/api/warp/config') && request.method() === 'PUT')
+    await page.getByTestId('warp-save-btn').click()
+    expect((await saved).postDataJSON().topic_discovery_min_requests).toBe(40)
   })
 
   test('shows how many topics the model could not name, and why', async ({ page }) => {
@@ -128,7 +211,7 @@ test.describe('Warp topic clusters', () => {
     await page.goto('/workspace/config/warp')
 
     const status = page.getByTestId('warp-topics-status')
-    await expect(status).toContainText('95 topics written · 25 labels fell back')
+    await expect(status).toContainText('95 topics written · 12 themes · 25 labels fell back')
     await expect(status).toContainText('Latest error: label topic: no keys found')
   })
 
