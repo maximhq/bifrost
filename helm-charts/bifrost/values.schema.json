@@ -258,6 +258,42 @@
         }
       }
     },
+    "podDisruptionBudget": {
+      "type": "object",
+      "description": "PodDisruptionBudget for the Bifrost pods. Off by default; when enabled it is rendered only when bifrost.cluster.enabled is true.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Create the PodDisruptionBudget (default false). Takes effect only when cluster mode is enabled."
+        },
+        "minAvailable": {
+          "description": "Minimum pods that must stay available during a voluntary disruption, as an integer or a percentage string such as \"50%\". Ignored when maxUnavailable is set.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^([0-9]|[1-9][0-9]|100)%$"
+            }
+          ]
+        },
+        "maxUnavailable": {
+          "description": "Maximum pods that may be unavailable during a voluntary disruption, as an integer or a percentage string such as \"50%\". When set, replaces minAvailable.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^([0-9]|[1-9][0-9]|100)%$"
+            }
+          ]
+        }
+      }
+    },
     "volumes": {
       "type": "array"
     },
