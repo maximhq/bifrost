@@ -2389,3 +2389,94 @@ func TestBatchSweeper_TransientRetrieveFailureStillRetries(t *testing.T) {
 		"a 5xx must stay retryable, not park the batch")
 	assert.Positive(t, settled.PollAttempts, "the attempt must be recorded for backoff")
 }
+
+func TestOpenRouterBatchAccountingUsesExistingEngine(t *testing.T) {
+	s := newFakeAccountingStore()
+	r := openAIResult(200, "openai/gpt-4o", 18, 9)
+	r.Response.Body["usage"].(map[string]interface{})["cost"] = 0.123
+	o, e := AccountBatchResults(context.Background(), s, s, fakePricing{}, JobRequest{Provider: schemas.OpenRouter, ProviderJobID: "batch-native", ClaimedBy: "test", Payload: BatchPayload{Results: []schemas.BatchResultItem{r}}})
+	require.NoError(t, e)
+	require.NotNil(t, o)
+	assert.True(t, o.Accounted, "OpenRouter batches should be supported by settlement")
+}
+
+func TestOpenRouterBatchAggregateChargeAndRepricing(t *testing.T) {
+	for _, cost := range []float64{0, 0.001} {
+		for _, endpoint := range []schemas.BatchEndpoint{schemas.BatchEndpointChatCompletions, schemas.BatchEndpointResponses, schemas.BatchEndpointMessages, schemas.BatchEndpointEmbeddings} {
+			t.Run(fmt.Sprintf("%s/%v", endpoint, cost), func(t *testing.T) {
+				store := newFakeAccountingStore()
+				reporter := &fakeUsageReporter{}
+				usage := &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{PromptTokens: 40, CompletionTokens: 12, TotalTokens: 52, Cost: &schemas.BifrostCost{TotalCost: cost}}, IsBYOK: schemas.Ptr(true)}
+				req := JobRequest{Provider: schemas.OpenRouter, ProviderJobID: "batch-aggregate", FallbackModel: "openai/gpt-4o", ClaimedBy: "node-1", UsageReporter: reporter, Payload: BatchPayload{Endpoint: endpoint, Usage: usage, RequestCounts: &schemas.BatchRequestCounts{Total: 2, Completed: 1, Failed: 1}, Results: []schemas.BatchResultItem{openAIResult(200, "wrong-row-model", 1000, 1000), {CustomID: "failed", Error: &schemas.BatchResultError{Message: "failed"}}}}}
+				summary, e := AccountBatchResults(context.Background(), store, store, loadPricingFromFile(t), req)
+				require.NoError(t, e)
+				require.True(t, summary.Accounted)
+				assert.Equal(t, cost, summary.Cost)
+				assert.Equal(t, 52, summary.Usage.TotalTokens)
+				assert.Len(t, summary.ModelBreakdowns, 1)
+				require.Len(t, reporter.reports, 1)
+				assert.Equal(t, cost, reporter.reports[0].Cost)
+				repeated, e := AccountBatchResults(context.Background(), store, store, loadPricingFromFile(t), req)
+				require.NoError(t, e)
+				assert.False(t, repeated.Accounted)
+				assert.Len(t, reporter.reports, 1)
+				assert.Len(t, store.logs, 1)
+				entry := store.logs[summary.LogID]
+				repriced, e := RepriceLog(entry, loadPricingFromFile(t))
+				require.NoError(t, e)
+				require.NotNil(t, repriced)
+				assert.Equal(t, cost, repriced.Cost, "repricing must retain zero fees and not price externally billed BYOK inference")
+			})
+		}
+	}
+}
+
+func TestOpenRouterBatchSweeperUsesRetrievePayload(t *testing.T) {
+	store := newFakeAccountingStore()
+	now := time.Now().Add(-time.Minute)
+	job := &cstables.TableProviderJob{ID: cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openrouter", "batch-inline"), Kind: cstables.ProviderJobKindBatch, Provider: "openrouter", JobID: "batch-inline", Model: "openai/gpt-4o", AccountingStatus: cstables.ProviderJobAccountingStatusPending, NextCheckAt: &now}
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
+	fetcher := &fakeBatchResultFetcher{retrieveResp: &schemas.BifrostBatchRetrieveResponse{ID: job.JobID, Model: job.Model, Endpoint: string(schemas.BatchEndpointMessages), Status: schemas.BatchStatusCompleted, RequestCounts: schemas.BatchRequestCounts{Total: 1, Completed: 1}, Results: []schemas.BatchResultItem{{CustomID: "a", Response: &schemas.BatchResultResponse{StatusCode: 200}}}, Usage: &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{TotalTokens: 50, Cost: &schemas.BifrostCost{TotalCost: 0.123}}}}}
+	reporter := &fakeUsageReporter{}
+	sweeper := NewBatchSweeper(store, store, loadPricingFromFile(t), fetcher, nil, reporter, SweeperConfig{})
+	sweeper.SweepOnce(context.Background())
+	sweeper.SweepOnce(context.Background())
+	assert.Equal(t, 1, fetcher.retrieveCalls)
+	assert.Zero(t, fetcher.resultsCalls, "the upstream retrieve already includes results")
+	assert.Len(t, store.logs, 1)
+	require.Len(t, reporter.reports, 1)
+	assert.Equal(t, 0.123, reporter.reports[0].Cost)
+}
+
+func TestOpenRouterBatchAggregateUsageRedrivesWithoutResults(t *testing.T) {
+	store := newFakeAccountingStore()
+	req := JobRequest{Provider: schemas.OpenRouter, ProviderJobID: "expired", FallbackModel: "openai/gpt-4o", ClaimedBy: "node", Payload: BatchPayload{Usage: &schemas.BatchUsage{}}}
+	first, e := AccountBatchResults(context.Background(), store, store, loadPricingFromFile(t), req)
+	require.NoError(t, e)
+	require.False(t, first.Accounted)
+	req.Payload = BatchPayload{Usage: &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{TotalTokens: 10, Cost: &schemas.BifrostCost{TotalCost: 0.1}}}}
+	settled, e := AccountBatchResults(context.Background(), store, store, loadPricingFromFile(t), req)
+	require.NoError(t, e)
+	require.True(t, settled.Accounted)
+	assert.Equal(t, 0.1, settled.Cost)
+}
+
+func TestOpenRouterBatchPollWaitsForReportedCharge(t *testing.T) {
+	job := &cstables.TableProviderJob{ID: "job", Provider: "openrouter", JobID: "batch-late-charge", Model: "openai/gpt-4o"}
+	fetcher := &fakeBatchResultFetcher{retrieveResp: &schemas.BifrostBatchRetrieveResponse{
+		ID: job.JobID, Model: job.Model, Status: schemas.BatchStatusCompleted,
+		RequestCounts: schemas.BatchRequestCounts{Total: 1, Completed: 1},
+		Results:       []schemas.BatchResultItem{{CustomID: "a", Response: &schemas.BatchResultResponse{StatusCode: 200}}},
+		Usage:         &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{TotalTokens: 20}},
+	}}
+	settler := NewBatchSettler(fetcher)
+	poll, err := settler.Poll(context.Background(), job)
+	require.NoError(t, err)
+	require.True(t, poll.Retry, "a temporarily missing native charge should be polled again, not parked permanently")
+	require.False(t, poll.Settleable)
+	fetcher.retrieveResp.Usage.Cost = &schemas.BifrostCost{TotalCost: 0}
+	poll, err = settler.Poll(context.Background(), job)
+	require.NoError(t, err)
+	require.True(t, poll.Settleable, "an explicitly reported zero fee is ready to settle")
+	require.Zero(t, fetcher.resultsCalls, "native retrieve already carries the settlement inputs")
+}
