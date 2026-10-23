@@ -1690,11 +1690,11 @@ func TestListModels_DecisionsOllamaListsSystemOneModels(t *testing.T) {
 	}
 }
 
-// TestListModels_DecisionsAzureListsMicrosoftDecisionModels pins that decisions=true
-// lists Microsoft's decision models on Azure, by name or through a key alias whose
-// target is a deployment named otherwise, and not gpt-6-luna or chat deployments:
-// Azure serves those as chat models.
-func TestListModels_DecisionsAzureListsMicrosoftDecisionModels(t *testing.T) {
+// TestListModels_DecisionsAzureListsDecisionModels pins that decisions=true lists
+// Azure's decision models, Microsoft's (by name or through a key alias whose target
+// is a deployment named otherwise) and the gpt-6-luna family, which Azure serves on
+// /openai/v1/decisions, and not chat deployments.
+func TestListModels_DecisionsAzureListsDecisionModels(t *testing.T) {
 	SetLogger(&mockLogger{})
 	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
@@ -1702,7 +1702,7 @@ func TestListModels_DecisionsAzureListsMicrosoftDecisionModels(t *testing.T) {
 	key := schemas.Key{ID: "key-a", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
 		"Microsoft-Decision-1": {ModelID: "Decision-1"},
 	}}
-	listed := []string{"Microsoft-Decision-1", "microsoft-decision-2", "gpt-6-luna", "gpt-4o"}
+	listed := []string{"Microsoft-Decision-1", "microsoft-decision-2", "gpt-6-luna", "gpt-6-luna-2026-09-22", "gpt-4o"}
 	h := providerHandlerForTest(schemas.Azure, []schemas.Key{key}, listed, listed)
 	catalog := modelCatalogForPricingJSON(t, []byte(`{"azure/gpt-4o": {"provider":"azure","mode":"chat"}}`))
 	catalog.SetKeyConfigForProvider(schemas.Azure, []schemas.Key{key})
@@ -1725,7 +1725,7 @@ func TestListModels_DecisionsAzureListsMicrosoftDecisionModels(t *testing.T) {
 		names = append(names, model.Name)
 	}
 	slices.Sort(names)
-	if want := []string{"Microsoft-Decision-1", "microsoft-decision-2"}; !slices.Equal(names, want) {
+	if want := []string{"Microsoft-Decision-1", "gpt-6-luna", "gpt-6-luna-2026-09-22", "microsoft-decision-2"}; !slices.Equal(names, want) {
 		t.Fatalf("expected %v, got %v", want, names)
 	}
 }

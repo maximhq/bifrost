@@ -111,7 +111,7 @@ describe("decision model provider helpers", () => {
 		expect(defaultDecisionModel(openrouter)).toBe("~typesafe/jev-latest");
 		expect(defaultDecisionModel(openai)).toBe("gpt-6-luna");
 		expect(defaultDecisionModel(cloudflare)).toBe("@cf/cloudflare/clef-flash");
-		expect(defaultDecisionModel(perplexity)).toBe("pplx-decider-v1.1-27b");
+		expect(defaultDecisionModel(perplexity)).toBe("pplx-decider-latest");
 		// Only Ollama's listing says which System One models are pulled locally.
 		expect(defaultDecisionModel(ollama)).toBe("");
 		// The model name a key alias maps to the user's deployment.
