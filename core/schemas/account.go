@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -1111,6 +1112,24 @@ const (
 	// OAuthGrantJWTBearer is the JWT bearer assertion grant (RFC 7523): Bifrost signs an
 	// assertion with the configured private key and exchanges it for an access token.
 	OAuthGrantJWTBearer OAuthGrantType = "jwt_bearer"
+	// OAuthGrantTokenExchange is the token exchange grant (RFC 8693): Bifrost reads a subject
+	// token issued to the workload (a Kubernetes projected service account token, for example)
+	// from a file and exchanges it for an access token. This is how workload identity
+	// federation with OpenAI is configured.
+	OAuthGrantTokenExchange OAuthGrantType = "token_exchange"
+)
+
+// OAuthTokenTypeJWT is the RFC 8693 token type URI for a JWT, the default subject_token_type.
+const OAuthTokenTypeJWT = "urn:ietf:params:oauth:token-type:jwt"
+
+// OAuthRequestEncoding selects how the token_exchange grant encodes its request body.
+type OAuthRequestEncoding string
+
+const (
+	// OAuthRequestEncodingForm sends application/x-www-form-urlencoded (the RFC 8693 default).
+	OAuthRequestEncodingForm OAuthRequestEncoding = "form"
+	// OAuthRequestEncodingJSON sends application/json, which OpenAI's token endpoint requires.
+	OAuthRequestEncodingJSON OAuthRequestEncoding = "json"
 )
 
 // OAuthAuthStyle selects where the client_credentials grant sends the client ID and secret.
@@ -1132,20 +1151,23 @@ const (
 // Leave Key.Value empty to mint from this config; a non-empty Value always wins and is sent
 // verbatim as the bearer token.
 type OAuthKeyConfig struct {
-	GrantType                OAuthGrantType    `json:"grant_type"`                           // client_credentials or jwt_bearer (required)
-	TokenURL                 SecretVar         `json:"token_url"`                            // Token endpoint, absolute https URL (required, supports env. prefix)
-	ClientID                 *SecretVar        `json:"client_id,omitempty"`                  // client_credentials: client ID (required for that grant)
-	ClientSecret             *SecretVar        `json:"client_secret,omitempty"`              // client_credentials: client secret (required for that grant)
-	PrivateKey               *SecretVar        `json:"private_key,omitempty"`                // jwt_bearer: RSA or EC private key, PEM (required for that grant)
-	Scopes                   []string          `json:"scopes,omitempty"`                     // Scopes requested, sent space-joined
-	Audience                 string            `json:"audience,omitempty"`                   // jwt_bearer: aud claim (required for that grant); client_credentials: optional audience form param
-	Issuer                   string            `json:"issuer,omitempty"`                     // jwt_bearer: iss claim (required for that grant)
-	Subject                  string            `json:"subject,omitempty"`                    // jwt_bearer: sub claim (defaults to issuer)
-	KeyID                    string            `json:"key_id,omitempty"`                     // jwt_bearer: kid header
-	SigningAlgorithm         string            `json:"signing_algorithm,omitempty"`          // jwt_bearer: RS256 (default), RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512
-	AuthStyle                OAuthAuthStyle    `json:"auth_style,omitempty"`                 // client_credentials: header (default) or body
-	ExtraParams              map[string]string `json:"extra_params,omitempty"`               // Extra form parameters sent on the token request
-	AssertionLifetimeSeconds int               `json:"assertion_lifetime_seconds,omitempty"` // jwt_bearer: assertion exp - iat (default 300)
+	GrantType                OAuthGrantType       `json:"grant_type"`                           // client_credentials, jwt_bearer or token_exchange (required)
+	TokenURL                 SecretVar            `json:"token_url"`                            // Token endpoint, absolute https URL (required, supports env. prefix)
+	ClientID                 *SecretVar           `json:"client_id,omitempty"`                  // client_credentials: client ID (required for that grant)
+	ClientSecret             *SecretVar           `json:"client_secret,omitempty"`              // client_credentials: client secret (required for that grant)
+	PrivateKey               *SecretVar           `json:"private_key,omitempty"`                // jwt_bearer: RSA or EC private key, PEM (required for that grant)
+	Scopes                   []string             `json:"scopes,omitempty"`                     // Scopes requested, sent space-joined
+	Audience                 string               `json:"audience,omitempty"`                   // jwt_bearer: aud claim (required for that grant); client_credentials, token_exchange: optional audience param
+	Issuer                   string               `json:"issuer,omitempty"`                     // jwt_bearer: iss claim (required for that grant)
+	Subject                  string               `json:"subject,omitempty"`                    // jwt_bearer: sub claim (defaults to issuer)
+	KeyID                    string               `json:"key_id,omitempty"`                     // jwt_bearer: kid header
+	SigningAlgorithm         string               `json:"signing_algorithm,omitempty"`          // jwt_bearer: RS256 (default), RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512
+	AuthStyle                OAuthAuthStyle       `json:"auth_style,omitempty"`                 // client_credentials: header (default) or body
+	ExtraParams              map[string]string    `json:"extra_params,omitempty"`               // Extra form parameters sent on the token request
+	AssertionLifetimeSeconds int                  `json:"assertion_lifetime_seconds,omitempty"` // jwt_bearer: assertion exp - iat (default 300)
+	SubjectTokenFile         string               `json:"subject_token_file,omitempty"`         // token_exchange: path of the subject token, re-read on every exchange (required for that grant)
+	SubjectTokenType         string               `json:"subject_token_type,omitempty"`         // token_exchange: RFC 8693 token type URI (default urn:ietf:params:oauth:token-type:jwt)
+	RequestEncoding          OAuthRequestEncoding `json:"request_encoding,omitempty"`           // token_exchange: form (default) or json
 }
 
 // Redacted returns a copy safe to return from a configuration read: the token URL stays
@@ -1242,10 +1264,27 @@ func (c *OAuthKeyConfig) Validate() error {
 		if c.AssertionLifetimeSeconds < 0 || c.AssertionLifetimeSeconds > 3600 {
 			return fmt.Errorf("oauth_key_config.assertion_lifetime_seconds must be between 0 (default) and 3600")
 		}
+	case OAuthGrantTokenExchange:
+		if strings.TrimSpace(c.SubjectTokenFile) == "" {
+			return fmt.Errorf("oauth_key_config.subject_token_file is required for the token_exchange grant")
+		}
+		if !filepath.IsAbs(strings.TrimSpace(c.SubjectTokenFile)) {
+			return fmt.Errorf("oauth_key_config.subject_token_file must be an absolute path")
+		}
+		switch c.RequestEncoding {
+		case "", OAuthRequestEncodingForm, OAuthRequestEncodingJSON:
+		default:
+			return fmt.Errorf("oauth_key_config.request_encoding must be form or json")
+		}
 	case "":
 		return fmt.Errorf("oauth_key_config.grant_type is required")
 	default:
-		return fmt.Errorf("oauth_key_config.grant_type must be client_credentials or jwt_bearer")
+		return fmt.Errorf("oauth_key_config.grant_type must be client_credentials, jwt_bearer or token_exchange")
+	}
+	// The token_exchange fields would be silently ignored on another grant, which reads as a
+	// working key that sends something else.
+	if c.GrantType != OAuthGrantTokenExchange && (c.SubjectTokenFile != "" || c.SubjectTokenType != "" || c.RequestEncoding != "") {
+		return fmt.Errorf("oauth_key_config.subject_token_file, subject_token_type and request_encoding apply to the token_exchange grant only")
 	}
 	return nil
 }

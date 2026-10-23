@@ -508,6 +508,19 @@ func TestValidateKeyOAuthKeyConfig(t *testing.T) {
 		return c
 	}
 
+	te := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:        schemas.OAuthGrantTokenExchange,
+			TokenURL:         *schemas.NewSecretVar("https://auth.openai.com/oauth/token"),
+			SubjectTokenFile: "/var/run/secrets/openai/token",
+			RequestEncoding:  schemas.OAuthRequestEncodingJSON,
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+
 	tests := []struct {
 		name      string
 		key       schemas.Key
@@ -515,12 +528,17 @@ func TestValidateKeyOAuthKeyConfig(t *testing.T) {
 	}{
 		{name: "client_credentials is sufficient", key: schemas.Key{OAuthKeyConfig: cc(nil)}},
 		{name: "jwt_bearer is sufficient", key: schemas.Key{OAuthKeyConfig: jb(nil)}},
+		{name: "token_exchange is sufficient", key: schemas.Key{OAuthKeyConfig: te(nil)}},
+		{name: "token_exchange missing subject_token_file", key: schemas.Key{OAuthKeyConfig: te(func(c *schemas.OAuthKeyConfig) { c.SubjectTokenFile = " " })}, wantError: "subject_token_file is required"},
+		{name: "token_exchange relative subject_token_file", key: schemas.Key{OAuthKeyConfig: te(func(c *schemas.OAuthKeyConfig) { c.SubjectTokenFile = "token" })}, wantError: "must be an absolute path"},
+		{name: "token_exchange bad request_encoding", key: schemas.Key{OAuthKeyConfig: te(func(c *schemas.OAuthKeyConfig) { c.RequestEncoding = "xml" })}, wantError: "request_encoding must be form or json"},
+		{name: "token_exchange fields on another grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.SubjectTokenFile = "/t" })}, wantError: "apply to the token_exchange grant only"},
 		// Key selection runs this on every request. A static value always wins over the block, so
 		// an incomplete block must not take a usable key out of rotation; the management API
 		// still refuses to save one (handlers.validateProviderKey).
 		{name: "a value alongside an incomplete config keeps the key usable", key: schemas.Key{Value: *schemas.NewSecretVar("sk"), OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientSecret = nil })}},
 		{name: "missing grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "" })}, wantError: "grant_type is required"},
-		{name: "unknown grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" })}, wantError: "must be client_credentials or jwt_bearer"},
+		{name: "unknown grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" })}, wantError: "must be client_credentials, jwt_bearer or token_exchange"},
 		{name: "missing token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar(" ") })}, wantError: "token_url is required"},
 		{name: "relative token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("/token") })}, wantError: "must be https"},
 		{name: "plain http on a public host", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://idp.example/token") })}, wantError: "must be https"},

@@ -96,7 +96,7 @@ func TestMinterForConfig(t *testing.T) {
 		{"ftp token url", func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("ftp://x/token") }, "must be https"},
 		{"plain http on a public host", func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://idp.example/oauth2/token") }, "must be https"},
 		{"missing grant", func(c *schemas.OAuthKeyConfig) { c.GrantType = "" }, "grant_type is required"},
-		{"unknown grant", func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" }, "must be client_credentials or jwt_bearer"},
+		{"unknown grant", func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" }, "must be client_credentials, jwt_bearer or token_exchange"},
 		{"jwt bearer without key", func(c *schemas.OAuthKeyConfig) {
 			c.GrantType = schemas.OAuthGrantJWTBearer
 			c.Issuer = "i"
@@ -114,6 +114,13 @@ func TestMinterForConfig(t *testing.T) {
 		}, "signing_algorithm must be one of"},
 		{"missing client id", func(c *schemas.OAuthKeyConfig) { c.ClientID = schemas.NewSecretVar("") }, "client_id and oauth_key_config.client_secret are required"},
 		{"bad auth style", func(c *schemas.OAuthKeyConfig) { c.AuthStyle = "query" }, "auth_style must be header or body"},
+		{"token exchange without subject token file", func(c *schemas.OAuthKeyConfig) {
+			c.GrantType = schemas.OAuthGrantTokenExchange
+		}, "subject_token_file is required"},
+		{"token exchange bad encoding", func(c *schemas.OAuthKeyConfig) {
+			c.GrantType = schemas.OAuthGrantTokenExchange
+			c.SubjectTokenFile, c.RequestEncoding = "/t", "xml"
+		}, "request_encoding must be form or json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var cfg *schemas.OAuthKeyConfig
@@ -216,6 +223,31 @@ func TestOAuthKeyCacheKey(t *testing.T) {
 			assert.NotEqual(t, ref, key(c))
 		})
 	}
+
+	t.Run("token_exchange fields each change the key", func(t *testing.T) {
+		teBase := func() *schemas.OAuthKeyConfig {
+			return &schemas.OAuthKeyConfig{
+				GrantType:        schemas.OAuthGrantTokenExchange,
+				TokenURL:         *schemas.NewSecretVar("https://idp.example/token"),
+				SubjectTokenFile: "/var/run/secrets/token",
+			}
+		}
+		teRef := key(teBase())
+		for _, tc := range []struct {
+			name string
+			edit func(*schemas.OAuthKeyConfig)
+		}{
+			{"subject token file", func(c *schemas.OAuthKeyConfig) { c.SubjectTokenFile = "/var/run/secrets/other" }},
+			{"subject token type", func(c *schemas.OAuthKeyConfig) { c.SubjectTokenType = "urn:ietf:params:oauth:token-type:id_token" }},
+			{"request encoding", func(c *schemas.OAuthKeyConfig) { c.RequestEncoding = schemas.OAuthRequestEncodingJSON }},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				c := teBase()
+				tc.edit(c)
+				assert.NotEqual(t, teRef, key(c))
+			})
+		}
+	})
 
 	t.Run("jwt_bearer fields each change the key", func(t *testing.T) {
 		jwtBase := func() *schemas.OAuthKeyConfig {

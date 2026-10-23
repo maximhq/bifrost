@@ -1,6 +1,7 @@
 package tokencache
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -158,11 +159,26 @@ func parsePrivateKey(pemData, alg string) (crypto.PrivateKey, error) {
 // carry the endpoint's status so the cache classifies them, and never echo the body beyond
 // the standard error and error_description fields.
 func postTokenRequest(ctx context.Context, hc *http.Client, tokenURL string, form url.Values) (string, time.Time, *schemas.BifrostError) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	// The signed assertion and every extra parameter are what this request sent; none of them
+	// may come back to the caller through the error code or description. grant_type and scope are not
+	// credentials, and an error naming the scope it refused is worth keeping readable.
+	var submitted []string
+	for k, vs := range form {
+		if k != "grant_type" && k != "scope" {
+			submitted = append(submitted, vs...)
+		}
+	}
+	return postToken(ctx, hc, tokenURL, []byte(form.Encode()), "application/x-www-form-urlencoded", submitted)
+}
+
+// postToken posts an encoded body to the token endpoint and reads the access token. submitted
+// lists the credential values the body carries, scrubbed from any error the endpoint returns.
+func postToken(ctx context.Context, hc *http.Client, tokenURL string, body []byte, contentType string, submitted []string) (string, time.Time, *schemas.BifrostError) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(body))
 	if err != nil {
 		return "", time.Time{}, configurationError("oauth token request could not be built: " + err.Error())
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := hc.Do(req)
@@ -170,7 +186,7 @@ func postTokenRequest(ctx context.Context, hc *http.Client, tokenURL string, for
 		return "", time.Time{}, transportError(tokenURL, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes))
 	if err != nil {
 		return "", time.Time{}, providerUtils.NewProviderAPIError(
 			fmt.Sprintf("oauth token response from %s could not be read", redactURL(tokenURL)),
@@ -178,17 +194,8 @@ func postTokenRequest(ctx context.Context, hc *http.Client, tokenURL string, for
 	}
 
 	var parsed tokenResponse
-	_ = sonic.Unmarshal(body, &parsed)
+	_ = sonic.Unmarshal(respBody, &parsed)
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		// The signed assertion and every extra parameter are what this request sent; none of them
-		// may come back to the caller through the error code or description. grant_type and scope are not
-		// credentials, and an error naming the scope it refused is worth keeping readable.
-		var submitted []string
-		for k, vs := range form {
-			if k != "grant_type" && k != "scope" {
-				submitted = append(submitted, vs...)
-			}
-		}
 		bErr := tokenEndpointError(tokenURL, resp.StatusCode, scrubSubmitted(strings.TrimSpace(parsed.Error+" "+parsed.ErrorDescription), submitted))
 		providerUtils.ApplyRetryAfterHTTP(bErr, resp.Header)
 		return "", time.Time{}, bErr
