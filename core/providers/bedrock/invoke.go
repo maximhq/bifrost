@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -1490,9 +1491,83 @@ func ToBedrockInvokeMessagesResponse(ctx *schemas.BifrostContext, resp *schemas.
 	if strings.Contains(model, "ai21") {
 		return toBedrockInvokeAI21Response(resp), nil
 	}
+	if schemas.IsMistralModelFamily(ctx, model) {
+		if model == "" {
+			model = schemas.ResolveCanonicalModel(ctx, model)
+		}
+		return toBedrockInvokeMistralMessagesResponse(resp, model), nil
+	}
 
 	// Default: Anthropic Messages API format (most common InvokeModel + messages use case)
 	return toBedrockInvokeAnthropicResponse(resp, model), nil
+}
+
+func toBedrockInvokeMistralResponse(resp *schemas.BifrostChatResponse) *BedrockInvokeMistralResponse {
+	out := &BedrockInvokeMistralResponse{ID: resp.ID, Object: resp.Object, Created: resp.Created, Model: resp.Model, Choices: resp.Choices}
+	if out.ID == "" {
+		out.ID = uuid.NewString()
+	}
+	if out.Created == 0 {
+		out.Created = int(time.Now().Unix())
+	}
+	if resp.Usage != nil {
+		out.Usage = &BedrockInvokeAI21Usage{PromptTokens: resp.Usage.PromptTokens, CompletionTokens: resp.Usage.CompletionTokens, TotalTokens: resp.Usage.TotalTokens}
+	}
+	return out
+}
+
+func toBedrockInvokeMistralMessagesResponse(resp *schemas.BifrostResponsesResponse, model string) *BedrockInvokeMistralResponse {
+	// A cache/plugin response may omit status; unary Invoke is still terminal.
+	response := *resp
+	if response.Status == nil {
+		response.Status = schemas.Ptr(schemas.ResponsesResponseStatusCompleted)
+	}
+	chat := response.ToBifrostChatResponse()
+	chat.Model = model
+	if len(chat.Choices) == 0 {
+		chat.Choices = (&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &response}).ToBifrostChatResponse().Choices
+	}
+	if len(chat.Choices) == 1 {
+		choice := chat.Choices[0]
+		if choice.ChatNonStreamResponseChoice != nil && choice.Message != nil && choice.Message.ChatAssistantMessage == nil && choice.Message.Content != nil && choice.Message.Content.ContentStr != nil {
+			out := toBedrockInvokeMistralResponse(chat)
+			out.GuardrailAction, out.Trace = bedrockInvokeGuardrailFields(resp)
+			return out
+		}
+	}
+
+	// Converse has one answer. Responses can split its text and tools into several
+	// items; those are parts of the same Mistral message, not alternative choices.
+	var text strings.Builder
+	var tools []schemas.ChatAssistantMessageToolCall
+	for _, choice := range chat.Choices {
+		if choice.ChatNonStreamResponseChoice == nil || choice.Message == nil {
+			continue
+		}
+		message := choice.Message
+		if message.Content != nil {
+			if message.Content.ContentStr != nil {
+				text.WriteString(*message.Content.ContentStr)
+			} else {
+				for _, block := range message.Content.ContentBlocks {
+					if block.Text != nil {
+						text.WriteString(*block.Text)
+					}
+				}
+			}
+		}
+		if message.ChatAssistantMessage != nil {
+			tools = append(tools, message.ToolCalls...)
+		}
+	}
+	message := &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(text.String())}}
+	if len(tools) > 0 {
+		message.ChatAssistantMessage = &schemas.ChatAssistantMessage{ToolCalls: tools}
+	}
+	chat.Choices = []schemas.BifrostResponseChoice{{Index: 0, FinishReason: chat.Choices[0].FinishReason, ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: message}}}
+	out := toBedrockInvokeMistralResponse(chat)
+	out.GuardrailAction, out.Trace = bedrockInvokeGuardrailFields(resp)
+	return out
 }
 
 // bedrockInvokeGuardrailFields renders the guardrail outcome the way InvokeModel reports
@@ -1994,12 +2069,13 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 		return "", nil, fmt.Errorf("bifrost stream response is nil")
 	}
 
-	// Get model from the stream chunk's ExtraFields first (set on every chunk by the
-	// streaming handler), then fall back to resp.Response fields (only present on the
-	// final Completed event). Without checking resp.ExtraFields, early chunks would
-	// have model="" and Nova streams would be mis-routed through the Anthropic path.
-	model := ""
-	if resp.Response != nil {
+	// Delta events have no Response. Use the identity stamped on every chunk before
+	// falling back to the lifecycle response so all events choose the same encoder.
+	model := resp.ExtraFields.ResolvedModelUsed
+	if model == "" {
+		model = resp.ExtraFields.OriginalModelRequested
+	}
+	if model == "" && resp.Response != nil {
 		if resp.Response.Model != "" {
 			model = resp.Response.Model
 		} else {
@@ -2023,6 +2099,12 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 		}
 		return "", bedrockEvent, nil
 	}
+	if schemas.IsMistralModelFamily(ctx, model) {
+		if model == "" {
+			model = schemas.ResolveCanonicalModel(ctx, model)
+		}
+		return toBedrockInvokeMistralStreamResponse(ctx, resp, model)
+	}
 
 	// For Anthropic models (and default): serialize as Anthropic Messages API SSE events,
 	// then wrap in InvokeModelRawChunks. Some Bifrost events map to multiple Anthropic events
@@ -2043,6 +2125,81 @@ func ToBedrockInvokeMessagesStreamResponse(ctx *schemas.BifrostContext, resp *sc
 	}
 
 	return "", bedrockEvent, nil
+}
+
+const bedrockInvokeMistralStreamStateKey schemas.BifrostContextKey = "bedrock-invoke-mistral-stream-state"
+
+// Only fixed-size header/index metadata lives on ctx, never stream content.
+// The HTTP stream writer calls the converter serially; the record is released on
+// the terminal event, or with ctx when the stream is cancelled.
+type bedrockInvokeMistralStreamState struct {
+	id                   string
+	created              int
+	firstToolOutputIndex int
+}
+
+func toBedrockInvokeMistralStreamResponse(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse, model string) (string, interface{}, error) {
+	switch resp.Type {
+	case schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeOutputTextDelta,
+		schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+		schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+		schemas.ResponsesStreamResponseTypeRefusalDelta,
+		schemas.ResponsesStreamResponseTypeCompleted,
+		schemas.ResponsesStreamResponseTypeIncomplete:
+	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+		if resp.Item == nil || resp.Item.Type == nil || *resp.Item.Type != schemas.ResponsesMessageTypeFunctionCall || resp.Item.ResponsesToolMessage == nil {
+			return "", nil, nil
+		}
+	default:
+		return "", nil, nil
+	}
+	if (resp.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta || resp.Type == schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta || resp.Type == schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta) && resp.Delta == nil {
+		return "", nil, nil
+	}
+	chat := resp.ToBifrostChatResponse()
+	chat.Model = model
+	var state *bedrockInvokeMistralStreamState
+	if ctx != nil && resp.Type != schemas.ResponsesStreamResponseTypeCreated {
+		state, _ = ctx.Value(bedrockInvokeMistralStreamStateKey).(*bedrockInvokeMistralStreamState)
+	}
+	if state == nil {
+		state = &bedrockInvokeMistralStreamState{id: chat.ID, created: chat.Created, firstToolOutputIndex: -1}
+		if state.id == "" {
+			state.id = uuid.NewString()
+		}
+		if state.created == 0 {
+			state.created = int(time.Now().Unix())
+		}
+		if ctx != nil {
+			ctx.SetValue(bedrockInvokeMistralStreamStateKey, state)
+		}
+	}
+	chat.ID, chat.Created = state.id, state.created
+	if resp.Type == schemas.ResponsesStreamResponseTypeCreated {
+		chat.Choices[0].Delta.Role = schemas.Ptr("assistant")
+	}
+	if calls := chat.Choices[0].Delta.ToolCalls; len(calls) > 0 && resp.OutputIndex != nil {
+		// The shared chat adapter reserves output slot zero for text. Bedrock may
+		// start directly with tools, so anchor indexes at the first actual tool.
+		if state.firstToolOutputIndex < 0 {
+			state.firstToolOutputIndex = *resp.OutputIndex
+		}
+		calls[0].Index = uint16(*resp.OutputIndex - state.firstToolOutputIndex)
+	}
+	out := toBedrockInvokeMistralResponse(chat)
+	data, err := providerUtils.MarshalSorted(out)
+	if err != nil {
+		return "", nil, err
+	}
+	event := &BedrockStreamEvent{InvokeModelRawChunks: [][]byte{data}}
+	if resp.Type == schemas.ResponsesStreamResponseTypeCompleted || resp.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+		event.InvokeModelGuardrailAction, event.InvokeModelTrace = bedrockInvokeGuardrailFields(resp.Response)
+		if ctx != nil {
+			ctx.SetValue(bedrockInvokeMistralStreamStateKey, nil)
+		}
+	}
+	return "", event, nil
 }
 
 type bedrockInvokeStreamStateKeyType struct{}

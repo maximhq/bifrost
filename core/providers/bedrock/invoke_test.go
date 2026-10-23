@@ -3113,3 +3113,297 @@ func TestInvokeBuildConfig_ExcludesInternalConverseFields(t *testing.T) {
 	assert.True(t, excluded["additionalModelRequestFieldPaths"], "additionalModelRequestFieldPaths must be excluded")
 	assert.True(t, excluded["additionalModelResponseFieldPaths"], "additionalModelResponseFieldPaths must be excluded")
 }
+
+func mistralInvokeTestResponse(t testing.TB, content string, stopReason string) *schemas.BifrostResponsesResponse {
+	t.Helper()
+	var native BedrockConverseResponse
+	require.NoError(t, sonic.UnmarshalString(`{"output":{"message":{"role":"assistant","content":`+content+`}},"stopReason":"`+stopReason+`","usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`, &native))
+	resp, err := native.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	resp.Model = "mistral.mistral-large-3-675b-instruct"
+	return resp
+}
+
+func TestToBedrockInvokeMessagesResponse_Mistral(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, stop, text, finish string
+		tools                             int
+	}{
+		{"text", `[{"text":"hello"}]`, "end_turn", "hello", "stop", 0},
+		{"text blocks", `[{"text":"hello"},{"text":" world"}]`, "end_turn", "hello world", "stop", 0},
+		{"length", `[{"text":"partial"}]`, "max_tokens", "partial", "length", 0},
+		{"tools only", `[{"toolUse":{"toolUseId":"call_1","name":"weather","input":{"city":"Paris"}}},{"toolUse":{"toolUseId":"call_2","name":"time","input":{}}}]`, "tool_use", "", "tool_calls", 2},
+		{"text and tool", `[{"text":"Checking."},{"toolUse":{"toolUseId":"call_1","name":"weather","input":{"city":"Paris"}}}]`, "tool_use", "Checking.", "tool_calls", 1},
+		{"empty", `[]`, "end_turn", "", "stop", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := mistralInvokeTestResponse(t, tc.content, tc.stop)
+			before, err := providerUtils.MarshalSorted(resp)
+			require.NoError(t, err)
+			out, err := ToBedrockInvokeMessagesResponse(nil, resp)
+			require.NoError(t, err)
+			raw, err := providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			require.Equal(t, "chat.completion", gjson.GetBytes(raw, "object").String(), "%s", raw)
+			require.Len(t, gjson.GetBytes(raw, "choices").Array(), 1, "%s", raw)
+			assert.Equal(t, "assistant", gjson.GetBytes(raw, "choices.0.message.role").String())
+			assert.Equal(t, tc.text, gjson.GetBytes(raw, "choices.0.message.content").String())
+			assert.Equal(t, tc.finish, gjson.GetBytes(raw, "choices.0.finish_reason").String())
+			assert.Len(t, gjson.GetBytes(raw, "choices.0.message.tool_calls").Array(), tc.tools)
+			if tc.tools > 0 {
+				assert.Equal(t, "call_1", gjson.GetBytes(raw, "choices.0.message.tool_calls.0.id").String())
+				assert.Equal(t, "weather", gjson.GetBytes(raw, "choices.0.message.tool_calls.0.function.name").String())
+				assert.JSONEq(t, `{"city":"Paris"}`, gjson.GetBytes(raw, "choices.0.message.tool_calls.0.function.arguments").String())
+			}
+			assert.JSONEq(t, `{"prompt_tokens":15,"completion_tokens":51,"total_tokens":66}`, gjson.GetBytes(raw, "usage").Raw)
+			assert.False(t, gjson.GetBytes(raw, "type").Exists())
+			assert.False(t, gjson.GetBytes(raw, "extra_fields").Exists())
+			after, err := providerUtils.MarshalSorted(resp)
+			require.NoError(t, err)
+			assert.Equal(t, string(before), string(after), "egress must not mutate the canonical response")
+		})
+	}
+}
+
+func TestToBedrockInvokeMessagesResponse_MistralModelIdentity(t *testing.T) {
+	for _, tc := range []struct{ model, resolved, original string }{
+		{"mistral.mistral-large-3-675b-instruct", "", ""},
+		{"us-west-2/mistral.mistral-large-3-675b-instruct", "", ""},
+		{"", "mistral.mistral-large-3-675b-instruct", ""},
+		{"", "", "mistral.mistral-large-3-675b-instruct"},
+	} {
+		t.Run(tc.model+tc.resolved+tc.original, func(t *testing.T) {
+			resp := mistralInvokeTestResponse(t, `[{"text":"hello"}]`, "end_turn")
+			resp.Model = tc.model
+			resp.ExtraFields.ResolvedModelUsed = tc.resolved
+			resp.ExtraFields.OriginalModelRequested = tc.original
+			out, err := ToBedrockInvokeMessagesResponse(nil, resp)
+			require.NoError(t, err)
+			raw, err := providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			assert.Equal(t, "chat.completion", gjson.GetBytes(raw, "object").String(), "%s", raw)
+		})
+	}
+}
+
+func TestToBedrockInvokeMessagesResponse_MistralCacheAndAlias(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{ModelID: "deployment-id", ModelFamily: schemas.Ptr(schemas.ModelFamilyMistral)}})
+	resp := mistralInvokeTestResponse(t, `[{"text":"cached"}]`, "end_turn")
+	resp.Model, resp.ID, resp.Status = "deployment-id", nil, nil
+	resp.Usage = &schemas.ResponsesResponseUsage{}
+	resp.ExtraFields.RawResponse = `{"type":"message","content":[{"text":"must not leak"}]}`
+	out, err := ToBedrockInvokeMessagesResponse(ctx, resp)
+	require.NoError(t, err)
+	raw, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	assert.Equal(t, "chat.completion", gjson.GetBytes(raw, "object").String())
+	assert.Equal(t, "cached", gjson.GetBytes(raw, "choices.0.message.content").String())
+	assert.Equal(t, "stop", gjson.GetBytes(raw, "choices.0.finish_reason").String())
+	assert.NotEmpty(t, gjson.GetBytes(raw, "id").String())
+	assert.JSONEq(t, `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`, gjson.GetBytes(raw, "usage").Raw)
+	assert.NotContains(t, string(raw), "must not leak")
+	assert.Nil(t, resp.ID)
+	assert.Nil(t, resp.Status)
+}
+
+func TestToBedrockInvokeMessagesResponse_MistralAliasPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config schemas.AliasConfig
+		want   bool
+	}{
+		{"explicit other family", schemas.AliasConfig{ModelID: "mistral-large", ModelFamily: schemas.Ptr(schemas.ModelFamilyAnthropic)}, false},
+		{"canonical name wins", schemas.AliasConfig{ModelID: "mistral-large", ModelName: schemas.Ptr("claude-sonnet-4-6")}, false},
+		{"unknown name falls back to id", schemas.AliasConfig{ModelID: "mistral-large", ModelName: schemas.Ptr("friendly")}, true},
+		{"canonical mistral deployment", schemas.AliasConfig{ModelID: "deployment", ModelName: schemas.Ptr("mistral-large")}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &tc.config})
+			resp := mistralInvokeTestResponse(t, `[{"text":"hello"}]`, "end_turn")
+			resp.Model = "deployment"
+			out, err := ToBedrockInvokeMessagesResponse(ctx, resp)
+			require.NoError(t, err)
+			raw, err := providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, gjson.GetBytes(raw, "object").String() == "chat.completion", "%s", raw)
+		})
+	}
+}
+
+func TestBedrockInvokeMistralGuardrailOutcome(t *testing.T) {
+	resp := mistralInvokeTestResponse(t, `[{"text":"blocked"}]`, "guardrail_intervened")
+	resp.ProviderExtraFields = map[string]interface{}{anthropic.BedrockInvokeGuardrailActionKey: "INTERVENED", anthropic.BedrockInvokeGuardrailTraceKey: json.RawMessage(`{"guardrail":{"test":true}}`)}
+	out, err := ToBedrockInvokeMessagesResponse(nil, resp)
+	require.NoError(t, err)
+	raw, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	assert.Equal(t, "INTERVENED", gjson.GetBytes(raw, "amazon-bedrock-guardrailAction").String())
+	assert.JSONEq(t, `{"guardrail":{"test":true}}`, gjson.GetBytes(raw, "amazon-bedrock-trace").Raw)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, stream, err := ToBedrockInvokeMessagesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: resp})
+	require.NoError(t, err)
+	event := stream.(*BedrockStreamEvent)
+	assert.Equal(t, "INTERVENED", event.InvokeModelGuardrailAction)
+	assert.JSONEq(t, `{"guardrail":{"test":true}}`, string(event.InvokeModelTrace))
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKey("bedrock-invoke-mistral-stream-state")))
+}
+
+func TestBedrockInvokeMessagesOtherFamiliesAndLegacyMistral(t *testing.T) {
+	for _, tc := range []struct{ model, path string }{
+		{"anthropic.claude-3-sonnet-20240229-v1:0", "content.0.text"},
+		{"amazon.nova-pro-v1:0", "output.message.content.0.text"},
+		{"ai21.jamba-1-5-large-v1:0", "choices.0.message.content"},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			resp := mistralInvokeTestResponse(t, `[{"text":"hello"}]`, "end_turn")
+			resp.Model = tc.model
+			out, err := ToBedrockInvokeMessagesResponse(nil, resp)
+			require.NoError(t, err)
+			raw, err := providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			assert.Equal(t, "hello", gjson.GetBytes(raw, tc.path).String())
+		})
+	}
+	assert.Equal(t, schemas.TextCompletionRequest, DetectInvokeRequestType([]byte(`{"prompt":"hello"}`), "mistral.mistral-7b-instruct-v0:2"))
+	out := ToBedrockTextCompletionResponse(&schemas.BifrostTextCompletionResponse{Model: "mistral.mistral-7b-instruct-v0:2", Choices: []schemas.BifrostResponseChoice{{TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{Text: schemas.Ptr("hello")}, FinishReason: schemas.Ptr("stop")}}})
+	raw, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", gjson.GetBytes(raw, "outputs.0.text").String())
+	_, err = ToBedrockInvokeMessagesResponse(nil, nil)
+	assert.Error(t, err)
+	_, _, err = ToBedrockInvokeMessagesStreamResponse(nil, nil)
+	assert.Error(t, err)
+}
+
+func TestToBedrockInvokeMessagesStreamResponse_Mistral(t *testing.T) {
+	const model = "mistral.mistral-large-3-675b-instruct"
+	for _, textFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "tools only", true: "text then tools"}[textFirst], func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			events := []*schemas.BifrostResponsesStreamResponse{{Type: schemas.ResponsesStreamResponseTypeCreated, Response: &schemas.BifrostResponsesResponse{ID: schemas.Ptr("chat_1"), CreatedAt: 123, Model: model}}}
+			offset := 0
+			if textFirst {
+				events = append(events, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("hello")})
+				offset = 1
+			}
+			for i, name := range []string{"weather", "time"} {
+				callID := []string{"call_1", "call_2"}[i]
+				events = append(events,
+					&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(i + offset), Item: &schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: &name}}},
+					&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, OutputIndex: schemas.Ptr(i + offset), Delta: schemas.Ptr(`{}`)},
+				)
+			}
+			events = append(events, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &schemas.BifrostResponsesResponse{ID: schemas.Ptr("chat_1"), CreatedAt: 123, Model: model, StopReason: schemas.Ptr("tool_calls"), Usage: &schemas.ResponsesResponseUsage{InputTokens: 15, OutputTokens: 51, TotalTokens: 66}}})
+			var toolIndexes []int64
+			for i, event := range events {
+				event.ExtraFields.ResolvedModelUsed = model // Only the lifecycle events have Response.
+				_, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, event)
+				require.NoError(t, err)
+				encoded := out.(*BedrockStreamEvent)
+				require.Len(t, encoded.InvokeModelRawChunks, 1)
+				raw := encoded.InvokeModelRawChunks[0]
+				require.Equal(t, "chat.completion.chunk", gjson.GetBytes(raw, "object").String(), "%s", raw)
+				assert.Equal(t, "chat_1", gjson.GetBytes(raw, "id").String())
+				assert.Equal(t, int64(123), gjson.GetBytes(raw, "created").Int())
+				assert.Equal(t, model, gjson.GetBytes(raw, "model").String())
+				assert.False(t, gjson.GetBytes(raw, "extra_fields").Exists())
+				if i == 0 {
+					assert.Equal(t, "assistant", gjson.GetBytes(raw, "choices.0.delta.role").String())
+				}
+				if calls := gjson.GetBytes(raw, "choices.0.delta.tool_calls").Array(); len(calls) > 0 {
+					toolIndexes = append(toolIndexes, calls[0].Get("index").Int())
+				}
+				if i == len(events)-1 {
+					assert.Equal(t, "tool_calls", gjson.GetBytes(raw, "choices.0.finish_reason").String())
+					assert.Equal(t, int64(66), gjson.GetBytes(raw, "usage.total_tokens").Int())
+				} else {
+					assert.False(t, gjson.GetBytes(raw, "usage").Exists())
+				}
+			}
+			assert.Equal(t, []int64{0, 0, 1, 1}, toolIndexes)
+		})
+	}
+}
+
+func TestToBedrockInvokeMessagesStreamResponse_MistralSkipsLifecycle(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, typ := range []schemas.ResponsesStreamResponseType{schemas.ResponsesStreamResponseTypeInProgress, schemas.ResponsesStreamResponseTypeContentPartAdded, schemas.ResponsesStreamResponseTypeContentPartDone, schemas.ResponsesStreamResponseTypeOutputTextDone, schemas.ResponsesStreamResponseTypeOutputItemDone, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone} {
+		_, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{Type: typ, ExtraFields: schemas.BifrostResponseExtraFields{ResolvedModelUsed: "mistral.mistral-large-3-675b-instruct"}})
+		require.NoError(t, err)
+		assert.Nil(t, out, "%s must not become an extra chat delta", typ)
+	}
+}
+
+func TestToBedrockInvokeMessagesStreamResponse_MistralIncompleteAndAlias(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{ModelID: "mistral.mistral-large-3-675b-instruct"}})
+	_, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeIncomplete, Response: &schemas.BifrostResponsesResponse{IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens}}})
+	require.NoError(t, err)
+	raw := out.(*BedrockStreamEvent).InvokeModelRawChunks[0]
+	assert.Equal(t, "length", gjson.GetBytes(raw, "choices.0.finish_reason").String())
+	assert.Equal(t, "mistral.mistral-large-3-675b-instruct", gjson.GetBytes(raw, "model").String())
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKey("bedrock-invoke-mistral-stream-state")))
+}
+
+func TestToBedrockInvokeMessagesStreamResponse_MistralNewAttempt(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	const model = "mistral.mistral-large-3-675b-instruct"
+	for i, id := range []string{"first-attempt", "second-attempt"} {
+		_, _, err := ToBedrockInvokeMessagesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCreated, Response: &schemas.BifrostResponsesResponse{ID: &id, CreatedAt: 123 + i, Model: model}})
+		require.NoError(t, err)
+		index := 3 - i
+		_, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: &index, ExtraFields: schemas.BifrostResponseExtraFields{ResolvedModelUsed: model}, Item: &schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("weather")}}})
+		require.NoError(t, err)
+		raw := out.(*BedrockStreamEvent).InvokeModelRawChunks[0]
+		assert.Equal(t, id, gjson.GetBytes(raw, "id").String())
+		assert.Equal(t, int64(123+i), gjson.GetBytes(raw, "created").Int())
+		assert.Equal(t, int64(0), gjson.GetBytes(raw, "choices.0.delta.tool_calls.0.index").Int())
+	}
+}
+
+func TestToBedrockInvokeMessagesStreamResponse_NovaEarlyModel(t *testing.T) {
+	_, out, err := ToBedrockInvokeMessagesStreamResponse(nil, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("hello"), ExtraFields: schemas.BifrostResponseExtraFields{ResolvedModelUsed: "amazon.nova-pro-v1:0"}})
+	require.NoError(t, err)
+	event := out.(*BedrockStreamEvent)
+	assert.Empty(t, event.InvokeModelRawChunks)
+	require.NotNil(t, event.Delta)
+	assert.Equal(t, "hello", *event.Delta.Text)
+}
+
+func BenchmarkBedrockInvokeMessagesResponse(b *testing.B) {
+	for _, model := range []string{"mistral.mistral-large-3-675b-instruct", "anthropic.claude-3-sonnet-20240229-v1:0"} {
+		b.Run(model, func(b *testing.B) {
+			resp := mistralInvokeTestResponse(b, `[{"text":"hello"}]`, "end_turn")
+			resp.Model = model
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				out, err := ToBedrockInvokeMessagesResponse(ctx, resp)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := providerUtils.MarshalSorted(out); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkBedrockInvokeMessagesStreamResponse(b *testing.B) {
+	for _, model := range []string{"mistral.mistral-large-3-675b-instruct", "anthropic.claude-3-sonnet-20240229-v1:0"} {
+		b.Run(model, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			event := &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("hello"), ExtraFields: schemas.BifrostResponseExtraFields{ResolvedModelUsed: model}}
+			_, _, _ = ToBedrockInvokeMessagesStreamResponse(ctx, event)
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, _, err := ToBedrockInvokeMessagesStreamResponse(ctx, event); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

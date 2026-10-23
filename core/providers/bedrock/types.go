@@ -860,6 +860,20 @@ type BedrockInvokeMessagesOutputTokensDetails struct {
 	ThinkingTokens int `json:"thinking_tokens"` // Subset of output_tokens, never additive
 }
 
+// BedrockInvokeMistralResponse is the native chat-completion envelope used by
+// messages-based Mistral InvokeModel calls, including streaming chunk payloads.
+type BedrockInvokeMistralResponse struct {
+	ID      string                          `json:"id"`
+	Object  string                          `json:"object"`
+	Created int                             `json:"created"`
+	Model   string                          `json:"model"`
+	Choices []schemas.BifrostResponseChoice `json:"choices"`
+	Usage   *BedrockInvokeAI21Usage         `json:"usage,omitempty"`
+
+	GuardrailAction string          `json:"amazon-bedrock-guardrailAction,omitempty"`
+	Trace           json.RawMessage `json:"amazon-bedrock-trace,omitempty"`
+}
+
 // BedrockInvokeAI21Response represents AI21 Jamba's InvokeModel response format.
 type BedrockInvokeAI21Response struct {
 	ID      string                    `json:"id"`
