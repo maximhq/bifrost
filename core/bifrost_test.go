@@ -599,6 +599,142 @@ func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
 	}
 }
 
+func TestCreateBaseProvider_CustomConfigIsNotSharedAcrossProviders(t *testing.T) {
+	client := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	shared := &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
+	firstConfig := &schemas.ProviderConfig{CustomProviderConfig: shared}
+	secondConfig := &schemas.ProviderConfig{CustomProviderConfig: shared}
+	first, err := client.createBaseProvider("first-registration", firstConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := client.createBaseProvider("second-registration", secondConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shared.CustomProviderKey != "" {
+		t.Error("constructor mutated the shared account custom configuration")
+	}
+	if first.GetProviderKey() != "first-registration" || second.GetProviderKey() != "second-registration" {
+		t.Fatalf("provider identities were aliased: first=%q second=%q", first.GetProviderKey(), second.GetProviderKey())
+	}
+}
+
+func TestInitializeProvider_ConcurrentCallsDoNotRebuild(t *testing.T) {
+	account := NewMockAccount()
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const provider schemas.ModelProvider = "concurrent-registration"
+	defer func() {
+		_ = client.RemoveProvider(provider)
+		client.Shutdown()
+	}()
+	config := &schemas.ProviderConfig{
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 2},
+		CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+	}
+	account.mu.Lock()
+	account.configs[provider] = config
+	account.mu.Unlock()
+	const callers = 32
+	errors := make(chan error, callers)
+	instances := make(chan schemas.Provider, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := client.InitializeProvider(provider); err != nil {
+				errors <- err
+				return
+			}
+			instances <- client.GetProviderByKey(provider)
+		}()
+	}
+	wg.Wait()
+	close(errors)
+	close(instances)
+	for err := range errors {
+		t.Error(err)
+	}
+	instance := client.GetProviderByKey(provider)
+	for got := range instances {
+		if got != instance {
+			t.Error("concurrent initialization replaced the active provider")
+		}
+	}
+	active, err := client.GetConfiguredProviders()
+	if err != nil || len(active) != 1 || active[0] != provider {
+		t.Fatalf("unexpected active providers: %v (error: %v)", active, err)
+	}
+	// Initialize is idempotent, but the existing explicit update must still rebuild.
+	if err := client.UpdateProvider(provider); err != nil {
+		t.Fatal(err)
+	}
+	if client.GetProviderByKey(provider) == instance {
+		t.Error("explicit update no longer rebuilds the provider")
+	}
+}
+
+func TestUpdateProvider_FailedInitializationDoesNotPublishRuntimeState(t *testing.T) {
+	account := NewMockAccount()
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Shutdown()
+	provider := schemas.ModelProvider("failed-registration")
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(provider) })
+	config := &schemas.ProviderConfig{
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 2},
+		CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex},
+	}
+	account.mu.Lock()
+	account.configs[provider] = config
+	account.mu.Unlock()
+	if err := client.UpdateProvider(provider); err == nil || !strings.Contains(err.Error(), "unsupported base provider type") {
+		t.Fatalf("expected constructor failure, got %v", err)
+	}
+	if _, ok := client.requestQueues.Load(provider); ok {
+		t.Error("failed constructor published a request queue")
+	}
+	if _, ok := client.waitGroups.Load(provider); ok {
+		t.Error("failed constructor published a worker wait group")
+	}
+	active, err := client.GetConfiguredProviders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(active, provider) || schemas.IsKnownProvider(string(provider)) {
+		t.Error("failed constructor published a provider or model prefix")
+	}
+	// Retrying a corrected configuration must take the new-provider path, not
+	// attempt to replace a queue that has no corresponding provider instance.
+	corrected := *config
+	corrected.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
+	account.mu.Lock()
+	account.configs[provider] = &corrected
+	account.mu.Unlock()
+	if err := client.UpdateProvider(provider); err != nil {
+		t.Fatalf("corrected configuration could not be registered: %v", err)
+	}
+	active, err = client.GetConfiguredProviders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(active, provider) || !schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("corrected provider was not registered")
+	}
+	if err := client.RemoveProvider(provider); err != nil {
+		t.Fatal(err)
+	}
+	if schemas.IsKnownProvider(string(provider)) {
+		t.Error("removed provider prefix is still registered")
+	}
+}
+
 func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	providerConfig := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{

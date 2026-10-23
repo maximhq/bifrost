@@ -4216,6 +4216,13 @@ func (bifrost *Bifrost) RemoveProvider(providerKey schemas.ModelProvider) error 
 	return nil
 }
 
+// InitializeProvider initializes a configured provider without rebuilding an
+// already active instance. The existence check and initialization share the
+// provider lifecycle lock, so concurrent callers cannot create duplicate workers.
+func (bifrost *Bifrost) InitializeProvider(providerKey schemas.ModelProvider) error {
+	return bifrost.updateProvider(providerKey, true)
+}
+
 // UpdateProvider dynamically updates a provider with new configuration.
 // This method gracefully recreates the provider instance with updated settings,
 // stops existing workers, creates a new queue with updated settings,
@@ -4238,6 +4245,10 @@ func (bifrost *Bifrost) RemoveProvider(providerKey schemas.ModelProvider) error 
 // waited on. This avoids high-load updates blocking new requests behind the
 // provider read lock while slow in-flight old-worker requests finish.
 func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error {
+	return bifrost.updateProvider(providerKey, false)
+}
+
+func (bifrost *Bifrost) updateProvider(providerKey schemas.ModelProvider, initializeOnly bool) error {
 	bifrost.providerLifecycleMu.RLock()
 	defer bifrost.providerLifecycleMu.RUnlock()
 	if bifrost.ctx.Err() != nil {
@@ -4265,6 +4276,9 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 		bifrost.logger.Debug("provider %s not currently active, initializing with new configuration", providerKey)
 		// If provider doesn't exist, just prepare it with new configuration
 		return bifrost.prepareProvider(providerKey, providerConfig)
+	}
+	if initializeOnly {
+		return nil
 	}
 
 	oldPq := oldPqValue.(*ProviderQueue)
@@ -4990,8 +5004,11 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 			return nil, fmt.Errorf("unsupported base provider type: %s", config.CustomProviderConfig.BaseProviderType)
 		}
 
-		// Automatically set the custom provider key to the provider name
-		config.CustomProviderConfig.CustomProviderKey = string(providerKey)
+		// Provider constructors retain this block. Detach it from account-owned
+		// config before assigning identity, which must stay unique per instance.
+		customConfig := *config.CustomProviderConfig
+		customConfig.CustomProviderKey = string(providerKey)
+		config.CustomProviderConfig = &customConfig
 
 		targetProviderKey = config.CustomProviderConfig.BaseProviderType
 	}
@@ -5078,6 +5095,13 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 // It initializes the request queue and starts worker goroutines for processing requests.
 // Note: This function assumes the caller has already acquired the appropriate mutex for the provider.
 func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) error {
+	// A constructor failure must not publish a queue without a provider or
+	// workers. Leave no runtime state behind so a corrected config can retry.
+	provider, err := bifrost.createBaseProvider(providerKey, config)
+	if err != nil {
+		return fmt.Errorf("failed to create provider for the given key: %w", err)
+	}
+
 	// Create ProviderQueue with lifecycle management
 	pq := &ProviderQueue{
 		queue:      make(chan *ChannelMessage, config.ConcurrencyAndBufferSize.BufferSize),
@@ -5089,11 +5113,6 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 
 	// Start specified number of workers
 	bifrost.waitGroups.Store(providerKey, &sync.WaitGroup{})
-
-	provider, err := bifrost.createBaseProvider(providerKey, config)
-	if err != nil {
-		return fmt.Errorf("failed to create provider for the given key: %v", err)
-	}
 
 	waitGroupValue, _ := bifrost.waitGroups.Load(providerKey)
 	currentWaitGroup := waitGroupValue.(*sync.WaitGroup)
@@ -5169,8 +5188,9 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*Pr
 	return pq, nil
 }
 
-// GetProviderByKey returns the provider instance for the given provider key.
-// Returns nil if no provider with the given key exists.
+// GetProviderByKey returns the provider instance, initializing it from account
+// configuration or supported dynamic defaults on a miss. Returns nil if it cannot
+// be initialized. Use GetConfiguredProviders for a side-effect-free snapshot.
 func (bifrost *Bifrost) GetProviderByKey(providerKey schemas.ModelProvider) schemas.Provider {
 	return bifrost.getProviderByKey(providerKey)
 }
@@ -5536,8 +5556,8 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 	}, nil
 }
 
-// getProviderByKey retrieves a provider instance from the providers array by its provider key.
-// Returns the provider if found, or nil if no provider with the given key exists.
+// getProviderByKey retrieves a provider instance, initializing it from account
+// configuration on a miss. Returns nil if the provider cannot be initialized.
 func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) schemas.Provider {
 	providers := bifrost.providers.Load()
 	if providers == nil {

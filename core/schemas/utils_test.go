@@ -230,6 +230,27 @@ func TestParseModelString(t *testing.T) {
 	})
 }
 
+func BenchmarkParseModelString(b *testing.B) {
+	custom := ModelProvider("benchmark-registration")
+	RegisterKnownProvider(custom)
+	b.Cleanup(func() { UnregisterKnownProvider(custom) })
+	for _, tc := range []struct {
+		name, model string
+	}{
+		{"standard", "openai/gpt-4o"},
+		{"custom", "benchmark-registration/gpt-4o"},
+		{"namespace", "meta-llama/Llama-3.1-8B"},
+		{"bare", "gpt-4o"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ParseModelString(tc.model, "")
+			}
+		})
+	}
+}
+
 func TestIsClefModel(t *testing.T) {
 	for _, model := range []string{"clef", "clef-flash", "clef-omni", "@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "@cf/cloudflare/clef-omni"} {
 		assert.True(t, IsClefModel(model), model)
