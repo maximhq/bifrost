@@ -3,6 +3,7 @@ package integrations
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -800,4 +801,49 @@ func TestOpenAIRawPassthroughSkipsConvertedRequests(t *testing.T) {
 		}
 	}
 	require.Positive(t, checked, "no OpenAI chat/text/responses converters found")
+}
+
+func TestOpenAIBatchExtensionRoutes(t *testing.T) {
+	routes := CreateOpenAIBatchRouteConfigs("/openai", &mockHandlerStore{})
+	for _, method := range []string{"GET", "DELETE"} {
+		for _, provider := range []schemas.ModelProvider{schemas.OpenRouter, schemas.Gemini, schemas.Vertex} {
+			path := "/openai/v1/batches/{batch_id}"
+			if method == "GET" {
+				path += "/results"
+			}
+			var selected *RouteConfig
+			for i := range routes {
+				if routes[i].Path == path && routes[i].Method == method {
+					selected = &routes[i]
+					break
+				}
+			}
+			require.NotNil(t, selected)
+			request := selected.GetRequestTypeInstance(context.Background())
+			var ctx fasthttp.RequestCtx
+			id := "batch-1"
+			expected := id
+			if provider == schemas.Gemini {
+				id = "batches-test"
+				expected = "batches/test"
+			}
+			if provider == schemas.Vertex {
+				expected = "projects/p/locations/l/batchPredictionJobs/x"
+				id = base64.RawURLEncoding.EncodeToString([]byte(expected))
+			}
+			ctx.SetUserValue("batch_id", id)
+			ctx.QueryArgs().Set("provider", string(provider))
+			require.NoError(t, selected.PreCallback(&ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request))
+			converted, err := selected.BatchRequestConverter(nil, request)
+			require.NoError(t, err)
+			if method == "DELETE" {
+				require.Equal(t, provider, converted.DeleteRequest.Provider)
+				require.Equal(t, expected, converted.DeleteRequest.BatchID)
+			} else {
+				require.Equal(t, provider, converted.ResultsRequest.Provider)
+				require.Equal(t, expected, converted.ResultsRequest.BatchID)
+			}
+		}
+	}
+	var _ RequestWithSettableExtraParams = (*schemas.BifrostBatchCreateRequest)(nil)
 }

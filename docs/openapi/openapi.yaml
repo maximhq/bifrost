@@ -360,6 +360,8 @@ paths:
     $ref: "./paths/integrations/openai/batch.yaml#/batches"
   /openai/v1/batches/{batch_id}:
     $ref: "./paths/integrations/openai/batch.yaml#/batches-by-id"
+  /openai/v1/batches/{batch_id}/results:
+    $ref: "./paths/integrations/openai/batch.yaml#/batches-results"
   /openai/v1/batches/{batch_id}/cancel:
     $ref: "./paths/integrations/openai/batch.yaml#/batches-cancel"
 

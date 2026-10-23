@@ -8110,6 +8110,92 @@
       }
     },
     "/v1/batches/{batch_id}": {
+      "delete": {
+        "operationId": "deleteBatch",
+        "summary": "Delete a terminal batch",
+        "description": "Deletes a finished batch. This operation is not cancellation.",
+        "tags": [
+          "Batch"
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Batch deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "object": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "validating",
+                        "failed",
+                        "in_progress",
+                        "finalizing",
+                        "completed",
+                        "expired",
+                        "cancelling",
+                        "canceled",
+                        "cancelled",
+                        "deleted",
+                        "ended"
+                      ]
+                    },
+                    "deletion": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Batch is still active or results are not ready"
+          },
+          "503": {
+            "description": "Configured batch settlement has not completed; retry cleanup"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
       "get": {
         "operationId": "retrieveBatch",
         "summary": "Retrieve a batch job",
@@ -8235,6 +8321,8 @@
                         "expired",
                         "cancelling",
                         "canceled",
+                        "cancelled",
+                        "deleted",
                         "ended"
                       ]
                     },
@@ -8350,6 +8438,92 @@
                 "schema": {
                   "type": "object",
                   "properties": {
+                    "model": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "validating",
+                        "failed",
+                        "in_progress",
+                        "finalizing",
+                        "completed",
+                        "expired",
+                        "cancelling",
+                        "canceled",
+                        "cancelled",
+                        "deleted",
+                        "ended"
+                      ]
+                    },
+                    "usage": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/BifrostLLMUsage"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "is_byok": {
+                              "type": "boolean"
+                            },
+                            "cost_details": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "number"
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "request_counts": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer"
+                        },
+                        "completed": {
+                          "type": "integer"
+                        },
+                        "failed": {
+                          "type": "integer"
+                        },
+                        "succeeded": {
+                          "type": "integer"
+                        },
+                        "expired": {
+                          "type": "integer"
+                        },
+                        "canceled": {
+                          "type": "integer"
+                        },
+                        "pending": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "error_type": {
+                          "type": "string"
+                        }
+                      }
+                    },
                     "batch_id": {
                       "type": "string"
                     },
@@ -8358,6 +8532,9 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "id": {
+                            "type": "string"
+                          },
                           "custom_id": {
                             "type": "string"
                           },
@@ -8393,6 +8570,15 @@
                                 "type": "string"
                               },
                               "message": {
+                                "type": "string"
+                              },
+                              "type": {
+                                "type": "string"
+                              },
+                              "param": {
+                                "type": "string"
+                              },
+                              "error_type": {
                                 "type": "string"
                               }
                             }
@@ -18959,6 +19145,92 @@
       }
     },
     "/openai/v1/batches/{batch_id}": {
+      "delete": {
+        "operationId": "openaiDeleteBatch",
+        "summary": "Delete a terminal batch",
+        "description": "Deletes a finished batch. This operation is not cancellation.",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Batch deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "object": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "validating",
+                        "failed",
+                        "in_progress",
+                        "finalizing",
+                        "completed",
+                        "expired",
+                        "cancelling",
+                        "canceled",
+                        "cancelled",
+                        "deleted",
+                        "ended"
+                      ]
+                    },
+                    "deletion": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Batch is still active or results are not ready"
+          },
+          "503": {
+            "description": "Configured batch settlement has not completed; retry cleanup"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      },
       "get": {
         "operationId": "openaiRetrieveBatch",
         "summary": "Retrieve batch job (OpenAI format)",
@@ -19030,6 +19302,218 @@
         ]
       }
     },
+    "/openai/v1/batches/{batch_id}/results": {
+      "get": {
+        "operationId": "openaiGetBatchResults",
+        "summary": "Get normalized batch results",
+        "description": "Bifrost extension; OpenRouter retrieves these inline from its batch resource.",
+        "tags": [
+          "OpenAI Integration"
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Batch results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "model": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "validating",
+                        "failed",
+                        "in_progress",
+                        "finalizing",
+                        "completed",
+                        "expired",
+                        "cancelling",
+                        "canceled",
+                        "cancelled",
+                        "deleted",
+                        "ended"
+                      ]
+                    },
+                    "usage": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/BifrostLLMUsage"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "is_byok": {
+                              "type": "boolean"
+                            },
+                            "cost_details": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "number"
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "request_counts": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer"
+                        },
+                        "completed": {
+                          "type": "integer"
+                        },
+                        "failed": {
+                          "type": "integer"
+                        },
+                        "succeeded": {
+                          "type": "integer"
+                        },
+                        "expired": {
+                          "type": "integer"
+                        },
+                        "canceled": {
+                          "type": "integer"
+                        },
+                        "pending": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "error_type": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "batch_id": {
+                      "type": "string"
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "custom_id": {
+                            "type": "string"
+                          },
+                          "response": {
+                            "type": "object",
+                            "properties": {
+                              "status_code": {
+                                "type": "integer"
+                              },
+                              "request_id": {
+                                "type": "string"
+                              },
+                              "body": {
+                                "type": "object"
+                              }
+                            }
+                          },
+                          "result": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string"
+                              },
+                              "message": {
+                                "type": "object"
+                              }
+                            }
+                          },
+                          "error": {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "type": "string"
+                              },
+                              "message": {
+                                "type": "string"
+                              },
+                              "type": {
+                                "type": "string"
+                              },
+                              "param": {
+                                "type": "string"
+                              },
+                              "error_type": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    },
+                    "next_cursor": {
+                      "type": "string"
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Batch results are not ready"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/openai/v1/batches/{batch_id}/cancel": {
       "post": {
         "operationId": "openaiCancelBatch",
@@ -19082,6 +19566,8 @@
                         "expired",
                         "cancelling",
                         "canceled",
+                        "cancelled",
+                        "deleted",
                         "ended"
                       ]
                     },
@@ -119839,6 +120325,33 @@
           "model"
         ],
         "properties": {
+          "provider": {
+            "description": "Native OpenRouter provider preferences on the neutral route; Bifrost provider name on SDK routes.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "only": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "allow_fallbacks": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            ]
+          },
+          "extra_params": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "SDK provider parameters, enabled with x-bf-passthrough-extra-params."
+          },
           "model": {
             "type": "string",
             "description": "Model in provider/model format"
@@ -119899,6 +120412,57 @@
       "BatchCreateResponse": {
         "type": "object",
         "properties": {
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "description": "Upstream provider selected by OpenRouter"
+          },
+          "usage": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BifrostLLMUsage"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "is_byok": {
+                    "type": "boolean"
+                  },
+                  "cost_details": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "param": {
+                "type": "string"
+              },
+              "error_type": {
+                "type": "string"
+              }
+            }
+          },
+          "finalized_at": {
+            "type": "integer"
+          },
           "id": {
             "type": "string"
           },
@@ -119925,6 +120489,8 @@
               "expired",
               "cancelling",
               "canceled",
+              "cancelled",
+              "deleted",
               "ended"
             ]
           },
@@ -120020,6 +120586,116 @@
       "BatchRetrieveResponse": {
         "type": "object",
         "properties": {
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "description": "Upstream provider selected by OpenRouter"
+          },
+          "usage": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BifrostLLMUsage"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "is_byok": {
+                    "type": "boolean"
+                  },
+                  "cost_details": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "param": {
+                "type": "string"
+              },
+              "error_type": {
+                "type": "string"
+              }
+            }
+          },
+          "finalized_at": {
+            "type": "integer"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "custom_id": {
+                  "type": "string"
+                },
+                "response": {
+                  "type": "object",
+                  "properties": {
+                    "status_code": {
+                      "type": "integer"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "result": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "error": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    },
+                    "param": {
+                      "type": "string"
+                    },
+                    "error_type": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "id": {
             "type": "string"
           },
@@ -120046,6 +120722,8 @@
               "expired",
               "cancelling",
               "canceled",
+              "cancelled",
+              "deleted",
               "ended"
             ]
           },

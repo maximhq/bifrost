@@ -27,10 +27,10 @@ OpenRouter is an **OpenAI-compatible provider routing service** that accesses mo
 | Decisions | ✅ | - | `/v1/decisions` |
 | Image Generation | ❌ | ❌ | - |
 | Files | ❌ | ❌ | - |
-| Batch | ❌ | ❌ | - |
+| Batch | ✅ | - | `/v1/batches` |
 
 <Note>
-**Unsupported Operations** (❌): Image Generation, Files, Batch, and streaming Speech/Transcriptions are not supported by the upstream OpenRouter API. These return a `BifrostError` with an error code of `"unsupported_operation"`.
+**Unsupported Operations** (❌): Image Generation, Files, and streaming Speech/Transcriptions are not implemented by Bifrost’s OpenRouter provider. These return a `BifrostError` with an error code of `"unsupported_operation"`.
 
 **Note**: OpenRouter's Responses API is currently in **beta**.
 </Note>
@@ -326,7 +326,7 @@ OpenRouter decides which models it serves for decisions. A new decision model wo
 | Image Generation | Not offered by OpenRouter API |
 | Streaming Speech/TTS | Not offered by OpenRouter API |
 | Streaming Transcription/STT | Not offered by OpenRouter API |
-| Batch Operations | Not offered by OpenRouter API |
+| Batch Operations | Native inline submission, listing, retrieval, results, and terminal deletion |
 | File Management | Not offered by OpenRouter API |
 
 ---
@@ -353,3 +353,68 @@ OpenRouter decides which models it serves for decisions. A new decision model wo
 **Impact**: Longer user identifiers are lost
 **Code**: SanitizeUserField enforces 64-char max
 </Accordion>
+
+
+## Native Batch API
+
+Bifrost supports [OpenRouter’s native Batch API](https://openrouter.ai/docs/batch-quickstart) using the existing batch interfaces. Enable **Use for Batch APIs** (`use_for_batch_api: true`) on at least one registered OpenRouter key; an ordinary synchronous key is not selected for batch operations until this is enabled.
+
+A batch contains one model, one endpoint, and inline `{ custom_id, body }` requests. Supported endpoints are `/v1/chat/completions`, `/v1/responses`, `/v1/messages`, and `/v1/embeddings`. Each body uses that endpoint’s native shape. IDs must be nonempty and unique; a body-level model, when supplied, must match the batch model. No input-file upload is required or supported. `completion_window` defaults to `24h` and only accepts that value; poll the returned status rather than assuming every upstream provider expires at exactly 24 hours.
+
+```bash
+curl http://localhost:8080/v1/batches \
+  -H 'Content-Type: application/json' \
+  -H 'x-bf-vk: YOUR_VIRTUAL_KEY' \
+  -d '{
+    "model": "openrouter/openai/gpt-4o-mini",
+    "endpoint": "/v1/chat/completions",
+    "provider": {"only": ["openai"], "allow_fallbacks": false},
+    "requests": [{
+      "custom_id": "request-1",
+      "body": {"messages": [{"role": "user", "content": "Say hello."}], "max_tokens": 16}
+    }]
+  }'
+```
+
+OpenRouter’s upstream `202 Accepted` is handled as success. Bifrost keeps its normalized batch-create HTTP `200` contract. Acceptance precedes asynchronous validation: a subsequent retrieval can report `status: "failed"` with an `error`. Do not treat creation as proof that every request is valid.
+
+| Operation | Gateway route |
+|-----------|---------------|
+| Submit | `POST /v1/batches` |
+| List | `GET /v1/batches?provider=openrouter` |
+| Retrieve status and inline results | `GET /v1/batches/{id}?provider=openrouter` |
+| Retrieve normalized results | `GET /v1/batches/{id}/results?provider=openrouter` |
+| Delete a terminal batch | `DELETE /v1/batches/{id}?provider=openrouter` |
+
+Results and status use the same upstream GET resource: there is no output-file download. Match results on `custom_id`, not array order; completed batches may contain both successes and per-request errors. Fetching results before they are ready returns `409`. Deletion is not cancellation, and active batches cannot be deleted. Cancellation remains unsupported. With accounting configured, deletion first settles results through the normal pipeline; cleanup is deferred if settlement cannot finish.
+
+### Provider options and SDK routing
+
+OpenRouter batches accept `provider.only` and `provider.allow_fallbacks`, not synchronous preferences such as `order` or `sort`. Embeddings batches do not accept provider preferences. Optional `callback_url` is forwarded to OpenRouter and must be HTTPS; OpenRouter validates public reachability. Bifrost itself does not receive these callbacks: its accounting sweeper polls provider jobs.
+
+The OpenAI SDK routes also support batches. Their top-level `provider` selects **Bifrost’s** provider, so put OpenRouter’s preferences in the existing `extra_params` envelope and enable its passthrough header:
+
+```python
+batch = client.batches.create(
+    input_file_id="",  # The SDK signature is file-oriented; Bifrost uses requests below.
+    endpoint="/v1/chat/completions",
+    completion_window="24h",
+    extra_headers={"x-bf-passthrough-extra-params": "true"},
+    extra_body={
+        "provider": "openrouter",
+        "model": "openai/gpt-4o-mini",
+        "extra_params": {"provider": {"only": ["openai"]}},
+        "requests": [{"custom_id": "request-1", "body": {
+            "messages": [{"role": "user", "content": "Say hello."}], "max_tokens": 16
+        }}],
+    },
+)
+```
+
+Use `extra_query={"provider": "openrouter"}` on SDK list/retrieve calls. Bifrost additionally exposes `/openai/v1/batches/{id}/results` and `DELETE /openai/v1/batches/{id}`; SDK versions without these methods can use their low-level HTTP client. Go SDK callers use `BifrostBatchCreateRequest.Requests` and `ExtraParams["provider"]` directly. Listing returns one workspace page using the first successful eligible credential; pin a key with `x-bf-api-key-id` to select another workspace. List filters include `limit` (1–100), `after`, repeated `status`, `created_after`, and `created_before`.
+
+### Ownership and accounting
+
+Batch operations use the existing virtual-key object-ownership checks. Recorded foreign batches are hidden or return `404`; requests without a virtual key and unrecorded/external objects retain Bifrost’s existing access policy. Upstream workspace-wide visibility does not bypass recorded ownership. Leave `client.enforce_vk_object_ownership` enabled to enforce this boundary.
+
+With logging, a config store, and a pricing manager configured, aggregate usage and OpenRouter’s reported charge settle through Bifrost’s existing provider-job engine. Repeated polling/results retrieval displays the settled charge without billing again. Explicit zero charges remain zero, including during cost recalculation. For BYOK, this is **OpenRouter’s fee only**; inference billed directly by the upstream provider is separate. `usage.is_byok` and `usage.cost_details` are preserved; Bifrost normalizes `usage.cost` into its cost object. As with existing provider jobs, distributed governance reporting is at-least-once under marker-write failures, not a new exactly-once guarantee.

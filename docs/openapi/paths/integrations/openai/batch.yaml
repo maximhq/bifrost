@@ -74,6 +74,38 @@ batches:
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 batches-by-id:
+  delete:
+    operationId: openaiDeleteBatch
+    summary: Delete a terminal batch
+    description: Deletes a finished batch. This operation is not cancellation.
+    tags:
+    - OpenAI Integration
+    parameters:
+    - name: batch_id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: provider
+      in: query
+      required: true
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Batch deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/inference/batch.yaml#/BatchDeleteResponse'
+      '409':
+        description: Batch is still active or results are not ready
+      '503':
+        description: Configured batch settlement has not completed; retry cleanup
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   get:
     operationId: openaiRetrieveBatch
     summary: Retrieve batch job (OpenAI format)
@@ -144,6 +176,37 @@ batches-cancel:
         $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+batches-results:
+  get:
+    operationId: openaiGetBatchResults
+    summary: Get normalized batch results
+    description: Bifrost extension; OpenRouter retrieves these inline from its batch resource.
+    tags:
+    - OpenAI Integration
+    parameters:
+    - name: batch_id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: provider
+      in: query
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Batch results
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/inference/batch.yaml#/BatchResultsResponse'
+      '409':
+        description: Batch results are not ready
     security:
     - BearerAuth: []
     - VirtualKeyAuth: []

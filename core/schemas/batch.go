@@ -98,6 +98,8 @@ func (d *BifrostBatchDebug) IsZero() bool {
 // separate log row for that HTTP call — Cost on THAT row is a read-only echo
 // of the aggregate row's price so the caller can display it too; see Cost below.
 type BatchAccountingDebug struct {
+	IsBYOK          *bool                          `json:"is_byok,omitempty"`
+	CostDetails     map[string]float64             `json:"cost_details,omitempty"`
 	ModelBreakdowns map[string]BatchModelBreakdown `json:"model_breakdowns,omitempty"`
 	Cost            *float64                       `json:"cost,omitempty"`
 	// ParseErrorCount is how many result rows the provider returned that could not
@@ -181,6 +183,11 @@ type BatchExpiresAfter struct {
 	Seconds int    `json:"seconds"` // 3600-2592000 (1 hour to 30 days)
 }
 
+// SetExtraParams implements the SDK router's existing extra_params passthrough contract.
+func (request *BifrostBatchCreateRequest) SetExtraParams(params map[string]any) {
+	request.ExtraParams = params
+}
+
 // GetRawRequestBody returns the raw request body.
 func (request *BifrostBatchCreateRequest) GetRawRequestBody() []byte {
 	return request.RawRequestBody
@@ -188,6 +195,12 @@ func (request *BifrostBatchCreateRequest) GetRawRequestBody() []byte {
 
 // BifrostBatchCreateResponse represents the response from creating a batch job.
 type BifrostBatchCreateResponse struct {
+	Model       string            `json:"model,omitempty"`
+	Provider    string            `json:"provider,omitempty"`
+	Usage       *BatchUsage       `json:"usage,omitempty"` // Deferred provider work, not usage of this metadata call.
+	Error       *BatchResultError `json:"error,omitempty"`
+	FinalizedAt *int64            `json:"finalized_at,omitempty"`
+
 	ID               string             `json:"id"`
 	Object           string             `json:"object,omitempty"`       // "batch" for OpenAI
 	DisplayName      *string            `json:"display_name,omitempty"` // Human-readable job name (e.g. Vertex displayName)
@@ -270,6 +283,13 @@ func (request *BifrostBatchRetrieveRequest) GetRawRequestBody() []byte {
 
 // BifrostBatchRetrieveResponse represents the response from retrieving a batch job.
 type BifrostBatchRetrieveResponse struct {
+	Model       string            `json:"model,omitempty"`
+	Provider    string            `json:"provider,omitempty"`
+	Usage       *BatchUsage       `json:"usage,omitempty"` // Deferred provider work, not usage of this metadata call.
+	Error       *BatchResultError `json:"error,omitempty"`
+	FinalizedAt *int64            `json:"finalized_at,omitempty"`
+	Results     []BatchResultItem `json:"results,omitempty"`
+
 	ID               string             `json:"id"`
 	Object           string             `json:"object,omitempty"`
 	DisplayName      *string            `json:"display_name,omitempty"` // Human-readable job name (e.g. Vertex displayName)
@@ -360,6 +380,7 @@ func (request *BifrostBatchDeleteRequest) GetRawRequestBody() []byte {
 
 // BifrostBatchDeleteResponse represents the response from deleting a batch job.
 type BifrostBatchDeleteResponse struct {
+	Deletion      map[string]any     `json:"deletion,omitempty"`
 	ID            string             `json:"id"`
 	Object        string             `json:"object,omitempty"`
 	Status        BatchStatus        `json:"status"`
@@ -390,6 +411,7 @@ func (request *BifrostBatchResultsRequest) GetRawRequestBody() []byte {
 
 // BatchResultItem represents a single result from a batch request.
 type BatchResultItem struct {
+	ID       string `json:"id,omitempty"`
 	CustomID string `json:"custom_id"`
 
 	// Result data (varies by request type)
@@ -445,15 +467,32 @@ type BatchResultData struct {
 
 // BatchResultError represents an error for a single batch request.
 type BatchResultError struct {
-	Code    string `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Param     string `json:"param,omitempty"`
+	ErrorType string `json:"error_type,omitempty"`
+}
+
+// BatchUsage retains a provider's aggregate charge separately from per-result usage.
+// For BYOK, Cost is the gateway provider's fee, not externally billed inference.
+type BatchUsage struct {
+	BifrostLLMUsage
+	IsBYOK      *bool              `json:"is_byok,omitempty"`
+	CostDetails map[string]float64 `json:"cost_details,omitempty"`
 }
 
 // BifrostBatchResultsResponse represents the response from retrieving batch results.
 type BifrostBatchResultsResponse struct {
-	BatchID  string            `json:"batch_id"`
-	Endpoint BatchEndpoint     `json:"-"` // Internal accounting hint; provider-facing result payloads stay unchanged.
-	Results  []BatchResultItem `json:"results"`
+	Error             *BatchResultError   `json:"error,omitempty"`
+	Model             string              `json:"model,omitempty"`
+	Status            BatchStatus         `json:"status,omitempty"`
+	Usage             *BatchUsage         `json:"usage,omitempty"`
+	RequestCounts     *BatchRequestCounts `json:"request_counts,omitempty"`
+	AccountingPending bool                `json:"-"` // Prevent destructive cleanup before configured accounting succeeds.
+	BatchID           string              `json:"batch_id"`
+	Endpoint          BatchEndpoint       `json:"-"` // Internal accounting hint; provider-facing result payloads stay unchanged.
+	Results           []BatchResultItem   `json:"results"`
 
 	// For streaming results (Anthropic)
 	HasMore    bool    `json:"has_more,omitempty"`

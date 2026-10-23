@@ -515,10 +515,38 @@ func (p *LoggerPlugin) batchRunnerID(prefix string) string {
 }
 
 func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.BifrostResponse, pricingScopes *modelcatalog.PricingLookupScopes) {
-	if result == nil || result.BatchResultsResponse == nil || entry == nil || p.pricingManager == nil || p.batchStore == nil {
+	if result == nil || entry == nil || p.pricingManager == nil || p.batchStore == nil {
 		return
 	}
 	batchResp := result.BatchResultsResponse
+	if batchResp == nil && entry.Provider == string(schemas.OpenRouter) && result.BatchRetrieveResponse != nil {
+		retrieved := result.BatchRetrieveResponse
+		switch retrieved.Status {
+		case schemas.BatchStatusCompleted:
+			if retrieved.Results == nil {
+				return
+			}
+		case schemas.BatchStatusFailed, schemas.BatchStatusExpired, schemas.BatchStatusCancelled:
+		default:
+			return
+		}
+		usage := retrieved.Usage
+		if usage == nil && retrieved.Status == schemas.BatchStatusFailed && retrieved.RequestCounts.Completed == 0 {
+			usage = &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{}}}
+		}
+		if usage == nil || usage.Cost == nil {
+			// The charge is not published yet. Leave the lifecycle job pending
+			// for the sweeper instead of marking it unpriceable inline.
+			return
+		}
+		batchResp = &schemas.BifrostBatchResultsResponse{BatchID: retrieved.ID, Model: retrieved.Model,
+			Endpoint: schemas.BatchEndpoint(retrieved.Endpoint), Status: retrieved.Status, Usage: usage,
+			Results: retrieved.Results, RequestCounts: &retrieved.RequestCounts, ExtraFields: retrieved.ExtraFields}
+	}
+	if batchResp == nil {
+		return
+	}
+	batchResp.AccountingPending = true
 	if batchResp.BatchID == "" {
 		return
 	}
@@ -532,6 +560,14 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 	ctx, cancel := context.WithTimeout(p.ctx, jobAccountingTimeout)
 	defer cancel()
 
+	model := entry.Model
+	if batchResp.Model != "" {
+		model = batchResp.Model
+	}
+	status := batchResp.Status
+	if status == "" {
+		status = schemas.BatchStatusCompleted
+	}
 	claimedBy := p.batchRunnerID("logging")
 	p.mu.Lock()
 	usageReporter := p.batchUsageReporter
@@ -540,17 +576,19 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 	summary, err := jobaccounting.AccountBatchResults(ctx, p.batchStore, p.store, p.pricingManager, jobaccounting.JobRequest{
 		Provider:      schemas.ModelProvider(entry.Provider),
 		ProviderJobID: batchResp.BatchID,
-		FallbackModel: entry.Model,
-		Job:           batchJobFromEntry(entry, batchResp.BatchID, entry.Model, string(batchResp.Endpoint), string(schemas.BatchStatusCompleted)),
+		FallbackModel: model,
+		Job:           batchJobFromEntry(entry, batchResp.BatchID, model, string(batchResp.Endpoint), string(status)),
 		BaseLog:       entry,
 		Emitter:       p,
 		UsageReporter: usageReporter,
 		ClaimedBy:     claimedBy,
 		Scopes:        pricingScopes,
 		Payload: jobaccounting.BatchPayload{
-			Endpoint:    batchResp.Endpoint,
-			Results:     batchResp.Results,
-			ParseErrors: batchResp.ExtraFields.ParseErrors,
+			Endpoint:      batchResp.Endpoint,
+			Results:       batchResp.Results,
+			Usage:         batchResp.Usage,
+			RequestCounts: batchResp.RequestCounts,
+			ParseErrors:   batchResp.ExtraFields.ParseErrors,
 		},
 	})
 	if err != nil {
@@ -559,6 +597,16 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 	}
 	if summary != nil && summary.Accounted {
 		p.logger.Info("accounted batch results for provider=%s batch_id=%s cost=%f log_id=%s", entry.Provider, batchResp.BatchID, summary.Cost, summary.LogID)
+	}
+	batchResp.AccountingPending = summary == nil || !summary.Complete
+	if !batchResp.AccountingPending && entry.Provider == string(schemas.OpenRouter) && !summary.Accounted {
+		// A losing claim can display a price before its owner finishes reporting
+		// governance usage. Only the durable accounted marker permits cleanup.
+		job, lookupErr := p.batchStore.GetProviderJob(ctx, summary.JobID)
+		batchResp.AccountingPending = lookupErr != nil || job == nil || job.AccountingStatus != tables.ProviderJobAccountingStatusAccounted
+		if lookupErr != nil {
+			p.logger.Warn("failed to verify batch accounting completion for provider=%s batch_id=%s: %v", entry.Provider, batchResp.BatchID, lookupErr)
+		}
 	}
 	attachBatchResultsDisplay(entry, batchResp, summary)
 }
@@ -611,7 +659,11 @@ func (p *LoggerPlugin) accountVideoResults(entry *logstore.Log, result *schemas.
 
 func attachBatchResultsDisplay(entry *logstore.Log, batchResp *schemas.BifrostBatchResultsResponse, summary *jobaccounting.Outcome) {
 	debug := &schemas.BifrostBatchDebug{BatchID: batchResp.BatchID}
-	if counts := schemas.BatchRequestCountsFromResults(batchResp.Results); !counts.IsZero() {
+	counts := schemas.BatchRequestCountsFromResults(batchResp.Results)
+	if batchResp.RequestCounts != nil {
+		counts = *batchResp.RequestCounts
+	}
+	if !counts.IsZero() {
 		debug.RequestCounts = &counts
 	}
 	if summary != nil {
@@ -2589,9 +2641,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 		}
 		if bifrostErr == nil &&
-			requestType == schemas.BatchResultsRequest &&
 			result != nil &&
-			result.BatchResultsResponse != nil {
+			(requestType == schemas.BatchResultsRequest || (requestType == schemas.BatchRetrieveRequest && entry.Provider == string(schemas.OpenRouter))) {
 			p.accountBatchResults(entry, result, pricingScopes)
 		}
 		if bifrostErr == nil &&

@@ -3,6 +3,8 @@ package jobaccounting
 import (
 	"context"
 	"fmt"
+	"maps"
+	"math"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -50,6 +52,7 @@ type BatchResultFetcher interface {
 // BatchPayload is the batch kind's settlement input, carried opaquely by the
 // engine on JobRequest.Payload from Poll (or an inline caller) into Settle.
 type BatchPayload struct {
+	Usage         *schemas.BatchUsage
 	Endpoint      schemas.BatchEndpoint
 	Results       []schemas.BatchResultItem
 	ParseErrors   []schemas.BatchError
@@ -135,12 +138,13 @@ func AccountBatchResults(ctx context.Context, stateStore JobStore, logStore Aggr
 	}
 	req.Job = job
 
-	// Holding results is what earns the right to re-drive an unpriceable job: the
+	// Holding results or an authoritative aggregate charge earns the right to re-drive
+	// an unpriceable job: the
 	// state was reached by giving up on polling (max attempts, a terminal status
 	// with nothing to fetch, unpriceable rows), and none of those reasons survive
-	// a caller arriving with the actual rows. Without results there is nothing new
+	// a caller arriving with new settlement inputs. Without those there is nothing new
 	// to say, so the terminal guard stands.
-	req.ForceClaim = len(load.Results) > 0
+	req.ForceClaim = len(load.Results) > 0 || (load.Usage != nil && load.Usage.Cost != nil)
 
 	return AccountJob(ctx, stateStore, logStore, pricing, NewBatchSettler(nil), req)
 }
@@ -211,6 +215,28 @@ func (s *BatchSettler) Poll(ctx context.Context, job *cstables.TableProviderJob)
 
 	latest := batchJobFromRetrieve(job, retrieved)
 
+	// OpenRouter returns aggregate usage and inline results on this GET. Reuse
+	// them instead of downloading the same potentially large resource twice.
+	if schemas.ModelProvider(job.Provider) == schemas.OpenRouter && isTerminalStatus(retrieved.Status) {
+		if retrieved.Status == schemas.BatchStatusCompleted && retrieved.Results == nil {
+			return &PollResult{Job: latest, Retry: true}, nil
+		}
+		usage := retrieved.Usage
+		if usage == nil && retrieved.Status == schemas.BatchStatusFailed && retrieved.RequestCounts.Completed == 0 {
+			usage = &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{}}}
+		}
+		if usage == nil || usage.Cost == nil {
+			// Completion and usage publication can become visible separately.
+			// Keep the existing bounded retry/backoff instead of parking the job
+			// without the provider's authoritative charge.
+			return &PollResult{Job: latest, Terminal: true, Retry: true}, nil
+		}
+		return &PollResult{Job: latest, Terminal: true, Settleable: true, Payload: BatchPayload{
+			Endpoint: schemas.BatchEndpoint(retrieved.Endpoint), Results: retrieved.Results,
+			Usage: usage, RequestCounts: &retrieved.RequestCounts,
+		}}, nil
+	}
+
 	if retrieved.Status != schemas.BatchStatusCompleted && retrieved.Status != schemas.BatchStatusEnded {
 		if !isTerminalStatus(retrieved.Status) {
 			return &PollResult{Job: latest}, nil
@@ -251,6 +277,7 @@ func settleablePoll(job *cstables.TableProviderJob, retrieved *schemas.BifrostBa
 		Payload: BatchPayload{
 			Endpoint:      endpoint,
 			Results:       results.Results,
+			Usage:         results.Usage,
 			ParseErrors:   results.ExtraFields.ParseErrors,
 			RequestCounts: &retrieved.RequestCounts,
 		},
@@ -294,6 +321,31 @@ func (s *BatchSettler) fetchResultsForSettlement(ctx context.Context, job *cstab
 // priced normally and the count we could not read rides on the aggregate row.
 func (s *BatchSettler) Settle(ctx context.Context, pricing PricingManager, jobReq JobRequest) (*Settlement, error) {
 	in := batchInputFrom(jobReq)
+
+	// Native OpenRouter batches have one model and an authoritative aggregate
+	// charge. Do not estimate inference rates or add each result's usage again;
+	// for BYOK this charge is only OpenRouter's fee. Explicit zero is final too.
+	if in.Provider == schemas.OpenRouter && in.Usage != nil {
+		usage := *in.Usage.BifrostLLMUsage.DeepCopy()
+		if usage.Cost == nil || usage.Cost.TotalCost < 0 || math.IsNaN(usage.Cost.TotalCost) || math.IsInf(usage.Cost.TotalCost, 0) {
+			return &Settlement{UnpriceableReason: UnpriceableReasonNoUsage}, nil
+		}
+		usage.TotalTokens = max(usage.TotalTokens, usage.PromptTokens+usage.CompletionTokens)
+		model := in.FallbackModel
+		if model == "" {
+			return &Settlement{UnpriceableReason: UnpriceableReasonMissingModel}, nil
+		}
+		counts := requestCountsForAggregateLog(in)
+		cost := usage.Cost.TotalCost
+		breakdowns := map[string]ModelBreakdown{model: {Model: model, RequestCount: counts.Completed, Usage: usage, Cost: &cost}}
+		status := ""
+		if jobReq.Job != nil {
+			status = jobReq.Job.ProviderStatus
+		}
+		return &Settlement{Object: schemas.BatchResultsRequest, Model: model, Cost: cost, Usage: usage,
+			ModelBreakdowns: breakdowns, Priced: true, Complete: true, PricedCount: counts.Completed,
+			FailedCount: counts.Failed, ApplyDebug: batchDebugFor(in, breakdowns, status, true)}, nil
+	}
 
 	settlement, err := summarizeResults(pricing, in)
 	if err != nil {
@@ -390,6 +442,12 @@ func batchDebugFor(in batchInput, breakdowns map[string]ModelBreakdown, provider
 		if requestCounts := requestCountsForAggregateLog(in); !requestCounts.IsZero() {
 			debug.RequestCounts = &requestCounts
 		}
+		if in.Usage != nil {
+			debug.Accounting.CostDetails = maps.Clone(in.Usage.CostDetails)
+			if in.Usage.IsBYOK != nil {
+				debug.Accounting.IsBYOK = schemas.Ptr(*in.Usage.IsBYOK)
+			}
+		}
 		entry.BatchDebugParsed = debug
 	}
 }
@@ -407,6 +465,9 @@ func (s *BatchSettler) HydrateFromLog(entry *logstore.Log, out *Outcome) {
 func batchJobFromRetrieve(existing *cstables.TableProviderJob, retrieved *schemas.BifrostBatchRetrieveResponse) *cstables.TableProviderJob {
 	job := *existing
 	job.ProviderStatus = string(retrieved.Status)
+	if retrieved.Model != "" {
+		job.Model = retrieved.Model
+	}
 	if retrieved.Endpoint != "" {
 		job.Endpoint = retrieved.Endpoint
 	}
@@ -639,12 +700,13 @@ func BatchRequestType(endpoint schemas.BatchEndpoint) schemas.RequestType {
 type usageExtractor func(fallbackModel string, item schemas.BatchResultItem) (extractedUsage, error)
 
 var usageExtractors = map[schemas.ModelProvider]usageExtractor{
-	schemas.OpenAI:    extractResponseBodyUsage,
-	schemas.Azure:     extractResponseBodyUsage,
-	schemas.Bedrock:   extractResponseBodyUsage,
-	schemas.Gemini:    extractResponseBodyUsage,
-	schemas.Vertex:    extractResponseBodyUsage,
-	schemas.Anthropic: extractAnthropicUsage,
+	schemas.OpenAI:     extractResponseBodyUsage,
+	schemas.OpenRouter: extractResponseBodyUsage,
+	schemas.Azure:      extractResponseBodyUsage,
+	schemas.Bedrock:    extractResponseBodyUsage,
+	schemas.Gemini:     extractResponseBodyUsage,
+	schemas.Vertex:     extractResponseBodyUsage,
+	schemas.Anthropic:  extractAnthropicUsage,
 }
 
 func IsProviderSupported(provider schemas.ModelProvider) bool {
@@ -940,7 +1002,13 @@ func (s *BatchSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 	priced := 0
 	for model, breakdown := range accounting.ModelBreakdowns {
 		usage := breakdown.Usage
-		details := pricing.CalculateBatchCostDetailsForUsage(&usage, schemas.ModelProvider(entry.Provider), model, requestType, &scopes)
+		var details modelcatalog.BatchCostDetails
+		if schemas.ModelProvider(entry.Provider) == schemas.OpenRouter && usage.Cost != nil {
+			// Keep authoritative zero charges on repricing as well as settlement.
+			details = modelcatalog.BatchCostDetails{Cost: usage.Cost.TotalCost, Priced: true, ProviderCostUsed: true}
+		} else {
+			details = pricing.CalculateBatchCostDetailsForUsage(&usage, schemas.ModelProvider(entry.Provider), model, requestType, &scopes)
+		}
 		if details.Priced {
 			cost := details.Cost
 			breakdown.Cost = &cost
