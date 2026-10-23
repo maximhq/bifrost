@@ -104664,7 +104664,7 @@
             }
           },
           "400": {
-            "description": "The time range is invalid - `end_time` must be after `start_time`.",
+            "description": "The request body is malformed JSON, `start_time` or `end_time` is\nmissing or not an RFC3339 timestamp, or the time range is invalid -\n`end_time` must be after `start_time`.\n",
             "content": {
               "application/json": {
                 "schema": {
@@ -127589,7 +127589,7 @@
                   },
                   "decisions": {
                     "type": "boolean",
-                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                    "description": "Decision requests via /v1/decisions. A typesafe or openai base serves them natively; other bases emulate them through the Responses API only when the compat plugin's convert_decision_to_responses is enabled, and otherwise return unsupported_operation"
                   },
                   "speech": {
                     "type": "boolean"
@@ -127863,7 +127863,7 @@
                   },
                   "decisions": {
                     "type": "boolean",
-                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                    "description": "Decision requests via /v1/decisions. A typesafe or openai base serves them natively; other bases emulate them through the Responses API only when the compat plugin's convert_decision_to_responses is enabled, and otherwise return unsupported_operation"
                   },
                   "speech": {
                     "type": "boolean"
@@ -128095,7 +128095,7 @@
                   },
                   "decisions": {
                     "type": "boolean",
-                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                    "description": "Decision requests via /v1/decisions. A typesafe or openai base serves them natively; other bases emulate them through the Responses API only when the compat plugin's convert_decision_to_responses is enabled, and otherwise return unsupported_operation"
                   },
                   "speech": {
                     "type": "boolean"
