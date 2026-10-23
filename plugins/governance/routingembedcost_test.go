@@ -128,3 +128,69 @@ func TestPostHookWorkerUsesCapturedFallbackCost(t *testing.T) {
 		})
 	}
 }
+
+func TestPostLLMHookCapturesCostBeforeRoutingDecoration(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		streaming     bool
+		fallbackIndex int
+	}{
+		{name: "unary_fallback", fallbackIndex: 1},
+		{name: "streaming_fallback", streaming: true, fallbackIndex: 1},
+		{name: "streaming_primary", streaming: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requestType := schemas.ChatCompletionRequest
+			if tc.streaming {
+				requestType = schemas.ChatCompletionStreamRequest
+			}
+			fixture := newAccountingFixture(t)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, NewMockLogger(), fixture.store, nil, newOfflinePricingCatalog(t), nil, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+			ctx := resolverCtx(fixture.store, "sk-bf-acct")
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "cost-capture-"+tc.name)
+			ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, tc.fallbackIndex)
+			req := &schemas.BifrostRequest{RequestType: requestType, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+			_, short, err := plugin.PreLLMHook(ctx, req)
+			require.NoError(t, err)
+			require.Nil(t, short)
+			provider, model, routingTokens := "openai", "text-embedding-3-small", 13
+			result := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType: requestType, Provider: schemas.OpenAI, OriginalModelRequested: "gpt-4o",
+					RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"},
+					RoutingMetadata: &schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{{
+						ProviderUsed: &provider, ModelUsed: &model, InputTokens: &routingTokens, CountTowardBudgets: true,
+					}}},
+				},
+			}}
+			if tc.streaming {
+				_, _, err := plugin.PostLLMHook(ctx, result, nil)
+				require.NoError(t, err)
+				plugin.wg.Wait()
+				assert.Zero(t, fixture.cost(), "a nonfinal stream chunk must not be billed")
+				assert.Zero(t, fixture.tokens())
+				assert.Zero(t, fixture.requests())
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			}
+			_, _, err = plugin.PostLLMHook(ctx, result, nil)
+			require.NoError(t, err)
+			// Core applies this decoration only after the post-hook returns. The
+			// asynchronous worker must use its snapshot rather than reading it again.
+			if tc.fallbackIndex > 0 {
+				result.SetFallbackRoutingInfo(schemas.Anthropic, "primary-model")
+			} else {
+				result.PopulateRoutingInfo(schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"})
+			}
+			plugin.wg.Wait()
+			want := float64(100)*2.5e-6 + float64(50)*1e-5 + float64(routingTokens)*2e-8
+			assert.EventuallyWithT(t, func(c *assert.CollectT) {
+				assert.InDelta(c, want, fixture.cost(), 1e-12, "inference and routing sidecar cost are each charged once")
+				assert.Equal(c, int64(150), fixture.tokens())
+				assert.Equal(c, int64(1), fixture.requests())
+			}, time.Second, 10*time.Millisecond)
+		})
+	}
+}

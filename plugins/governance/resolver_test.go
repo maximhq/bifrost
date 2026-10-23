@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1358,6 +1359,134 @@ func TestOpenRouterWildcardAdmission(t *testing.T) {
 	}
 }
 
+// Successful responses exercise the streaming post-hooks too, rather than
+// stopping at an upstream rejection before a stream has opened.
+func TestOpenRouterWildcardSuccessfulResponses(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk-or", "sk-bf-or", "OpenRouter", []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openrouter", []string{"*"})})
+	plugin := newOpenRouterWildcardPlugin(t, vk)
+	sentModels := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model  string
+			Stream bool
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		sentModels <- body.Model
+		response := fmt.Sprintf(`{"id":"wildcard","object":"chat.completion","created":1,"model":%q,"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`, body.Model)
+		if strings.HasSuffix(r.URL.Path, "/responses") {
+			response = fmt.Sprintf(`{"id":"wildcard","object":"response","created_at":1,"status":"completed","model":%q,"output":[{"id":"message","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`, body.Model)
+			if body.Stream {
+				response = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"output_index\":0,\"content_index\":0,\"item_id\":\"message\",\"delta\":\"ok\"}\n\n" +
+					"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":" + response + "}\n\n"
+			}
+		} else if body.Stream {
+			response = fmt.Sprintf("data: {\"id\":\"wildcard\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\n", body.Model) +
+				fmt.Sprintf("data: {\"id\":\"wildcard\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n", body.Model) +
+				fmt.Sprintf("data: {\"id\":\"wildcard\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":%q,\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n", body.Model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if body.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+		}
+		if _, err := w.Write([]byte(response)); err != nil {
+			t.Errorf("write upstream response: %v", err)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &openRouterWildcardAccount{
+			keys: []schemas.Key{{ID: "or", Value: *schemas.NewSecretVar("placeholder"), Models: schemas.WhiteList{"*"}, Weight: 1}},
+			config: &schemas.ProviderConfig{
+				NetworkConfig:            schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
+				ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
+			},
+		},
+		LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	for _, model := range []string{"claude-haiku-5.5", "openai/gpt-6-luna:nitro"} {
+		for _, route := range []string{"chat", "chat_stream", "responses", "responses_stream"} {
+			t.Run(model+"/"+route, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(presentCtx("sk-bf-or"), time.Now().Add(5*time.Second))
+				defer ctx.Cancel()
+				req := &schemas.BifrostChatRequest{Provider: schemas.OpenRouter, Model: model, Input: []schemas.ChatMessage{{Role: "user", Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi")}}}}
+				var text string
+				var usage int
+				var stream chan *schemas.BifrostStreamChunk
+				var requestErr *schemas.BifrostError
+				switch route {
+				case "chat":
+					result, err := client.ChatCompletionRequest(ctx, req)
+					require.Nil(t, err)
+					require.NotNil(t, result)
+					assert.Equal(t, schemas.OpenRouter, result.ExtraFields.Provider)
+					require.Len(t, result.Choices, 1)
+					require.NotNil(t, result.Choices[0].Message)
+					require.NotNil(t, result.Choices[0].Message.Content)
+					require.NotNil(t, result.Choices[0].Message.Content.ContentStr)
+					require.NotNil(t, result.Usage)
+					text = *result.Choices[0].Message.Content.ContentStr
+					usage = result.Usage.TotalTokens
+				case "responses":
+					result, err := client.ResponsesRequest(ctx, req.ToResponsesRequest())
+					require.Nil(t, err)
+					require.NotNil(t, result)
+					assert.Equal(t, schemas.OpenRouter, result.ExtraFields.Provider)
+					require.Len(t, result.Output, 1)
+					require.NotNil(t, result.Output[0].Content)
+					require.Len(t, result.Output[0].Content.ContentBlocks, 1)
+					require.NotNil(t, result.Output[0].Content.ContentBlocks[0].Text)
+					require.NotNil(t, result.Usage)
+					text = *result.Output[0].Content.ContentBlocks[0].Text
+					usage = result.Usage.TotalTokens
+				case "chat_stream":
+					stream, requestErr = client.ChatCompletionStreamRequest(ctx, req)
+				case "responses_stream":
+					stream, requestErr = client.ResponsesStreamRequest(ctx, req.ToResponsesRequest())
+				}
+				require.Nil(t, requestErr)
+				if strings.HasSuffix(route, "_stream") {
+					require.NotNil(t, stream)
+					for chunk := range stream {
+						require.Nil(t, chunk.BifrostError)
+						if chunk.BifrostChatResponse != nil {
+							result := chunk.BifrostChatResponse
+							assert.Equal(t, schemas.OpenRouter, result.ExtraFields.Provider)
+							for _, choice := range result.Choices {
+								if choice.Delta != nil && choice.Delta.Content != nil {
+									text += *choice.Delta.Content
+								}
+							}
+							if result.Usage != nil {
+								usage = result.Usage.TotalTokens
+							}
+						} else if chunk.BifrostResponsesStreamResponse != nil {
+							result := chunk.BifrostResponsesStreamResponse
+							assert.Equal(t, schemas.OpenRouter, result.ExtraFields.Provider)
+							if result.Delta != nil {
+								text += *result.Delta
+							}
+							if result.Type == schemas.ResponsesStreamResponseTypeCompleted {
+								require.NotNil(t, result.Response)
+								require.NotNil(t, result.Response.Usage)
+								usage = result.Response.Usage.TotalTokens
+							}
+						}
+					}
+				}
+				assert.Equal(t, "ok", text)
+				assert.Equal(t, 2, usage, "the successful response/stream carries usage through the post-hooks")
+				assert.Equal(t, model, <-sentModels, "wildcard authorization must not rewrite the model")
+			})
+		}
+	}
+}
+
 func TestOpenRouterWildcardRestrictionsAndDiscovery(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1429,14 +1558,19 @@ func (a *wildcardFallbackAccount) GetConfigForProvider(provider schemas.ModelPro
 }
 
 func TestOpenRouterWildcardFallbackAdmission(t *testing.T) {
-	for _, restricted := range []bool{false, true} {
-		name := "wildcard"
-		if restricted {
-			name = "explicit_allowlist"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		restricted bool
+		streaming  bool
+	}{
+		{name: "wildcard"},
+		{name: "explicit_allowlist", restricted: true},
+		{name: "wildcard_stream", streaming: true},
+		{name: "explicit_allowlist_stream", restricted: true, streaming: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			allowed := []string{"*"}
-			if restricted {
+			if tc.restricted {
 				allowed = []string{"openai/gpt-6-luna"}
 			}
 			vk := buildVirtualKeyWithProviders("vk-or", "sk-bf-or", "Fallback", []configstoreTables.TableVirtualKeyProviderConfig{
@@ -1455,6 +1589,13 @@ func TestOpenRouterWildcardFallbackAdmission(t *testing.T) {
 					return
 				}
 				fallbackCalls.Add(1)
+				if tc.streaming {
+					w.Header().Set("Content-Type", "text/event-stream")
+					if _, err := w.Write([]byte("data: {\"id\":\"fallback\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"openai/gpt-6-luna:nitro\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n")); err != nil {
+						t.Errorf("write fallback stream: %v", err)
+					}
+					return
+				}
 				if _, err := w.Write([]byte(`{"id":"fallback","object":"chat.completion","created":1,"model":"openai/gpt-6-luna:nitro","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)); err != nil {
 					t.Errorf("write fallback completion: %v", err)
 				}
@@ -1474,20 +1615,47 @@ func TestOpenRouterWildcardFallbackAdmission(t *testing.T) {
 			})
 			require.NoError(t, err)
 			t.Cleanup(func() { client.Shutdown() })
-			response, requestErr := client.ChatCompletionRequest(presentCtx("sk-bf-or"), &schemas.BifrostChatRequest{
+			ctx := schemas.NewBifrostContext(presentCtx("sk-bf-or"), time.Now().Add(5*time.Second))
+			defer ctx.Cancel()
+			req := &schemas.BifrostChatRequest{
 				Provider: schemas.OpenAI, Model: "gpt-6-luna", Input: []schemas.ChatMessage{{Role: "user", Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi")}}},
 				Fallbacks: []schemas.Fallback{{Provider: schemas.OpenRouter, Model: "openai/gpt-6-luna:nitro"}},
-			})
+			}
+			var response *schemas.BifrostChatResponse
+			var stream chan *schemas.BifrostStreamChunk
+			var requestErr *schemas.BifrostError
+			if tc.streaming {
+				stream, requestErr = client.ChatCompletionStreamRequest(ctx, req)
+			} else {
+				response, requestErr = client.ChatCompletionRequest(ctx, req)
+			}
 			assert.Equal(t, int32(1), primaryCalls.Load())
-			if restricted {
+			if tc.restricted {
 				// Core retains the primary error when no fallback can serve.
 				require.NotNil(t, requestErr)
 				assert.Equal(t, http.StatusInternalServerError, *requestErr.StatusCode)
 				assert.Zero(t, fallbackCalls.Load())
 			} else {
 				require.Nil(t, requestErr)
-				require.NotNil(t, response)
-				assert.Equal(t, schemas.OpenRouter, response.ExtraFields.Provider)
+				if tc.streaming {
+					require.NotNil(t, stream)
+					var text string
+					for chunk := range stream {
+						require.Nil(t, chunk.BifrostError)
+						if chunk.BifrostChatResponse != nil {
+							assert.Equal(t, schemas.OpenRouter, chunk.BifrostChatResponse.ExtraFields.Provider)
+							for _, choice := range chunk.BifrostChatResponse.Choices {
+								if choice.Delta != nil && choice.Delta.Content != nil {
+									text += *choice.Delta.Content
+								}
+							}
+						}
+					}
+					assert.Equal(t, "ok", text)
+				} else {
+					require.NotNil(t, response)
+					assert.Equal(t, schemas.OpenRouter, response.ExtraFields.Provider)
+				}
 				assert.Equal(t, int32(1), fallbackCalls.Load())
 			}
 		})
@@ -1548,6 +1716,33 @@ func BenchmarkOpenRouterResolveAccess(b *testing.B) {
 			}
 		})
 	}
+}
+
+func BenchmarkOpenRouterPostLLMHookTerminalStream(b *testing.B) {
+	vk := buildVirtualKeyWithProviders("vk-or", "sk-bf-or", "OpenRouter", []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openrouter", []string{"*"})})
+	plugin := newOpenRouterWildcardPlugin(b, vk)
+	ctx := presentCtx("sk-bf-or")
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenRouter, Model: "gpt-6-luna"}}
+	require.NoError(b, plugin.PreRequestHook(ctx, req))
+	_, short, err := plugin.PreLLMHook(ctx, req)
+	require.NoError(b, err)
+	require.Nil(b, short)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	result := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionStreamRequest, Provider: schemas.OpenRouter, OriginalModelRequested: "gpt-6-luna",
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenRouter, Model: "gpt-6-luna"},
+		},
+	}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := plugin.PostLLMHook(ctx, result, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+	plugin.wg.Wait()
 }
 
 func BenchmarkOpenRouterPostLLMHook(b *testing.B) {

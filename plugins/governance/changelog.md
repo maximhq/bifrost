@@ -1,3 +1,3 @@
 - fix: honor unrestricted virtual key model permits without coupling authorization to provider discovery
-- fix: snapshot fallback cost before asynchronous usage accounting reads routing metadata
+- fix: snapshot fallback and terminal-stream cost before asynchronous usage accounting reads routing metadata
 - chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
