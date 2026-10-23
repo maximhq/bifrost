@@ -280,6 +280,18 @@ func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "patch body must contain at least one key")
 		return
 	}
+	// A missing row reads as an empty map, so any error here is a real read failure.
+	current, err := h.store.ConfigStore.GetClientMetadata(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read metadata: %v", err))
+		return
+	}
+	before := map[string]any{}
+	for k := range patch {
+		if v, ok := current[k]; ok {
+			before[k] = v
+		}
+	}
 	if err := h.store.ConfigStore.UpdateClientMetadata(ctx, patch); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("failed to update metadata: %v", err))
@@ -288,6 +300,13 @@ func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update metadata: %v", err))
 		return
 	}
+	after := map[string]any{}
+	for k, v := range patch {
+		if v != nil {
+			after[k] = v
+		}
+	}
+	lib.RecordAuditChange(ctx, "config_metadata.updated", "config_metadata", "client_metadata", "Client metadata", before, after)
 	SendJSON(ctx, map[string]any{"success": true})
 }
 
@@ -447,6 +466,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// pointer or slice fields.
 	copied := *currentConfig
 	updatedConfig := &copied
+	before := lib.AuditSnapshot(currentConfig.Redacted())
 
 	// Validate first-admin setup before any live mutation or persistence below.
 	var existingAuthConfig *configstore.AuthConfig
@@ -930,6 +950,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	h.store.Mu.Lock()
 	*h.store.ClientConfig = *updatedConfig
 	h.store.Mu.Unlock()
+	// Recorded at the commit point: the reload, framework and auth steps below
+	// can fail without undoing this write.
+	lib.RecordAuditChange(ctx, "config.updated", "config", "client_config", "client_config", before, updatedConfig.Redacted())
 	// Publish a saved allowlist change here rather than relying on the reload
 	// below: if its store read fails, a removed host would stay reachable.
 	if allowlistChanged {
@@ -1252,6 +1275,7 @@ func (h *ConfigHandler) forceSyncPricing(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to force pricing sync: %v", err))
 		return
 	}
+	lib.RecordAuditChange(ctx, "pricing.synced", "pricing", "pricing", "Pricing", nil, map[string]any{"forced": true})
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	SendJSON(ctx, map[string]any{
@@ -1373,12 +1397,20 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	existingProxyConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
+		return
+	}
+	before := auditProxyConfig(existingProxyConfig)
 	// Save proxy config
 	if err := h.store.ConfigStore.UpdateProxyConfig(ctx, &payload); err != nil {
 		logger.Warn("failed to save proxy configuration: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save proxy configuration: %v", err))
 		return
 	}
+	// Recorded once saved: the reload below can fail without undoing the write.
+	lib.RecordAuditChange(ctx, "proxy_config.updated", "proxy_config", "proxy_config", "proxy_config", before, auditProxyConfig(&payload))
 
 	// Pulling the proxy config from the config store
 	newProxyConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)

@@ -448,6 +448,9 @@ func (h *LoggingHandler) createUserAgentMapping(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to create user agent mapping: %v", err))
 		return
 	}
+	if created != nil {
+		lib.RecordAuditChange(ctx, "user_agent_mapping.created", "user_agent_mapping", created.ID, created.App, nil, auditUserAgentMapping(created))
+	}
 	SendJSON(ctx, created)
 }
 
@@ -463,6 +466,7 @@ func (h *LoggingHandler) updateUserAgentMapping(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
 		return
 	}
+	before := h.findUserAgentMapping(ctx, id)
 	updated, err := h.logManager.UpdateUserAgentMapping(ctx, id, &mapping)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -476,6 +480,9 @@ func (h *LoggingHandler) updateUserAgentMapping(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update user agent mapping: %v", err))
 		return
 	}
+	if updated != nil {
+		lib.RecordAuditChange(ctx, "user_agent_mapping.updated", "user_agent_mapping", id, updated.App, auditUserAgentMapping(before), auditUserAgentMapping(updated))
+	}
 	SendJSON(ctx, updated)
 }
 
@@ -486,6 +493,7 @@ func (h *LoggingHandler) deleteUserAgentMapping(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "id is required")
 		return
 	}
+	before := h.findUserAgentMapping(ctx, id)
 	if err := h.logManager.DeleteUserAgentMapping(ctx, id); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "user agent mapping not found")
@@ -494,7 +502,34 @@ func (h *LoggingHandler) deleteUserAgentMapping(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to delete user agent mapping: %v", err))
 		return
 	}
+	targetName := id
+	if before != nil && before.App != "" {
+		targetName = before.App
+	}
+	lib.RecordAuditChange(ctx, "user_agent_mapping.deleted", "user_agent_mapping", id, targetName, auditUserAgentMapping(before), nil)
 	SendJSON(ctx, map[string]any{"success": true})
+}
+
+// findUserAgentMapping returns the mapping with the given id for an audit before-snapshot, or nil.
+func (h *LoggingHandler) findUserAgentMapping(ctx context.Context, id string) *logstore.UserAgentMapping {
+	mappings, err := h.logManager.ListUserAgentMappings(ctx)
+	if err != nil {
+		return nil
+	}
+	for i := range mappings {
+		if mappings[i].ID == id {
+			return &mappings[i]
+		}
+	}
+	return nil
+}
+
+// auditUserAgentMapping snapshots a mapping without its logo bytes.
+func auditUserAgentMapping(m *logstore.UserAgentMapping) any {
+	if m == nil {
+		return nil
+	}
+	return lib.AuditSnapshot(m, "logo")
 }
 
 // getLogSessionByID handles GET /api/logs/sessions/{session_id} - Get logs in a single session.
@@ -2477,6 +2512,7 @@ func (h *LoggingHandler) deleteLogs(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete logs")
 		return
 	}
+	lib.RecordAuditChange(ctx, "logs.deleted", "logs", "logs", "Logs", auditDeletedIDs(req.IDs), nil)
 
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Logs deleted successfully",
@@ -2547,6 +2583,13 @@ func (h *LoggingHandler) recalculateLogCosts(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "logs.cost_recalculation_started", "logs", jobID, "Cost recalculation", nil, map[string]any{
+		"job_id":            jobID,
+		"missing_cost_only": missingCostOnly,
+		"period":            payload.Filters.Period,
+		"start_time":        filters.StartTime,
+		"end_time":          filters.EndTime,
+	})
 	ctx.SetStatusCode(fasthttp.StatusAccepted)
 	if job, err := h.sidekiqStore.GetSidekiqJob(ctx, jobID); err == nil && job != nil {
 		SendJSON(ctx, recalcJobStatusFromRow(job))
@@ -2641,6 +2684,7 @@ func (h *LoggingHandler) cancelRecalculateCost(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to cancel the recalculation")
 		return
 	}
+	lib.RecordAuditChange(ctx, "logs.cost_recalculation_cancelled", "logs", job.ID, "Cost recalculation", nil, map[string]any{"job_id": job.ID})
 
 	// Re-read so the response carries the cancelled status and the counters committed
 	// before the stop. The handler may still be unwinding, so its final progress
@@ -3343,6 +3387,7 @@ func (h *LoggingHandler) deleteMCPLogs(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP tool logs")
 		return
 	}
+	lib.RecordAuditChange(ctx, "mcp_logs.deleted", "mcp_logs", "mcp_logs", "MCP logs", auditDeletedIDs(req.IDs), nil)
 
 	SendJSON(ctx, map[string]interface{}{
 		"message": "MCP tool logs deleted successfully",
