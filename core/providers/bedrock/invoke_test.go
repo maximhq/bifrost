@@ -3207,6 +3207,40 @@ func TestToBedrockInvokeMessagesResponse_MistralCacheAndAlias(t *testing.T) {
 	assert.Nil(t, resp.Status)
 }
 
+func TestToBedrockInvokeMessagesResponse_MistralMetadataDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		id      *string
+		created int
+	}{
+		{"missing metadata", nil, 0},
+		{"empty id", schemas.Ptr(""), 0},
+		{"supplied metadata", schemas.Ptr("completion_1"), 123},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := mistralInvokeTestResponse(t, `[{"text":"hello"}]`, "end_turn")
+			resp.ID, resp.CreatedAt, resp.Usage = tc.id, tc.created, nil
+			out, err := ToBedrockInvokeMessagesResponse(nil, resp)
+			require.NoError(t, err)
+			raw, err := providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			assert.NotEmpty(t, gjson.GetBytes(raw, "id").String())
+			if tc.id != nil && *tc.id != "" {
+				assert.Equal(t, *tc.id, gjson.GetBytes(raw, "id").String())
+			}
+			if tc.created != 0 {
+				assert.Equal(t, int64(tc.created), gjson.GetBytes(raw, "created").Int())
+			} else {
+				assert.Positive(t, gjson.GetBytes(raw, "created").Int())
+			}
+			assert.False(t, gjson.GetBytes(raw, "usage").Exists())
+			assert.False(t, gjson.GetBytes(raw, "choices.0.delta").Exists())
+			assert.Equal(t, tc.id, resp.ID)
+			assert.Equal(t, tc.created, resp.CreatedAt, "defaults must not mutate the canonical response")
+		})
+	}
+}
+
 func TestToBedrockInvokeMessagesResponse_MistralAliasPrecedence(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -3247,7 +3281,20 @@ func TestBedrockInvokeMistralGuardrailOutcome(t *testing.T) {
 	event := stream.(*BedrockStreamEvent)
 	assert.Equal(t, "INTERVENED", event.InvokeModelGuardrailAction)
 	assert.JSONEq(t, `{"guardrail":{"test":true}}`, string(event.InvokeModelTrace))
+	encoded := event.ToEncodedEvents()
+	require.Len(t, encoded, 1)
+	chunk, ok := encoded[0].Payload.(BedrockInvokeStreamChunkEvent)
+	require.True(t, ok)
+	assert.Equal(t, "chunk", encoded[0].EventType)
+	assert.Equal(t, "chat.completion.chunk", gjson.GetBytes(chunk.Bytes, "object").String())
+	assert.Equal(t, "INTERVENED", gjson.GetBytes(chunk.Bytes, "amazon-bedrock-guardrailAction").String())
+	assert.JSONEq(t, `{"guardrail":{"test":true}}`, gjson.GetBytes(chunk.Bytes, "amazon-bedrock-trace").Raw)
 	assert.Nil(t, ctx.Value(schemas.BifrostContextKey("bedrock-invoke-mistral-stream-state")))
+	_, start, err := ToBedrockInvokeMessagesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCreated, Response: resp})
+	require.NoError(t, err)
+	first := start.(*BedrockStreamEvent).ToEncodedEvents()[0].Payload.(BedrockInvokeStreamChunkEvent).Bytes
+	assert.False(t, gjson.GetBytes(first, "amazon-bedrock-guardrailAction").Exists())
+	assert.False(t, gjson.GetBytes(first, "amazon-bedrock-trace").Exists(), "guardrail outcomes belong only to the terminal chunk")
 }
 
 func TestBedrockInvokeMessagesOtherFamiliesAndLegacyMistral(t *testing.T) {
@@ -3334,6 +3381,92 @@ func TestToBedrockInvokeMessagesStreamResponse_MistralSkipsLifecycle(t *testing.
 		require.NoError(t, err)
 		assert.Nil(t, out, "%s must not become an extra chat delta", typ)
 	}
+}
+
+func TestToBedrockInvokeMessagesStreamResponse_MistralSkipsEmptyEvents(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		event schemas.BifrostResponsesStreamResponse
+	}{
+		{"missing item", schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded}},
+		{"missing item type", schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{}}},
+		{"text item", schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage)}}},
+		{"missing tool", schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall)}}},
+		{"missing text delta", schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta}},
+		{"missing arguments delta", schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta}},
+		{"missing reasoning delta", schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			tc.event.ExtraFields.ResolvedModelUsed = "mistral.mistral-large-3-675b-instruct"
+			name, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, &tc.event)
+			require.NoError(t, err)
+			assert.Empty(t, name)
+			assert.Nil(t, out)
+			assert.Nil(t, ctx.Value(bedrockInvokeMistralStreamStateKey), "skipped events must not allocate stream state")
+		})
+	}
+}
+
+func TestToBedrockInvokeMessagesStreamResponse_MistralModelIdentity(t *testing.T) {
+	const model = "mistral.mistral-large-3-675b-instruct"
+	for _, tc := range []struct {
+		name  string
+		extra schemas.BifrostResponseExtraFields
+		resp  *schemas.BifrostResponsesResponse
+	}{
+		{"resolved identity wins", schemas.BifrostResponseExtraFields{ResolvedModelUsed: model, OriginalModelRequested: "anthropic.claude-3-sonnet"}, &schemas.BifrostResponsesResponse{Model: "amazon.nova-pro-v1:0"}},
+		{"original identity wins", schemas.BifrostResponseExtraFields{OriginalModelRequested: model}, &schemas.BifrostResponsesResponse{Model: "anthropic.claude-3-sonnet"}},
+		{"lifecycle model", schemas.BifrostResponseExtraFields{}, &schemas.BifrostResponsesResponse{Model: model}},
+		{"lifecycle resolved model", schemas.BifrostResponseExtraFields{}, &schemas.BifrostResponsesResponse{ExtraFields: schemas.BifrostResponseExtraFields{ResolvedModelUsed: model}}},
+		{"lifecycle original model", schemas.BifrostResponseExtraFields{}, &schemas.BifrostResponsesResponse{ExtraFields: schemas.BifrostResponseExtraFields{OriginalModelRequested: model}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			_, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("hello"), ExtraFields: tc.extra, Response: tc.resp})
+			require.NoError(t, err)
+			raw := out.(*BedrockStreamEvent).InvokeModelRawChunks[0]
+			assert.Equal(t, "chat.completion.chunk", gjson.GetBytes(raw, "object").String())
+			assert.Equal(t, model, gjson.GetBytes(raw, "model").String())
+		})
+	}
+}
+
+func TestToBedrockInvokeMessagesStreamResponse_MistralHeaderFallback(t *testing.T) {
+	const model = "mistral.mistral-large-3-675b-instruct"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	var id string
+	var created int64
+	for i, event := range []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("hello")},
+		{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr(" world")},
+		{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &schemas.BifrostResponsesResponse{ID: schemas.Ptr("late-id"), CreatedAt: 123, Model: model}},
+	} {
+		event.ExtraFields.OriginalModelRequested = model
+		_, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, event)
+		require.NoError(t, err)
+		raw := out.(*BedrockStreamEvent).InvokeModelRawChunks[0]
+		if i == 0 {
+			id, created = gjson.GetBytes(raw, "id").String(), gjson.GetBytes(raw, "created").Int()
+			assert.NotEmpty(t, id)
+			assert.Positive(t, created)
+		}
+		assert.Equal(t, id, gjson.GetBytes(raw, "id").String(), "late metadata must not change stream identity")
+		assert.Equal(t, created, gjson.GetBytes(raw, "created").Int())
+		assert.Equal(t, model, gjson.GetBytes(raw, "model").String())
+		assert.False(t, gjson.GetBytes(raw, "usage").Exists())
+		if i == 2 {
+			assert.Equal(t, "stop", gjson.GetBytes(raw, "choices.0.finish_reason").String())
+			assert.JSONEq(t, `{}`, gjson.GetBytes(raw, "choices.0.delta").Raw)
+		} else {
+			assert.True(t, gjson.GetBytes(raw, "choices.0.finish_reason").Exists())
+			assert.Equal(t, gjson.Null, gjson.GetBytes(raw, "choices.0.finish_reason").Type)
+		}
+	}
+	assert.Nil(t, ctx.Value(bedrockInvokeMistralStreamStateKey))
 }
 
 func TestToBedrockInvokeMessagesStreamResponse_MistralIncompleteAndAlias(t *testing.T) {
@@ -3484,6 +3617,17 @@ func TestMistralInvokeToolIndexBoundsAndIsolation(t *testing.T) {
 	}
 	_, err = first.toolIndex(ctx, 1<<16)
 	require.ErrorContains(t, err, "tool call count")
+	ctx.SetValue(bedrockInvokeMistralStreamStateKey, first)
+	_, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, OutputIndex: schemas.Ptr(1 << 16), Delta: schemas.Ptr(`{}`),
+		ExtraFields: schemas.BifrostResponseExtraFields{ResolvedModelUsed: "mistral.mistral-large-3-675b-instruct"},
+	})
+	require.ErrorContains(t, err, "tool call count")
+	assert.Nil(t, out)
+	_, retained := bedrockInvokeMistralToolIndexes.Load(mistralInvokeToolIndexKey(ctx, first))
+	assert.False(t, retained, "public converter must release an overflowing mapping")
+	_, retained = bedrockInvokeMistralToolIndexes.Load(mistralInvokeToolIndexKey(ctx, second))
+	assert.True(t, retained, "conversion failure must not release another stream's mapping")
 }
 
 func TestToBedrockInvokeMessagesStreamResponse_NovaEarlyModel(t *testing.T) {
