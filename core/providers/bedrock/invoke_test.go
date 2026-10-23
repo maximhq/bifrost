@@ -3,9 +3,11 @@ package bedrock
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -99,6 +101,185 @@ func TestToBedrockInvokeMessagesResponse_MistralTools(t *testing.T) {
 	assert.Equal(t, "tool_calls", gjson.GetBytes(wire, "choices.0.finish_reason").String())
 	assert.Equal(t, "get_weather", gjson.GetBytes(wire, "choices.0.message.tool_calls.0.function.name").String())
 	assert.False(t, gjson.GetBytes(wire, "type").Exists())
+}
+
+func TestMistralInvokeStream_TerminationAndErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, exception, reason string
+		wantStatus              int
+	}{
+		{name: "complete", reason: "tool_calls"},
+		{name: "truncated", wantStatus: 502},
+		{name: "throttled", exception: "throttlingException", wantStatus: 429},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+				if tc.exception != "" {
+					writeEventStreamException(t, w, tc.exception, "native exception")
+					return
+				}
+				writeInvokeChunk(t, w, `{"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"}}]}`)
+				if tc.reason != "" {
+					writeInvokeChunk(t, w, `{"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"`+tc.reason+`"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+				}
+			}))
+			defer server.Close()
+			provider := newTestProviderWithServer(t, server)
+			provider.mantleStreamingClient = &fasthttp.Client{TLSConfig: &tls.Config{InsecureSkipVerify: true}}
+			key := testBedrockKey()
+			key.BedrockKeyConfig.Endpoints = &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(server.URL)}
+			ctx, request := mistralInvokeTestRequest(t, mistralInvokeTestBody)
+			previous := &providerUtils.SSEReaderFactory{}
+			ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, previous)
+			stream, err := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, request)
+			require.Nil(t, err)
+			var streamErr *schemas.BifrostError
+			var finish string
+			for chunk := range stream {
+				if chunk.BifrostError != nil {
+					streamErr = chunk.BifrostError
+				}
+				if chunk.BifrostChatResponse != nil && len(chunk.BifrostChatResponse.Choices) > 0 && chunk.BifrostChatResponse.Choices[0].FinishReason != nil {
+					finish = *chunk.BifrostChatResponse.Choices[0].FinishReason
+				}
+			}
+			if tc.wantStatus == 0 {
+				require.Nil(t, streamErr)
+				assert.Equal(t, tc.reason, finish)
+			} else {
+				require.NotNil(t, streamErr)
+				assert.Equal(t, tc.wantStatus, streamErr.EffectiveHTTPStatus())
+				if tc.exception != "" {
+					assert.False(t, streamErr.IsBifrostError)
+					assert.Contains(t, streamErr.Error.Message, "native exception")
+				}
+			}
+			assert.Same(t, previous, ctx.Value(schemas.BifrostContextKeySSEReaderFactory), "reader override must not leak into a fallback")
+		})
+	}
+}
+
+func TestMistralInvoke_UnarySigningAndGuardrails(t *testing.T) {
+	captured := make(chan struct {
+		auth, digest, guardrail string
+		body                    []byte
+	}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		captured <- struct {
+			auth, digest, guardrail string
+			body                    []byte
+		}{r.Header.Get("Authorization"), r.Header.Get("x-amz-content-sha256"), r.Header.Get(guardrailIdentifierHeader), body}
+		_, _ = io.WriteString(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"amazon-bedrock-guardrailAction":"NONE","amazon-bedrock-trace":{"guardrail":{"inputAssessment":{}}}}`)
+	}))
+	defer server.Close()
+	provider := newTestProviderWithServer(t, server)
+	key := testBedrockKey()
+	key.Value = schemas.SecretVar{}
+	key.BedrockKeyConfig.AccessKey = *schemas.NewSecretVar("AKIDTEST")
+	key.BedrockKeyConfig.SecretKey = *schemas.NewSecretVar("test-secret")
+	ctx, request := mistralInvokeTestRequest(t, mistralInvokeTestBody)
+	request.Params.ExtraParams = map[string]interface{}{"guardrailConfig": map[string]interface{}{"guardrailIdentifier": "gr-test", "guardrailVersion": "1"}}
+	response, err := provider.ChatCompletion(ctx, key, request)
+	require.Nil(t, err)
+	hit := <-captured
+	assert.Contains(t, hit.auth, "/us-east-1/bedrock/aws4_request")
+	assert.Equal(t, "gr-test", hit.guardrail)
+	assert.Equal(t, fmt.Sprintf("%x", sha256.Sum256(hit.body)), hit.digest)
+	assert.NotContains(t, string(hit.body), "guardrailConfig")
+	wire, marshalErr := providerUtils.MarshalSorted(ToBedrockInvokeChatResponse(response))
+	require.NoError(t, marshalErr)
+	assert.Equal(t, "NONE", gjson.GetBytes(wire, "amazon-bedrock-guardrailAction").String())
+	assert.True(t, gjson.GetBytes(wire, "amazon-bedrock-trace.guardrail").Exists())
+}
+
+func TestInvokeGuardrailHeaders_OpaqueConfig(t *testing.T) {
+	extra := map[string]interface{}{"guardrailConfig": json.RawMessage(`{"guardrailIdentifier":"gr-raw","guardrailVersion":"1","trace":"enabled"}`)}
+	headers := invokeGuardrailHeaders(nil, extra)
+	for name, want := range map[string]string{guardrailIdentifierHeader: "gr-raw", guardrailVersionHeader: "1", guardrailTraceHeader: "ENABLED"} {
+		value := headers[name]
+		assert.Equal(t, want, value.GetValue(), name)
+	}
+	assert.IsType(t, json.RawMessage{}, extra["guardrailConfig"], "header conversion must not mutate the caller's config")
+}
+
+func TestMistralInvoke_HTTPError(t *testing.T) {
+	for _, status := range []int{400, 429, 503} {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%d/stream=%t", status, streaming), func(t *testing.T) {
+				exception := map[int]string{400: "ValidationException", 429: "ThrottlingException", 503: "ServiceUnavailableException"}[status]
+				server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(status)
+					_, _ = fmt.Fprintf(w, `{"__type":%q,"message":"native refusal"}`, exception)
+				}))
+				defer server.Close()
+				provider := newTestProviderWithServer(t, server)
+				provider.mantleStreamingClient = &fasthttp.Client{TLSConfig: &tls.Config{InsecureSkipVerify: true}}
+				ctx, request := mistralInvokeTestRequest(t, mistralInvokeTestBody)
+				key := testBedrockKey()
+				key.BedrockKeyConfig.Endpoints = &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(server.URL)}
+				previous := &providerUtils.SSEReaderFactory{}
+				ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, previous)
+				var err *schemas.BifrostError
+				if streaming {
+					_, err = provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, request)
+				} else {
+					_, err = provider.ChatCompletion(ctx, key, request)
+				}
+				require.NotNil(t, err)
+				assert.Equal(t, status, err.EffectiveHTTPStatus())
+				assert.Equal(t, "native refusal", err.Error.Message)
+				assert.Equal(t, exception, ToBedrockError(err).Type)
+				assert.Same(t, previous, ctx.Value(schemas.BifrostContextKeySSEReaderFactory))
+			})
+		}
+	}
+}
+
+func TestMistralInvoke_JSONInsteadOfStream(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"not a stream"}}]}`)
+	}))
+	defer server.Close()
+	provider := newTestProviderWithServer(t, server)
+	provider.mantleStreamingClient = &fasthttp.Client{TLSConfig: &tls.Config{InsecureSkipVerify: true}}
+	ctx, request := mistralInvokeTestRequest(t, mistralInvokeTestBody)
+	key := testBedrockKey()
+	key.BedrockKeyConfig.Endpoints = &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(server.URL)}
+	stream, err := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, request)
+	require.Nil(t, err)
+	var failure *schemas.BifrostError
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			failure = chunk.BifrostError
+		}
+	}
+	require.NotNil(t, failure)
+	assert.Equal(t, 502, failure.EffectiveHTTPStatus())
+	assert.Contains(t, failure.Error.Message, "non-SSE")
+}
+
+func TestBedrockMistralNeutralChatStaysOnConverse(t *testing.T) {
+	paths := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths <- r.URL.Path
+		_, _ = io.WriteString(w, `{"output":{"message":{"role":"assistant","content":[{"text":"ok"}]}},"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}`)
+	}))
+	defer server.Close()
+	provider := newTestProviderWithServer(t, server)
+	ctx, request := mistralInvokeTestRequest(t, mistralInvokeTestBody)
+	ctx.ClearValue(BedrockContextKeyMistralInvokeIngress)
+	_, err := provider.ChatCompletion(ctx, testBedrockKey(), request)
+	require.Nil(t, err)
+	assert.True(t, strings.HasSuffix(<-paths, "/converse"))
+	ctx.SetValue(BedrockContextKeyMistralInvokeIngress, true)
+	request.Model = "anthropic.claude-sonnet-4-6"
+	_, err = provider.ChatCompletion(ctx, testBedrockKey(), request)
+	require.Nil(t, err)
+	assert.True(t, strings.HasSuffix(<-paths, "/converse"), "the marker must not divert another model family")
 }
 
 func BenchmarkBedrockMistralInvokeGate(b *testing.B) {
