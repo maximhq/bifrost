@@ -299,6 +299,12 @@ func newMidStreamResetServer() *httptest.Server {
 func TestStream_MidStreamDrop_IsUpstreamError(t *testing.T) {
 	content := "hello"
 	streams := map[string]func(*BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError){
+		"text": func(p *BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return p.TextCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), &schemas.BifrostTextCompletionRequest{
+				Model: "mistral.mistral-7b-instruct-v0:2",
+				Input: &schemas.TextCompletionInput{PromptStr: &content},
+			})
+		},
 		"chat": func(p *BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 			return p.ChatCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), testChatRequest())
 		},
