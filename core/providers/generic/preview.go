@@ -11,14 +11,15 @@ import (
 // UsagePreviewInput is one hypothetical relayed call: what the caller would send and what the
 // upstream would answer. Bodies are the operator's own samples, never fetched from anywhere.
 type UsagePreviewInput struct {
-	Method              string `json:"method"`
-	Path                string `json:"path"`
-	Accept              string `json:"accept,omitempty"`
-	RequestContentType  string `json:"request_content_type,omitempty"`
-	RequestBody         string `json:"request_body,omitempty"`
-	StatusCode          int    `json:"status_code,omitempty"` // default 200
-	ResponseContentType string `json:"response_content_type,omitempty"`
-	ResponseBody        string `json:"response_body,omitempty"`
+	Method              string            `json:"method"`
+	Path                string            `json:"path"`
+	Headers             map[string]string `json:"headers,omitempty"` // request headers, for routes that match on one
+	Accept              string            `json:"accept,omitempty"`
+	RequestContentType  string            `json:"request_content_type,omitempty"`
+	RequestBody         string            `json:"request_body,omitempty"`
+	StatusCode          int               `json:"status_code,omitempty"` // default 200
+	ResponseContentType string            `json:"response_content_type,omitempty"`
+	ResponseBody        string            `json:"response_body,omitempty"`
 }
 
 // UsagePreview is what the relay would record for that call: the route it matched, whether it
@@ -34,7 +35,10 @@ type UsagePreview struct {
 	UnitsSource    schemas.GenericUnitsSource  `json:"units_source"`
 	UnitsMeasure   schemas.GenericUnitsMeasure `json:"units_measure"`
 	UnitsPath      string                      `json:"units_path"`
-	Units          *float64                    `json:"units"` // quantity read, null when none
+	Units          *float64                    `json:"units"`        // quantity read, null when none
+	UnitsBilled    *float64                    `json:"units_billed"` // after block rounding and the minimum, null when none
+	UnitsBlockSize float64                     `json:"units_block_size"`
+	UnitsMinimum   float64                     `json:"units_minimum"`
 	CostPerUnit    float64                     `json:"cost_per_unit"`
 	CostPerRequest float64                     `json:"cost_per_request"`
 	ExtractedCost  *float64                    `json:"extracted_cost"` // cost_path or usage.cost, null when none
@@ -75,7 +79,11 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, in UsagePreviewInput) (*Us
 	}
 
 	provider := &GenericProvider{cfg: cfg, usage: resolveUsage(cfg.Usage, nil), routes: compileRoutes(cfg), streamGlobs: compileStreamGlobs(cfg)}
-	route := provider.matchRoute(method, path)
+	headers := make(map[string]string, len(in.Headers))
+	for name, value := range in.Headers {
+		headers[strings.ToLower(strings.TrimSpace(name))] = value
+	}
+	route := provider.matchRoute(method, path, headers)
 	usage, billable := provider.usage, billableByDefault(method, nil)
 	out := &UsagePreview{RouteAllowed: !cfg.StrictRoutes || route != nil}
 	if route != nil {
@@ -93,6 +101,7 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, in UsagePreviewInput) (*Us
 	out.ModelPath = usage.effectiveModelPath()
 	out.UnitsSource, out.UnitsMeasure, out.UnitsPath = usage.unitsSource, usage.unitsMeasure, usage.unitsPath
 	out.CostPerUnit, out.CostPerRequest = usage.costPerUnit, usage.costPerRequest
+	out.UnitsBlockSize, out.UnitsMinimum = usage.unitsBlockSize, usage.unitsMinimum
 	out.Notes = []string{}
 
 	if out.ModelPath != "" && len(reqBody) > 0 {
@@ -144,6 +153,7 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, in UsagePreviewInput) (*Us
 	}
 	if fields.hasUnits {
 		out.Units = schemas.Ptr(fields.units)
+		out.UnitsBilled = schemas.Ptr(usage.billedUnits(fields.units))
 	}
 	if fields.hasCost {
 		out.ExtractedCost = schemas.Ptr(fields.cost)

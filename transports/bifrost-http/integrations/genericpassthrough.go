@@ -106,12 +106,14 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 		return
 	}
 
-	// The routes are matched once here; the plan rides on the context so the relay reuses it.
+	// The routes are matched once here, with the caller's headers so a route may pick an
+	// operation by header (X-Amz-Target); the plan rides on the context so the relay reuses it.
 	method := string(ctx.Method())
 	body := ctx.Request.Body()
 	contentType := string(ctx.Request.Header.ContentType())
 	rawQuery := string(ctx.URI().QueryString())
-	plan := gp.Plan(method, path, string(ctx.Request.Header.Peek("Accept")), genericBodyStreams(body, contentType) || passthroughQueryStreams(method, rawQuery))
+	safeHeaders, _ := collectPassthroughHeaders(ctx)
+	plan := gp.Plan(method, path, string(ctx.Request.Header.Peek("Accept")), genericBodyStreams(body, contentType) || passthroughQueryStreams(method, rawQuery), safeHeaders)
 
 	// With strict_routes, an operation the operator did not list is refused before anything else
 	// is looked at, the same way the path guard refuses a malformed path.
@@ -126,7 +128,6 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 		return
 	}
 
-	safeHeaders, _ := collectPassthroughHeaders(ctx)
 	stripCallerCredentialHeaders(safeHeaders)
 	model := extractGenericModel(body, contentType, plan.ModelPath)
 

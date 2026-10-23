@@ -540,6 +540,11 @@ GenericProviderConfig:
           billable:
             type: boolean
             description: false relays the call without counting or charging it; true counts it. Unset keeps the method default (only POST billable)
+          headers:
+            type: object
+            additionalProperties:
+              type: string
+            description: Request headers that must also match, header name to value glob (X-Amz-Target to Textract.Get*), so one route per operation on APIs that multiplex a path
           stream:
             type: boolean
           usage:
@@ -580,6 +585,13 @@ GenericUsageConfig:
       type: number
       minimum: 0
       description: "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
+    units_block_size:
+      type: number
+      description: Bill per started block of this many raw units (100 for per-100-character pricing); default exact
+    units_minimum:
+      type: number
+      minimum: 0
+      description: Least number of billed units once a quantity was read; default 0
     disable_optimistic_parsing:
       type: boolean
 

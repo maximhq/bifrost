@@ -28,6 +28,13 @@ func TestGenericProviderConfigValidate(t *testing.T) {
 		{"route path must be rooted", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "GET", Path: "x"}}}, "must start with /"},
 		{"route glob syntax", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "GET", Path: "/[x"}}}, "routes[0]"},
 		{"double star only last", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "GET", Path: "/**/x"}}}, "only allowed as the last segment"},
+		{"header route ok", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}}}}, ""},
+		{"header name must be a token", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X Amz": "x"}}}}, "not a valid header name"},
+		{"header value required", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": " "}}}}, "a value glob is required"},
+		{"header glob syntax", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "[x"}}}}, "routes[0].headers[X-Amz-Target]"},
+		{"block size above zero", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsBlockSize: Ptr(0.0)}}, "units_block_size must be above zero"},
+		{"minimum not negative", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsMinimum: Ptr(-1.0)}}, "units_minimum must not be negative"},
+		{"rounding ok", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsPath: "Text", UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsChars, UnitsBlockSize: Ptr(100.0), UnitsMinimum: Ptr(1.0), CostPerUnit: Ptr(0.01)}}, ""},
 		{"route fee", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "GET", Path: "/x", Usage: &GenericUsageConfig{CostPerRequest: Ptr(-0.1)}}}}, "routes[0].usage.cost_per_request"},
 		{"streaming glob", &GenericProviderConfig{Streaming: &GenericStreamingConfig{Paths: []string{"v1/*"}}}, "streaming.paths[0]"},
 		{"full valid", &GenericProviderConfig{
@@ -100,6 +107,6 @@ func TestGenericUsageConfigUnitsValidation(t *testing.T) {
 	err := (&GenericProviderConfig{Routes: rate}).Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "routes[0].usage.units_path is required")
-	ok(&GenericUsageConfig{CostPerUnit: Ptr(0.0)}) // zero is "no unit pricing" and needs no path (a route waiving the provider's)
+	ok(&GenericUsageConfig{CostPerUnit: Ptr(0.0)})                                                                                 // zero is "no unit pricing" and needs no path (a route waiving the provider's)
 	ok(&GenericUsageConfig{UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsBodyChars, CostPerUnit: Ptr(0.000016)}) // body_chars reads the whole body and needs no path
 }

@@ -13463,6 +13463,16 @@
           "minimum": 0,
           "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + any extracted cost"
         },
+        "units_block_size": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Bill per started block of this many raw units: 100 for an API priced per 100 characters. Default exact"
+        },
+        "units_minimum": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Least number of billed units once a quantity was read. Default 0"
+        },
         "disable_optimistic_parsing": {
           "type": "boolean",
           "description": "Read only the configured paths"
@@ -13510,6 +13520,13 @@
         "billable": {
           "type": "boolean",
           "description": "false relays the call without counting or charging it; true counts it. Left unset, the method default applies, with or without a route: only POST is billable; GET and HEAD are polls and listings, PUT and PATCH update settings, DELETE cleans up"
+        },
+        "headers": {
+          "type": "object",
+          "description": "Request headers that must also match for this route: header name (case-insensitive) to value glob. AWS JSON APIs send every operation to POST / and name it in X-Amz-Target, so one route per operation is {\"X-Amz-Target\": \"Textract.GetDocumentAnalysis\"} or a glob such as Textract.Get*",
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "stream": {
           "type": "boolean",

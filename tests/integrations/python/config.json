@@ -224,6 +224,29 @@
           },
           "routes": [
             {
+              "method": "POST",
+              "path": "/post",
+              "headers": {
+                "X-Amz-Target": "Echo.Priced*"
+              },
+              "usage": {
+                "cost_per_unit": 0.002
+              }
+            },
+            {
+              "method": "PATCH",
+              "path": "/patch",
+              "billable": true,
+              "usage": {
+                "units_source": "request",
+                "units_measure": "body_chars",
+                "units_block_size": 100,
+                "units_minimum": 1,
+                "cost_per_unit": 0.01,
+                "cost_per_request": 0
+              }
+            },
+            {
               "method": "PUT",
               "path": "/put",
               "billable": true,

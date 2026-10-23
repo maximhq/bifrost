@@ -1,6 +1,7 @@
 package generic
 
 import (
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -176,6 +177,20 @@ func TestUnitsPricing(t *testing.T) {
 		require.NotNil(t, usage.Cost)
 		assert.InDelta(t, float64(len(ssml))*16.0/1_000_000, usage.Cost.TotalCost, 1e-12)
 		assert.Equal(t, usage.Cost.TotalCost, u.defaultUsage(initial).Cost.TotalCost, "the streaming fallback carries the same request-side quantity")
+	})
+	t.Run("rounding: per started block with a minimum (Comprehend Medical shape)", func(t *testing.T) {
+		u := resolveUsage(&schemas.GenericUsageConfig{UnitsPath: "Text", UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsChars, UnitsBlockSize: schemas.Ptr(100.0), UnitsMinimum: schemas.Ptr(1.0), CostPerUnit: schemas.Ptr(0.01)}, nil)
+		assert.InDelta(t, 3, u.billedUnits(250), 0, "250 characters start three 100-character blocks")
+		assert.InDelta(t, 1, u.billedUnits(100), 0, "an exact block is one")
+		assert.InDelta(t, 1, u.billedUnits(0), 0, "the minimum applies once a quantity was read")
+		initial := u.requestUnits("application/x-amz-json-1.1", []byte(`{"Text":"`+strings.Repeat("a", 250)+`"}`))
+		require.True(t, initial.hasUnits)
+		usage := extractUsage(u, "application/x-amz-json-1.1", []byte(`{"Entities":[]}`), initial)
+		require.NotNil(t, usage.Cost)
+		assert.InDelta(t, 0.03, usage.Cost.TotalCost, 1e-9)
+		exact := resolveUsage(&schemas.GenericUsageConfig{UnitsPath: "Text", UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsChars, CostPerUnit: schemas.Ptr(0.01)}, nil)
+		assert.InDelta(t, 250, exact.billedUnits(250), 0, "without a block size the raw quantity is billed exactly")
+		assert.InDelta(t, 0, exact.billedUnits(0), 0, "and no minimum applies")
 	})
 	t.Run("request body chars: multi-byte SSML billed per character, not per byte", func(t *testing.T) {
 		u := resolveUsage(&schemas.GenericUsageConfig{UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsBodyChars, CostPerUnit: schemas.Ptr(16.0 / 1_000_000)}, nil)

@@ -43,62 +43,110 @@ func TestMatchRouteFirstWins(t *testing.T) {
 	}
 	provider := &GenericProvider{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(cfg.Usage, nil)}
 
-	route := provider.matchRoute("POST", "/search")
+	route := provider.matchRoute("POST", "/search", nil)
 	require.NotNil(t, route)
 	assert.True(t, route.billable)
 	assert.InDelta(t, 0.02, route.usage.costPerRequest, 1e-9, "the first matching route decides")
 
-	route = provider.matchRoute("POST", "/anything/else")
+	route = provider.matchRoute("POST", "/anything/else", nil)
 	require.NotNil(t, route)
 	assert.False(t, route.billable)
 	assert.InDelta(t, 0.01, route.usage.costPerRequest, 1e-9, "a route without usage inherits the provider mapping")
 
-	route = provider.matchRoute("GET", "/jobs/9")
+	route = provider.matchRoute("GET", "/jobs/9", nil)
 	require.NotNil(t, route)
 	require.NotNil(t, route.stream)
 	assert.True(t, *route.stream)
 
-	assert.Nil(t, provider.matchRoute("DELETE", "/search"), "method must match")
+	assert.Nil(t, provider.matchRoute("DELETE", "/search", nil), "method must match")
 
 	ctx := testCtx(t)
-	usage, billable, matched := provider.resolve(ctx, "PATCH", "/x")
+	usage, billable, matched := provider.resolve(ctx, "PATCH", "/x", nil)
 	assert.Nil(t, matched)
 	assert.False(t, billable, "no route means the method default: a PATCH is not billable")
 	assert.InDelta(t, 0.01, usage.costPerRequest, 1e-9, "and the provider usage mapping")
 
-	_, billable, matched = provider.resolve(ctx, "GET", "/x")
+	_, billable, matched = provider.resolve(ctx, "GET", "/x", nil)
 	assert.Nil(t, matched)
 	assert.False(t, billable, "an unrouted GET is a poll or a listing: not counted")
-	_, billable, _ = provider.resolve(ctx, "HEAD", "/x")
+	_, billable, _ = provider.resolve(ctx, "HEAD", "/x", nil)
 	assert.False(t, billable)
-	_, billable, _ = provider.resolve(ctx, "PUT", "/x")
+	_, billable, _ = provider.resolve(ctx, "PUT", "/x", nil)
 	assert.False(t, billable, "PUT, PATCH and DELETE update or clean up: not counted without a route saying so")
-	_, billable, _ = provider.resolve(ctx, "GET", "/jobs/9")
+	_, billable, _ = provider.resolve(ctx, "GET", "/jobs/9", nil)
 	assert.False(t, billable, "a route without an explicit billable keeps the method default: a GET stays unbilled")
 }
 
 // A plan the transport stored on the context is what resolve uses, when it was made by this
 // provider instance; a plan from another instance (the provider was rebuilt in between) or no
 // plan at all falls back to matching the routes.
+// A route may require request headers, so AWS JSON APIs that send every operation to POST /
+// and name it in X-Amz-Target get one route per operation. Names match case-insensitively (the
+// transport lower-cases them), values with the single-segment glob, "/" as an ordinary character.
+func TestMatchRouteHeaders(t *testing.T) {
+	cfg := &schemas.GenericProviderConfig{
+		StrictRoutes: true,
+		Routes: []schemas.GenericRouteConfig{
+			{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.AnalyzeDocument"}, Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.05)}},
+			{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}, Billable: schemas.Ptr(false)},
+			{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.*", "Content-Type": "application/x-amz-json-*"}, Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.0015)}},
+			{Method: "POST", Path: "/plain"},
+		},
+	}
+	provider := &GenericProvider{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(cfg.Usage, nil)}
+	hdr := func(target string) map[string]string {
+		return map[string]string{"x-amz-target": target, "content-type": "application/x-amz-json-1.1"}
+	}
+
+	route := provider.matchRoute("POST", "/", hdr("Textract.AnalyzeDocument"))
+	require.NotNil(t, route)
+	assert.InDelta(t, 0.05, route.usage.costPerRequest, 1e-9, "the exact operation wins by order")
+
+	route = provider.matchRoute("POST", "/", hdr("Textract.GetDocumentAnalysis"))
+	require.NotNil(t, route)
+	assert.False(t, route.billable, "a glob picks the result polls")
+
+	route = provider.matchRoute("POST", "/", hdr("Textract.DetectDocumentText"))
+	require.NotNil(t, route)
+	assert.InDelta(t, 0.0015, route.usage.costPerRequest, 1e-9, "the catch-all needs both headers, and / in a value is literal")
+
+	assert.Nil(t, provider.matchRoute("POST", "/", map[string]string{"x-amz-target": "Textract.DetectDocumentText"}), "a route needs every listed header")
+	assert.Nil(t, provider.matchRoute("POST", "/", hdr("Translate.TranslateText")), "another service matches no route")
+	assert.Nil(t, provider.matchRoute("POST", "/", nil), "no headers: only header-free routes can match")
+	require.NotNil(t, provider.matchRoute("POST", "/plain", nil), "a route without headers is untouched by the feature")
+	assert.Nil(t, provider.matchRoute("POST", "/", hdr("textract.analyzedocument")), "values are case-sensitive, as AWS targets are")
+
+	plan := provider.Plan("POST", "/", "", false, hdr("Textract.GetDocumentAnalysis"))
+	assert.True(t, plan.Allowed)
+	require.NotNil(t, plan.route)
+	assert.False(t, plan.route.billable)
+	assert.False(t, provider.Plan("POST", "/", "", false, hdr("Translate.TranslateText")).Allowed, "strict routes refuse an unlisted operation")
+
+	ctx := testCtx(t)
+	_, billable, matched := provider.resolve(ctx, "POST", "/", hdr("Textract.GetDocumentAnalysis"))
+	require.NotNil(t, matched)
+	assert.False(t, billable, "the SDK path, with no plan on the context, matches with the request headers too")
+}
+
 func TestResolveUsesPlanFromContext(t *testing.T) {
 	cfg := &schemas.GenericProviderConfig{Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/search", Billable: schemas.Ptr(false)}}}
 	provider := &GenericProvider{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(cfg.Usage, nil)}
 	other := &GenericProvider{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(cfg.Usage, nil)}
 
 	ctx := testCtx(t)
-	plan := provider.Plan("POST", "/search", "", false)
+	plan := provider.Plan("POST", "/search", "", false, nil)
 	require.NotNil(t, plan.route)
 	assert.True(t, plan.Allowed)
 	assert.False(t, plan.Streams)
 	WithPlan(ctx, plan)
-	_, billable, matched := provider.resolve(ctx, "POST", "/search")
+	_, billable, matched := provider.resolve(ctx, "POST", "/search", nil)
 	assert.Same(t, plan.route, matched, "the stored plan's route is reused")
 	assert.False(t, billable)
 
-	_, _, matched = other.resolve(ctx, "POST", "/search")
+	_, _, matched = other.resolve(ctx, "POST", "/search", nil)
 	require.NotNil(t, matched)
 	assert.NotSame(t, plan.route, matched, "another instance matches its own routes")
-	_, _, matched = provider.resolve(testCtx(t), "POST", "/search")
+	_, _, matched = provider.resolve(testCtx(t), "POST", "/search", nil)
 	require.NotNil(t, matched, "no plan on the context: matched here")
 }
 
@@ -129,11 +177,11 @@ func TestRouteBillableInheritsMethodDefault(t *testing.T) {
 		{"POST", "/free", false},
 	}
 	for _, tc := range cases {
-		_, billable, matched := provider.resolve(testCtx(t), tc.method, tc.path)
+		_, billable, matched := provider.resolve(testCtx(t), tc.method, tc.path, nil)
 		require.NotNilf(t, matched, "%s %s must match a route", tc.method, tc.path)
 		assert.Equalf(t, tc.want, billable, "%s %s", tc.method, tc.path)
 	}
-	_, billable, matched := provider.resolve(testCtx(t), "POST", "/unrouted")
+	_, billable, matched := provider.resolve(testCtx(t), "POST", "/unrouted", nil)
 	assert.Nil(t, matched)
 	assert.True(t, billable, "an unrouted POST is billable: the same method default applies with or without a route")
 }
@@ -149,7 +197,7 @@ func TestRouteOverridesZeroFeeAndModelPath(t *testing.T) {
 		},
 	}
 	provider := &GenericProvider{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(cfg.Usage, nil)}
-	usage, billable, _ := provider.resolve(testCtx(t), "POST", "/free")
+	usage, billable, _ := provider.resolve(testCtx(t), "POST", "/free", nil)
 	assert.True(t, billable)
 	assert.InDelta(t, 0.0, usage.costPerRequest, 1e-9, "an explicit 0 waives the provider fee")
 	assert.Nil(t, usage.defaultUsage(usageFields{}).Cost)

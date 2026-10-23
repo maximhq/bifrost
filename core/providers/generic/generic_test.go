@@ -715,12 +715,12 @@ func BenchmarkGenericRoutePlan(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		plan := provider.Plan("POST", "/v1/resource199/42/action", "", false)
+		plan := provider.Plan("POST", "/v1/resource199/42/action", "", false, nil)
 		if !plan.Allowed {
 			b.Fatal("route must match")
 		}
 		WithPlan(ctx, plan)
-		if _, _, route := provider.resolve(ctx, "POST", "/v1/resource199/42/action"); route == nil {
+		if _, _, route := provider.resolve(ctx, "POST", "/v1/resource199/42/action", nil); route == nil {
 			b.Fatal("plan must be reused")
 		}
 	}

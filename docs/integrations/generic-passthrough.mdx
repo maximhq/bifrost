@@ -92,7 +92,14 @@ curl -X POST http://localhost:8080/api/providers/tavily/keys \
         "base_provider_type": "generic",
         "generic_config": {
           "auth": { "type": "aws_sigv4", "aws": { "service": "textract", "region": "us-east-1" } },
-          "usage": { "units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.0015 }
+          "usage": { "units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.0015 },
+          "strict_routes": true,
+          "routes": [
+            { "method": "POST", "path": "/", "headers": { "X-Amz-Target": "Textract.AnalyzeDocument" }, "usage": { "cost_per_unit": 0.05 } },
+            { "method": "POST", "path": "/", "headers": { "X-Amz-Target": "Textract.Get*" }, "billable": false },
+            { "method": "POST", "path": "/", "headers": { "X-Amz-Target": "Textract.Start*" }, "usage": { "cost_per_request": 0.01, "cost_per_unit": 0 } },
+            { "method": "POST", "path": "/", "headers": { "X-Amz-Target": "Textract.*" } }
+          ]
         }
       }
     },
@@ -156,6 +163,8 @@ Paths are [gjson](https://github.com/tidwall/gjson) paths. Tokens and cost are r
 | `units_source` | `response` (default): a count the API reports. `request`: what the caller sent, which per-character APIs bill on |
 | `units_measure` | `value` (default): the number at the path. `chars`: the character count of the JSON string at the path (the body must be JSON). `body_bytes`: the byte length of the whole body. `body_chars`: the character count of the whole body, any content type |
 | `cost_per_unit` | USD per unit. A route may set `0` to waive the provider's unit pricing |
+| `units_block_size` | Bill per started block of this many raw units: `100` for an API priced per 100 characters (Comprehend Medical). Default exact |
+| `units_minimum` | Least number of billed units once a quantity was read, e.g. `1`. Default `0` |
 | `disable_optimistic_parsing` | Read only the configured paths |
 
 **Per-unit pricing.** Most non-LLM APIs bill by quantity, and the quantity is in a different place for each:
@@ -167,7 +176,7 @@ Paths are [gjson](https://github.com/tidwall/gjson) paths. Tokens and cost are r
 | AWS Translate | character of input, spaces included | `units_source: request`, `units_measure: chars`, `units_path: Text`, `cost_per_unit: 0.000015` |
 | Azure TTS (neural voices) | character of SSML, markup included | `units_source: request`, `units_measure: body_chars`, `cost_per_unit: 0.000016` (the body is `application/ssml+xml`, so `chars` with a path cannot read it, and `body_bytes` would over-count multi-byte text) |
 
-Cost per call is `units × cost_per_unit + cost_per_request + extracted cost`. Request-side quantities count what the upstream itself bills on: a caller cannot send less text than it wants translated, and padding the text raises the upstream bill as much as the Bifrost charge. A quantity that is missing, negative or not JSON (unless the measure is `body_bytes` or `body_chars`, which read the whole body whatever its type) adds nothing. On an SSE stream a response-side quantity is read per event and the last value reported wins (map a field that carries a running total); `body_bytes` and `body_chars` on the response side are read from buffered responses only. A request-side quantity is known before the upstream answers and is kept on every path; an unframed stream (audio) reports it on its final chunk. Azure TTS Avatar bills per second of a batch job, which no synchronous relay can see; use a flat fee for it.
+Cost per call is `billed units × cost_per_unit + cost_per_request + extracted cost`, where billed units is the raw quantity unless `units_block_size` or `units_minimum` is set: then it is `max(units_minimum, ceil(quantity / units_block_size))`, the way APIs priced per started 100-character block bill. Request-side quantities count what the upstream itself bills on: a caller cannot send less text than it wants translated, and padding the text raises the upstream bill as much as the Bifrost charge. A quantity that is missing, negative or not JSON (unless the measure is `body_bytes` or `body_chars`, which read the whole body whatever its type) adds nothing. On an SSE stream a response-side quantity is read per event and the last value reported wins (map a field that carries a running total); `body_bytes` and `body_chars` on the response side are read from buffered responses only. A request-side quantity is known before the upstream answers and is kept on every path; an unframed stream (audio) reports it on its final chunk. Azure TTS Avatar bills per second of a batch job, which no synchronous relay can see; use a flat fee for it.
 
 **Optimistic defaults.** With no mapping, Bifrost reads the shapes most APIs borrow: request `model`; response `usage.prompt_tokens` or `usage.input_tokens`, `usage.completion_tokens` or `usage.output_tokens`, `usage.total_tokens`; cost `usage.cost`. A root-level `cost` is never read by default, since on many APIs it is a product price rather than a bill. Naming any token path turns the optimistic token lookup off, so a half-mapped response is never topped up from a block you did not map. `disable_optimistic_parsing` also stops the default `model` lookup. Negative numbers are ignored. Bodies are scanned when their `Content-Type` is any JSON media type, including `application/x-amz-json-1.1`.
 
@@ -192,11 +201,14 @@ Detection order: the matching route's `stream` flag, then `streaming.paths`, the
 | --- | --- |
 | `method` | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD` |
 | `path` | Rooted segment glob: `*` matches within a segment (`/jobs/*`), a trailing `/**` matches the prefix and everything below |
+| `headers` | Request headers that must also match: header name (case-insensitive) to value glob, e.g. `{"X-Amz-Target": "Textract.Get*"}`. For APIs that send every operation to one path and name it in a header |
 | `billable` | `false` relays the call without counting or charging it (status polls, listings); `true` counts it. Unset keeps the method default: only `POST` is billable |
 | `stream` | Forces the streaming (`true`) or buffered (`false`) relay for this route |
 | `usage` | Field-by-field override of the provider `usage` mapping |
 
-The first matching route wins. A request matching no route uses the provider defaults and the method default for billing, so listing every operation of an API as routes (for example from an OpenAPI import) does not start charging its polls and listings.
+The first matching route wins, so list the specific operation before its catch-all. A request matching no route uses the provider defaults and the method default for billing, so listing every operation of an API as routes (for example from an OpenAPI import) does not start charging its polls and listings.
+
+**One path, many operations.** AWS JSON-protocol APIs (Textract, Translate, Comprehend) send every operation to `POST /` and name it in the `X-Amz-Target` header, so a route on method and path alone cannot tell them apart. Add `headers` to the route, as the Textract example above does: `AnalyzeDocument` at its own rate, result polls (`Get*`) free, job starts (`Start*`) at a flat fee, everything else at the base rate. An async job's pages are reported on every `Get*` result page, so leave those polls non-billable and charge the start, rather than billing the pages once per poll. The OpenAPI importer turns AWS path keys of the form `/#X-Amz-Target=Service.Operation` into these routes.
 
 ### `strict_routes`
 

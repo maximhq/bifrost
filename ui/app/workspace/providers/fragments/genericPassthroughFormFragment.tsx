@@ -18,7 +18,7 @@ import {
 	genericUnitsMeasureReadsWholeBody,
 	ModelProvider,
 } from "@/lib/types/config";
-import { genericProviderConfigSchema } from "@/lib/types/schemas";
+import { genericProviderFormSchema } from "@/lib/types/schemas";
 import { importOpenAPI, parseOpenAPIText, type OpenAPIImport } from "@/lib/utils/openapiImport";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -29,7 +29,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { buildProviderUpdatePayload } from "../views/utils";
 
-type FormValues = z.infer<typeof genericProviderConfigSchema>;
+type FormValues = z.infer<typeof genericProviderFormSchema>;
 
 interface Props {
 	provider: ModelProvider;
@@ -56,7 +56,19 @@ const emptyUsage = {
 	units_source: "response" as const,
 	units_measure: "value" as const,
 	cost_per_unit: 0,
+	units_block_size: undefined,
+	units_minimum: undefined,
 	disable_optimistic_parsing: false,
+};
+
+// Route header matchers travel as a record in config and as name/value pairs in the form.
+const headersToPairs = (headers?: Record<string, string>) => Object.entries(headers ?? {}).map(([name, value]) => ({ name, value }));
+const pairsToHeaders = (pairs?: { name: string; value: string }[]) => {
+	const out: Record<string, string> = {};
+	for (const p of pairs ?? []) {
+		if (p.name.trim() && p.value.trim()) out[p.name.trim()] = p.value.trim();
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
 };
 
 function toFormValues(cfg: GenericProviderConfig | undefined): FormValues {
@@ -72,6 +84,7 @@ function toFormValues(cfg: GenericProviderConfig | undefined): FormValues {
 		streaming: { paths: cfg?.streaming?.paths ?? [], detect_from_accept_header: cfg?.streaming?.detect_from_accept_header ?? false },
 		routes: (cfg?.routes ?? []).map((r) => ({
 			...r,
+			headers: headersToPairs(r.headers),
 			// An unset billable stays unset in the form: the switch shows the current method's default
 			// until the operator touches it, so changing an imported GET to POST keeps the POST default
 			// rather than freezing the GET one as an explicit override.
@@ -97,6 +110,8 @@ function cleanUsage(usage: FormValues["usage"], route = false) {
 	if (usage.cost_path) out.cost_path = usage.cost_path;
 	if (usage.cost_per_request !== undefined && (route || usage.cost_per_request > 0)) out.cost_per_request = usage.cost_per_request;
 	if (usage.cost_per_unit !== undefined && (route || usage.cost_per_unit > 0)) out.cost_per_unit = usage.cost_per_unit;
+	if (usage.units_block_size !== undefined && usage.units_block_size > 0) out.units_block_size = usage.units_block_size;
+	if (usage.units_minimum !== undefined && usage.units_minimum > 0) out.units_minimum = usage.units_minimum;
 	if (usage.units_path) out.units_path = usage.units_path;
 	if (usage.units_source && usage.units_source !== "response") out.units_source = usage.units_source;
 	if (usage.units_measure && usage.units_measure !== "value") out.units_measure = usage.units_measure;
@@ -127,6 +142,7 @@ function toConfig(values: FormValues): GenericProviderConfig {
 		cfg.routes = values.routes.map((r) => ({
 			method: r.method,
 			path: r.path,
+			headers: pairsToHeaders(r.headers),
 			// Stored only when it departs from the method default, so the config stays what the operator decided.
 			billable: r.billable === undefined || r.billable === genericRouteBillableByDefault(r.method) ? undefined : r.billable,
 			stream: r.stream,
@@ -158,6 +174,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	const [sample, setSample] = useState({
 		method: "POST",
 		path: "/",
+		headers: "",
 		request_content_type: "application/json",
 		request_body: "",
 		status_code: 200,
@@ -166,9 +183,15 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	});
 	const runPreview = async () => {
 		try {
+			const { headers: headerText, ...rest } = sample;
+			const headers: Record<string, string> = {};
+			for (const line of headerText.split("\n")) {
+				const [name, ...valueParts] = line.split(":");
+				if (name?.trim() && valueParts.length > 0) headers[name.trim()] = valueParts.join(":").trim();
+			}
 			const result = await previewUsage({
 				provider: provider.name,
-				body: { generic_config: toConfig(form.getValues()), ...sample },
+				body: { generic_config: toConfig(form.getValues()), ...rest, headers: Object.keys(headers).length > 0 ? headers : undefined },
 			}).unwrap();
 			setPreview(result);
 		} catch (err) {
@@ -178,7 +201,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	};
 
 	const form = useForm<FormValues>({
-		resolver: zodResolver(genericProviderConfigSchema),
+		resolver: zodResolver(genericProviderFormSchema),
 		mode: "onChange",
 		defaultValues: toFormValues(genericConfig),
 	});
@@ -241,6 +264,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 				routes.append({
 					method: route.method,
 					path: route.path,
+					headers: headersToPairs(route.headers),
 					billable: undefined,
 					stream: undefined,
 					usage: { ...emptyUsage, cost_per_request: undefined },
@@ -517,6 +541,54 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 									</FormItem>
 								)}
 							/>
+							<FormField
+								control={form.control}
+								name="usage.units_block_size"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Block size (optional)</FormLabel>
+										<FormControl>
+											<Input
+												type="number"
+												step="any"
+												min={0}
+												placeholder="exact"
+												data-testid="generic-units-block-size-input"
+												disabled={disabled}
+												value={field.value ?? ""}
+												onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+											/>
+										</FormControl>
+										<FormDescription>
+											Bill per started block of this many units, e.g. 100 for APIs priced per 100 characters
+										</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="usage.units_minimum"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Minimum units (optional)</FormLabel>
+										<FormControl>
+											<Input
+												type="number"
+												step="any"
+												min={0}
+												placeholder="0"
+												data-testid="generic-units-minimum-input"
+												disabled={disabled}
+												value={field.value ?? ""}
+												onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+											/>
+										</FormControl>
+										<FormDescription>Least number of billed units once a quantity was read</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
 						</div>
 					</div>
 					{switchField(
@@ -591,6 +663,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 								routes.append({
 									method: "POST",
 									path: "/",
+									headers: [],
 									billable: undefined,
 									stream: undefined,
 									usage: { ...emptyUsage, cost_per_request: undefined },
@@ -710,6 +783,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 									)}
 								/>
 							</div>
+							<RouteHeaderMatchers control={form.control} index={index} disabled={disabled} />
 						</div>
 					))}
 				</section>
@@ -828,6 +902,14 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 							aria-label="Response status code"
 						/>
 					</div>
+					<Textarea
+						placeholder={"Request headers, one per line, e.g.\nX-Amz-Target: Textract.AnalyzeDocument"}
+						value={sample.headers}
+						onChange={(e) => setSample({ ...sample, headers: e.target.value })}
+						disabled={disabled}
+						rows={2}
+						data-testid="generic-preview-headers-textarea"
+					/>
 					<div className="grid gap-3 md:grid-cols-2">
 						<div className="space-y-2">
 							<Input
@@ -897,7 +979,11 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 								<span data-testid="generic-preview-units">
 									{preview.units === null
 										? "none"
-										: `${preview.units} (${preview.units_measure}, ${preview.units_source}${preview.units_path ? `, ${preview.units_path}` : ""}) × ${preview.cost_per_unit}`}
+										: `${preview.units} (${preview.units_measure}, ${preview.units_source}${preview.units_path ? `, ${preview.units_path}` : ""})${
+												preview.units_billed !== null && preview.units_billed !== preview.units
+													? ` billed as ${preview.units_billed}${preview.units_block_size > 0 ? ` in blocks of ${preview.units_block_size}` : ""}${preview.units_minimum > 0 ? `, minimum ${preview.units_minimum}` : ""}`
+													: ""
+											} × ${preview.cost_per_unit}`}
 								</span>
 								<span className="text-muted-foreground">Tokens</span>
 								<span>
@@ -937,5 +1023,82 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 				</div>
 			</form>
 		</Form>
+	);
+}
+
+// RouteHeaderMatchers edits a route's required request headers as name/value pairs. AWS JSON APIs
+// send every operation to POST / and name it in X-Amz-Target, so this is how one route per
+// operation is expressed; a route with no pairs matches on method and path alone.
+function RouteHeaderMatchers({
+	control,
+	index,
+	disabled,
+}: {
+	control: ReturnType<typeof useForm<FormValues>>["control"];
+	index: number;
+	disabled: boolean;
+}) {
+	const headers = useFieldArray({ control, name: `routes.${index}.headers` });
+	return (
+		<div className="space-y-2" data-testid={`generic-route-headers-${index}`}>
+			{headers.fields.map((h, hi) => (
+				<div key={h.id} className="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
+					<FormField
+						control={control}
+						name={`routes.${index}.headers.${hi}.name`}
+						render={({ field }) => (
+							<FormItem>
+								<FormControl>
+									<Input
+										placeholder="Header name, e.g. X-Amz-Target"
+										data-testid={`generic-route-header-name-input-${index}-${hi}`}
+										disabled={disabled}
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`routes.${index}.headers.${hi}.value`}
+						render={({ field }) => (
+							<FormItem>
+								<FormControl>
+									<Input
+										placeholder="Value glob, e.g. Textract.Get*"
+										data-testid={`generic-route-header-value-input-${index}-${hi}`}
+										disabled={disabled}
+										{...field}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<Button
+						type="button"
+						variant="ghost"
+						size="icon"
+						disabled={disabled}
+						onClick={() => headers.remove(hi)}
+						data-testid={`generic-route-header-remove-btn-${index}-${hi}`}
+					>
+						<Trash2 className="h-4 w-4" />
+					</Button>
+				</div>
+			))}
+			<Button
+				type="button"
+				variant="outline"
+				size="sm"
+				disabled={disabled}
+				onClick={() => headers.append({ name: "", value: "" })}
+				data-testid={`generic-route-header-add-btn-${index}`}
+			>
+				Match a header
+			</Button>
+		</div>
 	);
 }

@@ -282257,6 +282257,119 @@
               ]
             }
           }
+        },
+        {
+          "name": "262.19 POST /passthrough/generic_echo_units/post with X-Amz-Target - a header-matched route prices the operation: 7 pages at the route's rate plus the inherited fee (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_units has a route on POST /post that also requires X-Amz-Target: Echo.Priced*. With the header the",
+                  "// route's cost_per_unit 0.002 applies over the provider's units_path json.pages, and the provider's 0.01 fee is",
+                  "// inherited: 7 x 0.002 + 0.01 = 0.024. Case 262.14 sends the same body without the header and pays 0.017.",
+                  "pm.test('generic relay: request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.passthrough_response_body !== undefined && row.cost !== undefined && row.cost !== null) {",
+                  "      pm.test('generic relay: header-matched route rate applied', function () { pm.expect(row.cost, JSON.stringify({cost: row.cost})).to.be.closeTo(0.024, 1e-6); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: log row with cost appeared', function () { pm.expect.fail('log ' + reqId + ' has no cost after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "Echo.PricedOp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pages\": 7\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_units/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_units",
+                "post"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.20 PATCH /passthrough/generic_echo_units/patch - rounding: 250 characters bill as three 100-character blocks (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The PATCH /patch route bills request body_chars per started block of 100 with a minimum of 1 at 0.01 a block",
+                  "// and waives the flat fee: a 250-character body is 3 blocks, cost 0.03. An exact count would give 2.50.",
+                  "pm.test('generic relay: request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.passthrough_response_body !== undefined && row.cost !== undefined && row.cost !== null) {",
+                  "      pm.test('generic relay: per-block rounding applied', function () { pm.expect(row.cost, JSON.stringify({cost: row.cost})).to.be.closeTo(0.03, 1e-6); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: log row with cost appeared', function () { pm.expect.fail('log ' + reqId + ' has no cost after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "text/plain"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_units/patch",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_units",
+                "patch"
+              ]
+            }
+          }
         }
       ]
     }

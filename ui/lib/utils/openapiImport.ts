@@ -104,6 +104,19 @@ export function baseUrlFromServers(doc: Doc): string | undefined {
 	return undefined;
 }
 
+// AWS specifications key every operation of a JSON-protocol API as "/#X-Amz-Target=Service.Op": the
+// operation is a header, not a path. Such a key becomes a route on the path before the "#" with a
+// header matcher, which is what the relay needs to tell the operations apart.
+export function templateToRoute(template: string): { path: string; headers?: Record<string, string> } {
+	const hash = template.indexOf("#");
+	if (hash < 0) return { path: templateToGlob(template) };
+	const base = template.slice(0, hash) || "/";
+	const fragment = template.slice(hash + 1);
+	const eq = fragment.indexOf("=");
+	if (eq <= 0) return { path: templateToGlob(base) };
+	return { path: templateToGlob(base), headers: { [fragment.slice(0, eq)]: fragment.slice(eq + 1) } };
+}
+
 // importOpenAPI resolves a parsed document into provider fields.
 export function importOpenAPI(doc: Doc): OpenAPIImport {
 	const info = asRecord(doc.info);
@@ -118,7 +131,7 @@ export function importOpenAPI(doc: Doc): OpenAPIImport {
 			for (const method of Object.keys(item)) {
 				const upper = method.toUpperCase() as GenericRouteMethod;
 				if (!ROUTE_METHODS.includes(upper)) continue;
-				result.routes.push({ method: upper, path: templateToGlob(template) });
+				result.routes.push({ method: upper, ...templateToRoute(template) });
 			}
 		}
 		if (result.routes.length === 0) result.warnings.push("No operation in the document uses a method the relay serves");

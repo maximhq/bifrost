@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { authFromSecuritySchemes, baseUrlFromServers, importOpenAPI, parseOpenAPIText, templateToGlob } from "./openapiImport";
+import {
+	authFromSecuritySchemes,
+	baseUrlFromServers,
+	importOpenAPI,
+	parseOpenAPIText,
+	templateToGlob,
+	templateToRoute,
+} from "./openapiImport";
 
 const petstore = {
 	openapi: "3.0.3",
@@ -63,6 +70,22 @@ describe("openapiImport", () => {
 		expect(templateToGlob("/{owner}-{repo}/issues")).toBe("/*-*/issues");
 		expect(templateToGlob("/items[0]/what?")).toBe("/items\\[0\\]/what\\?");
 		expect(templateToGlob("/a*b")).toBe("/a\\*b");
+	});
+
+	it("turns AWS X-Amz-Target path keys into header-matched routes", () => {
+		expect(templateToRoute("/#X-Amz-Target=Textract.AnalyzeDocument")).toEqual({
+			path: "/",
+			headers: { "X-Amz-Target": "Textract.AnalyzeDocument" },
+		});
+		expect(templateToRoute("/v1/jobs/{id}")).toEqual({ path: "/v1/jobs/*" });
+		const result = importOpenAPI({
+			openapi: "3.0.0",
+			paths: { "/#X-Amz-Target=Textract.GetDocumentAnalysis": { post: {} }, "/#X-Amz-Target=Textract.StartDocumentAnalysis": { post: {} } },
+		});
+		expect(result.routes).toEqual([
+			{ method: "POST", path: "/", headers: { "X-Amz-Target": "Textract.GetDocumentAnalysis" } },
+			{ method: "POST", path: "/", headers: { "X-Amz-Target": "Textract.StartDocumentAnalysis" } },
+		]);
 	});
 
 	it("parses JSON and YAML documents", async () => {

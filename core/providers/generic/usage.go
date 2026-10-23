@@ -1,6 +1,7 @@
 package generic
 
 import (
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -227,12 +228,26 @@ func (u resolvedUsage) build(f usageFields) *schemas.BifrostPassthroughUsage {
 		cost += f.cost
 	}
 	if f.hasUnits && u.costPerUnit > 0 {
-		cost += f.units * u.costPerUnit
+		cost += u.billedUnits(f.units) * u.costPerUnit
 	}
 	if cost > 0 {
 		usage.Cost = &schemas.BifrostCost{TotalCost: cost}
 	}
 	return usage
+}
+
+// billedUnits applies the mapping's rounding rules to a raw quantity: per started block of
+// unitsBlockSize (Comprehend Medical bills 100-character units), and never fewer than
+// unitsMinimum. With the defaults (no block, no minimum) the raw quantity is billed exactly.
+func (u resolvedUsage) billedUnits(raw float64) float64 {
+	units := raw
+	if u.unitsBlockSize > 0 {
+		units = math.Ceil(raw / u.unitsBlockSize)
+	}
+	if units < u.unitsMinimum {
+		units = u.unitsMinimum
+	}
+	return units
 }
 
 // extractUsage reads tokens, cost and a response-side quantity from a buffered response body and

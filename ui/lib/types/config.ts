@@ -611,6 +611,8 @@ export interface GenericUsageConfig {
 	units_source?: GenericUnitsSource;
 	units_measure?: GenericUnitsMeasure;
 	cost_per_unit?: number;
+	units_block_size?: number;
+	units_minimum?: number;
 	disable_optimistic_parsing?: boolean;
 }
 
@@ -633,6 +635,8 @@ export const genericRouteBillableByDefault = (method: GenericRouteMethod): boole
 export interface GenericRouteConfig {
 	method: GenericRouteMethod;
 	path: string;
+	// Request headers that must also match: name (case-insensitive) to value glob, e.g. X-Amz-Target: Textract.Get*
+	headers?: Record<string, string>;
 	billable?: boolean;
 	stream?: boolean;
 	usage?: GenericUsageConfig;
@@ -654,6 +658,7 @@ export interface GenericUsagePreviewRequest {
 	generic_config?: GenericProviderConfig;
 	method: string;
 	path: string;
+	headers?: Record<string, string>;
 	accept?: string;
 	request_content_type?: string;
 	request_body?: string;
@@ -675,6 +680,9 @@ export interface GenericUsagePreview {
 	units_measure: GenericUnitsMeasure;
 	units_path: string;
 	units: number | null;
+	units_billed: number | null;
+	units_block_size: number;
+	units_minimum: number;
 	cost_per_unit: number;
 	cost_per_request: number;
 	extracted_cost: number | null;

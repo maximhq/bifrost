@@ -75,6 +75,8 @@ type GenericUsageConfig struct {
 	UnitsSource              GenericUnitsSource  `json:"units_source,omitempty"`       // response (default) or request
 	UnitsMeasure             GenericUnitsMeasure `json:"units_measure,omitempty"`      // value (default), chars, body_bytes or body_chars
 	CostPerUnit              *float64            `json:"cost_per_unit,omitempty"`      // USD per unit; cost += units * cost_per_unit
+	UnitsBlockSize           *float64            `json:"units_block_size,omitempty"`   // bill per started block of this many raw units (100 characters); default 1, exact
+	UnitsMinimum             *float64            `json:"units_minimum,omitempty"`      // least number of billed units once a quantity was read; default 0
 	DisableOptimisticParsing bool                `json:"disable_optimistic_parsing"`   // only the configured paths are read
 }
 
@@ -88,6 +90,7 @@ type GenericStreamingConfig struct {
 type GenericRouteConfig struct {
 	Method   string              `json:"method"`             // GET | POST | PUT | PATCH | DELETE | HEAD
 	Path     string              `json:"path"`               // segment glob; a trailing /** matches the prefix and everything below
+	Headers  map[string]string   `json:"headers,omitempty"`  // request headers that must also match: name (case-insensitive) to value glob (X-Amz-Target: Textract.Get*)
 	Billable *bool               `json:"billable,omitempty"` // false: the call is relayed but not counted or charged
 	Stream   *bool               `json:"stream,omitempty"`   // forces the streaming or buffered handler
 	Usage    *GenericUsageConfig `json:"usage,omitempty"`    // field-by-field override of the provider usage mapping
@@ -128,6 +131,17 @@ func (c *GenericProviderConfig) Validate() error {
 		}
 		if err := validateGenericRouteGlob(route.Path); err != nil {
 			return fmt.Errorf("routes[%d]: %w", i, err)
+		}
+		for name, glob := range route.Headers {
+			if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t\r\n:") {
+				return fmt.Errorf("routes[%d].headers: %q is not a valid header name", i, name)
+			}
+			if strings.TrimSpace(glob) == "" {
+				return fmt.Errorf("routes[%d].headers[%s]: a value glob is required", i, name)
+			}
+			if _, err := path.Match(glob, ""); err != nil {
+				return fmt.Errorf("routes[%d].headers[%s]: %w", i, name, err)
+			}
 		}
 		if err := route.Usage.validate(fmt.Sprintf("routes[%d].usage", i), c.Usage); err != nil {
 			return err
@@ -177,6 +191,12 @@ func (u *GenericUsageConfig) validate(field string, base *GenericUsageConfig) er
 	}
 	if u.CostPerUnit != nil && *u.CostPerUnit < 0 {
 		return fmt.Errorf("%s.cost_per_unit must not be negative", field)
+	}
+	if u.UnitsBlockSize != nil && *u.UnitsBlockSize <= 0 {
+		return fmt.Errorf("%s.units_block_size must be above zero", field)
+	}
+	if u.UnitsMinimum != nil && *u.UnitsMinimum < 0 {
+		return fmt.Errorf("%s.units_minimum must not be negative", field)
 	}
 	switch u.UnitsSource {
 	case "", GenericUnitsFromResponse, GenericUnitsFromRequest:
@@ -249,6 +269,12 @@ func (c *GenericProviderConfig) Clone() *GenericProviderConfig {
 		if c.Usage.CostPerUnit != nil {
 			usage.CostPerUnit = Ptr(*c.Usage.CostPerUnit)
 		}
+		if c.Usage.UnitsBlockSize != nil {
+			usage.UnitsBlockSize = Ptr(*c.Usage.UnitsBlockSize)
+		}
+		if c.Usage.UnitsMinimum != nil {
+			usage.UnitsMinimum = Ptr(*c.Usage.UnitsMinimum)
+		}
 		out.Usage = &usage
 	}
 	if c.Streaming != nil {
@@ -260,6 +286,12 @@ func (c *GenericProviderConfig) Clone() *GenericProviderConfig {
 		out.Routes = make([]GenericRouteConfig, len(c.Routes))
 		for i, route := range c.Routes {
 			out.Routes[i] = route
+			if route.Headers != nil {
+				out.Routes[i].Headers = make(map[string]string, len(route.Headers))
+				for k, v := range route.Headers {
+					out.Routes[i].Headers[k] = v
+				}
+			}
 			if route.Billable != nil {
 				out.Routes[i].Billable = Ptr(*route.Billable)
 			}
@@ -273,6 +305,12 @@ func (c *GenericProviderConfig) Clone() *GenericProviderConfig {
 				}
 				if route.Usage.CostPerUnit != nil {
 					usage.CostPerUnit = Ptr(*route.Usage.CostPerUnit)
+				}
+				if route.Usage.UnitsBlockSize != nil {
+					usage.UnitsBlockSize = Ptr(*route.Usage.UnitsBlockSize)
+				}
+				if route.Usage.UnitsMinimum != nil {
+					usage.UnitsMinimum = Ptr(*route.Usage.UnitsMinimum)
 				}
 				out.Routes[i].Usage = &usage
 			}

@@ -1128,6 +1128,8 @@ export const genericUsageConfigSchema = z
 		units_source: z.enum(["response", "request"]).optional(),
 		units_measure: z.enum(["value", "chars", "body_bytes", "body_chars"]).optional(),
 		cost_per_unit: z.number().min(0, "Cost per unit must not be negative").optional(),
+		units_block_size: z.number().positive("Block size must be above zero").optional(),
+		units_minimum: z.number().min(0, "Minimum units must not be negative").optional(),
 		disable_optimistic_parsing: z.boolean().optional(),
 	})
 	.superRefine((usage, ctx) => {
@@ -1183,12 +1185,27 @@ export const genericAuthConfigSchema = z
 		}
 	});
 
+// A route's header matchers are edited as name/value pairs; an incomplete pair is dropped on save.
+export const genericRouteHeaderSchema = z.object({
+	name: z
+		.string()
+		.trim()
+		.refine((n) => !/[\s:]/.test(n), "Header name must not contain spaces or colons"),
+	value: z.string().trim(),
+});
+
 export const genericRouteConfigSchema = z.object({
 	method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
 	path: genericRouteGlob,
+	headers: z.record(z.string(), z.string()).optional(),
 	billable: z.boolean().optional(),
 	stream: z.boolean().optional(),
 	usage: genericUsageConfigSchema.optional(),
+});
+
+// The Passthrough tab edits a route's header matchers as pairs; the config keeps the record.
+export const genericRouteFormSchema = genericRouteConfigSchema.omit({ headers: true }).extend({
+	headers: z.array(genericRouteHeaderSchema).optional(),
 });
 
 // Generic provider config schema matching Go's schemas.GenericProviderConfig
@@ -1203,6 +1220,11 @@ export const genericProviderConfigSchema = z.object({
 		.optional(),
 	routes: z.array(genericRouteConfigSchema).optional(),
 	strict_routes: z.boolean().optional(),
+});
+
+// Form variant of the generic provider config: routes carry header matchers as name/value pairs.
+export const genericProviderFormSchema = genericProviderConfigSchema.extend({
+	routes: z.array(genericRouteFormSchema).optional(),
 });
 
 // Custom provider config schema
