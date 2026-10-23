@@ -1752,6 +1752,34 @@ func TestChatStreamForwardsAnnotationOnlyDelta(t *testing.T) {
 	t.Error("the annotation-only chunk was never forwarded; streamed citations are lost")
 }
 
+// OpenRouter streams a generated image as its own delta.images frame.
+func TestChatStreamForwardsImageOnlyDelta(t *testing.T) {
+	const imageURL = "data:image/png;base64,iVBORw0KGgo="
+	rawImageFrame := `{"id":"gen-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[{"index":0,"delta":{"images":[{"type":"image_url","image_url":{"url":"` + imageURL + `"}}]},"finish_reason":null}],"usage":null}`
+	body := "data: " + rawImageFrame + "\n\n" +
+		"data: " + rawFinishOnlyFrame + "\n\n" +
+		"data: [DONE]\n\n"
+	server := completeSSEServer(t, body)
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	for _, delta := range collectChatDeltas(collectChunks(t, stream)) {
+		encoded, err := schemas.Marshal(delta)
+		if err != nil {
+			t.Fatalf("encode delta: %v", err)
+		}
+		if strings.Contains(string(encoded), `"images":[{"type":"image_url","image_url":{"url":"`+imageURL+`"}}]`) {
+			return
+		}
+	}
+	t.Error("the image-only chunk was never forwarded; the generated image is lost")
+}
+
 // The fallback ingress owes the same contract as the direct chat path: every frame
 // the provider sent, exactly once, in order. It broke that contract in BOTH
 // directions.
