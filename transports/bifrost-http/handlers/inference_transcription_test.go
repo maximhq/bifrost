@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -68,5 +69,22 @@ func TestPrepareTranscriptionRequest_NoTimestampGranularities(t *testing.T) {
 	}
 	if req.Params.TimestampGranularities != nil {
 		t.Fatalf("timestamp granularities = %v, want none", req.Params.TimestampGranularities)
+	}
+}
+
+func TestPrepareTranscriptionRequest_BareFallbacks(t *testing.T) {
+	req, _, err := prepareTranscriptionRequest(multipartTranscriptionCtx(t, [][2]string{
+		{"model", "openai/whisper-1"},
+		{"fallbacks", "foo/model"},
+		{"fallbacks", "backup"},
+		{"fallbacks", "openai/whisper-1"},
+		{"fallbacks", "openai/"},
+	}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []schemas.Fallback{{Model: "backup"}, {Provider: schemas.OpenAI, Model: "whisper-1"}}
+	if !slices.Equal(req.Fallbacks, want) {
+		t.Fatalf("fallbacks = %+v, want %+v", req.Fallbacks, want)
 	}
 }

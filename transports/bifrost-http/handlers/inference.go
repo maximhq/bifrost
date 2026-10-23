@@ -77,10 +77,7 @@ func prepareRequest[T baseRequest](ctx *fasthttp.RequestCtx, config *lib.Config,
 	if err != nil {
 		return nil, nil, err
 	}
-	fallbacks, err := parseFallbacks((*req).getFallbacks())
-	if err != nil {
-		return nil, nil, err
-	}
+	fallbacks := schemas.ParseFallbacks((*req).getFallbacks())
 	var extraParams map[string]any
 	if knownFields != nil {
 		ep, epErr := extractExtraParams(ctx.PostBody(), knownFields)
@@ -754,21 +751,6 @@ func enableRawRequestResponseForContainer(bifrostCtx *schemas.BifrostContext) {
 	bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
 	bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, true)
-}
-
-// parseFallbacks extracts fallbacks from string array and converts to Fallback structs
-func parseFallbacks(fallbackStrings []string) ([]schemas.Fallback, error) {
-	fallbacks := make([]schemas.Fallback, 0, len(fallbackStrings))
-	for _, fallback := range fallbackStrings {
-		fallbackProvider, fallbackModelName := schemas.ParseModelString(fallback, "")
-		if fallbackProvider != "" && fallbackModelName != "" {
-			fallbacks = append(fallbacks, schemas.Fallback{
-				Provider: fallbackProvider,
-				Model:    fallbackModelName,
-			})
-		}
-	}
-	return fallbacks, nil
 }
 
 func effectiveStream(bodyStream *bool) bool {
@@ -1967,10 +1949,7 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] == "true" {
 		stream = true
 	}
-	fallbacks, err := parseFallbacks(form.Value["fallbacks"])
-	if err != nil {
-		return nil, false, err
-	}
+	fallbacks := schemas.ParseFallbacks(form.Value["fallbacks"])
 	bifrostTranscriptionReq := &schemas.BifrostTranscriptionRequest{
 		Model:     modelName,
 		Provider:  schemas.ModelProvider(provider),
@@ -3024,10 +3003,7 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Ima
 		req.ImageEditParameters = &schemas.ImageEditParameters{}
 	}
 	req.ImageEditParameters.ExtraParams = extraParams
-	fallbacks, err := parseFallbacks(req.Fallbacks)
-	if err != nil {
-		return nil, nil, err
-	}
+	fallbacks := schemas.ParseFallbacks(req.Fallbacks)
 	bifrostReq := &schemas.BifrostImageEditRequest{
 		Provider:  schemas.ModelProvider(provider),
 		Model:     modelName,
@@ -3160,10 +3136,7 @@ func prepareImageVariationRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 		}
 	}
 	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
-		fallbacks, err := parseFallbacks(fallbackValues)
-		if err != nil {
-			return nil, err
-		}
+		fallbacks := schemas.ParseFallbacks(fallbackValues)
 		return &schemas.BifrostImageVariationRequest{
 			Provider:       schemas.ModelProvider(provider),
 			Model:          modelName,
@@ -3228,11 +3201,7 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	fallbacks, err := parseFallbacks(req.Fallbacks)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
-	}
+	fallbacks := schemas.ParseFallbacks(req.Fallbacks)
 
 	if req.VideoGenerationParameters == nil {
 		req.VideoGenerationParameters = &schemas.VideoGenerationParameters{}
@@ -3380,10 +3349,7 @@ func prepareVideoEditRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*sch
 		return nil, err
 	}
 
-	fallbacks, err := parseFallbacks(req.Fallbacks)
-	if err != nil {
-		return nil, err
-	}
+	fallbacks := schemas.ParseFallbacks(req.Fallbacks)
 
 	if req.VideoEditParameters == nil {
 		req.VideoEditParameters = &schemas.VideoEditParameters{}

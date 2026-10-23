@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"mime/multipart"
+	"slices"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -70,6 +71,25 @@ func TestPrepareImageEditRequest_JSON(t *testing.T) {
 	}
 	if req.Params.UpscaleFactor == nil || *req.Params.UpscaleFactor != 4 {
 		t.Fatalf("upscale_factor = %v, want 4", req.Params.UpscaleFactor)
+	}
+}
+
+func TestPrepareImageEditRequest_BareFallbacks(t *testing.T) {
+	for _, ctx := range []*fasthttp.RequestCtx{
+		jsonImageEditCtx(`{"model":"openai/gpt-image-1","images":[{"url":"https://example.com/image.png"}],"fallbacks":["backup","foo/model","openai/gpt-image-1","openai/"]}`),
+		multipartImageEditCtx(t, map[string]string{"model": "openai/gpt-image-1", "image_url": "https://example.com/image.png", "fallbacks": "backup"}, nil),
+	} {
+		_, req, err := prepareImageEditRequest(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []schemas.Fallback{{Model: "backup"}}
+		if !isMultipartRequest(ctx) {
+			want = append(want, schemas.Fallback{Provider: schemas.OpenAI, Model: "gpt-image-1"})
+		}
+		if !slices.Equal(req.Fallbacks, want) {
+			t.Fatalf("fallbacks = %+v, want %+v", req.Fallbacks, want)
+		}
 	}
 }
 

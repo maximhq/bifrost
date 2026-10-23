@@ -116,6 +116,16 @@ func TestPrepareVideoEditRequest_ProviderFallbacks(t *testing.T) {
 	}
 }
 
+func TestPrepareVideoEditRequest_BareFallbacks(t *testing.T) {
+	req, err := prepareVideoEditRequest(jsonVideoEditCtx(`{"model":"runware/runway:aleph@2.0","video":{"url":"https://example.com/video.mp4"},"fallbacks":["backup","foo/model","openai/sora-2","openai/"]}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Fallbacks) != 2 || req.Fallbacks[0].Provider != "" || req.Fallbacks[0].Model != "backup" || req.Fallbacks[1].Provider != schemas.OpenAI || req.Fallbacks[1].Model != "sora-2" {
+		t.Fatalf("fallbacks not preserved/filtered: %+v", req.Fallbacks)
+	}
+}
+
 // A model with no provider prefix must not short-circuit provider resolution: Runware AIR ids like
 // "runway:aleph@2.0" carry no "/" so ParseModelString yields an empty provider, and the query
 // param, header and video-id suffix all still have to be consulted.

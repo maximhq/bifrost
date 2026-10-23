@@ -571,6 +571,54 @@ func BenchmarkPrepareSmallRequest(b *testing.B) {
 	}
 }
 
+func TestPrepareRequestFallbacks(t *testing.T) {
+	for _, model := range []string{"anthropic/claude-sonnet-4-5", "claude-sonnet-4-5"} {
+		for _, kind := range []string{"chat", "responses", "embedding", "speech"} {
+			t.Run(kind+"/"+model, func(t *testing.T) {
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.SetBodyString(`{"model":"` + model + `","fallbacks":["foo/model","claude-haiku-4-5","openai/gpt-4o","openai/"]}`)
+				var base *requestBase
+				var err error
+				switch kind {
+				case "chat":
+					_, base, err = prepareRequest[ChatRequest](ctx, nil, nil)
+				case "responses":
+					_, base, err = prepareRequest[ResponsesRequest](ctx, nil, nil)
+				case "embedding":
+					_, base, err = prepareRequest[EmbeddingRequest](ctx, nil, nil)
+				case "speech":
+					_, base, err = prepareRequest[SpeechRequest](ctx, nil, nil)
+				}
+				require.NoError(t, err)
+				assert.Equal(t, []schemas.Fallback{{Model: "claude-haiku-4-5"}, {Provider: schemas.OpenAI, Model: "gpt-4o"}}, base.Fallbacks)
+			})
+		}
+	}
+}
+
+func BenchmarkPrepareRequestFallbacks(b *testing.B) {
+	for _, tc := range []struct{ name, fallbacks string }{
+		{name: "none", fallbacks: "[]"},
+		{name: "explicit", fallbacks: `["anthropic/claude-haiku-4-5"]`},
+		{name: "bare", fallbacks: `["claude-haiku-4-5"]`},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBodyString(`{"model":"anthropic/claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"fallbacks":` + tc.fallbacks + `}`)
+			// Compile Sonic's decoder before timing, not in the first sample.
+			if _, _, err := prepareChatCompletionRequest(ctx, nil); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, _, err := prepareChatCompletionRequest(ctx, nil); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func benchmarkPrepareRequest[T baseRequest](b *testing.B, body string, known map[string]bool, extraCount int) {
 	b.Helper()
 	ctx := &fasthttp.RequestCtx{}
