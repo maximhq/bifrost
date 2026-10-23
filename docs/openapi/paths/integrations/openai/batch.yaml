@@ -79,7 +79,7 @@ batches-by-id:
     summary: Delete a terminal batch
     description: Deletes a finished batch. This operation is not cancellation.
     tags:
-    - Batch
+    - OpenAI Integration
     parameters:
     - name: batch_id
       in: path

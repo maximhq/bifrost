@@ -516,8 +516,10 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 		if usage == nil && retrieved.Status == schemas.BatchStatusFailed && retrieved.RequestCounts.Completed == 0 {
 			usage = &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{}}}
 		}
-		if usage == nil {
-			usage = &schemas.BatchUsage{}
+		if usage == nil || usage.Cost == nil {
+			// The charge is not published yet. Leave the lifecycle job pending
+			// for the sweeper instead of marking it unpriceable inline.
+			return
 		}
 		batchResp = &schemas.BifrostBatchResultsResponse{BatchID: retrieved.ID, Model: retrieved.Model,
 			Endpoint: schemas.BatchEndpoint(retrieved.Endpoint), Status: retrieved.Status, Usage: usage,

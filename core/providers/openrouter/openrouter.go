@@ -693,7 +693,12 @@ func (provider *OpenRouterProvider) requestBatch(ctx *schemas.BifrostContext, ke
 		return schemas.BifrostResponseExtraFields{}, providerUtils.EnrichError(ctx, bifrostErr, body, nil, rawRequest, rawResponse, latency)
 	}
 	if resp.StatusCode() != successStatus {
-		return schemas.BifrostResponseExtraFields{}, providerUtils.EnrichError(ctx, parseOpenRouterError(resp), body, resp.Body(), rawRequest, rawResponse, latency)
+		errorBody := resp.Body()
+		if rawResponse {
+			// Invalid JSON is retained as-is by EnrichError; detach it from the pool.
+			errorBody = append([]byte(nil), errorBody...)
+		}
+		return schemas.BifrostResponseExtraFields{}, providerUtils.EnrichError(ctx, parseOpenRouterError(resp), body, errorBody, rawRequest, rawResponse, latency)
 	}
 	decoded, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {

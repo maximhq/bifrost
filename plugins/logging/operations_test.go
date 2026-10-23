@@ -5084,3 +5084,62 @@ func TestOpenRouterBatchCleanupWaitsForAccountingCompletion(t *testing.T) {
 	require.NoError(t, bs.CompleteProviderJob(context.Background(), jobID, "another-worker"))
 	require.False(t, fetch().AccountingPending, "an already-accounted batch can be cleaned up without billing again")
 }
+
+func TestOpenRouterBatchRetrieveMissingChargeStaysPending(t *testing.T) {
+	for _, status := range []schemas.BatchStatus{schemas.BatchStatusCompleted, schemas.BatchStatusFailed, schemas.BatchStatusExpired, schemas.BatchStatusCancelled} {
+		for _, usage := range []*schemas.BatchUsage{nil, {BifrostLLMUsage: schemas.BifrostLLMUsage{TotalTokens: 12}}} {
+			t.Run(fmt.Sprintf("%s/usage-present=%t", status, usage != nil), func(t *testing.T) {
+				store := newTestStore(t)
+				bs := newFakeBatchStore()
+				plugin := &LoggerPlugin{ctx: context.Background(), store: store, batchStore: bs, logger: testLogger{}, pricingManager: newTestPricingManager(t)}
+				batchID := "batch-charge-not-ready"
+				now := time.Now().UTC()
+				jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openrouter", batchID)
+				require.NoError(t, bs.UpsertProviderJob(context.Background(), &cstables.TableProviderJob{
+					ID: jobID, Kind: cstables.ProviderJobKindBatch, Provider: "openrouter", JobID: batchID, Model: "openai/gpt-4o",
+					AccountingStatus: cstables.ProviderJobAccountingStatusPending, NextCheckAt: &now,
+				}))
+				result := &schemas.BifrostResponse{BatchRetrieveResponse: &schemas.BifrostBatchRetrieveResponse{
+					ID: batchID, Model: "openai/gpt-4o", Status: status, Usage: usage, RequestCounts: schemas.BatchRequestCounts{Total: 1, Completed: 1},
+					Results: []schemas.BatchResultItem{{CustomID: "a", Response: &schemas.BatchResultResponse{StatusCode: 200}}},
+				}}
+				entry := &logstore.Log{ID: "poll", Provider: "openrouter", Model: "openai/gpt-4o"}
+				if status == schemas.BatchStatusCompleted {
+					// Match PostLLMHook's lifecycle-before-accounting order.
+					plugin.recordBatchJobLifecycle(entry, result)
+				}
+				plugin.accountBatchResults(entry, result, nil)
+				job, err := bs.GetProviderJob(context.Background(), jobID)
+				require.NoError(t, err)
+				require.Equal(t, cstables.ProviderJobAccountingStatusPending, job.AccountingStatus)
+				require.NotNil(t, job.NextCheckAt, "the sweeper must still be able to poll the job")
+				require.Nil(t, job.AggregateLogWrittenAt)
+				require.Nil(t, job.GovernanceReportedAt)
+			})
+		}
+	}
+}
+
+func TestOpenRouterBatchRetrieveStillSettlesZeroCharges(t *testing.T) {
+	for _, status := range []schemas.BatchStatus{schemas.BatchStatusCompleted, schemas.BatchStatusFailed} {
+		t.Run(string(status), func(t *testing.T) {
+			store := newTestStore(t)
+			bs := newFakeBatchStore()
+			plugin := &LoggerPlugin{ctx: context.Background(), store: store, batchStore: bs, logger: testLogger{}, pricingManager: newTestPricingManager(t)}
+			response := &schemas.BifrostBatchRetrieveResponse{ID: "zero-charge", Model: "openai/gpt-4o", Status: status, RequestCounts: schemas.BatchRequestCounts{Total: 1}}
+			if status == schemas.BatchStatusCompleted {
+				response.Results = []schemas.BatchResultItem{{CustomID: "a", Response: &schemas.BatchResultResponse{StatusCode: 200}}}
+				response.RequestCounts.Completed = 1
+				response.Usage = &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{TotalCost: 0}}}
+			}
+			plugin.accountBatchResults(&logstore.Log{ID: "zero-poll", Provider: "openrouter", Model: "openai/gpt-4o"}, &schemas.BifrostResponse{BatchRetrieveResponse: response}, nil)
+			job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openrouter", response.ID))
+			require.NoError(t, err)
+			require.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+			entry, err := store.FindByID(context.Background(), jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenRouter, response.ID))
+			require.NoError(t, err)
+			require.NotNil(t, entry.Cost)
+			require.Zero(t, *entry.Cost)
+		})
+	}
+}

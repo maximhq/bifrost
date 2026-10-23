@@ -7,17 +7,17 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-
-	bifrost "github.com/maximhq/bifrost/core"
-	"github.com/maximhq/bifrost/core/providers/openrouter"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
-
+	"github.com/maximhq/bifrost/core/providers/openrouter"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 func TestOpenRouter(t *testing.T) {
@@ -330,5 +330,41 @@ func TestOpenRouterBatchParseFailureRetainsRawCapture(t *testing.T) {
 	})
 	if err == nil || err.ExtraFields.RawRequest == nil || err.ExtraFields.RawResponse == nil {
 		t.Fatalf("parse error must retain configured raw captures: %+v", err)
+	}
+}
+
+func TestOpenRouterBatchNonJSONErrorOwnsRawBody(t *testing.T) {
+	// Keep response-pool reuse on one P so overwriting the released body is a
+	// deterministic regression for captures that still borrow that buffer.
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+	const errorBody = "upstream unavailable: non-JSON response body"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprint(w, errorBody)
+	}))
+	defer server.Close()
+	provider := openrouter.NewOpenRouterProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}, SendBackRawResponse: true,
+	}, bifrost.NewNoOpLogger())
+	_, err := provider.BatchCreate(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{Value: *schemas.NewSecretVar("key")}, &schemas.BifrostBatchCreateRequest{
+		Model: schemas.Ptr("openai/gpt-4o"), Endpoint: schemas.BatchEndpointChatCompletions,
+		Requests: []schemas.BatchRequestItem{{CustomID: "a", Body: map[string]any{"messages": []any{}}}},
+	})
+	if err == nil {
+		t.Fatal("expected an upstream error")
+	}
+	captured, ok := err.ExtraFields.RawResponse.(json.RawMessage)
+	if !ok || string(captured) != errorBody {
+		t.Fatalf("raw response = %q, want %q", captured, errorBody)
+	}
+	for range 16 {
+		response := fasthttp.AcquireResponse()
+		response.SetBodyString(strings.Repeat("x", len(errorBody)))
+		fasthttp.ReleaseResponse(response)
+	}
+	if string(captured) != errorBody {
+		t.Fatalf("raw error borrowed the released response buffer: %q", captured)
 	}
 }
