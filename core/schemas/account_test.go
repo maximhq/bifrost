@@ -843,3 +843,16 @@ func TestApplyRequestRouting(t *testing.T) {
 	nilInfo.ApplyRequestRouting(ctx)
 	(&RoutingInfo{}).ApplyRequestRouting(nil)
 }
+
+func TestResolveFamilyAllocations(t *testing.T) {
+	for _, alias := range []*ResolvedAlias{nil, {Key: "key", Config: &AliasConfig{ModelName: Ptr("unknown"), ModelID: "anthropic.claude-sonnet-4-6"}}, {Config: &AliasConfig{ModelFamily: Ptr(ModelFamilyMistral)}}} {
+		ctx := NewBifrostContext(context.Background(), NoDeadline)
+		if alias != nil {
+			ctx.SetValue(BifrostContextKeyResolvedAlias, alias)
+		}
+		allocs := testing.AllocsPerRun(100, func() { ResolveFamily(ctx, "anthropic.claude-sonnet-4-6") })
+		if allocs != 0 {
+			t.Errorf("ResolveFamily allocated %v times for alias %+v", allocs, alias)
+		}
+	}
+}
