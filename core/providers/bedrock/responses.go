@@ -2920,7 +2920,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 
 				if tool.Name == nil || *tool.Name == "" {
-					return nil, fmt.Errorf("responses tool is missing required name for Bedrock function conversion")
+					return nil, providerUtils.InvalidRequestErrorf("responses tool is missing required name for Bedrock function conversion")
 				}
 				name := *tool.Name
 				toolSpecName := bedrockAliasToolName(ctx, name)

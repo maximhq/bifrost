@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -25,6 +26,88 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+const mistralInvokeTestModel = "mistral.mistral-large-3-675b-instruct"
+const mistralInvokeTestBody = `{"max_tokens":256,"temperature":0,"tool_choice":"any","messages":[{"role":"user","content":"Weather?"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"z_location":{"type":"string"},"a_unit":{"type":"string"}},"required":["z_location"]}}}]}`
+
+func mistralInvokeTestRequest(t *testing.T, body string) (*schemas.BifrostContext, *schemas.BifrostChatRequest) {
+	t.Helper()
+	ctx := testBedrockCtx()
+	ctx.SetValue(BedrockContextKeyMistralInvokeIngress, true)
+	var incoming openai.OpenAIChatRequest
+	require.NoError(t, sonic.Unmarshal([]byte(body), &incoming))
+	incoming.Model = "bedrock/" + mistralInvokeTestModel
+	return ctx, incoming.ToBifrostChatRequest(ctx)
+}
+
+func TestToBedrockInvokeChatRequest_Mistral(t *testing.T) {
+	for _, choice := range []string{"auto", "any", "none"} {
+		t.Run(choice, func(t *testing.T) {
+			ctx, request := mistralInvokeTestRequest(t, strings.Replace(mistralInvokeTestBody, `"any"`, `"`+choice+`"`, 1))
+			request.Params.ExtraParams = map[string]interface{}{"guardrailConfig": map[string]interface{}{"guardrailIdentifier": "gr", "guardrailVersion": "1"}}
+			before, err := providerUtils.MarshalSorted(request)
+			require.NoError(t, err)
+			native, err := ToBedrockInvokeChatRequest(ctx, request)
+			require.NoError(t, err)
+			wire, err := providerUtils.MarshalSorted(native)
+			require.NoError(t, err)
+			assert.Equal(t, choice, gjson.GetBytes(wire, "tool_choice").String())
+			assert.Equal(t, int64(256), gjson.GetBytes(wire, "max_tokens").Int())
+			assert.Equal(t, "get_weather", gjson.GetBytes(wire, "tools.0.function.name").String())
+			for _, field := range []string{"model", "stream", "stream_options", "max_completion_tokens", "guardrailConfig"} {
+				assert.False(t, gjson.GetBytes(wire, field).Exists(), field)
+			}
+			schema := gjson.GetBytes(wire, "tools.0.function.parameters").Raw
+			assert.Less(t, strings.Index(schema, `"z_location"`), strings.Index(schema, `"a_unit"`))
+			after, err := providerUtils.MarshalSorted(request)
+			require.NoError(t, err)
+			assert.Equal(t, string(before), string(after), "converter must not mutate its input")
+		})
+	}
+}
+
+func TestToBedrockInvokeChatRequest_Validation(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"messages":[]}`, "messages"},
+		{`{"messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":""}}]}`, "tools[0].function.name"},
+		{`{"messages":[{"role":"assistant","tool_calls":[{"function":{"name":"f","arguments":"{}"}}]}]}`, "tool_calls[0].id"},
+		{`{"messages":[{"role":"assistant","tool_calls":[{"id":"call12345","function":{"arguments":"{}"}}]}]}`, "tool_calls[0].function.name"},
+		{`{"messages":[{"role":"tool","content":"sunny"}]}`, "tool_call_id"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			ctx, request := mistralInvokeTestRequest(t, tc.body)
+			_, err := ToBedrockInvokeChatRequest(ctx, request)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok)
+			assert.Equal(t, 400, bifrostErr.EffectiveHTTPStatus())
+			assert.Equal(t, "ValidationException", ToBedrockError(bifrostErr).Type)
+		})
+	}
+}
+
+func TestToBedrockInvokeMessagesResponse_MistralTools(t *testing.T) {
+	response := &schemas.BifrostResponsesResponse{Model: mistralInvokeTestModel, Status: schemas.Ptr("completed"), Output: []schemas.ResponsesMessage{{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call12345"), Name: schemas.Ptr("get_weather"), Arguments: schemas.Ptr(`{"location":"SF"}`)},
+	}}}
+	out, err := ToBedrockInvokeMessagesResponse(testBedrockCtx(), response)
+	require.NoError(t, err)
+	wire, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	assert.Equal(t, "tool_calls", gjson.GetBytes(wire, "choices.0.finish_reason").String())
+	assert.Equal(t, "get_weather", gjson.GetBytes(wire, "choices.0.message.tool_calls.0.function.name").String())
+	assert.False(t, gjson.GetBytes(wire, "type").Exists())
+}
+
+func BenchmarkBedrockMistralInvokeGate(b *testing.B) {
+	ctx := testBedrockCtx()
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = ctx.Value(BedrockContextKeyMistralInvokeIngress) == true && schemas.IsMistralModelFamily(ctx, mistralInvokeTestModel)
+	}
+}
 
 // anthropicToolMap builds an Anthropic-native tool map as it would arrive on the wire
 // (i.e. the shape convertAnthropicTools reads out of the untyped r.Tools field).
