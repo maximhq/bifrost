@@ -1600,9 +1600,9 @@ func responsesTerminalFromChatFinishReason(finishReason *string) (eventType Resp
 	return eventType, mappedStatus, mappedIncompleteDetails
 }
 
-// chatFinishReasonFromResponses derives a Chat finish_reason from a Responses terminal state.
+// ChatFinishReasonFromResponses derives a Chat finish_reason from a Responses terminal state.
 // Returns nil for non-terminal or unrecognized states so finish_reason stays unset.
-func chatFinishReasonFromResponses(status *string, incompleteDetails *ResponsesResponseIncompleteDetails, stopReason *string, output []ResponsesMessage) *string {
+func ChatFinishReasonFromResponses(status *string, incompleteDetails *ResponsesResponseIncompleteDetails, stopReason *string, output []ResponsesMessage) *string {
 	if status != nil && (*status == ResponsesResponseStatusInProgress || *status == ResponsesResponseStatusQueued) {
 		return nil
 	}
@@ -1736,7 +1736,7 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 		// Convert ResponsesMessages back to ChatMessages
 		chatMessages := ToChatMessages(responsesResp.Output)
 
-		finishReason := chatFinishReasonFromResponses(responsesResp.Status, responsesResp.IncompleteDetails, responsesResp.StopReason, responsesResp.Output)
+		finishReason := ChatFinishReasonFromResponses(responsesResp.Status, responsesResp.IncompleteDetails, responsesResp.StopReason, responsesResp.Output)
 
 		// Create choices from chat messages
 		choices := make([]BifrostResponseChoice, 0, len(chatMessages))
@@ -2843,7 +2843,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 			}
 		}
 
-		finishReason := chatFinishReasonFromResponses(&status, incompleteDetails, stopReason, output)
+		finishReason := ChatFinishReasonFromResponses(&status, incompleteDetails, stopReason, output)
 		if finishReason == nil {
 			finishReason = &fallback
 		}

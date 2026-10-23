@@ -863,15 +863,31 @@ type BedrockInvokeMessagesOutputTokensDetails struct {
 // BedrockInvokeMistralResponse is the native chat-completion envelope used by
 // messages-based Mistral InvokeModel calls, including streaming chunk payloads.
 type BedrockInvokeMistralResponse struct {
-	ID      string                          `json:"id"`
-	Object  string                          `json:"object"`
-	Created int                             `json:"created"`
-	Model   string                          `json:"model"`
-	Choices []schemas.BifrostResponseChoice `json:"choices"`
-	Usage   *BedrockInvokeAI21Usage         `json:"usage,omitempty"`
+	ID      string                       `json:"id"`
+	Object  string                       `json:"object"`
+	Created int                          `json:"created"`
+	Model   string                       `json:"model"`
+	Choices []BedrockInvokeMistralChoice `json:"choices"`
+	Usage   *BedrockInvokeAI21Usage      `json:"usage,omitempty"`
 
 	GuardrailAction string          `json:"amazon-bedrock-guardrailAction,omitempty"`
 	Trace           json.RawMessage `json:"amazon-bedrock-trace,omitempty"`
+}
+
+// BedrockInvokeMistralChoice carries either a complete native message or a stream delta.
+type BedrockInvokeMistralChoice struct {
+	Index        int                                    `json:"index"`
+	FinishReason *string                                `json:"finish_reason"`
+	LogProbs     *schemas.BifrostLogProbs               `json:"logprobs"`
+	Message      *BedrockInvokeMistralMessage           `json:"message,omitempty"`
+	Delta        *schemas.ChatStreamResponseChoiceDelta `json:"delta,omitempty"`
+}
+
+// BedrockInvokeMistralMessage is the model's native text/function-call response.
+type BedrockInvokeMistralMessage struct {
+	Role      string                                 `json:"role"`
+	Content   string                                 `json:"content"`
+	ToolCalls []schemas.ChatAssistantMessageToolCall `json:"tool_calls,omitempty"`
 }
 
 // BedrockInvokeAI21Response represents AI21 Jamba's InvokeModel response format.
