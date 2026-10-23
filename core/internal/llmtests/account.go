@@ -695,6 +695,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			{"VLLM_EMBEDDING_BASE_URL", "VLLM_EMBEDDING_MODEL"},
 			{"VLLM_RERANK_BASE_URL", "VLLM_RERANK_MODEL"},
 			{"VLLM_TRANSCRIPTION_BASE_URL", "VLLM_TRANSCRIPTION_MODEL"},
+			{"VLLM_DECISION_BASE_URL", "VLLM_DECISION_MODEL"},
 		}
 		for _, instance := range secondaryVLLMInstances {
 			url := strings.TrimSpace(os.Getenv(instance.urlEnv))
