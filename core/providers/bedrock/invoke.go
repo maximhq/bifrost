@@ -305,8 +305,19 @@ func normalizeAnthropicToolResultContent(raw json.RawMessage) ([]BedrockContentB
 // DetectInvokeRequestType determines the request type from raw JSON body and model ID
 // without full deserialization, keeping detection logic colocated with conversion methods.
 func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
+	decodedModelID := modelID
+	if strings.Contains(modelID, "%") {
+		if unescaped, err := url.PathUnescape(modelID); err == nil {
+			decodedModelID = unescaped
+		}
+	}
 	// Messages → chat/responses path
 	if node, _ := sonic.Get(body, "messages"); node.Exists() {
+		// Mistral's native messages/tools already use the OpenAI chat dialect.
+		// Select its codec before the Converse decoder drops tool-call IDs.
+		if schemas.IsMistralModel(decodedModelID) {
+			return schemas.ChatCompletionRequest
+		}
 		if raw, err := node.Raw(); err == nil && raw != "null" && raw != "[]" {
 			return schemas.ResponsesRequest
 		}
@@ -347,12 +358,6 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 		case TaskTypeSingleEmbedding:
 			return schemas.EmbeddingRequest
 		}
-	}
-
-	// URL-decode the model ID once for all model-name checks below
-	decodedModelID := modelID
-	if unescaped, err := url.PathUnescape(modelID); err == nil {
-		decodedModelID = unescaped
 	}
 
 	// Stability AI: supports both generation (prompt-only) and edit (image+prompt)
