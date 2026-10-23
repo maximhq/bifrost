@@ -283255,6 +283255,477 @@
       ]
     },
     {
+      "name": "277. Server tool models are held to the virtual key model list (server tool model check) [SERIAL]",
+      "description": "A server tool can name a model of its own: Anthropic's advisor_20260301 tool carries tools[].model, and the provider runs that model inside the same request and bills it at that model's rate. Governance checked only the request's outer model, so a virtual key restricted to claude-haiku-4-5 could put claude-opus-4-8 in the advisor tool and have it run. Governance now evaluates every model a server tool names the same way it evaluates the models a passthrough body names, so a model outside the key's allowed_models is refused with model_blocked before any provider call. Setup creates a run-scoped virtual key whose Anthropic provider config allows only claude-haiku-4-5; the refusal rows cost nothing (refused before the provider is called), the control row spends one small claude-haiku-4-5 call. Red before the change: the refusal rows returned 200 and the advisor ran. Routes: the native /anthropic/v1/messages route (unary and streaming, with the advisor beta header a real client sends) and the neutral /v1/responses route (no anthropic-beta header, the tool in its neutral 'advisor' shape). With x-bf-passthrough-extra-params: true, extra_params.tools is merged onto the provider body after governance runs, so the /openai/v1/chat/completions and /openai/v1/responses rows put the advisor there and expect the same refusal. Not covered here: raw forwarding on the native route (needs Claude Code OAuth credentials) and inline /anthropic/v1/messages/batches items (a red run would submit a real batch); both are pinned by governance unit tests.",
+      "item": [
+        {
+          "name": "anthropic server tool model check setup: create a virtual key that allows only claude-haiku-4-5",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sweep virtual keys an earlier run left behind (a failed cleanup or an aborted run). The folder is",
+                  "// [SERIAL], so it runs whole and once per run: every run-tagged key that exists now is a leftover.",
+                  "(function () {",
+                  "  var BASE = pm.variables.get('baseUrl');",
+                  "  var PREFIX = 'harness-stmc-vk-run-';",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys?search=' + encodeURIComponent(PREFIX) + '&limit=100', method: 'GET' }, function (err, res) {",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    ((json && json.virtual_keys) || []).filter(function (v) { return String(v.name || '').indexOf(PREFIX) === 0; }).forEach(function (v) {",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + v.id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "})();",
+                  "pm.collectionVariables.set('stmcVK', 'missing');",
+                  "pm.collectionVariables.unset('stmcVKID');",
+                  "pm.collectionVariables.set('stmcBody', JSON.stringify({",
+                  "  name: 'harness-stmc-vk-run-' + Date.now(),",
+                  "  provider_configs: [{ provider: 'anthropic', allowed_models: ['claude-haiku-4-5'], key_ids: ['*'], weight: 1 }]",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('server tool model check: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var vk = {}; try { vk = (pm.response.json() || {}).virtual_key || {}; } catch (e) { vk = {}; }",
+                  "var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "pm.test('server tool model check: the virtual key has a value and an id', function () {",
+                  "  pm.expect(value, pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.id, pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (value && vk.id) { pm.collectionVariables.set('stmcVK', value); pm.collectionVariables.set('stmcVKID', vk.id); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{stmcBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] anthropic claude-haiku-4-5 /anthropic/v1/messages: an advisor tool naming claude-opus-4-8 is refused with model_blocked - server tool model check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The executor model is allowed, the advisor model is not: the provider would run (and bill)",
+                  "// claude-opus-4-8 on this key's behalf, so governance must refuse before any provider call.",
+                  "pm.test('anthropic messages: refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
+                  "});",
+                  "pm.test('anthropic messages: the refusal is model_blocked and names the advisor model', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-8\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] anthropic claude-haiku-4-5 /anthropic/v1/messages stream: an advisor tool naming claude-opus-4-8 is refused with model_blocked - server tool model check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The executor model is allowed, the advisor model is not: the provider would run (and bill)",
+                  "// claude-opus-4-8 on this key's behalf, so governance must refuse before any provider call.",
+                  "pm.test('anthropic messages stream: refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
+                  "});",
+                  "pm.test('anthropic messages stream: the refusal is model_blocked and names the advisor model', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "advisor-tool-2026-03-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-8\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] anthropic/claude-haiku-4-5 /v1/responses: an advisor tool naming claude-opus-4-8 is refused with model_blocked - server tool model check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The executor model is allowed, the advisor model is not: the provider would run (and bill)",
+                  "// claude-opus-4-8 on this key's behalf, so governance must refuse before any provider call.",
+                  "pm.test('responses: refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
+                  "});",
+                  "pm.test('responses: the refusal is model_blocked and names the advisor model', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{stmcVK}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 16,\n  \"input\": \"Reply with the single word: ok\",\n  \"tools\": [\n    {\n      \"type\": \"advisor\",\n      \"model\": \"claude-opus-4-8\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] anthropic/claude-haiku-4-5 /openai/v1/chat/completions extra_params: an advisor tool naming claude-opus-4-8 in extra_params.tools is refused with model_blocked - server tool model check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// x-bf-passthrough-extra-params merges extra_params.tools onto the provider body after governance runs,",
+                  "// so the advisor model riding there must be held to the key's model list like a typed tool.",
+                  "pm.test('chat extra_params: refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
+                  "});",
+                  "pm.test('chat extra_params: the refusal is model_blocked and names the advisor model', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"extra_params\": {\n    \"tools\": [\n      {\n        \"type\": \"advisor_20260301\",\n        \"name\": \"advisor\",\n        \"model\": \"claude-opus-4-8\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] anthropic/claude-haiku-4-5 /openai/v1/responses extra_params: an advisor tool naming claude-opus-4-8 in extra_params.tools is refused with model_blocked - server tool model check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// x-bf-passthrough-extra-params merges extra_params.tools onto the provider body after governance runs,",
+                  "// so the advisor model riding there must be held to the key's model list like a typed tool.",
+                  "pm.test('responses extra_params: refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'want 403 model_blocked: ' + txt.slice(0, 600)).to.eql(403);",
+                  "});",
+                  "pm.test('responses extra_params: the refusal is model_blocked and names the advisor model', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('model_blocked');",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('claude-opus-4-8');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 16,\n  \"input\": \"Reply with the single word: ok\",\n  \"extra_params\": {\n    \"tools\": [\n      {\n        \"type\": \"advisor_20260301\",\n        \"name\": \"advisor\",\n        \"model\": \"claude-opus-4-8\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic claude-haiku-4-5 /anthropic/v1/messages: the same key without an advisor tool is served - server tool model check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Control: the key itself works for its allowed model, so the refusals above are about the",
+                  "// advisor model and not about the key.",
+                  "pm.test('server tool model check: allowed model without a server tool is served', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.not.include('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{stmcVK}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic server tool model check cleanup: delete the virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('stmcVKID')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('server tool model check: virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "// Keep the id when the delete failed, so the failure stays visible and the next run's sweep removes the key.",
+                  "if (pm.response.code === 200) { pm.collectionVariables.unset('stmcVKID'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{stmcVKID}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{stmcVKID}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "279. MCP OAuth discovery ignores protected resource metadata for another resource (mcp oauth resource match)",
       "description": "Management-endpoint check with no live provider involved. When an OAuth MCP client is added without authorize/token URLs, Bifrost discovers them from the MCP server: the 401's WWW-Authenticate resource_metadata document (RFC 9728) names the authorization servers. RFC 9728 section 3.3 says that document must not be used unless its resource identifies the server being connected to; before the fix any document was trusted, so an MCP server could hand Bifrost a different resource and any authorization server, and Bifrost sent its dynamic client registration and the admin's sign-in there.\n\nPrerequisite: node tests/e2e/api/runners/mcp-oauth-resource-fixture.mjs (port 8799, override with --port and the mcpOauthResourceFixtureUrl variable). Its /mcp advertises metadata whose resource is https://other-mcp.invalid/mcp and whose authorization server is the fixture's /rogue issuer; the server origin's own authorization server metadata points at /legit. Nothing in the harness runners starts it, so the row is [PREVIEW]-tagged: run PROVIDER=mcp FEATURE=\"mcp oauth resource match\" INCLUDE_PREVIEW=1 once the fixture is up. The row names no model, so no provider fork selects it and a run without PROVIDER=mcp skips it. The harness profile allowlists 127.0.0.1 for the MCP OAuth chain (see mcp-oauth-private-allowlist).\n\nRed before the fix: the authorize URL points at /rogue/authorize and the fixture records a registration on /rogue/register. Green after: the document is ignored, discovery falls back to the server origin, the authorize URL is /legit/authorize, and only /legit/register is called. The consent is never completed, so no MCP client row is created; the pending OAuth config it leaves behind is inert.",
       "item": [
