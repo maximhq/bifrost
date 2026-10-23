@@ -3377,6 +3377,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		Logger:             logger,
 		KVStore:            s.Config.KVStore,
 		ModelCatalog:       s.Config.ModelCatalog,
+		VirtualModels:      s.Config.VirtualModelResolver(),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)

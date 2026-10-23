@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -189,4 +190,31 @@ func TestGenerateRoutingRuleHash_FallbackIdentity(t *testing.T) {
 	assert.NotEqual(t, base, hash(`[{"provider":"azure","model":"m","key_id":"k1"}]`), "a different provider must change the hash")
 	assert.Equal(t, hash(`["vertex/m"]`), hash(`[{"provider":"vertex","model":"m"}]`), "an unpinned object must hash like its string form")
 	assert.Equal(t, hash(`["anthropic/"]`), hash(`[{"provider":"anthropic"}]`), "an unpinned provider-only object must hash like its string form")
+}
+
+// Editing only model_residency has to change the provider hash. That hash is how the store decides
+// whether config.json differs from what is already provisioned: leave residency out of it and an
+// operator changing adapter, path or timeout is never picked up, because the merge sees no
+// difference and keeps the stored copy.
+func TestProviderConfigHash_ModelResidencyChangesHash(t *testing.T) {
+	network := func(residency *schemas.ModelResidencyConfig) *schemas.NetworkConfig {
+		return &schemas.NetworkConfig{BaseURL: "http://192.0.2.10:8090", ModelResidency: residency}
+	}
+	plain := ProviderConfig{NetworkConfig: network(nil)}
+	custom := ProviderConfig{NetworkConfig: network(&schemas.ModelResidencyConfig{
+		Adapter: schemas.ResidencyAdapterCustom,
+		Path:    "/internal/serving",
+		Fields:  &schemas.ResidencyFieldMap{Items: "models", ID: "name"},
+	})}
+
+	plainHash, err := plain.GenerateConfigHash("local-omlx")
+	require.NoError(t, err)
+	customHash, err := custom.GenerateConfigHash("local-omlx")
+	require.NoError(t, err)
+	assert.NotEqual(t, plainHash, customHash, "changing only model_residency left the hash alone")
+
+	// Same config, same digest: a restart must not look like an edit and force a resync.
+	repeat, err := custom.GenerateConfigHash("local-omlx")
+	require.NoError(t, err)
+	assert.Equal(t, customHash, repeat)
 }

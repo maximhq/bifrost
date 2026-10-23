@@ -961,6 +961,10 @@ type modelListQuery struct {
 	// Decisions keeps only models that serve decisions natively, by the same
 	// capability rule the provider applies at request time.
 	Decisions bool
+	// CredentialPresented marks a request that offered a virtual key. With no resolved access it
+	// distinguishes a caller who presented nothing, and keeps the unfiltered listing, from one
+	// governance refused, who is shown no virtual names.
+	CredentialPresented bool
 	// VK-based filtering: populated when a virtual key is found in request headers.
 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
 	HasVKFilter bool
@@ -1319,12 +1323,13 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 	// route runs outside the request pipeline, so it asks governance directly rather than
 	// waiting for a hook to.
 	//
-	// Nothing resolved leaves the listing unfiltered: an unknown key, or a deployment with no
-	// governance at all, has nothing to narrow the listing by. So does a request nothing settled
-	// who it is; it is refused where it matters, and a listing is not that.
-	if access, err := h.modelsManager.ResolveAccess(bifrostCtx); err == nil && access != nil {
+	// Access is what the caller may reach; nil leaves the listing unfiltered, the same reading
+	// the concrete listing gives when nothing was resolved. Virtual names are filtered by it, so
+	// a settled grant is never shown a virtual model built on a provider or candidate it lacks.
+	query.Access = resolveVirtualModelAccess(bifrostCtx, h.modelsManager)
+	query.CredentialPresented = virtualKeyPresented(ctx)
+	if query.Access != nil {
 		query.HasVKFilter = true
-		query.Access = access
 	}
 
 	return query, true
@@ -1389,6 +1394,17 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 		})
 	}
 
+	// Virtual names join here: after the virtual-key provider filter above, so a caller
+	// granted nothing is shown nothing, and before pagination and the total, so a virtual
+	// model is neither confined to page two nor missing from the count. Skipped when the
+	// caller asked only for models that support decisions, which virtual models make no
+	// claim about. They take the search filter too: concrete names are narrowed by it a few
+	// lines up, so a search for one string must not answer with every virtual name.
+	if !query.Decisions {
+		virtual := virtualListedModels(h.inMemoryStore, providers, query.Access, query.CredentialPresented, query.Query)
+		models = append(models, h.virtualModelsForListing(models, virtual, query)...)
+	}
+
 	total := len(models)
 	if query.Offset > 0 {
 		if query.Offset >= len(models) {
@@ -1402,6 +1418,111 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 	}
 
 	return models, total, nil
+}
+
+// virtualModelsForListing narrows virtual names to the same filters the concrete models a few lines
+// above already went through, which they did not pass until now.
+//
+// A name the provider lists concretely is dropped: the concrete entry is kept, and a second row for
+// the same provider and name would duplicate the row, inflate total and take a pagination slot.
+//
+// When the request selected keys with ?keys=, a virtual model is kept only when those keys reach
+// every candidate, because any candidate may be the one that serves. The keys that reach all of them
+// go into AccessibleByKeys, the field concrete entries use, so an empty value never quietly reads as
+// "unrestricted" on a request that asked for a filter.
+func (h *ProviderHandler) virtualModelsForListing(existing, virtual []listedModel, query modelListQuery) []listedModel {
+	if len(virtual) == 0 {
+		return virtual
+	}
+	seen := make(map[string]bool, len(existing))
+	for _, row := range existing {
+		seen[virtualRowKey(row.Provider, row.Name)] = true
+	}
+	kept := make([]listedModel, 0, len(virtual))
+	for _, row := range virtual {
+		if seen[virtualRowKey(row.Provider, row.Name)] {
+			continue
+		}
+		accessible, ok := h.virtualModelKeysForQuery(row, query)
+		if !ok {
+			continue
+		}
+		row.AccessibleByKeys = accessible
+		seen[virtualRowKey(row.Provider, row.Name)] = true
+		kept = append(kept, row)
+	}
+	return kept
+}
+
+// virtualRowKey is the provider and name of a listing row. The same name on two providers is two
+// models, and case is not part of the identity.
+func virtualRowKey(provider schemas.ModelProvider, name string) string {
+	return string(provider) + "\x00" + strings.ToLower(name)
+}
+
+// virtualModelKeysForQuery answers which of the request's selected keys can serve a virtual model,
+// and whether it survives the filter at all. With no keys selected there is nothing to apply and the
+// entry is kept with the field empty, exactly as an unfiltered concrete entry is. Where the selected
+// keys cannot be evaluated the entry is not claimed reachable: a listing that cannot prove a key
+// serves the candidates should not assert that one does.
+func (h *ProviderHandler) virtualModelKeysForQuery(row listedModel, query modelListQuery) ([]string, bool) {
+	if len(query.KeyIDs) == 0 || query.Unfiltered {
+		return nil, true
+	}
+	if h.inMemoryStore == nil {
+		return nil, false
+	}
+	config, err := h.inMemoryStore.GetProviderConfigRaw(row.Provider)
+	if err != nil || config == nil {
+		return nil, false
+	}
+	validKeyIDs := getValidKeyIDsForProvider(config, query.KeyIDs)
+	if len(validKeyIDs) == 0 {
+		return nil, false
+	}
+	vm, ok := h.inMemoryStore.VirtualModels.Lookup(row.Name)
+	if !ok {
+		return nil, false
+	}
+	allowed, accessByModel := filterModelsByKeysWithAccessMap(config, row.Provider, h.inMemoryStore.ModelCatalog, vm.Models, validKeyIDs)
+	if len(allowed) != len(vm.Models) {
+		return nil, false
+	}
+	common := keysReachingAllCandidates(accessByModel, vm.Models)
+	if len(common) == 0 {
+		return nil, false
+	}
+	return common, true
+}
+
+// keysReachingAllCandidates keeps the keys permitted every candidate, in first-seen order so the
+// listing is stable. A key that permits all but one candidate is not enough: it cannot serve the
+// model a residency probe may pick.
+func keysReachingAllCandidates(accessByModel map[string][]string, candidates []string) []string {
+	counted := make(map[string]bool, len(candidates))
+	counts := make(map[string]int, len(candidates))
+	order := make([]string, 0, len(candidates))
+	total := 0
+	for _, candidate := range candidates {
+		if counted[candidate] {
+			continue
+		}
+		counted[candidate] = true
+		total++
+		for _, id := range accessByModel[candidate] {
+			if _, ok := counts[id]; !ok {
+				order = append(order, id)
+			}
+			counts[id]++
+		}
+	}
+	out := make([]string, 0, len(order))
+	for _, id := range order {
+		if counts[id] == total {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // listManagementModelsForProvider applies provider-level model selection and key filtering.

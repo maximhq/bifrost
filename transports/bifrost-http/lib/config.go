@@ -242,6 +242,11 @@ type ConfigData struct {
 	presentMCPSections        map[string]bool
 	SkillsRegistry            *SkillsRegistryConfig `json:"skills_registry,omitempty"`
 	rejectedMCPClients        map[string]bool       // file clients dropped while loading; a config.json sync keeps their stored clients
+
+	// VirtualModels maps a user-chosen name to the ordered candidates it may resolve
+	// to, resolved at request time against what the provider has resident in memory.
+	// See docs/providers/virtualmodels.mdx.
+	VirtualModels map[string]schemas.VirtualModel `json:"virtual_models,omitempty"`
 }
 
 // SkillsRegistryConfig defines declarative skill definitions in config.json.
@@ -575,6 +580,8 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
 		ProxyConfig       *GlobalProxyFileConfig                `json:"proxy_config,omitempty"`
 		SkillsRegistry    *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
+
+		VirtualModels map[string]schemas.VirtualModel `json:"virtual_models,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -622,6 +629,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		}
 	}
 	cd.SkillsRegistry = temp.SkillsRegistry
+	cd.VirtualModels = temp.VirtualModels
 	// Initialize providers map if nil
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
@@ -735,6 +743,10 @@ type Config struct {
 	// HTTPClientFactory hands out outbound clients that honour ProxyConfig per purpose
 	// and follow its changes live (see network.HTTPClientFactory).
 	HTTPClientFactory *network.HTTPClientFactory
+
+	// VirtualModels answers which names are virtual and which candidate a virtual name
+	// resolves to right now. Nil when no virtual model is configured.
+	VirtualModels *VirtualModelService
 
 	// SetupToken is the resolved operator-provisioned bootstrap secret (see
 	// ConfigData.SetupToken / resolveSetupToken). Empty when the operator hasn't
@@ -1206,6 +1218,12 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	network.SetDefaultHTTPClientFactory(config.HTTPClientFactory)
 	// 5. Providers (store → file → auto-detect)
 	if err := loadProviders(ctx, config, &configData); err != nil {
+		return nil, err
+	}
+	// 5a. Virtual models, after providers because every virtual model's residency is
+	// read from a configured provider: an install that references a provider which does
+	// not exist is refused rather than deferred to a confusing failure at request time.
+	if err := installVirtualModels(config, configData.VirtualModels, logger); err != nil {
 		return nil, err
 	}
 	// 6. MCP config
@@ -8633,6 +8651,9 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 	}
 	c.Providers[provider] = config
 	logger.Info("added provider: %s", provider)
+	// A virtual model kept its definition when this provider was deleted; rebuilding its endpoint
+	// here is what makes the name work again without a restart.
+	c.refreshVirtualModelProbes()
 	return nil
 }
 
@@ -8719,6 +8740,10 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 		return fmt.Errorf("failed to update provider: %w", clientErr)
 	}
 
+	// Probes read base URL, credentials and TLS from the provider config. Rebuild them only once the
+	// update has been accepted, so a rollback cannot leave them pointing at the rejected config.
+	c.refreshVirtualModelProbes()
+
 	logger.Info("Updated configuration for provider: %s", provider)
 	return nil
 }
@@ -8790,6 +8815,7 @@ func (c *Config) AddProviderKey(ctx context.Context, provider schemas.ModelProvi
 	}
 
 	logger.Info("Added key %s to provider: %s", key.ID, provider)
+	c.refreshVirtualModelProbes()
 	return nil
 }
 
@@ -8863,6 +8889,7 @@ func (c *Config) UpdateProviderKey(ctx context.Context, provider schemas.ModelPr
 	}
 
 	logger.Info("Updated key %s for provider: %s", keyID, provider)
+	c.refreshVirtualModelProbes()
 	return nil
 }
 
@@ -8916,6 +8943,7 @@ func (c *Config) RemoveProviderKey(ctx context.Context, provider schemas.ModelPr
 	}
 
 	logger.Info("Removed key %s from provider: %s", keyID, provider)
+	c.refreshVirtualModelProbes()
 	return nil
 }
 
@@ -8940,6 +8968,7 @@ func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvi
 	}
 	delete(c.Providers, provider)
 	logger.Info("Removed provider: %s", provider)
+	c.refreshVirtualModelProbes()
 	return nil
 }
 

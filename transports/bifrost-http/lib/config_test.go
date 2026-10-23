@@ -25842,3 +25842,49 @@ func TestA2APrivateAllowlist(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, absent, empty)
 }
+
+// Residency is configured under network_config, a closed object: declare the field there or the
+// documented setting fails validation while the Go config reads it. It belongs only on the variant
+// that carries base_url, since a provider without one has no endpoint to probe. Providers are walked
+// from providers.* so a shape added later cannot quietly lose it.
+func TestSchemaNetworkConfigAdmitsModelResidency(t *testing.T) {
+	schema := loadJSONSchema(t)
+
+	network := resolveSchemaRef(schema, "#/$defs/network_config")
+	require.NotNil(t, network, "network_config definition is missing")
+	declared, ok := network["properties"].(map[string]interface{})["model_residency"].(map[string]interface{})
+	require.True(t, ok, "network_config must declare model_residency")
+	require.Equal(t, "#/$defs/model_residency_config", declared["$ref"], "network_config points at the wrong residency definition")
+	require.NotNil(t, resolveSchemaRef(schema, "#/$defs/model_residency_config"), "model_residency_config must exist")
+
+	keyless := resolveSchemaRef(schema, "#/$defs/network_config_without_base_url")
+	require.NotNil(t, keyless, "network_config_without_base_url definition is missing")
+	keylessProps, _ := keyless["properties"].(map[string]interface{})
+	_, hasResidency := keylessProps["model_residency"]
+	require.False(t, hasResidency, "residency must not be offered where there is no base_url to probe")
+
+	props, ok := schema["properties"].(map[string]interface{})["providers"].(map[string]interface{})
+	require.True(t, ok, "providers is missing from the schema")
+	providerSchemas, ok := props["properties"].(map[string]interface{})
+	require.True(t, ok, "providers.properties is missing from the schema")
+
+	checked := 0
+	for name, raw := range providerSchemas {
+		providerSchema, ok := raw.(map[string]interface{})
+		require.True(t, ok, "provider %s is not an object", name)
+		if ref, isRef := providerSchema["$ref"].(string); isRef {
+			providerSchema = resolveSchemaRef(schema, ref)
+			require.NotNil(t, providerSchema, "provider %s has an unresolved $ref %s", name, ref)
+		}
+		properties, _ := providerSchema["properties"].(map[string]interface{})
+		networkRef, ok := properties["network_config"].(map[string]interface{})["$ref"].(string)
+		require.True(t, ok, "provider %s offers no network_config, so residency cannot be set on it", name)
+		require.Contains(t,
+			[]string{"#/$defs/network_config", "#/$defs/network_config_without_base_url"},
+			networkRef,
+			"provider %s references a network config outside the two known shapes", name)
+		checked++
+	}
+
+	require.Greater(t, checked, 10, "expected to walk the full provider set, got %d", checked)
+}

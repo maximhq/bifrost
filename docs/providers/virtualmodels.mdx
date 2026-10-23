@@ -1,0 +1,135 @@
+---
+title: "Virtual Models"
+description: "Route a stable model name to a candidate already resident on a self-hosted backend."
+icon: "layer-group"
+---
+
+## Overview
+
+A virtual model maps a client-facing name to an ordered list of candidates on one provider. Bifrost probes that provider's residency and chooses a concrete model at request time. Unlike a static alias, the target can change as the backend loads and unloads models.
+
+```json title="config.json"
+{
+  "providers": {
+    "local-omlx": {
+      "keys": [{ "name": "local", "value": "env.LOCAL_API_KEY", "models": ["*"] }],
+      "network_config": {
+        "base_url": "http://localhost:8090",
+        "allow_private_network": true,
+        "model_residency": { "adapter": "omlx" }
+      },
+      "custom_provider_config": { "base_provider_type": "openai" }
+    }
+  },
+  "virtual_models": {
+    "local-chat": {
+      "provider": "local-omlx",
+      "models": ["preferred-model", "alternate-model"],
+      "on_probe_error": "error"
+    }
+  }
+}
+```
+
+Send `"model": "local-chat"` in an inference request. Responses report the concrete model that ran; routing metadata retains the requested virtual name.
+
+## Selection and cold loads
+
+Candidates are evaluated in configuration order:
+
+1. First candidate reported **ready**.
+2. Otherwise, first candidate reported **loading**.
+3. Otherwise, the **first candidate**, allowing the backend to cold-load it.
+
+<Warning>
+  This is residency-aware routing, not a no-load guarantee. A successful probe with no resident candidate deliberately allows a cold load, which may evict another model. `on_probe_error` does not change that behavior.
+</Warning>
+
+When no authoritative reading is available:
+
+| `on_probe_error` | Behavior |
+|---|---|
+| `error` (default) | Return HTTP 502 with `virtual_model_resolution_error` |
+| `first` | Send the first candidate despite unknown residency |
+
+If a refresh fails after a successful reading, Bifrost reuses the last successful snapshot with its original observation time. A reading older than ten cache windows, at least 60 seconds, stops counting as authoritative, so `on_probe_error` decides the request rather than an observation from before the outage. A failed probe is also remembered for one second, or `cache_ttl_ms` if longer, so a backend that is down costs one probe per window instead of one per request. Residency can still change between observation and inference.
+
+## Adapters
+
+Configure `model_residency` under the provider's `network_config`, next to the `base_url` it probes:
+
+| Adapter | Default probe endpoint | Residency source |
+|---|---|---|
+| `omlx` | `/v1/models/status` | `loaded` / `is_loading` |
+| `llamacpp` | `/v1/models` | `status.value` |
+| `ollama` | `/api/ps` | Membership in the resident process list |
+| `custom` | Required `path` | Configured field mapping |
+| `auto` (default) | Tries oMLX, llama.cpp, then Ollama | First recognized residency response |
+
+Explicit adapters probe only their configured endpoint. `path` overrides the default path. Auto-detection remembers the successful adapter for subsequent probes. A normal OpenAI model list without residency fields is not accepted as a residency snapshot.
+
+Ollama's OpenAI-compatible `/v1/models` does not expose residency. Use `adapter: "ollama"` to probe `/api/ps`, including when the provider itself uses OpenAI-compatible inference. Set `network_config.base_url` to the engine root, without a trailing `/v1`.
+
+The [llama.cpp router](https://github.com/ggml-org/llama.cpp) exposes per-model state through `/v1/models`; `/props` is not a substitute for that state.
+
+### Custom endpoints
+
+```json
+"network_config": {
+  "base_url": "http://localhost:8090",
+  "allow_private_network": true,
+  "model_residency": {
+    "adapter": "custom",
+    "path": "/internal/serving",
+    "fields": {
+      "items": "data.models",
+      "id": "name",
+      "loaded": "in_memory",
+      "loading": "warming"
+    },
+    "timeout_ms": 2000,
+    "cache_ttl_ms": 0
+  }
+}
+```
+
+`items` is a dot path to an array; other fields name properties of each entry. With neither `loaded` nor `loading` mapped, listed entries are treated as resident.
+
+The default timeout is 2000 ms. A cache TTL of zero (the default) probes on each sequential request. Requests overlapping an in-flight probe share its result, and the probe is not cancelled when the client that started it disconnects, since the other waiters still need an answer. Positive TTLs reuse successful readings for the configured duration.
+
+## Discovery and authorization
+
+Virtual names appear in `/v1/models` and `/api/models`. Listings do not probe residency. `/v1/models/{name}` returns a synthetic descriptor and probes only the associated provider, including:
+
+- `bifrost:virtual`
+- `bifrost:provider`
+- `bifrost:candidate-models`
+- `bifrost:candidate-residency`
+- `bifrost:residency-authoritative`
+- `bifrost:residency-observed-at`
+- `bifrost:resident-model`, when a candidate is ready
+
+Discovery filters virtual names by the caller's resolved access: the provider and **every candidate** must be permitted before the entry and its residency are published. A caller granted no providers sees nothing.
+
+A provider named explicitly, by path prefix or `?provider=`, outranks the virtual name. When it is not the owning provider, the request is for that provider's own model of the same name, so Bifrost leaves it untouched and the named provider answers. A virtual model may therefore share a vendor model's name without hiding it, and `provider/model` stays the way to pin the vendor.
+
+On the dashboard listing they take the same `?keys=` filter the concrete models take. A virtual model is listed only when the selected keys reach **every** candidate, since any one of them may be the one that serves, and the keys that do reach all of them are reported in `accessible_by_keys` exactly as a concrete model reports them.
+
+When nothing has been resolved the two cases behind that word are not the same, and they do not share a default. A caller who presented **no** credential gets the unfiltered listing, the same reading the concrete model listing gives: no governance deployed, or a management route that carries no grant. Authentication stays with the existing auth layer and this feature adds no second gate beside it.
+
+A caller who **did** present a virtual key and resolved to nothing was refused by governance, and is treated as refused: virtual names are omitted from listings, `GET /v1/models/{name}` answers 403, and no residency probe is spent on a credential with no right to that backend. "Presented" is read from the request headers using the same parser the auth middleware uses, because those two routes run outside that middleware.
+
+The existing `x-bifrost-resolved-model` response header is emitted when response metadata contains a resolved model. The routing trail records virtual-model selection; no new virtual-model response header is introduced.
+
+## Scope and limitations
+
+- **Config file only:** definitions load at startup; restart to add, remove or rename a virtual model. Changes to the provider itself (base URL, keys, TLS) are picked up live, so a rotated credential does not strand the probe. Deleting a provider and adding it back is live too. While the provider is gone `GET /v1/models` still lists the name and requests to it answer 503 rather than silently routing elsewhere; the dashboard's model list hides it until the provider returns.
+- **One provider per virtual model:** there is no cross-provider GPU memory coordination. Operators must coordinate engines sharing memory.
+- **A named provider wins:** a request that names a provider, by `provider/model` prefix or `?provider=`, goes to that provider even when the name is also a virtual model elsewhere. Reach a virtual model by its bare name, or prefixed with its own provider. This keeps a virtual model from hiding a vendor model that shares its name. On its own provider, though, a virtual name shadows a concrete model of the same name: give the virtual model a distinct name if you need both reachable.
+- **Governance:** resolution runs after pre-request routing hooks and before session routing, key selection, and per-attempt LLM hooks. Grant the concrete candidate models; virtual names do not create permissions.
+- **Inferred fallbacks are dropped on resolution:** when a virtual model resolves, a fallback chain Bifrost promoted for the bare name (the model-catalog resolver adds one from every other provider serving it) is removed, so a failed local backend cannot bill a vendor the request never named. Fallbacks you wrote stay. Load-balancing candidates promoted by the governance plugin are not currently marked as inferred and do still fall back; name a fallback explicitly when you want one.
+- **No automatic candidate fallback chain:** normal explicit fallback configuration remains separate. A `fallbacks` entry naming a virtual model is sent as written, so keep virtual names in the primary `model`.
+- **Probe auth:** the probe sends the provider's first enabled key as `Authorization: Bearer`. A backend expecting another scheme should set it in `network_config.extra_headers`, which the probe honours and never overwrites.
+- **No eviction guarantee:** a selected model can be evicted or unloaded after a probe, and stale snapshots may be reused after probe failures.
+
+Use [key aliases](./aliasing-models) and [routing rules](./routing-rules) for fixed targets. Use virtual models when the preferred target depends on backend residency.
