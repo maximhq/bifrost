@@ -18,7 +18,6 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -84,12 +83,14 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 								{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"checking"}}`},
 								{"contentBlockStop", `{"contentBlockIndex":0}`},
 								{"contentBlockStart", `{"contentBlockIndex":1,"start":{"toolUse":{"toolUseId":"call_1","name":"weather"}}}`},
-								{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{}"}}}`},
+								{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{"}}}`},
+								{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"}"}}}`},
 								{"contentBlockStop", `{"contentBlockIndex":1}`},
 								{"contentBlockDelta", `{"contentBlockIndex":2,"delta":{"text":"and time"}}`},
 								{"contentBlockStop", `{"contentBlockIndex":2}`},
 								{"contentBlockStart", `{"contentBlockIndex":3,"start":{"toolUse":{"toolUseId":"call_2","name":"time"}}}`},
-								{"contentBlockDelta", `{"contentBlockIndex":3,"delta":{"toolUse":{"input":"{}"}}}`},
+								{"contentBlockDelta", `{"contentBlockIndex":3,"delta":{"toolUse":{"input":"{"}}}`},
+								{"contentBlockDelta", `{"contentBlockIndex":3,"delta":{"toolUse":{"input":"}"}}}`},
 								{"contentBlockStop", `{"contentBlockIndex":3}`},
 								{"messageStop", `{"stopReason":"tool_use"}`},
 								{"metadata", `{"usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`},
@@ -137,15 +138,17 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 					require.NoError(t, route.PreCallback(httpCtx, ctx, ingress))
 					req, err := route.RequestConverter(ctx, ingress)
 					require.NoError(t, err)
+					router := NewGenericRouter(nil, store, nil, nil, nil, logger)
 					var payloads [][]byte
 					if suffix == "invoke" {
 						resp, bifrostErr := provider.Responses(ctx, key, req.ResponsesRequest)
 						require.Nil(t, bifrostErr)
 						out, err := route.ResponsesResponseConverter(ctx, resp)
 						require.NoError(t, err)
-						raw, err := providerUtils.MarshalSorted(out)
-						require.NoError(t, err)
-						payloads = append(payloads, raw)
+						router.sendSuccess(httpCtx, ctx, route.ErrorConverter, out, nil)
+						assert.Equal(t, fasthttp.StatusOK, httpCtx.Response.StatusCode())
+						assert.Equal(t, "application/json", string(httpCtx.Response.Header.ContentType()))
+						payloads = append(payloads, httpCtx.Response.Body())
 					} else {
 						stream, bifrostErr := provider.ResponsesStream(ctx, func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 							// Core stamps the routed identity before the transport converter.
@@ -155,7 +158,10 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 							return resp, err
 						}, nil, key, req.ResponsesRequest)
 						require.Nil(t, bifrostErr)
-						NewGenericRouter(nil, store, nil, nil, nil, logger).handleStreaming(httpCtx, ctx, route, "", stream, cancel)
+						router.handleStreaming(httpCtx, ctx, route, "", stream, cancel)
+						// HTTP stream headers are set by handleStreamingRequest. This
+						// lower-level test checks the EventStream writer; the harness
+						// checks headers through the complete HTTP request path.
 						wire, err := io.ReadAll(httpCtx.Response.BodyStream())
 						require.NoError(t, err)
 						reader := bytes.NewReader(wire)
@@ -167,6 +173,8 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 							}
 							require.NoError(t, err)
 							require.Equal(t, "chunk", frame.Headers.Get(":event-type").String())
+							assert.Equal(t, "event", eventStreamHeaderString(t, frame.Headers, ":message-type"))
+							assert.Equal(t, "application/json", eventStreamHeaderString(t, frame.Headers, ":content-type"))
 							data, err := base64.StdEncoding.DecodeString(gjson.GetBytes(frame.Payload, "bytes").String())
 							require.NoError(t, err)
 							payloads = append(payloads, data)
@@ -177,19 +185,84 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 					if suffix != "invoke" {
 						object += ".chunk"
 					}
-					for _, raw := range payloads {
+					for i, raw := range payloads {
 						assert.Equal(t, object, gjson.GetBytes(raw, "object").String(), "%s", raw)
+						assert.NotEmpty(t, gjson.GetBytes(raw, "id").String())
+						assert.Equal(t, gjson.GetBytes(payloads[0], "id").String(), gjson.GetBytes(raw, "id").String())
+						assert.Positive(t, gjson.GetBytes(raw, "created").Int())
+						assert.Equal(t, gjson.GetBytes(payloads[0], "created").Int(), gjson.GetBytes(raw, "created").Int())
+						assert.Equal(t, model, gjson.GetBytes(raw, "model").String())
 						assert.False(t, gjson.GetBytes(raw, "type").Exists(), "%s", raw)
 						assert.False(t, gjson.GetBytes(raw, "extra_fields").Exists())
 						require.Len(t, gjson.GetBytes(raw, "choices").Array(), 1)
+						assert.True(t, gjson.GetBytes(raw, "choices.0.index").Exists())
+						assert.Equal(t, int64(0), gjson.GetBytes(raw, "choices.0.index").Int())
+						if suffix == "invoke" {
+							assert.False(t, gjson.GetBytes(raw, "choices.0.delta").Exists())
+							assert.Equal(t, "assistant", gjson.GetBytes(raw, "choices.0.message.role").String())
+						} else {
+							assert.False(t, gjson.GetBytes(raw, "choices.0.message").Exists())
+							if i == 0 {
+								assert.Equal(t, "assistant", gjson.GetBytes(raw, "choices.0.delta.role").String())
+							}
+							if i < len(payloads)-1 {
+								assert.True(t, gjson.GetBytes(raw, "choices.0.finish_reason").Exists())
+								assert.Equal(t, gjson.Null, gjson.GetBytes(raw, "choices.0.finish_reason").Type)
+								assert.False(t, gjson.GetBytes(raw, "usage").Exists())
+							} else {
+								assert.JSONEq(t, `{}`, gjson.GetBytes(raw, "choices.0.delta").Raw)
+							}
+						}
+					}
+					if stop == "tool_use" {
+						type toolResult struct{ id, name, arguments string }
+						tools := make(map[int64]toolResult)
+						for _, raw := range payloads {
+							path := "choices.0.delta.tool_calls"
+							if suffix == "invoke" {
+								path = "choices.0.message.tool_calls"
+							}
+							for i, call := range gjson.GetBytes(raw, path).Array() {
+								index := int64(i)
+								if suffix != "invoke" {
+									index = call.Get("index").Int()
+								}
+								tool := tools[index]
+								if id := call.Get("id").String(); id != "" {
+									assert.Equal(t, "function", call.Get("type").String())
+									tool.id = id
+								}
+								tool.name += call.Get("function.name").String()
+								tool.arguments += call.Get("function.arguments").String()
+								tools[index] = tool
+							}
+						}
+						names := []string{"weather"}
+						if scenario.mixedTools {
+							names = append(names, "time")
+						}
+						require.Len(t, tools, len(names))
+						for i, name := range names {
+							tool, exists := tools[int64(i)]
+							require.True(t, exists)
+							assert.Equal(t, []string{"call_1", "call_2"}[i], tool.id)
+							assert.Equal(t, name, tool.name)
+							assert.JSONEq(t, `{}`, tool.arguments)
+						}
+					}
+					if !scenario.mixedTools && stop != "tool_use" {
+						text := gjson.GetBytes(payloads[0], "choices.0.message.content").String()
+						if suffix != "invoke" {
+							text = ""
+							for _, raw := range payloads {
+								text += gjson.GetBytes(raw, "choices.0.delta.content").String()
+							}
+						}
+						assert.Equal(t, "hello", text)
 					}
 
 					if scenario.mixedTools {
 						if suffix == "invoke" {
-							calls := gjson.GetBytes(payloads[0], "choices.0.message.tool_calls").Array()
-							require.Len(t, calls, 2)
-							assert.Equal(t, "call_1", calls[0].Get("id").String())
-							assert.Equal(t, "call_2", calls[1].Get("id").String())
 							assert.Equal(t, "checkingand time", gjson.GetBytes(payloads[0], "choices.0.message.content").String())
 						} else {
 							var indexes []int64
@@ -198,13 +271,13 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 									indexes = append(indexes, call.Get("index").Int())
 								}
 							}
-							assert.Equal(t, []int64{0, 0, 1, 1}, indexes)
+							assert.Equal(t, []int64{0, 0, 0, 1, 1, 1}, indexes)
 						}
 					}
 					last := payloads[len(payloads)-1]
 					finish := map[string]string{"end_turn": "stop", "max_tokens": "length", "tool_use": "tool_calls"}[stop]
 					assert.Equal(t, finish, gjson.GetBytes(last, "choices.0.finish_reason").String(), "%s", last)
-					assert.Equal(t, int64(66), gjson.GetBytes(last, "usage.total_tokens").Int())
+					assert.JSONEq(t, `{"prompt_tokens":15,"completion_tokens":51,"total_tokens":66}`, gjson.GetBytes(last, "usage").Raw)
 					r := <-captured
 					action := "converse"
 					if suffix != "invoke" {
@@ -214,6 +287,139 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 					assert.Contains(t, r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
 				})
 			}
+		}
+	}
+}
+
+func TestBedrockInvokeMistralProviderErrors(t *testing.T) {
+	const model = "mistral.mistral-large-3-675b-instruct"
+	for _, prefix := range []string{"/bedrock", "/langchain", "/litellm", "/pydanticai", "/cursor"} {
+		for _, tc := range []struct {
+			name, suffix string
+			streamError  bool
+		}{
+			{"unary validation", "invoke", false},
+			{"stream startup validation", "invoke-with-response-stream", false},
+			{"stream exception", "invoke-with-response-stream", true},
+		} {
+			t.Run(prefix+"/"+tc.name, func(t *testing.T) {
+				upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					assert.Contains(t, r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
+					if !tc.streamError {
+						w.Header().Set("Content-Type", "application/json")
+						w.Header().Set("X-Amzn-Errortype", "ValidationException")
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = io.WriteString(w, `{"__type":"ValidationException","message":"fixture validation"}`)
+						return
+					}
+					assert.Equal(t, "/model/"+model+"/converse-stream", r.URL.Path)
+					w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+					encoder := eventstream.NewEncoder()
+					for _, frame := range [][2]string{
+						{"messageStart", `{"role":"assistant"}`},
+						{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"partial"}}`},
+					} {
+						if err := encoder.Encode(w, eventstream.Message{Headers: eventstream.Headers{
+							{Name: ":message-type", Value: eventstream.StringValue("event")},
+							{Name: ":event-type", Value: eventstream.StringValue(frame[0])},
+						}, Payload: []byte(frame[1])}); err != nil {
+							t.Error(err)
+							return
+						}
+					}
+					if err := encoder.Encode(w, eventstream.Message{Headers: eventstream.Headers{
+						{Name: ":message-type", Value: eventstream.StringValue("exception")},
+						{Name: ":exception-type", Value: eventstream.StringValue("throttlingException")},
+					}, Payload: []byte(`{"message":"fixture throttle"}`)}); err != nil {
+						t.Error(err)
+					}
+				}))
+				defer upstream.Close()
+				logger := bifrost.NewNoOpLogger()
+				provider, err := bedrock.NewBedrockProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{InsecureSkipVerify: true, DefaultRequestTimeoutInSeconds: 5}}, logger)
+				require.NoError(t, err)
+				key := schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{AccessKey: *schemas.NewSecretVar("AKIDEXAMPLE"), SecretKey: *schemas.NewSecretVar("test-secret"), Region: schemas.NewSecretVar("us-west-2"), Endpoints: &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(upstream.URL)}}}
+				parent, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+				store := &mockHandlerStore{}
+				var route RouteConfig
+				for _, candidate := range CreateBedrockRouteConfigs(prefix, store) {
+					if candidate.Path == prefix+"/model/{modelId}/"+tc.suffix {
+						route = candidate
+						break
+					}
+				}
+				require.NotNil(t, route.RequestConverter)
+				httpCtx := &fasthttp.RequestCtx{}
+				httpCtx.SetUserValue("modelId", model)
+				httpCtx.Request.SetBodyString(`{"max_tokens":32,"messages":[{"role":"user","content":"Hello"}]}`)
+				ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, route.GetHTTPRequestType(httpCtx))
+				ingress := route.GetRequestTypeInstance(ctx)
+				require.NoError(t, sonic.Unmarshal(httpCtx.Request.Body(), ingress))
+				require.NoError(t, route.PreCallback(httpCtx, ctx, ingress))
+				req, err := route.RequestConverter(ctx, ingress)
+				require.NoError(t, err)
+				router := NewGenericRouter(nil, store, nil, nil, nil, logger)
+				if tc.suffix == "invoke" {
+					resp, bifrostErr := provider.Responses(ctx, key, req.ResponsesRequest)
+					require.Nil(t, resp)
+					require.NotNil(t, bifrostErr)
+					router.sendError(httpCtx, ctx, route.ErrorConverter, bifrostErr)
+				} else {
+					stream, bifrostErr := provider.ResponsesStream(ctx, func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+						if resp != nil && resp.ResponsesStreamResponse != nil {
+							resp.ResponsesStreamResponse.ExtraFields.ResolvedModelUsed = model
+						}
+						return resp, err
+					}, nil, key, req.ResponsesRequest)
+					if tc.streamError {
+						require.Nil(t, bifrostErr)
+						router.handleStreaming(httpCtx, ctx, route, "", stream, cancel)
+						wire, err := io.ReadAll(httpCtx.Response.BodyStream())
+						require.NoError(t, err)
+						reader := bytes.NewReader(wire)
+						decoder := eventstream.NewDecoder()
+						var chunks, exceptions int
+						for {
+							frame, err := decoder.Decode(reader, nil)
+							if err == io.EOF {
+								break
+							}
+							require.NoError(t, err)
+							if eventStreamHeaderString(t, frame.Headers, ":message-type") == "exception" {
+								exceptions++
+								assert.Equal(t, "throttlingException", eventStreamHeaderString(t, frame.Headers, ":exception-type"))
+								assert.Equal(t, "throttlingException", gjson.GetBytes(frame.Payload, "__type").String())
+								assert.Contains(t, gjson.GetBytes(frame.Payload, "message").String(), "fixture throttle")
+								assert.False(t, gjson.GetBytes(frame.Payload, "choices").Exists())
+								assert.Zero(t, reader.Len(), "exception must terminate the stream")
+							} else {
+								chunks++
+								assert.Equal(t, "chunk", eventStreamHeaderString(t, frame.Headers, ":event-type"))
+								data, err := base64.StdEncoding.DecodeString(gjson.GetBytes(frame.Payload, "bytes").String())
+								require.NoError(t, err)
+								assert.Equal(t, "chat.completion.chunk", gjson.GetBytes(data, "object").String())
+								assert.Equal(t, gjson.Null, gjson.GetBytes(data, "choices.0.finish_reason").Type)
+								if chunks == 2 {
+									assert.Equal(t, "partial", gjson.GetBytes(data, "choices.0.delta.content").String())
+								}
+							}
+						}
+						assert.Equal(t, 2, chunks)
+						assert.Equal(t, 1, exceptions)
+						return
+					}
+					require.Nil(t, stream)
+					require.NotNil(t, bifrostErr)
+					router.sendStreamError(httpCtx, ctx, route, bifrostErr)
+				}
+				assert.Equal(t, fasthttp.StatusBadRequest, httpCtx.Response.StatusCode())
+				assert.Equal(t, "application/json", string(httpCtx.Response.Header.ContentType()))
+				assert.Equal(t, "ValidationException", gjson.GetBytes(httpCtx.Response.Body(), "__type").String())
+				assert.Contains(t, gjson.GetBytes(httpCtx.Response.Body(), "message").String(), "fixture validation")
+				assert.False(t, gjson.GetBytes(httpCtx.Response.Body(), "choices").Exists())
+			})
 		}
 	}
 }
