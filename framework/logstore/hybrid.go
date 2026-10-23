@@ -2488,6 +2488,11 @@ func (h *HybridLogStore) UpsertWarpTopicAssignments(ctx context.Context, assignm
 	return h.inner.UpsertWarpTopicAssignments(ctx, assignments)
 }
 
+// DeleteWarpTopicAssignments removes the given requests' assignments.
+func (h *HybridLogStore) DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error {
+	return h.inner.DeleteWarpTopicAssignments(ctx, logIDs)
+}
+
 // SummarizeWarpTopicAssignments adds up the selected assignments per topic.
 func (h *HybridLogStore) SummarizeWarpTopicAssignments(ctx context.Context, filter WarpTopicAssignmentFilter) ([]WarpTopicUsage, error) {
 	return h.inner.SummarizeWarpTopicAssignments(ctx, filter)
