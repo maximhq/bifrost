@@ -150,6 +150,16 @@ Set a per-chunk idle timeout for streaming responses. If no chunk arrives within
 bfCtx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 10*time.Second)
 ```
 
+### Disable Implicit Built-in Tool Rewriting
+
+Keep application tools instead of implicitly substituting provider built-ins, without bypassing request conversion:
+
+```go
+bfCtx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
+```
+
+Explicitly requested built-ins still receive normal provider conversion. See [request options](/providers/request-options#disable-implicit-built-in-tool-rewriting) for the scope and HTTP header.
+
 ### Raw Request Body
 
 Send a raw request body instead of Bifrost's standardized format. The provider receives your payload as-is. You must both set the context key AND populate `RawRequestBody` on the request.
@@ -394,6 +404,7 @@ func makeRequest(client *bifrost.Bifrost) {
 | `BifrostContextKeyURLPath` | `string` | Set | Custom URL path appended to provider base URL |
 | `BifrostContextKeyStreamIdleTimeout` | `time.Duration` | Set | Per-chunk idle timeout for streaming responses |
 | `BifrostContextKeyUseRawRequestBody` | `bool` | Set | Send raw request body directly to provider |
+| `BifrostContextKeyDisableBuiltinToolRewriting` | `bool` | Set | Disable implicit provider built-in tool substitution while retaining request conversion |
 | `BifrostContextKeySendBackRawRequest` | `bool` | Set | Include raw request in `ExtraFields` |
 | `BifrostContextKeySendBackRawResponse` | `bool` | Set | Include raw provider response in `ExtraFields` |
 | `BifrostContextKeyPassthroughExtraParams` | `bool` | Set | Merge `ExtraParams` directly into provider request |

@@ -28,6 +28,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `BifrostContextKeySkipKeySelection`        | `-`                                                  | `bool`                | Skip key selection process (Go SDK only)                                                                                              |
 | `BifrostContextKeyURLPath`                 | `-`                                                  | `string`              | Custom URL path appended to provider base URL (Go SDK only)                                                                           |
 | `BifrostContextKeyUseRawRequestBody`       | `-`                                                  | `bool`                | Use raw request body (Go SDK only, requires RawRequestBody field)                                                                     |
+| `BifrostContextKeyDisableBuiltinToolRewriting` | `x-bf-disable-builtin-tool-rewriting` | `bool` | Disable implicit conversion/provisioning of provider built-in tools while retaining normal request conversion |
 | `semanticcache.CacheKey`                   | `x-bf-cache-key`                                     | `string`              | Custom cache key                                                                                                                      |
 | `semanticcache.CacheTTLKey`                | `x-bf-cache-ttl`                                     | `time.Duration`       | Cache TTL (duration string or seconds)                                                                                                |
 | `semanticcache.CacheThresholdKey`          | `x-bf-cache-threshold`                               | `float64`             | Similarity threshold (0.0-1.0)                                                                                                        |
@@ -790,6 +791,38 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 })
 ```
 
+### Disable Implicit Built-in Tool Rewriting
+
+**Context Key:** `BifrostContextKeyDisableBuiltinToolRewriting`
+
+**Header:** `x-bf-disable-builtin-tool-rewriting`
+
+**Type:** `bool`
+
+**Default:** `false`
+
+Set this option to `true` when your application must retain control of its own tools instead of having Bifrost substitute provider built-ins. Normal request conversion remains enabled, including Responses requests served by Vertex-hosted Claude.
+
+- Mantle's reserved client namespaces, such as `web`, are flattened into ordinary functions rather than replaced with hosted web search. Tool-call names and namespaces are restored on both regular and streaming responses.
+- On OpenAI-compatible models with native tool search, deferred functions remain eagerly available unless you explicitly declare a `tool_search` tool. Bifrost does not create hosted tool search or convert a client search function into a built-in search tool.
+- Explicitly declared built-ins still receive normal provider conversion and capability checks. This option is **not** a ban on provider-hosted tools, a user-approval mechanism, or an override of operator-configured `injected_tools`.
+
+For example, add this header to a Chat Completions, Responses, or SDK integration request:
+
+```bash
+--header 'x-bf-disable-builtin-tool-rewriting: true'
+```
+
+In the Go SDK:
+
+```go
+bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+bfCtx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
+// Pass bfCtx to ChatCompletionRequest, ResponsesRequest, or their streaming variants.
+```
+
+Always declare application tools with `"type": "function"`. Names such as `web_search_custom` or `computer_custom` remain function names. Provider type aliases such as `web_search_20250305` are explicit built-in declarations; unrelated types that merely share a prefix are not recognized as those aliases.
+
 ### Raw Request Body (Go SDK Only)
 
 **Context Key:** `BifrostContextKeyUseRawRequestBody`  
@@ -797,7 +830,7 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 **Type:** `bool`  
 **Required:** No
 
-Send a raw request body instead of Bifrost's standardized format. The provider receives your payload as-is. You must both enable the context key AND set the `RawRequestBody` field on your request.
+Send a provider-native request body instead of Bifrost's standardized format. You must both enable the context key AND set the `RawRequestBody` field on your request. Provider-specific compatibility processing, including native tool-version normalization on Vertex and Bedrock, still applies.
 
 ```go
 // Prepare your raw JSON payload

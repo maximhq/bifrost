@@ -679,6 +679,14 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
+		// Handle before allowlist forwarding and MCP extra headers: this is a gateway
+		// processing option, not a header to forward to either provider or MCP servers.
+		if keyStr == "x-bf-disable-builtin-tool-rewriting" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, b)
+			}
+			return true
+		}
 		// Direct header forwarding: when allowlist is configured, any header explicitly
 		// in the allowlist can be forwarded directly without the x-bf-eh- prefix.
 		// This enables forwarding arbitrary headers like "anthropic-beta" directly.

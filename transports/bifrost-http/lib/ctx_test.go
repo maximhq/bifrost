@@ -59,6 +59,57 @@ func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { ret
 func (s testHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                 { return "" }
 
+func TestDisableBuiltinToolRewritingHeader(t *testing.T) {
+	for _, allowlist := range [][]string{nil, {"*"}} {
+		for _, value := range []string{"true", "false", "invalid", ""} {
+			t.Run(fmt.Sprintf("allowlist=%v/value=%s", allowlist, value), func(t *testing.T) {
+				ctx := &fasthttp.RequestCtx{}
+				if value != "" {
+					ctx.Request.Header.Set("X-Bf-Disable-Builtin-Tool-Rewriting", value)
+				}
+				matcher := NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{Allowlist: allowlist})
+				converted, cancel := ConvertToBifrostContext(ctx, testHandlerStore{matcher: matcher})
+				defer cancel()
+				got := converted.Value(schemas.BifrostContextKeyDisableBuiltinToolRewriting)
+				switch value {
+				case "true", "false":
+					if got != (value == "true") {
+						t.Errorf("option = %v, want %s", got, value)
+					}
+				default:
+					if got != nil {
+						t.Errorf("option = %v, want absent", got)
+					}
+				}
+				if extra, _ := converted.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); extra["x-bf-disable-builtin-tool-rewriting"] != nil {
+					t.Fatal("gateway option was forwarded to the provider")
+				}
+			})
+		}
+	}
+}
+
+func BenchmarkBuiltinToolRewritingTransportContext(b *testing.B) {
+	for _, header := range []string{"", "true"} {
+		name := "default"
+		if header != "" {
+			name = "enabled"
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+				if header != "" {
+					ctx.Request.Header.Set("x-bf-disable-builtin-tool-rewriting", header)
+				}
+				_, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+				cancel()
+			}
+		})
+	}
+}
+
 func TestParseSessionIDFromBaggage(t *testing.T) {
 	tests := []struct {
 		name   string
