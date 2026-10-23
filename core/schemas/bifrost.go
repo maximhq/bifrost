@@ -82,6 +82,7 @@ const (
 	Typesafe      ModelProvider = "typesafe"
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
+	Nadir         ModelProvider = "nadir"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -134,6 +135,7 @@ var StandardProviders = []ModelProvider{
 	Typesafe,
 	MiniMax,
 	BytePlus,
+	Nadir,
 }
 
 // RequestType represents the type of request being made to a provider.

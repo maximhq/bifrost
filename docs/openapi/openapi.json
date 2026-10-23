@@ -112264,6 +112264,7 @@
           "gemini",
           "groq",
           "mistral",
+          "nadir",
           "ollama",
           "opencode-go",
           "opencode-zen",

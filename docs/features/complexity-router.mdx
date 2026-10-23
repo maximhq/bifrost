@@ -78,6 +78,7 @@ Any decision model Bifrost serves natively can classify. In the UI, pick a provi
 | Ollama System One models | [`ollama`](/providers/supported-providers/ollama#6-decisions) | A pulled `nimble`, `tev1`, `clef`, `clef-flash`, or `laya` model, such as `tev1:0.8b` |
 | Microsoft-Decision-1 | [`azure`](/providers/supported-providers/azure#10-decisions) | `Microsoft-Decision-1` (UI default), aliased to your deployment |
 | Databricks ai_decide | [`databricks`](/providers/supported-providers/databricks#decisions) | `ai_decide` (the only one, shown fixed in the UI) |
+| Nadir | [`nadir`](/providers/supported-providers/nadir#4-decisions) | `auto` (the only one, shown fixed in the UI) |
 | Laya | Your [custom provider](/providers/self-hosted-decision-models#laya) | `english`, `multilingual`, or `typed-decisions` |
 | Nimble | Your [custom provider](/providers/self-hosted-decision-models#nimble) | `nimble-latest` |
 
@@ -85,6 +86,7 @@ The question, rules, and tier guidance are the same for every model, but results
 
 - **Context window.** All tier guidance is sent on every request. Laya's `english` checkpoint reads only 512 tokens (`multilingual` reads 1,024) and truncates the rest, which shows in the decision's `usage.truncated`. Keep guidance short.
 - **Cold starts.** A model that has to load or wake up can exceed the timeout, and that request goes unclassified: `clef-flash` takes 4-6 seconds cold, Laya loads a checkpoint that was not preloaded, and Nimble on Modal takes minutes to wake. Keep these models loaded, or raise `decision.timeout` (see [Self-Hosted Decision Models](/providers/self-hosted-decision-models#using-them-in-the-complexity-router)).
+- **Trained classifiers ignore guidance.** Nadir answers with a trained classifier, so the tier guidance below does not change its answers.
 - **Re-check after switching.** Guidance tuned for one model may need adjusting for another. Compare the tier distribution in the logs before and after.
 
 #### Tier guidance

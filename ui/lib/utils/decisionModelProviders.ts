@@ -4,6 +4,7 @@ import {
 	CLOUDFLARE_DECISION_MODEL,
 	DATABRICKS_DECISION_MODEL,
 	DEFAULT_DECISION_MODEL,
+	NADIR_DECISION_MODEL,
 	OPENAI_DECISION_MODEL,
 	OPENROUTER_DECISION_MODEL,
 	PERPLEXITY_DECISION_MODEL,
@@ -64,7 +65,8 @@ export function decisionProviderIconKey(provider: ModelProvider): ProviderIconTy
 
 // isDecisionProvider reports a provider that answers /v1/decisions natively:
 // Typesafe, OpenRouter, Cloudflare (Clef), Perplexity, Ollama, Azure
-// (Microsoft-Decision-1), Databricks (ai_decide), OpenAI or a custom provider built
+// (Microsoft-Decision-1), Databricks (ai_decide), Nadir (its complexity classifier,
+// which answers only the complexity router's tier question), OpenAI or a custom provider built
 // on it (their decision models, such as gpt-6-luna), or a custom provider built on
 // the Typesafe base (Laya, Nimble, Clef). Other providers would only emulate
 // decisions through chat, so decision-model pickers never offer them.
@@ -77,6 +79,7 @@ export function isDecisionProvider(provider: ModelProvider): boolean {
 		provider.name === "ollama" ||
 		provider.name === "azure" ||
 		provider.name === "databricks" ||
+		provider.name === "nadir" ||
 		isOpenAIDecisionProvider(provider) ||
 		provider.custom_provider_config?.base_provider_type === "typesafe"
 	);
@@ -98,7 +101,7 @@ export function selfHostedModelGroups(providerName: string): SelfHostedModelGrou
 
 // defaultDecisionModel is the model a newly selected provider starts on: Jev's
 // latest alias (named per provider), Clef Flash on Cloudflare, Azure's and
-// Databricks' decision models, OpenAI's decision
+// Databricks' decision models, Nadir's router, OpenAI's decision
 // model (a custom OpenAI-based provider starts empty, as only its listing says
 // what it serves), the Clef model a custom provider's Cloudflare URL serves, or
 // the first checkpoint of the model a self-hosted provider is named after (Laya
@@ -112,6 +115,7 @@ export function defaultDecisionModel(provider: ModelProvider | undefined): strin
 	if (provider?.name === "ollama") return "";
 	if (provider?.name === "azure") return AZURE_DECISION_MODEL;
 	if (provider?.name === "databricks") return DATABRICKS_DECISION_MODEL;
+	if (provider?.name === "nadir") return NADIR_DECISION_MODEL;
 	if (provider?.name === "openai") return OPENAI_DECISION_MODEL;
 	if (isOpenAIDecisionProvider(provider)) return "";
 	return clefModelFromProvider(provider) ?? namedSelfHostedGroup(provider?.name ?? "")?.models[0] ?? "";
@@ -127,8 +131,9 @@ export function listsDecisionModels(provider: ModelProvider | undefined, provide
 }
 
 // servesFixedDecisionModel reports a provider whose decision model is fixed by its
-// configuration rather than chosen: Databricks serves only ai_decide, and a Cloudflare
-// URL on a custom provider binds its Clef model. Pickers show the model, not a choice.
+// configuration rather than chosen: Databricks serves only ai_decide, Nadir only its
+// classifier, and a Cloudflare URL on a custom provider binds its Clef model. Pickers
+// show the model, not a choice.
 export function servesFixedDecisionModel(provider: ModelProvider | undefined, providerName: string): boolean {
-	return providerName === "databricks" || clefModelFromProvider(provider) !== undefined;
+	return providerName === "databricks" || providerName === "nadir" || clefModelFromProvider(provider) !== undefined;
 }

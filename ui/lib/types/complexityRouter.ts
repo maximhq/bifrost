@@ -258,6 +258,10 @@ export const AZURE_DECISION_MODEL = "Microsoft-Decision-1";
 // Function, the only decision model a Databricks workspace serves.
 export const DATABRICKS_DECISION_MODEL = "ai_decide";
 
+// NADIR_DECISION_MODEL is the model a Nadir provider runs: "auto", Nadir's router. Nadir
+// answers with its complexity classifier whatever the model is named, so there is nothing to pick.
+export const NADIR_DECISION_MODEL = "auto";
+
 // CLOUDFLARE_DECISION_MODEL is the model a newly selected Cloudflare provider starts on.
 // The picker lists the Clef models Cloudflare Workers AI serves.
 export const CLOUDFLARE_DECISION_MODEL = "@cf/cloudflare/clef-flash";
