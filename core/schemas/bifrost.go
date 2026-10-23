@@ -787,7 +787,7 @@ type LargePayloadMetadata struct {
 // routing config named. It is never read from or written to the wire. See
 // Bifrost.shouldTryFallbacks for what it changes.
 type Fallback struct {
-	Provider ModelProvider `json:"provider"`
+	Provider ModelProvider `json:"provider"` // Empty inherits the routing-selected primary provider.
 	Model    string        `json:"model"`
 	KeyID    string        `json:"key_id,omitempty"` // pins a provider key for this attempt; empty means normal key selection
 	Inferred bool          `json:"-"`                // added by Bifrost, not named by the caller or a routing config

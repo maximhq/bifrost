@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -14,6 +15,105 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type requestFallbackBenchmarkPlugin struct{ requestFallbackRoutingPlugin }
+
+func (*requestFallbackBenchmarkPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, &schemas.LLMPluginShortCircuit{Response: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "cached", Model: "primary"}}}, nil
+}
+
+// Measures the complete core path without upstream latency, including routing and fallback setup.
+func BenchmarkRequestFallbackDispatch(b *testing.B) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{&requestFallbackBenchmarkPlugin{}}})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(client.Shutdown)
+	for _, tc := range []struct {
+		name      string
+		fallbacks []schemas.Fallback
+	}{
+		{name: "none"},
+		{name: "explicit", fallbacks: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "backup"}}},
+		{name: "bare", fallbacks: []schemas.Fallback{{Model: "backup"}}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			req := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "primary", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}, Fallbacks: tc.fallbacks}
+			b.ReportAllocs()
+			for b.Loop() {
+				req.Fallbacks = tc.fallbacks
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if _, err := client.ChatCompletionRequest(ctx, req); err != nil {
+					b.Fatal(err.GetErrorString())
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkPrepareFallbackRequest(b *testing.B) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	client := &Bifrost{account: account, logger: NewNoOpLogger()}
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "primary"}}
+	target := schemas.Fallback{Provider: schemas.OpenAI, Model: "backup"}
+	b.ReportAllocs()
+	for b.Loop() {
+		if client.prepareFallbackRequest(req, target) == nil {
+			b.Fatal("configured fallback was skipped")
+		}
+	}
+}
+
+func TestResolveFallbackProviders(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		provider    schemas.ModelProvider
+		input, want []schemas.Fallback
+		cloned      bool
+	}{
+		{name: "absent", provider: schemas.OpenAI},
+		{name: "empty SDK fallback stays invalid", provider: schemas.OpenAI, input: []schemas.Fallback{{}}, want: []schemas.Fallback{{}}},
+		{name: "binding valid SDK shorthand does not activate empty entries", provider: schemas.OpenAI, input: []schemas.Fallback{{}, {Model: "backup"}}, want: []schemas.Fallback{{}, {Provider: schemas.OpenAI, Model: "backup"}}, cloned: true},
+		{name: "unresolved primary is left for validation", input: []schemas.Fallback{{Model: "backup"}}, want: []schemas.Fallback{{Model: "backup"}}},
+		{name: "explicit providers remain authoritative", provider: schemas.OpenAI, input: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "backup", KeyID: "key", Inferred: true}}, want: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "backup", KeyID: "key", Inferred: true}}},
+		{name: "bare entries inherit without losing metadata", provider: schemas.OpenAI, input: []schemas.Fallback{{Model: "backup", KeyID: "key", Inferred: true}}, want: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "backup", KeyID: "key", Inferred: true}}, cloned: true},
+		{name: "mixed chain never inherits the preceding fallback", provider: schemas.OpenAI, input: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "a"}, {Model: "b"}, {Provider: schemas.Gemini, Model: "c"}, {Model: "d"}}, want: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "a"}, {Provider: schemas.OpenAI, Model: "b"}, {Provider: schemas.Gemini, Model: "c"}, {Provider: schemas.OpenAI, Model: "d"}}, cloned: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := append([]schemas.Fallback(nil), tc.input...)
+			got := resolveFallbackProviders(tc.provider, tc.input)
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, original, tc.input, "caller-owned slice must stay unchanged")
+			if len(got) > 0 {
+				assert.Equal(t, tc.cloned, &got[0] != &tc.input[0])
+			}
+		})
+	}
+	t.Run("shared fallback slice supports concurrent routing", func(t *testing.T) {
+		shared := []schemas.Fallback{{Model: "backup"}}
+		var wg sync.WaitGroup
+		for range 16 {
+			for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic} {
+				wg.Go(func() {
+					resolved := resolveFallbackProviders(provider, shared)
+					if resolved[0].Provider != provider {
+						t.Errorf("got %s, want %s", resolved[0].Provider, provider)
+					}
+				})
+			}
+		}
+		wg.Wait()
+		assert.Empty(t, shared[0].Provider)
+	})
+	t.Run("unchanged chains allocate nothing", func(t *testing.T) {
+		explicit := []schemas.Fallback{{Provider: schemas.OpenAI, Model: "backup"}}
+		assert.Zero(t, testing.AllocsPerRun(100, func() { resolveFallbackProviders(schemas.OpenAI, nil) }))
+		assert.Zero(t, testing.AllocsPerRun(100, func() { resolveFallbackProviders(schemas.OpenAI, explicit) }))
+	})
+}
 
 func TestValidateExternalURL(t *testing.T) {
 	tests := []struct {
@@ -797,4 +897,64 @@ func TestWrapConvertedStreamPostHookRunnerMarksConvertedChunks(t *testing.T) {
 			assert.Equal(t, tt.targetType, tt.extra(got).ConvertedRequestType)
 		})
 	}
+}
+
+func TestCopyInferenceRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostRequest
+	}{
+		{name: "TextCompletionRequest", req: &schemas.BifrostRequest{TextCompletionRequest: &schemas.BifrostTextCompletionRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "ChatRequest", req: &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "ResponsesRequest", req: &schemas.BifrostRequest{ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "CountTokensRequest", req: &schemas.BifrostRequest{CountTokensRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "CompactionRequest", req: &schemas.BifrostRequest{CompactionRequest: &schemas.BifrostCompactionRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "EmbeddingRequest", req: &schemas.BifrostRequest{EmbeddingRequest: &schemas.BifrostEmbeddingRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "RerankRequest", req: &schemas.BifrostRequest{RerankRequest: &schemas.BifrostRerankRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "DecisionRequest", req: &schemas.BifrostRequest{DecisionRequest: &schemas.BifrostDecisionRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "OCRRequest", req: &schemas.BifrostRequest{OCRRequest: &schemas.BifrostOCRRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "SpeechRequest", req: &schemas.BifrostRequest{SpeechRequest: &schemas.BifrostSpeechRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "TranscriptionRequest", req: &schemas.BifrostRequest{TranscriptionRequest: &schemas.BifrostTranscriptionRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "ImageGenerationRequest", req: &schemas.BifrostRequest{ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "VideoGenerationRequest", req: &schemas.BifrostRequest{VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "VideoEditRequest", req: &schemas.BifrostRequest{VideoEditRequest: &schemas.BifrostVideoEditRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "ImageEditRequest", req: &schemas.BifrostRequest{ImageEditRequest: &schemas.BifrostImageEditRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+		{name: "ImageVariationRequest", req: &schemas.BifrostRequest{ImageVariationRequest: &schemas.BifrostImageVariationRequest{Provider: schemas.OpenAI, Model: "primary", Fallbacks: []schemas.Fallback{{Model: "backup"}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			owned := copyInferenceRequest(tc.req, nil)
+			owned.SetFallbacks([]schemas.Fallback{{Provider: schemas.Cerebras, Model: "backup"}})
+			owned.SetProvider(schemas.Cerebras)
+			owned.SetModel("owned")
+			provider, model, fallbacks := tc.req.GetRequestFields()
+			if provider != schemas.OpenAI || model != "primary" || len(fallbacks) != 1 || fallbacks[0].Provider != "" {
+				t.Fatalf("caller body was changed: %s/%s %+v", provider, model, fallbacks)
+			}
+			target := schemas.Fallback{Provider: schemas.Anthropic, Model: "target"}
+			attempt := copyInferenceRequest(tc.req, &target)
+			provider, model, _ = attempt.GetRequestFields()
+			if provider != target.Provider || model != target.Model {
+				t.Fatalf("fallback arm not copied/routed: %s/%s", provider, model)
+			}
+		})
+	}
+	t.Run("distinct inference arms retain their own values when not retargeting", func(t *testing.T) {
+		req := &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "chat"}, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: "responses"}}
+		owned := copyInferenceRequest(req, nil)
+		if owned.ChatRequest == req.ChatRequest || owned.ResponsesRequest == req.ResponsesRequest || owned.ChatRequest.Model != "chat" || owned.ResponsesRequest.Model != "responses" {
+			t.Fatal("arm identity or model lost")
+		}
+		target := schemas.Fallback{Provider: schemas.Cerebras, Model: "target"}
+		attempt := copyInferenceRequest(req, &target)
+		if attempt.ChatRequest.Provider != target.Provider || attempt.ResponsesRequest.Provider != target.Provider || attempt.ChatRequest.Model != target.Model || attempt.ResponsesRequest.Model != target.Model {
+			t.Fatal("existing multi-arm retargeting behavior changed")
+		}
+	})
+	t.Run("payloads and parameter pointers stay shared", func(t *testing.T) {
+		req := &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "primary", Params: &schemas.ChatParameters{}, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}}, RawRequestBody: []byte(`{"model":"primary"}`)}}
+		owned := copyInferenceRequest(req, nil)
+		if owned.ChatRequest == req.ChatRequest || owned.ChatRequest.Params != req.ChatRequest.Params || &owned.ChatRequest.Input[0] != &req.ChatRequest.Input[0] || &owned.ChatRequest.RawRequestBody[0] != &req.ChatRequest.RawRequestBody[0] {
+			t.Fatal("request header was not isolated, or unchanged payloads were deep-copied")
+		}
+	})
 }

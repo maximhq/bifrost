@@ -338,12 +338,24 @@ func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, request
 	primaryKeyPin := routingKeyPinFromContext(ctx)
 	chain := make([]schemas.Route, 0, 1+len(fallbacks))
 	chain = append(chain, schemas.Route{Provider: provider, Model: model, KeyID: primaryKeyPin})
+	hasBareFallback := false
 	for _, fallback := range fallbacks {
-		chain = append(chain, schemas.Route{Provider: fallback.Provider, Model: fallback.Model, KeyID: strings.TrimSpace(fallback.KeyID)})
+		fallbackProvider := fallback.Provider
+		if fallbackProvider == "" && fallback.Model != "" {
+			// Affinity reorders concrete routes; bare fallbacks inherit the
+			// routing-selected primary before they can be promoted.
+			fallbackProvider = provider
+			hasBareFallback = true
+		}
+		chain = append(chain, schemas.Route{Provider: fallbackProvider, Model: fallback.Model, KeyID: strings.TrimSpace(fallback.KeyID)})
 	}
 	resolved := bifrost.sessionAffinity.ResolveRoute(ctx, requested, chain)
 	if len(resolved) == 0 || slices.Equal(resolved, chain) {
 		return
+	}
+	if hasBareFallback {
+		// Promotion must not persist bound shorthand on a reusable SDK request.
+		*req = copyInferenceRequest(req, nil)
 	}
 	req.SetProvider(resolved[0].Provider)
 	req.SetModel(resolved[0].Model)
