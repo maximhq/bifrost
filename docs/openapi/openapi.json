@@ -2867,7 +2867,7 @@
                       "fallbacks": {
                         "type": "array",
                         "items": {
-                          "$ref": "#/components/schemas/Fallback"
+                          "type": "string"
                         },
                         "description": "Fallback models to try if primary model fails"
                       }
@@ -3396,7 +3396,7 @@
                   "fallbacks": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/components/schemas/Fallback"
+                      "type": "string"
                     },
                     "description": "Fallback models to try if primary model fails"
                   }
@@ -3572,7 +3572,7 @@
                   "fallbacks": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/components/schemas/Fallback"
+                      "type": "string"
                     },
                     "description": "Fallback models to try if primary model fails"
                   }
@@ -3953,7 +3953,7 @@
                   "fallbacks": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/components/schemas/Fallback"
+                      "type": "string"
                     },
                     "description": "Fallback models to try if primary model fails"
                   }
@@ -4228,7 +4228,7 @@
                   "fallbacks": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/components/schemas/Fallback"
+                      "type": "string"
                     },
                     "description": "Fallback models to try if primary model fails"
                   }
@@ -5302,7 +5302,7 @@
                   "fallbacks": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/components/schemas/Fallback"
+                      "type": "string"
                     },
                     "description": "Fallback models to try if primary model fails"
                   }
@@ -10689,7 +10689,7 @@
                       "fallbacks": {
                         "type": "array",
                         "items": {
-                          "$ref": "#/components/schemas/Fallback"
+                          "type": "string"
                         },
                         "description": "Fallback models to try if primary model fails"
                       }
@@ -10953,7 +10953,7 @@
                   "fallbacks": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/components/schemas/Fallback"
+                      "type": "string"
                     },
                     "description": "Fallback models to try if primary model fails"
                   }
@@ -11129,7 +11129,7 @@
                   "fallbacks": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/components/schemas/Fallback"
+                      "type": "string"
                     },
                     "description": "Fallback models to try if primary model fails"
                   }
@@ -11255,7 +11255,7 @@
                   "fallbacks": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/components/schemas/Fallback"
+                      "type": "string"
                     },
                     "description": "Fallback models to try if primary model fails"
                   }
