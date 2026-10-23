@@ -26,9 +26,12 @@ type VirtualKeyQueryParams struct {
 	SortBy                             string // name, budget_spent, created_at, status (default: created_at)
 	Order                              string // asc, desc (default: asc)
 	Export                             bool   // When true, skip default pagination limits (caller controls limit)
-	ExcludeAccessProfileManagedVirtual bool   // When true, exclude VKs managed through enterprise access profiles
-	ExcludeAssignedVirtualKeys         bool   // When true, exclude VKs that already have any user assignment
-	ForUserAssignment                  bool   // When true, exclude VKs assigned to any entity (team, customer, access profile, or user) — intended for user-assignment pickers
+	ExcludeAccessProfileManagedVirtual bool   // When true, exclude VKs managed through enterprise access profiles: a user's key while the user holds one, and a key whose owner holds one
+	// ExcludeUserAccessProfileManagedVirtual is the narrower form of ExcludeAccessProfileManagedVirtual:
+	// it excludes only a user's key while the user holds an enterprise access profile. Matches nothing in OSS.
+	ExcludeUserAccessProfileManagedVirtual bool
+	ExcludeAssignedVirtualKeys             bool // When true, exclude VKs that already have any user assignment
+	ForUserAssignment                      bool // When true, exclude VKs assigned to any entity (team, customer, access profile, or user) — intended for user-assignment pickers
 	// MetadataFilters narrows to keys whose metadata has every listed key set to exactly the given
 	// value (AND). Keys failing tables.IsValidVirtualKeyMetadataKey match nothing.
 	MetadataFilters map[string]string

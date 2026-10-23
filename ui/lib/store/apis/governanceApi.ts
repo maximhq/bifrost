@@ -73,6 +73,9 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.exclude_access_profile_managed_virtual === true && {
 						exclude_access_profile_managed_virtual: "true",
 					}),
+					...(params?.exclude_user_access_profile_managed_virtual === true && {
+						exclude_user_access_profile_managed_virtual: "true",
+					}),
 					...(params?.exclude_assigned_virtual_keys === true && {
 						exclude_assigned_virtual_keys: "true",
 					}),

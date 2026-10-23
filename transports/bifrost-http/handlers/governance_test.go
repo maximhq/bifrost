@@ -46,10 +46,13 @@ type mockConfigStoreForVK struct {
 	configstore.ConfigStore
 	getVirtualKeysCalls          int
 	getVirtualKeysPaginatedCalls int
+	lastParams                   configstore.VirtualKeyQueryParams
 }
 
-func (m *mockConfigStoreForVK) GetVirtualKeysPaginated(_ context.Context, _ configstore.VirtualKeyQueryParams) ([]configstoreTables.TableVirtualKey, int64, error) {
+// GetVirtualKeysPaginated counts the call and records the params the handler built.
+func (m *mockConfigStoreForVK) GetVirtualKeysPaginated(_ context.Context, params configstore.VirtualKeyQueryParams) ([]configstoreTables.TableVirtualKey, int64, error) {
 	m.getVirtualKeysPaginatedCalls++
+	m.lastParams = params
 	return nil, 0, nil
 }
 
@@ -3265,6 +3268,37 @@ func TestGetVirtualKeys_PaginatedEndpoint_QueryParams(t *testing.T) {
 			if got := resp["offset"].(float64); got != tt.wantOffset {
 				t.Errorf("offset: got %v, want %v", got, tt.wantOffset)
 			}
+		})
+	}
+}
+
+// TestGetVirtualKeys_AccessProfileManagedFilters pins that each access-profile filter reaches the
+// store on its own: the broad one hides every key a profile governs, the narrow one only a user's key,
+// and a picker asking for either must not be served the unfiltered list.
+func TestGetVirtualKeys_AccessProfileManagedFilters(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	for _, tt := range []struct {
+		query      string
+		wantBroad  bool
+		wantNarrow bool
+	}{
+		{query: "exclude_access_profile_managed_virtual=true", wantBroad: true},
+		{query: "exclude_user_access_profile_managed_virtual=true", wantNarrow: true},
+	} {
+		t.Run(tt.query, func(t *testing.T) {
+			store := &mockConfigStoreForVK{}
+			h := &GovernanceHandler{configStore: store, governanceManager: &mockGovernanceManagerForVK{}}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("GET")
+			ctx.Request.SetRequestURI("/api/governance/virtual-keys?" + tt.query)
+
+			h.getVirtualKeys(ctx)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+			require.Equal(t, 1, store.getVirtualKeysPaginatedCalls, "a filtered list must take the store's filtered path")
+			assert.Equal(t, tt.wantBroad, store.lastParams.ExcludeAccessProfileManagedVirtual)
+			assert.Equal(t, tt.wantNarrow, store.lastParams.ExcludeUserAccessProfileManagedVirtual)
 		})
 	}
 }
