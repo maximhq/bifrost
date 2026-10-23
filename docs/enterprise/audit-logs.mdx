@@ -571,7 +571,9 @@ If the log store is disabled or uses SQLite, nothing changes. Audit events stay 
 
 The **Legacy view** switch on the Audit Logs page reads the config store's table instead of the log store's. It is off by default.
 
-With the switch off, you see events recorded since the upgrade. With it on, you see events recorded before it. The two never mix in one list.
+With the switch off, you see events in the log store's `enterprise_audit_events` table. With it on, you see events in the config store's `enterprise_audit_logs` table. The two never mix in one list.
+
+The split is by table, not by time. Events recorded during a rolling upgrade by nodes still on an older version land in the legacy view too. See [Upgrading a cluster](#upgrading-a-cluster).
 
 The switch appears only when audit events go to the log store and the config store's table still holds at least one event. On a fresh install, or once retention has removed the last legacy event, it is gone.
 
@@ -581,16 +583,16 @@ Each viewer has their own setting, saved in their browser. Turning it on changes
 
 | The legacy view does | The legacy view does not |
 | --- | --- |
-| Show events recorded in the config store before the upgrade. | Show events recorded after the upgrade, or merge both tables into one list. |
+| Show events stored in the config store's `enterprise_audit_logs` table. | Show events stored in the log store's `enterprise_audit_events` table, or merge both tables into one list. |
 | Verify signatures with the same signing keys. Rows keep their original signatures. | Copy, move or change any event. |
 | Export legacy events in every format, for users with `AuditLogs:Download`. | Change where new events are written. They always go to the log store. |
 | Respect the same permissions and data access scopes as the default view. | Appear when the log store is disabled or SQLite. |
 
 ### Retention and archival
 
-`retention_days` applies to both tables. Legacy events age out on the same schedule as new ones. With retention on, the legacy view empties by itself once the last pre-upgrade event passes the retention window, and the switch disappears.
+`retention_days` applies to both tables. Legacy events age out on the same schedule as new ones. With retention on, the legacy view empties by itself once the last event in the config store's table passes the retention window, and the switch disappears.
 
-Archival to object storage reads both tables, so the window that spans the upgrade is archived in full.
+Archival to object storage reads both tables, so a window that spans the upgrade is archived with events from both. That holds only when `object_storage` is configured and the window's rows are still in the database when the archiver gets to it. Retention does not wait for archival, so a short `retention_days` such as `1` can delete rows first. See [the warning on retention and archival](#database-vs-object-storage) for the safe minimum.
 
 ### Migrating older audit events
 
