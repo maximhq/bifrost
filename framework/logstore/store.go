@@ -124,6 +124,16 @@ type LogStore interface {
 	// read for jobs that rank every user by spend.
 	GetUserSpend(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error)
 	GetDimensionRankings(ctx context.Context, filters SearchFilters, dimension RankingDimension) (*DimensionRankingResult, error)
+	// GetDimensionUsage returns each entity's requests, tokens and cost on a rollup
+	// dimension in one read, attributed exactly as GetDimensionRankings attributes
+	// them. It skips what the rankings add for the dashboard (ordering, row limit,
+	// request totals, the "Other" bucket); with compare set, the same read covers
+	// the previous window and fills each entry's Trend.
+	GetDimensionUsage(ctx context.Context, filters SearchFilters, dimension RankingDimension, compare bool) ([]DimensionUsageEntry, error)
+	// GetDimensionModelUsage returns requests and cost per (entity, model,
+	// provider) on a rollup dimension in one read, for callers that need the model
+	// mix of many entities at once.
+	GetDimensionModelUsage(ctx context.Context, filters SearchFilters, dimension RankingDimension) ([]DimensionModelUsageEntry, error)
 	// GetDimensionCostHistogram returns time-bucketed cost data grouped by the specified dimension (e.g., team_id, customer_id).
 	GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error)
 	// GetDimensionTokenHistogram returns time-bucketed token usage grouped by the specified dimension.
@@ -171,6 +181,9 @@ type LogStore interface {
 	GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error)
 	GetMCPCostHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPCostHistogramResult, error)
 	GetMCPTopTools(ctx context.Context, filters MCPToolLogSearchFilters, limit int) (*MCPTopToolsResult, error)
+	// GetMCPToolCountsByDimension returns how many distinct tools each user,
+	// team, customer or business unit called, in one read.
+	GetMCPToolCountsByDimension(ctx context.Context, filters MCPToolLogSearchFilters, dimension RankingDimension) (map[string]int, error)
 
 	// MCP Tool Log methods
 	CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error

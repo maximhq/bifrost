@@ -1328,6 +1328,18 @@ func (h *HybridLogStore) GetDimensionRankings(ctx context.Context, filters Searc
 	return h.inner.GetDimensionRankings(ctx, filters, dimension)
 }
 
+// GetDimensionUsage delegates to the inner store and returns each entity's usage
+// on a rollup dimension in one read.
+func (h *HybridLogStore) GetDimensionUsage(ctx context.Context, filters SearchFilters, dimension RankingDimension, compare bool) ([]DimensionUsageEntry, error) {
+	return h.inner.GetDimensionUsage(ctx, filters, dimension, compare)
+}
+
+// GetDimensionModelUsage delegates to the inner store and returns usage per
+// (entity, model, provider) on a rollup dimension in one read.
+func (h *HybridLogStore) GetDimensionModelUsage(ctx context.Context, filters SearchFilters, dimension RankingDimension) ([]DimensionModelUsageEntry, error) {
+	return h.inner.GetDimensionModelUsage(ctx, filters, dimension)
+}
+
 // GetDimensionCostHistogram delegates to the inner store and returns a cost
 // histogram bucketed by bucketSizeSeconds and grouped by the given dimension.
 func (h *HybridLogStore) GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {
@@ -1596,6 +1608,12 @@ func (h *HybridLogStore) GetMCPCostHistogram(ctx context.Context, filters MCPToo
 // GetMCPTopTools returns the top tools used in MCP tool logs.
 func (h *HybridLogStore) GetMCPTopTools(ctx context.Context, filters MCPToolLogSearchFilters, limit int) (*MCPTopToolsResult, error) {
 	return h.inner.GetMCPTopTools(ctx, filters, limit)
+}
+
+// GetMCPToolCountsByDimension delegates to the inner store and returns each
+// entity's distinct tool count.
+func (h *HybridLogStore) GetMCPToolCountsByDimension(ctx context.Context, filters MCPToolLogSearchFilters, dimension RankingDimension) (map[string]int, error) {
+	return h.inner.GetMCPToolCountsByDimension(ctx, filters, dimension)
 }
 
 // applyMCPToolLogUpdate applies the updates from an entry to the target MCPToolLog entry.
