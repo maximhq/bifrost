@@ -45,8 +45,17 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 			name       string
 			stop       string
 			mixedTools bool
-		}{{"end_turn", "end_turn", false}, {"max_tokens", "max_tokens", false}, {"tool_use", "tool_use", false}, {"mixed tools", "tool_use", true}} {
+			native     bool
+		}{
+			{name: "end_turn", stop: "end_turn", native: true},
+			{name: "max_tokens", stop: "max_tokens", native: true},
+			{name: "native tool", stop: "tool_use", native: true},
+			{name: "native mixed tools", stop: "tool_use", mixedTools: true, native: true},
+			{name: "Converse toolConfig", stop: "tool_use"},
+			{name: "Converse mixed tools", stop: "tool_use", mixedTools: true},
+		} {
 			stop := scenario.stop
+			finish := map[string]string{"end_turn": "stop", "max_tokens": "length", "tool_use": "tool_calls"}[stop]
 			for _, suffix := range []string{"invoke", "invoke-with-response-stream"} {
 				t.Run(prefix+"/"+scenario.name+"/"+suffix, func(t *testing.T) {
 					captured := make(chan *http.Request, 1)
@@ -56,9 +65,17 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 							t.Error(err)
 							return
 						}
-						assert.Equal(t, int64(256), gjson.GetBytes(body, "inferenceConfig.maxTokens").Int())
-						assert.Equal(t, "Hello", gjson.GetBytes(body, "messages.0.content.0.text").String())
-						if stop == "tool_use" {
+						if scenario.native {
+							assert.Equal(t, int64(256), gjson.GetBytes(body, "max_tokens").Int())
+							assert.Equal(t, "Hello", gjson.GetBytes(body, "messages.0.content").String())
+							if stop == "tool_use" {
+								assert.Equal(t, "any", gjson.GetBytes(body, "tool_choice").String())
+								assert.Equal(t, "weather", gjson.GetBytes(body, "tools.0.function.name").String())
+								assert.Equal(t, "time", gjson.GetBytes(body, "tools.1.function.name").String())
+							}
+						} else {
+							assert.Equal(t, int64(256), gjson.GetBytes(body, "inferenceConfig.maxTokens").Int())
+							assert.Equal(t, "Hello", gjson.GetBytes(body, "messages.0.content.0.text").String())
 							assert.Equal(t, "weather", gjson.GetBytes(body, "toolConfig.tools.0.toolSpec.name").String())
 							assert.Equal(t, "time", gjson.GetBytes(body, "toolConfig.tools.1.toolSpec.name").String())
 						}
@@ -72,41 +89,97 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 								content = `[{"text":"checking"},{"toolUse":{"toolUseId":"call_1","name":"weather","input":{}}},{"text":"and time"},{"toolUse":{"toolUseId":"call_2","name":"time","input":{}}}]`
 							}
 						}
-						if !strings.HasSuffix(r.URL.Path, "/converse-stream") {
+						if suffix == "invoke" {
 							w.Header().Set("Content-Type", "application/json")
-							_, _ = io.WriteString(w, `{"output":{"message":{"role":"assistant","content":`+content+`}},"stopReason":"`+stop+`","usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`)
+							if scenario.native {
+								message := `{"role":"assistant","content":"hello"}`
+								if stop == "tool_use" {
+									message = `{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{}"}}]}`
+									if scenario.mixedTools {
+										message = `{"role":"assistant","content":"checkingand time","tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{}"}},{"id":"call_2","type":"function","function":{"name":"time","arguments":"{}"}}]}`
+									}
+								}
+								_, _ = io.WriteString(w, `{"id":"chatcmpl-test","object":"chat.completion","model":"`+model+`","choices":[{"index":0,"message":`+message+`,"finish_reason":"`+finish+`"}],"usage":{"prompt_tokens":15,"completion_tokens":51,"total_tokens":66}}`)
+							} else {
+								_, _ = io.WriteString(w, `{"output":{"message":{"role":"assistant","content":`+content+`}},"stopReason":"`+stop+`","usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`)
+							}
 							return
 						}
 						w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
-						frames := [][2]string{{"messageStart", `{"role":"assistant"}`}}
-						if stop == "tool_use" {
-							frames = append(frames, [2]string{"contentBlockStart", `{"contentBlockIndex":0,"start":{"toolUse":{"toolUseId":"call_1","name":"weather"}}}`})
-						}
-						frames = append(frames, [2]string{"contentBlockDelta", `{"contentBlockIndex":0,"delta":` + delta + `}`}, [2]string{"contentBlockStop", `{"contentBlockIndex":0}`}, [2]string{"messageStop", `{"stopReason":"` + stop + `"}`}, [2]string{"metadata", `{"usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`})
-						if scenario.mixedTools {
-							frames = [][2]string{
-								{"messageStart", `{"role":"assistant"}`},
-								{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"checking"}}`},
-								{"contentBlockStop", `{"contentBlockIndex":0}`},
-								{"contentBlockStart", `{"contentBlockIndex":1,"start":{"toolUse":{"toolUseId":"call_1","name":"weather"}}}`},
-								{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{}"}}}`},
-								{"contentBlockStop", `{"contentBlockIndex":1}`},
-								{"contentBlockDelta", `{"contentBlockIndex":2,"delta":{"text":"and time"}}`},
-								{"contentBlockStop", `{"contentBlockIndex":2}`},
-								{"contentBlockStart", `{"contentBlockIndex":3,"start":{"toolUse":{"toolUseId":"call_2","name":"time"}}}`},
-								{"contentBlockDelta", `{"contentBlockIndex":3,"delta":{"toolUse":{"input":"{}"}}}`},
-								{"contentBlockStop", `{"contentBlockIndex":3}`},
-								{"messageStop", `{"stopReason":"tool_use"}`},
-								{"metadata", `{"usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`},
-							}
-						}
-						for _, frame := range frames {
-							err := eventstream.NewEncoder().Encode(w, eventstream.Message{Headers: eventstream.Headers{{Name: ":message-type", Value: eventstream.StringValue("event")}, {Name: ":event-type", Value: eventstream.StringValue(frame[0])}}, Payload: []byte(frame[1])})
+						encoder := eventstream.NewEncoder()
+						writeEvent := func(eventType, payload string) {
+							err := encoder.Encode(w, eventstream.Message{Headers: eventstream.Headers{{Name: ":message-type", Value: eventstream.StringValue("event")}, {Name: ":event-type", Value: eventstream.StringValue(eventType)}}, Payload: []byte(payload)})
 							if err != nil {
 								t.Error(err)
 								return
 							}
 							w.(http.Flusher).Flush()
+						}
+						if scenario.native {
+							firstChunk := true
+							writeChunk := func(delta, finish string) {
+								identity := ""
+								if firstChunk {
+									identity = `"id":"chatcmpl-test","created":123,"model":"` + model + `",`
+									firstChunk = false
+								}
+								chunk := `{` + identity + `"object":"chat.completion.chunk","choices":[{"index":0,"delta":` + delta
+								if finish != "" {
+									chunk += `,"finish_reason":"` + finish + `"`
+								}
+								chunk += `}]`
+								if finish != "" {
+									chunk += `,"usage":{"prompt_tokens":15,"completion_tokens":51,"total_tokens":66}`
+								}
+								chunk += `}`
+								payload, err := providerUtils.MarshalSorted(bedrock.BedrockInvokeStreamChunkEvent{Bytes: []byte(chunk)})
+								if err != nil {
+									t.Error(err)
+									return
+								}
+								writeEvent("chunk", string(payload))
+							}
+							if scenario.mixedTools {
+								writeChunk(`{"role":"assistant","content":"checking"}`, "")
+							}
+							if stop == "tool_use" {
+								writeChunk(`{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"weather","arguments":""}}]}`, "")
+								writeChunk(`{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}`, "")
+								if scenario.mixedTools {
+									writeChunk(`{"content":"and time"}`, "")
+									writeChunk(`{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"time","arguments":""}}]}`, "")
+									writeChunk(`{"tool_calls":[{"index":1,"function":{"arguments":"{}"}}]}`, "")
+								}
+							} else {
+								writeChunk(`{"role":"assistant","content":"hello"}`, "")
+							}
+							writeChunk(`{}`, finish)
+						} else {
+							frames := [][2]string{{"messageStart", `{"role":"assistant"}`}}
+							if stop == "tool_use" {
+								frames = append(frames, [2]string{"contentBlockStart", `{"contentBlockIndex":0,"start":{"toolUse":{"toolUseId":"call_1","name":"weather"}}}`})
+							}
+							frames = append(frames, [2]string{"contentBlockDelta", `{"contentBlockIndex":0,"delta":` + delta + `}`}, [2]string{"contentBlockStop", `{"contentBlockIndex":0}`}, [2]string{"messageStop", `{"stopReason":"` + stop + `"}`}, [2]string{"metadata", `{"usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`})
+							if scenario.mixedTools {
+								frames = [][2]string{
+									{"messageStart", `{"role":"assistant"}`},
+									{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"text":"checking"}}`},
+									{"contentBlockStop", `{"contentBlockIndex":0}`},
+									{"contentBlockStart", `{"contentBlockIndex":1,"start":{"toolUse":{"toolUseId":"call_1","name":"weather"}}}`},
+									{"contentBlockDelta", `{"contentBlockIndex":1,"delta":{"toolUse":{"input":"{}"}}}`},
+									{"contentBlockStop", `{"contentBlockIndex":1}`},
+									{"contentBlockDelta", `{"contentBlockIndex":2,"delta":{"text":"and time"}}`},
+									{"contentBlockStop", `{"contentBlockIndex":2}`},
+									{"contentBlockStart", `{"contentBlockIndex":3,"start":{"toolUse":{"toolUseId":"call_2","name":"time"}}}`},
+									{"contentBlockDelta", `{"contentBlockIndex":3,"delta":{"toolUse":{"input":"{}"}}}`},
+									{"contentBlockStop", `{"contentBlockIndex":3}`},
+									{"messageStop", `{"stopReason":"tool_use"}`},
+									{"metadata", `{"usage":{"inputTokens":15,"outputTokens":51,"totalTokens":66}}`},
+								}
+							}
+							for _, frame := range frames {
+								writeEvent(frame[0], frame[1])
+							}
 						}
 					}))
 					defer upstream.Close()
@@ -129,13 +202,19 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 					httpCtx := &fasthttp.RequestCtx{}
 					httpCtx.SetUserValue("modelId", model)
 					httpCtx.Request.SetBodyString(`{"max_tokens":256,"temperature":0,"messages":[{"role":"user","content":"Hello"}]}`)
-					if stop == "tool_use" {
-						// Use the existing Converse-shaped toolConfig compatibility input.
-						// Native tools[].function ingress is independently tracked in #8940.
+					if stop == "tool_use" && !scenario.native {
+						// Keep the existing Converse-shaped toolConfig compatibility input.
 						httpCtx.Request.SetBodyString(`{"max_tokens":256,"temperature":0,"messages":[{"role":"user","content":"Hello"}],"toolConfig":{"tools":[{"toolSpec":{"name":"weather","description":"Get weather","inputSchema":{"json":{"type":"object","properties":{}}}}},{"toolSpec":{"name":"time","description":"Get time","inputSchema":{"json":{"type":"object","properties":{}}}}}]}}`)
 					}
+					if stop == "tool_use" && scenario.native {
+						httpCtx.Request.SetBodyString(`{"max_tokens":256,"temperature":0,"tool_choice":"any","messages":[{"role":"user","content":"Hello"}],"tools":[{"type":"function","function":{"name":"weather","parameters":{"type":"object"}}},{"type":"function","function":{"name":"time","parameters":{"type":"object"}}}]}`)
+					}
 					typ := route.GetHTTPRequestType(httpCtx)
-					require.Equal(t, schemas.ResponsesRequest, typ)
+					expectedType := schemas.ResponsesRequest
+					if scenario.native {
+						expectedType = schemas.ChatCompletionRequest
+					}
+					require.Equal(t, expectedType, typ)
 					ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, typ)
 					ingress := route.GetRequestTypeInstance(ctx)
 					require.NoError(t, sonic.Unmarshal(httpCtx.Request.Body(), ingress))
@@ -144,21 +223,40 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 					require.NoError(t, err)
 					var payloads [][]byte
 					if suffix == "invoke" {
-						resp, bifrostErr := provider.Responses(ctx, key, req.ResponsesRequest)
-						require.Nil(t, bifrostErr)
-						out, err := route.ResponsesResponseConverter(ctx, resp)
+						var out interface{}
+						if scenario.native {
+							resp, bifrostErr := provider.ChatCompletion(ctx, key, req.ChatRequest)
+							require.Nil(t, bifrostErr)
+							out, err = route.ChatResponseConverter(ctx, resp)
+						} else {
+							resp, bifrostErr := provider.Responses(ctx, key, req.ResponsesRequest)
+							require.Nil(t, bifrostErr)
+							out, err = route.ResponsesResponseConverter(ctx, resp)
+						}
 						require.NoError(t, err)
 						raw, err := providerUtils.MarshalSorted(out)
 						require.NoError(t, err)
 						payloads = append(payloads, raw)
 					} else {
-						stream, bifrostErr := provider.ResponsesStream(ctx, func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+						postHook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 							// Core stamps the routed identity before the transport converter.
-							if resp != nil && resp.ResponsesStreamResponse != nil {
-								resp.ResponsesStreamResponse.ExtraFields.ResolvedModelUsed = model
+							if resp != nil {
+								if resp.ChatResponse != nil {
+									resp.ChatResponse.ExtraFields.ResolvedModelUsed = model
+								}
+								if resp.ResponsesStreamResponse != nil {
+									resp.ResponsesStreamResponse.ExtraFields.ResolvedModelUsed = model
+								}
 							}
 							return resp, err
-						}, nil, key, req.ResponsesRequest)
+						}
+						var stream chan *schemas.BifrostStreamChunk
+						var bifrostErr *schemas.BifrostError
+						if scenario.native {
+							stream, bifrostErr = provider.ChatCompletionStream(ctx, postHook, nil, key, req.ChatRequest)
+						} else {
+							stream, bifrostErr = provider.ResponsesStream(ctx, postHook, nil, key, req.ResponsesRequest)
+						}
 						require.Nil(t, bifrostErr)
 						NewGenericRouter(nil, store, nil, nil, nil, logger).handleStreaming(httpCtx, ctx, route, "", stream, cancel)
 						wire, err := io.ReadAll(httpCtx.Response.BodyStream())
@@ -182,7 +280,13 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 					if suffix != "invoke" {
 						object += ".chunk"
 					}
+					id := gjson.GetBytes(payloads[0], "id").String()
+					created := gjson.GetBytes(payloads[0], "created").Int()
+					require.NotEmpty(t, id)
+					require.Positive(t, created)
 					for _, raw := range payloads {
+						assert.Equal(t, id, gjson.GetBytes(raw, "id").String(), "%s", raw)
+						assert.Equal(t, created, gjson.GetBytes(raw, "created").Int(), "%s", raw)
 						assert.Equal(t, object, gjson.GetBytes(raw, "object").String(), "%s", raw)
 						assert.False(t, gjson.GetBytes(raw, "type").Exists(), "%s", raw)
 						assert.False(t, gjson.GetBytes(raw, "extra_fields").Exists())
@@ -207,13 +311,15 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 						}
 					}
 					last := payloads[len(payloads)-1]
-					finish := map[string]string{"end_turn": "stop", "max_tokens": "length", "tool_use": "tool_calls"}[stop]
 					assert.Equal(t, finish, gjson.GetBytes(last, "choices.0.finish_reason").String(), "%s", last)
 					assert.Equal(t, int64(66), gjson.GetBytes(last, "usage.total_tokens").Int())
 					r := <-captured
 					action := "converse"
 					if suffix != "invoke" {
 						action += "-stream"
+					}
+					if scenario.native {
+						action = suffix
 					}
 					assert.Equal(t, "/model/"+model+"/"+action, r.URL.Path)
 					assert.Contains(t, r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
@@ -328,8 +434,8 @@ func TestBedrockMistralInvokeHTTP(t *testing.T) {
 					}
 					if none {
 						chunks = []string{
-							`{"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"sunny"}}]}`,
-							`{"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}`,
+							`{"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"sunny"}}]}`,
+							`{"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}`,
 						}
 					}
 					chunks[len(chunks)-1] = strings.TrimSuffix(chunks[len(chunks)-1], "}") + `,"amazon-bedrock-guardrailAction":"NONE","amazon-bedrock-trace":{"guardrail":{"inputAssessment":{}}}}`
@@ -396,13 +502,24 @@ func TestBedrockMistralInvokeHTTP(t *testing.T) {
 					var finish string
 					var usage int64
 					var toolName string
-					var action string
+					var action, id string
+					var created int64
 					for reader.Len() > 0 {
 						frame, err := decoder.Decode(reader, nil)
 						require.NoError(t, err)
 						require.Equal(t, "chunk", frame.Headers.Get(":event-type").String())
 						var chunk bedrock.BedrockInvokeStreamChunkEvent
 						require.NoError(t, sonic.Unmarshal(frame.Payload, &chunk))
+						if id == "" {
+							id = gjson.GetBytes(chunk.Bytes, "id").String()
+						}
+						if created == 0 {
+							created = gjson.GetBytes(chunk.Bytes, "created").Int()
+						}
+						require.NotEmpty(t, id)
+						require.Positive(t, created)
+						assert.Equal(t, id, gjson.GetBytes(chunk.Bytes, "id").String())
+						assert.Equal(t, created, gjson.GetBytes(chunk.Bytes, "created").Int())
 						if value := gjson.GetBytes(chunk.Bytes, "amazon-bedrock-guardrailAction").String(); value != "" {
 							action = value
 						}

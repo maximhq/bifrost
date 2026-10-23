@@ -4835,6 +4835,10 @@ func (provider *BedrockProvider) invokeMistralChatCompletionStream(ctx *schemas.
 	// Only the latest guardrail outcome is retained by this stream's callbacks,
 	// never in context or a process-wide cache. It is released with the stream.
 	var outcome map[string]interface{}
+	// Native chunks may carry identity only on the first frame. Keep it stable
+	// before the shared chat loop captures it for the synthetic terminal chunk.
+	var streamID, streamModel string
+	var streamCreated int
 	headers := provider.invokeStreamHeaders(chatExtraParams(request))
 	headers["Accept"] = *schemas.NewSecretVar(bedrockInvokeStreamAccept)
 	stream, err := openai.HandleOpenAIChatCompletionStreaming(ctx, provider.mantleStreamingClient, requestURL, request,
@@ -4843,8 +4847,30 @@ func (provider *BedrockProvider) invokeMistralChatCompletionStream(ctx *schemas.
 		func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
 			return ToBedrockInvokeChatRequest(ctx, request)
 		},
-		func(body []byte, response *schemas.BifrostChatResponse, request []byte, rawRequest, rawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
-			rq, rs, err := parseInvokeChatResponse(body, response, request, rawRequest, rawResponse)
+		func(body []byte, response *schemas.BifrostChatResponse, requestBody []byte, rawRequest, rawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
+			rq, rs, err := parseInvokeChatResponse(body, response, requestBody, rawRequest, rawResponse)
+			if err != nil {
+				return rq, rs, err
+			}
+			if streamID == "" {
+				streamID = response.ID
+				if streamID == "" {
+					streamID = uuid.NewString()
+				}
+			}
+			if streamCreated == 0 {
+				streamCreated = response.Created
+				if streamCreated == 0 {
+					streamCreated = int(time.Now().Unix())
+				}
+			}
+			if streamModel == "" {
+				streamModel = response.Model
+				if streamModel == "" {
+					_, streamModel = parseBedrockRegionAndModel(request.Model)
+				}
+			}
+			response.ID, response.Created, response.Model = streamID, streamCreated, streamModel
 			if len(response.ExtraParams) > 0 {
 				outcome = response.ExtraParams
 			}
