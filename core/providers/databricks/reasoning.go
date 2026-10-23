@@ -126,6 +126,33 @@ func thinkingParam(support paramSupport, params *schemas.ChatParameters) (thinki
 	return thinking, maxTokens
 }
 
+// outputConfigParam builds the "output_config" extra param that carries the effort label next
+// to adaptive thinking. Adaptive thinking has no budget, so on an adaptive-only Claude endpoint
+// output_config.effort is the only knob that scales how hard the model thinks; without it
+// "low" and "max" send the same request. thinking is what thinkingParam produced, so every gate
+// that turned thinking off (enabled false, effort none, a caller-supplied thinking object) has
+// already applied. It returns nil when nothing should be sent, including when the caller set
+// output_config themselves.
+func outputConfigParam(thinking map[string]any, params *schemas.ChatParameters) map[string]any {
+	if params == nil || thinking["type"] != "adaptive" {
+		return nil
+	}
+	if _, callerSet := params.ExtraParams["output_config"]; callerSet {
+		return nil
+	}
+	var effort string
+	if params.Reasoning != nil && params.Reasoning.Effort != nil {
+		effort = *params.Reasoning.Effort
+	}
+	if effort == "" {
+		effort, _ = params.ExtraParams["reasoning_effort"].(string)
+	}
+	if effort == "" || effort == "none" {
+		return nil
+	}
+	return map[string]any{"effort": anthropic.MapBifrostEffortToAnthropic(effort)}
+}
+
 // chatResponseHandler parses a Databricks chat completion (or stream event) after lifting
 // reasoning content blocks into Bifrost's reasoning fields. It stands in for the shared
 // handler's default parse; raw request/response capture is preserved with the upstream

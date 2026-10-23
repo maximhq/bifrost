@@ -3704,6 +3704,7 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 		{"anthropic integration to bedrock clears", "anthropic", schemas.Bedrock, "anthropic.claude-sonnet-4-20250514-v1:0", nil, true},
 		{"anthropic integration to anthropic preserved", "anthropic", schemas.Anthropic, "claude-sonnet-4-20250514", nil, false},
 		{"anthropic integration to vertex preserved", "anthropic", schemas.Vertex, "claude-sonnet-4@20250514", nil, false},
+		{"anthropic integration to Vertex OpenAI custom deployment clears", "anthropic", schemas.Vertex, "claude-custom", &schemas.ResolvedAlias{Config: &schemas.AliasConfig{ModelFamily: schemas.Ptr(schemas.ModelFamilyAnthropic), VertexAliasCfg: &schemas.VertexAliasCfg{VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}}}}, true},
 		{"anthropic integration to azure preserved", "anthropic", schemas.Azure, "claude-sonnet-4-20250514", nil, false},
 		{"anthropic integration to bedrock mantle preserved", "anthropic", schemas.BedrockMantle, "claude-sonnet-4-20250514", nil, false},
 		{"anthropic integration to bedrock mantle openai model clears", "anthropic", schemas.BedrockMantle, "gpt-5-6-luna", nil, true},

@@ -299,6 +299,9 @@ false
 {{- if .Values.bifrost.envLabel }}
 {{- $_ := set $config "env_label" .Values.bifrost.envLabel }}
 {{- end }}
+{{- if hasKey .Values.bifrost "disableOnboarding" }}
+{{- $_ := set $config "disable_onboarding" .Values.bifrost.disableOnboarding }}
+{{- end }}
 {{- if .Values.bifrost.setupToken }}
 {{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
 {{- end }}

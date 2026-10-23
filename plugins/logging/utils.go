@@ -205,6 +205,16 @@ func (p *PluginLogManager) GetLog(ctx context.Context, id string) (*logstore.Log
 	return p.plugin.GetLog(ctx, id)
 }
 
+// LogStore returns the store the plugin writes to, for readers that need a
+// surface the manager does not adapt, such as Warp's topic tables. Nil when
+// the plugin has none.
+func (p *PluginLogManager) LogStore() logstore.LogStore {
+	if p == nil || p.plugin == nil {
+		return nil
+	}
+	return p.plugin.store
+}
+
 func (p *PluginLogManager) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
 	if filters == nil || pagination == nil {
 		return nil, fmt.Errorf("filters and pagination cannot be nil")
@@ -429,7 +439,13 @@ func (p *PluginLogManager) DeleteLog(ctx context.Context, id string) error {
 	if p.plugin == nil || p.plugin.store == nil {
 		return fmt.Errorf("log store not initialized")
 	}
-	return p.plugin.store.DeleteLog(ctx, id)
+	// A partial delete removed the log, so subscribers still hear of it.
+	err := p.plugin.store.DeleteLog(ctx, id)
+	if err != nil && !errors.Is(err, logstore.ErrPartialLogDelete) {
+		return err
+	}
+	p.plugin.notifyLogDeleteCallbacks(ctx, []string{id})
+	return err
 }
 
 // DeleteLogs deletes multiple logs from the log store
@@ -437,7 +453,13 @@ func (p *PluginLogManager) DeleteLogs(ctx context.Context, ids []string) error {
 	if p.plugin == nil || p.plugin.store == nil {
 		return fmt.Errorf("log store not initialized")
 	}
-	return p.plugin.store.DeleteLogs(ctx, ids)
+	// A partial delete removed the logs, so subscribers still hear of it.
+	err := p.plugin.store.DeleteLogs(ctx, ids)
+	if err != nil && !errors.Is(err, logstore.ErrPartialLogDelete) {
+		return err
+	}
+	p.plugin.notifyLogDeleteCallbacks(ctx, ids)
+	return err
 }
 
 func (p *PluginLogManager) RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error) {

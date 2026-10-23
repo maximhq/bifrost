@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"strings"
@@ -69,7 +70,7 @@ type PendingLogData struct {
 	LastActivity atomic.Int64
 	// Live is set for a GPT Live session's row: what its units have folded into it so far.
 	Live             *liveSessionState
-	ProvisionalInput bool           // Input captured before the virtual key's content decision was known
+	ProvisionalInput bool           // Input captured before the virtual key's or project's content decision was known
 	ContentPolicy    *contentPolicy // Content policy resolved in PreLLMHook; nil means the global policy
 	EvictionAttempts int            // Sweeps that could not queue this entry's partial row
 	EvictedPartial   bool           // PostLLMHook stub for an already-evicted request; reconciles by UPDATE
@@ -100,14 +101,15 @@ type pendingAgentInjectEntries struct {
 }
 
 // writeQueueEntry is an entry pushed to the batch write queue.
-// Exactly one of log (insert), logUpdate (partial update), mcpLog or agentLog is set.
+// Exactly one insert, partial update, transcript correction, MCP log or agent log is set.
 type writeQueueEntry struct {
-	log         *logstore.Log
-	logUpdate   *logstore.Log
-	mcpLog      *logstore.MCPToolLog
-	agentLog    *logstore.AgentLog
-	callback    func(entry *logstore.Log)
-	mcpCallback func(entry *logstore.MCPToolLog)
+	realtimeInput *realtimeInputUpdate
+	log           *logstore.Log
+	logUpdate     *logstore.Log
+	mcpLog        *logstore.MCPToolLog
+	agentLog      *logstore.AgentLog
+	callback      func(entry *logstore.Log)
+	mcpCallback   func(entry *logstore.MCPToolLog)
 }
 
 // batchWriter is the single writer goroutine that drains the write queue
@@ -512,6 +514,21 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	unwrittenUpdates := writeWithRecovery(p, ctx, "log update", logUpdates, func(ctx context.Context, chunk []*logstore.Log) error {
 		return p.store.BatchUpdate(ctx, chunk)
 	}, p.updateLogIndividually)
+	for _, entry := range batch {
+		if entry.realtimeInput != nil {
+			if err := p.writeRealtimeInputUpdate(ctx, entry.realtimeInput); err != nil {
+				// Trace injection may enqueue the original turn after its transcript.
+				// Reuse the bounded queue and normal write retry budget, with no waiter.
+				entry.realtimeInput.attempts++
+				if errors.Is(err, logstore.ErrNotFound) && entry.realtimeInput.attempts < batchWriteAttempts {
+					p.enqueueRealtimeInputUpdate(entry.realtimeInput)
+					continue
+				}
+				p.logger.Warn("failed to update realtime transcript for log %s: %v", entry.realtimeInput.connectionID, err)
+				p.countDrop()
+			}
+		}
+	}
 
 	// Map unwritten rows back to their queue entries. An entry carrying more
 	// than one log type is handed back whole if any part is unwritten; persisted
@@ -709,7 +726,7 @@ func (p *LoggerPlugin) pendingClaimLock(requestID string) *sync.Mutex {
 // counted. Content follows the policy resolved for the request in PreLLMHook
 // (ContentPolicy; the global policy when none was recorded), because eviction
 // has no request context. Input captured provisionally, before the virtual
-// key's decision was known, is never kept: PostLLMHook's final-policy drop
+// key's or project's decision was known, is never kept: PostLLMHook's final-policy drop
 // cannot run for it. CreatedAt is reset to now so flushStaleProcessingLogs
 // gives the row a fresh window; Timestamp keeps the original request time. No
 // callback: PreLLMHook already announced the processing entry to subscribers.
@@ -775,7 +792,7 @@ func (p *LoggerPlugin) claimStaleMCPEntry(key any) (*logstore.MCPToolLog, bool) 
 		// PostMCPHook claimed it first and still needs the held arguments.
 		return nil, false
 	}
-	// Arguments held back for an unresolved key go with the entry: a stale entry never
+	// Arguments held back for an unresolved key or project go with the entry: a stale entry never
 	// learns its final content decision, so it never gets them.
 	p.provisionalMCPArguments.Delete(key)
 	entry, ok := actual.(*logstore.MCPToolLog)
@@ -968,6 +985,9 @@ func (p *LoggerPlugin) enqueueAgentLogEntry(entry *logstore.AgentLog) {
 func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
 	if entry == nil {
 		return 0
+	}
+	if entry.realtimeInput != nil {
+		return len(entry.realtimeInput.raw) + len(entry.realtimeInput.connectionID) + len(entry.realtimeInput.itemID) + len(entry.realtimeInput.transcript)
 	}
 	if entry.agentLog != nil {
 		size := len(entry.agentLog.PluginLogs) + len(entry.agentLog.ErrorDetails) + 512

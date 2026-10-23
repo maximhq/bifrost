@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -536,11 +537,16 @@ func getProviderFromHeader(ctx *fasthttp.RequestCtx, defaultProvider schemas.Mod
 	return schemas.ModelProvider(providerHeader)
 }
 
+// errPassthroughNotEnabled marks a custom provider that has not opted in to HTTP passthrough.
+var errPassthroughNotEnabled = errors.New("passthrough is not enabled")
+
 // getPassthroughProvider resolves the provider for a passthrough request from the
 // x-model-provider header, falling back to defaultProvider when the header is absent. On the
 // catch-all passthrough routes the header picks which key pool and upstream a caller-shaped
-// path is dispatched to, so it must match the route's resolved provider before anything is looked up.
-func getPassthroughProvider(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (schemas.ModelProvider, error) {
+// path is dispatched to, so it must name the route's resolved provider or, when allowCustom is
+// set, a custom provider that speaks the same wire format and opted in with a passthrough policy.
+// Any other provider would receive a path shaped for a different API.
+func getPassthroughProvider(ctx *fasthttp.RequestCtx, store lib.HandlerStore, defaultProvider schemas.ModelProvider, allowCustom bool) (schemas.ModelProvider, error) {
 	providerHeader := string(ctx.Request.Header.Peek("x-model-provider"))
 	if providerHeader == "" {
 		return defaultProvider, nil
@@ -548,10 +554,19 @@ func getPassthroughProvider(ctx *fasthttp.RequestCtx, defaultProvider schemas.Mo
 	if !schemas.IsKnownProvider(providerHeader) {
 		return "", fmt.Errorf("unknown provider %q in x-model-provider header", providerHeader)
 	}
-	if schemas.ModelProvider(providerHeader) != defaultProvider {
-		return "", fmt.Errorf("provider does not match the passthrough route: expected %s", defaultProvider)
+	provider := schemas.ModelProvider(providerHeader)
+	if provider == defaultProvider {
+		return provider, nil
 	}
-	return schemas.ModelProvider(providerHeader), nil
+	if allowCustom {
+		if base, enabled, ok := store.GetCustomProviderPassthrough(provider); ok && base == defaultProvider {
+			if !enabled {
+				return "", fmt.Errorf("%w for provider %s; configure its passthrough allowed routes", errPassthroughNotEnabled, provider)
+			}
+			return provider, nil
+		}
+	}
+	return "", fmt.Errorf("provider does not match the passthrough route: expected %s or a custom provider based on it", defaultProvider)
 }
 
 func RegisterKVDecoders(store *kvstore.Store) {

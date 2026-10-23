@@ -941,6 +941,7 @@ export interface LogFilters {
 	customer_ids?: string[];
 	business_unit_ids?: string[];
 	project_ids?: string[];
+	topic_ids?: string[]; // Warp topics the request was filed under
 	apps?: string[]; // Backend-detected client apps
 	user_agents?: string[]; // Raw User-Agent strings; kept for backward compatibility/debug filtering
 }

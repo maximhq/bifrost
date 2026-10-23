@@ -129,6 +129,7 @@ For retryable responses, Bifrost uses the explicit hint in `extra_fields.retry_a
 whether supplied by `google.rpc.RetryInfo`, Azure's `retry-after-ms`, or the standard
 `Retry-After` header (seconds or an HTTP date). The next attempt waits for the longer
 of the existing exponential backoff and the remaining provider-specified delay.
+When rotating away from a permanent per-key failure, Bifrost skips both delays.
 Missing, invalid, zero, or past hints do not shorten the
 local backoff. Provider-specific rate-limit reset headers and prose in error
 messages are not interpreted as explicit retry hints.

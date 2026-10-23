@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -45,6 +46,15 @@ func (r *tokenExchangeResolver) ConnectionHeaders(ctx *schemas.BifrostContext, c
 				Message:             subjectTokenMissingMessage(ctx, config.Name),
 			}
 		}
+		if errors.Is(err, schemas.ErrStoredSignInExpired) {
+			return nil, &schemas.MCPAuthRequiredError{
+				Kind:                schemas.MCPAuthRequiredKindExchange,
+				MCPClientID:         config.ID,
+				MCPClientName:       config.Name,
+				SubjectTokenMissing: true,
+				Message:             storedSignInExpiredMessage(ctx, config.Name),
+			}
+		}
 		var rejected *schemas.TokenExchangeRejectedError
 		if errors.As(err, &rejected) {
 			return nil, &schemas.MCPAuthRequiredError{
@@ -59,6 +69,17 @@ func (r *tokenExchangeResolver) ConnectionHeaders(ctx *schemas.BifrostContext, c
 	}
 
 	return bearerHeader(accessToken), nil
+}
+
+// storedSignInExpiredMessage tells a caller whose request used their stored sign-in, because it
+// carried no identity-provider token, that the sign-in has expired. Signing in to Bifrost again is
+// the only fix, so the message names where, when the request's base URL is known.
+func storedSignInExpiredMessage(ctx *schemas.BifrostContext, clientName string) string {
+	signIn := "Sign in to Bifrost again"
+	if base := utils.BuildMCPCallbackBaseURL(ctx); base != "" {
+		signIn += " at " + base
+	}
+	return fmt.Sprintf("Authentication required for %s: this server uses your identity token, and your Bifrost sign-in has expired. %s, then retry.", clientName, signIn)
 }
 
 // subjectTokenMissingMessage explains why there was no identity-provider token to exchange, as

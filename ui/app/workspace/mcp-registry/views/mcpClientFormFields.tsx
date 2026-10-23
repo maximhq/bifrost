@@ -520,8 +520,8 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 }
 
 /**
- * Warns that STDIO servers shell out to the host, which only carries the usual
- * runtimes on the official image. Shown wherever a STDIO server is configured.
+ * Warns that STDIO servers shell out to the host, and the official image ships
+ * no runtimes (npx, python) for them. Shown wherever a STDIO server is configured.
  */
 export function StdioRuntimeNotice() {
 	return (
@@ -531,7 +531,7 @@ export function StdioRuntimeNotice() {
 				<div className="flex-1">
 					<p className="text-xs font-medium text-amber-900">Docker Notice</p>
 					<p className="mt-0.5 text-xs text-amber-800">
-						If not using the official Bifrost Docker image, STDIO connections may not work if required commands (npx, python, etc.)
+						If using the official Bifrost Docker image, STDIO connections may not work because common commands like npx, python, etc.
 						aren&apos;t installed. You can safely ignore this if running locally or using a custom image with the necessary dependencies.
 					</p>
 				</div>

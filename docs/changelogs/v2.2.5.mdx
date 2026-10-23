@@ -24,16 +24,16 @@ Earlier versions are affected. Upgrade, then restrict management ports to truste
 
 ## ✨ Features
 
-- **First-Time Setup Token** - New installs now require a setup token before the initial dashboard setup can be completed, so a fresh instance is no longer open to anyone who can reach it (#7830)
-- **Long-Context Fast Tier Pricing** - Added ultrafast and priority above-272k pricing columns so fast-tier requests over 272k tokens, including cache writes, bill at the published long-context rates (#7834, #7838)
+- **First-Time Setup Token** - New installs now require a setup token before the initial dashboard setup can be completed, so a fresh instance is no longer open to anyone who can reach it
+- **Long-Context Fast Tier Pricing** - Added ultrafast and priority above-272k pricing columns so fast-tier requests over 272k tokens, including cache writes, bill at the published long-context rates
 
 ## 🐞 Fixed
 
 - **Route parsing bug fix** - Auth whitelist and temp-token scope checks fixes fasthttp routing bug
-- **Code Mode Auto-Execute Allow List** - `tools_to_execute` and `tools_to_auto_execute` are now enforced at invocation time inside code mode, so indirect calls like `getattr(server, name)(...)` or a plugin tool rename cannot bypass them. Approved runs through `/v1/mcp/tool/execute` are bound only by `tools_to_execute` (#7833)
-- **OpenAI service_tier Fast Billing** - Requests with `service_tier` fast now bill at the priority rates, and the tier is echoed back to clients (#7837)
-- **Gemini to OpenAI Fallback** - Fallbacks from Gemini to OpenAI Responses now strip fields OpenAI rejects: item `status`, generated reasoning and function output IDs, function output `name`, and content signatures (#7835)
-- **Guardrail Redaction Alignment** - Anthropic raw transform targets now match normalized guardrail ordinals when billing headers or MCP blocks are present, so redaction hits the right fields (#7808)
+- **Code Mode Auto-Execute Allow List** - `tools_to_execute` and `tools_to_auto_execute` are now enforced at invocation time inside code mode, so indirect calls like `getattr(server, name)(...)` or a plugin tool rename cannot bypass them. Approved runs through `/v1/mcp/tool/execute` are bound only by `tools_to_execute`
+- **OpenAI service_tier Fast Billing** - Requests with `service_tier` fast now bill at the priority rates, and the tier is echoed back to clients
+- **Gemini to OpenAI Fallback** - Fallbacks from Gemini to OpenAI Responses now strip fields OpenAI rejects: item `status`, generated reasoning and function output IDs, function output `name`, and content signatures
+- **Guardrail Redaction Alignment** - Anthropic raw transform targets now match normalized guardrail ordinals when billing headers or MCP blocks are present, so redaction hits the right fields
 
 ## 🗄️ Database Migrations
 

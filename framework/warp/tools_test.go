@@ -568,6 +568,7 @@ func TestWarpFilterAcceptsPreviouslyMissingFields(t *testing.T) {
 		"stop_reasons":       []any{"length", "content_filter"},
 		"objects":            []any{"embedding"},
 		"project_ids":        []any{"proj-1"},
+		"topic_ids":          []any{"topic-1"},
 		"min_tokens":         float64(10),
 		"max_tokens":         float64(5000),
 		"cache_hit_types":    []any{"semantic"},
@@ -577,6 +578,7 @@ func TestWarpFilterAcceptsPreviouslyMissingFields(t *testing.T) {
 	require.Equal(t, []string{"length", "content_filter"}, filters.StopReasons)
 	require.Equal(t, []string{"embedding"}, filters.Objects)
 	require.Equal(t, []string{"proj-1"}, filters.ProjectIDs)
+	require.Equal(t, []string{"topic-1"}, filters.TopicIDs)
 	require.NotNil(t, filters.MinTokens)
 	require.Equal(t, 10, *filters.MinTokens)
 	require.NotNil(t, filters.MaxTokens)
@@ -952,6 +954,17 @@ func TestWarpMetricsRejectsTooManyBuckets(t *testing.T) {
 		"metrics": []any{"cost"},
 	})
 	require.NoError(t, err, "a 47h window is 47 hourly buckets and must be accepted")
+
+	// The adaptive bucket is counted the way the store cuts it, aligned to the
+	// epoch: exactly 200 thirty-day spans that start halfway through one touch
+	// 201 buckets.
+	month := int64(30 * 24 * 3600)
+	start := time.Unix(366*month+month/2, 0).UTC()
+	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": start.Format(time.RFC3339), "end_time": start.Add(time.Duration(200*month) * time.Second).Format(time.RFC3339)},
+		"metrics": []any{"cost"},
+	})
+	require.ErrorContains(t, err, "more than 200 buckets")
 
 	// The ceiling is about buckets, so it must not reach a request that builds
 	// none: a summary over the same over-long range is one aggregate query.
@@ -2369,7 +2382,7 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 		"routing_engine_used": []any{"loadbalancing"}, "complexity_tiers": []any{"COMPLEX"}, "complexity_mechanisms": []any{"semantic"},
 		"tool_call_names": []any{"get_weather"}, "user_agents": []any{"curl/8"},
 		"metadata_filters": map[string]any{"env": "prod"}, "session_id": "sess-1", "parent_request_id": "req-0", "request_id": "req-1",
-		"missing_cost_only": true,
+		"missing_cost_only": true, "agent_names": []any{"support-bot"}, "agent_correlation_id": "corr-1",
 	}, Now())
 	require.NoError(t, err)
 	require.Equal(t, []string{"rule-premium"}, filters.RoutingRuleIDs)
@@ -2385,6 +2398,8 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 	require.Equal(t, "req-0", filters.ParentRequestID)
 	require.Equal(t, "req-1", filters.RequestID)
 	require.True(t, filters.MissingCostOnly)
+	require.Equal(t, []string{"support-bot"}, filters.AgentNames)
+	require.Equal(t, "corr-1", filters.AgentCorrelationID)
 
 	// Refused, not dropped.
 	for _, bad := range []map[string]any{
@@ -2558,6 +2573,18 @@ func TestWarpQueryMetricsIntervalReturnsBuckets(t *testing.T) {
 		"filters": map[string]any{"start_time": "-30d"}, "metrics": []any{"requests"}, "interval": "hour",
 	})
 	require.ErrorContains(t, err, `interval "day"`, "720 hourly buckets is over the cap; the error names the way out")
+
+	// Buckets are aligned to the epoch and both end buckets count: exactly 200
+	// hours that start mid-hour touch 201 of them; 200 that start on the hour
+	// and stop short of the last touch 200.
+	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": "2026-08-20T00:30:00Z", "end_time": "2026-08-28T08:30:00Z"}, "metrics": []any{"requests"}, "interval": "hour",
+	})
+	require.ErrorContains(t, err, "more than 200 buckets")
+	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": "2026-08-20T00:00:00Z", "end_time": "2026-08-28T07:59:59Z"}, "metrics": []any{"requests"}, "interval": "hour",
+	})
+	require.NoError(t, err)
 
 	_, err = runTool(t, "query_metrics", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
 		"filters": map[string]any{"start_time": "-7d"}, "metrics": []any{"cost"}, "group_by": "provider", "interval": "day",

@@ -5572,6 +5572,41 @@ func TestProviderInjectedToolsRoundTrip(t *testing.T) {
 	assert.Empty(t, got.InjectedTools, "an empty list clears the stored column too")
 }
 
+// TestProviderPassthroughRoundTrip pins passthrough through every provider write path and
+// both read paths. An empty allowlist must come back as a policy: it forwards nothing,
+// which is not the same as no policy, which forwards every route.
+func TestProviderPassthroughRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	policy := &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+		{Methods: []string{"POST"}, Path: "/v1/chat/completions"},
+		{Methods: []string{"GET", "DELETE"}, Path: "/v1/files/*"},
+	}}
+
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		schemas.OpenAI: {Passthrough: policy},
+	}))
+	all, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, policy, all[schemas.OpenAI].Passthrough)
+
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, ProviderConfig{Passthrough: policy}))
+	got, err := store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Equal(t, policy, got.Passthrough)
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{Passthrough: &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{}}}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	require.NotNil(t, got.Passthrough, "an empty allowlist must survive the round trip as a policy")
+	assert.Empty(t, got.Passthrough.AllowedRoutes)
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Nil(t, got.Passthrough, "updating with a nil policy must clear the stored column")
+}
+
 func TestUpdateClientConfig_CompatConvertDecisionToResponsesRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

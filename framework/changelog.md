@@ -1,19 +1,4 @@
-- feat: openapimcp package synthesizes an MCP server from an OpenAPI document, and the config store persists openapi_config (#8308, #8309)
-- feat: passthroughparse package parses passthrough bodies into typed requests, rebuilds streamed responses, summarizes multipart uploads and infers the request type; streaming exports its chat and Responses message builders (#8517, #8518, #8519, #8520, #8522, #8523, #8524)
-- feat: rssfeed package and rss_feeds config store table (#8537)
-- feat: extra_fields_placement client setting (#8476)
-- feat: Vertex use_session_routing key column (#8650)
-- feat: W3C tracestate extraction and A2A observability exports (#8575, #8683)
-- fix: oauth2_server_config.allowed_redirect_uris syncs from config.json and accepts a bare * (#8480)
-- fix: Agent Gateway and skills marketplaces require explicit public URLs, and agent registrations carry destination policy (#8526, #8552)
-- fix: config.json MCP clients keep their derived endpoint_slug on re-sync (#8535)
-- fix: provider key enabled from config.json persists without re-syncing UI-edited keys (#8610, #8647)
-- fix: migrations wait for a live concurrent index build, and logstore upgrade migrations no longer stall behind old replicas (#8479, #8572)
-- fix: OAuth token endpoint rejections are classified by error code (#8559)
-- fix: throughput counts only inference requests (#8579)
-- fix: ClickHouse A2A cleanup and correlation no longer issue needless mutations or load payload columns (#8596, #8608)
-- fix: SQLite busy and locked log batches are retried whole (#8707)
-- fix: custom providers with no keys no longer claim every model in the model catalog (#8706)
-- chore: upgraded core to v1.13.0 and Go to 1.27.2
-[feat]: virtual key list filters by metadata key/value pairs and search matches metadata [@jimseiwert](https://github.com/jimseiwert)
-[feat]: virtual keys carry custom key/value metadata (validated, migrated, included in the config hash only when set) [@jimseiwert](https://github.com/jimseiwert)
+- fix: logstore builds without cgo again [@jeremym-tanium](https://github.com/jeremym-tanium)
+- chore: upgraded Go to 1.27.3 and core to v1.13.1
+- [fix]: MiniMax video jobs are settled and priced by the video job sweeper instead of being skipped
+- [feat]: BytePlus video jobs are settled and priced by the video job sweeper

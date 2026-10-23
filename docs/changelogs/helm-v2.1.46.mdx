@@ -1,0 +1,13 @@
+---
+title: "v2.1.46"
+description: "Helm v2.1.46 changelog - 2026-10-22"
+---
+
+<Update label="Bifrost Helm" description="v2.1.46">
+
+## Changelog
+
+- Configurable request-body buffer pool limit via `bifrost.server.bodyBufferPoolLimitBytes`. Maps to `server.body_buffer_pool_limit_bytes` in config.json. Keep-alive connections free request-body buffers larger than this after each request instead of holding the largest body they ever read (default 4 MiB when unset; `0` means unlimited, the old behaviour).
+- Added `bifrost.disableOnboarding` (`disable_onboarding`) to hide the management UI setup checklist for every user. It is read from config.json on every start rather than the config store, so it stays in effect on stateless or provider-less deployments.
+
+</Update>
