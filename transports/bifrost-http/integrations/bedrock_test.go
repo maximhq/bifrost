@@ -699,6 +699,31 @@ func TestBedrockMistralInvokeHTTPValidation(t *testing.T) {
 	assert.Zero(t, hits.Load())
 }
 
+func TestBedrockMistralInvokeHTTPMalformedToolConfig(t *testing.T) {
+	var hits atomic.Int32
+	base := newBedrockInvokeHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Error(w, "must not reach AWS", http.StatusInternalServerError)
+	})
+	for _, route := range []string{"invoke", "invoke-with-response-stream"} {
+		for _, body := range []string{
+			`{"messages":[{"role":"user","content":"Hello"}],"toolConfig":{"tools":[}}`,
+			`{"toolConfig":{"tools":[},"messages":[{"role":"user","content":"Hello"}]}`,
+			`{"messages":[{"role":"user","content":"Hello"}],"toolConfig":"bad\q"}`,
+		} {
+			t.Run(route+"/"+body, func(t *testing.T) {
+				resp, err := http.Post(base+"/bedrock/model/"+bedrockMistralInvokeModel+"/"+route, "application/json", strings.NewReader(body))
+				require.NoError(t, err)
+				wire, err := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "%s", wire)
+			})
+		}
+	}
+	assert.Zero(t, hits.Load(), "request decoding must reject malformed JSON before calling AWS")
+}
+
 func BenchmarkBedrockInvokeRequestConversion(b *testing.B) {
 	for _, tc := range []struct{ name, model, body string }{
 		{"anthropic_no_tools", "anthropic.claude-sonnet-4-6", `{"messages":[{"role":"user","content":"Hello"}],"max_tokens":256}`},
@@ -717,6 +742,9 @@ func BenchmarkBedrockInvokeRequestConversion(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
+				requestType := route.GetHTTPRequestType(httpCtx)
+				httpCtx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, requestType)
+				ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, requestType)
 				req := route.GetRequestTypeInstance(httpCtx)
 				if err := sonic.Unmarshal([]byte(tc.body), req); err != nil {
 					b.Fatal(err)

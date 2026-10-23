@@ -56,6 +56,45 @@ func TestDetectInvokeRequestType_MistralChat(t *testing.T) {
 	}
 }
 
+func TestDetectInvokeRequestType_MistralToolConfigFields(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       schemas.RequestType
+	}{
+		{"before messages", `{"toolConfig":null,"messages":[{"role":"user","content":"Hello"}]}`, schemas.ResponsesRequest},
+		{"after messages", `{"messages":[{"role":"user","content":"Hello"}],"toolConfig":{}}`, schemas.ResponsesRequest},
+		{"escaped keys", `{"mess\u0061ges":[{"role":"user","content":"Hello"}],"tool\u0043onfig":null}`, schemas.ResponsesRequest},
+		{"nested field", `{"messages":[{"role":"user","content":"Hello"}],"metadata":{"toolConfig":null}}`, schemas.ChatCompletionRequest},
+		{"field in text", `{"messages":[{"role":"user","content":"\"toolConfig\":null"}]}`, schemas.ChatCompletionRequest},
+		{"case sensitive", `{"messages":[{"role":"user","content":"Hello"}],"ToolConfig":{}}`, schemas.ChatCompletionRequest},
+		{"empty native messages", `{"messages":[]}`, schemas.ChatCompletionRequest},
+		{"null native messages", `{"messages":null}`, schemas.ChatCompletionRequest},
+		{"empty legacy messages", `{"messages":[],"toolConfig":{}}`, schemas.TextCompletionRequest},
+		{"null legacy messages", `{"messages":null,"toolConfig":{}}`, schemas.TextCompletionRequest},
+		{"spaced legacy messages", `{"messages":[ ],"toolConfig":{}}`, schemas.ResponsesRequest},
+		{"prompt", `{"prompt":"Hello","toolConfig":{}}`, schemas.TextCompletionRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(tc.body)
+			before := bytes.Clone(body)
+			assert.Equal(t, tc.want, DetectInvokeRequestType(body, mistralInvokeTestModel))
+			assert.Equal(t, before, body, "detection must not mutate the input")
+		})
+	}
+}
+
+func TestDetectInvokeRequestType_MistralToolConfigAllocationBudget(t *testing.T) {
+	for _, config := range []string{`{}`, `{"tools":[{"toolSpec":{"name":"weather","description":"` + strings.Repeat("description ", 1024) + `"}}]}`} {
+		body := []byte(`{"messages":[{"role":"user","content":"Hello"}],"toolConfig":` + config + `}`)
+		require.Equal(t, schemas.ResponsesRequest, DetectInvokeRequestType(body, mistralInvokeTestModel))
+		allocs := testing.AllocsPerRun(1000, func() {
+			DetectInvokeRequestType(body, mistralInvokeTestModel)
+		})
+		// Only the local message node allocates, not either JSON payload.
+		assert.LessOrEqual(t, allocs, float64(1))
+	}
+}
+
 func TestToBedrockInvokeChatResponse(t *testing.T) {
 	assert.Nil(t, ToBedrockInvokeChatResponse(nil))
 	for _, tc := range []struct{ name, choices string }{
@@ -140,11 +179,17 @@ func BenchmarkBedrockInvokeChatResponse(b *testing.B) {
 }
 
 func BenchmarkDetectInvokeRequestType(b *testing.B) {
+	largeNativeTools := strings.Replace(mistralInvokeTestBody, `"parameters":{`, `"description":"`+strings.Repeat("tool description ", 1024)+`","parameters":{`, 1)
+	largeMessages := strings.Replace(mistralInvokeTestBody, "Weather?", strings.Repeat("Weather? ", 1024), 1)
+	largeToolConfig := `{"messages":[{"role":"user","content":"Hello"}],"toolConfig":{"tools":[{"toolSpec":{"name":"weather","description":"` + strings.Repeat("tool description ", 1024) + `","inputSchema":{"json":{"type":"object"}}}}]}}`
 	for _, tc := range []struct{ name, model, body string }{
 		{"anthropic", "anthropic.claude-sonnet-4-6", `{"messages":[{"role":"user","content":"Hello"}]}`},
 		{"nova", "amazon.nova-lite-v1:0", `{"messages":[{"role":"user","content":[{"text":"Hello"}]}]}`},
 		{"mistral native", mistralInvokeTestModel, mistralInvokeTestBody},
 		{"mistral toolConfig", mistralInvokeTestModel, `{"messages":[{"role":"user","content":"Hello"}],"toolConfig":{"tools":[]}}`},
+		{"mistral large native tools", mistralInvokeTestModel, largeNativeTools},
+		{"mistral large messages", mistralInvokeTestModel, largeMessages},
+		{"mistral large toolConfig", mistralInvokeTestModel, largeToolConfig},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			body := []byte(tc.body)

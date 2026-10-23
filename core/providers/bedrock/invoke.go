@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -312,12 +313,19 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 		}
 	}
 	// Messages → chat/responses path
-	if node, _ := sonic.Get(body, "messages"); node.Exists() {
+	// The node stays local: retain validation, but don't copy message content
+	// just to select a request codec.
+	if node, _ := sonic.GetWithOptions(body, ast.SearchOptions{ValidateJSON: true}, "messages"); node.Exists() {
 		// Mistral's native messages/tools already use the OpenAI chat dialect.
 		// Select its codec before the Converse decoder drops tool-call IDs, but
 		// retain the existing Converse path for toolConfig compatibility input.
-		if schemas.IsMistralModel(decodedModelID) && !providerUtils.JSONFieldExists(body, "toolConfig") {
-			return schemas.ChatCompletionRequest
+		if schemas.IsMistralModel(decodedModelID) {
+			// Only presence is needed here; the selected request codec validates
+			// JSON. Avoid validating or copying a config this detector won't use.
+			toolConfig, _ := sonic.GetWithOptions(body, ast.SearchOptions{}, "toolConfig")
+			if !toolConfig.Exists() {
+				return schemas.ChatCompletionRequest
+			}
 		}
 		if raw, err := node.Raw(); err == nil && raw != "null" && raw != "[]" {
 			return schemas.ResponsesRequest
