@@ -281494,6 +281494,212 @@
           }
         }
       ]
+    },
+    {
+      "name": "271. Bedrock Converse strict tool use (bedrock tool strict)",
+      "description": "Converse ToolSpecification has a strict member (\"Flag to enable structured output enforcement on a tool usage response\", https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolSpecification.html). Bifrost's BedrockToolSpec had no such field, so function.strict / toolSpec.strict / tools[].strict was dropped on every Converse route and Claude received the tool unenforced. Cases 1 and 3 pin the neutral routes via raw_request (toolSpec.strict must be true). Case 2 pins that strict:false, the default that Codex sends on every tool, stays off the wire, so clients that never asked for enforcement send the pre-strict bytes even to inference profiles without structured outputs (in.anthropic Claude Haiku 4.5). Case 4 pins the native /bedrock converse route, which has no raw_request: it sends a strict tool whose schema uses minimum, a numeric constraint AWS rejects under strict tool use (\"If the schema contains unsupported features, Amazon Bedrock returns a 400 error immediately\", https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html). Before the fix strict was dropped and the request returned 200; after it Bedrock validates and rejects the schema. Red before, green after.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions function.strict reaches Converse toolSpec.strict (raw_request) - bedrock tool strict - #8058",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Strict tool on /v1/chat/completions returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('Converse toolSpec.strict reaches Bedrock as true', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var spec = raw.toolConfig.tools[0].toolSpec;",
+                  "  pm.expect(spec.name, 'raw_request: ' + JSON.stringify(raw)).to.equal('get_weather');",
+                  "  pm.expect(spec.strict, 'toolSpec.strict dropped before Bedrock; raw_request: ' + JSON.stringify(raw)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city\",\n        \"strict\": true,\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\",\n              \"description\": \"City name\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions function.strict false stays off Converse toolSpec (raw_request) - bedrock tool strict - #8058",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('strict:false tool on /v1/chat/completions returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('Converse toolSpec omits strict for the default false', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var spec = raw.toolConfig.tools[0].toolSpec;",
+                  "  pm.expect(spec.name, 'raw_request: ' + JSON.stringify(raw)).to.equal('get_weather');",
+                  "  pm.expect(spec, 'strict:false is the default and must not reach Bedrock; raw_request: ' + JSON.stringify(raw)).to.not.have.property('strict');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city\",\n        \"strict\": false,\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\",\n              \"description\": \"City name\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses function tool strict reaches Converse toolSpec.strict (raw_request) - bedrock tool strict - #8058",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Strict tool on /v1/responses returns 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('Converse toolSpec.strict reaches Bedrock as true', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var spec = raw.toolConfig.tools[0].toolSpec;",
+                  "  pm.expect(spec.name, 'raw_request: ' + JSON.stringify(raw)).to.equal('get_weather');",
+                  "  pm.expect(spec.strict, 'toolSpec.strict dropped before Bedrock; raw_request: ' + JSON.stringify(raw)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_output_tokens\": 64,\n  \"input\": \"What is the weather in Paris? Use the tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city\",\n      \"strict\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\",\n            \"description\": \"City name\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] bedrock/global.anthropic.claude-sonnet-4-6 /bedrock/model/{modelId}/converse toolSpec.strict reaches Bedrock, which rejects an unsupported strict schema - bedrock tool strict - #8058",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Bedrock validated the strict schema and rejected it with a 400 (strict was forwarded)', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400 from Bedrock schema validation; 200 means toolSpec.strict was dropped: ' + text).to.equal(400);",
+                  "});",
+                  "pm.test('The rejection is the schema validation, not an unrelated request error', function () {",
+                  "  pm.expect(text.toLowerCase(), 'body: ' + text).to.match(/schema|minimum|strict/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Book 2 seats for Paris.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 64\n  },\n  \"toolConfig\": {\n    \"tools\": [\n      {\n        \"toolSpec\": {\n          \"name\": \"book_seats\",\n          \"description\": \"Book seats for a city\",\n          \"strict\": true,\n          \"inputSchema\": {\n            \"json\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"city\": {\n                  \"type\": \"string\"\n                },\n                \"seats\": {\n                  \"type\": \"integer\",\n                  \"minimum\": 1\n                }\n              },\n              \"required\": [\n                \"city\",\n                \"seats\"\n              ],\n              \"additionalProperties\": false\n            }\n          }\n        }\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-4-6/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-4-6",
+                "converse"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
