@@ -29,7 +29,7 @@ OpenAICompactionRequest:
       type: array
       items:
         type: string
-      description: Bifrost-specific — fallback model list in provider/model format.
+      description: Bifrost-specific — Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored.
 
 OpenAICompactionInput:
   oneOf:

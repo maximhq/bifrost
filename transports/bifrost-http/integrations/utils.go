@@ -301,71 +301,7 @@ func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, re
 		return nil // No fallbacks to process
 	}
 
-	provider, _, _ := bifrostReq.GetRequestFields()
-
-	// Parse fallbacks from strings to Fallback structs
-	parsedFallbacks := make([]schemas.Fallback, 0, len(fallbacks))
-	for _, fallbackStr := range fallbacks {
-		if fallbackStr == "" {
-			continue // Skip empty strings
-		}
-
-		// Use ParseModelString to extract provider and model
-		provider, model := schemas.ParseModelString(fallbackStr, provider)
-
-		parsedFallback := schemas.Fallback{
-			Provider: provider,
-			Model:    model,
-		}
-		parsedFallbacks = append(parsedFallbacks, parsedFallback)
-	}
-
-	if len(parsedFallbacks) == 0 {
-		return nil // No valid fallbacks found
-	}
-
-	// Add fallbacks to the main BifrostRequest
-	bifrostReq.SetFallbacks(parsedFallbacks)
-
-	// Also add fallbacks to the specific request type if it exists
-	switch bifrostReq.RequestType {
-	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
-		if bifrostReq.TextCompletionRequest != nil {
-			bifrostReq.TextCompletionRequest.Fallbacks = parsedFallbacks
-		}
-	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
-		if bifrostReq.ChatRequest != nil {
-			bifrostReq.ChatRequest.Fallbacks = parsedFallbacks
-		}
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
-		if bifrostReq.ResponsesRequest != nil {
-			bifrostReq.ResponsesRequest.Fallbacks = parsedFallbacks
-		}
-	case schemas.EmbeddingRequest:
-		if bifrostReq.EmbeddingRequest != nil {
-			bifrostReq.EmbeddingRequest.Fallbacks = parsedFallbacks
-		}
-	case schemas.RerankRequest:
-		if bifrostReq.RerankRequest != nil {
-			bifrostReq.RerankRequest.Fallbacks = parsedFallbacks
-		}
-	case schemas.DecisionRequest:
-		if bifrostReq.DecisionRequest != nil {
-			bifrostReq.DecisionRequest.Fallbacks = parsedFallbacks
-		}
-	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
-		if bifrostReq.SpeechRequest != nil {
-			bifrostReq.SpeechRequest.Fallbacks = parsedFallbacks
-		}
-	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
-		if bifrostReq.TranscriptionRequest != nil {
-			bifrostReq.TranscriptionRequest.Fallbacks = parsedFallbacks
-		}
-	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
-		if bifrostReq.ImageGenerationRequest != nil {
-			bifrostReq.ImageGenerationRequest.Fallbacks = parsedFallbacks
-		}
-	}
+	bifrostReq.SetFallbacks(schemas.ParseFallbacks(fallbacks))
 
 	return nil
 }

@@ -55,7 +55,7 @@ VideoGenerationRequest:
     fallbacks:
       type: array
       items:
-        $ref: './common.yaml#/Fallback'
+        type: string
       description: Fallback models to try if primary model fails
 
 VideoGenerationResponse:
@@ -185,7 +185,7 @@ VideoEditRequest:
     fallbacks:
       type: array
       items:
-        $ref: './common.yaml#/Fallback'
+        type: string
       description: Fallback models to try if primary model fails
 
 VideoInput:

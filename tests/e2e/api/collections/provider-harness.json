@@ -279705,6 +279705,634 @@
           }
         }
       ]
+    },
+    {
+      "name": "267. Request fallback provider resolution (bare models and invalid prefixes, PR #8968)",
+      "description": "Native /v1 and Anthropic request parsers dropped bare fallback models, while generic drop-ins inherited the primary provider and retained unknown prefixes. Each row deliberately uses an invalid Anthropic primary followed by an unknown provider prefix and a bare Haiku fallback. Success must be from Anthropic Haiku at fallback index 1: an unknown prefix cannot consume an attempt. Unary and streaming cover /v1 chat and Responses, /openai chat and Responses, /anthropic messages, and /genai generation. Local Go tests additionally cover providerless primaries, SDK ownership, key pins, native objects/default presets, primary success and exhausted or all-invalid chains. Requires configured Anthropic credentials and permission to use claude-haiku-4-5. Live execution is opt-in and may incur provider usage.",
+      "item": [
+        {
+          "name": "Anthropic claude-haiku-4-5 request fallback provider resolution /v1/chat/completions unary - PR #8968",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request fallback provider resolution succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'response: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.eql('anthropic');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.eql('claude-haiku-4-5');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.eql('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'unknown provider prefix must not consume an attempt').to.eql('1');",
+                  "  pm.expect(pm.response.text(), 'empty response').to.not.eql('');",
+                  "});",
+                  "pm.test('Response has content', function () { var body = pm.response.json(); pm.expect(body.choices || body.output || body.content || body.candidates, 'no completion content').to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-does-not-exist\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly OK.\"\n    }\n  ],\n  \"fallbacks\": [\n    \"foo/model\",\n    \"claude-haiku-4-5\"\n  ],\n  \"stream\": false,\n  \"max_tokens\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 request fallback provider resolution /v1/chat/completions streaming - PR #8968",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request fallback provider resolution succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'response: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.eql('anthropic');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.eql('claude-haiku-4-5');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.eql('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'unknown provider prefix must not consume an attempt').to.eql('1');",
+                  "  pm.expect(pm.response.text(), 'empty response').to.not.eql('');",
+                  "});",
+                  "pm.test('Stream terminates normally', function () { pm.expect(pm.response.text()).to.include(\"[DONE]\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-does-not-exist\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly OK.\"\n    }\n  ],\n  \"fallbacks\": [\n    \"foo/model\",\n    \"claude-haiku-4-5\"\n  ],\n  \"stream\": true,\n  \"max_tokens\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 request fallback provider resolution /v1/responses unary - PR #8968",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request fallback provider resolution succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'response: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.eql('anthropic');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.eql('claude-haiku-4-5');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.eql('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'unknown provider prefix must not consume an attempt').to.eql('1');",
+                  "  pm.expect(pm.response.text(), 'empty response').to.not.eql('');",
+                  "});",
+                  "pm.test('Response has content', function () { var body = pm.response.json(); pm.expect(body.choices || body.output || body.content || body.candidates, 'no completion content').to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-does-not-exist\",\n  \"input\": \"Reply with exactly OK.\",\n  \"fallbacks\": [\n    \"foo/model\",\n    \"claude-haiku-4-5\"\n  ],\n  \"stream\": false,\n  \"max_output_tokens\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 request fallback provider resolution /v1/responses streaming - PR #8968",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request fallback provider resolution succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'response: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.eql('anthropic');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.eql('claude-haiku-4-5');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.eql('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'unknown provider prefix must not consume an attempt').to.eql('1');",
+                  "  pm.expect(pm.response.text(), 'empty response').to.not.eql('');",
+                  "});",
+                  "pm.test('Stream terminates normally', function () { var text = pm.response.text(); pm.expect(text.indexOf('response.completed') !== -1 || text.indexOf('response.incomplete') !== -1, 'no terminal Responses event: ' + text).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-does-not-exist\",\n  \"input\": \"Reply with exactly OK.\",\n  \"fallbacks\": [\n    \"foo/model\",\n    \"claude-haiku-4-5\"\n  ],\n  \"stream\": true,\n  \"max_output_tokens\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 request fallback provider resolution /openai/v1/chat/completions unary - PR #8968",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request fallback provider resolution succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'response: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.eql('anthropic');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.eql('claude-haiku-4-5');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.eql('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'unknown provider prefix must not consume an attempt').to.eql('1');",
+                  "  pm.expect(pm.response.text(), 'empty response').to.not.eql('');",
+                  "});",
+                  "pm.test('Response has content', function () { var body = pm.response.json(); pm.expect(body.choices || body.output || body.content || body.candidates, 'no completion content').to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-does-not-exist\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly OK.\"\n    }\n  ],\n  \"fallbacks\": [\n    \"foo/model\",\n    \"claude-haiku-4-5\"\n  ],\n  \"stream\": false,\n  \"max_tokens\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 request fallback provider resolution /openai/v1/chat/completions streaming - PR #8968",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request fallback provider resolution succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'response: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.eql('anthropic');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.eql('claude-haiku-4-5');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.eql('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'unknown provider prefix must not consume an attempt').to.eql('1');",
+                  "  pm.expect(pm.response.text(), 'empty response').to.not.eql('');",
+                  "});",
+                  "pm.test('Stream terminates normally', function () { pm.expect(pm.response.text()).to.include(\"[DONE]\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-does-not-exist\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly OK.\"\n    }\n  ],\n  \"fallbacks\": [\n    \"foo/model\",\n    \"claude-haiku-4-5\"\n  ],\n  \"stream\": true,\n  \"max_tokens\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 request fallback provider resolution /openai/v1/responses unary - PR #8968",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request fallback provider resolution succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'response: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.eql('anthropic');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.eql('claude-haiku-4-5');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.eql('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'unknown provider prefix must not consume an attempt').to.eql('1');",
+                  "  pm.expect(pm.response.text(), 'empty response').to.not.eql('');",
+                  "});",
+                  "pm.test('Response has content', function () { var body = pm.response.json(); pm.expect(body.choices || body.output || body.content || body.candidates, 'no completion content').to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-does-not-exist\",\n  \"input\": \"Reply with exactly OK.\",\n  \"fallbacks\": [\n    \"foo/model\",\n    \"claude-haiku-4-5\"\n  ],\n  \"stream\": false,\n  \"max_output_tokens\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 request fallback provider resolution /openai/v1/responses streaming - PR #8968",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request fallback provider resolution succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'response: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.eql('anthropic');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.eql('claude-haiku-4-5');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.eql('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'unknown provider prefix must not consume an attempt').to.eql('1');",
+                  "  pm.expect(pm.response.text(), 'empty response').to.not.eql('');",
+                  "});",
+                  "pm.test('Stream terminates normally', function () { var text = pm.response.text(); pm.expect(text.indexOf('response.completed') !== -1 || text.indexOf('response.incomplete') !== -1, 'no terminal Responses event: ' + text).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-does-not-exist\",\n  \"input\": \"Reply with exactly OK.\",\n  \"fallbacks\": [\n    \"foo/model\",\n    \"claude-haiku-4-5\"\n  ],\n  \"stream\": true,\n  \"max_output_tokens\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 request fallback provider resolution /anthropic/v1/messages unary - PR #8968",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request fallback provider resolution succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'response: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.eql('anthropic');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.eql('claude-haiku-4-5');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.eql('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'unknown provider prefix must not consume an attempt').to.eql('1');",
+                  "  pm.expect(pm.response.text(), 'empty response').to.not.eql('');",
+                  "});",
+                  "pm.test('Response has content', function () { var body = pm.response.json(); pm.expect(body.choices || body.output || body.content || body.candidates, 'no completion content').to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-does-not-exist\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly OK.\"\n    }\n  ],\n  \"fallbacks\": [\n    \"foo/model\",\n    \"claude-haiku-4-5\"\n  ],\n  \"stream\": false,\n  \"max_tokens\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 request fallback provider resolution /anthropic/v1/messages streaming - PR #8968",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request fallback provider resolution succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'response: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.eql('anthropic');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.eql('claude-haiku-4-5');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.eql('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'unknown provider prefix must not consume an attempt').to.eql('1');",
+                  "  pm.expect(pm.response.text(), 'empty response').to.not.eql('');",
+                  "});",
+                  "pm.test('Stream terminates normally', function () { pm.expect(pm.response.text()).to.include(\"message_stop\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5-does-not-exist\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with exactly OK.\"\n    }\n  ],\n  \"fallbacks\": [\n    \"foo/model\",\n    \"claude-haiku-4-5\"\n  ],\n  \"stream\": true,\n  \"max_tokens\": 8\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 request fallback provider resolution /genai/v1beta/models/ unary - PR #8968",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request fallback provider resolution succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'response: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.eql('anthropic');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.eql('claude-haiku-4-5');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.eql('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'unknown provider prefix must not consume an attempt').to.eql('1');",
+                  "  pm.expect(pm.response.text(), 'empty response').to.not.eql('');",
+                  "});",
+                  "pm.test('Response has content', function () { var body = pm.response.json(); pm.expect(body.choices || body.output || body.content || body.candidates, 'no completion content').to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with exactly OK.\"\n        }\n      ]\n    }\n  ],\n  \"fallbacks\": [\n    \"foo/model\",\n    \"claude-haiku-4-5\"\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 8\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/anthropic/claude-haiku-4-5-does-not-exist:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "anthropic",
+                "claude-haiku-4-5-does-not-exist:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 request fallback provider resolution /genai/v1beta/models/ streaming - PR #8968",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Request fallback provider resolution succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'response: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider')).to.eql('anthropic');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model')).to.eql('claude-haiku-4-5');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback')).to.eql('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'unknown provider prefix must not consume an attempt').to.eql('1');",
+                  "  pm.expect(pm.response.text(), 'empty response').to.not.eql('');",
+                  "});",
+                  "pm.test('Stream terminates normally', function () { pm.expect(/\\\"finishReason\\\"\\s*:\\s*\\\"(?:STOP|MAX_TOKENS)\\\"/.test(pm.response.text()), 'no terminal Gemini candidate: ' + pm.response.text()).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with exactly OK.\"\n        }\n      ]\n    }\n  ],\n  \"fallbacks\": [\n    \"foo/model\",\n    \"claude-haiku-4-5\"\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 8\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/anthropic/claude-haiku-4-5-does-not-exist:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "anthropic",
+                "claude-haiku-4-5-does-not-exist:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

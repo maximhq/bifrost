@@ -230,6 +230,50 @@ func TestParseModelString(t *testing.T) {
 	})
 }
 
+func TestParseFallbacks(t *testing.T) {
+	custom := ModelProvider("fallback-test-custom")
+	RegisterKnownProvider(custom)
+	t.Cleanup(func() { UnregisterKnownProvider(custom) })
+	for _, tc := range []struct {
+		name  string
+		input []string
+		want  []Fallback
+	}{
+		{name: "absent"},
+		{name: "empty", input: []string{}},
+		{name: "bare model waits for primary routing", input: []string{"claude-haiku-4-5"}, want: []Fallback{{Model: "claude-haiku-4-5"}}},
+		{name: "explicit provider", input: []string{"anthropic/claude-haiku-4-5"}, want: []Fallback{{Provider: Anthropic, Model: "claude-haiku-4-5"}}},
+		{name: "custom provider", input: []string{"fallback-test-custom/backup"}, want: []Fallback{{Provider: custom, Model: "backup"}}},
+		{name: "namespaced model with explicit provider", input: []string{"openrouter/meta-llama/Llama-3.1-8B"}, want: []Fallback{{Provider: OpenRouter, Model: "meta-llama/Llama-3.1-8B"}}},
+		{name: "unknown prefixes and empty models are dropped", input: []string{"foo/model", "meta-llama/Llama-3.1-8B", "OpenAI/gpt-4o", "openai/", "/model", ""}},
+		{name: "mixed chain preserves order and duplicates", input: []string{"foo/model", "backup", "openai/gpt-4o", "", "backup"}, want: []Fallback{{Model: "backup"}, {Provider: OpenAI, Model: "gpt-4o"}, {Model: "backup"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseFallbacks(tc.input)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func BenchmarkParseFallbacks(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		input []string
+	}{
+		{name: "none"},
+		{name: "explicit", input: []string{"anthropic/claude-haiku-4-5", "openai/gpt-4o"}},
+		{name: "bare", input: []string{"claude-haiku-4-5"}},
+		{name: "mixed", input: []string{"foo/model", "claude-haiku-4-5", "openai/gpt-4o", "openai/"}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ParseFallbacks(tc.input)
+			}
+		})
+	}
+}
+
 func TestIsClefModel(t *testing.T) {
 	for _, model := range []string{"clef", "clef-flash", "clef-omni", "@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "@cf/cloudflare/clef-omni"} {
 		assert.True(t, IsClefModel(model), model)

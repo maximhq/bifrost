@@ -32,7 +32,7 @@ OpenAIDecisionRequest:
       type: array
       items:
         type: string
-      description: Bifrost fallback models in provider/model format; never sent upstream
+      description: Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored. Never sent upstream.
 
 OpenAIDecisionQuestion:
   type: object

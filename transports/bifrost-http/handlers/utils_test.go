@@ -2,19 +2,243 @@ package handlers
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/fasthttp/router"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+type requestFallbackHTTPAccount struct{ url string }
+
+func (requestFallbackHTTPAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Anthropic}, nil
+}
+func (requestFallbackHTTPAccount) GetKeysForProvider(_ context.Context, _ schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "fallback-key", Value: *schemas.NewSecretVar("synthetic-key"), Models: schemas.WhiteList{"*"}, Weight: 1}}, nil
+}
+func (a requestFallbackHTTPAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if provider != schemas.Anthropic {
+		return nil, fmt.Errorf("provider %s is not configured", provider)
+	}
+	config := schemas.DefaultNetworkConfig
+	config.BaseURL = a.url
+	config.MaxRetries = 0
+	return &schemas.ProviderConfig{NetworkConfig: config, ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4}}, nil
+}
+
+type requestFallbackHTTPRouting struct {
+	mu                    sync.Mutex
+	preRequests, attempts int
+}
+
+func (*requestFallbackHTTPRouting) GetName() string { return "fallback-http-routing" }
+func (*requestFallbackHTTPRouting) Cleanup() error  { return nil }
+func (p *requestFallbackHTTPRouting) PreRequestHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	p.mu.Lock()
+	p.preRequests++
+	p.mu.Unlock()
+	if provider, _, _ := req.GetRequestFields(); provider == "" {
+		req.SetProvider(schemas.Anthropic)
+	}
+	return nil
+}
+func (p *requestFallbackHTTPRouting) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.mu.Lock()
+	p.attempts++
+	p.mu.Unlock()
+	return req, nil, nil
+}
+func (*requestFallbackHTTPRouting) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// Real HTTP/SSE requests exercise each ingress parser, routing, provider dispatch and egress.
+// No live provider or credential is used: the primary always fails and the backup answers locally.
+func TestRequestFallbackHTTP(t *testing.T) {
+	SetLogger(&mockLogger{})
+	var mu sync.Mutex
+	var models []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			w.WriteHeader(500)
+			return
+		}
+		model := gjson.GetBytes(body, "model").String()
+		mu.Lock()
+		models = append(models, model)
+		mu.Unlock()
+		if model != "claude-haiku-4-5" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"type":"error","error":{"type":"not_found_error","message":"primary unavailable"}}`)
+			return
+		}
+		if strings.Contains(string(body), `"stream":true`) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			for _, event := range []struct{ name, data string }{
+				{"message_start", `{"type":"message_start","message":{"id":"msg_backup","type":"message","role":"assistant","model":"claude-haiku-4-5","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`},
+				{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+				{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"fallback-ok"}}`},
+				{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+				{"message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`},
+				{"message_stop", `{"type":"message_stop"}`},
+			} {
+				fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.name, event.data)
+				w.(http.Flusher).Flush()
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_backup","type":"message","role":"assistant","model":"claude-haiku-4-5","content":[{"type":"text","text":"fallback-ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	t.Cleanup(upstream.Close)
+	plugin := &requestFallbackHTTPRouting{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: requestFallbackHTTPAccount{url: upstream.URL}, Logger: bifrost.NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{plugin}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Shutdown)
+	r := router.New()
+	clientConfig := lib.DefaultClientConfig
+	store := &lib.Config{ClientConfig: &clientConfig}
+	NewInferenceHandler(nil, client, store).RegisterRoutes(r)
+	integrations.NewOpenAIRouter(client, store, nil, bifrost.NewNoOpLogger()).RegisterRoutes(r)
+	integrations.NewAnthropicRouter(client, store, nil, bifrost.NewNoOpLogger()).RegisterRoutes(r)
+	integrations.NewGenAIRouter(client, store, nil, bifrost.NewNoOpLogger()).RegisterRoutes(r)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &fasthttp.Server{Handler: r.Handler}
+	go func() {
+		if err := server.Serve(listener); err != nil {
+			t.Errorf("gateway serve: %v", err)
+		}
+	}()
+	t.Cleanup(func() { _ = server.Shutdown() })
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	for _, route := range []struct{ path, shape, terminal string }{
+		{"/v1/chat/completions", "chat", "[DONE]"},
+		{"/v1/responses", "responses", "response.completed"},
+		{"/openai/v1/chat/completions", "chat", "[DONE]"},
+		{"/openai/v1/responses", "responses", "response.completed"},
+		{"/anthropic/v1/messages", "anthropic", "message_stop"},
+		{"/genai/v1beta/models/", "genai", ""},
+	} {
+		for _, prefix := range []string{"anthropic/", ""} {
+			for _, streaming := range []bool{false, true} {
+				for _, tc := range []struct {
+					name, fallbacks string
+					primary         string
+					status          int
+					models          []string
+				}{
+					{name: "bare", fallbacks: `["foo/model","claude-haiku-4-5","anthropic/"]`, status: http.StatusOK, models: []string{"claude-sonnet-4-5", "claude-haiku-4-5"}},
+					{name: "unknown-only", fallbacks: `["foo/model","anthropic/"]`, status: http.StatusNotFound, models: []string{"claude-sonnet-4-5"}},
+					{name: "explicit", fallbacks: `["foo/model","anthropic/claude-haiku-4-5"]`, status: http.StatusOK, models: []string{"claude-sonnet-4-5", "claude-haiku-4-5"}},
+					{name: "exhausted-bare", fallbacks: `["foo/model","claude-missing-backup"]`, status: http.StatusNotFound, models: []string{"claude-sonnet-4-5", "claude-missing-backup"}},
+					{name: "primary-success", primary: "claude-haiku-4-5", fallbacks: `["foo/model","claude-missing-backup"]`, status: http.StatusOK, models: []string{"claude-haiku-4-5"}},
+				} {
+					t.Run(fmt.Sprintf("%s/prefix=%s/stream=%t/%s", route.path, prefix, streaming, tc.name), func(t *testing.T) {
+						mu.Lock()
+						models = nil
+						mu.Unlock()
+						plugin.mu.Lock()
+						plugin.preRequests, plugin.attempts = 0, 0
+						plugin.mu.Unlock()
+						model := prefix + "claude-sonnet-4-5"
+						if tc.primary != "" {
+							model = prefix + tc.primary
+						}
+						path := route.path
+						body := `{"model":"` + model + `","fallbacks":` + tc.fallbacks + `,"stream":` + strconv.FormatBool(streaming)
+						switch route.shape {
+						case "chat":
+							body += `,"messages":[{"role":"user","content":"hi"}],"max_tokens":8}`
+						case "responses":
+							body += `,"input":"hi","max_output_tokens":8}`
+						case "anthropic":
+							body += `,"messages":[{"role":"user","content":"hi"}],"max_tokens":8}`
+						case "genai":
+							path += model + ":generateContent"
+							if streaming {
+								path = strings.TrimSuffix(path, ":generateContent") + ":streamGenerateContent"
+							}
+							body += `,"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":8}}`
+						}
+						resp, err := httpClient.Post("http://"+listener.Addr().String()+path, "application/json", strings.NewReader(body))
+						if err != nil {
+							t.Fatal(err)
+						}
+						data, err := io.ReadAll(resp.Body)
+						_ = resp.Body.Close()
+						if err != nil {
+							t.Fatal(err)
+						}
+						if resp.StatusCode != tc.status {
+							t.Fatalf("status=%d body=%s", resp.StatusCode, data)
+						}
+						if tc.status == http.StatusOK {
+							if !strings.Contains(string(data), "fallback-ok") {
+								t.Fatalf("no fallback content: %s", data)
+							}
+							isFallback, fallbackIndex := "true", "1"
+							if tc.primary != "" {
+								// Primary success omits fallback-only response headers.
+								isFallback, fallbackIndex = "", ""
+							}
+							for header, want := range map[string]string{
+								lib.HeaderBifrostRoutingInfoProvider:   "anthropic",
+								lib.HeaderBifrostRoutingInfoModel:      "claude-haiku-4-5",
+								lib.HeaderBifrostRoutingInfoIsFallback: isFallback,
+								lib.HeaderBifrostFallbackIndex:         fallbackIndex,
+							} {
+								if got := resp.Header.Get(header); got != want {
+									t.Errorf("%s = %q, want %q", header, got, want)
+								}
+							}
+						} else if !strings.Contains(string(data), "primary unavailable") {
+							t.Fatalf("dropping invalid fallbacks changed the primary error: %s", data)
+						}
+						if tc.status == http.StatusOK && streaming && route.terminal != "" && !strings.Contains(string(data), route.terminal) {
+							t.Fatalf("missing terminal %s: %s", route.terminal, data)
+						}
+						mu.Lock()
+						got := append([]string(nil), models...)
+						mu.Unlock()
+						if !slices.Equal(got, tc.models) {
+							t.Fatalf("wrong upstream attempts (invalid entries must be dropped): %v", got)
+						}
+						plugin.mu.Lock()
+						preRequests, attempts := plugin.preRequests, plugin.attempts
+						plugin.mu.Unlock()
+						if preRequests != 1 || attempts != len(tc.models) {
+							t.Fatalf("routing ran %d times and per-attempt pre-hook %d times", preRequests, attempts)
+						}
+					})
+				}
+			}
+		}
+	}
+}
 
 // TestSendJSON_StandardBytes pins the exact json.NewEncoder byte contract that the
 // switch to sonic must not regress: HTML escaping, sorted map keys (deterministic

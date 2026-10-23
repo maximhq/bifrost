@@ -124,7 +124,7 @@ ImageGenerationRequest:
         fallbacks:
           type: array
           items:
-            $ref: "./common.yaml#/Fallback"
+            type: string
           description: Fallback models to try if primary model fails
 
 ImageGenerationResponse:
@@ -514,7 +514,7 @@ ImageEditRequest:
     fallbacks:
       type: array
       items:
-        $ref: "./common.yaml#/Fallback"
+        type: string
       description: Fallback models to try if primary model fails
 
 ImageEditMultipartRequest:
@@ -678,7 +678,7 @@ ImageEditMultipartRequest:
     fallbacks:
       type: array
       items:
-        $ref: "./common.yaml#/Fallback"
+        type: string
       description: Fallback models to try if primary model fails
 
 # Image Variation Schemas (multipart/form-data)
@@ -727,7 +727,7 @@ ImageVariationRequest:
     fallbacks:
       type: array
       items:
-        $ref: "./common.yaml#/Fallback"
+        type: string
       description: Fallback models to try if primary model fails
 
 # Image Edit Streaming (SSE)

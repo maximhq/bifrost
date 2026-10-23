@@ -621,12 +621,12 @@ type AnthropicNativeFallback struct {
 // AnthropicFallbackEntry is one entry of the overloaded request-level "fallbacks"
 // field, which carries two unrelated features that share the same wire key,
 // disambiguated by element shape:
-//   - a JSON string ("provider/model") is a Bifrost cross-provider fallback;
+//   - a JSON string (bare model or "provider/model") is a Bifrost gateway fallback;
 //   - a JSON object ({"model": ...}) is an Anthropic native server-side fallback.
 //
 // Exactly one field is set after unmarshalling.
 type AnthropicFallbackEntry struct {
-	BifrostModel string                   // set when the entry is a "provider/model" string
+	BifrostModel string                   // set when the entry is a gateway fallback model string
 	Native       *AnthropicNativeFallback // set when the entry is a native {"model": ...} object
 }
 
@@ -691,7 +691,7 @@ func (f AnthropicFallbacks) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(f.Entries)
 }
 
-// bifrostFallbackModels returns the Bifrost cross-provider fallback "provider/model" strings.
+// bifrostFallbackModels returns Bifrost gateway fallback model strings, not native objects or presets.
 func (req *AnthropicMessageRequest) bifrostFallbackModels() []string {
 	var out []string
 	if req.Fallbacks == nil {

@@ -16,7 +16,158 @@ import (
 	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
+
+type requestFallbackRoutingPlugin struct{ provider schemas.ModelProvider }
+
+type reusedRequestFallbackPlugin struct {
+	requestFallbackRoutingPlugin
+	attempts []schemas.Route
+}
+
+func (p *reusedRequestFallbackPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	provider, model, _ := req.GetRequestFields()
+	p.attempts = append(p.attempts, schemas.Route{Provider: provider, Model: model})
+	if model == "primary" {
+		return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "primary unavailable"}}}, nil
+	}
+	return req, &schemas.LLMPluginShortCircuit{Response: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ID: "cached-backup", Model: model}}}, nil
+}
+
+// Resolving shorthand must not turn a caller's reusable request into an
+// explicit fallback to the provider selected for a previous call.
+func TestRequestFallbackReusedSDKRequest(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", streaming), func(t *testing.T) {
+			account := NewMockAccount()
+			account.AddProvider(schemas.OpenAI, 1, 1)
+			account.AddProvider(schemas.Cerebras, 1, 1)
+			plugin := &reusedRequestFallbackPlugin{}
+			client := newStreamTestClient(t, account, plugin)
+			callerFallbacks := []schemas.Fallback{{}, {Model: "backup"}}
+			req := &schemas.BifrostChatRequest{Model: "primary", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}, Fallbacks: callerFallbacks}
+			for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Cerebras} {
+				req.Provider = provider
+				plugin.attempts = nil
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if streaming {
+					stream, err := client.ChatCompletionStreamRequest(ctx, req)
+					if err != nil {
+						t.Fatal(err.GetErrorString())
+					}
+					for range stream {
+					}
+				} else if _, err := client.ChatCompletionRequest(ctx, req); err != nil {
+					t.Fatal(err.GetErrorString())
+				}
+				want := []schemas.Route{{Provider: provider, Model: "primary"}, {Provider: provider, Model: "backup"}}
+				if !slices.Equal(plugin.attempts, want) {
+					t.Errorf("reused request attempts=%+v, want %+v", plugin.attempts, want)
+				}
+				if !slices.Equal(req.Fallbacks, callerFallbacks) {
+					t.Errorf("request shorthand was overwritten: %+v", req.Fallbacks)
+				}
+			}
+		})
+	}
+}
+
+func (*requestFallbackRoutingPlugin) GetName() string { return "request-fallback-routing" }
+func (*requestFallbackRoutingPlugin) Cleanup() error  { return nil }
+func (p *requestFallbackRoutingPlugin) PreRequestHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	if p.provider != "" {
+		req.SetProvider(p.provider)
+	}
+	return nil
+}
+func (*requestFallbackRoutingPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (*requestFallbackRoutingPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// A bare fallback must be bound after routing, without modifying a caller-owned slice.
+func TestRequestFallbackProviderResolution(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		provider, routed, want schemas.ModelProvider
+	}{
+		{name: "explicit primary", provider: schemas.OpenAI, want: schemas.OpenAI},
+		{name: "providerless primary", routed: schemas.OpenAI, want: schemas.OpenAI},
+		{name: "routing changes primary provider", provider: schemas.OpenAI, routed: schemas.Cerebras, want: schemas.Cerebras},
+	} {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, streaming), func(t *testing.T) {
+				var mu sync.Mutex
+				var models, keys []string
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Error(err)
+						w.WriteHeader(500)
+						return
+					}
+					model := gjson.GetBytes(body, "model").String()
+					mu.Lock()
+					models = append(models, model)
+					keys = append(keys, r.Header.Get("Authorization"))
+					mu.Unlock()
+					if model == "primary" {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusNotFound)
+						fmt.Fprint(w, `{"error":{"message":"primary model unavailable","type":"invalid_request_error","code":"model_not_found"}}`)
+						return
+					}
+					if streaming {
+						sseHandler(`{"id":"fallback","object":"chat.completion.chunk","model":"backup","choices":[{"index":0,"delta":{"content":"fallback-ok"}}]}`, `{"id":"fallback","object":"chat.completion.chunk","model":"backup","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)(w, r)
+					} else {
+						w.Header().Set("Content-Type", "application/json")
+						fmt.Fprint(w, `{"id":"fallback","object":"chat.completion","model":"backup","choices":[{"index":0,"message":{"role":"assistant","content":"fallback-ok"},"finish_reason":"stop"}]}`)
+					}
+				}))
+				t.Cleanup(upstream.Close)
+				account := NewMockAccount()
+				for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Cerebras} {
+					account.AddProviderWithBaseURL(provider, 1, 1, upstream.URL)
+					account.configs[provider].NetworkConfig.MaxRetries = 0
+					account.SetKeysForProvider(provider, []schemas.Key{{ID: string(provider), Value: *schemas.NewSecretVar("key-" + string(provider)), Models: schemas.WhiteList{"*"}, Weight: 1}})
+				}
+				client := newStreamTestClient(t, account, &requestFallbackRoutingPlugin{provider: tc.routed})
+				callerFallbacks := []schemas.Fallback{{Model: "backup"}}
+				req := &schemas.BifrostChatRequest{Provider: tc.provider, Model: "primary", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}, Fallbacks: callerFallbacks}
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+				if streaming {
+					stream, err := client.ChatCompletionStreamRequest(ctx, req)
+					if err != nil {
+						t.Fatalf("fallback failed: %s", err.GetErrorString())
+					}
+					text, errs := drainChatStream(stream)
+					if text != "fallback-ok" || len(errs) != 0 {
+						t.Fatalf("text=%q errors=%v", text, errs)
+					}
+				} else {
+					resp, err := client.ChatCompletionRequest(ctx, req)
+					if err != nil {
+						t.Fatalf("fallback failed: %s", err.GetErrorString())
+					}
+					if resp.Model != "backup" || !resp.ExtraFields.RoutingInfo.IsFallback {
+						t.Fatalf("unexpected response: %+v", resp)
+					}
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if !slices.Equal(models, []string{"primary", "backup"}) || !slices.Equal(keys, []string{"Bearer key-" + string(tc.want), "Bearer key-" + string(tc.want)}) {
+					t.Fatalf("models=%v keys=%v", models, keys)
+				}
+				if callerFallbacks[0].Provider != "" {
+					t.Fatalf("caller-owned fallback slice changed: %+v", callerFallbacks)
+				}
+			})
+		}
+	}
+}
 
 // Regression tests for https://github.com/maximhq/bifrost/issues/4788.
 //

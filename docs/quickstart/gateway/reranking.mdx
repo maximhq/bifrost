@@ -38,7 +38,7 @@ curl --location 'http://localhost:8080/v1/rerank' \
 - `max_tokens_per_doc` (optional): provider-dependent document token cap
 - `priority` (optional): provider-dependent priority hint
 - `return_documents` (optional): include matched document content in each result
-- `fallbacks` (optional): fallback models in `provider/model` format
+- `fallbacks` (optional): `provider/model` strings or bare model names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored.
 
 ## Example with Options
 

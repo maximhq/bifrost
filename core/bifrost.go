@@ -5662,112 +5662,8 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		return nil
 	}
 
-	// Create a new request with the fallback provider and model
-	fallbackReq := *req
+	fallbackReq := copyInferenceRequest(req, &fallback)
 
-	if req.TextCompletionRequest != nil {
-		tmp := *req.TextCompletionRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.TextCompletionRequest = &tmp
-	}
-
-	if req.ChatRequest != nil {
-		tmp := *req.ChatRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.ChatRequest = &tmp
-	}
-
-	if req.ResponsesRequest != nil {
-		tmp := *req.ResponsesRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.ResponsesRequest = &tmp
-	}
-
-	if req.CountTokensRequest != nil {
-		tmp := *req.CountTokensRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.CountTokensRequest = &tmp
-	}
-
-	if req.CompactionRequest != nil {
-		tmp := *req.CompactionRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.CompactionRequest = &tmp
-	}
-
-	if req.EmbeddingRequest != nil {
-		tmp := *req.EmbeddingRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.EmbeddingRequest = &tmp
-	}
-	if req.RerankRequest != nil {
-		tmp := *req.RerankRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.RerankRequest = &tmp
-	}
-	if req.DecisionRequest != nil {
-		tmp := *req.DecisionRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.DecisionRequest = &tmp
-	}
-	if req.OCRRequest != nil {
-		tmp := *req.OCRRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.OCRRequest = &tmp
-	}
-
-	if req.SpeechRequest != nil {
-		tmp := *req.SpeechRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.SpeechRequest = &tmp
-	}
-
-	if req.TranscriptionRequest != nil {
-		tmp := *req.TranscriptionRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.TranscriptionRequest = &tmp
-	}
-	if req.ImageGenerationRequest != nil {
-		tmp := *req.ImageGenerationRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.ImageGenerationRequest = &tmp
-	}
-	if req.VideoGenerationRequest != nil {
-		tmp := *req.VideoGenerationRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.VideoGenerationRequest = &tmp
-	}
-	if req.VideoEditRequest != nil {
-		tmp := *req.VideoEditRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.VideoEditRequest = &tmp
-	}
-	if req.ImageEditRequest != nil {
-		tmp := *req.ImageEditRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.ImageEditRequest = &tmp
-	}
-	if req.ImageVariationRequest != nil {
-		tmp := *req.ImageVariationRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.ImageVariationRequest = &tmp
-	}
 	// A sub-request type without an arm above keeps the primary's pointer through the
 	// shallow copy, so the "fallback" would be routed back to the primary while
 	// RoutingInfo reports it as a fallback (#6966). Skip it loudly instead of silently
@@ -5895,6 +5791,15 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	preDispatchSpan := bifrost.startCoreSpan(ctx, "miscellaneous")
 	// Re-read after PreRequestHook — provider/model/fallbacks may have changed.
 	provider, model, fallbacks = req.GetRequestFields()
+	if len(fallbacks) > 0 {
+		resolved := resolveFallbackProviders(provider, fallbacks)
+		if &resolved[0] != &fallbacks[0] {
+			// Isolate the body as well as the slice: the caller may reuse the request.
+			*req = copyInferenceRequest(req, nil)
+			req.SetFallbacks(resolved)
+		}
+		fallbacks = resolved
+	}
 	// Empty provider/model after PreRequestHook means no plugin
 	// could pick a provider for this model — the caller's input is unresolvable.
 	validateErr := validateRequestAfterPreRequestHooks(req)
@@ -6107,6 +6012,15 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	preDispatchSpan := bifrost.startCoreSpan(ctx, "miscellaneous")
 	// Re-read after PreRequestHook — provider/model/fallbacks may have changed.
 	provider, model, fallbacks = req.GetRequestFields()
+	if len(fallbacks) > 0 {
+		resolved := resolveFallbackProviders(provider, fallbacks)
+		if &resolved[0] != &fallbacks[0] {
+			// Isolate the body as well as the slice: the caller may reuse the request.
+			*req = copyInferenceRequest(req, nil)
+			req.SetFallbacks(resolved)
+		}
+		fallbacks = resolved
+	}
 	// Empty provider after PreRequestHook means no plugin
 	// could pick a provider for this model — the caller's input is unresolvable.
 	validateErr := validateRequestAfterPreRequestHooks(req)
