@@ -3,8 +3,11 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -17,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -24,7 +28,7 @@ import (
 // stream. It must stay below typical proxy/load-balancer idle timeouts (60s on
 // most stacks) so connections aren't reaped, while being large enough to avoid
 // gratuitous wake-ups on idle clients.
-const sseHeartbeatInterval = 15 * time.Second
+var sseHeartbeatInterval = 15 * time.Second
 
 // mcpServerName is what the server calls itself in the initialize handshake. One server serves
 // every caller, so it carries no caller's name.
@@ -82,11 +86,12 @@ type MCPServerHandler struct {
 	// governance in-memory store, avoiding a per-request DB read. Optional: a nil
 	// cache or a miss falls back to the config store. See getVirtualKeyByID.
 	vkCache VirtualKeyCache
-	// mcpServer is the one server every caller is served from. What each caller sees of it is
-	// decided per request, from the tool list stamped on the request context, so nothing about
-	// it is per caller. Replaced whole when the tool registry changes; a request already holding
-	// the previous one finishes against it.
-	mcpServer atomic.Pointer[server.MCPServer]
+	// mcpServer is the one server every caller is served from, for the life of the handler. What
+	// each caller sees of it is decided per request, from the tool list stamped on the request
+	// context, so nothing about it is per caller. Its tools are replaced in place on a registry change.
+	mcpServer *server.MCPServer
+	// transport speaks the Streamable HTTP rules of every protocol revision on top of mcpServer.
+	transport *server.StreamableHTTPServer
 	// tokenValidator, when set, may refuse a verified Bifrost-issued token.
 	tokenValidator MCPTokenValidator
 }
@@ -154,6 +159,8 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 		vkCache:          vkCache,
 	}
 
+	handler.mcpServer = handler.buildServer()
+	handler.transport = newMCPTransport(handler.mcpServer)
 	if err := handler.SyncMCPServer(ctx); err != nil {
 		return nil, fmt.Errorf("failed to sync all MCP servers: %w", err)
 	}
@@ -174,53 +181,20 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 
 // RegisterRoutes registers the MCP server routes.
 func (h *MCPServerHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	// MCP server endpoint - supports both POST (JSON-RPC) and GET (SSE)
-	r.POST("/mcp", lib.ChainMiddlewares(h.handleMCPServer, middlewares...))
-	r.GET("/mcp", lib.ChainMiddlewares(h.handleMCPServerSSE, middlewares...))
-	// Virtual MCP endpoints: same handlers, narrowed to the slug's vMCP in admit.
-	r.POST("/mcp/{slug}", lib.ChainMiddlewares(h.handleMCPServer, middlewares...))
-	r.GET("/mcp/{slug}", lib.ChainMiddlewares(h.handleMCPServerSSE, middlewares...))
+	// Streamable HTTP: POST carries messages, GET opens the legacy notification stream, DELETE ends
+	// a legacy session. Slug endpoints are the same handler, narrowed to the slug in admit.
+	handler := lib.ChainMiddlewares(h.handleMCPServer, middlewares...)
+	for _, path := range []string{"/mcp", "/mcp/{slug}"} {
+		r.POST(path, handler)
+		r.GET(path, handler)
+		r.DELETE(path, handler)
+	}
 }
 
+// handleMCPServer admits the request, then hands it to mcp-go's Streamable HTTP transport, which
+// applies the rules of whichever protocol revision the client speaks. Requests that cannot open a
+// stream are answered inline; GET and subscriptions/listen are served as SSE streams.
 func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
-	defer cancel()
-	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
-
-	if refusal := h.admit(ctx, bifrostCtx); refusal != nil {
-		SendError(ctx, refusal.status, refusal.message)
-		return
-	}
-	mcpServer := h.server()
-	if mcpServer == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP server is not ready")
-		return
-	}
-
-	// Use mcp-go server to handle the request
-	// HandleMessage processes JSON-RPC messages and returns appropriate responses
-	response := mcpServer.HandleMessage(bifrostCtx, ctx.PostBody())
-
-	// Check if response is nil (notification - no response needed)
-	if response == nil {
-		ctx.SetStatusCode(fasthttp.StatusAccepted)
-		return
-	}
-
-	// Marshal and send response
-	responseJSON, err := sonic.Marshal(response)
-	if err != nil {
-		logger.Warn(fmt.Sprintf("Failed to marshal MCP response: %v", err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
-		return
-	}
-
-	ctx.SetContentType("application/json")
-	ctx.SetBody(responseJSON)
-}
-
-// handleMCPServerSSE handles GET requests for MCP Server-Sent Events streaming
-func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
 
@@ -230,147 +204,148 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	req := &server.HTTPRequest{
+		Method:  string(ctx.Method()),
+		Header:  mcpRequestHeader(ctx),
+		Body:    ctx.PostBody(),
+		Context: bifrostCtx,
+	}
+	if !opensMCPStream(ctx) {
+		defer cancel()
+		w := &mcpBufferedWriter{ctx: ctx, header: make(http.Header, 4)}
+		h.transport.Handle(w, req)
+		w.finish()
+		return
+	}
+	h.serveMCPStream(ctx, bifrostCtx, cancel, req)
+}
+
+// serveMCPStream runs the transport on its own goroutine so the response can outlive this handler.
+// It waits until the transport either starts an SSE stream or finishes with a plain reply, so a
+// refusal (405 for a modern GET, a version error) is answered as an ordinary response.
+func (h *MCPServerHandler) serveMCPStream(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, cancel context.CancelFunc, req *server.HTTPRequest) {
+	w := newMCPStreamWriter(cancel)
+	handled := make(chan struct{})
+
+	// Pre-allocate the completer slot before the stream can start; see streamMCP for why.
+	var completerSlot atomic.Value
+	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+
+	go func() {
+		defer close(handled)
+		h.transport.Handle(w, req)
+	}()
+
+	select {
+	case <-w.streaming:
+	case <-handled:
+		cancel()
+		w.copyHeaders(ctx)
+		ctx.SetBody(w.body)
+		return
+	}
+
 	// Signal to transport-plugin and tracing middlewares that this is a streaming
 	// response. Without this, fasthttpResponseToHTTPResponse calls ctx.Response.Body()
 	// during post-hook processing, which materializes the SSE body stream and
 	// deadlocks waiting for an EOF that only arrives after the goroutine exits.
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
-
-	// Pre-allocate atomic.Value slot for the transport post-hook completer.
-	// TransportInterceptorMiddleware stores the completer into this slot after next(ctx)
-	// returns. The goroutine reads from the closure-captured pointer, avoiding any ctx
-	// access after the handler returns (fasthttp recycles RequestCtx).
-	var completerSlot atomic.Value
-	ctx.SetUserValue(schemas.BifrostContextKeyTransportPostHookCompleter, &completerSlot)
-
-	// Get the trace completer function for use in the streaming callback.
-	// Signature: func([]schemas.PluginLogEntry) — accepts transport plugin logs so it
-	// never needs to read from ctx.UserValue (ctx may be recycled).
-	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
-
-	// Set SSE headers
-	ctx.SetContentType("text/event-stream")
-	ctx.Response.Header.Set("Cache-Control", "no-cache")
-	ctx.Response.Header.Set("Connection", "keep-alive")
+	w.copyHeaders(ctx)
 	ctx.Response.Header.Set("X-Accel-Buffering", "no")
+	ctx.Response.SetBodyStream(w.reader, -1)
 
-	// Use SSEStreamReader to bypass fasthttp's internal pipe batching
-	reader := lib.NewSSEStreamReader()
-	ctx.Response.SetBodyStream(reader, -1)
-
-	go func() {
-		var transportLogs []schemas.PluginLogEntry
-		completerRan := false
-		// runCompleter invokes the transport post-hook completer at most once.
-		// sendSSEOnError=true emits plugin errors as SSE "event: error" frames so the
-		// client sees them; =false logs server-side only (defer fallback, after stream
-		// termination). The MCP SSE handler has no happy-path completion point, so it
-		// only ever invokes this from the defer with sendSSEOnError=false.
-		runCompleter := func(sendSSEOnError bool) {
-			if completerRan {
-				return
-			}
-			// Bounded wait for TransportInterceptorMiddleware to publish the completer.
-			// It calls slot.Store after next(ctx) returns, which races with this goroutine
-			// on fast/empty streams. 100ms is ample — the store runs a few instructions
-			// after the handler returns.
-			var loaded any
-			deadline := time.Now().Add(100 * time.Millisecond)
-			for {
-				if loaded = completerSlot.Load(); loaded != nil {
-					break
-				}
-				if time.Now().After(deadline) {
-					break
-				}
-				time.Sleep(time.Millisecond)
-			}
-			if loaded == nil {
-				return
-			}
-			postHookCompleter, ok := loaded.(func() ([]schemas.PluginLogEntry, error))
-			if !ok {
-				return
-			}
-			completerRan = true
-			logs, err := postHookCompleter()
-			if err != nil {
-				if sendSSEOnError {
-					errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
-					if marshalErr == nil {
-						reader.SendError(errorJSON)
-					}
-				} else {
-					logger.Warn("transport post-hook failed after stream terminated: %v", err)
-				}
-			}
-			transportLogs = logs
-		}
-
-		defer func() {
-			// Run the deferred transport post-hook completer before cancelling the
-			// context so plugins see a live context. Errors are logged server-side
-			// only — the stream is already closing.
-			runCompleter(false)
-			cancel()
-			reader.Done()
-			// Complete the trace after streaming finishes, passing transport plugin logs.
-			// This ensures all spans are properly ended before the trace is sent to OTEL.
-			if traceCompleter != nil {
-				traceCompleter(transportLogs)
-			}
-		}()
-
-		// Send initial connection message
-		initMessage := map[string]interface{}{
-			"jsonrpc": "2.0",
-			"method":  "connection/opened",
-		}
-		if initJSON, err := sonic.Marshal(initMessage); err == nil {
-			buf := make([]byte, 0, len(initJSON)+8)
-			buf = append(buf, "data: "...)
-			buf = append(buf, initJSON...)
-			buf = append(buf, '\n', '\n')
-			if !reader.Send(buf) {
-				return
-			}
-		}
-
-		// Periodic SSE comment heartbeats keep idle connections alive through
-		// proxies and let us detect client disconnect via reader.SendHeartbeat()
-		// returning false — fasthttp.RequestCtx never cancels bifrostCtx on its own.
-		//
-		// Use the shared frame, never a local one: a hand-rolled ": ping\n\n" carries the
-		// trailing blank line #5883 removed (some decoders dispatch it as an empty event,
-		// #5874) and bypasses the line-boundary gate #5905 added.
-		ticker := time.NewTicker(sseHeartbeatInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if !reader.SendHeartbeat() {
-					return
-				}
-			case <-(*bifrostCtx).Done():
-				return
-			}
-		}
-	}()
+	go streamMCP(bifrostCtx, cancel, w.reader, handled, &completerSlot, traceCompleter)
 }
 
-// SyncMCPServer rebuilds the server from the tools currently available and swaps it in. Called
-// whenever the set of MCP clients or their tools changes. Every caller is served from this one
-// server; what each of them sees is decided per request.
+// streamMCP keeps an MCP SSE stream alive until the transport finishes or the client goes away,
+// then runs the deferred transport post-hooks and completes the trace. It reads nothing from the
+// fasthttp ctx: TransportInterceptorMiddleware stores the completer into the closure-captured slot
+// after the handler returns, and fasthttp recycles the RequestCtx.
+func streamMCP(bifrostCtx *schemas.BifrostContext, cancel context.CancelFunc, reader *lib.SSEStreamReader, handled <-chan struct{}, completerSlot *atomic.Value, traceCompleter func([]schemas.PluginLogEntry)) {
+	var transportLogs []schemas.PluginLogEntry
+	defer func() {
+		// Run the deferred transport post-hook completer before cancelling the
+		// context so plugins see a live context. Errors are logged server-side
+		// only — the stream is already closing.
+		transportLogs = runMCPStreamCompleter(completerSlot)
+		cancel()
+		reader.Done()
+		// Complete the trace after streaming finishes, passing transport plugin logs.
+		if traceCompleter != nil {
+			traceCompleter(transportLogs)
+		}
+	}()
+
+	// Periodic SSE comment heartbeats keep idle connections alive through
+	// proxies and let us detect client disconnect via reader.SendHeartbeat()
+	// returning false — fasthttp.RequestCtx never cancels bifrostCtx on its own.
+	//
+	// Use the shared frame, never a local one: a hand-rolled ": ping\n\n" carries the
+	// trailing blank line #5883 removed (some decoders dispatch it as an empty event,
+	// #5874) and bypasses the line-boundary gate #5905 added.
+	// One heartbeat up front: fasthttp sends the headers with the first chunk, and a legacy GET
+	// stream may have nothing else to say for a while.
+	if !reader.SendHeartbeat() {
+		cancel()
+		<-handled
+		return
+	}
+	ticker := time.NewTicker(sseHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if !reader.SendHeartbeat() {
+				cancel()
+				<-handled
+				return
+			}
+		case <-handled:
+			return
+		case <-(*bifrostCtx).Done():
+			<-handled
+			return
+		}
+	}
+}
+
+// runMCPStreamCompleter invokes the transport post-hook completer once the middleware has published
+// it, and returns the transport plugin logs. The store races with the stream on fast or empty
+// streams, so it waits briefly; 100ms is ample, as it runs a few instructions after the handler returns.
+func runMCPStreamCompleter(completerSlot *atomic.Value) []schemas.PluginLogEntry {
+	var loaded any
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for {
+		if loaded = completerSlot.Load(); loaded != nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	postHookCompleter, ok := loaded.(func() ([]schemas.PluginLogEntry, error))
+	if !ok {
+		return nil
+	}
+	logs, err := postHookCompleter()
+	if err != nil {
+		logger.Warn("transport post-hook failed after stream terminated: %v", err)
+	}
+	return logs
+}
+
+// SyncMCPServer replaces the server's tools with those currently available. Called whenever the set
+// of MCP clients or their tools changes; the server tells listening clients the list changed. Every
+// caller is served from this one server; what each of them sees is decided per request.
 func (h *MCPServerHandler) SyncMCPServer(ctx context.Context) error {
 	availableTools := h.toolManager.GetAvailableMCPTools(ctx)
-	h.mcpServer.Store(h.buildServer(availableTools))
+	h.mcpServer.SetTools(h.serverTools(availableTools)...)
 	logger.Debug("Synced MCP server with %d tools", len(availableTools))
 	return nil
 }
 
-// server returns the server requests are currently served from, or nil before the first sync.
+// server returns the server requests are served from.
 func (h *MCPServerHandler) server() *server.MCPServer {
-	return h.mcpServer.Load()
+	return h.mcpServer
 }
 
 // forwardServerInstructions answers initialize with the upstream servers' own usage guidance,
@@ -379,35 +354,49 @@ func (h *MCPServerHandler) server() *server.MCPServer {
 // because that option is fixed at construction, and one server here serves every caller: the
 // text has to be resolved per request, from the same context the tool filter reads, or a caller
 // narrowed to one upstream would be handed the instructions of servers it cannot reach.
-//
-// Silent when the aggregate is empty, so no upstream instructions means no field at all rather
-// than an empty one.
 func (h *MCPServerHandler) forwardServerInstructions(ctx context.Context, _ any, _ *mcp.InitializeRequest, result *mcp.InitializeResult) {
-	if result == nil {
-		return
-	}
-	if instructions := h.toolManager.GetMCPServerInstructions(ctx); instructions != "" {
-		result.Instructions = instructions
+	if result != nil {
+		h.setInstructions(ctx, &result.Instructions)
 	}
 }
 
-// buildServer registers every available tool on a fresh server. A tool's handler reads nothing
-// about the caller: what a request may see and call rides on its context, and both the tool filter
-// and the executor read it from there.
-func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *server.MCPServer {
+// forwardDiscoverInstructions is forwardServerInstructions for 2026-07-28 clients, which learn
+// about the server from server/discover instead of initialize.
+func (h *MCPServerHandler) forwardDiscoverInstructions(ctx context.Context, _ any, _ *mcp.DiscoverRequest, result *mcp.DiscoverResult) {
+	if result != nil {
+		h.setInstructions(ctx, &result.Instructions)
+	}
+}
+
+// setInstructions applies the request's upstream instructions. Silent when there are none, so no
+// upstream instructions means no field at all rather than an empty one.
+func (h *MCPServerHandler) setInstructions(ctx context.Context, field *string) {
+	if instructions := h.toolManager.GetMCPServerInstructions(ctx); instructions != "" {
+		*field = instructions
+	}
+}
+
+// buildServer builds the one server every caller is served from, with no tools yet.
+func (h *MCPServerHandler) buildServer() *server.MCPServer {
 	hooks := &server.Hooks{}
 	hooks.AddAfterInitialize(h.forwardServerInstructions)
+	hooks.AddAfterDiscover(h.forwardDiscoverInstructions)
 
-	mcpServer := server.NewMCPServer(
+	return server.NewMCPServer(
 		mcpServerName,
 		version,
 		server.WithToolCapabilities(true),
 		server.WithHooks(hooks),
+		// Per-request tool filter so tools/list answers with what this request may see.
+		server.WithToolFilter(h.makeIncludeClientsFilter()),
 	)
-	// Per-request tool filter so tools/list answers with what this request may see.
-	server.WithToolFilter(h.makeIncludeClientsFilter())(mcpServer)
+}
 
-	// Register tools from all connected clients
+// serverTools turns every available tool into a server tool. A tool's handler reads nothing about
+// the caller: what a request may see and call rides on its context, and both the tool filter and
+// the executor read it from there.
+func (h *MCPServerHandler) serverTools(availableTools []schemas.ChatTool) []server.ServerTool {
+	tools := make([]server.ServerTool, 0, len(availableTools))
 	for _, tool := range availableTools {
 		// Only process function tools (skip custom tools)
 		if tool.Function == nil {
@@ -486,15 +475,17 @@ func (h *MCPServerHandler) buildServer(availableTools []schemas.ChatTool) *serve
 			}
 		}
 
-		// Register tool with the server
-		mcpServer.AddTool(mcp.Tool{
-			Name:        toolName,
-			Description: description,
-			InputSchema: inputSchema,
-			Annotations: toolAnnotation,
-		}, handler)
+		tools = append(tools, server.ServerTool{
+			Tool: mcp.Tool{
+				Name:        toolName,
+				Description: description,
+				InputSchema: inputSchema,
+				Annotations: toolAnnotation,
+			},
+			Handler: handler,
+		})
 	}
-	return mcpServer
+	return tools
 }
 
 // makeIncludeClientsFilter returns a ToolFilterFunc that narrows tools/list to what the request's
@@ -877,4 +868,149 @@ func convertToolFunctionParametersToMCPInputSchema(params *schemas.ToolFunctionP
 	}
 
 	return inputSchema
+}
+
+// Streamable HTTP transport over fasthttp
+
+// newMCPTransport serves srv with the Streamable HTTP rules of every protocol revision mcp-go knows.
+func newMCPTransport(srv *server.MCPServer) *server.StreamableHTTPServer {
+	return server.NewStreamableHTTPServer(srv, server.WithSessionIdManager(&mcpSessionIDManager{}))
+}
+
+// mcpSessionIDManager hands legacy clients a session id at initialize but never requires one back.
+// The gateway keeps no per-session state, so requests without an id, or with one minted by another
+// replica, are served exactly as before ids were issued.
+type mcpSessionIDManager struct {
+	server.StatelessGeneratingSessionIdManager
+}
+
+func (*mcpSessionIDManager) Validate(string) (isTerminated bool, err error) { return false, nil }
+
+// mcpRequestHeader copies the headers the transport reads (content negotiation, Mcp-* and
+// MCP-Protocol-Version, Last-Event-ID) into the form mcp-go reads them in. Credentials stay out.
+func mcpRequestHeader(ctx *fasthttp.RequestCtx) http.Header {
+	header := make(http.Header, 6)
+	for key, value := range ctx.Request.Header.All() {
+		if len(key) >= 4 && bytes.EqualFold(key[:4], []byte("mcp-")) ||
+			bytes.EqualFold(key, []byte(fasthttp.HeaderContentType)) ||
+			bytes.EqualFold(key, []byte(fasthttp.HeaderAccept)) ||
+			bytes.EqualFold(key, []byte("Last-Event-ID")) {
+			header.Add(string(key), string(value))
+		}
+	}
+	return header
+}
+
+// opensMCPStream reports whether the request is one whose answer is an SSE stream: the legacy GET
+// stream, or a 2026-07-28 subscriptions/listen. Everything else is answered inline.
+func opensMCPStream(ctx *fasthttp.RequestCtx) bool {
+	if ctx.IsGet() {
+		return true
+	}
+	if !ctx.IsPost() {
+		return false
+	}
+	if method := ctx.Request.Header.Peek(mcp.HeaderMethod); len(method) > 0 {
+		return string(method) == string(mcp.MethodSubscriptionsListen)
+	}
+	return gjson.GetBytes(ctx.PostBody(), "method").Str == string(mcp.MethodSubscriptionsListen)
+}
+
+// mcpBufferedWriter writes an inline answer straight into the fasthttp response. It reports that it
+// cannot stream, so mcp-go answers with a single JSON body on the calling goroutine.
+type mcpBufferedWriter struct {
+	ctx         *fasthttp.RequestCtx
+	header      http.Header
+	wroteHeader bool
+}
+
+func (w *mcpBufferedWriter) Header() http.Header { return w.header }
+
+func (w *mcpBufferedWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	w.ctx.SetStatusCode(status)
+	copyMCPHeaders(w.ctx, w.header)
+}
+
+func (w *mcpBufferedWriter) Write(p []byte) (int, error) {
+	w.WriteHeader(http.StatusOK)
+	return w.ctx.Write(p)
+}
+
+func (w *mcpBufferedWriter) Flush()          {}
+func (w *mcpBufferedWriter) CanStream() bool { return false }
+
+// finish commits the headers of an answer that wrote no body.
+func (w *mcpBufferedWriter) finish() { w.WriteHeader(http.StatusOK) }
+
+// mcpStreamWriter is written by mcp-go on its own goroutine. An SSE answer is forwarded to the
+// client through reader as it is written; any other answer is kept in body for the handler to send.
+type mcpStreamWriter struct {
+	header      http.Header
+	status      int
+	wroteHeader bool
+	body        []byte
+	reader      *lib.SSEStreamReader
+	streaming   chan struct{} // closed once the answer is known to be an SSE stream
+	cancel      context.CancelFunc
+}
+
+func newMCPStreamWriter(cancel context.CancelFunc) *mcpStreamWriter {
+	return &mcpStreamWriter{header: make(http.Header, 4), status: http.StatusOK, streaming: make(chan struct{}), cancel: cancel}
+}
+
+func (w *mcpStreamWriter) Header() http.Header { return w.header }
+
+func (w *mcpStreamWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	w.status = status
+	if mediaType := w.header.Get("Content-Type"); strings.HasPrefix(mediaType, "text/event-stream") {
+		w.reader = lib.NewSSEStreamReader()
+		close(w.streaming)
+	}
+}
+
+func (w *mcpStreamWriter) Write(p []byte) (int, error) {
+	w.WriteHeader(http.StatusOK)
+	if w.reader == nil {
+		w.body = append(w.body, p...)
+		return len(p), nil
+	}
+	// mcp-go reuses its write buffer, so the reader gets its own copy.
+	if !w.reader.Send(append([]byte(nil), p...)) {
+		w.cancel()
+		return 0, errMCPClientGone
+	}
+	return len(p), nil
+}
+
+// Flush is a no-op: Write already hands every chunk to the client.
+func (w *mcpStreamWriter) Flush()          {}
+func (w *mcpStreamWriter) CanStream() bool { return true }
+
+// copyHeaders commits the status and headers mcp-go wrote. Called by the handler once the answer is
+// known, after which mcp-go no longer touches them.
+func (w *mcpStreamWriter) copyHeaders(ctx *fasthttp.RequestCtx) {
+	ctx.SetStatusCode(w.status)
+	copyMCPHeaders(ctx, w.header)
+}
+
+var errMCPClientGone = errors.New("mcp client disconnected")
+
+func copyMCPHeaders(ctx *fasthttp.RequestCtx, header http.Header) {
+	for key, values := range header {
+		for i, value := range values {
+			if i == 0 {
+				ctx.Response.Header.Set(key, value)
+			} else {
+				ctx.Response.Header.Add(key, value)
+			}
+		}
+	}
 }
