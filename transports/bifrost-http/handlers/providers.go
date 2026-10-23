@@ -392,10 +392,16 @@ func (h *ProviderHandler) previewGenericUsage(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
+	// The stored provider supplies the config when the payload carries none, and its
+	// ignore_provider_cost either way, so the preview prices exactly as the relay would.
+	stored, storedErr := h.inMemoryStore.GetProviderConfigRaw(provider)
 	cfg := payload.GenericConfig
+	ignoreProviderCost := false
+	if storedErr == nil && stored != nil {
+		ignoreProviderCost = stored.IgnoreProviderCost
+	}
 	if cfg == nil {
-		stored, err := h.inMemoryStore.GetProviderConfigRaw(provider)
-		if err != nil || stored == nil {
+		if storedErr != nil || stored == nil {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider %s not found", provider))
 			return
 		}
@@ -405,7 +411,7 @@ func (h *ProviderHandler) previewGenericUsage(ctx *fasthttp.RequestCtx) {
 		}
 		cfg = stored.CustomProviderConfig.GenericConfig
 	}
-	preview, err := generic.PreviewUsage(cfg, payload.UsagePreviewInput)
+	preview, err := generic.PreviewUsage(cfg, payload.UsagePreviewInput, ignoreProviderCost)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid preview: %v", err))
 		return

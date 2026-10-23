@@ -30,7 +30,7 @@ func TestPreviewUsage(t *testing.T) {
 	t.Run("header picks the operation's rate", func(t *testing.T) {
 		in := textract
 		in.Headers = map[string]string{"X-Amz-Target": "Textract.AnalyzeDocument"}
-		out, err := PreviewUsage(cfg, in)
+		out, err := PreviewUsage(cfg, in, false)
 		require.NoError(t, err)
 		require.NotNil(t, out.RouteIndex)
 		assert.Equal(t, 0, *out.RouteIndex)
@@ -42,7 +42,7 @@ func TestPreviewUsage(t *testing.T) {
 	t.Run("result polls are relayed but not counted", func(t *testing.T) {
 		in := textract
 		in.Headers = map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis"}
-		out, err := PreviewUsage(cfg, in)
+		out, err := PreviewUsage(cfg, in, false)
 		require.NoError(t, err)
 		assert.Equal(t, 1, *out.RouteIndex, "header names are matched case-insensitively")
 		assert.False(t, out.Billable)
@@ -52,7 +52,7 @@ func TestPreviewUsage(t *testing.T) {
 	t.Run("an unlisted operation is refused under strict routes", func(t *testing.T) {
 		in := textract
 		in.Headers = map[string]string{"X-Amz-Target": "Translate.TranslateText"}
-		out, err := PreviewUsage(cfg, in)
+		out, err := PreviewUsage(cfg, in, false)
 		require.NoError(t, err)
 		assert.Nil(t, out.RouteIndex)
 		assert.False(t, out.RouteAllowed)
@@ -60,7 +60,7 @@ func TestPreviewUsage(t *testing.T) {
 	})
 	t.Run("rounding shows raw and billed units", func(t *testing.T) {
 		rounded := &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{UnitsPath: "Text", UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsChars, UnitsBlockSize: schemas.Ptr(100.0), UnitsMinimum: schemas.Ptr(1.0), CostPerUnit: schemas.Ptr(0.01)}}
-		out, err := PreviewUsage(rounded, UsagePreviewInput{Method: "POST", Path: "/", RequestContentType: "application/json", RequestBody: `{"Text":"hello"}`, ResponseBody: `{}`})
+		out, err := PreviewUsage(rounded, UsagePreviewInput{Method: "POST", Path: "/", RequestContentType: "application/json", RequestBody: `{"Text":"hello"}`, ResponseBody: `{}`}, false)
 		require.NoError(t, err)
 		require.NotNil(t, out.Units)
 		assert.InDelta(t, 5, *out.Units, 0)
@@ -70,15 +70,26 @@ func TestPreviewUsage(t *testing.T) {
 		assert.InDelta(t, 0.01, out.Cost, 1e-9)
 	})
 	t.Run("a wrong path is explained, not silent", func(t *testing.T) {
-		out, err := PreviewUsage(&schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{UnitsPath: "Pages", CostPerUnit: schemas.Ptr(0.1)}}, UsagePreviewInput{Method: "POST", Path: "/x", ResponseBody: `{"DocumentMetadata":{"Pages":7}}`})
+		out, err := PreviewUsage(&schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{UnitsPath: "Pages", CostPerUnit: schemas.Ptr(0.1)}}, UsagePreviewInput{Method: "POST", Path: "/x", ResponseBody: `{"DocumentMetadata":{"Pages":7}}`}, false)
 		require.NoError(t, err)
 		assert.Nil(t, out.Units)
 		assert.InDelta(t, 0, out.Cost, 0)
 		assert.Contains(t, notes(out), "at path Pages")
 		assert.Contains(t, notes(out), "cost is 0")
 	})
+	t.Run("ignore_provider_cost drops the upstream-reported cost, as the relay does", func(t *testing.T) {
+		cfg := &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{CostPath: "usage.cost", CostPerRequest: schemas.Ptr(0.01)}}
+		in := UsagePreviewInput{Method: "POST", Path: "/x", ResponseBody: `{"usage":{"cost":0.5}}`}
+		trusting, err := PreviewUsage(cfg, in, false)
+		require.NoError(t, err)
+		assert.InDelta(t, 0.51, trusting.Cost, 1e-9)
+		ignoring, err := PreviewUsage(cfg, in, true)
+		require.NoError(t, err)
+		assert.Nil(t, ignoring.ExtractedCost)
+		assert.InDelta(t, 0.01, ignoring.Cost, 1e-9, "only the operator's own fee remains")
+	})
 	t.Run("invalid config is refused", func(t *testing.T) {
-		_, err := PreviewUsage(&schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: "magic"}}, UsagePreviewInput{Method: "POST", Path: "/"})
+		_, err := PreviewUsage(&schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: "magic"}}, UsagePreviewInput{Method: "POST", Path: "/"}, false)
 		require.Error(t, err)
 	})
 }

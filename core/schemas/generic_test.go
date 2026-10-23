@@ -32,6 +32,7 @@ func TestGenericProviderConfigValidate(t *testing.T) {
 		{"header name must be a token", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X Amz": "x"}}}}, "not a valid header name"},
 		{"header value required", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": " "}}}}, "a value glob is required"},
 		{"header glob syntax", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "[x"}}}}, "routes[0].headers[X-Amz-Target]"},
+		{"header names differing only by case", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "A*", "x-amz-target": "B*"}}}}, "differs only by case"},
 		{"block size above zero", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsBlockSize: Ptr(0.0)}}, "units_block_size must be above zero"},
 		{"minimum not negative", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsMinimum: Ptr(-1.0)}}, "units_minimum must not be negative"},
 		{"rounding ok", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsPath: "Text", UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsChars, UnitsBlockSize: Ptr(100.0), UnitsMinimum: Ptr(1.0), CostPerUnit: Ptr(0.01)}}, ""},

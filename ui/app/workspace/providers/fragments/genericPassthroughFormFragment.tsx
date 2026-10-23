@@ -81,7 +81,11 @@ function toFormValues(cfg: GenericProviderConfig | undefined): FormValues {
 			aws: { service: cfg?.auth?.aws?.service ?? "", region: cfg?.auth?.aws?.region ?? "" },
 		},
 		usage: { ...emptyUsage, ...(cfg?.usage ?? {}) },
-		streaming: { paths: cfg?.streaming?.paths ?? [], detect_from_accept_header: cfg?.streaming?.detect_from_accept_header ?? false },
+		streaming: {
+			paths: cfg?.streaming?.paths ?? [],
+			detect_from_accept_header: cfg?.streaming?.detect_from_accept_header ?? false,
+			detect_from_body: cfg?.streaming?.detect_from_body ?? false,
+		},
 		routes: (cfg?.routes ?? []).map((r) => ({
 			...r,
 			headers: headersToPairs(r.headers),
@@ -132,10 +136,11 @@ function toConfig(values: FormValues): GenericProviderConfig {
 	const usage = cleanUsage(values.usage);
 	if (usage) cfg.usage = usage;
 	const paths = (values.streaming?.paths ?? []).filter((p) => p.trim() !== "");
-	if (paths.length > 0 || values.streaming?.detect_from_accept_header) {
+	if (paths.length > 0 || values.streaming?.detect_from_accept_header || values.streaming?.detect_from_body) {
 		cfg.streaming = {
 			paths: paths.length > 0 ? paths : undefined,
 			detect_from_accept_header: values.streaming?.detect_from_accept_header || undefined,
+			detect_from_body: values.streaming?.detect_from_body || undefined,
 		};
 	}
 	if (values.routes && values.routes.length > 0) {
@@ -258,9 +263,13 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 			const result = importOpenAPI(await parseOpenAPIText(text));
 			setImported(result);
 			const existing = form.getValues("routes") ?? [];
-			const seen = new Set(existing.map((r) => `${r.method} ${r.path}`));
+			// Two operations can share a method and path and differ only by a header matcher (AWS
+			// X-Amz-Target), so the matcher is part of the identity.
+			const routeKey = (method: string, path: string, headers?: Record<string, string>) =>
+				`${method} ${path} ${JSON.stringify(Object.entries(headers ?? {}).sort())}`;
+			const seen = new Set(existing.map((r) => routeKey(r.method, r.path, pairsToHeaders(r.headers))));
 			for (const route of result.routes) {
-				if (seen.has(`${route.method} ${route.path}`)) continue;
+				if (seen.has(routeKey(route.method, route.path, route.headers))) continue;
 				routes.append({
 					method: route.method,
 					path: route.path,
@@ -636,6 +645,12 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 							</FormItem>
 						)}
 					/>
+					{switchField(
+						"streaming.detect_from_body",
+						"Stream on a caller's stream flag",
+						'Treat "stream": true in a JSON body (or ?stream=true on a GET) as a streaming request. Leave off unless the upstream is an LLM API: the streaming relay forwards a non-SSE reply unread, so a caller could otherwise skip response-side billing',
+						"generic-streaming-body-switch",
+					)}
 					{switchField(
 						"streaming.detect_from_accept_header",
 						"Stream on Accept: text/event-stream",

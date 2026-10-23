@@ -50,7 +50,9 @@ type UsagePreview struct {
 // PreviewUsage runs one hypothetical call through the same route matching and usage mapping the
 // relay applies, so an operator can check a mapping against a sample before saving it. It builds
 // no client and sends nothing. Config-time only, never on the request path.
-func PreviewUsage(cfg *schemas.GenericProviderConfig, in UsagePreviewInput) (*UsagePreview, error) {
+// ignoreProviderCost is the provider's ignore_provider_cost: with it set the relay never reads
+// the upstream-reported cost path, so the preview must not either.
+func PreviewUsage(cfg *schemas.GenericProviderConfig, in UsagePreviewInput, ignoreProviderCost bool) (*UsagePreview, error) {
 	if cfg == nil {
 		cfg = &schemas.GenericProviderConfig{}
 	} else {
@@ -78,7 +80,15 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, in UsagePreviewInput) (*Us
 		return nil, errors.New("response_content_type is required when the response body is not JSON")
 	}
 
-	provider := &GenericProvider{cfg: cfg, usage: resolveUsage(cfg.Usage, nil), routes: compileRoutes(cfg), streamGlobs: compileStreamGlobs(cfg)}
+	usage := resolveUsage(cfg.Usage, nil)
+	usage.ignoreUpstreamCost = ignoreProviderCost
+	usage.eventPaths = usage.collectEventPaths()
+	routes := compileRoutes(cfg)
+	for i := range routes {
+		routes[i].usage.ignoreUpstreamCost = ignoreProviderCost
+		routes[i].usage.eventPaths = routes[i].usage.collectEventPaths()
+	}
+	provider := &GenericProvider{cfg: cfg, usage: usage, routes: routes, streamGlobs: compileStreamGlobs(cfg)}
 	headers := make(map[string]string, len(in.Headers))
 	for name, value := range in.Headers {
 		headers[strings.ToLower(strings.TrimSpace(name))] = value

@@ -310,6 +310,9 @@
         "generic_config": {
           "auth": {
             "type": "bearer"
+          },
+          "streaming": {
+            "detect_from_body": true
           }
         }
       },

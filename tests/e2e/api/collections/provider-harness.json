@@ -281713,7 +281713,7 @@
           }
         },
         {
-          "name": "262.10 POST /passthrough/generic_echo_sigv4/post - aws_sigv4 auth signs the relayed request (generic passthrough)",
+          "name": "270.10 POST /passthrough/generic_echo_sigv4/post - aws_sigv4 auth signs the relayed request (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -281770,7 +281770,7 @@
           }
         },
         {
-          "name": "262.11 POST /passthrough/generic_echo_strict/post - a listed route is relayed under strict_routes (generic passthrough)",
+          "name": "270.11 POST /passthrough/generic_echo_strict/post - a listed route is relayed under strict_routes (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -281812,7 +281812,7 @@
           }
         },
         {
-          "name": "[EXPECT-404] 262.12 DELETE /passthrough/generic_echo_strict/delete - an unlisted operation is refused under strict_routes (generic passthrough)",
+          "name": "[EXPECT-404] 270.12 DELETE /passthrough/generic_echo_strict/delete - an unlisted operation is refused under strict_routes (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -281854,7 +281854,7 @@
           }
         },
         {
-          "name": "262.13 GET /passthrough/generic_echo/headers - a GET route listed without a billable flag keeps the method default and is not charged (generic passthrough)",
+          "name": "270.13 GET /passthrough/generic_echo/headers - a GET route listed without a billable flag keeps the method default and is not charged (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -281904,7 +281904,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] 262.23 PUT /api/providers/generic_echo_sigv4 - switching a generic provider to an injecting auth type is refused while a stored key has no value (generic passthrough)",
+          "name": "[EXPECT-400] 270.23 PUT /api/providers/generic_echo_sigv4 - switching a generic provider to an injecting auth type is refused while a stored key has no value (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -281951,7 +281951,7 @@
           }
         },
         {
-          "name": "262.14 POST /passthrough/generic_echo_units/post - per-unit pricing: cost on the log row is units x rate plus the flat fee (generic passthrough)",
+          "name": "270.14 POST /passthrough/generic_echo_units/post - per-unit pricing: cost on the log row is units x rate plus the flat fee (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -282005,7 +282005,7 @@
           }
         },
         {
-          "name": "262.15 GET /passthrough/generic_echo/stream/1 - the word stream in a path does not select the streaming relay; the reply is buffered (generic passthrough)",
+          "name": "270.15 GET /passthrough/generic_echo/stream/1 - the word stream in a path does not select the streaming relay; the reply is buffered (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -282045,7 +282045,7 @@
           }
         },
         {
-          "name": "262.16 GET /passthrough/generic_echo_query/get?api_key=caller&foo=bar - query auth: configured key injected, caller api_key replaced (generic passthrough)",
+          "name": "270.16 GET /passthrough/generic_echo_query/get?api_key=caller&foo=bar - query auth: configured key injected, caller api_key replaced (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -282094,7 +282094,7 @@
           }
         },
         {
-          "name": "262.17 GET /passthrough/generic_echo_query/get?api_key=caller&x=%zz - query auth strips only the caller's api_key and forwards every other segment byte for byte (generic passthrough)",
+          "name": "270.17 GET /passthrough/generic_echo_query/get?api_key=caller&x=%zz - query auth strips only the caller's api_key and forwards every other segment byte for byte (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -282106,7 +282106,8 @@
                   "// only credential that arrives.",
                   "pm.test('generic relay: query with an undecodable value is relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
                   "var j = pm.response.json();",
-                  "pm.test('generic relay: caller api_key replaced, other segment kept', function () { pm.expect(j.args.api_key, JSON.stringify(j.args)).to.eql('harness-dummy'); pm.expect(j.args, JSON.stringify(j.args)).to.have.property('x'); });"
+                  "pm.test('generic relay: caller api_key replaced, other segment kept', function () { pm.expect(j.args.api_key, JSON.stringify(j.args)).to.eql('harness-dummy'); pm.expect(j.args, JSON.stringify(j.args)).to.have.property('x'); });",
+                  "pm.test('generic relay: the untouched segment arrives byte for byte', function () { pm.expect(j.url, 'echoed url ' + j.url).to.include('x=%zz'); pm.expect(j.url, 'echoed url ' + j.url).to.not.include('api_key=caller'); });"
                 ]
               }
             }
@@ -282143,7 +282144,7 @@
           }
         },
         {
-          "name": "262.17 PUT /passthrough/generic_echo_units/put - body_chars bills request characters, not bytes: multi-byte text costs per character (generic passthrough)",
+          "name": "270.17 PUT /passthrough/generic_echo_units/put - body_chars bills request characters, not bytes: multi-byte text costs per character (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -282198,7 +282199,7 @@
           }
         },
         {
-          "name": "262.18 POST /passthrough/generic_echo/post - caller credential headers of any spelling are dropped, non-credential headers forwarded (generic passthrough)",
+          "name": "270.18 POST /passthrough/generic_echo/post - caller credential headers of any spelling are dropped, non-credential headers forwarded (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -282259,7 +282260,7 @@
           }
         },
         {
-          "name": "262.19 POST /passthrough/generic_echo_units/post with X-Amz-Target - a header-matched route prices the operation: 7 pages at the route's rate plus the inherited fee (generic passthrough)",
+          "name": "270.19 POST /passthrough/generic_echo_units/post with X-Amz-Target - a header-matched route prices the operation: 7 pages at the route's rate plus the inherited fee (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -282268,7 +282269,7 @@
                 "exec": [
                   "// generic_echo_units has a route on POST /post that also requires X-Amz-Target: Echo.Priced*. With the header the",
                   "// route's cost_per_unit 0.002 applies over the provider's units_path json.pages, and the provider's 0.01 fee is",
-                  "// inherited: 7 x 0.002 + 0.01 = 0.024. Case 262.14 sends the same body without the header and pays 0.017.",
+                  "// inherited: 7 x 0.002 + 0.01 = 0.024. Case 270.14 sends the same body without the header and pays 0.017.",
                   "pm.test('generic relay: request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
                   "var reqId = pm.response.headers.get('x-bifrost-request-id');",
                   "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
@@ -282318,7 +282319,7 @@
           }
         },
         {
-          "name": "262.20 PATCH /passthrough/generic_echo_units/patch - rounding: 250 characters bill as three 100-character blocks (generic passthrough)",
+          "name": "270.20 PATCH /passthrough/generic_echo_units/patch - rounding: 250 characters bill as three 100-character blocks (generic passthrough)",
           "event": [
             {
               "listen": "test",
@@ -282367,6 +282368,61 @@
                 "passthrough",
                 "generic_echo_units",
                 "patch"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.21 POST /passthrough/generic_echo_units/post with stream:true - a caller's stream flag does not select the streaming relay: the reply is buffered and the pages are billed (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_units has no detect_from_body, so \"stream\": true in the body is just another field: the buffered",
+                  "// handler serves the call (no X-Accel-Buffering), the echoed pages are read, and the row costs 7 x 0.001 + 0.01.",
+                  "// Had the flag selected the streaming relay, the non-SSE reply would be forwarded unread and only the fee billed.",
+                  "pm.test('generic relay: request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "pm.test('generic relay: buffered handler served it', function () { pm.expect(pm.response.headers.get('x-accel-buffering'), 'x-accel-buffering must be absent').to.not.eql('no'); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.passthrough_response_body !== undefined && row.cost !== undefined && row.cost !== null) {",
+                  "      pm.test('generic relay: response-side pages still billed', function () { pm.expect(row.cost, JSON.stringify({cost: row.cost})).to.be.closeTo(0.017, 1e-6); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: log row with cost appeared', function () { pm.expect.fail('log ' + reqId + ' has no cost after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pages\": 7,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_units/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_units",
+                "post"
               ]
             }
           }

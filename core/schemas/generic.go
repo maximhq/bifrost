@@ -84,6 +84,7 @@ type GenericUsageConfig struct {
 type GenericStreamingConfig struct {
 	Paths                  []string `json:"paths,omitempty"`           // route globs that always stream
 	DetectFromAcceptHeader bool     `json:"detect_from_accept_header"` // Accept: text/event-stream selects streaming
+	DetectFromBody         bool     `json:"detect_from_body"`          // "stream": true in a JSON body, or ?stream=true on a GET, selects streaming
 }
 
 // GenericRouteConfig overrides provider defaults for one upstream operation.
@@ -132,10 +133,17 @@ func (c *GenericProviderConfig) Validate() error {
 		if err := validateGenericRouteGlob(route.Path); err != nil {
 			return fmt.Errorf("routes[%d]: %w", i, err)
 		}
+		seenHeaders := make(map[string]struct{}, len(route.Headers))
 		for name, glob := range route.Headers {
 			if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t\r\n:") {
 				return fmt.Errorf("routes[%d].headers: %q is not a valid header name", i, name)
 			}
+			// Names match case-insensitively, so two spellings of one header would both have to
+			// match a single value and the route would silently never fire.
+			if _, dup := seenHeaders[strings.ToLower(name)]; dup {
+				return fmt.Errorf("routes[%d].headers: %q duplicates a header name that differs only by case", i, name)
+			}
+			seenHeaders[strings.ToLower(name)] = struct{}{}
 			if strings.TrimSpace(glob) == "" {
 				return fmt.Errorf("routes[%d].headers[%s]: a value glob is required", i, name)
 			}

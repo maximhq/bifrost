@@ -524,6 +524,9 @@ GenericProviderConfig:
           description: Rooted segment globs that always stream, e.g. /v1/stream/**
         detect_from_accept_header:
           type: boolean
+        detect_from_body:
+          type: boolean
+          description: Treat stream:true in a JSON body (or ?stream=true on a GET) as a streaming request; off by default so a caller cannot skip response-side billing
     routes:
       type: array
       description: Per-route overrides; the first matching route wins

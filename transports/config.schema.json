@@ -13494,6 +13494,10 @@
         "detect_from_accept_header": {
           "type": "boolean",
           "description": "Treat Accept: text/event-stream as a streaming request"
+        },
+        "detect_from_body": {
+          "type": "boolean",
+          "description": "Treat stream: true in a JSON body, or ?stream=true on a GET, as a streaming request. Off by default: the streaming relay forwards a non-SSE reply unread, so a caller could otherwise skip response-side billing by adding the flag. Turn on for LLM-shaped upstreams"
         }
       },
       "additionalProperties": false

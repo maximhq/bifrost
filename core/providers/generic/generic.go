@@ -154,7 +154,7 @@ func (provider *GenericProvider) GenericConfig() *schemas.GenericProviderConfig 
 
 // Streams decides whether a request is served by the streaming relay: a route's explicit flag,
 // then the streaming.paths globs, then the Accept header when enabled, then the body's stream
-// flag. The path's wording is never a signal: unlike an LLM API, a generic API with "stream" in a
+// flag when enabled. The path's wording is never a signal: unlike an LLM API, a generic API with "stream" in a
 // path (/v1/streams/{id}) usually answers with plain JSON, and the streaming relay forwards a
 // non-SSE body unread, so the response-side usage mapping would be silently skipped.
 func (provider *GenericProvider) Streams(method, path, accept string, bodyStream bool) bool {
@@ -173,7 +173,11 @@ func (provider *GenericProvider) streams(route *compiledRoute, path, accept stri
 	if provider.cfg.Streaming != nil && provider.cfg.Streaming.DetectFromAcceptHeader && acceptsEventStream(accept) {
 		return true
 	}
-	return bodyStream
+	// A caller's own stream flag counts only when the operator says so. The streaming relay forwards
+	// a non-SSE reply unread, so on a provider whose billing reads the response (Textract pages,
+	// Tavily credits) a caller could add "stream": true and pay the flat fee alone. LLM-shaped
+	// upstreams, where the flag is the protocol, turn detect_from_body on.
+	return bodyStream && provider.cfg.Streaming != nil && provider.cfg.Streaming.DetectFromBody
 }
 
 // RouteAllowed reports whether an operation may be relayed: always, unless strict_routes is on

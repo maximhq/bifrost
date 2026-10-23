@@ -1116,37 +1116,39 @@ export const allowedRequestsSchema = z.object({
 const gjsonPath = z.string().trim().optional();
 
 // Generic relay usage mapping (gjson paths, flat per-request fee)
-export const genericUsageConfigSchema = z
-	.object({
-		model_path: gjsonPath,
-		input_tokens_path: gjsonPath,
-		output_tokens_path: gjsonPath,
-		total_tokens_path: gjsonPath,
-		cost_path: gjsonPath,
-		cost_per_request: z.number().min(0, "Cost per request must not be negative").optional(),
-		units_path: gjsonPath,
-		units_source: z.enum(["response", "request"]).optional(),
-		units_measure: z.enum(["value", "chars", "body_bytes", "body_chars"]).optional(),
-		cost_per_unit: z.number().min(0, "Cost per unit must not be negative").optional(),
-		units_block_size: z.number().positive("Block size must be above zero").optional(),
-		units_minimum: z.number().min(0, "Minimum units must not be negative").optional(),
-		disable_optimistic_parsing: z.boolean().optional(),
-	})
-	.superRefine((usage, ctx) => {
-		if (
-			usage.cost_per_unit &&
-			usage.cost_per_unit > 0 &&
-			usage.units_measure !== "body_bytes" &&
-			usage.units_measure !== "body_chars" &&
-			!usage.units_path
-		) {
-			ctx.addIssue({
-				code: "custom",
-				message: "Units path is required unless the measure reads the whole body",
-				path: ["units_path"],
-			});
-		}
-	});
+const genericUsageConfigBaseSchema = z.object({
+	model_path: gjsonPath,
+	input_tokens_path: gjsonPath,
+	output_tokens_path: gjsonPath,
+	total_tokens_path: gjsonPath,
+	cost_path: gjsonPath,
+	cost_per_request: z.number().min(0, "Cost per request must not be negative").optional(),
+	units_path: gjsonPath,
+	units_source: z.enum(["response", "request"]).optional(),
+	units_measure: z.enum(["value", "chars", "body_bytes", "body_chars"]).optional(),
+	cost_per_unit: z.number().min(0, "Cost per unit must not be negative").optional(),
+	units_block_size: z.number().positive("Block size must be above zero").optional(),
+	units_minimum: z.number().min(0, "Minimum units must not be negative").optional(),
+	disable_optimistic_parsing: z.boolean().optional(),
+});
+
+// The provider-level mapping must name a path for a positive rate. A route's mapping may inherit
+// that path from the provider, which the backend validates, so routes use the base object.
+export const genericUsageConfigSchema = genericUsageConfigBaseSchema.superRefine((usage, ctx) => {
+	if (
+		usage.cost_per_unit &&
+		usage.cost_per_unit > 0 &&
+		usage.units_measure !== "body_bytes" &&
+		usage.units_measure !== "body_chars" &&
+		!usage.units_path
+	) {
+		ctx.addIssue({
+			code: "custom",
+			message: "Units path is required unless the measure reads the whole body",
+			path: ["units_path"],
+		});
+	}
+});
 
 const genericRouteGlob = z
 	.string()
@@ -1200,7 +1202,7 @@ export const genericRouteConfigSchema = z.object({
 	headers: z.record(z.string(), z.string()).optional(),
 	billable: z.boolean().optional(),
 	stream: z.boolean().optional(),
-	usage: genericUsageConfigSchema.optional(),
+	usage: genericUsageConfigBaseSchema.optional(),
 });
 
 // The Passthrough tab edits a route's header matchers as pairs; the config keeps the record.
@@ -1216,6 +1218,7 @@ export const genericProviderConfigSchema = z.object({
 		.object({
 			paths: z.array(genericRouteGlob).optional(),
 			detect_from_accept_header: z.boolean().optional(),
+			detect_from_body: z.boolean().optional(),
 		})
 		.optional(),
 	routes: z.array(genericRouteConfigSchema).optional(),
