@@ -1,6 +1,6 @@
 ---
 title: "Retries & Fallbacks"
-description: "Automatic retry with exponential backoff and provider failover. Retries handle transient errors within a provider; fallbacks switch to a different provider when the primary fails."
+description: "Automatic retry with exponential backoff and model failover. Retries handle transient errors within a provider; fallbacks try another model or provider when the primary fails."
 icon: "list-check"
 ---
 
@@ -274,7 +274,7 @@ Rate-limit rotation only applies when `max_retries > 0` and more than one key is
 
 ## Fallbacks
 
-Fallbacks provide automatic failover to a different provider when the primary fails, after whatever retries it was given. Each fallback is tried in order until one succeeds.
+Fallbacks provide automatic failover to another model, on the same or a different provider, when the primary fails after whatever retries it was given. Each fallback is tried in order until one succeeds.
 
 ### How fallbacks work
 
@@ -291,7 +291,15 @@ Each fallback runs the per-attempt plugins again (semantic caching, governance c
 <Tabs group="fallbacks">
 <Tab title="Gateway">
 
-Pass a `fallbacks` array in the request body. Each entry specifies a `provider/model` string:
+Pass a `fallbacks` array in the request body. An entry can be a `provider/model` string or a bare model name. Bare fallback models inherit the primary provider selected by routing, including when the primary model has no provider prefix. They are not looked up independently in the model catalog. Session affinity may then reorder the resolved provider/model routes without changing their providers.
+
+For example, `"model": "anthropic/claude-sonnet-4-5"` with `"fallbacks": ["claude-haiku-4-5", "openai/gpt-4o-mini"]` tries Haiku on Anthropic first, then GPT on OpenAI. This parsing behavior is shared by the native `/v1` endpoints and SDK drop-ins, including `/anthropic/v1/messages`.
+
+<Note>
+Unknown provider prefixes, empty entries, and entries with no model after a known prefix (such as `"openai/"`) are silently ignored, not returned as HTTP 400 errors. A namespaced model must include its provider, for example `"openrouter/meta-llama/Llama-3.1-8B"`; `"meta-llama/Llama-3.1-8B"` alone has an unknown provider prefix and is ignored. Malformed request shapes still undergo normal request validation.
+
+Routing-rule fallbacks retain their stricter creation/update validation. Anthropic native fallback objects (`{"model": "..."}`) and the `"default"` preset remain separate provider-native features; they are not interpreted as Bifrost string fallbacks.
+</Note>
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
@@ -349,6 +357,8 @@ The response's `extra_fields.routing_info` tells you which provider actually ser
 
 </Tab>
 <Tab title="Go SDK">
+
+An empty `schemas.Fallback.Provider` inherits the routing-selected primary provider. An explicit provider remains authoritative. Binding preserves the caller's fallback fields, so reusing a request does not turn shorthand into an explicit fallback to the previous provider. Unchanged request payloads are shared, not deep-copied.
 
 ```go
 package main

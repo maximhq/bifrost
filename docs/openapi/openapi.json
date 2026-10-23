@@ -6130,7 +6130,7 @@
                     "items": {
                       "type": "string"
                     },
-                    "description": "Fallback model list in provider/model format."
+                    "description": "Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored."
                   }
                 }
               }
@@ -17327,7 +17327,7 @@
                     "items": {
                       "type": "string"
                     },
-                    "description": "Bifrost-specific — fallback model list in provider/model format."
+                    "description": "Bifrost-specific — Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored."
                   }
                 }
               }
@@ -113078,7 +113078,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Fallback models in provider/model format"
+            "description": "Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored."
           },
           "stream": {
             "type": "boolean",
@@ -116835,7 +116835,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Fallback models in provider/model format"
+            "description": "Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored."
           },
           "top_n": {
             "type": "integer",
@@ -116982,7 +116982,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Fallback models in provider/model format"
+            "description": "Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored."
           }
         }
       },
@@ -117436,7 +117436,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Fallback models in provider/model format"
+            "description": "Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored."
           }
         }
       },
@@ -117675,7 +117675,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Bifrost fallback models in provider/model format; never sent upstream"
+            "description": "Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored. Never sent upstream."
           }
         }
       },
@@ -120190,7 +120190,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Fallback models in provider/model format"
+            "description": "Fallback models as provider/model strings or bare names that inherit the routing-selected primary provider. Unknown provider prefixes and empty models are ignored."
           },
           "include_image_base64": {
             "type": "boolean",
