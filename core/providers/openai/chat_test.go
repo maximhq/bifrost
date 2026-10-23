@@ -3035,3 +3035,21 @@ func BenchmarkOpenAIChatRequestUnknownFields(b *testing.B) {
 		_ = OpenAIChatRequestUnknownFields(body)
 	}
 }
+
+func TestConvertOpenAIMessagesToBifrostMessages_ThinkingContentBlocks(t *testing.T) {
+	var msg OpenAIMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`{"role":"assistant","content":[
+		{"type":"thinking","thinking":"I multiply.","signature":"SIG1"}],
+		"tool_calls":[{"id":"c1","type":"function","function":{"name":"submit","arguments":"{}"}}]}`), &msg))
+
+	converted := ConvertOpenAIMessagesToBifrostMessages([]OpenAIMessage{msg})
+	require.Len(t, converted, 1)
+	require.Nil(t, converted[0].Content, "the thinking block must leave content")
+	require.NotNil(t, converted[0].ChatAssistantMessage)
+	require.Len(t, converted[0].ChatAssistantMessage.ToolCalls, 1)
+	require.Len(t, converted[0].ChatAssistantMessage.ReasoningDetails, 1)
+	detail := converted[0].ChatAssistantMessage.ReasoningDetails[0]
+	require.Equal(t, schemas.BifrostReasoningDetailsTypeText, detail.Type)
+	require.Equal(t, "I multiply.", *detail.Text)
+	require.Equal(t, "SIG1", *detail.Signature)
+}

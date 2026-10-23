@@ -9029,3 +9029,33 @@ func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 		})
 	}
 }
+
+// The assistant turn exactly as the OpenAI Agents SDK replays it through LiteLLM.
+func TestChatThinkingContentBlockReplaysAsSignedReasoning(t *testing.T) {
+	t.Parallel()
+
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+		{"role":"user","content":"compute"},
+		{"role":"assistant","content":[{"type":"thinking","thinking":"I multiply.","signature":"SIG1"}],
+		 "tool_calls":[{"id":"tooluse_1","type":"function","function":{"name":"submit","arguments":"{\"value\":1}"}}]},
+		{"role":"tool","tool_call_id":"tooluse_1","content":"accepted"}]`), &input))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-opus-4-8",
+		Input:    input,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Messages, 3)
+
+	assistant := result.Messages[1]
+	require.NotEmpty(t, assistant.Content)
+	reasoning := assistant.Content[0].ReasoningContent
+	require.NotNil(t, reasoning, "thinking must replay as the first block")
+	require.NotNil(t, reasoning.ReasoningText)
+	assert.Equal(t, "I multiply.", *reasoning.ReasoningText.Text)
+	assert.Equal(t, "SIG1", *reasoning.ReasoningText.Signature)
+	assert.NotNil(t, assistant.Content[len(assistant.Content)-1].ToolUse)
+}

@@ -1240,7 +1240,42 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 		cm.ChatAssistantMessage = &assistantMsg
 	}
 
+	cm.MoveThinkingBlocksToReasoningDetails()
 	return nil
+}
+
+// MoveThinkingBlocksToReasoningDetails moves an assistant message's thinking and
+// redacted_thinking content blocks onto ReasoningDetails, which every provider
+// converter replays. Reasoning details sent explicitly are kept and the blocks dropped.
+func (cm *ChatMessage) MoveThinkingBlocksToReasoningDetails() {
+	if cm.Role != ChatMessageRoleAssistant || cm.Content == nil {
+		return
+	}
+	var details []ChatReasoningDetails
+	kept := make([]ChatContentBlock, 0, len(cm.Content.ContentBlocks))
+	for _, block := range cm.Content.ContentBlocks {
+		if block.reasoning == nil {
+			kept = append(kept, block)
+			continue
+		}
+		detail := *block.reasoning
+		detail.Index = len(details)
+		details = append(details, detail)
+	}
+	if len(details) == 0 {
+		return
+	}
+	if len(kept) == 0 {
+		cm.Content = nil
+	} else {
+		cm.Content = &ChatMessageContent{ContentBlocks: kept}
+	}
+	if cm.ChatAssistantMessage == nil {
+		cm.ChatAssistantMessage = &ChatAssistantMessage{}
+	}
+	if len(cm.ChatAssistantMessage.ReasoningDetails) == 0 {
+		cm.ChatAssistantMessage.ReasoningDetails = details
+	}
 }
 
 // ChatMessageContent represents a content in a message.
@@ -1307,6 +1342,10 @@ const (
 	ChatContentBlockTypeInputAudio ChatContentBlockType = "input_audio"
 	ChatContentBlockTypeFile       ChatContentBlockType = "file"
 	ChatContentBlockTypeRefusal    ChatContentBlockType = "refusal"
+
+	// Inbound only: MoveThinkingBlocksToReasoningDetails lifts these off assistant messages.
+	ChatContentBlockTypeThinking         ChatContentBlockType = "thinking"
+	ChatContentBlockTypeRedactedThinking ChatContentBlockType = "redacted_thinking"
 )
 
 // ChatContentBlock represents a content block in a message.
@@ -1331,6 +1370,8 @@ type ChatContentBlock struct {
 
 	// GuardContent marks this text or image block for selective guardrail evaluation (Bedrock).
 	GuardContent *GuardContent `json:"guard_content,omitempty"`
+
+	reasoning *ChatReasoningDetails
 }
 
 // UnmarshalJSON normalizes Anthropic-style document content blocks
@@ -1365,6 +1406,25 @@ func (c *ChatContentBlock) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*c = ChatContentBlock(a)
+	c.reasoning = thinkingBlockReasoning(c.Type, data)
+	return nil
+}
+
+// thinkingBlockReasoning reads an Anthropic thinking or redacted_thinking block,
+// the shape LiteLLM-based clients use to replay assistant reasoning.
+func thinkingBlockReasoning(blockType ChatContentBlockType, data []byte) *ChatReasoningDetails {
+	field := func(path string) *string {
+		if value := gjson.GetBytes(data, path); value.Type == gjson.String {
+			return Ptr(value.String())
+		}
+		return nil
+	}
+	switch blockType {
+	case ChatContentBlockTypeThinking:
+		return &ChatReasoningDetails{Type: BifrostReasoningDetailsTypeText, Text: field("thinking"), Signature: field("signature")}
+	case ChatContentBlockTypeRedactedThinking:
+		return &ChatReasoningDetails{Type: BifrostReasoningDetailsTypeEncrypted, Data: field("data")}
+	}
 	return nil
 }
 

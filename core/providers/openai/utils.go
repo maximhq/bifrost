@@ -294,6 +294,7 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}
 		}
+		bifrostMessages[i].MoveThinkingBlocksToReasoningDetails()
 	}
 	return bifrostMessages
 }
