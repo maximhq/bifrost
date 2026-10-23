@@ -27,7 +27,7 @@ const toolSearchExecutionServer = "server"
 // server-side search, become OpenAI's hosted call/output pair; when no tool_search goes
 // out they mean nothing to OpenAI and are dropped. Runs after
 // filterUnsupportedTools, on slices that are not shared with the caller's request.
-func (req *OpenAIResponsesRequest) provisionToolSearch(supported bool) {
+func (req *OpenAIResponsesRequest) provisionToolSearch(supported, disableBuiltinToolRewriting bool) {
 	req.keepDeferLoading = false
 	if !supported || len(req.Tools) == 0 {
 		req.dropTypedToolSearchCalls()
@@ -45,6 +45,12 @@ func (req *OpenAIResponsesRequest) provisionToolSearch(supported bool) {
 		}
 	}
 	if !hasDeferred && searchIdx < 0 {
+		req.dropTypedToolSearchCalls()
+		return
+	}
+	// An explicit search tool keeps its semantics. Without one, opting out leaves
+	// functions (including a client search function) eager instead of adding a built-in.
+	if disableBuiltinToolRewriting && searchIdx < 0 {
 		req.dropTypedToolSearchCalls()
 		return
 	}

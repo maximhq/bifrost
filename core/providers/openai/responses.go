@@ -88,7 +88,7 @@ var reservedToolNamespaces = map[schemas.ModelProvider][]string{
 // hardcoded fallback. toolProvider is the BASE provider, so a custom provider
 // wrapping Mantle reads the bedrock_mantle row and the bedrock_mantle fallback.
 func resolveReservedToolNamespaces(toolProvider schemas.ModelProvider, capModel string) map[string]bool {
-	names := schemas.ResolveModelCaps(toolProvider, capModel).ReservedToolNamespaces(reservedToolNamespaces[toolProvider])
+	names := ReservedToolNamespaces(toolProvider, capModel)
 	if len(names) == 0 {
 		return nil
 	}
@@ -99,6 +99,12 @@ func resolveReservedToolNamespaces(toolProvider schemas.ModelProvider, capModel 
 		}
 	}
 	return reserved
+}
+
+// ReservedToolNamespaces returns the provider's reserved namespace names for one
+// attempt, honoring the datasheet override. The returned slice is read-only.
+func ReservedToolNamespaces(provider schemas.ModelProvider, model string) []string {
+	return schemas.ResolveModelCaps(provider, model).ReservedToolNamespaces(reservedToolNamespaces[provider])
 }
 
 // dropReservedNamespaceTools returns a copy of tools without the namespace tools
@@ -1122,8 +1128,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// key, which neither the datasheet nor the fallback map knows, so the reserved
 	// namespace would reach AWS.
 	toolProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	disableBuiltinToolRewriting := len(req.Tools) > 0 && ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableBuiltinToolRewriting) == true
 	if reserved := resolveReservedToolNamespaces(toolProvider, capModel); len(reserved) > 0 && len(req.Tools) > 0 {
-		substitute := toolProvider == schemas.BedrockMantle && caps.SupportsWebSearch(true)
+		substitute := !disableBuiltinToolRewriting && toolProvider == schemas.BedrockMantle && caps.SupportsWebSearch(true)
 		req.Tools = dropReservedNamespaceTools(req.Tools, reserved, substitute)
 	}
 
@@ -1158,7 +1165,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// Filter out tools that the OpenAI-compatible target doesn't support.
 	toolCaps := schemas.ResolveModelCaps(toolProvider, capModel)
 	req.filterUnsupportedTools(supportsWebSearchContentTypes(toolCaps, toolProvider), toolProvider)
-	req.provisionToolSearch(toolCaps.SupportsToolSearch(defaultSupportsToolSearch(toolProvider, capModel)))
+	req.provisionToolSearch(toolCaps.SupportsToolSearch(defaultSupportsToolSearch(toolProvider, capModel)), disableBuiltinToolRewriting)
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams

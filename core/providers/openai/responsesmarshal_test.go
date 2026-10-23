@@ -1234,6 +1234,62 @@ func TestToOpenAIResponsesRequest_ToolChoicePinningClientSearchKeepsFunction(t *
 
 // Deferred tools with no search tool of any kind get OpenAI's hosted tool_search
 // on models that support it; older models get the tools eagerly instead.
+func TestDisableBuiltinToolRewritingToolSearch(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, schemas.BedrockMantle} {
+		for _, search := range []string{"implicit", "function", "server", "client"} {
+			t.Run(string(provider)+"/"+search, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
+				tools := []schemas.ResponsesTool{deferredWeatherTool()}
+				switch search {
+				case "function":
+					tools = append(tools, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: new("ToolSearch"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}})
+				case "server", "client":
+					tools = append(tools, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeToolSearch, ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: new(search)}})
+				}
+				r := &schemas.BifrostResponsesRequest{Provider: provider, Model: "gpt-6-sol", Input: []schemas.ResponsesMessage{toolSearchUserTurn()}, Params: &schemas.ResponsesParameters{Tools: tools}}
+				out := ToOpenAIResponsesRequest(ctx, r)
+				body, err := out.MarshalJSON()
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantSearch := search == "server" || search == "client"
+				hasSearch := slices.ContainsFunc(out.Tools, func(tool schemas.ResponsesTool) bool { return tool.Type == schemas.ResponsesToolTypeToolSearch })
+				if hasSearch != wantSearch || strings.Contains(string(body), `"defer_loading":true`) != wantSearch {
+					t.Errorf("explicit search=%v, got %s", wantSearch, body)
+				}
+				if search == "function" && !slices.ContainsFunc(out.Tools, func(tool schemas.ResponsesTool) bool {
+					return tool.Type == schemas.ResponsesToolTypeFunction && tool.Name != nil && *tool.Name == "ToolSearch"
+				}) {
+					t.Errorf("client search function was rewritten: %s", body)
+				}
+				if r.Params.Tools[0].DeferLoading == nil || !*r.Params.Tools[0].DeferLoading {
+					t.Fatal("shared request was mutated")
+				}
+			})
+		}
+	}
+}
+
+func BenchmarkBuiltinToolRewritingResponses(b *testing.B) {
+	for _, count := range []int{0, 1} {
+		name := "no_tools"
+		var tools []schemas.ResponsesTool
+		if count > 0 {
+			name = "function"
+			tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: new("web_search_custom"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}}}}
+		}
+		b.Run(name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			r := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-6-sol", Input: []schemas.ResponsesMessage{toolSearchUserTurn()}, Params: &schemas.ResponsesParameters{Tools: tools}}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(ctx, r)
+			}
+		})
+	}
+}
+
 func TestToOpenAIResponsesRequest_AddsHostedToolSearch(t *testing.T) {
 	tools := []schemas.ResponsesTool{
 		{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("lookup"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
