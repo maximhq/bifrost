@@ -13509,7 +13509,7 @@
         },
         "billable": {
           "type": "boolean",
-          "description": "false relays the call without counting or charging it; true counts it. Left unset, the method default applies: POST/PUT/PATCH/DELETE are billable and GET/HEAD are not, with or without a route"
+          "description": "false relays the call without counting or charging it; true counts it. Left unset, the method default applies, with or without a route: only POST is billable; GET and HEAD are polls and listings, PUT and PATCH update settings, DELETE cleans up"
         },
         "stream": {
           "type": "boolean",

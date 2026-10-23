@@ -5,13 +5,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
-import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
+import { useGetProviderKeysQuery, usePreviewGenericUsageMutation, useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import {
 	GenericAuthTypeLabels,
 	GenericAuthTypes,
 	GenericProviderConfig,
 	GenericRouteMethods,
 	GenericUnitsMeasureLabels,
+	type GenericUsagePreview,
 	genericRouteBillableByDefault,
 	GenericUnitsSourceLabels,
 	genericUnitsMeasureReadsWholeBody,
@@ -143,6 +144,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const dispatch = useAppDispatch();
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
+	const { data: providerKeys = [] } = useGetProviderKeysQuery(provider.name);
 	const genericConfig = provider.custom_provider_config?.generic_config;
 	// OpenAPI import: the document is parsed in the browser and resolved into routes, auth and a
 	// base URL hint; only those fields are saved.
@@ -150,6 +152,30 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	const [importUrl, setImportUrl] = useState("");
 	const [importing, setImporting] = useState(false);
 	const [imported, setImported] = useState<OpenAPIImport | null>(null);
+	// Test this mapping: a sample call run through the mapping as it stands in the form.
+	const [previewUsage, { isLoading: previewing }] = usePreviewGenericUsageMutation();
+	const [preview, setPreview] = useState<GenericUsagePreview | null>(null);
+	const [sample, setSample] = useState({
+		method: "POST",
+		path: "/",
+		request_content_type: "application/json",
+		request_body: "",
+		status_code: 200,
+		response_content_type: "application/json",
+		response_body: "",
+	});
+	const runPreview = async () => {
+		try {
+			const result = await previewUsage({
+				provider: provider.name,
+				body: { generic_config: toConfig(form.getValues()), ...sample },
+			}).unwrap();
+			setPreview(result);
+		} catch (err) {
+			setPreview(null);
+			toast.error("Could not run the mapping", { description: getErrorMessage(err) });
+		}
+	};
 
 	const form = useForm<FormValues>({
 		resolver: zodResolver(genericProviderConfigSchema),
@@ -173,6 +199,16 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	const [streamingPathsText, setStreamingPathsText] = useState(() => (genericConfig?.streaming?.paths ?? []).join("\n"));
 
 	const onSubmit = (values: FormValues) => {
+		// Under SigV4 the relay signs with the key's AWS credentials and never reads its value, so
+		// keys that were plain values for another auth type stop doing anything without a word.
+		if (values.auth.type === "aws_sigv4" && genericConfig?.auth?.type !== "aws_sigv4") {
+			const valued = providerKeys.filter((k) => k.value?.value || k.value?.ref).map((k) => k.name);
+			if (valued.length > 0) {
+				toast.warning("Existing key values are ignored under AWS Signature V4", {
+					description: `${valued.join(", ")}: add AWS credentials to these keys, or they will sign with the gateway's own AWS identity.`,
+				});
+			}
+		}
 		updateProvider(
 			buildProviderUpdatePayload(provider, {
 				custom_provider_config: {
@@ -298,8 +334,8 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 				<p className="text-muted-foreground text-sm">
 					Requests to <code className="font-mono text-xs">/passthrough/{provider.name}/&lt;path&gt;</code> are relayed to{" "}
 					<code className="font-mono text-xs">{provider.network_config?.base_url || "the configured base URL"}</code> with the selected key
-					injected. Every call is logged; calls on billable routes are counted and charged, and GET and HEAD are not billable unless a route
-					says so.
+					injected. Every call is logged; calls on billable routes are counted and charged. Only POST is billable unless a route says
+					otherwise.
 				</p>
 
 				{/* Auth */}
@@ -749,6 +785,143 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 						"Strict routes",
 						"Refuse any request that matches no route above with 404, so the routes list is an allowlist",
 						"generic-strict-routes-switch",
+					)}
+				</section>
+
+				{/* Test this mapping */}
+				<section className="space-y-4" data-testid="generic-usage-preview-section">
+					<div>
+						<h3 className="text-sm font-semibold">Test this mapping</h3>
+						<p className="text-muted-foreground text-sm">
+							Paste a request and the response the API gives for it. The mapping above, as it stands in this form (saved or not), is run
+							against them and what the log row would carry is shown. Nothing is sent to the API.
+						</p>
+					</div>
+					<div className="grid gap-3 md:grid-cols-[120px_1fr_1fr]">
+						<Select value={sample.method} onValueChange={(v) => setSample({ ...sample, method: v })} disabled={disabled}>
+							<SelectTrigger data-testid="generic-preview-method-select">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{GenericRouteMethods.map((m) => (
+									<SelectItem key={m} value={m}>
+										{m}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+						<Input
+							placeholder="/search"
+							value={sample.path}
+							onChange={(e) => setSample({ ...sample, path: e.target.value })}
+							disabled={disabled}
+							data-testid="generic-preview-path-input"
+						/>
+						<Input
+							type="number"
+							min={100}
+							max={599}
+							value={sample.status_code}
+							onChange={(e) => setSample({ ...sample, status_code: Number(e.target.value) || 200 })}
+							disabled={disabled}
+							data-testid="generic-preview-status-input"
+							aria-label="Response status code"
+						/>
+					</div>
+					<div className="grid gap-3 md:grid-cols-2">
+						<div className="space-y-2">
+							<Input
+								placeholder="Request Content-Type, e.g. application/json"
+								value={sample.request_content_type}
+								onChange={(e) => setSample({ ...sample, request_content_type: e.target.value })}
+								disabled={disabled}
+								data-testid="generic-preview-request-content-type-input"
+							/>
+							<Textarea
+								placeholder={'Request body, e.g. {"Text": "hello"}'}
+								value={sample.request_body}
+								onChange={(e) => setSample({ ...sample, request_body: e.target.value })}
+								disabled={disabled}
+								rows={5}
+								data-testid="generic-preview-request-body-textarea"
+							/>
+						</div>
+						<div className="space-y-2">
+							<Input
+								placeholder="Response Content-Type, e.g. application/json"
+								value={sample.response_content_type}
+								onChange={(e) => setSample({ ...sample, response_content_type: e.target.value })}
+								disabled={disabled}
+								data-testid="generic-preview-response-content-type-input"
+							/>
+							<Textarea
+								placeholder={'Response body, e.g. {"DocumentMetadata": {"Pages": 7}}'}
+								value={sample.response_body}
+								onChange={(e) => setSample({ ...sample, response_body: e.target.value })}
+								disabled={disabled}
+								rows={5}
+								data-testid="generic-preview-response-body-textarea"
+							/>
+						</div>
+					</div>
+					<div className="flex items-center gap-3">
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							onClick={runPreview}
+							isLoading={previewing}
+							disabled={disabled}
+							data-testid="generic-preview-run-btn"
+						>
+							Run
+						</Button>
+					</div>
+					{preview && (
+						<div className="space-y-2 rounded-sm border p-3 text-sm" data-testid="generic-preview-result">
+							<div className="grid gap-x-6 gap-y-1 md:grid-cols-2">
+								<span className="text-muted-foreground">Route</span>
+								<span data-testid="generic-preview-route">
+									{preview.route_index === null ? "none (provider defaults)" : `routes[${preview.route_index}]`}
+									{!preview.route_allowed ? " - refused by strict routes" : ""}
+								</span>
+								<span className="text-muted-foreground">Served as</span>
+								<span>{preview.streams ? "stream" : "buffered"}</span>
+								<span className="text-muted-foreground">Counted</span>
+								<span data-testid="generic-preview-counted">
+									{preview.counted ? "yes, one request" : preview.billable ? "no (status not 2xx)" : "no (route not billable)"}
+								</span>
+								<span className="text-muted-foreground">Model</span>
+								<span>{preview.model || (preview.model_path ? `none at ${preview.model_path}` : "not read")}</span>
+								<span className="text-muted-foreground">Units</span>
+								<span data-testid="generic-preview-units">
+									{preview.units === null
+										? "none"
+										: `${preview.units} (${preview.units_measure}, ${preview.units_source}${preview.units_path ? `, ${preview.units_path}` : ""}) × ${preview.cost_per_unit}`}
+								</span>
+								<span className="text-muted-foreground">Tokens</span>
+								<span>
+									{preview.tokens
+										? `${preview.tokens.prompt_tokens} in / ${preview.tokens.completion_tokens} out / ${preview.tokens.total_tokens} total`
+										: "none"}
+								</span>
+								<span className="text-muted-foreground">Extracted cost</span>
+								<span>{preview.extracted_cost === null ? "none" : preview.extracted_cost}</span>
+								<span className="text-muted-foreground">Flat fee</span>
+								<span>{preview.cost_per_request}</span>
+								<span className="font-medium">Cost on the log row</span>
+								<span className="font-medium" data-testid="generic-preview-cost">
+									{preview.cost} USD
+								</span>
+							</div>
+							{preview.notes.length > 0 && (
+								<ul className="text-muted-foreground list-disc pl-5" data-testid="generic-preview-notes">
+									{preview.notes.map((n) => (
+										<li key={n}>{n}</li>
+									))}
+								</ul>
+							)}
+						</div>
 					)}
 				</section>
 

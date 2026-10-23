@@ -37,7 +37,7 @@ POST /passthrough/azure-tts/cognitiveservices/v1 → https://eastus.tts.speech.m
 2. Set a name (this becomes the route segment), choose **generic** as the base format, and enter the API's base URL.
 3. Pick the **Auth type** and fill its fields (header name for `header`, query parameter for `query`, service and region for `aws_sigv4`).
 4. Save, then add a key. For `aws_sigv4` the key carries AWS credentials (access key, secret key, region, or a role ARN) instead of a value.
-5. Open the provider's **Passthrough** tab to set usage and cost mapping, streaming rules and per-route overrides, or import them from the API's OpenAPI document.
+5. Open the provider's **Passthrough** tab to set usage and cost mapping, streaming rules and per-route overrides, or import them from the API's OpenAPI document. **Test this mapping** at the bottom of the tab runs a sample request and response through the mapping as it stands in the form and shows the route matched, the quantity read, the tokens and the cost the log row would carry, so a wrong path is caught before it bills zero in production.
 </Tab>
 <Tab title="API">
 ```bash
@@ -173,7 +173,7 @@ Cost per call is `units × cost_per_unit + cost_per_request + extracted cost`. R
 
 **`ignore_provider_cost`.** On a generic provider the Pricing tab's "ignore provider cost" switch drops only what the upstream reports (`cost_path`); the flat fee and unit pricing are yours and keep applying.
 
-**What gets charged.** Every successful (2xx) call on a billable route reports usage, even when nothing could be read from the response, so it counts as one request against rate limits. Cost is `extracted cost + cost_per_request`; budgets are charged when that is above zero. Non-2xx responses and non-billable routes report no usage, so they are never charged; as on every passthrough route, a call that names a model (by default the request's `model` field) still counts as one request against rate limits. `GET` and `HEAD` are not billable by default, with or without a route (they are usually polls and listings); add a route with `billable: true` to count them.
+**What gets charged.** Every successful (2xx) call on a billable route reports usage, even when nothing could be read from the response, so it counts as one request against rate limits. Cost is `extracted cost + cost_per_request`; budgets are charged when that is above zero. Non-2xx responses and non-billable routes report no usage, so they are never charged; as on every passthrough route, a call that names a model (by default the request's `model` field) still counts as one request against rate limits. Only `POST` is billable by default, with or without a route: `GET` and `HEAD` are usually polls and listings, `PUT` and `PATCH` update settings, and `DELETE` cleans up (an Azure avatar job, a Tavily crawl). Add a route with `billable: true` for an API that bills another method.
 
 **Streams.** Each usage field keeps the last value any SSE event reported, so an API that reports input tokens on its first event and output tokens on its last is billed for both. Values are not summed: map fields that carry running totals (as OpenAI and Anthropic report them), not per-event increments.
 
@@ -192,7 +192,7 @@ Detection order: the matching route's `stream` flag, then `streaming.paths`, the
 | --- | --- |
 | `method` | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD` |
 | `path` | Rooted segment glob: `*` matches within a segment (`/jobs/*`), a trailing `/**` matches the prefix and everything below |
-| `billable` | `false` relays the call without counting or charging it (status polls, listings); `true` counts it. Unset keeps the method default: `GET` and `HEAD` are not billable, every other method is |
+| `billable` | `false` relays the call without counting or charging it (status polls, listings); `true` counts it. Unset keeps the method default: only `POST` is billable |
 | `stream` | Forces the streaming (`true`) or buffered (`false`) relay for this route |
 | `usage` | Field-by-field override of the provider `usage` mapping |
 
@@ -248,5 +248,6 @@ Only custom providers with the generic base type are served by `/passthrough/{pr
 - Redirects are never followed: a 3xx from the upstream is returned to the caller as is, so the injected key never reaches a host the upstream named.
 - Transport errors name the upstream host and path but never the query string, which for query auth carries the key.
 - Response headers are scrubbed of a query-auth key before they reach the caller or the log row: a `Location` (or any other header) that echoes the request query loses the auth parameter.
-- With query auth, a request whose query string cannot be parsed is refused with 400 rather than relayed, since the caller's own credential could be hiding in it.
+- With query auth, the caller's own copy of the auth parameter is removed and every other query segment is forwarded byte for byte, in its original order and encoding, so signed or compared query strings survive. A parameter name that cannot be decoded, or a `;` separator, is refused with 400 rather than relayed, since the caller's credential could be hiding in it.
+- Beyond `authorization`, `api-key`, `x-api-key`, `x-goog-api-key` and cookies, every caller header whose name marks it as a credential (`*-token`, `*secret*`, `*api-key*`, `*jwt*`, `cf-access-*`, `x-amzn-oidc-*`, `ocp-apim-subscription-key`, `subscription-key`, `x-functions-key`) is dropped, so a caller cannot route their own upstream account through the provider. Non-credential headers such as `x-idempotency-key` and `x-amz-target` are forwarded.
 - The buffered relay caps a response at 64 MiB; use a streaming route for anything larger.

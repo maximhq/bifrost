@@ -133,6 +133,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 						control={form.control}
 						providerName={provider.name}
 						baseProviderType={keyFormBaseProviderType(provider)}
+						hideModelFields={provider.custom_provider_config?.base_provider_type === "generic"}
 						form={form}
 					/>
 					{isEditing && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}

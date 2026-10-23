@@ -10,6 +10,8 @@ import {
 	ModelProviderName,
 	UpdateProviderRequest,
 	UpdateProviderKeyRequest,
+	GenericUsagePreview,
+	GenericUsagePreviewRequest,
 } from "@/lib/types/config";
 import { DBKey, PricingOverrideMatchType, PricingOverridePatch, PricingOverrideScopeKind } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
@@ -425,6 +427,17 @@ export const providersApi = baseApi.injectEndpoints({
 			},
 		}),
 
+		// Run a sample request/response through a generic relay's usage mapping (the unsaved one in
+		// the payload, or the stored one) and get back what the log row would carry. Sends nothing
+		// upstream and stores nothing, so no tag is invalidated.
+		previewGenericUsage: builder.mutation<GenericUsagePreview, { provider: string; body: GenericUsagePreviewRequest }>({
+			query: ({ provider, body }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/generic-usage-preview`,
+				method: "POST",
+				body,
+			}),
+		}),
+
 		// Re-run model discovery for a single key.
 		refreshProviderKeyModels: builder.mutation<ModelProviderKey, { provider: string; keyId: string }>({
 			query: ({ provider, keyId }) => ({
@@ -557,6 +570,7 @@ export const {
 	useDeleteProviderKeyMutation,
 	useRefreshProviderModelsMutation,
 	useRefreshProviderKeyModelsMutation,
+	usePreviewGenericUsageMutation,
 	useDeleteProviderMutation,
 	useGetAllKeysQuery,
 	useGetModelsQuery,

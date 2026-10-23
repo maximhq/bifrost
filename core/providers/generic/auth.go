@@ -32,25 +32,39 @@ func (provider *GenericProvider) authHeader() string {
 }
 
 // stripCallerQueryCredential removes the auth query parameter a caller may have sent, so the
-// configured key is the only credential upstream. It is a no-op when the parameter is absent. A
-// query that cannot be parsed is refused rather than forwarded: it could carry the parameter in
-// a form this cannot see, and the key is appended to whatever goes out.
+// configured key is the only credential upstream. Every other segment is forwarded byte for byte,
+// in its original order and encoding: APIs that sign or compare the query string must see exactly
+// what the caller sent. Only a segment's name is decoded, to recognise the parameter however it is
+// spelled (api%5Fkey); a name that cannot be decoded, or a ";" separator whose meaning differs
+// between servers, is refused rather than forwarded with the caller's credential possibly inside.
 func (provider *GenericProvider) stripCallerQueryCredential(rawQuery string) (string, error) {
 	param := provider.authQuery()
 	// Cheap gate: the parameter name appears literally, or something is percent-encoded and may
-	// spell it. Everything else is left untouched without a parse.
+	// spell it. Everything else is left untouched without a scan.
 	if param == "" || rawQuery == "" || (!strings.Contains(rawQuery, param) && !strings.Contains(rawQuery, "%")) {
 		return rawQuery, nil
 	}
-	values, err := url.ParseQuery(rawQuery)
-	if err != nil {
-		return "", fmt.Errorf("query string cannot be parsed: %w", err)
+	if strings.Contains(rawQuery, ";") {
+		return "", fmt.Errorf("query string cannot be parsed: a ; separator is ambiguous under query auth")
 	}
-	if _, present := values[param]; !present {
+	var kept []string
+	dropped := false
+	for _, segment := range strings.Split(rawQuery, "&") {
+		name, _, _ := strings.Cut(segment, "=")
+		decoded, err := url.QueryUnescape(name)
+		if err != nil {
+			return "", fmt.Errorf("query string cannot be parsed: %w", err)
+		}
+		if decoded == param {
+			dropped = true
+			continue
+		}
+		kept = append(kept, segment)
+	}
+	if !dropped {
 		return rawQuery, nil
 	}
-	delete(values, param)
-	return values.Encode(), nil
+	return strings.Join(kept, "&"), nil
 }
 
 // appendAuthQuery adds the key as a query parameter for the query auth type.

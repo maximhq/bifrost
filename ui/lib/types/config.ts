@@ -624,9 +624,10 @@ export type GenericRouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "
 
 export const GenericRouteMethods: GenericRouteMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
 
-// genericRouteBillableByDefault mirrors the relay's method default: GET and HEAD are polls and
-// listings and are not counted or charged unless a route says so; every other method is.
-export const genericRouteBillableByDefault = (method: GenericRouteMethod): boolean => method !== "GET" && method !== "HEAD";
+// genericRouteBillableByDefault mirrors the relay's method default: only POST is counted and
+// charged unless a route says so. GET and HEAD are polls and listings, PUT and PATCH update
+// settings, DELETE cleans up.
+export const genericRouteBillableByDefault = (method: GenericRouteMethod): boolean => method === "POST";
 
 // GenericRouteConfig matching Go's schemas.GenericRouteConfig
 export interface GenericRouteConfig {
@@ -645,6 +646,41 @@ export interface GenericProviderConfig {
 	streaming?: GenericStreamingConfig;
 	routes?: GenericRouteConfig[];
 	strict_routes?: boolean;
+}
+
+// GenericUsagePreviewRequest matching Go's generic.UsagePreviewInput plus the unsaved relay
+// config: one hypothetical call to run through the mapping.
+export interface GenericUsagePreviewRequest {
+	generic_config?: GenericProviderConfig;
+	method: string;
+	path: string;
+	accept?: string;
+	request_content_type?: string;
+	request_body?: string;
+	status_code?: number;
+	response_content_type?: string;
+	response_body?: string;
+}
+
+// GenericUsagePreview matching Go's generic.UsagePreview: what the relay would record.
+export interface GenericUsagePreview {
+	route_index: number | null;
+	route_allowed: boolean;
+	billable: boolean;
+	streams: boolean;
+	counted: boolean;
+	model_path: string;
+	model: string;
+	units_source: GenericUnitsSource;
+	units_measure: GenericUnitsMeasure;
+	units_path: string;
+	units: number | null;
+	cost_per_unit: number;
+	cost_per_request: number;
+	extracted_cost: number | null;
+	tokens: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
+	cost: number;
+	notes: string[];
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig

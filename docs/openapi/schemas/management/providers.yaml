@@ -539,7 +539,7 @@ GenericProviderConfig:
             description: Rooted segment glob; a trailing /** matches the prefix and everything below
           billable:
             type: boolean
-            description: false relays the call without counting or charging it; true counts it. Unset keeps the method default (GET/HEAD not billable, other methods billable)
+            description: false relays the call without counting or charging it; true counts it. Unset keeps the method default (only POST billable)
           stream:
             type: boolean
           usage:

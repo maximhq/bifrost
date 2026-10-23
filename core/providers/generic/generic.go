@@ -27,13 +27,44 @@ var genericPassthroughMaxResponseBytes int64 = 64 << 20
 // dispatching a /passthrough/{provider}/... request to it.
 type PassthroughProvider interface {
 	GenericConfig() *schemas.GenericProviderConfig
-	Streams(method, path, accept string, bodyStream bool) bool
-	// RouteAllowed reports whether an operation may be relayed: always, unless strict_routes is on
-	// and no routes[] entry matches it.
-	RouteAllowed(method, path string) bool
-	// ModelPath is the request body path the model is read from for this operation, or "" when
-	// no model should be read.
-	ModelPath(method, path string) string
+	// Plan matches the request against the routes once and answers everything the transport
+	// needs to dispatch it. The transport stores the plan on the request context with WithPlan so
+	// the relay does not match the routes a second time.
+	Plan(method, path, accept string, bodyStream bool) RoutePlan
+}
+
+// RoutePlan is the outcome of matching one request against a provider's routes.
+type RoutePlan struct {
+	Allowed   bool   // false only under strict_routes when no route matched
+	ModelPath string // request body path the model is read from, "" for none
+	Streams   bool   // serve with the streaming relay
+	provider  *GenericProvider
+	route     *compiledRoute // nil when no route matched
+}
+
+type routePlanContextKey struct{}
+
+// WithPlan stores a plan on the request context for the relay to pick up. It is a small handle
+// (two pointers), never request-sized data.
+func WithPlan(ctx *schemas.BifrostContext, plan RoutePlan) {
+	ctx.SetValue(routePlanContextKey{}, plan)
+}
+
+// Plan implements PassthroughProvider: one route match for the allowlist, the model path and
+// the streaming decision together.
+func (provider *GenericProvider) Plan(method, path, accept string, bodyStream bool) RoutePlan {
+	route := provider.matchRoute(method, path)
+	usage := provider.usage
+	if route != nil {
+		usage = route.usage
+	}
+	return RoutePlan{
+		Allowed:   !provider.cfg.StrictRoutes || route != nil,
+		ModelPath: usage.effectiveModelPath(),
+		Streams:   provider.streams(route, path, accept, bodyStream),
+		provider:  provider,
+		route:     route,
+	}
 }
 
 // GenericProvider relays raw HTTP requests to one configured upstream.
@@ -126,7 +157,11 @@ func (provider *GenericProvider) GenericConfig() *schemas.GenericProviderConfig 
 // path (/v1/streams/{id}) usually answers with plain JSON, and the streaming relay forwards a
 // non-SSE body unread, so the response-side usage mapping would be silently skipped.
 func (provider *GenericProvider) Streams(method, path, accept string, bodyStream bool) bool {
-	if route := provider.matchRoute(method, path); route != nil && route.stream != nil {
+	return provider.streams(provider.matchRoute(method, path), path, accept, bodyStream)
+}
+
+func (provider *GenericProvider) streams(route *compiledRoute, path, accept string, bodyStream bool) bool {
+	if route != nil && route.stream != nil {
 		return *route.stream
 	}
 	for _, glob := range provider.streamGlobs {
@@ -140,7 +175,8 @@ func (provider *GenericProvider) Streams(method, path, accept string, bodyStream
 	return bodyStream
 }
 
-// RouteAllowed implements PassthroughProvider.
+// RouteAllowed reports whether an operation may be relayed: always, unless strict_routes is on
+// and no routes[] entry matches it.
 func (provider *GenericProvider) RouteAllowed(method, path string) bool {
 	return !provider.cfg.StrictRoutes || provider.matchRoute(method, path) != nil
 }
@@ -161,19 +197,27 @@ func isEventStream(contentType string) bool {
 }
 
 // resolve returns the usage mapping and billing flag for a request: the matching route's, or the
-// provider defaults. GET and HEAD are not billable unless a route says so: on most APIs they are
-// status polls and listings, and charging a poll would spend a caller's allowance on nothing. A
-// route's explicit billable flag turns that around either way.
-func (provider *GenericProvider) resolve(method, path string) (resolvedUsage, bool, *compiledRoute) {
-	if route := provider.matchRoute(method, path); route != nil {
+// provider defaults (see billableByDefault for which methods count without a route). The route is
+// taken from the plan the transport stored on the context when it was made for this provider
+// instance, so the routes are matched once per request; the Go SDK path, which stores none,
+// matches here.
+func (provider *GenericProvider) resolve(ctx *schemas.BifrostContext, method, path string) (resolvedUsage, bool, *compiledRoute) {
+	var route *compiledRoute
+	if plan, ok := ctx.Value(routePlanContextKey{}).(RoutePlan); ok && plan.provider == provider {
+		route = plan.route
+	} else {
+		route = provider.matchRoute(method, path)
+	}
+	if route != nil {
 		return route.usage, route.billable, route
 	}
 	return provider.usage, billableByDefault(method, nil), nil
 }
 
-// ModelPath implements PassthroughProvider.
+// ModelPath is the request body path the model is read from for this operation, or "" when no
+// model should be read.
 func (provider *GenericProvider) ModelPath(method, path string) string {
-	usage, _, _ := provider.resolve(method, path)
+	usage, _, _ := provider.resolve(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), method, path)
 	return usage.effectiveModelPath()
 }
 
@@ -219,7 +263,7 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	usageMapping, billable, route := provider.resolve(req.Method, req.Path)
+	usageMapping, billable, route := provider.resolve(ctx, req.Method, req.Path)
 	streamingRoute := route != nil && route.stream != nil && *route.stream
 	requestUnits := usageMapping.requestUnits(req.SafeHeaders["content-type"], req.Body)
 
@@ -292,7 +336,7 @@ func (provider *GenericProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	usageMapping, billable, _ := provider.resolve(req.Method, req.Path)
+	usageMapping, billable, _ := provider.resolve(ctx, req.Method, req.Path)
 	requestUnits := usageMapping.requestUnits(req.SafeHeaders["content-type"], req.Body)
 
 	startTime := time.Now()

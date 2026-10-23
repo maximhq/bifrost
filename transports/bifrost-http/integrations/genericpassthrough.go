@@ -106,10 +106,16 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 		return
 	}
 
+	// The routes are matched once here; the plan rides on the context so the relay reuses it.
+	method := string(ctx.Method())
+	body := ctx.Request.Body()
+	contentType := string(ctx.Request.Header.ContentType())
+	rawQuery := string(ctx.URI().QueryString())
+	plan := gp.Plan(method, path, string(ctx.Request.Header.Peek("Accept")), genericBodyStreams(body, contentType) || passthroughQueryStreams(method, rawQuery))
+
 	// With strict_routes, an operation the operator did not list is refused before anything else
 	// is looked at, the same way the path guard refuses a malformed path.
-	method := string(ctx.Method())
-	if !gp.RouteAllowed(method, path) {
+	if !plan.Allowed {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "no route for "+method+" "+path+" on provider "+name+" (strict_routes)", fasthttp.StatusNotFound))
 		return
 	}
@@ -121,15 +127,15 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 	}
 
 	safeHeaders, _ := collectPassthroughHeaders(ctx)
-	body := ctx.Request.Body()
-	contentType := string(ctx.Request.Header.ContentType())
-	model := extractGenericModel(body, contentType, gp.ModelPath(method, path))
+	stripCallerCredentialHeaders(safeHeaders)
+	model := extractGenericModel(body, contentType, plan.ModelPath)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
+	generic.WithPlan(bifrostCtx, plan)
 	passthroughReq := &schemas.BifrostPassthroughRequest{
 		Method:        method,
 		Path:          path,
-		RawQuery:      string(ctx.URI().QueryString()),
+		RawQuery:      rawQuery,
 		Body:          body,
 		SafeHeaders:   safeHeaders,
 		Provider:      provider,
@@ -137,10 +143,31 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 		ModelResolved: true,
 	}
 
-	accept := string(ctx.Request.Header.Peek("Accept"))
-	if gp.Streams(method, path, accept, genericBodyStreams(body, contentType) || passthroughQueryStreams(method, passthroughReq.RawQuery)) {
+	if plan.Streams {
 		g.handlePassthroughStream(ctx, bifrostCtx, cancel, provider, passthroughReq)
 	} else {
 		g.handlePassthroughNonStream(ctx, bifrostCtx, cancel, provider, passthroughReq)
+	}
+}
+
+// genericCredentialHeaders are credential-bearing header names the shared sensitive-header
+// classifier does not catch (it keys on api-key, token, secret, authorization and the like).
+var genericCredentialHeaders = map[string]struct{}{
+	"ocp-apim-subscription-key": {}, // Azure API Management and Cognitive Services
+	"subscription-key":          {},
+	"x-functions-key":           {}, // Azure Functions
+}
+
+// stripCallerCredentialHeaders drops every caller header that carries a credential, beyond the
+// fixed set the shared collector removes. The configured key is the only credential a generic
+// relay sends: an LLM provider reads only Authorization, but a non-LLM API may honour any of
+// these, and forwarding one would let a caller use their own upstream account through the
+// provider's host pin, logging and governance. Non-credential keys such as idempotency keys are
+// kept, so this is a name list, not a suffix rule.
+func stripCallerCredentialHeaders(headers map[string]string) {
+	for name := range headers {
+		if _, credential := genericCredentialHeaders[name]; credential || schemas.IsSensitiveHeader(name) {
+			delete(headers, name)
+		}
 	}
 }

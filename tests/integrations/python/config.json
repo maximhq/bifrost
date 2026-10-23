@@ -226,6 +226,7 @@
             {
               "method": "PUT",
               "path": "/put",
+              "billable": true,
               "usage": {
                 "units_source": "request",
                 "units_measure": "body_chars",

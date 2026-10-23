@@ -55,7 +55,12 @@ func compileGlob(glob string) routeGlob {
 // is matched with path.Match against one path segment; a prefix glob accepts any remainder,
 // including none. A trailing slash is an extra empty segment and only a prefix glob admits it.
 func (g routeGlob) match(requestPath string) bool {
-	segments := strings.Split(strings.TrimPrefix(requestPath, "/"), "/")
+	return g.matchSegments(strings.Split(strings.TrimPrefix(requestPath, "/"), "/"))
+}
+
+// matchSegments is match on a path already split once, so a request checked against many routes
+// splits its path a single time.
+func (g routeGlob) matchSegments(segments []string) bool {
 	if g.prefix {
 		if len(segments) < len(g.segments) {
 			return false
@@ -118,14 +123,17 @@ func resolveUsage(base *schemas.GenericUsageConfig, override *schemas.GenericUsa
 }
 
 // billableByDefault resolves a route's billable flag: the explicit value when set, else the
-// method default shared with unrouted operations (GET and HEAD are polls and listings, not
-// counted; everything else is). A route therefore never flips a method's billing just by
-// existing, which matters for routes imported wholesale from an OpenAPI document.
+// method default shared with unrouted operations. Only POST is billable by default: on most
+// APIs GET and HEAD are polls and listings, PUT and PATCH update settings, DELETE cleans up (an
+// Azure avatar job, a Tavily crawl), and charging those would spend a caller's allowance on
+// nothing. A route therefore never flips a method's billing just by existing, which matters for
+// routes imported wholesale from an OpenAPI document; set billable: true where an API bills
+// another method.
 func billableByDefault(method string, explicit *bool) bool {
 	if explicit != nil {
 		return *explicit
 	}
-	return !strings.EqualFold(method, "GET") && !strings.EqualFold(method, "HEAD")
+	return strings.EqualFold(method, "POST")
 }
 
 func compileRoutes(cfg *schemas.GenericProviderConfig) []compiledRoute {
@@ -159,11 +167,31 @@ func compileStreamGlobs(cfg *schemas.GenericProviderConfig) []routeGlob {
 
 // matchRoute returns the first routes[] entry whose method and glob fit, or nil.
 func (provider *GenericProvider) matchRoute(method, requestPath string) *compiledRoute {
+	if len(provider.routes) == 0 {
+		return nil
+	}
+	// The method is upper-cased and the path split once, not once per route: with a routes list
+	// the size of an OpenAPI import that is the difference between 2 and 200 allocations.
+	upper := method
+	if !isUpper(method) {
+		upper = strings.ToUpper(method)
+	}
+	segments := strings.Split(strings.TrimPrefix(requestPath, "/"), "/")
 	for i := range provider.routes {
 		route := &provider.routes[i]
-		if route.method == strings.ToUpper(method) && route.glob.match(requestPath) {
+		if route.method == upper && route.glob.matchSegments(segments) {
 			return route
 		}
 	}
 	return nil
+}
+
+// isUpper reports whether s has no lower-case ASCII letter, the common case for an HTTP method.
+func isUpper(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'a' && s[i] <= 'z' {
+			return false
+		}
+	}
+	return true
 }

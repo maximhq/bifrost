@@ -282094,19 +282094,19 @@
           }
         },
         {
-          "name": "[EXPECT-400] 262.17 GET /passthrough/generic_echo_query/get?api_key=caller&x=%zz - query auth refuses a query string it cannot parse (generic passthrough)",
+          "name": "262.17 GET /passthrough/generic_echo_query/get?api_key=caller&x=%zz - query auth strips only the caller's api_key and forwards every other segment byte for byte (generic passthrough)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// With query auth, a query that does not parse could hide the caller's credential from the strip,",
-                  "// so the relay refuses it with 400 before key selection instead of forwarding both keys upstream.",
-                  "pm.test('generic relay: unparsable query refused under query auth', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
-                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('cannot be parsed');",
-                  "});"
+                  "// With query auth only the caller's api_key segment is removed; x=%zz is not something Bifrost decodes or",
+                  "// re-encodes, it is forwarded as sent and the upstream makes of it what it will. The configured key is the",
+                  "// only credential that arrives.",
+                  "pm.test('generic relay: query with an undecodable value is relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('generic relay: caller api_key replaced, other segment kept', function () { pm.expect(j.args.api_key, JSON.stringify(j.args)).to.eql('harness-dummy'); pm.expect(j.args, JSON.stringify(j.args)).to.have.property('x'); });"
                 ]
               }
             }
@@ -282193,6 +282193,67 @@
                 "passthrough",
                 "generic_echo_units",
                 "put"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.18 POST /passthrough/generic_echo/post - caller credential headers of any spelling are dropped, non-credential headers forwarded (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// postman-echo returns the headers it received. The caller's Ocp-Apim-Subscription-Key and X-Auth-Token are",
+                  "// credentials a non-LLM upstream might honour, so they never arrive; X-Idempotency-Key and X-Amz-Target are not",
+                  "// credentials and must. The configured x-api-key is injected as always.",
+                  "pm.test('generic relay: request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var h = pm.response.json().headers || {};",
+                  "pm.test('generic relay: caller credential headers dropped', function () { pm.expect(h, JSON.stringify(h)).to.not.have.property('ocp-apim-subscription-key'); pm.expect(h, JSON.stringify(h)).to.not.have.property('x-auth-token'); });",
+                  "pm.test('generic relay: non-credential headers forwarded', function () { pm.expect(h['x-idempotency-key'], JSON.stringify(h)).to.eql('idem-262-18'); pm.expect(h['x-amz-target'], JSON.stringify(h)).to.eql('Svc.Op'); });",
+                  "pm.test('generic relay: configured key injected', function () { pm.expect(h['x-api-key']).to.eql('harness-dummy'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Ocp-Apim-Subscription-Key",
+                "value": "caller-azure-key"
+              },
+              {
+                "key": "X-Auth-Token",
+                "value": "caller-token"
+              },
+              {
+                "key": "X-Idempotency-Key",
+                "value": "idem-262-18"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "Svc.Op"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"q\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo",
+                "post"
               ]
             }
           }

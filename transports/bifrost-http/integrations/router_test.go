@@ -2206,6 +2206,7 @@ func (a genericPassthroughTestAccount) GetConfigForProvider(p schemas.ModelProvi
 
 type genericUpstreamHit struct {
 	method, path, apiKey, authorization string
+	headers                             http.Header
 }
 
 func newGenericPassthroughFixture(t *testing.T) (*router.Router, func() []genericUpstreamHit) {
@@ -2214,7 +2215,7 @@ func newGenericPassthroughFixture(t *testing.T) (*router.Router, func() []generi
 	var hits []genericUpstreamHit
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		hits = append(hits, genericUpstreamHit{method: r.Method, path: r.URL.RequestURI(), apiKey: r.Header.Get("x-api-key"), authorization: r.Header.Get("Authorization")})
+		hits = append(hits, genericUpstreamHit{method: r.Method, path: r.URL.RequestURI(), apiKey: r.Header.Get("x-api-key"), authorization: r.Header.Get("Authorization"), headers: r.Header.Clone()})
 		mu.Unlock()
 		if strings.HasPrefix(r.URL.Path, "/live/") {
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -2261,6 +2262,8 @@ func TestGenericPassthroughRoute(t *testing.T) {
 		wantUpstream string
 		wantBodyHas  string
 		wantStreamed bool
+		wantDropped  []string
+		wantKept     map[string]string
 	}{
 		{name: "POST relayed with the operator key", uri: "/passthrough/echo/search?q=1", body: `{"engine":"fast"}`, headers: map[string]string{"x-api-key": "caller", "Authorization": "Bearer caller"}, wantStatus: fasthttp.StatusOK, wantUpstream: "/search?q=1"},
 		{name: "GET relayed", method: fasthttp.MethodGet, uri: "/passthrough/echo/jobs/1", wantStatus: fasthttp.StatusOK, wantUpstream: "/jobs/1"},
@@ -2272,6 +2275,7 @@ func TestGenericPassthroughRoute(t *testing.T) {
 		{name: "path guard runs before dispatch", uri: "/passthrough/echo/@evil.example/x", body: `{}`, wantStatus: fasthttp.StatusBadRequest, wantBodyHas: "invalid passthrough path"},
 		{name: "x-model-provider must match the segment", uri: "/passthrough/echo/search", body: `{}`, headers: map[string]string{"x-model-provider": "openai"}, wantStatus: fasthttp.StatusBadRequest, wantBodyHas: "provider does not match"},
 		{name: "non-json body is relayed without model parsing", uri: "/passthrough/echo/upload", body: "<xml/>", headers: map[string]string{"Content-Type": "application/xml"}, wantStatus: fasthttp.StatusOK, wantUpstream: "/upload"},
+		{name: "caller credential headers of every spelling are dropped, other headers kept", uri: "/passthrough/echo/search", body: `{}`, headers: map[string]string{"Ocp-Apim-Subscription-Key": "caller", "X-Auth-Token": "caller", "X-Functions-Key": "caller", "X-Idempotency-Key": "idem-1", "X-Amz-Target": "Svc.Op"}, wantStatus: fasthttp.StatusOK, wantUpstream: "/search", wantDropped: []string{"Ocp-Apim-Subscription-Key", "X-Auth-Token", "X-Functions-Key"}, wantKept: map[string]string{"X-Idempotency-Key": "idem-1", "X-Amz-Target": "Svc.Op"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2306,6 +2310,12 @@ func TestGenericPassthroughRoute(t *testing.T) {
 			require.Equal(t, tc.wantUpstream, got[0].path)
 			require.Equal(t, "operator-echo", got[0].apiKey, "the configured key replaces the caller's")
 			require.Empty(t, got[0].authorization, "caller authorization never reaches the upstream")
+			for _, name := range tc.wantDropped {
+				require.Empty(t, got[0].headers.Get(name), "caller credential header %s must not reach the upstream", name)
+			}
+			for name, value := range tc.wantKept {
+				require.Equal(t, value, got[0].headers.Get(name), "non-credential header %s must be forwarded", name)
+			}
 			if !tc.wantStreamed {
 				require.Equal(t, "echo", string(ctx.Response.Header.Peek("X-Upstream")), "upstream headers reach the caller")
 				require.Equal(t, "echo", string(ctx.Response.Header.Peek("x-bifrost-provider")))
@@ -2380,9 +2390,9 @@ func TestGenericPassthroughRouteModelPath(t *testing.T) {
 	t.Cleanup(client.Shutdown)
 	_, gp, ok := resolveGenericProvider(client, "echo")
 	require.True(t, ok)
-	assert.Equal(t, "name", gp.ModelPath("POST", "/named"))
-	assert.Equal(t, "engine", gp.ModelPath("POST", "/search"))
-	assert.Equal(t, "engine", gp.ModelPath("GET", "/named"), "the route is method-specific")
+	assert.Equal(t, "name", gp.Plan("POST", "/named", "", false).ModelPath)
+	assert.Equal(t, "engine", gp.Plan("POST", "/search", "", false).ModelPath)
+	assert.Equal(t, "engine", gp.Plan("GET", "/named", "", false).ModelPath, "the route is method-specific")
 }
 
 func BenchmarkHandleGenericPassthrough(b *testing.B) {

@@ -3,6 +3,7 @@ package generic
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -498,10 +499,16 @@ func testCallerCredentialsStripped(t *testing.T) {
 		require.Len(t, got, 1)
 		assert.Equal(t, "q=1&key=real", got[0].RawQuery)
 
-		_, bifrostErr = provider.Passthrough(testCtx(t), bearerKey("real"), relayRequest(http.MethodGet, "/get", "key=caller&q=%zz", "", nil))
-		require.NotNil(t, bifrostErr, "a query that cannot be parsed is refused")
+		_, bifrostErr = provider.Passthrough(testCtx(t), bearerKey("real"), relayRequest(http.MethodGet, "/get", "z=1&key=caller&q=%zz", "", nil))
+		require.Nil(t, bifrostErr, "a value that does not decode is forwarded as sent; the credential is still stripped")
+		got = up.requests()
+		require.Len(t, got, 2)
+		assert.Equal(t, "z=1&q=%zz&key=real", got[1].RawQuery, "other segments keep their order and bytes")
+
+		_, bifrostErr = provider.Passthrough(testCtx(t), bearerKey("real"), relayRequest(http.MethodGet, "/get", "ke%zzy=caller&q=1", "", nil))
+		require.NotNil(t, bifrostErr, "a parameter name that cannot be decoded is refused")
 		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
-		assert.Len(t, up.requests(), 1, "nothing reached the upstream with the caller's credential")
+		assert.Len(t, up.requests(), 2, "nothing reached the upstream with the caller's credential")
 	})
 }
 
@@ -690,6 +697,31 @@ func BenchmarkGenericPassthroughUnary(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, bifrostErr := provider.Passthrough(ctx, key, req); bifrostErr != nil {
 			b.Fatal(bifrostErr.Error.Message)
+		}
+	}
+}
+
+// BenchmarkGenericRoutePlan measures one request's route matching against a routes list the size
+// an OpenAPI import produces. Plan runs once per request in the transport and the relay reuses it
+// through the context, so this is the whole per-request matching cost.
+func BenchmarkGenericRoutePlan(b *testing.B) {
+	cfg := &schemas.GenericProviderConfig{StrictRoutes: true}
+	for i := 0; i < 200; i++ {
+		cfg.Routes = append(cfg.Routes, schemas.GenericRouteConfig{Method: "POST", Path: fmt.Sprintf("/v1/resource%d/*/action", i)})
+	}
+	provider := &GenericProvider{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(nil, nil)}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	b.Cleanup(ctx.Cancel)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		plan := provider.Plan("POST", "/v1/resource199/42/action", "", false)
+		if !plan.Allowed {
+			b.Fatal("route must match")
+		}
+		WithPlan(ctx, plan)
+		if _, _, route := provider.resolve(ctx, "POST", "/v1/resource199/42/action"); route == nil {
+			b.Fatal("plan must be reused")
 		}
 	}
 }
