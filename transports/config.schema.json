@@ -5388,10 +5388,170 @@
     },
     "proxy_config": {
       "$ref": "#/$defs/global_proxy_config"
+    },
+    "warp": {
+      "$ref": "#/$defs/warp_config"
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "warp_config": {
+      "type": "object",
+      "description": "Warp settings (the dashboard's Settings > Warp page): the models Warp runs on, its behaviour and limits, log search, and topics. Takes the same body as PUT /api/warp/config and goes through the same validation and vector namespace provisioning. An omitted embedding, search or topic field keeps its stored value; every other omitted field takes its default, and additional_models is replaced whole. Under source_of_truth \"split\" it is applied when new or changed and dashboard edits are kept otherwise; under \"config.json\" it is applied on every startup. Omit to manage Warp from the dashboard. The warp feature flag (feature_flags.flags.warp) is separate.",
+      "if": {
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "then": {
+        "required": [
+          "provider",
+          "model"
+        ]
+      },
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show Warp in the dashboard. Requires a connected vector store, provider, model, embedding_provider, embedding_model and embedding_dimension."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider of the default model that runs Warp's agent loop. Required when enabled."
+        },
+        "model": {
+          "type": "string",
+          "description": "Default model that runs Warp's agent loop. Required when enabled."
+        },
+        "api_key_id": {
+          "type": "string",
+          "description": "ID of one of the provider's configured keys to pin Warp to. Omit to load-balance across the provider's keys, or for a provider that needs no key."
+        },
+        "additional_models": {
+          "type": "array",
+          "maxItems": 20,
+          "description": "Other models people can switch to in the chat panel. Replaced whole: omitting it removes every additional model.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "api_key_id": {
+                "type": "string",
+                "description": "ID of one of the provider's configured keys to pin this model to"
+              }
+            },
+            "required": [
+              "provider",
+              "model"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "max_iterations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20,
+          "not": {
+            "const": 1
+          },
+          "default": 8,
+          "description": "Tool-call rounds Warp may run before it must answer. 0 means the default; 1 is rejected because the last round is reserved for answering."
+        },
+        "request_timeout_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 120,
+          "description": "Deadline for each call to Warp's model. 0 means the default."
+        },
+        "history_retention_days": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30,
+          "description": "How long a saved chat is kept after its last turn. 0 means the default. Independent of logs_store retention."
+        },
+        "system_prompt_suffix": {
+          "type": "string",
+          "description": "Text appended to Warp's built-in system prompt, such as naming conventions or cost model"
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature. Omit to use the provider's default; 0 is fully deterministic."
+        },
+        "reasoning_effort": {
+          "type": "string",
+          "enum": [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "description": "Effort level for reasoning models. Omit for models that are not reasoning models."
+        },
+        "embedding_provider": {
+          "type": "string",
+          "description": "Provider of the model used to index and search logs. Required when enabled."
+        },
+        "embedding_model": {
+          "type": "string",
+          "description": "Model used to index and search logs. Required when enabled."
+        },
+        "embedding_api_key_id": {
+          "type": "string",
+          "description": "ID of one of the embedding provider's configured keys to pin embedding calls to"
+        },
+        "embedding_dimension": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Vector size the embedding model returns, e.g. 1536 for text-embedding-3-small. Required when enabled."
+        },
+        "log_vector_store_namespace": {
+          "type": "string",
+          "default": "BifrostWarpLogs",
+          "description": "Vector store namespace holding Warp's log index. Must change whenever embedding_provider, embedding_model or embedding_dimension changes."
+        },
+        "semantic_search_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5,
+          "description": "Minimum similarity for a semantic log search match. 0 resets it to the default; omitting it keeps the stored value."
+        },
+        "semantic_search_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 25,
+          "default": 10,
+          "description": "Most matches one semantic log search returns. 0 resets it to the default; omitting it keeps the stored value."
+        },
+        "topic_discovery_min_requests": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20000,
+          "not": {
+            "minimum": 1,
+            "maximum": 9
+          },
+          "default": 100,
+          "description": "New topic threshold: how many requests that matched no topic must be waiting before Warp clusters them into new topics. Between 10 and 20000; 0 resets it to the default; omitting it keeps the stored value."
+        }
+      },
+      "additionalProperties": false
+    },
     "global_proxy_config": {
       "type": "object",
       "description": "Global outbound proxy (the dashboard's proxy settings page) and which components use it. Under source_of_truth \"split\" it is applied when new or changed and dashboard edits are kept otherwise; under \"config.json\" it is applied on every startup. Omit to manage the proxy from the dashboard. Not the same as a provider's own proxy_config.",
