@@ -312,7 +312,7 @@ OAuthKeyConfig:
       type: string
       minLength: 1
       pattern: '^/'
-      description: token_exchange absolute path of the subject token (e.g. a Kubernetes projected service account token), re-read on every exchange
+      description: token_exchange absolute path of the subject token (e.g. a Kubernetes projected service account token), inside a directory listed in the BIFROST_SUBJECT_TOKEN_DIRS environment variable; re-read on every exchange
     subject_token_type:
       type: string
       minLength: 1

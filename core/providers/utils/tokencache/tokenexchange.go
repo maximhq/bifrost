@@ -92,7 +92,11 @@ func TokenExchangeMinter(cfg TokenExchangeConfig, hc *http.Client) Minter[string
 }
 
 func readSubjectToken(path string) (string, error) {
-	f, err := os.Open(path)
+	real, err := schemas.ResolveSubjectTokenFile(path)
+	if err != nil {
+		return "", err
+	}
+	f, err := os.Open(real)
 	if err != nil {
 		return "", fmt.Errorf("subject_token_file could not be read: %w", err)
 	}

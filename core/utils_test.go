@@ -482,6 +482,7 @@ func TestValidateKeyGithubCopilot(t *testing.T) {
 }
 
 func TestValidateKeyOAuthKeyConfig(t *testing.T) {
+	t.Setenv(schemas.SubjectTokenDirsEnv, "/var/run/secrets/openai")
 	cc := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
 		c := &schemas.OAuthKeyConfig{
 			GrantType:    schemas.OAuthGrantClientCredentials,
@@ -532,6 +533,8 @@ func TestValidateKeyOAuthKeyConfig(t *testing.T) {
 		{name: "token_exchange missing subject_token_file", key: schemas.Key{OAuthKeyConfig: te(func(c *schemas.OAuthKeyConfig) { c.SubjectTokenFile = " " })}, wantError: "subject_token_file is required"},
 		{name: "token_exchange relative subject_token_file", key: schemas.Key{OAuthKeyConfig: te(func(c *schemas.OAuthKeyConfig) { c.SubjectTokenFile = "token" })}, wantError: "must be an absolute path"},
 		{name: "token_exchange bad request_encoding", key: schemas.Key{OAuthKeyConfig: te(func(c *schemas.OAuthKeyConfig) { c.RequestEncoding = "xml" })}, wantError: "request_encoding must be form or json"},
+		{name: "token_exchange file outside the allowed directories", key: schemas.Key{OAuthKeyConfig: te(func(c *schemas.OAuthKeyConfig) { c.SubjectTokenFile = "/etc/secrets/key" })}, wantError: "must be inside a directory listed in"},
+		{name: "token_exchange file climbing out with ..", key: schemas.Key{OAuthKeyConfig: te(func(c *schemas.OAuthKeyConfig) { c.SubjectTokenFile = "/var/run/secrets/openai/../../../etc/passwd" })}, wantError: "must be inside a directory listed in"},
 		{name: "token_exchange fields on another grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.SubjectTokenFile = "/t" })}, wantError: "apply to the token_exchange grant only"},
 		// Key selection runs this on every request. A static value always wins over the block, so
 		// an incomplete block must not take a usable key out of rotation; the management API

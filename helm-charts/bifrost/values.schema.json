@@ -7633,7 +7633,7 @@
               "type": "string",
               "minLength": 1,
               "pattern": "^/",
-              "description": "token_exchange: absolute path of the subject token, such as a Kubernetes projected service account token. Re-read on every exchange, so a token the platform rotates in place is picked up."
+              "description": "token_exchange: absolute path of the subject token, such as a Kubernetes projected service account token. Must be inside a directory listed in the BIFROST_SUBJECT_TOKEN_DIRS environment variable. Re-read on every exchange, so a token the platform rotates in place is picked up."
             },
             "subject_token_type": {
               "type": "string",

@@ -153,7 +153,6 @@ func TestOAuthKeyConfigMintsBearer(t *testing.T) {
 
 // Workload identity federation end to end: subject token file → JSON token exchange → bearer.
 func TestOAuthKeyConfigTokenExchangeMintsBearer(t *testing.T) {
-	t.Parallel()
 	var (
 		mu          sync.Mutex
 		contentType string
@@ -175,7 +174,9 @@ func TestOAuthKeyConfigTokenExchangeMintsBearer(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	tokenFile := filepath.Join(t.TempDir(), "token")
+	tokenDir := t.TempDir()
+	t.Setenv(schemas.SubjectTokenDirsEnv, tokenDir)
+	tokenFile := filepath.Join(tokenDir, "token")
 	if err := os.WriteFile(tokenFile, []byte("k8s-projected-jwt\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

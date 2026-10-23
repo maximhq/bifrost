@@ -376,7 +376,7 @@ curl --location 'http://localhost:8080/api/providers/acme-llm/keys' \
 | `signing_algorithm` | | `RS256` (default), `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `ES512`. Symmetric algorithms are refused. |
 | `assertion_lifetime_seconds` | | Seconds from issue until the assertion expires (`exp` = now + value). Default `300`, maximum `3600`. Bifrost backdates `iat` and `nbf` by 30 seconds for clock skew, so the assertion's `exp - iat` span is this value plus 30; pick a value 30 seconds under any span limit your identity provider enforces. |
 | `scopes` | | Scopes requested, sent space-joined. |
-| `subject_token_file` | token exchange | Absolute path of the subject token. Re-read on every exchange, so a token the platform rotates in place is picked up. |
+| `subject_token_file` | token exchange | Absolute path of the subject token, inside a directory listed in the `BIFROST_SUBJECT_TOKEN_DIRS` environment variable. Re-read on every exchange, so a token the platform rotates in place is picked up. |
 | `subject_token_type` | | RFC 8693 token type URI of the subject token. Default `urn:ietf:params:oauth:token-type:jwt`. |
 | `request_encoding` | | `form` (default) or `json` for the token exchange request body. OpenAI's token endpoint requires `json`. |
 | `extra_params` | | Extra form parameters sent on every token request. Values are masked when the key is read back, and the column is encrypted at rest only when encryption is enabled (`encryption_key` or `BIFROST_ENCRYPTION_KEY`, see [config.json](/deployment-guides/config-json)), like every other credential column. This map is not the place for a credential: use `client_secret` or `private_key`. |
@@ -403,7 +403,12 @@ volumeMounts:
   - name: openai-token
     mountPath: /var/run/secrets/openai
     readOnly: true
+env:
+  - name: BIFROST_SUBJECT_TOKEN_DIRS
+    value: /var/run/secrets/openai
 ```
+
+`BIFROST_SUBJECT_TOKEN_DIRS` lists the directories (separated by `:`) that `subject_token_file` may point into; without it the file is refused. It is process environment rather than key configuration, so someone who can edit keys through the API cannot make Bifrost read, and send to a token endpoint of their choice, any other file on the host. Symlinks are followed only while they stay inside the listed directories, which projected tokens do.
 
 Point a key on the `openai` provider at it:
 

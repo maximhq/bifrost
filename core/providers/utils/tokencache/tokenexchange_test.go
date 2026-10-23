@@ -62,6 +62,14 @@ func (es *exchangeServer) snapshot() (int, string, map[string]string) {
 	return es.hits, es.contentType, es.params
 }
 
+// tokenDir returns a fresh directory allowed by SubjectTokenDirsEnv for this test.
+func tokenDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv(schemas.SubjectTokenDirsEnv, dir)
+	return dir
+}
+
 func writeSubjectToken(t *testing.T, path, token string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(token+"\n"), 0o600))
@@ -70,7 +78,7 @@ func writeSubjectToken(t *testing.T, path, token string) {
 func TestTokenExchangeMinter(t *testing.T) {
 	t.Run("posts the subject token as an RFC 8693 form by default", func(t *testing.T) {
 		es := newExchangeServer(t)
-		file := filepath.Join(t.TempDir(), "token")
+		file := filepath.Join(tokenDir(t), "token")
 		writeSubjectToken(t, file, "subject-jwt-1")
 		mint := TokenExchangeMinter(TokenExchangeConfig{
 			TokenURL:         es.URL,
@@ -101,7 +109,7 @@ func TestTokenExchangeMinter(t *testing.T) {
 
 	t.Run("json encoding sends the flat object OpenAI expects", func(t *testing.T) {
 		es := newExchangeServer(t)
-		file := filepath.Join(t.TempDir(), "token")
+		file := filepath.Join(tokenDir(t), "token")
 		writeSubjectToken(t, file, "subject-jwt")
 		mint := TokenExchangeMinter(TokenExchangeConfig{
 			TokenURL:         es.URL,
@@ -126,7 +134,7 @@ func TestTokenExchangeMinter(t *testing.T) {
 
 	t.Run("re-reads the subject token file on every exchange", func(t *testing.T) {
 		es := newExchangeServer(t)
-		file := filepath.Join(t.TempDir(), "token")
+		file := filepath.Join(tokenDir(t), "token")
 		writeSubjectToken(t, file, "first")
 		mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: es.URL, SubjectTokenFile: file}, authClient(t))
 
@@ -154,7 +162,7 @@ func TestTokenExchangeMinter(t *testing.T) {
 	} {
 		t.Run(tc.name+" is a configuration fault that never reaches the endpoint", func(t *testing.T) {
 			es := newExchangeServer(t)
-			file := filepath.Join(t.TempDir(), "token")
+			file := filepath.Join(tokenDir(t), "token")
 			tc.prepare(t, file)
 			mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: es.URL, SubjectTokenFile: file}, authClient(t))
 
@@ -172,7 +180,7 @@ func TestTokenExchangeMinter(t *testing.T) {
 		es := newExchangeServer(t)
 		es.status = http.StatusUnauthorized
 		es.body = `{"error":{"message":"The provided service_account_id mapping does not match token attributes for secret-subject-jwt.","type":"invalid_request_error","param":null,"code":"invalid_grant"}}`
-		file := filepath.Join(t.TempDir(), "token")
+		file := filepath.Join(tokenDir(t), "token")
 		writeSubjectToken(t, file, "secret-subject-jwt")
 		mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: es.URL, SubjectTokenFile: file, Encoding: schemas.OAuthRequestEncodingJSON}, authClient(t))
 
@@ -183,12 +191,69 @@ func TestTokenExchangeMinter(t *testing.T) {
 		assert.NotContains(t, bErr.Error.Message, "(no detail)")
 	})
 
+	t.Run("a file outside the allowed directories is never read or sent", func(t *testing.T) {
+		es := newExchangeServer(t)
+		tokenDir(t)
+		outside := filepath.Join(t.TempDir(), "secret")
+		writeSubjectToken(t, outside, "host-secret")
+		mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: es.URL, SubjectTokenFile: outside}, authClient(t))
+
+		_, bErr := mint(context.Background(), nil)
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "must be inside a directory listed in "+schemas.SubjectTokenDirsEnv)
+		hits, _, _ := es.snapshot()
+		assert.Zero(t, hits)
+	})
+
+	t.Run("a symlink out of the allowed directory is refused", func(t *testing.T) {
+		es := newExchangeServer(t)
+		dir := tokenDir(t)
+		outside := filepath.Join(t.TempDir(), "secret")
+		writeSubjectToken(t, outside, "host-secret")
+		link := filepath.Join(dir, "token")
+		require.NoError(t, os.Symlink(outside, link))
+		mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: es.URL, SubjectTokenFile: link}, authClient(t))
+
+		_, bErr := mint(context.Background(), nil)
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "resolves outside the directories")
+		hits, _, _ := es.snapshot()
+		assert.Zero(t, hits)
+	})
+
+	t.Run("a symlink chain inside the allowed directory is followed, as Kubernetes projects tokens", func(t *testing.T) {
+		es := newExchangeServer(t)
+		dir := tokenDir(t)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "..2026_10_23"), 0o700))
+		writeSubjectToken(t, filepath.Join(dir, "..2026_10_23", "token"), "projected-jwt")
+		require.NoError(t, os.Symlink("..2026_10_23", filepath.Join(dir, "..data")))
+		require.NoError(t, os.Symlink(filepath.Join("..data", "token"), filepath.Join(dir, "token")))
+		mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: es.URL, SubjectTokenFile: filepath.Join(dir, "token")}, authClient(t))
+
+		_, bErr := mint(context.Background(), nil)
+		require.Nil(t, bErr)
+		_, _, params := es.snapshot()
+		assert.Equal(t, "projected-jwt", params["subject_token"])
+	})
+
+	t.Run("no allowed directories means the file source is refused", func(t *testing.T) {
+		es := newExchangeServer(t)
+		file := filepath.Join(tokenDir(t), "token")
+		writeSubjectToken(t, file, "subject-jwt")
+		t.Setenv(schemas.SubjectTokenDirsEnv, "")
+		mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: es.URL, SubjectTokenFile: file}, authClient(t))
+
+		_, bErr := mint(context.Background(), nil)
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "requires the "+schemas.SubjectTokenDirsEnv)
+	})
+
 	for _, encoding := range []schemas.OAuthRequestEncoding{schemas.OAuthRequestEncodingForm, schemas.OAuthRequestEncodingJSON} {
 		t.Run(string(encoding)+": an endpoint error never echoes the subject token", func(t *testing.T) {
 			es := newExchangeServer(t)
 			es.status = http.StatusUnauthorized
 			es.body = `{"error":"invalid_grant","error_description":"token secret-subject-jwt was not accepted"}`
-			file := filepath.Join(t.TempDir(), "token")
+			file := filepath.Join(tokenDir(t), "token")
 			writeSubjectToken(t, file, "secret-subject-jwt")
 			mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: es.URL, SubjectTokenFile: file, Encoding: encoding}, authClient(t))
 
@@ -204,7 +269,7 @@ func TestTokenExchangeMinter(t *testing.T) {
 
 func TestResolveBearerTokenExchange(t *testing.T) {
 	es := newExchangeServer(t)
-	file := filepath.Join(t.TempDir(), "token")
+	file := filepath.Join(tokenDir(t), "token")
 	writeSubjectToken(t, file, "subject-jwt")
 	cfg := &schemas.OAuthKeyConfig{
 		GrantType:        schemas.OAuthGrantTokenExchange,
