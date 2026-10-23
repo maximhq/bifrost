@@ -279705,6 +279705,282 @@
           }
         }
       ]
+    },
+    {
+      "name": "267. Gemini long decode: continuationToken and CONTINUATION survive /genai (long decode)",
+      "description": "Gemini long decode (gemini-4-argon) generates past the per-call output cap in hops. A hop that fills the cap ends with finishReason CONTINUATION and a candidate-level continuationToken; the client resends the original request with only the latest top-level continuationToken. A hop that stops on the total budget ends with MAX_TOKENS and still carries a token. SDK auto-continuation keys on CONTINUATION plus a token.\n\nThe /genai generateContent and streamGenerateContent responses were rebuilt from Bifrost's neutral response, which had no home for either value: the token was dropped and CONTINUATION was rewritten to STOP, so an SDK read a truncated hop as a finished answer with no error. The fix carries the token through the response (unary and the stream terminal event), maps CONTINUATION to the lowercase Bifrost stop_reason continuation and back, and forwards the request-side continuationToken on the typed path.\n\nCases: 267.1 asks Google directly through /genai_passthrough and asserts MAX_TOKENS plus a token on a small budget (the cheap trigger; red here means Google, not Bifrost). 267.2 and 267.3 run the same request on /genai unary and SSE and assert the token reaches the client; both red before the fix. 267.4 resumes with the token saved by 267.2 and a larger budget (the explicit gemini/ route forwards the raw body, so this one pins the chain end to end and was not red before). 267.5 asks for a proof long enough to fill a 32,768-token non-streaming hop and asserts CONTINUATION plus a token; it costs about 32K output tokens per run in every sweep and can approach the 300s Gemini timeout in the harness config.\n\nNot pinned here: a real streaming CONTINUATION (a 64K hop), the typed request path on bare-model /genai routes (covered by TestGeminiContinuationRequestRoundTrip), mid-stream checkpoint tokens (not carried), and /v1/chat/completions and /v1/responses (Google documents no long decode on the OpenAI-compatible endpoint).",
+      "item": [
+        {
+          "name": "gemini/gemini-4-argon /genai_passthrough generateContent MAX_TOKENS carries a continuationToken (trigger check) - long decode",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-4-argon:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-4-argon:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write a long, detailed essay on the history of the Roman Empire, covering every emperor.\"}]}],\"generationConfig\":{\"maxOutputTokens\":128}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('long decode passthrough: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var cand = (body.candidates || [])[0] || {};",
+                  "pm.test('long decode passthrough: Google stopped on MAX_TOKENS and returned a continuationToken (trigger check: red here means Google changed the long-decode contract or this model, not a Bifrost bug)', function () {",
+                  "  pm.expect(cand.finishReason, 'finishReason: ' + txt.slice(0, 1500)).to.eql('MAX_TOKENS');",
+                  "  pm.expect(cand.continuationToken, 'continuationToken: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-4-argon /genai generateContent MAX_TOKENS: continuationToken reaches the client - long decode",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-4-argon:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-4-argon:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write a long, detailed essay on the history of the Roman Empire, covering every emperor.\"}]}],\"generationConfig\":{\"maxOutputTokens\":128}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('long decode /genai generateContent: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var cand = (body.candidates || [])[0] || {};",
+                  "pm.test('long decode /genai generateContent: finishReason MAX_TOKENS (trigger check, see the passthrough row)', function () {",
+                  "  pm.expect(cand.finishReason, 'finishReason: ' + txt.slice(0, 1500)).to.eql('MAX_TOKENS');",
+                  "});",
+                  "pm.test('long decode /genai generateContent: candidates[0].continuationToken reaches the client (red before the fix: the candidate had no such field, so the token was dropped)', function () {",
+                  "  pm.expect(cand.continuationToken, 'continuationToken dropped: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "if (typeof cand.continuationToken === 'string' && cand.continuationToken) {",
+                  "  pm.collectionVariables.set('longDecodeToken', cand.continuationToken);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-4-argon /genai streamGenerateContent MAX_TOKENS: continuationToken reaches the client (SSE) - long decode",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-4-argon:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-4-argon:streamGenerateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write a long, detailed essay on the history of the Roman Empire, covering every emperor.\"}]}],\"generationConfig\":{\"maxOutputTokens\":128}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('long decode /genai stream: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + raw.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var chunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  var t = line.trim();",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { chunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var terminal = {};",
+                  "chunks.forEach(function (c) {",
+                  "  var cand = (c.candidates || [])[0];",
+                  "  if (cand && cand.finishReason) { terminal = cand; }",
+                  "});",
+                  "pm.test('long decode /genai stream: the terminal chunk finishes with MAX_TOKENS (trigger check, see the passthrough row)', function () {",
+                  "  pm.expect(terminal.finishReason, 'terminal candidate: ' + JSON.stringify(terminal) + ' raw: ' + raw.slice(0, 1500)).to.eql('MAX_TOKENS');",
+                  "});",
+                  "pm.test('long decode /genai stream: the terminal chunk carries continuationToken (red before the fix: the token was dropped on the stream path)', function () {",
+                  "  pm.expect(terminal.continuationToken, 'continuationToken dropped: ' + raw.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-4-argon /genai generateContent resume: the saved continuationToken is accepted - long decode",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-4-argon:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-4-argon:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write a long, detailed essay on the history of the Roman Empire, covering every emperor.\"}]}],\"generationConfig\":{\"maxOutputTokens\":512},\"continuationToken\":\"{{longDecodeToken}}\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('long decode /genai resume: 200 (Google rejects an unusable token or a budget not above the tokens already used)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var cand = (body.candidates || [])[0] || {};",
+                  "var total = body.usageMetadata && typeof body.usageMetadata.totalTokenCount === 'number' ? body.usageMetadata.totalTokenCount : 0;",
+                  "pm.test('long decode /genai resume: the hop produced a candidate with a finishReason and token usage', function () {",
+                  "  pm.expect(cand.finishReason, 'candidate: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(total, 'totalTokenCount: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-4-argon /genai generateContent real CONTINUATION hop: finishReason and continuationToken survive - long decode",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-4-argon:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-4-argon:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write a complete, rigorous proof of the prime number theorem, with every lemma proved in full. Do not summarize and do not stop early.\"}]}],\"generationConfig\":{\"maxOutputTokens\":262144,\"thinkingConfig\":{\"thinkingLevel\":\"high\"}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('long decode real hop: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var cand = (body.candidates || [])[0] || {};",
+                  "var u = body.usageMetadata || {};",
+                  "var used = (u.totalTokenCount || 0) - (u.promptTokenCount || 0);",
+                  "var hopFull = used >= 32000;",
+                  "pm.test('long decode real hop: the hop filled the per-hop cap (trigger check: red here means the model finished in ' + used + ' tokens, so the prompt needs to ask for more; not a Bifrost bug)', function () {",
+                  "  pm.expect(hopFull, 'finishReason ' + cand.finishReason + ' after ' + used + ' tokens: ' + txt.slice(0, 800)).to.eql(true);",
+                  "});",
+                  "pm.test('long decode real hop: a full hop reports CONTINUATION with a continuationToken, never STOP (red before the fix: CONTINUATION was rewritten to STOP and the token dropped)', function () {",
+                  "  if (!hopFull) { return; }",
+                  "  pm.expect(cand.finishReason, 'finishReason after ' + used + ' tokens: ' + txt.slice(0, 1500)).to.eql('CONTINUATION');",
+                  "  pm.expect(cand.continuationToken, 'continuationToken dropped: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
