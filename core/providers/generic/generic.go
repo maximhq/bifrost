@@ -178,8 +178,11 @@ func (provider *GenericProvider) ModelPath(method, path string) string {
 // buildRequest turns a passthrough request into the upstream net/http request: host-pinned URL,
 // caller headers minus credentials, operator extra headers, then the configured auth.
 func (provider *GenericProvider) buildRequest(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (*http.Request, *schemas.BifrostError) {
-	rawQuery := provider.appendAuthQuery(provider.stripCallerQueryCredential(req.RawQuery), key)
-	requestURL, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL, req.Path, rawQuery)
+	rawQuery, err := provider.stripCallerQueryCredential(req.RawQuery)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
+	}
+	requestURL, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL, req.Path, provider.appendAuthQuery(rawQuery, key))
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}

@@ -47,15 +47,31 @@ func TestQueryCredentialHandling(t *testing.T) {
 	provider := authProvider(schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "api_key"})
 	key := schemas.Key{Value: *schemas.NewSecretVar("s e&c")}
 
-	assert.Equal(t, "q=1", provider.stripCallerQueryCredential("q=1"), "untouched when the parameter is absent")
-	assert.Equal(t, "q=1", provider.stripCallerQueryCredential("api_key=caller&q=1"))
-	assert.Equal(t, "", provider.stripCallerQueryCredential("api_key=caller"))
-	assert.Equal(t, "q=1", provider.stripCallerQueryCredential("api%5Fkey=caller&q=1"), "a percent-encoded name is still the credential")
+	strip := func(raw string) string {
+		t.Helper()
+		out, err := provider.stripCallerQueryCredential(raw)
+		require.NoError(t, err)
+		return out
+	}
+	assert.Equal(t, "q=1", strip("q=1"), "untouched when the parameter is absent")
+	assert.Equal(t, "q=1", strip("api_key=caller&q=1"))
+	assert.Equal(t, "", strip("api_key=caller"))
+	assert.Equal(t, "q=1", strip("api%5Fkey=caller&q=1"), "a percent-encoded name is still the credential")
+	_, err := provider.stripCallerQueryCredential("api_key=caller&x=%zz")
+	require.Error(t, err, "a query that cannot be parsed is refused, never forwarded with the caller's credential still in it")
+	_, err = provider.stripCallerQueryCredential("x=%zz")
+	require.Error(t, err, "percent-encoding that cannot be parsed may spell the parameter, so it is refused too")
+	assert.Equal(t, "x=zz", strip("x=zz"), "a query that cannot carry the parameter is never parsed")
 	assert.Equal(t, "api_key=s+e%26c", provider.appendAuthQuery("", key))
 	assert.Equal(t, "q=1&api_key=s+e%26c", provider.appendAuthQuery("q=1", key))
 
 	other := authProvider(schemas.GenericAuthConfig{Type: schemas.GenericAuthBearer})
-	assert.Equal(t, "api_key=x", other.stripCallerQueryCredential("api_key=x"), "only the query auth type touches the query string")
+	untouched, err := other.stripCallerQueryCredential("api_key=x")
+	require.NoError(t, err)
+	assert.Equal(t, "api_key=x", untouched, "only the query auth type touches the query string")
+	untouched, err = other.stripCallerQueryCredential("api_key=x&y=%zz")
+	require.NoError(t, err, "other auth types never parse the query")
+	assert.Equal(t, "api_key=x&y=%zz", untouched)
 	assert.Equal(t, "api_key=x", other.appendAuthQuery("api_key=x", key))
 }
 

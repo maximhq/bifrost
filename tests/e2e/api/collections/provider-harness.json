@@ -282043,6 +282043,104 @@
               ]
             }
           }
+        },
+        {
+          "name": "262.16 GET /passthrough/generic_echo_query/get?api_key=caller&foo=bar - query auth: configured key injected, caller api_key replaced (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_query presents its key as the api_key query parameter. The caller's own api_key is",
+                  "// stripped before the configured key is appended, so the upstream sees exactly one credential.",
+                  "pm.test('generic relay: query auth reached postman-echo', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('generic relay: caller api_key replaced by the configured key', function () { pm.expect(j.args, JSON.stringify(j.args)).to.eql({api_key: 'harness-dummy', foo: 'bar'}); });",
+                  "pm.test('generic relay: no bearer or header credential added for query auth', function () { pm.expect(j.headers).to.not.have.property('authorization'); pm.expect(j.headers).to.not.have.property('x-api-key'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_query/get?api_key=caller&foo=bar",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_query",
+                "get"
+              ],
+              "query": [
+                {
+                  "key": "api_key",
+                  "value": "caller"
+                },
+                {
+                  "key": "foo",
+                  "value": "bar"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] 262.17 GET /passthrough/generic_echo_query/get?api_key=caller&x=%zz - query auth refuses a query string it cannot parse (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// With query auth, a query that does not parse could hide the caller's credential from the strip,",
+                  "// so the relay refuses it with 400 before key selection instead of forwarding both keys upstream.",
+                  "pm.test('generic relay: unparsable query refused under query auth', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('cannot be parsed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_query/get?api_key=caller&x=%zz",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_query",
+                "get"
+              ],
+              "query": [
+                {
+                  "key": "api_key",
+                  "value": "caller"
+                },
+                {
+                  "key": "x",
+                  "value": "%zz"
+                }
+              ]
+            }
+          }
         }
       ]
     }

@@ -2,6 +2,7 @@ package generic
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -31,23 +32,25 @@ func (provider *GenericProvider) authHeader() string {
 }
 
 // stripCallerQueryCredential removes the auth query parameter a caller may have sent, so the
-// configured key is the only credential upstream. It is a no-op when the parameter is absent.
-func (provider *GenericProvider) stripCallerQueryCredential(rawQuery string) string {
+// configured key is the only credential upstream. It is a no-op when the parameter is absent. A
+// query that cannot be parsed is refused rather than forwarded: it could carry the parameter in
+// a form this cannot see, and the key is appended to whatever goes out.
+func (provider *GenericProvider) stripCallerQueryCredential(rawQuery string) (string, error) {
 	param := provider.authQuery()
 	// Cheap gate: the parameter name appears literally, or something is percent-encoded and may
 	// spell it. Everything else is left untouched without a parse.
 	if param == "" || rawQuery == "" || (!strings.Contains(rawQuery, param) && !strings.Contains(rawQuery, "%")) {
-		return rawQuery
+		return rawQuery, nil
 	}
 	values, err := url.ParseQuery(rawQuery)
 	if err != nil {
-		return rawQuery
+		return "", fmt.Errorf("query string cannot be parsed: %w", err)
 	}
 	if _, present := values[param]; !present {
-		return rawQuery
+		return rawQuery, nil
 	}
 	delete(values, param)
-	return values.Encode()
+	return values.Encode(), nil
 }
 
 // appendAuthQuery adds the key as a query parameter for the query auth type.

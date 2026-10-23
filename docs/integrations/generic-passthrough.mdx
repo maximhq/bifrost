@@ -247,4 +247,6 @@ Only custom providers with the generic base type are served by `/passthrough/{pr
 - `base_url` is validated like any provider URL (`allow_private_network` governs private targets).
 - Redirects are never followed: a 3xx from the upstream is returned to the caller as is, so the injected key never reaches a host the upstream named.
 - Transport errors name the upstream host and path but never the query string, which for query auth carries the key.
+- Response headers are scrubbed of a query-auth key before they reach the caller or the log row: a `Location` (or any other header) that echoes the request query loses the auth parameter.
+- With query auth, a request whose query string cannot be parsed is refused with 400 rather than relayed, since the caller's own credential could be hiding in it.
 - The buffered relay caps a response at 64 MiB; use a streaming route for anything larger.

@@ -18,6 +18,47 @@ import { z } from "zod";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AllowedRequestsFields } from "../fragments/allowedRequestsFields";
 
+const DEFAULT_ALLOWED_REQUESTS = {
+	text_completion: true,
+	text_completion_stream: true,
+	chat_completion: true,
+	chat_completion_stream: true,
+	responses: true,
+	responses_stream: true,
+	responses_retrieve: true,
+	responses_delete: true,
+	responses_cancel: true,
+	responses_input_items: true,
+	embedding: true,
+	speech: true,
+	speech_stream: true,
+	transcription: true,
+	transcription_stream: true,
+	image_generation: true,
+	image_generation_stream: true,
+	image_edit: true,
+	image_edit_stream: true,
+	image_variation: true,
+	rerank: true,
+	decisions: true,
+	ocr: true,
+	ocr_stream: true,
+	video_generation: true,
+	video_edit: true,
+	video_retrieve: true,
+	video_download: true,
+	video_delete: true,
+	video_list: true,
+	video_remix: true,
+	passthrough: true,
+	passthrough_stream: true,
+	count_tokens: true,
+	list_models: true,
+	websocket_responses: true,
+	realtime: false,
+	live: false,
+};
+
 const formSchema = z
 	.object({
 		name: z.string().min(1),
@@ -59,46 +100,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			name: "",
 			baseFormat: "",
 			base_url: "",
-			allowed_requests: {
-				text_completion: true,
-				text_completion_stream: true,
-				chat_completion: true,
-				chat_completion_stream: true,
-				responses: true,
-				responses_stream: true,
-				responses_retrieve: true,
-				responses_delete: true,
-				responses_cancel: true,
-				responses_input_items: true,
-				embedding: true,
-				speech: true,
-				speech_stream: true,
-				transcription: true,
-				transcription_stream: true,
-				image_generation: true,
-				image_generation_stream: true,
-				image_edit: true,
-				image_edit_stream: true,
-				image_variation: true,
-				rerank: true,
-				decisions: true,
-				ocr: true,
-				ocr_stream: true,
-				video_generation: true,
-				video_edit: true,
-				video_retrieve: true,
-				video_download: true,
-				video_delete: true,
-				video_list: true,
-				video_remix: true,
-				passthrough: true,
-				passthrough_stream: true,
-				count_tokens: true,
-				list_models: true,
-				websocket_responses: true,
-				realtime: false,
-				live: false,
-			},
+			allowed_requests: DEFAULT_ALLOWED_REQUESTS,
 			request_path_overrides: undefined,
 			is_key_less: false,
 			does_not_send_done_marker: false,
@@ -186,9 +188,13 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 	}, [isDoneMarkerToggleDisabled, form]);
 
 	// A generic relay has no typed operations: clear the grid so the stored allowed_requests
-	// carries only the passthrough pair, and keep is_key_less in step with auth type none.
+	// carries only the passthrough pair, and restore the defaults when the format moves off
+	// generic so the grid is not left fully switched off. is_key_less follows auth type none.
 	useEffect(() => {
-		if (!isGeneric) return;
+		if (!isGeneric) {
+			form.setValue("allowed_requests", DEFAULT_ALLOWED_REQUESTS);
+			return;
+		}
 		const current = form.getValues("allowed_requests");
 		const cleared = Object.fromEntries(Object.keys(current).map((k) => [k, false])) as typeof current;
 		form.setValue("allowed_requests", { ...cleared, passthrough: true, passthrough_stream: true });

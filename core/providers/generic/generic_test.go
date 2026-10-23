@@ -497,6 +497,11 @@ func testCallerCredentialsStripped(t *testing.T) {
 		got := up.requests()
 		require.Len(t, got, 1)
 		assert.Equal(t, "q=1&key=real", got[0].RawQuery)
+
+		_, bifrostErr = provider.Passthrough(testCtx(t), bearerKey("real"), relayRequest(http.MethodGet, "/get", "key=caller&q=%zz", "", nil))
+		require.NotNil(t, bifrostErr, "a query that cannot be parsed is refused")
+		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		assert.Len(t, up.requests(), 1, "nothing reached the upstream with the caller's credential")
 	})
 }
 

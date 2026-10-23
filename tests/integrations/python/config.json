@@ -229,6 +229,35 @@
         "default_request_timeout_in_seconds": 60
       }
     },
+    "generic_echo_query": {
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Generic Echo Query Key",
+          "value": "harness-dummy",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "allowed_requests": {
+          "passthrough": true,
+          "passthrough_stream": true
+        },
+        "generic_config": {
+          "auth": {
+            "type": "query",
+            "query_param": "api_key"
+          }
+        }
+      },
+      "network_config": {
+        "base_url": "https://postman-echo.com",
+        "default_request_timeout_in_seconds": 60
+      }
+    },
     "generic_openai": {
       "store_raw_request_response": true,
       "keys": [
