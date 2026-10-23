@@ -213,15 +213,34 @@ func TestOpenRouterBatchValidation(t *testing.T) {
 		return &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr("openai/gpt-4o"), Endpoint: schemas.BatchEndpointChatCompletions, Requests: []schemas.BatchRequestItem{{CustomID: "a", Body: map[string]any{"messages": []any{}}}}}
 	}
 	for name, mutate := range map[string]func(*schemas.BifrostBatchCreateRequest){
-		"missing model":        func(q *schemas.BifrostBatchCreateRequest) { q.Model = nil },
-		"file input":           func(q *schemas.BifrostBatchCreateRequest) { q.InputFileID = "file-1" },
-		"duplicate id":         func(q *schemas.BifrostBatchCreateRequest) { q.Requests = append(q.Requests, q.Requests[0]) },
-		"blank id":             func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].CustomID = " " },
-		"missing body":         func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].Body = nil },
-		"mixed models":         func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].Body["model"] = "different" },
-		"mixed endpoints":      func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].URL = "/v1/responses" },
-		"completion window":    func(q *schemas.BifrostBatchCreateRequest) { q.CompletionWindow = "48h" },
-		"unsupported endpoint": func(q *schemas.BifrostBatchCreateRequest) { q.Endpoint = schemas.BatchEndpointCompletions },
+		"empty requests":      func(q *schemas.BifrostBatchCreateRequest) { q.Requests = nil },
+		"non POST method":     func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].Method = "GET" },
+		"body and params":     func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].Params = map[string]any{"input": "hi"} },
+		"metadata":            func(q *schemas.BifrostBatchCreateRequest) { q.Metadata = map[string]string{"label": "unsupported"} },
+		"provider not object": func(q *schemas.BifrostBatchCreateRequest) { q.ExtraParams = map[string]any{"provider": "openai"} },
+		"empty provider only": func(q *schemas.BifrostBatchCreateRequest) {
+			q.ExtraParams = map[string]any{"provider": map[string]any{"only": []any{}}}
+		},
+		"invalid provider slug": func(q *schemas.BifrostBatchCreateRequest) {
+			q.ExtraParams = map[string]any{"provider": map[string]any{"only": []any{12}}}
+		},
+		"invalid allow fallback": func(q *schemas.BifrostBatchCreateRequest) {
+			q.ExtraParams = map[string]any{"provider": map[string]any{"allow_fallbacks": "false"}}
+		},
+		"HTTP callback": func(q *schemas.BifrostBatchCreateRequest) {
+			q.ExtraParams = map[string]any{"callback_url": "http://example.com/hook"}
+		},
+		"invalid callback type":   func(q *schemas.BifrostBatchCreateRequest) { q.ExtraParams = map[string]any{"callback_url": 12} },
+		"unknown extra parameter": func(q *schemas.BifrostBatchCreateRequest) { q.ExtraParams = map[string]any{"unsupported": true} },
+		"missing model":           func(q *schemas.BifrostBatchCreateRequest) { q.Model = nil },
+		"file input":              func(q *schemas.BifrostBatchCreateRequest) { q.InputFileID = "file-1" },
+		"duplicate id":            func(q *schemas.BifrostBatchCreateRequest) { q.Requests = append(q.Requests, q.Requests[0]) },
+		"blank id":                func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].CustomID = " " },
+		"missing body":            func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].Body = nil },
+		"mixed models":            func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].Body["model"] = "different" },
+		"mixed endpoints":         func(q *schemas.BifrostBatchCreateRequest) { q.Requests[0].URL = "/v1/responses" },
+		"completion window":       func(q *schemas.BifrostBatchCreateRequest) { q.CompletionWindow = "48h" },
+		"unsupported endpoint":    func(q *schemas.BifrostBatchCreateRequest) { q.Endpoint = schemas.BatchEndpointCompletions },
 		"unsupported options": func(q *schemas.BifrostBatchCreateRequest) {
 			q.ExtraParams = map[string]any{"provider": map[string]any{"order": []string{"openai"}}}
 		},
@@ -366,5 +385,89 @@ func TestOpenRouterBatchNonJSONErrorOwnsRawBody(t *testing.T) {
 	}
 	if string(captured) != errorBody {
 		t.Fatalf("raw error borrowed the released response buffer: %q", captured)
+	}
+}
+
+func TestOpenRouterBatchParamsInput(t *testing.T) {
+	_, err := openrouter.ToOpenRouterBatchRequest(nil)
+	if err == nil {
+		t.Fatal("nil input must fail validation")
+	}
+	body := map[string]any{"model": "openai/gpt-4o", "messages": []any{}}
+	native, err := openrouter.ToOpenRouterBatchRequest(&schemas.BifrostBatchCreateRequest{
+		Model: schemas.Ptr("openai/gpt-4o"), Endpoint: schemas.BatchEndpointChatCompletions,
+		Requests: []schemas.BatchRequestItem{{CustomID: "params-id", Method: "POST", URL: "/v1/chat/completions", Params: body}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if native.Requests[0].CustomID != "params-id" || native.Requests[0].Body["model"] != body["model"] || native.Requests[0].Params != nil || native.Requests[0].Method != "" || native.Requests[0].URL != "" {
+		t.Fatalf("params must become native custom_id/body items: %+v", native.Requests[0])
+	}
+}
+
+func TestOpenRouterBatchListFiltersAndValidation(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		q := r.URL.Query()
+		if q.Get("after") != "cursor & next" || q.Get("created_after") != "2026-10-01T00:00:00Z" || q.Get("created_before") != "2026-10-22T00:00:00Z" || len(q["status"]) != 2 {
+			t.Errorf("filters lost: %s", r.URL.RawQuery)
+		}
+		fmt.Fprint(w, `{"object":"list","data":[],"has_more":false}`)
+	}))
+	defer server.Close()
+	p := openrouter.NewOpenRouterProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}}, bifrost.NewNoOpLogger())
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	keys := []schemas.Key{{ID: "available", Name: "available", Value: *schemas.NewSecretVar("key")}}
+	_, err := p.BatchList(ctx, keys, &schemas.BifrostBatchListRequest{After: schemas.Ptr("cursor & next"), ExtraParams: map[string]any{
+		"status": []any{"completed", "failed"}, "created_after": "2026-10-01T00:00:00Z", "created_before": "2026-10-22T00:00:00Z",
+	}})
+	if err != nil {
+		t.Fatal(err.GetErrorString())
+	}
+	for name, req := range map[string]*schemas.BifrostBatchListRequest{
+		"nil": nil, "negative limit": {Limit: -1}, "large limit": {Limit: 101}, "empty after": {After: schemas.Ptr("")},
+		"unsupported pagination": {AfterID: schemas.Ptr("id")}, "invalid status": {ExtraParams: map[string]any{"status": "ended"}},
+		"invalid status type": {ExtraParams: map[string]any{"status": []any{1}}}, "timestamp type": {ExtraParams: map[string]any{"created_after": 1}},
+		"unknown filter": {ExtraParams: map[string]any{"unknown": "value"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := p.BatchList(ctx, keys, req)
+			if err == nil || err.StatusCode == nil || *err.StatusCode != 400 {
+				t.Fatalf("expected validation 400, got %+v", err)
+			}
+		})
+	}
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "unknown")
+	_, err = p.BatchList(ctx, keys, &schemas.BifrostBatchListRequest{})
+	if err == nil {
+		t.Fatal("unknown key pin must fail")
+	}
+	if calls != 1 {
+		t.Fatalf("invalid requests must not reach upstream: %d calls", calls)
+	}
+}
+
+func TestOpenRouterBatchCredentialFailures(t *testing.T) {
+	for _, status := range []int{401, 403, 404, 429, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			var calls int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(status)
+				fmt.Fprintf(w, `{"error":{"code":%d,"message":"failure"}}`, status)
+			}))
+			defer server.Close()
+			p := openrouter.NewOpenRouterProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}}, bifrost.NewNoOpLogger())
+			_, err := p.BatchRetrieve(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), []schemas.Key{{Value: *schemas.NewSecretVar("one")}, {Value: *schemas.NewSecretVar("two")}}, &schemas.BifrostBatchRetrieveRequest{BatchID: "batch-1"})
+			want := 1
+			if status == 401 || status == 403 || status == 404 {
+				want = 2
+			}
+			if err == nil || err.StatusCode == nil || *err.StatusCode != status || calls != want {
+				t.Fatalf("status=%d calls=%d want=%d error=%+v", status, calls, want, err)
+			}
+		})
 	}
 }

@@ -75,7 +75,8 @@ func (s *fakeBatchStore) UpsertProviderJob(ctx context.Context, job *cstables.Ta
 	if job.NextCheckAt != nil {
 		existing.NextCheckAt = job.NextCheckAt
 	}
-	if cstables.IsTerminalBatchProviderStatus(job.ProviderStatus) &&
+	if job.Provider != string(schemas.OpenRouter) &&
+		cstables.IsTerminalBatchProviderStatus(job.ProviderStatus) &&
 		job.ProviderStatus != string(schemas.BatchStatusCompleted) &&
 		job.ProviderStatus != string(schemas.BatchStatusEnded) {
 		existing.NextCheckAt = nil
@@ -5104,10 +5105,8 @@ func TestOpenRouterBatchRetrieveMissingChargeStaysPending(t *testing.T) {
 					Results: []schemas.BatchResultItem{{CustomID: "a", Response: &schemas.BatchResultResponse{StatusCode: 200}}},
 				}}
 				entry := &logstore.Log{ID: "poll", Provider: "openrouter", Model: "openai/gpt-4o"}
-				if status == schemas.BatchStatusCompleted {
-					// Match PostLLMHook's lifecycle-before-accounting order.
-					plugin.recordBatchJobLifecycle(entry, result)
-				}
+				// Match PostLLMHook's lifecycle-before-accounting order for every status.
+				plugin.recordBatchJobLifecycle(entry, result)
 				plugin.accountBatchResults(entry, result, nil)
 				job, err := bs.GetProviderJob(context.Background(), jobID)
 				require.NoError(t, err)
@@ -5140,6 +5139,20 @@ func TestOpenRouterBatchRetrieveStillSettlesZeroCharges(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, entry.Cost)
 			require.Zero(t, *entry.Cost)
+		})
+	}
+}
+
+func BenchmarkRecordBatchJobLifecycle(b *testing.B) {
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.OpenRouter} {
+		b.Run(string(provider), func(b *testing.B) {
+			plugin := &LoggerPlugin{ctx: context.Background(), batchStore: newFakeBatchStore(), logger: testLogger{}}
+			entry := &logstore.Log{Provider: string(provider), Model: "openai/gpt-4o"}
+			result := &schemas.BifrostResponse{BatchRetrieveResponse: &schemas.BifrostBatchRetrieveResponse{ID: "batch-benchmark", Status: schemas.BatchStatusExpired}}
+			b.ReportAllocs()
+			for b.Loop() {
+				plugin.recordBatchJobLifecycle(entry, result)
+			}
 		})
 	}
 }

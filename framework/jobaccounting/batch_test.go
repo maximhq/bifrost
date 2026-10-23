@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -2479,4 +2481,45 @@ func TestOpenRouterBatchPollWaitsForReportedCharge(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, poll.Settleable, "an explicitly reported zero fee is ready to settle")
 	require.Zero(t, fetcher.resultsCalls, "native retrieve already carries the settlement inputs")
+}
+
+// Use the real lifecycle store: a fake that retains NextCheckAt can hide a
+// terminal-state upsert removing the job from the due-job query.
+func TestOpenRouterBatchSweeperRetriesTerminalChargeWithSQLite(t *testing.T) {
+	for _, status := range []schemas.BatchStatus{schemas.BatchStatusCompleted, schemas.BatchStatusFailed, schemas.BatchStatusExpired, schemas.BatchStatusCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			ctx := context.Background()
+			store, err := configstore.NewConfigStore(ctx, &configstore.Config{Enabled: true, Type: configstore.ConfigStoreTypeSQLite, Config: &configstore.SQLiteConfig{Path: t.TempDir() + "/config.db"}}, bifrost.NewNoOpLogger())
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close(ctx)) })
+			logs := newFakeAccountingStore()
+			due := time.Now().UTC().Add(-time.Minute)
+			job := &cstables.TableProviderJob{ID: cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openrouter", "late-charge"), Kind: cstables.ProviderJobKindBatch, Provider: "openrouter", JobID: "late-charge", Model: "openai/gpt-4o", NextCheckAt: &due}
+			require.NoError(t, store.UpsertProviderJob(ctx, job))
+			fetcher := &fakeBatchResultFetcher{retrieveResp: &schemas.BifrostBatchRetrieveResponse{ID: job.JobID, Model: job.Model, Endpoint: string(schemas.BatchEndpointChatCompletions), Status: status, RequestCounts: schemas.BatchRequestCounts{Total: 1, Completed: 1}, Results: []schemas.BatchResultItem{{CustomID: "a", Response: &schemas.BatchResultResponse{StatusCode: 200}}}}}
+			reporter := &fakeUsageReporter{}
+			sweeper := NewBatchSweeper(store, logs, loadPricingFromFile(t), fetcher, nil, reporter, SweeperConfig{})
+			sweeper.SweepOnce(ctx)
+			pending, err := store.GetProviderJob(ctx, job.ID)
+			require.NoError(t, err)
+			require.Equal(t, cstables.ProviderJobAccountingStatusPending, pending.AccountingStatus)
+			require.Equal(t, 1, pending.PollAttempts)
+			require.NotNil(t, pending.NextCheckAt)
+			require.True(t, pending.NextCheckAt.After(time.Now().UTC()))
+			require.Empty(t, reporter.reports)
+			fetcher.retrieveResp.Usage = &schemas.BatchUsage{BifrostLLMUsage: schemas.BifrostLLMUsage{Cost: &schemas.BifrostCost{TotalCost: 0.123}}}
+			pending.NextCheckAt = &due
+			require.NoError(t, store.UpsertProviderJob(ctx, pending))
+			sweeper.SweepOnce(ctx)
+			sweeper.SweepOnce(ctx)
+			settled, err := store.GetProviderJob(ctx, job.ID)
+			require.NoError(t, err)
+			require.Equal(t, cstables.ProviderJobAccountingStatusAccounted, settled.AccountingStatus)
+			require.Nil(t, settled.NextCheckAt)
+			require.Len(t, reporter.reports, 1)
+			require.Equal(t, 0.123, reporter.reports[0].Cost)
+			require.Equal(t, 2, fetcher.retrieveCalls)
+			require.Zero(t, fetcher.resultsCalls)
+		})
+	}
 }

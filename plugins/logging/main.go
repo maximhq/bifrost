@@ -805,7 +805,8 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 	if !tables.IsTerminalBatchProviderStatus(job.ProviderStatus) {
 		next := now.Add(time.Minute)
 		job.NextCheckAt = &next
-	} else if job.ProviderStatus == string(schemas.BatchStatusCompleted) ||
+	} else if job.Provider == string(schemas.OpenRouter) ||
+		job.ProviderStatus == string(schemas.BatchStatusCompleted) ||
 		job.ProviderStatus == string(schemas.BatchStatusEnded) {
 		job.NextCheckAt = &now
 	}

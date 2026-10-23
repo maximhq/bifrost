@@ -279452,6 +279452,784 @@
           }
         }
       ]
+    },
+    {
+      "name": "267. OpenRouter native Batch API (#7429 / PR #8950)",
+      "description": "Native inline batch regression coverage for neutral and OpenAI SDK routes. Enable use_for_batch_api on an OpenRouter key. Submissions are asynchronous and may incur charges; no completion polling loop is used. The chat submission stores openrouterNativeCreatedBatchId for subsequent lifecycle calls. [PREVIEW] cases require include_preview=1 and openrouterNativeBatchFixtureId naming a disposable, completed openai/gpt-4o-mini chat batch with custom IDs batch-success (HTTP 200) and batch-failure (per-request error), published usage.cost and at least two requests. Set openrouterNativeFixtureVK to its creating Bifrost virtual key (empty for an unbound batch). The final preview case permanently deletes this fixture after settlement. Budget/ledger idempotency and virtual-key isolation are asserted in SQLite-backed Go integration tests, not inferred from HTTP result reads.",
+      "item": [
+        {
+          "name": "OpenRouter openai/gpt-4o-mini native batch Chat Completions inline submission - #7429",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native inline submission accepts the shape', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(['validating','in_progress','completed','failed','expired','cancelled'], pm.response.text()).to.include(j.status);",
+                  "  pm.expect(j.endpoint).to.equal('/v1/chat/completions');",
+                  "  pm.expect(j.model).to.equal('openai/gpt-4o-mini');",
+                  "  pm.expect(j.input_file_id || '').to.equal('');",
+                  "});",
+                  "pm.collectionVariables.set('openrouterNativeCreatedBatchId', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-4o-mini\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"batch-success\",\n      \"body\": {\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply OK.\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ],\n  \"provider\": {\n    \"only\": [\n      \"openai\"\n    ],\n    \"allow_fallbacks\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter openai/gpt-4o-mini native batch Responses inline submission - #7429",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native inline submission accepts the shape', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(['validating','in_progress','completed','failed','expired','cancelled'], pm.response.text()).to.include(j.status);",
+                  "  pm.expect(j.endpoint).to.equal('/v1/responses');",
+                  "  pm.expect(j.model).to.equal('openai/gpt-4o-mini');",
+                  "  pm.expect(j.input_file_id || '').to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"openrouter\",\n  \"model\": \"openai/gpt-4o-mini\",\n  \"endpoint\": \"/v1/responses\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"batch-success\",\n      \"body\": {\n        \"input\": \"Reply OK.\",\n        \"max_output_tokens\": 8\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter anthropic/claude-sonnet-5 native batch Anthropic Messages inline submission - #7429",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native inline submission accepts the shape', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(['validating','in_progress','completed','failed','expired','cancelled'], pm.response.text()).to.include(j.status);",
+                  "  pm.expect(j.endpoint).to.equal('/v1/messages');",
+                  "  pm.expect(j.model).to.equal('anthropic/claude-sonnet-5');",
+                  "  pm.expect(j.input_file_id || '').to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/anthropic/claude-sonnet-5\",\n  \"endpoint\": \"/v1/messages\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"batch-success\",\n      \"body\": {\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply OK.\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter openai/text-embedding-3-small native batch Embeddings inline submission - #7429",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native inline submission accepts the shape', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(['validating','in_progress','completed','failed','expired','cancelled'], pm.response.text()).to.include(j.status);",
+                  "  pm.expect(j.endpoint).to.equal('/v1/embeddings');",
+                  "  pm.expect(j.model).to.equal('openai/text-embedding-3-small');",
+                  "  pm.expect(j.input_file_id || '').to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"openrouter\",\n  \"model\": \"openai/text-embedding-3-small\",\n  \"endpoint\": \"/v1/embeddings\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"batch-success\",\n      \"body\": {\n        \"input\": \"hello\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter openai/gpt-4o-mini native batch workspace list filters - #7429",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('filtered native workspace page is normalized', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data).to.be.an('array');",
+                  "  pm.expect(j.data.length).to.be.at.most(10);",
+                  "  j.data.forEach(function (batch) { pm.expect(['validating','completed'], pm.response.text()).to.include(batch.status); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches?provider=openrouter&limit=10&status=validating&status=completed",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openrouter"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                },
+                {
+                  "key": "status",
+                  "value": "validating"
+                },
+                {
+                  "key": "status",
+                  "value": "completed"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenRouter openai/gpt-4o-mini native batch retrieve submitted ID - #7429",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('submitted batch is retrievable without an input file', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id).to.equal(pm.collectionVariables.get('openrouterNativeCreatedBatchId'));",
+                  "  pm.expect(j.model).to.equal('openai/gpt-4o-mini');",
+                  "  pm.expect(j.request_counts.total).to.equal(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{openrouterNativeCreatedBatchId}}?provider=openrouter",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{openrouterNativeCreatedBatchId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openrouter"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] OpenRouter openai/gpt-4o-mini native batch cancellation stays unsupported - #7429",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('terminal deletion is not cancellation', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.json().error.code, pm.response.text()).to.equal('unsupported_operation');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{openrouterNativeCreatedBatchId}}/cancel?provider=openrouter",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{openrouterNativeCreatedBatchId}}",
+                "cancel"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openrouter"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] OpenRouter openai/gpt-4o-mini native batch rejects duplicate custom_id - #7429",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invalid inline input is rejected locally', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('duplicate custom_id');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-4o-mini\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"requests\": [\n    {\n      \"custom_id\": \"batch-success\",\n      \"body\": {\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"OK\"\n          }\n        ]\n      }\n    },\n    {\n      \"custom_id\": \"batch-success\",\n      \"body\": {\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"OK\"\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] OpenRouter openai/gpt-4o-mini native batch rejects mixed models - #7429",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invalid inline input is rejected locally', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('model must match');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-4o-mini\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"requests\": [\n    {\n      \"custom_id\": \"batch-success\",\n      \"body\": {\n        \"model\": \"openai/gpt-4o\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"OK\"\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] OpenRouter openai/gpt-4o-mini native batch rejects unsupported completion window - #7429",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invalid inline input is rejected locally', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('24h');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/gpt-4o-mini\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"requests\": [\n    {\n      \"custom_id\": \"batch-success\",\n      \"body\": {\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"OK\"\n          }\n        ]\n      }\n    }\n  ],\n  \"completion_window\": \"48h\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] OpenRouter openai/gpt-4o-mini native batch rejects embedding provider options - #7429",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('invalid inline input is rejected locally', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('do not support provider options');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/openai/text-embedding-3-small\",\n  \"endpoint\": \"/v1/embeddings\",\n  \"provider\": {\n    \"only\": [\n      \"openai\"\n    ]\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"batch-success\",\n      \"body\": {\n        \"input\": \"hello\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] OpenRouter openai/gpt-4o-mini native batch completed retrieve mixed results - #7429",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.get('openrouterNativeBatchFixtureId');",
+                  "if (!id || id.indexOf('replace-me') !== -1) { throw new Error('Set openrouterNativeBatchFixtureId to the owned disposable completed mixed-result batch described in this folder'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed native batch preserves mixed results and reported charge', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id || j.batch_id).to.equal(pm.variables.get('openrouterNativeBatchFixtureId'));",
+                  "  pm.expect(j.status).to.equal('completed');",
+                  "  pm.expect(j.model).to.equal('openai/gpt-4o-mini');",
+                  "  pm.expect(j.request_counts.completed).to.be.at.least(1);",
+                  "  pm.expect(j.request_counts.failed).to.be.at.least(1);",
+                  "  pm.expect(j.usage.cost.total_cost).to.be.a('number').and.at.least(0);",
+                  "  var successes = j.results.filter(function (r) { return r.custom_id === 'batch-success'; });",
+                  "  var failures = j.results.filter(function (r) { return r.custom_id === 'batch-failure'; });",
+                  "  pm.expect(successes.length).to.equal(1);",
+                  "  pm.expect(successes[0].response.status_code).to.equal(200);",
+                  "  pm.expect(failures.length).to.equal(1);",
+                  "  pm.expect(failures[0].error, pm.response.text()).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{openrouterNativeFixtureVK}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{openrouterNativeBatchFixtureId}}?provider=openrouter",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{openrouterNativeBatchFixtureId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openrouter"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [NO-CONTENT] OpenRouter openai/gpt-4o-mini native batch SDK results retain native charge - #7429",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.get('openrouterNativeBatchFixtureId');",
+                  "if (!id || id.indexOf('replace-me') !== -1) { throw new Error('Set openrouterNativeBatchFixtureId to the owned disposable completed mixed-result batch described in this folder'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed native batch preserves mixed results and reported charge', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id || j.batch_id).to.equal(pm.variables.get('openrouterNativeBatchFixtureId'));",
+                  "  pm.expect(j.status).to.equal('completed');",
+                  "  pm.expect(j.model).to.equal('openai/gpt-4o-mini');",
+                  "  pm.expect(j.request_counts.completed).to.be.at.least(1);",
+                  "  pm.expect(j.request_counts.failed).to.be.at.least(1);",
+                  "  pm.expect(j.usage.cost.total_cost).to.be.a('number').and.at.least(0);",
+                  "  var successes = j.results.filter(function (r) { return r.custom_id === 'batch-success'; });",
+                  "  var failures = j.results.filter(function (r) { return r.custom_id === 'batch-failure'; });",
+                  "  pm.expect(successes.length).to.equal(1);",
+                  "  pm.expect(successes[0].response.status_code).to.equal(200);",
+                  "  pm.expect(failures.length).to.equal(1);",
+                  "  pm.expect(failures[0].error, pm.response.text()).to.be.an('object');",
+                  "});",
+                  "pm.collectionVariables.set('openrouterNativeFixtureCost', pm.response.json().usage.cost.total_cost);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{openrouterNativeFixtureVK}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/{{openrouterNativeBatchFixtureId}}/results?provider=openrouter",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{openrouterNativeBatchFixtureId}}",
+                "results"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openrouter"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [NO-CONTENT] OpenRouter openai/gpt-4o-mini native batch repeated results preserve cost - #7429",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.get('openrouterNativeBatchFixtureId');",
+                  "if (!id || id.indexOf('replace-me') !== -1) { throw new Error('Set openrouterNativeBatchFixtureId to the owned disposable completed mixed-result batch described in this folder'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completed native batch preserves mixed results and reported charge', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id || j.batch_id).to.equal(pm.variables.get('openrouterNativeBatchFixtureId'));",
+                  "  pm.expect(j.status).to.equal('completed');",
+                  "  pm.expect(j.model).to.equal('openai/gpt-4o-mini');",
+                  "  pm.expect(j.request_counts.completed).to.be.at.least(1);",
+                  "  pm.expect(j.request_counts.failed).to.be.at.least(1);",
+                  "  pm.expect(j.usage.cost.total_cost).to.be.a('number').and.at.least(0);",
+                  "  var successes = j.results.filter(function (r) { return r.custom_id === 'batch-success'; });",
+                  "  var failures = j.results.filter(function (r) { return r.custom_id === 'batch-failure'; });",
+                  "  pm.expect(successes.length).to.equal(1);",
+                  "  pm.expect(successes[0].response.status_code).to.equal(200);",
+                  "  pm.expect(failures.length).to.equal(1);",
+                  "  pm.expect(failures[0].error, pm.response.text()).to.be.an('object');",
+                  "});",
+                  "pm.test('repeated result reads keep the reported charge', function () { pm.expect(pm.response.json().usage.cost.total_cost).to.equal(Number(pm.collectionVariables.get('openrouterNativeFixtureCost'))); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{openrouterNativeFixtureVK}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/{{openrouterNativeBatchFixtureId}}/results?provider=openrouter",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "{{openrouterNativeBatchFixtureId}}",
+                "results"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openrouter"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] OpenRouter openai/gpt-4o-mini native batch SDK terminal deletion - #7429",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.variables.get('openrouterNativeBatchFixtureId');",
+                  "if (!id || id.indexOf('replace-me') !== -1) { throw new Error('Set openrouterNativeBatchFixtureId to the owned disposable completed mixed-result batch described in this folder'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('settled terminal batch can be deleted, not cancelled', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id).to.equal(pm.variables.get('openrouterNativeBatchFixtureId'));",
+                  "  pm.expect(j.status, pm.response.text()).to.equal('deleted');",
+                  "  pm.expect(j.deletion.openrouter, pm.response.text()).to.equal('deleted');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{openrouterNativeFixtureVK}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/{{openrouterNativeBatchFixtureId}}?provider=openrouter",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{openrouterNativeBatchFixtureId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openrouter"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

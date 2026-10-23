@@ -424,3 +424,31 @@ func TestGetProviderJobsByJobIDSuffixesMatchTheLastSegmentWhole(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, jobs, 2, "several suffixes are matched in one query, duplicates and empties ignored")
 }
+
+func TestUpsertProviderJobOpenRouterTerminalChargeRetry(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+	for _, status := range []schemas.BatchStatus{schemas.BatchStatusCompleted, schemas.BatchStatusFailed, schemas.BatchStatusExpired, schemas.BatchStatusCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			job := seedBatchJob(t, store, string(schemas.OpenRouter), "batch-"+string(status))
+			job.ProviderStatus = string(status)
+			next := time.Now().UTC().Add(-time.Minute)
+			job.NextCheckAt = &next
+			require.NoError(t, store.UpsertProviderJob(ctx, job))
+			persisted := getBatchJob(t, store, job.ID)
+			require.NotNil(t, persisted.NextCheckAt, "a terminal native batch may still be waiting for its charge")
+			due, err := store.ListDueProviderJobs(ctx, tables.ProviderJobKindBatch, string(schemas.OpenRouter), time.Now().UTC(), 100)
+			require.NoError(t, err)
+			var found bool
+			for _, candidate := range due {
+				found = found || candidate.ID == job.ID
+			}
+			require.True(t, found, "pending settlement must remain visible to the sweeper")
+			claimed, err := store.ClaimProviderJob(ctx, job.ID, "worker", time.Now().UTC().Add(-time.Minute), false)
+			require.NoError(t, err)
+			require.True(t, claimed)
+			require.NoError(t, store.CompleteProviderJob(ctx, job.ID, "worker"))
+			require.Nil(t, getBatchJob(t, store, job.ID).NextCheckAt, "settled jobs stop polling")
+		})
+	}
+}

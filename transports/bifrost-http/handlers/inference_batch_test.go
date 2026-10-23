@@ -3,6 +3,14 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -15,18 +23,9 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"path/filepath"
-	"time"
-
-	"strings"
-	"testing"
-
-	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -152,6 +151,7 @@ func (a openRouterBatchTestAccount) GetConfigForProvider(schemas.ModelProvider) 
 func TestOpenRouterNativeBatchRoutesAndAccounting(t *testing.T) {
 	var nextID int
 	var ids []string
+	endpoints := make(map[string]string)
 	var hits []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits = append(hits, r.Method+" "+r.URL.Path)
@@ -166,19 +166,30 @@ func TestOpenRouterNativeBatchRoutesAndAccounting(t *testing.T) {
 			id = fmt.Sprintf("batch-%d", nextID)
 			ids = append(ids, id)
 			body, _ := io.ReadAll(r.Body)
-			if !gjson.GetBytes(body, "provider.only.0").Exists() || gjson.GetBytes(body, "provider.only.0").String() != "openai" {
+			endpoints[id] = gjson.GetBytes(body, "endpoint").String()
+			if endpoints[id] != "/v1/embeddings" && gjson.GetBytes(body, "provider.only.0").String() != "openai" {
 				t.Errorf("provider preferences lost: %s", body)
 			}
 			w.WriteHeader(202)
-			fmt.Fprintf(w, `{"id":%q,"object":"batch","endpoint":"/v1/chat/completions","model":"openai/gpt-4o","status":"validating","request_counts":{"total":1,"completed":0,"failed":0}}`, id)
+			fmt.Fprintf(w, `{"id":%q,"object":"batch","endpoint":%q,"model":"openai/gpt-4o","status":"validating","request_counts":{"total":1,"completed":0,"failed":0}}`, id, endpoints[id])
+		case r.Method == "GET" && r.URL.Path == "/v1/batches":
+			fmt.Fprint(w, `{"object":"list","data":[{"id":"foreign-workspace-batch","object":"batch","status":"completed"}`)
+			for _, batchID := range ids {
+				fmt.Fprintf(w, `,{"id":%q,"object":"batch","status":"completed"}`, batchID)
+			}
+			fmt.Fprint(w, `],"has_more":false}`)
 		case r.Method == "DELETE":
 			fmt.Fprintf(w, `{"id":%q,"object":"batch","deletion":{"openrouter":"deleted"}}`, id)
 		default:
+			if id == "batch-active" {
+				fmt.Fprint(w, `{"id":"batch-active","object":"batch","status":"in_progress"}`)
+				return
+			}
 			if id == "batch-no-charge" {
 				fmt.Fprint(w, `{"id":"batch-no-charge","model":"openai/gpt-4o","status":"completed","request_counts":{"total":1,"completed":1,"failed":0},"results":[{"custom_id":"a","response":{"status_code":200}}],"usage":{"total_tokens":30}}`)
 				return
 			}
-			fmt.Fprintf(w, `{"id":%q,"object":"batch","endpoint":"/v1/chat/completions","model":"openai/gpt-4o","status":"completed","request_counts":{"total":1,"completed":1,"failed":0},"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30,"cost":0.123,"is_byok":true},"results":[{"custom_id":"request-1","response":{"status_code":200,"body":{"choices":[{"message":{"content":"done"}}]}}}]}`, id)
+			fmt.Fprintf(w, `{"id":%q,"object":"batch","endpoint":%q,"model":"openai/gpt-4o","status":"completed","request_counts":{"total":1,"completed":1,"failed":0},"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":30,"cost":0.123,"is_byok":true},"results":[{"custom_id":"request-1","response":{"status_code":200,"body":{"choices":[{"message":{"content":"done"}}]}}}]}`, id, endpoints[id])
 		}
 	}))
 	defer upstream.Close()
@@ -186,6 +197,10 @@ func TestOpenRouterNativeBatchRoutesAndAccounting(t *testing.T) {
 	state, e := configstore.NewConfigStore(t.Context(), &configstore.Config{Enabled: true, Type: configstore.ConfigStoreTypeSQLite, Config: &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")}}, logger)
 	require.NoError(t, e)
 	defer state.Close(context.Background())
+	require.NoError(t, state.UpsertProviderJob(t.Context(), &configtables.TableProviderJob{
+		ID:   configtables.ProviderJobID(configtables.ProviderJobKindBatch, "openrouter", "foreign-workspace-batch"),
+		Kind: configtables.ProviderJobKindBatch, Provider: "openrouter", JobID: "foreign-workspace-batch", VirtualKeyID: schemas.Ptr("vk-other"),
+	}))
 	logs, e := logstore.NewLogStore(t.Context(), &logstore.Config{Enabled: true, Type: logstore.LogStoreTypeSQLite, Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")}}, logger)
 	require.NoError(t, e)
 	defer logs.Close(context.Background())
@@ -220,46 +235,76 @@ func TestOpenRouterNativeBatchRoutesAndAccounting(t *testing.T) {
 		routes.Handler(ctx)
 		return ctx
 	}
+	for _, shape := range []struct{ name, endpoint, body string }{
+		{"chat", "/v1/chat/completions", `{"messages":[{"role":"user","content":"hello"}],"max_tokens":8}`},
+		{"responses", "/v1/responses", `{"input":"hello","max_output_tokens":8}`},
+		{"messages", "/v1/messages", `{"messages":[{"role":"user","content":"hello"}],"max_tokens":8}`},
+		{"embeddings", "/v1/embeddings", `{"input":"hello"}`},
+	} {
+		for _, prefix := range []string{"", "/openai"} {
+			t.Run(shape.name+prefix, func(t *testing.T) {
+				options := `,"provider":{"only":["openai"]}`
+				identity := `"model":"openrouter/openai/gpt-4o"`
+				if prefix != "" {
+					identity = `"provider":"openrouter","model":"openai/gpt-4o"`
+					options = `,"extra_params":{"provider":{"only":["openai"]}}`
+				}
+				if shape.name == "embeddings" {
+					options = ""
+				}
+				body := fmt.Sprintf(`{%s,"endpoint":%q%s,"requests":[{"custom_id":"request-1","body":%s}]}`, identity, shape.endpoint, options, shape.body)
+				created := invoke("POST", prefix+"/v1/batches", body, "sk-bf-owner")
+				require.Equal(t, 200, created.Response.StatusCode(), string(created.Response.Body()))
+				id := gjson.GetBytes(created.Response.Body(), "id").String()
+				require.NotEmpty(t, id)
+				before := len(hits)
+				for _, op := range []struct{ method, suffix string }{{"GET", ""}, {"GET", "/results"}, {"DELETE", ""}} {
+					foreign := invoke(op.method, prefix+"/v1/batches/"+id+op.suffix+"?provider=openrouter", "", "sk-bf-other")
+					require.Equal(t, 404, foreign.Response.StatusCode(), string(foreign.Response.Body()))
+					require.Len(t, hits, before, "ownership is checked before reaching the shared upstream")
+				}
+				listed := invoke("GET", prefix+"/v1/batches?provider=openrouter&limit=10&status=completed", "", "sk-bf-owner")
+				require.Equal(t, 200, listed.Response.StatusCode(), string(listed.Response.Body()))
+				require.NotContains(t, string(listed.Response.Body()), "foreign-workspace-batch")
+				require.Len(t, gjson.GetBytes(listed.Response.Body(), "data").Array(), len(ids))
+				foreignList := invoke("GET", prefix+"/v1/batches?provider=openrouter", "", "sk-bf-other")
+				require.Equal(t, 200, foreignList.Response.StatusCode(), string(foreignList.Response.Body()))
+				require.Len(t, gjson.GetBytes(foreignList.Response.Body(), "data").Array(), 1)
+				require.Equal(t, "foreign-workspace-batch", gjson.GetBytes(foreignList.Response.Body(), "data.0.id").String())
+				for _, suffix := range []string{"", "", "/results", "/results"} {
+					got := invoke("GET", prefix+"/v1/batches/"+id+suffix+"?provider=openrouter", "", "sk-bf-owner")
+					require.Equal(t, 200, got.Response.StatusCode(), string(got.Response.Body()))
+					require.Equal(t, "request-1", gjson.GetBytes(got.Response.Body(), "results.0.custom_id").String())
+				}
+				removed := invoke("DELETE", prefix+"/v1/batches/"+id+"?provider=openrouter", "", "sk-bf-owner")
+				require.Equal(t, 200, removed.Response.StatusCode(), string(removed.Response.Body()))
+				entry, e := logs.FindByID(t.Context(), jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenRouter, id))
+				require.NoError(t, e)
+				require.NotNil(t, entry.Cost)
+				require.Equal(t, 0.123, *entry.Cost)
+			})
+		}
+	}
 	for _, prefix := range []string{"", "/openai"} {
-		t.Run(prefix, func(t *testing.T) {
-			body := `{"model":"openrouter/openai/gpt-4o","endpoint":"/v1/chat/completions","provider":{"only":["openai"]},"requests":[{"custom_id":"request-1","body":{"messages":[{"role":"user","content":"hello"}]}}]}`
-			if prefix != "" {
-				body = `{"provider":"openrouter","model":"openai/gpt-4o","endpoint":"/v1/chat/completions","extra_params":{"provider":{"only":["openai"]}},"requests":[{"custom_id":"request-1","body":{"messages":[{"role":"user","content":"hello"}]}}]}`
-			}
-			created := invoke("POST", prefix+"/v1/batches", body, "sk-bf-owner")
-			require.Equal(t, 200, created.Response.StatusCode(), string(created.Response.Body()))
-			id := gjson.GetBytes(created.Response.Body(), "id").String()
-			require.NotEmpty(t, id)
-			before := len(hits)
-			foreign := invoke("GET", prefix+"/v1/batches/"+id+"?provider=openrouter", "", "sk-bf-other")
-			require.Equal(t, 404, foreign.Response.StatusCode(), string(foreign.Response.Body()))
-			require.Len(t, hits, before, "ownership is checked before reaching the shared upstream")
-			for _, suffix := range []string{"", "", "/results", "/results"} {
-				got := invoke("GET", prefix+"/v1/batches/"+id+suffix+"?provider=openrouter", "", "sk-bf-owner")
-				require.Equal(t, 200, got.Response.StatusCode(), string(got.Response.Body()))
-				require.Equal(t, "request-1", gjson.GetBytes(got.Response.Body(), "results.0.custom_id").String())
-			}
-			removed := invoke("DELETE", prefix+"/v1/batches/"+id+"?provider=openrouter", "", "sk-bf-owner")
-			require.Equal(t, 200, removed.Response.StatusCode(), string(removed.Response.Body()))
-			entry, e := logs.FindByID(t.Context(), jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindBatch, schemas.OpenRouter, id))
-			require.NoError(t, e)
-			require.NotNil(t, entry.Cost)
-			require.Equal(t, 0.123, *entry.Cost)
-		})
+		for _, op := range []struct{ method, suffix string }{{"GET", "/results"}, {"DELETE", ""}} {
+			active := invoke(op.method, prefix+"/v1/batches/batch-active"+op.suffix+"?provider=openrouter", "", "sk-bf-owner")
+			require.Equal(t, 409, active.Response.StatusCode(), string(active.Response.Body()))
+		}
 	}
 	blocked := invoke("DELETE", "/v1/batches/batch-no-charge?provider=openrouter", "", "sk-bf-owner")
 	require.Equal(t, 503, blocked.Response.StatusCode(), string(blocked.Response.Body()))
 	for _, hit := range hits {
 		require.NotEqual(t, "DELETE /v1/batches/batch-no-charge", hit, "pending accounting must not destroy the only settlement input")
 	}
-	// Both batches were settled once despite repeated polling, downloads and the
+	// All eight batches were settled once despite repeated polling, downloads and the
 	// deletion preflight, and billing stayed on the original creating virtual key.
 	charged := gov.GetGovernanceStore().GetGovernanceData(t.Context()).Budgets["batch-budget"]
 	require.NotNil(t, charged)
-	require.InDelta(t, 0.246, charged.CurrentUsage, 1e-12)
+	require.InDelta(t, 0.984, charged.CurrentUsage, 1e-12)
 	for _, hit := range hits {
+		require.NotEqual(t, "DELETE /v1/batches/batch-active", hit)
 		require.NotContains(t, hit, "/results")
 		require.NotContains(t, hit, "/files")
 	}
-	require.Len(t, ids, 2)
+	require.Len(t, ids, 8)
 }
