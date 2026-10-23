@@ -3349,6 +3349,71 @@ func TestRunPostLLMHooksPreservesProviderResponseWithGuardrailError(t *testing.T
 	}
 }
 
+// JSON-deserialized cache/plugin responses do not carry ResponseFormat (json:"-").
+type transcriptionFormatMetadataPlugin struct {
+	fakeRoutingPlugin
+	postFormat *string
+}
+
+func (p *transcriptionFormatMetadataPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, &schemas.LLMPluginShortCircuit{Response: &schemas.BifrostResponse{
+		TranscriptionResponse: &schemas.BifrostTranscriptionResponse{Text: "cached transcript\n"},
+	}}, nil
+}
+
+func (p *transcriptionFormatMetadataPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if resp != nil && resp.TranscriptionResponse != nil && p.postFormat != nil {
+		resp.TranscriptionResponse.ResponseFormat = p.postFormat
+	}
+	return resp, err, nil
+}
+
+func TestTranscriptionRequestResponseFormatMetadata(t *testing.T) {
+	cases := []struct {
+		name       string
+		params     *schemas.TranscriptionParameters
+		postFormat *string
+		wantFormat *string
+	}{
+		{name: "nil params"},
+		{name: "default", params: &schemas.TranscriptionParameters{}},
+		{name: "json", params: &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("json")}, wantFormat: schemas.Ptr("json")},
+		{name: "text", params: &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("text")}, wantFormat: schemas.Ptr("text")},
+		{name: "srt", params: &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("srt")}, wantFormat: schemas.Ptr("srt")},
+		{name: "vtt", params: &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("vtt")}, wantFormat: schemas.Ptr("vtt")},
+		{name: "explicit post-hook format", params: &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("text")}, postFormat: schemas.Ptr("json"), wantFormat: schemas.Ptr("json")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 8, "http://127.0.0.1:1")
+			plugin := &transcriptionFormatMetadataPlugin{
+				fakeRoutingPlugin: fakeRoutingPlugin{name: "transcription-format-metadata"},
+				postFormat:        tc.postFormat,
+			}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account: account, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: NewDefaultLogger(schemas.LogLevelError),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { client.Shutdown() })
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, bifrostErr := client.TranscriptionRequest(ctx, &schemas.BifrostTranscriptionRequest{
+				Provider: schemas.OpenAI, Model: "whisper-1", Params: tc.params,
+				Input: &schemas.TranscriptionInput{File: []byte("fake-audio"), Filename: "sample.wav"},
+			})
+			if bifrostErr != nil || resp == nil {
+				t.Fatalf("response = %#v, error = %v", resp, bifrostErr)
+			}
+			if resp.Text != "cached transcript\n" || !reflect.DeepEqual(resp.ResponseFormat, tc.wantFormat) {
+				t.Fatalf("response text/format = %q/%v, want cached transcript/%v", resp.Text, resp.ResponseFormat, tc.wantFormat)
+			}
+		})
+	}
+}
+
 func newRoutingCommitPipeline(plugins ...schemas.LLMPlugin) *PluginPipeline {
 	return &PluginPipeline{
 		logger:     NewDefaultLogger(schemas.LogLevelError),

@@ -554,6 +554,29 @@ func TestExtraFieldsPlacementHeaders(t *testing.T) {
 		HeaderBifrostDroppedCompatParams, HeaderBifrostDroppedUnsupportedTools, HeaderBifrostPassthroughPath,
 	}
 
+	t.Run("nested routing metadata is not a header", func(t *testing.T) {
+		extra := schemas.BifrostResponseExtraFields{
+			RequestType: schemas.TranscriptionRequest,
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "whisper-1"},
+			RoutingMetadata: &schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{
+				{RequestType: schemas.EmbeddingRequest, InputTokens: schemas.Ptr(12)},
+			}},
+		}
+		body, err := schemas.MarshalSorted(&schemas.BifrostTranscriptionResponse{Text: "Hello.", ExtraFields: extra})
+		assert.NoError(t, err)
+		for _, headersMode := range []bool{false, true} {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, headersMode)
+			ApplyBifrostResponseHeaders(ctx, nil, extra)
+			assert.Equal(t, "openai", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoProvider)))
+			assert.Equal(t, "whisper-1", string(ctx.Response.Header.Peek(HeaderBifrostRoutingInfoModel)))
+			assert.Empty(t, string(ctx.Response.Header.Peek("x-bifrost-routing-metadata")))
+			out := StripExtraFieldsIfInHeaders(ctx, body)
+			assert.Equal(t, !headersMode, gjson.GetBytes(out, "extra_fields.routing_metadata").Exists())
+			assert.Equal(t, "Hello.", gjson.GetBytes(out, "text").String())
+		}
+	})
+
 	t.Run("body mode keeps today's header set", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		ApplyBifrostResponseHeaders(ctx, nil, extra)

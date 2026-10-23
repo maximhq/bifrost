@@ -19,23 +19,61 @@ import (
 )
 
 func TestTranscriptionNonJSONContentTypeWithoutOtherHeaders(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
-		_, _ = io.WriteString(w, "WEBVTT\n\n00:00.000 --> 00:01.000\nHello.\n")
-	}))
-	defer upstream.Close()
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	client := &fasthttp.Client{}
-	defer client.CloseIdleConnections()
-	req := &schemas.BifrostTranscriptionRequest{Model: "whisper-1", Input: &schemas.TranscriptionInput{
-		File: []byte("fake-audio-bytes"), Filename: "sample.wav",
-	}, Params: &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("vtt")}}
-	resp, err := HandleOpenAITranscriptionRequest(ctx, client, upstream.URL, req,
-		schemas.Key{Value: *schemas.NewSecretVar("test-key")}, nil, nil, schemas.OpenAI, false, nil, &testLogger{})
-	require.Nil(t, err)
-	require.NotNil(t, resp)
-	require.Equal(t, map[string]string{"Content-Type": "text/vtt; charset=utf-8"}, resp.ExtraFields.ProviderResponseHeaders)
-	require.Equal(t, resp.ExtraFields.ProviderResponseHeaders, ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders))
+	cases := []struct {
+		name, contentType, body string
+		params                  *schemas.TranscriptionParameters
+		retainContentType       bool
+	}{
+		{name: "text", contentType: "text/plain; charset=utf-8", body: " .\n", params: &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("text")}, retainContentType: true},
+		{name: "srt", contentType: "application/x-subrip; charset=utf-8", body: "1\r\n00:00:00,000 --> 00:00:01,000\r\nHello.\r\n\r\n", params: &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("srt")}, retainContentType: true},
+		{name: "vtt", contentType: "text/vtt; charset=utf-8", body: "WEBVTT\n\n00:00.000 --> 00:01.000\nHello.\n", params: &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("vtt")}, retainContentType: true},
+		{name: "nil params", contentType: "application/json", body: `{"text":"Hello."}`},
+		{name: "default", contentType: "application/json", body: `{"text":"Hello."}`, params: &schemas.TranscriptionParameters{}},
+		{name: "json", contentType: "application/json", body: `{"text":"Hello."}`, params: &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("json")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseMultipartForm(1 << 20); err != nil {
+					t.Error(err)
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				defer r.MultipartForm.RemoveAll()
+				wantFormat := ""
+				if tc.params != nil && tc.params.ResponseFormat != nil {
+					wantFormat = *tc.params.ResponseFormat
+				}
+				if r.FormValue("response_format") != wantFormat {
+					t.Errorf("upstream response_format = %q, want %q", r.FormValue("response_format"), wantFormat)
+				}
+				w.Header().Set("Content-Type", tc.contentType)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer upstream.Close()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			client := &fasthttp.Client{}
+			defer client.CloseIdleConnections()
+			req := &schemas.BifrostTranscriptionRequest{
+				Model: "whisper-1", Params: tc.params,
+				Input: &schemas.TranscriptionInput{File: []byte("fake-audio-bytes"), Filename: "sample.wav"},
+			}
+			resp, err := HandleOpenAITranscriptionRequest(ctx, client, upstream.URL, req,
+				schemas.Key{Value: *schemas.NewSecretVar("test-key")}, nil, nil, schemas.OpenAI, false, nil, &testLogger{})
+			require.Nil(t, err)
+			require.NotNil(t, resp)
+			var wantHeaders map[string]string
+			if tc.retainContentType {
+				wantHeaders = map[string]string{"Content-Type": tc.contentType}
+				require.Equal(t, tc.body, resp.Text)
+			} else {
+				require.Equal(t, "Hello.", resp.Text)
+			}
+			require.Equal(t, wantHeaders, resp.ExtraFields.ProviderResponseHeaders)
+			require.Equal(t, wantHeaders, ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders))
+		})
+	}
 }
 
 // Includes the local upstream round trip and provider parsing/header extraction;

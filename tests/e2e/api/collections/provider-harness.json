@@ -64,6 +64,22 @@
           "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
+          "    // Explicit non-JSON transcription formats are text/subtitle bodies, not JSON.",
+          "    var __transcriptionFormat = null;",
+          "    if (pm.request.body && pm.request.body.mode === 'formdata' && pm.request.body.formdata) {",
+          "      pm.request.body.formdata.each(function (__field) {",
+          "        if (__transcriptionFormat === null && __field && __field.key === 'response_format' && !__field.disabled) {",
+          "          __transcriptionFormat = pm.variables.replaceIn(String(__field.value));",
+          "        }",
+          "      });",
+          "    }",
+          "    if (/\\/audio\\/transcriptions(?:\\?|$)/.test(__u) && ['text', 'srt', 'vtt'].indexOf(__transcriptionFormat) !== -1) {",
+          "      var __transcriptionBody = pm.response.text() || '';",
+          "      var __transcriptionContentType = (pm.response.headers.get('content-type') || '').toLowerCase();",
+          "      pm.expect(__transcriptionContentType, 'body: ' + __transcriptionBody).to.match(/^(text\\/plain|text\\/vtt|application\\/x-subrip)(?:\\s*;|$)/);",
+          "      pm.expect(__transcriptionBody.trim().length, 'body: ' + __transcriptionBody).to.be.above(0);",
+          "      return;",
+          "    }",
           "    var j;",
           "    try { j = pm.response.json(); } catch (e) {",
           "        var raw = pm.response.text() || '';",
@@ -276967,11 +276983,11 @@
       ]
     },
     {
-      "name": "264. Transcription response formats",
-      "description": "Non-streaming transcription output must honor response_format without a JSON envelope. Groq whisper-large-v3-turbo text cases cover native and OpenAI integration routes; OpenAI whisper-1 SRT/VTT cases cover native subtitle output and preserve existing integration behavior. Exact upstream body/media-type preservation, raw-response settings, cache/plugin responses, and errors are pinned by local Go tests.",
+      "name": "264. Transcription response formats (#8850 / PR #8877)",
+      "description": "Non-streaming transcription response-format regressions for #8850 / PR #8877. Groq text and OpenAI Whisper text/SRT/VTT cover native and both OpenAI aliases; OpenAI text also covers LiteLLM, LangChain and PydanticAI routes reusing the converter. Cases assert HTTP 200, non-JSON content type, nonempty output, no extra_fields envelope, and subtitle syntax. Exact upstream media types, header placement, errors, routing fallbacks, serialized plugin responses, and Azure deployment routing are covered by Go mock tests.",
       "item": [
         {
-          "name": "groq/whisper-large-v3-turbo /v1/audio/transcriptions transcription response formats text",
+          "name": "groq/whisper-large-v3-turbo /v1/audio/transcriptions transcription response formats text - #8850",
           "event": [
             {
               "listen": "test",
@@ -277027,7 +277043,7 @@
           }
         },
         {
-          "name": "groq/whisper-large-v3-turbo /openai/v1/audio/transcriptions transcription response formats text",
+          "name": "groq/whisper-large-v3-turbo /openai/v1/audio/transcriptions transcription response formats text - #8850",
           "event": [
             {
               "listen": "test",
@@ -277084,7 +277100,7 @@
           }
         },
         {
-          "name": "openai/whisper-1 /v1/audio/transcriptions transcription response formats srt",
+          "name": "openai/whisper-1 /v1/audio/transcriptions transcription response formats srt - #8850",
           "event": [
             {
               "listen": "test",
@@ -277141,7 +277157,7 @@
           }
         },
         {
-          "name": "openai/whisper-1 /v1/audio/transcriptions transcription response formats vtt",
+          "name": "openai/whisper-1 /v1/audio/transcriptions transcription response formats vtt - #8850",
           "event": [
             {
               "listen": "test",
@@ -277198,7 +277214,7 @@
           }
         },
         {
-          "name": "openai/whisper-1 /openai/v1/audio/transcriptions transcription response formats srt",
+          "name": "openai/whisper-1 /openai/v1/audio/transcriptions transcription response formats srt - #8850",
           "event": [
             {
               "listen": "test",
@@ -277256,7 +277272,7 @@
           }
         },
         {
-          "name": "openai/whisper-1 /openai/v1/audio/transcriptions transcription response formats vtt",
+          "name": "openai/whisper-1 /openai/v1/audio/transcriptions transcription response formats vtt - #8850",
           "event": [
             {
               "listen": "test",
@@ -277306,6 +277322,516 @@
               ],
               "path": [
                 "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/whisper-1 /v1/audio/transcriptions transcription response formats text - #8850",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Transcription response formats return non-JSON output', function () {",
+                  "  var body = pm.response.text();",
+                  "  var ct = (pm.response.headers.get('Content-Type') || '').toLowerCase();",
+                  "  pm.expect(pm.response.code, 'body: ' + body).to.equal(200);",
+                  "  pm.expect(ct, 'body: ' + body).to.match(/^(text\\/|application\\/x-subrip)/);",
+                  "  pm.expect(ct, 'body: ' + body).not.to.include('application/json');",
+                  "  pm.expect(body.trim().length, 'body: ' + body).to.be.above(0);",
+                  "  pm.expect(body, 'JSON envelope leaked into transcript').not.to.include('\"extra_fields\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/whisper-1 /openai/v1/audio/transcriptions transcription response formats text - #8850",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Transcription response formats return non-JSON output', function () {",
+                  "  var body = pm.response.text();",
+                  "  var ct = (pm.response.headers.get('Content-Type') || '').toLowerCase();",
+                  "  pm.expect(pm.response.code, 'body: ' + body).to.equal(200);",
+                  "  pm.expect(ct, 'body: ' + body).to.match(/^(text\\/|application\\/x-subrip)/);",
+                  "  pm.expect(ct, 'body: ' + body).not.to.include('application/json');",
+                  "  pm.expect(body.trim().length, 'body: ' + body).to.be.above(0);",
+                  "  pm.expect(body, 'JSON envelope leaked into transcript').not.to.include('\"extra_fields\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "groq/whisper-large-v3-turbo /openai/audio/transcriptions transcription response formats text - #8850",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Transcription response formats return non-JSON output', function () {",
+                  "  var body = pm.response.text();",
+                  "  var ct = (pm.response.headers.get('Content-Type') || '').toLowerCase();",
+                  "  pm.expect(pm.response.code, 'body: ' + body).to.equal(200);",
+                  "  pm.expect(ct, 'body: ' + body).to.match(/^(text\\/|application\\/x-subrip)/);",
+                  "  pm.expect(ct, 'body: ' + body).not.to.include('application/json');",
+                  "  pm.expect(body.trim().length, 'body: ' + body).to.be.above(0);",
+                  "  pm.expect(body, 'JSON envelope leaked into transcript').not.to.include('\"extra_fields\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "groq/whisper-large-v3-turbo",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/whisper-1 /openai/audio/transcriptions transcription response formats text - #8850",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Transcription response formats return non-JSON output', function () {",
+                  "  var body = pm.response.text();",
+                  "  var ct = (pm.response.headers.get('Content-Type') || '').toLowerCase();",
+                  "  pm.expect(pm.response.code, 'body: ' + body).to.equal(200);",
+                  "  pm.expect(ct, 'body: ' + body).to.match(/^(text\\/|application\\/x-subrip)/);",
+                  "  pm.expect(ct, 'body: ' + body).not.to.include('application/json');",
+                  "  pm.expect(body.trim().length, 'body: ' + body).to.be.above(0);",
+                  "  pm.expect(body, 'JSON envelope leaked into transcript').not.to.include('\"extra_fields\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/whisper-1 /openai/audio/transcriptions transcription response formats srt - #8850",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Transcription response formats return non-JSON output', function () {",
+                  "  var body = pm.response.text();",
+                  "  var ct = (pm.response.headers.get('Content-Type') || '').toLowerCase();",
+                  "  pm.expect(pm.response.code, 'body: ' + body).to.equal(200);",
+                  "  pm.expect(ct, 'body: ' + body).to.match(/^(text\\/|application\\/x-subrip)/);",
+                  "  pm.expect(ct, 'body: ' + body).not.to.include('application/json');",
+                  "  pm.expect(body.trim().length, 'body: ' + body).to.be.above(0);",
+                  "  pm.expect(body, 'JSON envelope leaked into transcript').not.to.include('\"extra_fields\"');",
+                  "  pm.expect(body, 'body: ' + body).to.match(/\\d{2}:\\d{2}:\\d{2},\\d{3} --> \\d{2}:\\d{2}:\\d{2},\\d{3}/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "srt",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/whisper-1 /openai/audio/transcriptions transcription response formats vtt - #8850",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Transcription response formats return non-JSON output', function () {",
+                  "  var body = pm.response.text();",
+                  "  var ct = (pm.response.headers.get('Content-Type') || '').toLowerCase();",
+                  "  pm.expect(pm.response.code, 'body: ' + body).to.equal(200);",
+                  "  pm.expect(ct, 'body: ' + body).to.match(/^(text\\/|application\\/x-subrip)/);",
+                  "  pm.expect(ct, 'body: ' + body).not.to.include('application/json');",
+                  "  pm.expect(body.trim().length, 'body: ' + body).to.be.above(0);",
+                  "  pm.expect(body, 'JSON envelope leaked into transcript').not.to.include('\"extra_fields\"');",
+                  "  pm.expect(body, 'body: ' + body).to.match(/^\\s*WEBVTT/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "vtt",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/whisper-1 /litellm/v1/audio/transcriptions transcription response formats text - #8850",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Transcription response formats return non-JSON output', function () {",
+                  "  var body = pm.response.text();",
+                  "  var ct = (pm.response.headers.get('Content-Type') || '').toLowerCase();",
+                  "  pm.expect(pm.response.code, 'body: ' + body).to.equal(200);",
+                  "  pm.expect(ct, 'body: ' + body).to.match(/^(text\\/|application\\/x-subrip)/);",
+                  "  pm.expect(ct, 'body: ' + body).not.to.include('application/json');",
+                  "  pm.expect(body.trim().length, 'body: ' + body).to.be.above(0);",
+                  "  pm.expect(body, 'JSON envelope leaked into transcript').not.to.include('\"extra_fields\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/whisper-1 /langchain/v1/audio/transcriptions transcription response formats text - #8850",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Transcription response formats return non-JSON output', function () {",
+                  "  var body = pm.response.text();",
+                  "  var ct = (pm.response.headers.get('Content-Type') || '').toLowerCase();",
+                  "  pm.expect(pm.response.code, 'body: ' + body).to.equal(200);",
+                  "  pm.expect(ct, 'body: ' + body).to.match(/^(text\\/|application\\/x-subrip)/);",
+                  "  pm.expect(ct, 'body: ' + body).not.to.include('application/json');",
+                  "  pm.expect(body.trim().length, 'body: ' + body).to.be.above(0);",
+                  "  pm.expect(body, 'JSON envelope leaked into transcript').not.to.include('\"extra_fields\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/whisper-1 /pydanticai/v1/audio/transcriptions transcription response formats text - #8850",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Transcription response formats return non-JSON output', function () {",
+                  "  var body = pm.response.text();",
+                  "  var ct = (pm.response.headers.get('Content-Type') || '').toLowerCase();",
+                  "  pm.expect(pm.response.code, 'body: ' + body).to.equal(200);",
+                  "  pm.expect(ct, 'body: ' + body).to.match(/^(text\\/|application\\/x-subrip)/);",
+                  "  pm.expect(ct, 'body: ' + body).not.to.include('application/json');",
+                  "  pm.expect(body.trim().length, 'body: ' + body).to.be.above(0);",
+                  "  pm.expect(body, 'JSON envelope leaked into transcript').not.to.include('\"extra_fields\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "text",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
                 "v1",
                 "audio",
                 "transcriptions"
