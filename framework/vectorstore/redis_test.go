@@ -434,6 +434,9 @@ func TestRedisStore_DeleteNamespaceFallbackIsNarrow(t *testing.T) {
 		keepsNamespace bool
 	}{
 		{"native DD", nil, nil, nil, nil, 1, 0, false},
+		{"wrapped unquoted arity", fmt.Errorf("wrapped: %w", redisTestError("wrong number of arguments for FT.DROPINDEX command")), nil, nil, nil, 2, 1, false},
+		{"connection closed", redis.ErrClosed, nil, nil, redis.ErrClosed, 1, 0, true},
+		{"deadline exceeded", context.DeadlineExceeded, nil, nil, context.DeadlineExceeded, 1, 0, true},
 		{"no DD support", arity, nil, nil, nil, 2, 1, false},
 		{"absent Valkey 9.0", arity, redisTestError("Index with name 'cache' not found"), nil, nil, 2, 1, false},
 		{"absent Valkey 9.1", arity, redisTestError("Index with name 'cache' not found in database 0"), nil, nil, 2, 1, false},
@@ -497,6 +500,7 @@ func TestRedisStore_GetNearestRecoveryIsBounded(t *testing.T) {
 		infoCalls    int32
 		createCalls  int32
 	}{
+		{"healthy index", true, nil, nil, nil, 1, 0, 0},
 		{"unregistered", false, redisTestError("No such index cache"), nil, nil, 1, 0, 0},
 		{"permission error", true, redisTestError("NOPERM access denied"), nil, nil, 1, 0, 0},
 		{"query error", true, redisTestError("Invalid query"), nil, nil, 1, 0, 0},
@@ -539,8 +543,9 @@ func TestRedisStore_GetNearestRecoveryIsBounded(t *testing.T) {
 				return next(ctx, cmd)
 			}))
 			_, err := store.GetNearest(context.Background(), "cache", []float32{0.6, 0.8}, nil, nil, 0.8, 1)
-			require.Error(t, err)
-			if tc.createError != nil {
+			if tc.searchError == nil {
+				require.NoError(t, err)
+			} else if tc.createError != nil {
 				assert.ErrorIs(t, err, tc.createError)
 			} else if tc.inspectError != nil {
 				assert.ErrorIs(t, err, tc.inspectError)
@@ -552,6 +557,43 @@ func TestRedisStore_GetNearestRecoveryIsBounded(t *testing.T) {
 			assert.Equal(t, tc.createCalls, creates.Load())
 		})
 	}
+}
+
+func TestRedisStore_CreateNamespaceFailureDoesNotRegister(t *testing.T) {
+	server := newFakeRedisSearchServer(t, 0)
+	defer func() { require.NoError(t, server.close()) }()
+	client := redis.NewClient(&redis.Options{Addr: server.addr(), Protocol: 2, DisableIdentity: true, MaxRetries: -1})
+	defer func() { require.NoError(t, client.Close()) }()
+	store := &RedisStore{client: client}
+	missing := redisTestError("No such index cache")
+	denied := redisTestError("NOPERM creation denied")
+	var infos, creates atomic.Int32
+	client.AddHook(redisCommandHook(func(ctx context.Context, cmd redis.Cmder, next redis.ProcessHook) error {
+		var err error
+		switch cmd.Name() {
+		case "ft.info":
+			infos.Add(1)
+			err = missing
+		case "ft.create":
+			creates.Add(1)
+			err = denied
+		case "ft.search":
+			err = missing
+		}
+		if err != nil {
+			cmd.SetErr(err)
+			return err
+		}
+		return next(ctx, cmd)
+	}))
+
+	require.ErrorIs(t, store.CreateNamespace(context.Background(), "cache", 2, nil), denied)
+	_, registered := store.getNamespaceSchema("cache")
+	require.False(t, registered, "failed creation must not authorize future recovery")
+	_, err := store.GetNearest(context.Background(), "cache", []float32{0.6, 0.8}, nil, nil, 0.8, 1)
+	require.ErrorIs(t, err, missing)
+	assert.Equal(t, int32(1), infos.Load(), "search must not inspect an unregistered namespace")
+	assert.Equal(t, int32(1), creates.Load(), "search must not retry failed registration")
 }
 
 func TestRedisStore_RecoveryWaitHonorsCancellation(t *testing.T) {
@@ -1144,6 +1186,37 @@ func TestRedisStore_DeleteNamespaceClearsKeys(t *testing.T) {
 			require.NoError(t, store.DeleteNamespace(setup.ctx, namespace), "deletion must remain idempotent")
 		})
 	}
+}
+
+func TestRedisStore_DeleteNamespaceSweepFailureIsRetryable(t *testing.T) {
+	setup, namespace := newRedisRecoveryTestSetup(t)
+	store := setup.Store
+	require.NoError(t, store.CreateNamespace(setup.ctx, namespace, 2, nil))
+	key := buildKey(namespace, "orphan")
+	require.NoError(t, store.client.HSet(setup.ctx, key, "response", "old").Err())
+	require.NoError(t, store.client.Do(setup.ctx, "FT.DROPINDEX", namespace).Err())
+
+	// Exercise a failed DEL against a real scanned key, not just a failed SCAN.
+	denied := redisTestError("NOPERM deletion denied")
+	var failDelete atomic.Bool
+	failDelete.Store(true)
+	store.client.AddHook(redisCommandHook(func(ctx context.Context, cmd redis.Cmder, next redis.ProcessHook) error {
+		if cmd.Name() == "del" && failDelete.Swap(false) {
+			cmd.SetErr(denied)
+			return denied
+		}
+		return next(ctx, cmd)
+	}))
+	require.ErrorIs(t, store.DeleteNamespace(setup.ctx, namespace), denied)
+	assert.Equal(t, int64(1), store.client.Exists(setup.ctx, key).Val())
+	_, registered := store.getNamespaceSchema(namespace)
+	assert.False(t, registered, "an incomplete sweep must not allow index resurrection")
+	_, err := store.GetNearest(setup.ctx, namespace, []float32{0.6, 0.8}, nil, nil, 0.8, 1)
+	require.Error(t, err)
+	assert.True(t, isRedisIndexNotFoundError(err))
+
+	require.NoError(t, store.DeleteNamespace(setup.ctx, namespace), "retry must remove orphaned keys even after schema eviction")
+	assert.Zero(t, store.client.Exists(setup.ctx, key).Val())
 }
 
 func TestRedisStore_DeleteNamespaceKeysTreatsNamespaceLiterally(t *testing.T) {
