@@ -1958,6 +1958,10 @@ type BifrostResponseExtraFields struct {
 	ChunkIndex      int         `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest      interface{} `json:"raw_request,omitempty"`
 	RawResponse     interface{} `json:"raw_response,omitempty"`
+	// RawResponseFormat declares the wire shape of RawResponse on a streamed chunk so a plugin that
+	// changes the chunk's normalized text can apply the same change with SyncRawResponseText.
+	// Not serialized; empty means the producer did not declare a shape.
+	RawResponseFormat RawResponseFormat `json:"-"`
 	// Debug spelling is retained for the cache and guardrail Go/JSON contracts.
 	CacheDebug                *BifrostCacheMetadata     `json:"cache_debug,omitempty"`
 	RoutingMetadata           *BifrostRoutingMetadata   `json:"routing_metadata,omitempty"`
