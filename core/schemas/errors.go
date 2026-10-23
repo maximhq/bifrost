@@ -107,6 +107,7 @@ var modelAddressedRequestTypes = map[RequestType]struct{}{
 	ImageGenerationStreamRequest: {},
 	RerankRequest:                {},
 	DecisionRequest:              {},
+	ExtractionRequest:            {},
 	CountTokensRequest:           {},
 }
 

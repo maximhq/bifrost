@@ -203,6 +203,7 @@ const (
 	ContainerFileDeleteRequest     RequestType = "container_file_delete"
 	RerankRequest                  RequestType = "rerank"
 	DecisionRequest                RequestType = "decisions"
+	ExtractionRequest              RequestType = "extraction"
 	OCRRequest                     RequestType = "ocr"
 	CountTokensRequest             RequestType = "count_tokens"
 	CompactionRequest              RequestType = "compaction"
@@ -825,6 +826,7 @@ type BifrostRequest struct {
 	EmbeddingRequest             *BifrostEmbeddingRequest
 	RerankRequest                *BifrostRerankRequest
 	DecisionRequest              *BifrostDecisionRequest
+	ExtractionRequest            *BifrostExtractionRequest
 	OCRRequest                   *BifrostOCRRequest
 	SpeechRequest                *BifrostSpeechRequest
 	TranscriptionRequest         *BifrostTranscriptionRequest
@@ -898,6 +900,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.RerankRequest.Provider, br.RerankRequest.Model, br.RerankRequest.Fallbacks
 	case br.DecisionRequest != nil:
 		return br.DecisionRequest.Provider, br.DecisionRequest.Model, br.DecisionRequest.Fallbacks
+	case br.ExtractionRequest != nil:
+		return br.ExtractionRequest.Provider, br.ExtractionRequest.Model, br.ExtractionRequest.Fallbacks
 	case br.OCRRequest != nil:
 		return br.OCRRequest.Provider, br.OCRRequest.Model, br.OCRRequest.Fallbacks
 	case br.SpeechRequest != nil:
@@ -1058,6 +1062,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.RerankRequest.Provider = provider
 	case br.DecisionRequest != nil:
 		br.DecisionRequest.Provider = provider
+	case br.ExtractionRequest != nil:
+		br.ExtractionRequest.Provider = provider
 	case br.OCRRequest != nil:
 		br.OCRRequest.Provider = provider
 	case br.SpeechRequest != nil:
@@ -1118,6 +1124,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.RerankRequest.Model = model
 	case br.DecisionRequest != nil:
 		br.DecisionRequest.Model = model
+	case br.ExtractionRequest != nil:
+		br.ExtractionRequest.Model = model
 	case br.OCRRequest != nil:
 		br.OCRRequest.Model = model
 	case br.SpeechRequest != nil:
@@ -1178,6 +1186,8 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.RerankRequest.Fallbacks = fallbacks
 	case br.DecisionRequest != nil:
 		br.DecisionRequest.Fallbacks = fallbacks
+	case br.ExtractionRequest != nil:
+		br.ExtractionRequest.Fallbacks = fallbacks
 	case br.OCRRequest != nil:
 		br.OCRRequest.Fallbacks = fallbacks
 	case br.SpeechRequest != nil:
@@ -1224,6 +1234,8 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.RerankRequest.RawRequestBody = rawRequestBody
 	case br.DecisionRequest != nil:
 		br.DecisionRequest.RawRequestBody = rawRequestBody
+	case br.ExtractionRequest != nil:
+		br.ExtractionRequest.RawRequestBody = rawRequestBody
 	case br.OCRRequest != nil:
 		br.OCRRequest.RawRequestBody = rawRequestBody
 	case br.SpeechRequest != nil:
@@ -1403,6 +1415,7 @@ type BifrostResponse struct {
 	EmbeddingResponse             *BifrostEmbeddingResponse
 	RerankResponse                *BifrostRerankResponse
 	DecisionResponse              *BifrostDecisionResponse
+	ExtractionResponse            *BifrostExtractionResponse
 	OCRResponse                   *BifrostOCRResponse
 	SpeechResponse                *BifrostSpeechResponse
 	SpeechStreamResponse          *BifrostSpeechStreamResponse
@@ -1473,6 +1486,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.RerankResponse.ExtraFields
 	case r.DecisionResponse != nil:
 		return &r.DecisionResponse.ExtraFields
+	case r.ExtractionResponse != nil:
+		return &r.ExtractionResponse.ExtraFields
 	case r.OCRResponse != nil:
 		return &r.OCRResponse.ExtraFields
 	case r.SpeechResponse != nil:
@@ -1714,6 +1729,8 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		setCoreExtraFields(&r.RerankResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.DecisionResponse != nil:
 		setCoreExtraFields(&r.DecisionResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
+	case r.ExtractionResponse != nil:
+		setCoreExtraFields(&r.ExtractionResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.SpeechResponse != nil:
 		setCoreExtraFields(&r.SpeechResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.SpeechStreamResponse != nil:

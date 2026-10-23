@@ -330,6 +330,11 @@ func (provider *ElevenlabsProvider) Decision(ctx *schemas.BifrostContext, key sc
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
+// Extraction is not supported by the Elevenlabs provider.
+func (provider *ElevenlabsProvider) Extraction(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostExtractionRequest) (*schemas.BifrostExtractionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ExtractionRequest, provider.GetProviderKey())
+}
+
 // OCR is not supported by the Elevenlabs provider.
 func (provider *ElevenlabsProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())

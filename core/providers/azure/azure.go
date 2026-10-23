@@ -781,6 +781,11 @@ func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas
 	)
 }
 
+// Extraction is not supported by the Azure provider.
+func (provider *AzureProvider) Extraction(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostExtractionRequest) (*schemas.BifrostExtractionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ExtractionRequest, provider.GetProviderKey())
+}
+
 // OCR is not supported by the Azure provider.
 func (provider *AzureProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())

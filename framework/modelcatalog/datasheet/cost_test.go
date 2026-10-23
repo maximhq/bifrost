@@ -6016,6 +6016,52 @@ func TestCalculateCost_DecisionTokenBilling(t *testing.T) {
 	assert.InDelta(t, 50000*0.000000042, s.CalculateCost(resp, nil), 1e-12)
 }
 
+func makeExtractionResponse(provider schemas.ModelProvider, model string, usage *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		ExtractionResponse: &schemas.BifrostExtractionResponse{
+			Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ExtractionRequest,
+				RoutingInfo: routingInfoFor(provider, model),
+			},
+		},
+	}
+}
+
+// Clairic bills input tokens only, at $0.10 per million, on an extraction row. Pins the
+// dispatch arm and the mode: an unhandled request type would price every extraction at zero.
+func TestCalculateCost_ExtractionTokenBilling(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("clairic", "cloudflare", "extraction"): {
+			Model: "clairic", Provider: "cloudflare", Mode: "extraction",
+			InputCostPerToken:  bifrost.Ptr(0.0000001),
+			OutputCostPerToken: bifrost.Ptr(0.0),
+		},
+	})
+
+	resp := makeExtractionResponse(schemas.Cloudflare, "clairic", &schemas.BifrostLLMUsage{
+		PromptTokens: 416,
+		TotalTokens:  416,
+	})
+
+	assert.InDelta(t, 416*0.0000001, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// A model priced only on a chat row is still billed for an extraction.
+func TestCalculateCost_ExtractionFallsBackToChatRow(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("@cf/cloudflare/clairic", "cloudflare", "chat"): chatPricing(0.0000001, 0),
+	})
+
+	resp := makeExtractionResponse(schemas.Cloudflare, "@cf/cloudflare/clairic", &schemas.BifrostLLMUsage{
+		PromptTokens:     2_000_000,
+		CompletionTokens: 9,
+		TotalTokens:      2_000_009,
+	})
+
+	assert.InDelta(t, 0.2, s.CalculateCost(resp, nil), 1e-12)
+}
+
 // =========================================================================
 // Decision rates on a chat row, and their overrides
 // =========================================================================

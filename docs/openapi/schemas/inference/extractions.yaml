@@ -1,0 +1,181 @@
+# Extraction schemas (/v1/extractions)
+
+ExtractionRequest:
+  type: object
+  required:
+    - model
+    - fields
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format
+      example: cloudflare/clairic
+    input:
+      type: string
+      description: The text to read. Text answers are spans of it. May be empty when images are sent.
+    state:
+      type: string
+      description: Clairic's name for `input`. Send one of the two, not both.
+    fields:
+      type: object
+      description: Fields to extract, keyed by name. At least one.
+      minProperties: 1
+      additionalProperties:
+        $ref: '#/ExtractionFieldSpec'
+    images:
+      type: array
+      description: Images read before the text, as base64 data URLs or base64 objects
+      maxItems: 4
+      items:
+        oneOf:
+          - type: string
+            description: A base64 data URL
+          - type: object
+            required:
+              - content_type
+              - base64
+            properties:
+              content_type:
+                type: string
+              base64:
+                type: string
+    reference_date:
+      type: string
+      description: ISO date that anchors dates written without a year
+    options:
+      type: object
+      properties:
+        include_quantiles:
+          type: boolean
+          description: Add 99 percentiles to estimates
+        return_state_text:
+          type: boolean
+          description: Return the text that spans index into
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback models in provider/model format
+
+ExtractionFieldSpec:
+  type: object
+  additionalProperties: false
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum: [text, number, date, time, datetime, duration, list, estimate, forecast]
+    instructions:
+      type: string
+      description: What the field should contain
+    unit:
+      type: string
+      description: Unit label. For durations, one of seconds, minutes, hours, days, weeks, months, years
+    integer:
+      type: boolean
+      description: Numbers and durations only
+    decimals:
+      type: integer
+      minimum: 0
+      maximum: 6
+      description: Numbers, durations and number lists only
+    items:
+      type: string
+      enum: [text, number, date]
+      description: Required for list fields
+    min:
+      description: Required for estimates and forecasts. A number, or an ISO date for date estimates
+    max:
+      description: Required for estimates and forecasts. A number, or an ISO date for date estimates
+    step:
+      description: Estimate grid step. A positive number, or "month" or "year"
+    scale:
+      type: string
+      enum: [linear, log]
+    null_threshold:
+      type: number
+      description: Probability of null above which the value is null
+    horizon:
+      type: integer
+      minimum: 1
+      maximum: 64
+      description: Forecasts only. Number of steps
+    interval:
+      type: string
+      enum: [step, minute, hour, day, week, month, quarter, year]
+      description: Forecasts only
+
+ExtractionResponse:
+  type: object
+  required:
+    - model
+    - answers
+    - truncated
+  properties:
+    id:
+      type: string
+    model:
+      type: string
+      description: Model that performed the extraction
+    answers:
+      type: object
+      description: One answer per requested field, keyed by the field's name
+      additionalProperties:
+        $ref: '#/ExtractionAnswer'
+    truncated:
+      type: boolean
+      description: Whether the input did not fit and was cut
+    state_text:
+      type: string
+      description: The text that spans index into, when `return_state_text` was set
+    usage:
+      $ref: './usage.yaml#/BifrostLLMUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+ExtractionAnswer:
+  type: object
+  required:
+    - type
+    - value
+  properties:
+    type:
+      type: string
+    value:
+      description: The value, or null when the input does not determine it
+    guess:
+      description: The best value even when `value` is null
+    p_null:
+      type: number
+      description: Probability that the input does not determine the value
+    confidence:
+      type: number
+      description: Probability of the reported value
+    span:
+      type: array
+      items:
+        type: integer
+      description: Start and end offsets of a text answer in the input
+    spans:
+      type: array
+      items:
+        type: array
+        items:
+          type: integer
+      description: One span per list item
+    mean: {}
+    median: {}
+    p10: {}
+    p90: {}
+    p_below:
+      type: number
+    p_above:
+      type: number
+    quantiles:
+      type: array
+      items: {}
+    steps:
+      type: array
+      items: {}
+      description: Forecasts only. One estimate per step

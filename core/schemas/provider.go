@@ -424,6 +424,7 @@ type AllowedRequests struct {
 	Embedding             bool `json:"embedding"`
 	Rerank                bool `json:"rerank"`
 	Decision              bool `json:"decisions"`
+	Extraction            bool `json:"extraction"`
 	OCR                   bool `json:"ocr"`
 	Speech                bool `json:"speech"`
 	SpeechStream          bool `json:"speech_stream"`
@@ -514,6 +515,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Rerank
 	case DecisionRequest:
 		return ar.Decision
+	case ExtractionRequest:
+		return ar.Extraction
 	case OCRRequest:
 		return ar.OCR
 	case SpeechRequest:
@@ -818,6 +821,8 @@ type Provider interface {
 	Rerank(ctx *BifrostContext, key Key, request *BifrostRerankRequest) (*BifrostRerankResponse, *BifrostError)
 	// Decision performs an decision request against an annotated function-tool definition (Typesafe-only; other providers return unsupported)
 	Decision(ctx *BifrostContext, key Key, request *BifrostDecisionRequest) (*BifrostDecisionResponse, *BifrostError)
+	// Extraction reads typed fields out of text and images (Cloudflare Clairic; other providers return unsupported)
+	Extraction(ctx *BifrostContext, key Key, request *BifrostExtractionRequest) (*BifrostExtractionResponse, *BifrostError)
 	// OCR performs an optical character recognition request on a document
 	OCR(ctx *BifrostContext, key Key, request *BifrostOCRRequest) (*BifrostOCRResponse, *BifrostError)
 	// Speech performs a text to speech request

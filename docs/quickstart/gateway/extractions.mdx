@@ -1,0 +1,81 @@
+---
+title: "Extractions"
+description: "Read typed fields out of text and images using /v1/extractions."
+icon: "table-list"
+---
+
+Use extractions to turn unstructured text into typed values: an invoice number, a due date, a total, an estimate of how long something will take. Each field you ask for comes back with a typed value. Depending on the field type, the answer can also carry a confidence, the span of the text it came from, or an estimate's distribution.
+
+## Provider Model Examples
+
+- Cloudflare: `cloudflare/clairic` (also written `cloudflare/@cf/cloudflare/clairic`)
+
+## Basic Request
+
+```bash
+curl --location 'http://localhost:8080/v1/extractions' \
+--header 'Content-Type: application/json' \
+--data '{
+  "model": "cloudflare/clairic",
+  "input": "Invoice INV-2291 from Northwind Supply, issued 2026-09-02, net 30. 4 pallets at $250.00 each, shipping $80.00.",
+  "fields": {
+    "invoice_number": { "type": "text" },
+    "due_date": { "type": "date", "instructions": "Issue date plus the net payment days" },
+    "total": { "type": "number", "decimals": 2, "unit": "USD" },
+    "days_to_pay": { "type": "estimate", "min": 0, "max": 120, "step": 1 }
+  }
+}'
+```
+
+The body is Clairic's own request with a provider-prefixed model, so a request written for Cloudflare's API works as is once `model` is changed. Cloudflare names the text `state`; Bifrost accepts either `input` or `state`.
+
+## Request Parameters
+
+- `model` (required): model in `provider/model` format
+- `fields` (required): fields to extract, keyed by name. Each has a `type` (`text`, `number`, `date`, `time`, `datetime`, `duration`, `list`, `estimate`, or `forecast`) and optional settings such as `instructions`, `unit`, `decimals`, `items` (for lists), and `min`, `max` and `step` (for estimates)
+- `input` (optional): the text to read. It may be empty when `images` are sent. `state` is accepted in its place
+- `images` (optional): up to 4 images read before the text, as base64 data URLs or `{"content_type", "base64"}` objects. Remote URLs are not accepted
+- `reference_date` (optional): ISO date that anchors dates written without a year
+- `options` (optional): `include_quantiles` adds 99 percentiles to estimates; `return_state_text` returns the text that spans index into
+- `fallbacks` (optional): fallback models in `provider/model` format
+
+## Response Shape
+
+```json
+{
+  "model": "clairic",
+  "answers": {
+    "invoice_number": { "type": "text", "value": "INV-2291", "guess": "INV-2291", "confidence": 0.99, "p_null": 0.00001, "span": [8, 16] },
+    "due_date": { "type": "date", "value": "2026-10-02", "guess": "2026-10-02", "confidence": 0.99, "p_null": 0.000001 },
+    "total": { "type": "number", "value": 1080, "guess": 1080, "confidence": 0.99, "p_null": 0.000002 },
+    "days_to_pay": { "type": "estimate", "value": 30, "mean": 29.7, "median": 30, "p10": 25, "p90": 33, "p_below": 0.0000005, "p_above": 0.000003 }
+  },
+  "truncated": false,
+  "usage": {
+    "prompt_tokens": 416,
+    "total_tokens": 416,
+    "state_tokens": 52
+  },
+  "extra_fields": {
+    "request_type": "extraction",
+    "provider": "cloudflare",
+    "latency": 412
+  }
+}
+```
+
+`value` is `null` when the text does not determine the field; `guess` is still the best value. Text answers carry their `span` in the input. `usage.prompt_tokens` is what is billed.
+
+## Common Validation Errors
+
+- Empty `fields` -> `fields are required for extraction`
+- A field without a type -> `field "name" needs a type`
+- Both `input` and `state` -> `send the text to extract from as input or state, not both`
+
+Everything else is validated by the provider, whose error is passed through: for example, Clairic answers `422` for a property its schema does not define.
+
+## Next Steps
+
+- **[Cloudflare](../../providers/supported-providers/cloudflare#5-extractions)** - Clairic setup and details
+- **[Decisions](./decisions)** - Ask typed questions about some evidence
+- **[Provider Configuration](./provider-configuration)** - Multiple providers for redundancy

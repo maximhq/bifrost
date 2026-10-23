@@ -230,6 +230,17 @@ var decisionParamsKnownFields = map[string]bool{
 	"state": true,
 }
 
+var extractionParamsKnownFields = map[string]bool{
+	"model":          true,
+	"input":          true,
+	"state":          true,
+	"fields":         true,
+	"images":         true,
+	"reference_date": true,
+	"options":        true,
+	"fallbacks":      true,
+}
+
 // Known fields for DecisionMapFormRequest, the deprecated /v1/decisions body.
 var decisionMapFormKnownFields = map[string]bool{
 	"model":     true,
@@ -665,6 +676,25 @@ type DecisionHandlerRequest struct {
 	BifrostParams
 }
 
+// ExtractionHandlerRequest is a bifrost extraction request. It is Clairic's
+// body with a provider-prefixed model: the text to read is "input", or
+// "state" as Clairic names it, and the options sit under "options".
+type ExtractionHandlerRequest struct {
+	Input         *string                                `json:"input"`
+	State         *string                                `json:"state"`
+	Fields        map[string]schemas.ExtractionFieldSpec `json:"fields"`
+	Images        []schemas.ExtractionImage              `json:"images,omitempty"`
+	ReferenceDate *string                                `json:"reference_date,omitempty"`
+	Options       *ExtractionOptions                     `json:"options,omitempty"`
+	BifrostParams
+}
+
+// ExtractionOptions are the optional settings of an extraction request.
+type ExtractionOptions struct {
+	IncludeQuantiles *bool `json:"include_quantiles,omitempty"`
+	ReturnStateText  *bool `json:"return_state_text,omitempty"`
+}
+
 // DecisionMapFormRequest is a /v1/decisions request in the deprecated map
 // form: a state plus questions keyed by name, answered by answers keyed by the
 // same names. Its questions are Typesafe's System One questions (written with
@@ -825,6 +855,7 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/embeddings":             schemas.EmbeddingRequest,
 	"/v1/rerank":                 schemas.RerankRequest,
 	"/v1/decisions":              schemas.DecisionRequest,
+	"/v1/extractions":            schemas.ExtractionRequest,
 	"/v1/ocr":                    schemas.OCRRequest,
 	"/v1/audio/speech":           schemas.SpeechRequest,
 	"/v1/audio/transcriptions":   schemas.TranscriptionRequest,
@@ -884,6 +915,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
 	r.POST("/v1/rerank", lib.ChainMiddlewares(h.rerank, baseMiddlewares...))
 	r.POST("/v1/decisions", lib.ChainMiddlewares(h.evaluation, baseMiddlewares...))
+	r.POST("/v1/extractions", lib.ChainMiddlewares(h.extraction, baseMiddlewares...))
 	r.POST("/v1/ocr", lib.ChainMiddlewares(h.ocr, baseMiddlewares...))
 	// ElevenLabs sound-effect models also flow through /v1/audio/speech; the
 	// provider routes them to /v1/sound-generation by model id, keeping SDK and
@@ -1637,6 +1669,84 @@ func (h *CompletionHandler) evaluation(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, toDecisionMapFormResponse(resp))
 		return
 	}
+	SendJSON(ctx, resp)
+}
+
+// prepareExtractionRequest prepares a BifrostExtractionRequest from the HTTP
+// request body. Only what the request cannot be sent without is checked here:
+// at least one field, a type on each field, and one text, not both "input" and
+// "state". The provider validates the rest.
+func prepareExtractionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostExtractionRequest, error) {
+	req, base, err := prepareRequest[ExtractionHandlerRequest](ctx, config, extractionParamsKnownFields)
+	if err != nil {
+		return nil, err
+	}
+	if len(req.Fields) == 0 {
+		return nil, fmt.Errorf("fields are required for extraction")
+	}
+	for name, field := range req.Fields {
+		if field.Type == "" {
+			return nil, fmt.Errorf("field %q needs a type", name)
+		}
+	}
+	if req.Input != nil && req.State != nil {
+		return nil, fmt.Errorf("send the text to extract from as input or state, not both")
+	}
+	extractionReq := &schemas.BifrostExtractionRequest{
+		Provider:    base.Provider,
+		Model:       base.ModelName,
+		Fields:      req.Fields,
+		Images:      req.Images,
+		Fallbacks:   base.Fallbacks,
+		ExtraParams: base.ExtraParams,
+	}
+	switch {
+	case req.Input != nil:
+		extractionReq.Input = *req.Input
+	case req.State != nil:
+		extractionReq.Input = *req.State
+	}
+	if req.ReferenceDate != nil || req.Options != nil {
+		extractionReq.Params = &schemas.ExtractionParameters{ReferenceDate: req.ReferenceDate}
+		if req.Options != nil {
+			extractionReq.Params.IncludeQuantiles = req.Options.IncludeQuantiles
+			extractionReq.Params.ReturnStateText = req.Options.ReturnStateText
+		}
+	}
+	return extractionReq, nil
+}
+
+// extraction handles POST /v1/extractions - Process extraction requests
+func (h *CompletionHandler) extraction(ctx *fasthttp.RequestCtx) {
+	bifrostExtractionReq, err := prepareExtractionRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.ExtractionRequest(bifrostCtx, bifrostExtractionReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	// Send successful response
 	SendJSON(ctx, resp)
 }
 

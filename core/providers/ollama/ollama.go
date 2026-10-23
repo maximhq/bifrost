@@ -390,6 +390,11 @@ func (provider *OllamaProvider) Decision(ctx *schemas.BifrostContext, key schema
 	return bifrostResp, nil
 }
 
+// Extraction is not supported by the Ollama provider.
+func (provider *OllamaProvider) Extraction(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostExtractionRequest) (*schemas.BifrostExtractionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ExtractionRequest, provider.GetProviderKey())
+}
+
 // OCR is not supported by the Ollama provider.
 func (provider *OllamaProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())

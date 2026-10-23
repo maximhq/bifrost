@@ -1,3 +1,4 @@
+- [feat]: `extraction` pricing mode for extraction requests, falling back to a model's chat row [@barisuraz](https://github.com/barisuraz)
 - fix: logstore builds without cgo again [@jeremym-tanium](https://github.com/jeremym-tanium)
 - chore: upgraded Go to 1.27.3 and core to v1.13.1
 - [fix]: MiniMax video jobs are settled and priced by the video job sweeper instead of being skipped

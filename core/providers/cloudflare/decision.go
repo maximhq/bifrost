@@ -1,25 +1,10 @@
 package cloudflare
 
 import (
-	"strings"
-
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
-
-// cloudflareModelNamespace prefixes Cloudflare's full IDs for its own models,
-// such as "@cf/cloudflare/clef-flash".
-const cloudflareModelNamespace = "@cf/cloudflare/"
-
-// cloudflareDecisionPathPrefix is where Workers AI serves Clef, followed by the bare model name.
-const cloudflareDecisionPathPrefix = "/ai/run/" + cloudflareModelNamespace
-
-// clefModelName returns the bare Clef name the URL and the body both use: "clef-flash"
-// and "@cf/cloudflare/clef-flash" give "clef-flash". Casing is kept as sent.
-func clefModelName(model string) string {
-	return strings.TrimPrefix(model, cloudflareModelNamespace)
-}
 
 // ToCloudflareDecisionRequest converts a normalized decision request into Clef's body:
 // input_image parts become images, and the rest goes through Typesafe's converter, so
@@ -31,7 +16,7 @@ func ToCloudflareDecisionRequest(request *schemas.BifrostDecisionRequest) (*Clou
 	}
 	textOnly := *request
 	textOnly.Input = input
-	textOnly.Model = clefModelName(request.Model)
+	textOnly.Model = cloudflareModelName(request.Model)
 	native, err := typesafe.ToTypesafeDecisionRequest(&textOnly)
 	if err != nil {
 		return nil, err

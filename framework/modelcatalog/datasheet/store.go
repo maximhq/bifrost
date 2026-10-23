@@ -190,6 +190,7 @@ func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProv
 		schemas.EmbeddingRequest,
 		schemas.RerankRequest,
 		schemas.DecisionRequest,
+		schemas.ExtractionRequest,
 		schemas.SpeechRequest,
 		schemas.TranscriptionRequest,
 		schemas.ImageGenerationRequest,

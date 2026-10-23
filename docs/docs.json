@@ -75,6 +75,7 @@
                   "quickstart/gateway/multimodal",
                   "quickstart/gateway/reranking",
                   "quickstart/gateway/decisions",
+                  "quickstart/gateway/extractions",
                   "quickstart/gateway/integrations"
                 ]
               },
@@ -852,6 +853,13 @@
                 "expanded": false,
                 "pages": [
                   "POST /v1/decisions"
+                ]
+              },
+              {
+                "group": "Extractions",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/extractions"
                 ]
               },
               {
