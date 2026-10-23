@@ -1228,10 +1228,18 @@ func TestGenAIPassthroughHTTPStreamTerminalLifecycle(t *testing.T) {
 	terminal := `{"candidates":[{"finish\u0052eason":"STOP"}]}`
 	for _, tc := range []struct {
 		name, body, query, contentType string
+		status, totalTokens            int
+		upstreamEOF                    bool
 	}{
-		{"lf", "data: " + plain + "\n\ndata: " + usage + "\n\ndata: " + terminal + "\n\n", "alt=sse", "text/event-stream"},
-		{"crlf", "data: " + plain + "\r\n\r\ndata: " + usage + "\r\n\r\ndata: " + terminal + "\r\n\r\n", "alt=sse", "text/event-stream"},
-		{"json-array", "[" + plain + "," + usage + "," + terminal + "]", "alt=json", "application/json"},
+		{"lf", "data: " + plain + "\n\ndata: " + usage + "\n\ndata: " + terminal + "\n\n", "alt=sse", "text/event-stream", 200, 6, false},
+		{"crlf", "data: " + plain + "\r\n\r\ndata: " + usage + "\r\n\r\ndata: " + terminal + "\r\n\r\n", "alt=sse", "text/event-stream", 200, 6, false},
+		{"json-array", "[" + plain + "," + usage + "," + terminal + "]", "alt=json", "application/json", 200, 6, false},
+		{"nonterminal-markers", "data: " + plain + "\n\n" +
+			"data: {\"text\":\"finishReason message_stop error blockReason\\n\",\"metadata\":{\"finishReason\":\"STOP\"}}\n\n" +
+			"data: {\"finishReason\":\"STOP\",}\n\n" +
+			"data: " + usage + "\n\ndata: " + terminal + "\n\n", "alt=sse", "text/event-stream", 200, 6, false},
+		{"eof-no-marker", "data: " + plain + "\n\ndata: " + usage + "\n\n", "alt=sse", "text/event-stream", 200, 6, true},
+		{"upstream-error", `[{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"fixture rate limit"}}]`, "alt=json", "application/json", 429, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			releaseUpstream := make(chan struct{})
@@ -1244,6 +1252,7 @@ func TestGenAIPassthroughHTTPStreamTerminalLifecycle(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", tc.contentType)
+				w.WriteHeader(tc.status)
 				// Split marker names and framing across actual upstream writes.
 				for offset := 0; offset < len(tc.body); offset += 7 {
 					if _, err := io.WriteString(w, tc.body[offset:min(offset+7, len(tc.body))]); err != nil {
@@ -1251,7 +1260,9 @@ func TestGenAIPassthroughHTTPStreamTerminalLifecycle(t *testing.T) {
 					}
 					w.(http.Flusher).Flush()
 				}
-				<-releaseUpstream // No upstream EOF until after the client completes.
+				if !tc.upstreamEOF {
+					<-releaseUpstream // No upstream EOF until after the client completes.
+				}
 			})
 			client := &http.Client{Timeout: 5 * time.Second}
 			t.Cleanup(client.CloseIdleConnections)
@@ -1260,14 +1271,14 @@ func TestGenAIPassthroughHTTPStreamTerminalLifecycle(t *testing.T) {
 			defer response.Body.Close()
 			got, err := io.ReadAll(response.Body)
 			require.NoError(t, err, "downstream must not wait for upstream EOF")
-			require.Equal(t, http.StatusOK, response.StatusCode, "body: %s", got)
+			require.Equal(t, tc.status, response.StatusCode, "body: %s", got)
 			require.Equal(t, tc.contentType, response.Header.Get("Content-Type"))
 			require.Equal(t, tc.body, string(got))
 			receipt.mu.Lock()
 			defer receipt.mu.Unlock()
 			require.Equal(t, 1, receipt.pre)
 			require.Equal(t, 1, receipt.final)
-			require.Equal(t, 6, receipt.totalTokens)
+			require.Equal(t, tc.totalTokens, receipt.totalTokens)
 		})
 	}
 }

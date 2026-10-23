@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -662,6 +663,8 @@ func TestStreamBodySemanticCompletionRequiresHTTPFraming(t *testing.T) {
 	}{
 		{"complete", "0\r\n\r\n", "", true},
 		{"trailer", "0\r\nX-Done: yes\r\n\r\n", "", true},
+		{"split-zero-chunk", "0\r\n\r\n", "", true},
+		{"split-trailer", "0\r\nX-Done: yes\r\n\r\n", "", true},
 		{"missing-zero", "", "", false},
 		{"missing-trailer-end", "0\r\nX-Done: yes\r\n", "", false},
 		{"additional-payload", "5\r\nextra\r\n0\r\n\r\n", "extra", false},
@@ -673,12 +676,32 @@ func TestStreamBodySemanticCompletionRequiresHTTPFraming(t *testing.T) {
 			defer peer.Close()
 			response := &fasthttp.Response{}
 			response.Header.Set("Trailer", "X-Done")
-			br := bufio.NewReader(strings.NewReader("4\r\ndone\r\n" + tc.tail))
+			var wire bytes.Buffer
+			wire.WriteString("4\r\ndone\r\n")
+			split := strings.HasPrefix(tc.name, "split-")
+			if split {
+				wire.WriteString("0\r\n")
+			} else {
+				wire.WriteString(tc.tail)
+			}
+			br := bufio.NewReader(&wire)
 			reader := &chunkedBody{chunked: httputil.NewChunkedReader(br), br: br, resp: response}
 			body := &streamBody{reader: reader, conn: conn}
-			payload := make([]byte, 4)
-			if n, err := body.Read(payload); n != 4 || string(payload) != "done" || (err != nil && tc.name != "malformed-header") {
+			// An oversized read can return the last application bytes and EOF
+			// together. Withhold trailers until those bytes have been delivered.
+			payloadSize := 4
+			if split {
+				payloadSize = 8
+			}
+			payload := make([]byte, payloadSize)
+			if n, err := body.Read(payload); n != 4 || string(payload[:n]) != "done" || (err != nil && tc.name != "malformed-header") {
 				t.Fatalf("initial read: %d, %q, %v", n, payload, err)
+			}
+			if split {
+				if reader.done || body.fullyRead {
+					t.Fatal("application bytes were held for incomplete HTTP trailers")
+				}
+				wire.WriteString(strings.TrimPrefix(tc.tail, "0\r\n"))
 			}
 			if got := body.finishSemanticCompletion(context.Background()); got != tc.complete {
 				t.Fatalf("complete = %v, want %v", got, tc.complete)
@@ -691,6 +714,102 @@ func TestStreamBodySemanticCompletionRequiresHTTPFraming(t *testing.T) {
 				if err != nil || string(remaining) != tc.remaining {
 					t.Fatalf("probe consumed application data: remaining %q, error %v", remaining, err)
 				}
+			}
+		})
+	}
+}
+
+type semanticCompletionTestConn struct {
+	net.Conn
+	deadlines        []time.Time
+	setErr, resetErr error
+	cancelOnReset    context.CancelFunc
+}
+
+func (c *semanticCompletionTestConn) SetReadDeadline(deadline time.Time) error {
+	c.deadlines = append(c.deadlines, deadline)
+	if deadline.IsZero() {
+		if c.cancelOnReset != nil {
+			c.cancelOnReset()
+		}
+		return c.resetErr
+	}
+	return c.setErr
+}
+
+type semanticCompletionDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c semanticCompletionDeadlineContext) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+func TestStreamBodySemanticCompletionDeadline(t *testing.T) {
+	for _, name := range []string{"bounded", "caller-deadline", "set-failure", "reset-failure", "cancel-on-reset"} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var probeCtx context.Context = ctx
+			conn := &semanticCompletionTestConn{}
+			callerDeadline := time.Now().Add(-time.Hour)
+			switch name {
+			case "caller-deadline":
+				// A fixed Deadline without a real timer makes tightening deterministic.
+				probeCtx = semanticCompletionDeadlineContext{Context: ctx, deadline: callerDeadline}
+			case "set-failure":
+				conn.setErr = errors.New("set deadline failed")
+			case "reset-failure":
+				conn.resetErr = errors.New("reset deadline failed")
+			case "cancel-on-reset":
+				conn.cancelOnReset = cancel
+			}
+			br := bufio.NewReader(strings.NewReader("0\r\n\r\n"))
+			reader := &chunkedBody{chunked: httputil.NewChunkedReader(br), br: br, resp: &fasthttp.Response{}}
+			body := &streamBody{reader: reader, conn: conn}
+			before := time.Now()
+			want := name == "bounded" || name == "caller-deadline"
+			if got := body.finishSemanticCompletion(probeCtx); got != want || body.fullyRead != want {
+				t.Fatalf("complete = %v, fullyRead = %v, want %v", got, body.fullyRead, want)
+			}
+			deadline := conn.deadlines[0]
+			if name == "caller-deadline" {
+				if !deadline.Equal(callerDeadline) {
+					t.Fatalf("deadline %v, want caller deadline %v", deadline, callerDeadline)
+				}
+			} else if deadline.Before(before) || deadline.After(time.Now().Add(semanticCompletionTimeout)) {
+				t.Fatalf("deadline %v is not bounded by semanticCompletionTimeout", deadline)
+			}
+			if name == "set-failure" {
+				if len(conn.deadlines) != 1 || reader.done {
+					t.Fatal("failed deadline setup still probed the HTTP body")
+				}
+			} else if len(conn.deadlines) != 2 || !conn.deadlines[1].IsZero() {
+				t.Fatalf("read deadline was not cleared: %v", conn.deadlines)
+			}
+		})
+	}
+}
+
+func TestStreamBodySemanticCompletionRejectsUnsafeState(t *testing.T) {
+	for _, name := range []string{"cancelled", "closed", "active-reader"} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			conn := &semanticCompletionTestConn{}
+			body := &streamBody{reader: eofReader{}, conn: conn}
+			switch name {
+			case "cancelled":
+				cancel()
+			case "closed":
+				body.closed.Store(true)
+			case "active-reader":
+				body.readLock.Lock()
+				defer body.readLock.Unlock()
+			}
+			if body.finishSemanticCompletion(ctx) || body.fullyRead || len(conn.deadlines) != 0 {
+				t.Fatal("unsafe body was probed or marked reusable")
 			}
 		})
 	}

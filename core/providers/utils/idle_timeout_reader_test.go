@@ -794,19 +794,26 @@ func TestReleaseStreamingResponse_NoBodyDoesNotClaimConnection(t *testing.T) {
 }
 
 func TestReleaseStreamingResponse_SemanticCompletionAbandonsOnce(t *testing.T) {
-	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
-	body := &countingStreamCloser{}
-	// This response is not pooled: abandonment intentionally leaves it to GC.
-	resp := &fasthttp.Response{}
-	resp.SetBodyStream(body, -1)
-	ReleaseStreamingResponse(ctx, resp)
-	ReleaseStreamingResponse(ctx, resp)
-	if reads, closes := body.readCount.Load(), body.closeCount.Load(); reads != 0 || closes != 1 {
-		t.Fatalf("semantic completion read %d times and closed %d times", reads, closes)
-	}
-	if ctx.Err() != nil {
-		t.Fatalf("semantic completion cancelled the request: %v", ctx.Err())
+	for _, name := range []string{"parked", "unknown-body"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			defer ctx.Cancel()
+			if name == "parked" {
+				ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+			}
+			body := &countingStreamCloser{}
+			// This response is not pooled: abandonment intentionally leaves it to GC.
+			resp := &fasthttp.Response{}
+			resp.SetBodyStream(body, -1)
+			releaseStreamingResponse(ctx, resp, true)
+			releaseStreamingResponse(ctx, resp, true)
+			if reads, closes := body.readCount.Load(), body.closeCount.Load(); reads != 0 || closes != 1 {
+				t.Fatalf("semantic completion read %d times and closed %d times", reads, closes)
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("semantic completion cancelled the request: %v", ctx.Err())
+			}
+		})
 	}
 }
 

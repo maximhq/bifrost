@@ -1134,5 +1134,49 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
 });
 
+// The provider harness also accepts Google's undelimited streamed JSON array.
+// Execute the checked-in collection script with real assertions: an array of
+// usage/terminal metadata alone must not pass the generic content assertion.
+const providerHarness = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"));
+const providerHarnessTests = providerHarness.event.find((event) => event.listen === "test").script.exec.join("\n");
+function harnessContentResult(body) {
+  const state = { names: [], failures: [] };
+  const pm = {
+    info: { requestName: "Gemini JSON-array content probe" },
+    request: { url: { toString: () => "http://local/genai_passthrough/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=json" }, method: "POST" },
+    response: { code: 200, headers: { get: () => "application/json" }, json: () => body, text: () => JSON.stringify(body) },
+    expect: (actual, message) => {
+      const chain = redactionExpect(actual, message);
+      Object.defineProperty(chain, "true", { get: () => assert.strictEqual(actual, true, message) });
+      return chain;
+    },
+    test: (name, fn) => {
+      // This probe tests content classification, not routed-identity headers.
+      if (name !== "Status code is 200" && name !== "Response has content (text or tool_use)") return;
+      state.names.push(name);
+      try { fn(); } catch (error) { state.failures.push({ name, message: error.message }); }
+    },
+  };
+  new Function("pm", providerHarnessTests)(pm);
+  assert.ok(state.names.includes("Response has content (text or tool_use)"), "content assertion did not execute");
+  return state.failures;
+}
+
+test("provider-harness: Google JSON arrays accept text and tool content", () => {
+  for (const part of [{ text: "hello" }, { functionCall: { name: "lookup", args: {} } }, { inlineData: { data: "aGVsbG8=" } }]) {
+    const body = [null, { candidates: [{ content: { parts: [part] } }] }, { usageMetadata: { totalTokenCount: 6 } }, { candidates: [{ finishReason: "STOP" }] }];
+    assert.deepStrictEqual(harnessContentResult(body), []);
+  }
+  assert.deepStrictEqual(harnessContentResult({ candidates: [{ content: { parts: [{ text: "hello" }] } }] }), []);
+});
+
+test("provider-harness: Google JSON arrays reject metadata-only and unrelated payloads", () => {
+  for (const body of [[], [null, 42, "hello"], [{ usageMetadata: { totalTokenCount: 6 } }], [{ candidates: [{ finishReason: "STOP" }] }], [{ candidates: [{ content: { parts: [] } }] }]]) {
+    const failures = harnessContentResult(body);
+    assert.strictEqual(failures.length, 1, JSON.stringify(body));
+    assert.strictEqual(failures[0].name, "Response has content (text or tool_use)");
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
