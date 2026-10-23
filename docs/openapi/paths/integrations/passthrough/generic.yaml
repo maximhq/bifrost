@@ -11,7 +11,11 @@ generic:
     - name: path
       in: path
       required: true
-      description: Upstream path appended to the provider's `network_config.base_url`. The query string is forwarded unchanged.
+      description: >-
+        Upstream path appended to the provider's `network_config.base_url`, slashes included
+        (`v1/items/42`). OpenAPI path templating cannot express a catch-all segment, so a
+        generated client must send the nested path verbatim, not percent-encode its slashes.
+        The query string is forwarded unchanged.
       schema:
         type: string
   post:
@@ -27,8 +31,9 @@ generic:
 
       `GET`, `PUT`, `PATCH`, `DELETE` and `HEAD` are relayed the same way. A request is served by the
       streaming relay when the matching route says so, a `generic_config.streaming.paths` glob
-      matches, `Accept: text/event-stream` is sent (when enabled), the JSON body carries
-      `"stream": true`, or the path contains `stream`.
+      matches, `Accept: text/event-stream` is sent (when `detect_from_accept_header` is on), or the
+      JSON body carries `"stream": true` (when `detect_from_body` is on). The path's wording is
+      never a signal.
 
       With `strict_routes` on, an operation that matches no `routes[]` entry is refused with `404`
       before anything is forwarded.
@@ -74,5 +79,105 @@ generic:
             schema:
               type: string
               format: binary
+      '404':
+        $ref: '../../../openapi.yaml#/components/responses/NotFound'
+  put:
+    operationId: genericPassthroughPut
+    summary: Relay a PUT request to a generic provider
+    description: Same relay as the POST form.
+    tags:
+      - Generic Passthrough Integration
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+    requestBody:
+      required: false
+      description: Forwarded unchanged.
+      content:
+        '*/*':
+          schema:
+            type: string
+            format: binary
+    responses:
+      '200':
+        description: The upstream response, relayed unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../../openapi.yaml#/components/responses/NotFound'
+  patch:
+    operationId: genericPassthroughPatch
+    summary: Relay a PATCH request to a generic provider
+    description: Same relay as the POST form.
+    tags:
+      - Generic Passthrough Integration
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+    requestBody:
+      required: false
+      description: Forwarded unchanged.
+      content:
+        '*/*':
+          schema:
+            type: string
+            format: binary
+    responses:
+      '200':
+        description: The upstream response, relayed unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../../openapi.yaml#/components/responses/NotFound'
+  delete:
+    operationId: genericPassthroughDelete
+    summary: Relay a DELETE request to a generic provider
+    description: Same relay as the POST form.
+    tags:
+      - Generic Passthrough Integration
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+    responses:
+      '200':
+        description: The upstream response, relayed unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../../openapi.yaml#/components/responses/NotFound'
+  head:
+    operationId: genericPassthroughHead
+    summary: Relay a HEAD request to a generic provider
+    description: Same relay as the POST form.
+    tags:
+      - Generic Passthrough Integration
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+    responses:
+      '200':
+        description: The upstream response, relayed unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
       '404':
         $ref: '../../../openapi.yaml#/components/responses/NotFound'

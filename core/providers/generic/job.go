@@ -7,7 +7,6 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/tidwall/gjson"
 )
 
 // JobSnapshot is everything the job accounting sweeper needs to follow and price one job a
@@ -206,7 +205,7 @@ func (route *compiledRoute) jobHandle(contentType string, body []byte) *schemas.
 	if route == nil || route.job == nil || len(body) == 0 {
 		return nil
 	}
-	if !(isJSONContentType(contentType) || (contentType == "" && gjson.ValidBytes(body))) {
+	if !looksJSON(contentType, body) {
 		return nil
 	}
 	v := providerUtils.GetJSONField(body, route.job.IDPath)

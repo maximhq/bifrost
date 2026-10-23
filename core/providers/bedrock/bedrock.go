@@ -628,14 +628,23 @@ func stripHeadersForSigning(header http.Header) []restoredHeader {
 // assumed role, or the default chain when the key holds none). Other providers that relay to AWS
 // APIs (the generic base type) sign through it so the credential handling lives in one place.
 func SignAWSRequest(ctx *schemas.BifrostContext, req *http.Request, keyCfg *schemas.BedrockKeyConfig, region, service string) *schemas.BifrostError {
-	return signAWSRequest(ctx, req, keyCfg, region, service)
+	// A relayed request is signed as the caller sent it: no Content-Type or Accept is invented,
+	// since an S3 PutObject would store the guess as the object's metadata.
+	return signAWSRequestWithDefaults(ctx, req, keyCfg, region, service, false)
 }
 
-func signAWSRequest(
+// signAWSRequest signs a Bedrock request, defaulting Content-Type and Accept to JSON when the
+// caller set neither, which every Bedrock API expects.
+func signAWSRequest(ctx *schemas.BifrostContext, req *http.Request, keyCfg *schemas.BedrockKeyConfig, region, service string) *schemas.BifrostError {
+	return signAWSRequestWithDefaults(ctx, req, keyCfg, region, service, true)
+}
+
+func signAWSRequestWithDefaults(
 	ctx *schemas.BifrostContext,
 	req *http.Request,
 	keyCfg *schemas.BedrockKeyConfig,
 	region, service string,
+	jsonDefaults bool,
 ) (signErr *schemas.BifrostError) {
 	// "request-sign" overhead phase: AWS SigV4 signing is real per-request work. The
 	// nested "credentials-fetch" span (below) isolates the network portion (STS
@@ -668,11 +677,13 @@ func signAWSRequest(
 	}
 
 	// Set required headers before signing (only if not already set)
-	if req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/json")
+	if jsonDefaults {
+		if req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "application/json")
+		}
 	}
 
 	// Calculate SHA256 hash of the request body

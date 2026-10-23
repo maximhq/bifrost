@@ -5,6 +5,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 // GenericAuthType is how the generic relay presents the selected key to the upstream.
@@ -166,7 +168,7 @@ func (c *GenericProviderConfig) Validate() error {
 		}
 		seenHeaders := make(map[string]struct{}, len(route.Headers))
 		for name, glob := range route.Headers {
-			if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t\r\n:") {
+			if !httpguts.ValidHeaderFieldName(name) {
 				return fmt.Errorf("routes[%d].headers: %q is not a valid header name", i, name)
 			}
 			// Names match case-insensitively, so two spellings of one header would both have to
@@ -216,7 +218,7 @@ func (j *GenericJobConfig) validate(field string, route GenericRouteConfig, base
 		}
 	}
 	for name := range j.Poll.Headers {
-		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t\r\n:") {
+		if !httpguts.ValidHeaderFieldName(name) {
 			return fmt.Errorf("%s.poll.headers: %q is not a valid header name", field, name)
 		}
 	}
@@ -256,7 +258,7 @@ func (a GenericAuthConfig) validate() error {
 		if strings.TrimSpace(a.HeaderName) == "" {
 			return fmt.Errorf("auth.header_name is required for auth.type header")
 		}
-		if strings.ContainsAny(a.HeaderName, " \t\r\n:") {
+		if !httpguts.ValidHeaderFieldName(a.HeaderName) {
 			return fmt.Errorf("auth.header_name %q is not a valid header name", a.HeaderName)
 		}
 	case GenericAuthQuery:

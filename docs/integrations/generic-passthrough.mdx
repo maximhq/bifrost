@@ -280,7 +280,7 @@ Only custom providers with the generic base type are served by `/passthrough/{pr
 
 - **Virtual keys** scope access by provider name, so a key may allow `tavily` and not `textract`. Budgets and rate limits attach per provider as for any other.
 - A virtual key that **restricts models** refuses a passthrough call that names no model. Non-LLM APIs rarely do, so allow `*` on generic providers, or map `usage.model_path` to a request field that should act as the model.
-- The model is **read from the caller's body** at `usage.model_path` (default `model`), and only there: a caller can name any value in that field. Treat model restrictions on generic providers as routing hints, not access control; provider-level allowlists on the virtual key are the access control. With `disable_optimistic_parsing` and no `model_path`, no model is read and model restrictions do not apply.
+- The model is **read from the caller's body** at `usage.model_path` (default `model`), and only there: a caller can name any value in that field. Treat model restrictions on generic providers as routing hints, not access control; provider-level allowlists on the virtual key are the access control. With `disable_optimistic_parsing` and no `model_path`, no model is read, so a virtual key that restricts models refuses every call on the provider; give such keys `*` on generic providers.
 - **Logs** keep a generic relay as a `passthrough` row with the raw JSON request and response bodies. Multipart bodies are summarized; other content types are not stored. Tokens and cost read through the usage mapping appear on the row.
 
 ---

@@ -526,3 +526,22 @@ func TestPassthroughLogStoresAWSJSONBody(t *testing.T) {
 	require.Equal(t, `{"Document":{"Bytes":"aGk="}}`, row.PassthroughRequestBody)
 	require.Equal(t, string(schemas.PassthroughRequest), row.Object)
 }
+
+// TestPassthroughLogJSONMediaTypes pins which request media types count as JSON for storage: the
+// type is parsed, so a near-match such as application/jsonp or a profile=json parameter is not.
+func TestPassthroughLogJSONMediaTypes(t *testing.T) {
+	for ct, want := range map[string]bool{
+		"application/json":                         true,
+		"application/json; charset=utf-8":          true,
+		"Application/JSON":                         true,
+		"application/vnd.api+json":                 true,
+		"application/x-amz-json-1.1":               true,
+		"application/x-amz-json-1.0; charset=utf8": true,
+		"application/jsonp":                        false,
+		"text/plain; profile=json":                 false,
+		"application/ssml+xml":                     false,
+		"":                                         false,
+	} {
+		require.Equalf(t, want, isJSONRequestMediaType(ct), "content type %q", ct)
+	}
+}

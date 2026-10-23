@@ -658,6 +658,40 @@ func TestNewGenericProviderRequiresBaseURL(t *testing.T) {
 // A route with a job block attaches the job id and the settlement snapshot to the start call's
 // usage, so the logging plugin can record the job; the start call is still counted and charged
 // as the route says. A start response that names no id starts no job.
+// An operator's extra header is the operator's: a caller sending the same name does not replace
+// it, while any other caller header is forwarded.
+func TestGenericOperatorHeadersWinOverCaller(t *testing.T) {
+	up := jsonUpstream(t, http.StatusOK, `{}`)
+	provider, err := NewGenericProvider(&schemas.ProviderConfig{
+		NetworkConfig:        schemas.NetworkConfig{BaseURL: up.server.URL, DefaultRequestTimeoutInSeconds: 5, ExtraHeaders: map[string]schemas.SecretVar{"X-Tenant": *schemas.NewSecretVar("ops")}},
+		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{}},
+	}, &testLogger{})
+	require.NoError(t, err)
+	_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/search", "", `{}`, map[string]string{"x-tenant": "evil", "x-trace": "abc"}))
+	require.Nil(t, bifrostErr)
+	got := up.requests()
+	require.Len(t, got, 1)
+	assert.Equal(t, "ops", got[0].Header.Get("X-Tenant"), "the operator's value stands")
+	assert.Equal(t, "abc", got[0].Header.Get("X-Trace"), "other caller headers are forwarded")
+}
+
+// strict_routes holds on the Go SDK path too: the provider refuses an unlisted operation with 404
+// before anything is sent, the same way the HTTP transport does.
+func TestGenericStrictRoutesOnProvider(t *testing.T) {
+	up := jsonUpstream(t, http.StatusOK, `{}`)
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{StrictRoutes: true, Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/search"}}})
+	_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/other", "", `{}`, nil))
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, http.StatusNotFound, *bifrostErr.StatusCode)
+	_, bifrostErr = provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("k"), relayRequest(http.MethodPost, "/other", "", `{}`, nil))
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, http.StatusNotFound, *bifrostErr.StatusCode)
+	assert.Empty(t, up.requests(), "nothing reached the upstream")
+	resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/search", "", `{}`, nil))
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "a listed operation is relayed")
+}
+
 func TestGenericJobStartHandle(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{"JobId":"job-42"}`)
 	provider := newProvider(t, up, &schemas.GenericProviderConfig{

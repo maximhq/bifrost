@@ -151,7 +151,7 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, in UsagePreviewInput, igno
 		if usage.billsUnits() && usage.unitsSource == schemas.GenericUnitsFromResponse && !parsed.hasUnits {
 			out.Notes = append(out.Notes, "no quantity could be read from the response body with measure "+string(usage.unitsMeasure)+noPath(usage))
 		}
-		if len(respBody) > 0 && !(isJSONContentType(in.ResponseContentType) || (in.ResponseContentType == "" && gjson.ValidBytes(respBody))) && usage.unitsMeasure != schemas.GenericUnitsBodyBytes && usage.unitsMeasure != schemas.GenericUnitsBodyChars {
+		if len(respBody) > 0 && !looksJSON(in.ResponseContentType, respBody) && usage.unitsMeasure != schemas.GenericUnitsBodyBytes && usage.unitsMeasure != schemas.GenericUnitsBodyChars {
 			out.Notes = append(out.Notes, "the response body is not JSON, so token and cost paths are not read")
 		}
 		if !parsed.hasInput && !parsed.hasOutput && !parsed.hasTotal && len(respBody) > 0 && (usage.tokensConfigured() || usage.optimistic) {

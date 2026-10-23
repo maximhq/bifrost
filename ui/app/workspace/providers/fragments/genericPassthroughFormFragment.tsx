@@ -1009,7 +1009,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 								<span className="text-muted-foreground">Tokens</span>
 								<span>
 									{preview.tokens
-										? `${preview.tokens.prompt_tokens} in / ${preview.tokens.completion_tokens} out / ${preview.tokens.total_tokens} total`
+										? `${preview.tokens.prompt_tokens ?? 0} in / ${preview.tokens.completion_tokens ?? 0} out / ${preview.tokens.total_tokens ?? 0} total`
 										: "none"}
 								</span>
 								<span className="text-muted-foreground">Extracted cost</span>

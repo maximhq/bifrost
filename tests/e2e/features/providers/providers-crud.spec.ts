@@ -1,10 +1,7 @@
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
 import { expectListLoadError, fillSelect } from "../../core/utils/test-helpers";
-import {
-  createCustomProviderData,
-  createProviderKeyData,
-} from "./providers.data";
+import { createCustomProviderData, createProviderKeyData } from "./providers.data";
 
 // Track created resources for cleanup
 const createdKeys: { provider: string; keyName: string }[] = [];
@@ -82,18 +79,14 @@ test.describe("Providers", () => {
         });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        console.error(
-          `[CLEANUP ERROR] Failed to delete provider ${providerName}: ${errorMsg}`,
-        );
+        console.error(`[CLEANUP ERROR] Failed to delete provider ${providerName}: ${errorMsg}`);
       }
     }
     createdProviders.length = 0;
   });
 
   test.describe("Provider Navigation", () => {
-    test("should display standard providers in sidebar", async ({
-      providersPage,
-    }) => {
+    test("should display standard providers in sidebar", async ({ providersPage }) => {
       // Check that OpenAI provider is visible
       const openaiProvider = providersPage.getProviderItem("openai");
       await expect(openaiProvider).toBeVisible();
@@ -103,9 +96,7 @@ test.describe("Providers", () => {
       await expect(anthropicProvider).toBeVisible();
     });
 
-    test("should select a provider from the sidebar", async ({
-      providersPage,
-    }) => {
+    test("should select a provider from the sidebar", async ({ providersPage }) => {
       await providersPage.selectProvider("openai");
 
       // Verify URL contains provider param
@@ -125,14 +116,17 @@ test.describe("Providers", () => {
     test("should show the load error instead of the empty state when providers fail to load", async ({
       page,
     }) => {
-      await expectListLoadError(page, "/api/providers", "providers-load-error", "providers-button-read-more");
+      await expectListLoadError(
+        page,
+        "/api/providers",
+        "providers-load-error",
+        "providers-button-read-more",
+      );
     });
   });
 
   test.describe("Provider Keys", () => {
-    test("should add a new key to OpenAI provider", async ({
-      providersPage,
-    }) => {
+    test("should add a new key to OpenAI provider", async ({ providersPage }) => {
       // Select OpenAI provider
       await providersPage.selectProvider("openai");
 
@@ -172,9 +166,7 @@ test.describe("Providers", () => {
       expect(keyExists).toBe(true);
     });
 
-    test("should display empty state when no keys configured", async ({
-      providersPage,
-    }) => {
+    test("should display empty state when no keys configured", async ({ providersPage }) => {
       // Add Nebius from the dropdown if not already in sidebar (created with no keys)
       if (!(await providersPage.providerExists("nebius"))) {
         await providersPage.addKnownProviderFromDropdown("nebius");
@@ -239,7 +231,10 @@ test.describe("Providers", () => {
 
       // Edit it and switch to the federation tab: it must hide the JSON and API-key inputs and show its own.
       await openKeyEditor(keyName);
-      await expect(page.getByTestId("apikey-vertex-api-key-tab")).toHaveAttribute("data-state", "active");
+      await expect(page.getByTestId("apikey-vertex-api-key-tab")).toHaveAttribute(
+        "data-state",
+        "active",
+      );
       await page.getByTestId("apikey-vertex-aws-workload-identity-tab").click();
       await expect(page.getByTestId("apikey-vertex-auth-credentials-input")).toHaveCount(0);
       await expect(page.getByTestId("apikey-vertex-api-key-input")).toHaveCount(0);
@@ -248,7 +243,9 @@ test.describe("Providers", () => {
 
       // Saving without an audience must fail inline, not silently fall back to ADC.
       await providersPage.keySaveBtn.click();
-      await expect(page.getByText("Workload Identity Pool provider audience is required")).toBeVisible();
+      await expect(
+        page.getByText("Workload Identity Pool provider audience is required"),
+      ).toBeVisible();
       await expect(providersPage.keyForm).toBeVisible();
 
       await audienceInput.fill(audience);
@@ -287,12 +284,17 @@ test.describe("Providers", () => {
         "active",
       );
       await expect(page.getByTestId("apikey-vertex-aws-wif-audience-input")).toHaveValue(audience);
-      await expect(page.getByTestId("apikey-vertex-aws-wif-aws-region-input")).toHaveValue("us-east-1");
+      await expect(page.getByTestId("apikey-vertex-aws-wif-aws-region-input")).toHaveValue(
+        "us-east-1",
+      );
       await providersPage.keyCancelBtn.click();
       await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
     });
 
-    test("should configure both Vertex OpenAI endpoint methods and restore standard routing", async ({ providersPage, page }) => {
+    test("should configure both Vertex OpenAI endpoint methods and restore standard routing", async ({
+      providersPage,
+      page,
+    }) => {
       if (!(await providersPage.providerExists("vertex"))) {
         await providersPage.addKnownProviderFromDropdown("vertex");
         createdProviders.push("vertex");
@@ -306,7 +308,9 @@ test.describe("Providers", () => {
           models: ["*"],
           weight: 1,
           vertex_key_config: { project_id: "key-project", region: "us-central1" },
-          aliases: { "customer-vllm": { model_id: "custom-model-version", model_name: "custom-model" } },
+          aliases: {
+            "customer-vllm": { model_id: "custom-model-version", model_name: "custom-model" },
+          },
         },
       });
       expect(created.ok(), await created.text()).toBe(true);
@@ -342,33 +346,46 @@ test.describe("Providers", () => {
       await providersPage.keySaveBtn.click();
       await expect(page.getByTestId("deployment-vertex-endpoint-error")).toBeVisible();
       await expect(providersPage.keyForm).toBeVisible();
-      await page.getByTestId("deployment-vertex-endpoint").fill("https://us-west1-aiplatform.googleapis.com/v1/projects/customer-project/locations/us-west1/endpoints/2222222222:rawPredict");
+      await page
+        .getByTestId("deployment-vertex-endpoint")
+        .fill(
+          "https://us-west1-aiplatform.googleapis.com/v1/projects/customer-project/locations/us-west1/endpoints/2222222222:rawPredict",
+        );
       await expect(page.getByTestId("deployment-vertex-endpoint")).toHaveValue("2222222222");
       await save();
       let alias = await savedAlias();
       expect(alias.model_id).toBe("custom-model-version");
-      expect(alias.vertex_endpoint).toEqual({ endpoint_id: "2222222222", format: "openai_chat", method: "raw_predict" });
+      expect(alias.vertex_endpoint).toEqual({
+        endpoint_id: "2222222222",
+        format: "openai_chat",
+        method: "raw_predict",
+      });
       expect(alias.project_id.value).toBe("customer-project");
       expect(alias.region.value).toBe("us-west1");
 
       await edit();
-      await expect(page.getByTestId("deployment-vertex-serving-mode")).toContainText("Raw prediction");
+      await expect(page.getByTestId("deployment-vertex-serving-mode")).toContainText(
+        "Raw prediction",
+      );
       await selectMode("OpenAI-compatible — Chat completions");
       await save();
       alias = await savedAlias();
-      expect(alias.vertex_endpoint).toEqual({ endpoint_id: "2222222222", format: "openai_chat", method: "chat_completions" });
+      expect(alias.vertex_endpoint).toEqual({
+        endpoint_id: "2222222222",
+        format: "openai_chat",
+        method: "chat_completions",
+      });
       await edit();
-      await expect(page.getByTestId("deployment-vertex-serving-mode")).toContainText("Chat completions");
+      await expect(page.getByTestId("deployment-vertex-serving-mode")).toContainText(
+        "Chat completions",
+      );
       await selectMode("Standard Vertex");
       await expect(page.getByTestId("deployment-vertex-endpoint")).toHaveCount(0);
       await save();
       expect((await savedAlias()).vertex_endpoint).toBeUndefined();
     });
 
-    test("should save a Cloudflare key with its account ID", async ({
-      providersPage,
-      page,
-    }) => {
+    test("should save a Cloudflare key with its account ID", async ({ providersPage, page }) => {
       if (!(await providersPage.providerExists("cloudflare"))) {
         await providersPage.addKnownProviderFromDropdown("cloudflare");
         createdProviders.push("cloudflare");
@@ -410,9 +427,7 @@ test.describe("Providers", () => {
   });
 
   test.describe("Custom Providers", () => {
-    test("should open custom provider creation sheet", async ({
-      providersPage,
-    }) => {
+    test("should open custom provider creation sheet", async ({ providersPage }) => {
       await providersPage.openCustomProviderSheet();
 
       // Verify form fields are present
@@ -421,9 +436,7 @@ test.describe("Providers", () => {
       await expect(providersPage.baseUrlInput).toBeVisible();
     });
 
-    test("should create a custom OpenAI-compatible provider", async ({
-      providersPage,
-    }) => {
+    test("should create a custom OpenAI-compatible provider", async ({ providersPage }) => {
       const providerData = createCustomProviderData({
         name: `test-openai-${Date.now()}`,
         baseProviderType: "openai",
@@ -440,9 +453,7 @@ test.describe("Providers", () => {
       await expect(providerItem).toBeVisible({ timeout: 15000 });
     });
 
-    test("should create a custom Anthropic-compatible provider", async ({
-      providersPage,
-    }) => {
+    test("should create a custom Anthropic-compatible provider", async ({ providersPage }) => {
       const providerData = createCustomProviderData({
         name: `test-anthropic-${Date.now()}`,
         baseProviderType: "anthropic",
@@ -478,7 +489,10 @@ test.describe("Providers", () => {
       const decisionsSwitch = page.getByTestId("allowed-request-switch-decisions");
       await expect(decisionsSwitch).toBeEnabled();
       await expect(decisionsSwitch).toHaveAttribute("data-state", "checked");
-      await expect(page.getByTestId("allowed-request-switch-list_models")).toHaveAttribute("data-state", "checked");
+      await expect(page.getByTestId("allowed-request-switch-list_models")).toHaveAttribute(
+        "data-state",
+        "checked",
+      );
       await expect(page.getByTestId("allowed-request-switch-chat_completion")).toBeDisabled();
 
       await providersPage.saveCustomProvider();
@@ -493,7 +507,11 @@ test.describe("Providers", () => {
       const saved = (await response.json()) as {
         custom_provider_config?: {
           base_provider_type?: string;
-          allowed_requests?: { decisions?: boolean; list_models?: boolean; chat_completion?: boolean };
+          allowed_requests?: {
+            decisions?: boolean;
+            list_models?: boolean;
+            chat_completion?: boolean;
+          };
         };
       };
       expect(saved.custom_provider_config?.base_provider_type).toBe("typesafe");
@@ -516,7 +534,9 @@ test.describe("Providers", () => {
       createdProviders.push(providerData.name);
 
       await providersPage.createProvider(providerData);
-      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({
+        timeout: 15000,
+      });
 
       await providersPage.selectProvider(providerData.name);
       await providerSettingsPage.selectConfigTab("passthrough");
@@ -567,7 +587,11 @@ test.describe("Providers", () => {
       const saved = (await response.json()) as {
         custom_provider_config?: {
           base_provider_type?: string;
-          allowed_requests?: { passthrough?: boolean; passthrough_stream?: boolean; chat_completion?: boolean };
+          allowed_requests?: {
+            passthrough?: boolean;
+            passthrough_stream?: boolean;
+            chat_completion?: boolean;
+          };
           generic_config?: { auth?: { type?: string; header_name?: string } };
         };
       };
@@ -589,11 +613,18 @@ test.describe("Providers", () => {
       await page.getByTestId("generic-route-path-input-0").fill("/search");
       await page.getByTestId("generic-passthrough-save-btn").click();
       await expect
-        .poll(async () => {
-          const r = await page.request.get(`/api/providers/${providerData.name}`);
-          const j = (await r.json()) as { custom_provider_config?: { generic_config?: { routes?: { method: string; path: string }[] } } };
-          return j.custom_provider_config?.generic_config?.routes?.[0]?.path;
-        }, { timeout: 10000 })
+        .poll(
+          async () => {
+            const r = await page.request.get(`/api/providers/${providerData.name}`);
+            const j = (await r.json()) as {
+              custom_provider_config?: {
+                generic_config?: { routes?: { method: string; path: string }[] };
+              };
+            };
+            return j.custom_provider_config?.generic_config?.routes?.[0]?.path;
+          },
+          { timeout: 10000 },
+        )
         .toBe("/search");
 
       // Route usage fields the tab does not render (set through the API) survive a save from it:
@@ -611,7 +642,12 @@ test.describe("Providers", () => {
                 {
                   method: "POST",
                   path: "/search",
-                  usage: { units_source: "request", units_measure: "chars", units_path: "query", cost_per_unit: 0 },
+                  usage: {
+                    units_source: "request",
+                    units_measure: "chars",
+                    units_path: "query",
+                    cost_per_unit: 0,
+                  },
                 },
               ],
             },
@@ -623,20 +659,47 @@ test.describe("Providers", () => {
       await providersPage.selectProvider(providerData.name);
       await providerSettingsPage.selectConfigTab("generic");
       await expect(page.getByTestId("generic-route-row-0")).toBeVisible();
+      // Save is disabled on a pristine form; flip a harmless switch so the save path really runs.
+      await page.getByTestId("generic-streaming-accept-switch").click();
+      await expect(page.getByTestId("generic-passthrough-save-btn")).toBeEnabled();
       await page.getByTestId("generic-passthrough-save-btn").click();
       await expect
-        .poll(async () => {
-          const r = await page.request.get(`/api/providers/${providerData.name}`);
-          const j = (await r.json()) as {
-            custom_provider_config?: {
-              generic_config?: {
-                routes?: { usage?: { units_source?: string; units_measure?: string; units_path?: string; cost_per_unit?: number } }[];
+        .poll(
+          async () => {
+            const r = await page.request.get(`/api/providers/${providerData.name}`);
+            const j = (await r.json()) as {
+              custom_provider_config?: {
+                generic_config?: {
+                  routes?: {
+                    usage?: {
+                      units_source?: string;
+                      units_measure?: string;
+                      units_path?: string;
+                      cost_per_unit?: number;
+                    };
+                  }[];
+                };
               };
             };
-          };
-          return j.custom_provider_config?.generic_config?.routes?.[0]?.usage;
-        }, { timeout: 10000 })
-        .toEqual({ units_source: "request", units_measure: "chars", units_path: "query", cost_per_unit: 0 });
+            return j.custom_provider_config?.generic_config?.routes?.[0]?.usage;
+          },
+          { timeout: 10000 },
+        )
+        .toEqual({
+          units_source: "request",
+          units_measure: "chars",
+          units_path: "query",
+          cost_per_unit: 0,
+        });
+      const afterSave = await page.request.get(`/api/providers/${providerData.name}`);
+      const savedCfg = (await afterSave.json()) as {
+        custom_provider_config?: {
+          generic_config?: { streaming?: { detect_from_accept_header?: boolean } };
+        };
+      };
+      expect(
+        savedCfg.custom_provider_config?.generic_config?.streaming?.detect_from_accept_header,
+      ).toBe(true);
     });
 
     test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({
@@ -651,7 +714,9 @@ test.describe("Providers", () => {
       createdProviders.push(providerData.name);
 
       await providersPage.createProvider(providerData);
-      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({
+        timeout: 15000,
+      });
       await providersPage.selectProvider(providerData.name);
 
       const keyName = `oauth-key-${Date.now()}`;
@@ -665,14 +730,26 @@ test.describe("Providers", () => {
       await expect(providersPage.getKeyRow(keyName)).toBeVisible();
 
       // The API stores the block and returns it with the secret redacted.
-      const response = await request.get(`/api/providers/${encodeURIComponent(providerData.name)}/keys`);
+      const response = await request.get(
+        `/api/providers/${encodeURIComponent(providerData.name)}/keys`,
+      );
       expect(response.ok()).toBeTruthy();
       const body = await response.json();
-      const saved = (body.keys as Array<{ name: string; oauth_key_config?: { grant_type: string; token_url?: { value?: string }; client_secret?: { value?: string }; scopes?: string[] } }>).find(
-        (k) => k.name === keyName,
-      );
+      const saved = (
+        body.keys as Array<{
+          name: string;
+          oauth_key_config?: {
+            grant_type: string;
+            token_url?: { value?: string };
+            client_secret?: { value?: string };
+            scopes?: string[];
+          };
+        }>
+      ).find((k) => k.name === keyName);
       expect(saved?.oauth_key_config?.grant_type).toBe("client_credentials");
-      expect(saved?.oauth_key_config?.token_url?.value).toBe("https://idp.example.com/oauth2/token");
+      expect(saved?.oauth_key_config?.token_url?.value).toBe(
+        "https://idp.example.com/oauth2/token",
+      );
       expect(saved?.oauth_key_config?.scopes).toEqual(["inference"]);
       expect(saved?.oauth_key_config?.client_secret?.value).not.toBe("e2e-client-secret");
     });
@@ -689,7 +766,9 @@ test.describe("Providers", () => {
       createdProviders.push(providerData.name);
 
       await providersPage.createProvider(providerData);
-      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({
+        timeout: 15000,
+      });
       await providersPage.selectProvider(providerData.name);
 
       const keyName = `oauth-body-key-${Date.now()}`;
@@ -724,7 +803,9 @@ test.describe("Providers", () => {
       createdProviders.push(providerData.name);
 
       await providersPage.createProvider(providerData);
-      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({
+        timeout: 15000,
+      });
       await providersPage.selectProvider(providerData.name);
 
       const keyName = `oauth-jwt-key-${Date.now()}`;
@@ -768,7 +849,9 @@ test.describe("Providers", () => {
       createdProviders.push(providerData.name);
 
       await providersPage.createProvider(providerData);
-      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({
+        timeout: 15000,
+      });
       await providersPage.selectProvider(providerData.name);
 
       const keyName = `oauth-edit-key-${Date.now()}`;
@@ -786,14 +869,19 @@ test.describe("Providers", () => {
       expect(before?.oauth_key_config?.audience).toBe("api://before");
 
       // Change only the audience; the masked client_id / client_secret go back as masks.
-      await providersPage.editOAuthKey(keyName, { audience: "api://after", scopes: ["models.read"] });
+      await providersPage.editOAuthKey(keyName, {
+        audience: "api://after",
+        scopes: ["models.read"],
+      });
 
       const after = await fetchOAuthKey(request, providerData.name, keyName);
       expect(after?.oauth_key_config?.grant_type).toBe("client_credentials");
       expect(after?.oauth_key_config?.audience).toBe("api://after");
       expect(after?.oauth_key_config?.scopes).toEqual(["inference", "models.read"]);
       expect(after?.oauth_key_config?.auth_style).toBe("body");
-      expect(after?.oauth_key_config?.token_url?.value).toBe("https://idp.example.com/oauth2/token");
+      expect(after?.oauth_key_config?.token_url?.value).toBe(
+        "https://idp.example.com/oauth2/token",
+      );
       // Sending the masks back must resolve to the stored secret, not clear it: the block
       // still carries both credentials, still masked, and the key is still valueless.
       expect(after?.oauth_key_config?.client_id?.value ?? "").not.toBe("");
@@ -814,7 +902,9 @@ test.describe("Providers", () => {
       createdProviders.push(providerData.name);
 
       await providersPage.createProvider(providerData);
-      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({
+        timeout: 15000,
+      });
       await providersPage.selectProvider(providerData.name);
 
       const keyName = `oauth-switch-key-${Date.now()}`;
@@ -825,7 +915,9 @@ test.describe("Providers", () => {
         clientSecret: "e2e-client-secret",
       });
       await expect(providersPage.getKeyRow(keyName)).toBeVisible();
-      expect((await fetchOAuthKey(request, providerData.name, keyName))?.oauth_key_config?.grant_type).toBe("client_credentials");
+      expect(
+        (await fetchOAuthKey(request, providerData.name, keyName))?.oauth_key_config?.grant_type,
+      ).toBe("client_credentials");
 
       await providersPage.switchOAuthKeyToApiKey(keyName, "sk-e2e-static-key");
 
@@ -836,9 +928,7 @@ test.describe("Providers", () => {
       expect(after?.value?.value).not.toBe("sk-e2e-static-key");
     });
 
-    test("should cancel custom provider creation", async ({
-      providersPage,
-    }) => {
+    test("should cancel custom provider creation", async ({ providersPage }) => {
       await providersPage.openCustomProviderSheet();
 
       // Fill some data
@@ -851,14 +941,11 @@ test.describe("Providers", () => {
       await expect(providersPage.customProviderSheet).not.toBeVisible();
 
       // Provider should not exist
-      const providerExists =
-        await providersPage.providerExists("cancelled-provider");
+      const providerExists = await providersPage.providerExists("cancelled-provider");
       expect(providerExists).toBe(false);
     });
 
-    test("should delete custom provider and update UI", async ({
-      providersPage,
-    }) => {
+    test("should delete custom provider and update UI", async ({ providersPage }) => {
       const providerData = createCustomProviderData({
         name: `delete-test-${Date.now()}`,
         baseProviderType: "openai",
@@ -884,9 +971,7 @@ test.describe("Providers", () => {
   });
 
   test.describe("Form Validation", () => {
-    test("should require name for custom provider", async ({
-      providersPage,
-    }) => {
+    test("should require name for custom provider", async ({ providersPage }) => {
       await providersPage.openCustomProviderSheet();
 
       // Try to save without name
@@ -900,9 +985,7 @@ test.describe("Providers", () => {
       await expect(providersPage.customProviderSheet).toBeVisible();
     });
 
-    test("should require base URL for custom provider", async ({
-      providersPage,
-    }) => {
+    test("should require base URL for custom provider", async ({ providersPage }) => {
       await providersPage.openCustomProviderSheet();
 
       // Fill only name
@@ -951,37 +1034,24 @@ test.describe("Provider specific configuration", () => {
     await providersPage.addKeyBtn.click();
 
     const vllmUrlInput = providersPage.page.getByTestId("key-input-vllm-url");
-    const vllmModelInput = providersPage.page.getByTestId(
-      "key-input-vllm-model-name",
-    );
+    const vllmModelInput = providersPage.page.getByTestId("key-input-vllm-model-name");
 
     const urlVisible = await vllmUrlInput.isVisible().catch(() => false);
     const modelVisible = await vllmModelInput.isVisible().catch(() => false);
 
     if (!urlVisible && !modelVisible) {
-      test.skip(
-        true,
-        "vLLM key form fields not shown (provider may use standard key form)",
-      );
+      test.skip(true, "vLLM key form fields not shown (provider may use standard key form)");
       return;
     }
     await expect(vllmUrlInput).toBeVisible();
     await expect(vllmModelInput).toBeVisible();
-    await expect(
-      providersPage.page.getByTestId("api-keys-models-multiselect"),
-    ).toBeVisible();
-    await expect(
-      providersPage.page.getByTestId("apikey-blacklisted-models-field"),
-    ).toBeVisible();
+    await expect(providersPage.page.getByTestId("api-keys-models-multiselect")).toBeVisible();
+    await expect(providersPage.page.getByTestId("apikey-blacklisted-models-field")).toBeVisible();
     await expect(
       providersPage.page.getByTestId("api-keys-blocked-models-multiselect"),
     ).toBeVisible();
-    await expect(
-      providersPage.page.getByTestId("apikey-deployments-field"),
-    ).toBeVisible();
-    await expect(
-      providersPage.page.getByTestId("apikey-deployments-table"),
-    ).toBeVisible();
+    await expect(providersPage.page.getByTestId("apikey-deployments-field")).toBeVisible();
+    await expect(providersPage.page.getByTestId("apikey-deployments-table")).toBeVisible();
 
     await providersPage.keyCancelBtn.click();
   });
@@ -991,10 +1061,7 @@ test.describe("Provider specific configuration", () => {
   }) => {
     const available = await providersPage.providerExists("ollama");
     if (!available) {
-      test.skip(
-        true,
-        "Ollama provider not in sidebar (add from dropdown first)",
-      );
+      test.skip(true, "Ollama provider not in sidebar (add from dropdown first)");
       return;
     }
 
@@ -1017,10 +1084,7 @@ test.describe("Provider specific configuration", () => {
   }) => {
     const available = await providersPage.providerExists("sgl");
     if (!available) {
-      test.skip(
-        true,
-        "SGLang provider not in sidebar (add from dropdown first)",
-      );
+      test.skip(true, "SGLang provider not in sidebar (add from dropdown first)");
       return;
     }
 

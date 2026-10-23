@@ -27,6 +27,15 @@ func isJSONContentType(contentType string) bool {
 	return strings.Contains(strings.ToLower(mediaType), "json")
 }
 
+// looksJSON reports whether a body is worth scanning as JSON: a JSON media type, or no media type
+// and bytes that parse as JSON.
+func looksJSON(contentType string, body []byte) bool {
+	if isJSONContentType(contentType) {
+		return true
+	}
+	return contentType == "" && gjson.ValidBytes(body)
+}
+
 // tokensConfigured reports whether the mapping names any token path. Once it does, the token
 // fields are read from the mapping alone: a half-mapped response must not be topped up from a
 // usage block the operator chose not to trust.
@@ -142,7 +151,7 @@ func (u resolvedUsage) measureUnits(contentType string, body []byte) (float64, b
 		// byte-wise as Go does.
 		return float64(utf8.RuneCount(body)), len(body) > 0
 	case schemas.GenericUnitsChars:
-		if !(isJSONContentType(contentType) || (contentType == "" && gjson.ValidBytes(body))) {
+		if !looksJSON(contentType, body) {
 			return 0, false
 		}
 		if v := providerUtils.GetJSONField(body, u.unitsPath); v.Exists() && v.Type == gjson.String {
@@ -150,7 +159,7 @@ func (u resolvedUsage) measureUnits(contentType string, body []byte) (float64, b
 		}
 		return 0, false
 	default:
-		if !(isJSONContentType(contentType) || (contentType == "" && gjson.ValidBytes(body))) {
+		if !looksJSON(contentType, body) {
 			return 0, false
 		}
 		return firstNumber(body, []string{u.unitsPath})
@@ -197,7 +206,7 @@ func (u resolvedUsage) parse(contentType string, body []byte) usageFields {
 	if u.billsUnits() && u.unitsSource == schemas.GenericUnitsFromResponse {
 		f.units, f.hasUnits = u.measureUnits(contentType, body)
 	}
-	if !(isJSONContentType(contentType) || (contentType == "" && gjson.ValidBytes(body))) {
+	if !looksJSON(contentType, body) {
 		return f
 	}
 	f.input, f.hasInput = firstNumber(body, u.tokenPaths(u.inputTokensPath, optimisticInputTokenPaths))

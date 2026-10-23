@@ -28639,7 +28639,7 @@
           "name": "path",
           "in": "path",
           "required": true,
-          "description": "Upstream path appended to the provider's `network_config.base_url`. The query string is forwarded unchanged.",
+          "description": "Upstream path appended to the provider's `network_config.base_url`, slashes included (`v1/items/42`). OpenAPI path templating cannot express a catch-all segment, so a generated client must send the nested path verbatim, not percent-encode its slashes. The query string is forwarded unchanged.",
           "schema": {
             "type": "string"
           }
@@ -28648,7 +28648,7 @@
       "post": {
         "operationId": "genericPassthroughPost",
         "summary": "Relay a request to a generic (non-LLM) provider",
-        "description": "Relays the request byte for byte to the generic provider named in the path. Bifrost strips\ncaller credentials, injects the key it selects from the provider's key pool per the provider's\n`generic_config.auth`, pins the upstream host to the provider's base URL, and returns the\nupstream status, headers and body unchanged. Every call runs the plugin pipeline, is logged\nwith its raw bodies, and reports usage so governance counts it and charges `cost_per_request`\nand any cost the usage mapping extracts.\n\n`GET`, `PUT`, `PATCH`, `DELETE` and `HEAD` are relayed the same way. A request is served by the\nstreaming relay when the matching route says so, a `generic_config.streaming.paths` glob\nmatches, `Accept: text/event-stream` is sent (when enabled), the JSON body carries\n`\"stream\": true`, or the path contains `stream`.\n\nWith `strict_routes` on, an operation that matches no `routes[]` entry is refused with `404`\nbefore anything is forwarded.\n",
+        "description": "Relays the request byte for byte to the generic provider named in the path. Bifrost strips\ncaller credentials, injects the key it selects from the provider's key pool per the provider's\n`generic_config.auth`, pins the upstream host to the provider's base URL, and returns the\nupstream status, headers and body unchanged. Every call runs the plugin pipeline, is logged\nwith its raw bodies, and reports usage so governance counts it and charges `cost_per_request`\nand any cost the usage mapping extracts.\n\n`GET`, `PUT`, `PATCH`, `DELETE` and `HEAD` are relayed the same way. A request is served by the\nstreaming relay when the matching route says so, a `generic_config.streaming.paths` glob\nmatches, `Accept: text/event-stream` is sent (when `detect_from_accept_header` is on), or the\nJSON body carries `\"stream\": true` (when `detect_from_body` is on). The path's wording is\nnever a signal.\n\nWith `strict_routes` on, an operation that matches no `routes[]` entry is refused with `404`\nbefore anything is forwarded.\n",
         "tags": [
           "Generic Passthrough Integration"
         ],
@@ -28729,6 +28729,226 @@
                 "schema": {
                   "type": "string",
                   "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "genericPassthroughPut",
+        "summary": "Relay a PUT request to a generic provider",
+        "description": "Same relay as the POST form.",
+        "tags": [
+          "Generic Passthrough Integration"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "description": "Forwarded unchanged.",
+          "content": {
+            "*/*": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The upstream response, relayed unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "genericPassthroughPatch",
+        "summary": "Relay a PATCH request to a generic provider",
+        "description": "Same relay as the POST form.",
+        "tags": [
+          "Generic Passthrough Integration"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "description": "Forwarded unchanged.",
+          "content": {
+            "*/*": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The upstream response, relayed unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "genericPassthroughDelete",
+        "summary": "Relay a DELETE request to a generic provider",
+        "description": "Same relay as the POST form.",
+        "tags": [
+          "Generic Passthrough Integration"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The upstream response, relayed unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "genericPassthroughHead",
+        "summary": "Relay a HEAD request to a generic provider",
+        "description": "Same relay as the POST form.",
+        "tags": [
+          "Generic Passthrough Integration"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The upstream response, relayed unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -104790,7 +105010,7 @@
             }
           },
           "400": {
-            "description": "The time range is invalid - `end_time` must be after `start_time`.",
+            "description": "The request body is malformed JSON, `start_time` or `end_time` is\nmissing or not an RFC3339 timestamp, or the time range is invalid -\n`end_time` must be after `start_time`.\n",
             "content": {
               "application/json": {
                 "schema": {
@@ -112801,6 +113021,7 @@
           "databricks",
           "cloudflare",
           "typesafe",
+          "generic",
           "minimax",
           "byteplus"
         ]
@@ -127775,10 +127996,12 @@
               },
               "generic_config": {
                 "type": "object",
+                "additionalProperties": false,
                 "description": "Relay settings for a custom provider whose base_provider_type is generic: a raw HTTP passthrough to a non-LLM API reached at /passthrough/{provider}/{path}.",
                 "properties": {
                   "auth": {
                     "type": "object",
+                    "additionalProperties": false,
                     "description": "How the selected key is presented to the upstream",
                     "properties": {
                       "type": {
@@ -127806,6 +128029,7 @@
                       },
                       "aws": {
                         "type": "object",
+                        "additionalProperties": false,
                         "description": "SigV4 settings (type aws_sigv4); keys carry credentials in bedrock_key_config",
                         "properties": {
                           "service": {
@@ -127822,6 +128046,7 @@
                   },
                   "usage": {
                     "type": "object",
+                    "additionalProperties": false,
                     "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
                     "properties": {
                       "model_path": {
@@ -127845,7 +128070,7 @@
                       },
                       "units_path": {
                         "type": "string",
-                        "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes"
+                        "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
                       },
                       "units_source": {
                         "type": "string",
@@ -127859,13 +128084,23 @@
                         "enum": [
                           "value",
                           "chars",
-                          "body_bytes"
+                          "body_bytes",
+                          "body_chars"
                         ]
                       },
                       "cost_per_unit": {
                         "type": "number",
                         "minimum": 0,
                         "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
+                      },
+                      "units_block_size": {
+                        "type": "number",
+                        "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                      },
+                      "units_minimum": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Least number of billed units once a quantity was read; default 0"
                       },
                       "disable_optimistic_parsing": {
                         "type": "boolean"
@@ -127874,6 +128109,7 @@
                   },
                   "streaming": {
                     "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                       "paths": {
                         "type": "array",
@@ -127884,6 +128120,10 @@
                       },
                       "detect_from_accept_header": {
                         "type": "boolean"
+                      },
+                      "detect_from_body": {
+                        "type": "boolean",
+                        "description": "Treat stream:true in a JSON body (or ?stream=true on a GET) as a streaming request; off by default so a caller cannot skip response-side billing"
                       }
                     }
                   },
@@ -127892,6 +128132,7 @@
                     "description": "Per-route overrides; the first matching route wins",
                     "items": {
                       "type": "object",
+                      "additionalProperties": false,
                       "required": [
                         "method",
                         "path"
@@ -127914,13 +128155,21 @@
                         },
                         "billable": {
                           "type": "boolean",
-                          "description": "false relays the call without counting or charging it"
+                          "description": "false relays the call without counting or charging it; true counts it. Unset keeps the method default (only POST billable)"
+                        },
+                        "headers": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "description": "Request headers that must also match, header name to value glob (X-Amz-Target to Textract.Get*), so one route per operation on APIs that multiplex a path"
                         },
                         "stream": {
                           "type": "boolean"
                         },
                         "usage": {
                           "type": "object",
+                          "additionalProperties": false,
                           "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
                           "properties": {
                             "model_path": {
@@ -127944,7 +128193,7 @@
                             },
                             "units_path": {
                               "type": "string",
-                              "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes"
+                              "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
                             },
                             "units_source": {
                               "type": "string",
@@ -127958,7 +128207,8 @@
                               "enum": [
                                 "value",
                                 "chars",
-                                "body_bytes"
+                                "body_bytes",
+                                "body_chars"
                               ]
                             },
                             "cost_per_unit": {
@@ -127966,8 +128216,144 @@
                               "minimum": 0,
                               "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
                             },
+                            "units_block_size": {
+                              "type": "number",
+                              "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                            },
+                            "units_minimum": {
+                              "type": "number",
+                              "minimum": 0,
+                              "description": "Least number of billed units once a quantity was read; default 0"
+                            },
                             "disable_optimistic_parsing": {
                               "type": "boolean"
+                            }
+                          }
+                        },
+                        "job": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "description": "Makes the route the start of a provider-side job billed once it completes; the job accounting sweeper polls with the given request and prices the terminal response with the job's usage mapping",
+                          "required": [
+                            "id_path",
+                            "poll",
+                            "status_path",
+                            "succeeded"
+                          ],
+                          "properties": {
+                            "id_path": {
+                              "type": "string"
+                            },
+                            "poll": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "path"
+                              ],
+                              "properties": {
+                                "method": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                },
+                                "headers": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  }
+                                },
+                                "body": {
+                                  "type": "string"
+                                },
+                                "content_type": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "status_path": {
+                              "type": "string"
+                            },
+                            "succeeded": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "failed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "interval_seconds": {
+                              "type": "integer"
+                            },
+                            "timeout_seconds": {
+                              "type": "integer"
+                            },
+                            "usage": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                              "properties": {
+                                "model_path": {
+                                  "type": "string"
+                                },
+                                "input_tokens_path": {
+                                  "type": "string"
+                                },
+                                "output_tokens_path": {
+                                  "type": "string"
+                                },
+                                "total_tokens_path": {
+                                  "type": "string"
+                                },
+                                "cost_path": {
+                                  "type": "string"
+                                },
+                                "cost_per_request": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "units_path": {
+                                  "type": "string",
+                                  "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
+                                },
+                                "units_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "response",
+                                    "request"
+                                  ]
+                                },
+                                "units_measure": {
+                                  "type": "string",
+                                  "enum": [
+                                    "value",
+                                    "chars",
+                                    "body_bytes",
+                                    "body_chars"
+                                  ]
+                                },
+                                "cost_per_unit": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
+                                },
+                                "units_block_size": {
+                                  "type": "number",
+                                  "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                                },
+                                "units_minimum": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "description": "Least number of billed units once a quantity was read; default 0"
+                                },
+                                "disable_optimistic_parsing": {
+                                  "type": "boolean"
+                                }
+                              }
                             }
                           }
                         }
@@ -128256,10 +128642,12 @@
               },
               "generic_config": {
                 "type": "object",
+                "additionalProperties": false,
                 "description": "Relay settings for a custom provider whose base_provider_type is generic: a raw HTTP passthrough to a non-LLM API reached at /passthrough/{provider}/{path}.",
                 "properties": {
                   "auth": {
                     "type": "object",
+                    "additionalProperties": false,
                     "description": "How the selected key is presented to the upstream",
                     "properties": {
                       "type": {
@@ -128287,6 +128675,7 @@
                       },
                       "aws": {
                         "type": "object",
+                        "additionalProperties": false,
                         "description": "SigV4 settings (type aws_sigv4); keys carry credentials in bedrock_key_config",
                         "properties": {
                           "service": {
@@ -128303,6 +128692,7 @@
                   },
                   "usage": {
                     "type": "object",
+                    "additionalProperties": false,
                     "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
                     "properties": {
                       "model_path": {
@@ -128326,7 +128716,7 @@
                       },
                       "units_path": {
                         "type": "string",
-                        "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes"
+                        "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
                       },
                       "units_source": {
                         "type": "string",
@@ -128340,13 +128730,23 @@
                         "enum": [
                           "value",
                           "chars",
-                          "body_bytes"
+                          "body_bytes",
+                          "body_chars"
                         ]
                       },
                       "cost_per_unit": {
                         "type": "number",
                         "minimum": 0,
                         "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
+                      },
+                      "units_block_size": {
+                        "type": "number",
+                        "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                      },
+                      "units_minimum": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Least number of billed units once a quantity was read; default 0"
                       },
                       "disable_optimistic_parsing": {
                         "type": "boolean"
@@ -128355,6 +128755,7 @@
                   },
                   "streaming": {
                     "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                       "paths": {
                         "type": "array",
@@ -128365,6 +128766,10 @@
                       },
                       "detect_from_accept_header": {
                         "type": "boolean"
+                      },
+                      "detect_from_body": {
+                        "type": "boolean",
+                        "description": "Treat stream:true in a JSON body (or ?stream=true on a GET) as a streaming request; off by default so a caller cannot skip response-side billing"
                       }
                     }
                   },
@@ -128373,6 +128778,7 @@
                     "description": "Per-route overrides; the first matching route wins",
                     "items": {
                       "type": "object",
+                      "additionalProperties": false,
                       "required": [
                         "method",
                         "path"
@@ -128395,13 +128801,21 @@
                         },
                         "billable": {
                           "type": "boolean",
-                          "description": "false relays the call without counting or charging it"
+                          "description": "false relays the call without counting or charging it; true counts it. Unset keeps the method default (only POST billable)"
+                        },
+                        "headers": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "description": "Request headers that must also match, header name to value glob (X-Amz-Target to Textract.Get*), so one route per operation on APIs that multiplex a path"
                         },
                         "stream": {
                           "type": "boolean"
                         },
                         "usage": {
                           "type": "object",
+                          "additionalProperties": false,
                           "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
                           "properties": {
                             "model_path": {
@@ -128425,7 +128839,7 @@
                             },
                             "units_path": {
                               "type": "string",
-                              "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes"
+                              "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
                             },
                             "units_source": {
                               "type": "string",
@@ -128439,7 +128853,8 @@
                               "enum": [
                                 "value",
                                 "chars",
-                                "body_bytes"
+                                "body_bytes",
+                                "body_chars"
                               ]
                             },
                             "cost_per_unit": {
@@ -128447,8 +128862,144 @@
                               "minimum": 0,
                               "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
                             },
+                            "units_block_size": {
+                              "type": "number",
+                              "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                            },
+                            "units_minimum": {
+                              "type": "number",
+                              "minimum": 0,
+                              "description": "Least number of billed units once a quantity was read; default 0"
+                            },
                             "disable_optimistic_parsing": {
                               "type": "boolean"
+                            }
+                          }
+                        },
+                        "job": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "description": "Makes the route the start of a provider-side job billed once it completes; the job accounting sweeper polls with the given request and prices the terminal response with the job's usage mapping",
+                          "required": [
+                            "id_path",
+                            "poll",
+                            "status_path",
+                            "succeeded"
+                          ],
+                          "properties": {
+                            "id_path": {
+                              "type": "string"
+                            },
+                            "poll": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "path"
+                              ],
+                              "properties": {
+                                "method": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                },
+                                "headers": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  }
+                                },
+                                "body": {
+                                  "type": "string"
+                                },
+                                "content_type": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "status_path": {
+                              "type": "string"
+                            },
+                            "succeeded": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "failed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "interval_seconds": {
+                              "type": "integer"
+                            },
+                            "timeout_seconds": {
+                              "type": "integer"
+                            },
+                            "usage": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                              "properties": {
+                                "model_path": {
+                                  "type": "string"
+                                },
+                                "input_tokens_path": {
+                                  "type": "string"
+                                },
+                                "output_tokens_path": {
+                                  "type": "string"
+                                },
+                                "total_tokens_path": {
+                                  "type": "string"
+                                },
+                                "cost_path": {
+                                  "type": "string"
+                                },
+                                "cost_per_request": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "units_path": {
+                                  "type": "string",
+                                  "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
+                                },
+                                "units_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "response",
+                                    "request"
+                                  ]
+                                },
+                                "units_measure": {
+                                  "type": "string",
+                                  "enum": [
+                                    "value",
+                                    "chars",
+                                    "body_bytes",
+                                    "body_chars"
+                                  ]
+                                },
+                                "cost_per_unit": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
+                                },
+                                "units_block_size": {
+                                  "type": "number",
+                                  "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                                },
+                                "units_minimum": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "description": "Least number of billed units once a quantity was read; default 0"
+                                },
+                                "disable_optimistic_parsing": {
+                                  "type": "boolean"
+                                }
+                              }
                             }
                           }
                         }
@@ -128695,10 +129246,12 @@
               },
               "generic_config": {
                 "type": "object",
+                "additionalProperties": false,
                 "description": "Relay settings for a custom provider whose base_provider_type is generic: a raw HTTP passthrough to a non-LLM API reached at /passthrough/{provider}/{path}.",
                 "properties": {
                   "auth": {
                     "type": "object",
+                    "additionalProperties": false,
                     "description": "How the selected key is presented to the upstream",
                     "properties": {
                       "type": {
@@ -128726,6 +129279,7 @@
                       },
                       "aws": {
                         "type": "object",
+                        "additionalProperties": false,
                         "description": "SigV4 settings (type aws_sigv4); keys carry credentials in bedrock_key_config",
                         "properties": {
                           "service": {
@@ -128742,6 +129296,7 @@
                   },
                   "usage": {
                     "type": "object",
+                    "additionalProperties": false,
                     "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
                     "properties": {
                       "model_path": {
@@ -128765,7 +129320,7 @@
                       },
                       "units_path": {
                         "type": "string",
-                        "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes"
+                        "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
                       },
                       "units_source": {
                         "type": "string",
@@ -128779,13 +129334,23 @@
                         "enum": [
                           "value",
                           "chars",
-                          "body_bytes"
+                          "body_bytes",
+                          "body_chars"
                         ]
                       },
                       "cost_per_unit": {
                         "type": "number",
                         "minimum": 0,
                         "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
+                      },
+                      "units_block_size": {
+                        "type": "number",
+                        "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                      },
+                      "units_minimum": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Least number of billed units once a quantity was read; default 0"
                       },
                       "disable_optimistic_parsing": {
                         "type": "boolean"
@@ -128794,6 +129359,7 @@
                   },
                   "streaming": {
                     "type": "object",
+                    "additionalProperties": false,
                     "properties": {
                       "paths": {
                         "type": "array",
@@ -128804,6 +129370,10 @@
                       },
                       "detect_from_accept_header": {
                         "type": "boolean"
+                      },
+                      "detect_from_body": {
+                        "type": "boolean",
+                        "description": "Treat stream:true in a JSON body (or ?stream=true on a GET) as a streaming request; off by default so a caller cannot skip response-side billing"
                       }
                     }
                   },
@@ -128812,6 +129382,7 @@
                     "description": "Per-route overrides; the first matching route wins",
                     "items": {
                       "type": "object",
+                      "additionalProperties": false,
                       "required": [
                         "method",
                         "path"
@@ -128834,13 +129405,21 @@
                         },
                         "billable": {
                           "type": "boolean",
-                          "description": "false relays the call without counting or charging it"
+                          "description": "false relays the call without counting or charging it; true counts it. Unset keeps the method default (only POST billable)"
+                        },
+                        "headers": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "description": "Request headers that must also match, header name to value glob (X-Amz-Target to Textract.Get*), so one route per operation on APIs that multiplex a path"
                         },
                         "stream": {
                           "type": "boolean"
                         },
                         "usage": {
                           "type": "object",
+                          "additionalProperties": false,
                           "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
                           "properties": {
                             "model_path": {
@@ -128864,7 +129443,7 @@
                             },
                             "units_path": {
                               "type": "string",
-                              "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes"
+                              "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
                             },
                             "units_source": {
                               "type": "string",
@@ -128878,7 +129457,8 @@
                               "enum": [
                                 "value",
                                 "chars",
-                                "body_bytes"
+                                "body_bytes",
+                                "body_chars"
                               ]
                             },
                             "cost_per_unit": {
@@ -128886,8 +129466,144 @@
                               "minimum": 0,
                               "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
                             },
+                            "units_block_size": {
+                              "type": "number",
+                              "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                            },
+                            "units_minimum": {
+                              "type": "number",
+                              "minimum": 0,
+                              "description": "Least number of billed units once a quantity was read; default 0"
+                            },
                             "disable_optimistic_parsing": {
                               "type": "boolean"
+                            }
+                          }
+                        },
+                        "job": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "description": "Makes the route the start of a provider-side job billed once it completes; the job accounting sweeper polls with the given request and prices the terminal response with the job's usage mapping",
+                          "required": [
+                            "id_path",
+                            "poll",
+                            "status_path",
+                            "succeeded"
+                          ],
+                          "properties": {
+                            "id_path": {
+                              "type": "string"
+                            },
+                            "poll": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "path"
+                              ],
+                              "properties": {
+                                "method": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                },
+                                "headers": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  }
+                                },
+                                "body": {
+                                  "type": "string"
+                                },
+                                "content_type": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "status_path": {
+                              "type": "string"
+                            },
+                            "succeeded": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "failed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "interval_seconds": {
+                              "type": "integer"
+                            },
+                            "timeout_seconds": {
+                              "type": "integer"
+                            },
+                            "usage": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                              "properties": {
+                                "model_path": {
+                                  "type": "string"
+                                },
+                                "input_tokens_path": {
+                                  "type": "string"
+                                },
+                                "output_tokens_path": {
+                                  "type": "string"
+                                },
+                                "total_tokens_path": {
+                                  "type": "string"
+                                },
+                                "cost_path": {
+                                  "type": "string"
+                                },
+                                "cost_per_request": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "units_path": {
+                                  "type": "string",
+                                  "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
+                                },
+                                "units_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "response",
+                                    "request"
+                                  ]
+                                },
+                                "units_measure": {
+                                  "type": "string",
+                                  "enum": [
+                                    "value",
+                                    "chars",
+                                    "body_bytes",
+                                    "body_chars"
+                                  ]
+                                },
+                                "cost_per_unit": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
+                                },
+                                "units_block_size": {
+                                  "type": "number",
+                                  "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                                },
+                                "units_minimum": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "description": "Least number of billed units once a quantity was read; default 0"
+                                },
+                                "disable_optimistic_parsing": {
+                                  "type": "boolean"
+                                }
+                              }
                             }
                           }
                         }

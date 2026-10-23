@@ -74,6 +74,7 @@ type GenericProvider struct {
 	client               *http.Client                  // unary client; Timeout bounds the whole response
 	streamingClient      *http.Client                  // streaming client; no whole-response timeout
 	networkConfig        schemas.NetworkConfig         // base URL, extra headers, timeouts
+	extraHeaderNames     map[string]struct{}           // lower-cased names of the operator's extra headers, which a caller may not replace
 	customProviderConfig *schemas.CustomProviderConfig // name, allowed requests, generic config
 	cfg                  *schemas.GenericProviderConfig
 	usage                resolvedUsage // provider-level usage mapping
@@ -132,6 +133,7 @@ func NewGenericProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		client:               client,
 		streamingClient:      providerUtils.BuildStreamingHTTPClient(client),
 		networkConfig:        config.NetworkConfig,
+		extraHeaderNames:     lowerHeaderNames(config.NetworkConfig.ExtraHeaders),
 		customProviderConfig: config.CustomProviderConfig,
 		cfg:                  cfg,
 		usage:                usage,
@@ -226,6 +228,31 @@ func (provider *GenericProvider) ModelPath(method, path string) string {
 	return usage.effectiveModelPath()
 }
 
+// strictRouteError refuses an operation that matches no route under strict_routes. The HTTP
+// transport refuses it before dispatch; this is the same guard for the Go SDK path, which reaches
+// the provider directly.
+func (provider *GenericProvider) strictRouteError(route *compiledRoute, req *schemas.BifrostPassthroughRequest) *schemas.BifrostError {
+	if !provider.cfg.StrictRoutes || route != nil {
+		return nil
+	}
+	bifrostErr := providerUtils.NewBifrostOperationError(fmt.Sprintf("no route for %s %s (strict_routes)", req.Method, req.Path), nil)
+	bifrostErr.StatusCode = schemas.Ptr(http.StatusNotFound)
+	return bifrostErr
+}
+
+// lowerHeaderNames is the set of configured extra header names, lower-cased for the caller
+// header loop. Built once per provider.
+func lowerHeaderNames(extra map[string]schemas.SecretVar) map[string]struct{} {
+	if len(extra) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(extra))
+	for name := range extra {
+		out[strings.ToLower(name)] = struct{}{}
+	}
+	return out
+}
+
 // buildRequest turns a passthrough request into the upstream net/http request: host-pinned URL,
 // caller headers minus credentials, operator extra headers, then the configured auth.
 func (provider *GenericProvider) buildRequest(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (*http.Request, *schemas.BifrostError) {
@@ -250,6 +277,11 @@ func (provider *GenericProvider) buildRequest(ctx *schemas.BifrostContext, key s
 		if strings.EqualFold(k, "authorization") || strings.EqualFold(k, "content-length") || (authHeader != "" && strings.EqualFold(k, authHeader)) {
 			continue
 		}
+		// A header the operator configured (a tenant, an API version) is the operator's to set; a
+		// caller's copy of it is dropped rather than replacing it.
+		if _, operator := provider.extraHeaderNames[strings.ToLower(k)]; operator {
+			continue
+		}
 		httpReq.Header.Set(k, v)
 	}
 	if bifrostErr := provider.applyAuth(ctx, httpReq, key); bifrostErr != nil {
@@ -269,6 +301,9 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 		return nil, bifrostErr
 	}
 	usageMapping, billable, route := provider.resolve(ctx, req.Method, req.Path, req.SafeHeaders)
+	if bifrostErr := provider.strictRouteError(route, req); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	streamingRoute := route != nil && route.stream != nil && *route.stream
 	requestUnits := usageMapping.requestUnits(req.SafeHeaders["content-type"], req.Body)
 
@@ -344,7 +379,10 @@ func (provider *GenericProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	usageMapping, billable, _ := provider.resolve(ctx, req.Method, req.Path, req.SafeHeaders)
+	usageMapping, billable, route := provider.resolve(ctx, req.Method, req.Path, req.SafeHeaders)
+	if bifrostErr := provider.strictRouteError(route, req); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	requestUnits := usageMapping.requestUnits(req.SafeHeaders["content-type"], req.Body)
 
 	startTime := time.Now()

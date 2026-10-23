@@ -1940,6 +1940,9 @@ func processProvider(
 	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
 		return err
 	}
+	if provider == schemas.Generic && providerCfgInFile.CustomProviderConfig == nil {
+		return fmt.Errorf("provider %s: generic is a base type for custom providers, not a provider; set custom_provider_config.base_provider_type", provider)
+	}
 	if err := providerCfgInFile.Passthrough.Validate(); err != nil {
 		return fmt.Errorf("invalid passthrough for provider %s: %w", provider, err)
 	}

@@ -281295,7 +281295,7 @@
       "description": "A custom provider with base_provider_type generic is a raw HTTP relay to a non-LLM API, reached at /passthrough/{provider}/{path}. The provider segment is resolved per request; only generic-based custom providers are served. Bifrost injects the configured key per auth.type (header x-api-key here, bearer for generic_openai, none for the keyless provider), strips caller credentials, pins the upstream host, relays bytes untouched, and reports usage so governance counts the call and the log row keeps the raw bodies. Profile providers: generic_echo and generic_echo_keyless (postman-echo), generic_openai (api.openai.com). Rows: header auth injection and credential stripping; GET with query on a non-billable route; PUT; OpenAI through the relay with optimistic usage reaching the log row; OpenAI SSE through the streaming relay; streaming.paths glob on a keyless provider; 404 for a standard provider name; 404 for an unknown name; 400 from the path guard. Run with FEATURE=\"generic passthrough\".",
       "item": [
         {
-          "name": "270.1 POST /passthrough/generic_echo/post - header auth injected, caller x-api-key replaced (generic passthrough)",
+          "name": "270.1 POST /passthrough/generic_echo/post - header auth injected, caller x-api-key replaced (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281349,7 +281349,7 @@
           }
         },
         {
-          "name": "270.2 GET /passthrough/generic_echo/get?foo=bar - GET relayed with query preserved on a non-billable route (generic passthrough)",
+          "name": "270.2 GET /passthrough/generic_echo/get?foo=bar - GET relayed with query preserved on a non-billable route (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281397,7 +281397,7 @@
           }
         },
         {
-          "name": "270.3 PUT /passthrough/generic_echo/put - non-POST method relayed (generic passthrough)",
+          "name": "270.3 PUT /passthrough/generic_echo/put - non-POST method relayed (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281437,7 +281437,7 @@
           }
         },
         {
-          "name": "270.4 POST /passthrough/generic_openai/v1/chat/completions - openai gpt-4o-mini usage parsed optimistically (generic passthrough)",
+          "name": "270.4 POST /passthrough/generic_openai/v1/chat/completions - openai gpt-4o-mini usage parsed optimistically (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281499,7 +281499,7 @@
           }
         },
         {
-          "name": "270.5 POST /passthrough/generic_openai/v1/chat/completions stream:true - openai gpt-4o-mini SSE relayed (generic passthrough)",
+          "name": "270.5 POST /passthrough/generic_openai/v1/chat/completions stream:true - openai gpt-4o-mini SSE relayed (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281544,7 +281544,7 @@
           }
         },
         {
-          "name": "270.6 GET /passthrough/generic_echo_keyless/stream/3 - keyless provider served by the streaming relay via streaming.paths (generic passthrough)",
+          "name": "270.6 GET /passthrough/generic_echo_keyless/stream/3 - keyless provider served by the streaming relay via streaming.paths (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281583,7 +281583,7 @@
           }
         },
         {
-          "name": "[EXPECT-404] 270.7 POST /passthrough/openai/v1/chat/completions - standard provider is not a generic passthrough (generic passthrough)",
+          "name": "[EXPECT-404] 270.7 POST /passthrough/openai/v1/chat/completions - standard provider is not a generic passthrough (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281628,7 +281628,7 @@
           }
         },
         {
-          "name": "[EXPECT-404] 270.8 POST /passthrough/does-not-exist/search - unknown provider name (generic passthrough)",
+          "name": "[EXPECT-404] 270.8 POST /passthrough/does-not-exist/search - unknown provider name (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281669,7 +281669,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] 270.9 POST /passthrough/generic_echo/v1@127.0.0.1/x - passthrough path guard rejects before dispatch (generic passthrough)",
+          "name": "[EXPECT-400] 270.9 POST /passthrough/generic_echo/v1@127.0.0.1/x - passthrough path guard rejects before dispatch (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281713,7 +281713,7 @@
           }
         },
         {
-          "name": "270.10 POST /passthrough/generic_echo_sigv4/post - aws_sigv4 auth signs the relayed request (generic passthrough)",
+          "name": "270.10 POST /passthrough/generic_echo_sigv4/post - aws_sigv4 auth signs the relayed request (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281770,7 +281770,7 @@
           }
         },
         {
-          "name": "270.11 POST /passthrough/generic_echo_strict/post - a listed route is relayed under strict_routes (generic passthrough)",
+          "name": "270.11 POST /passthrough/generic_echo_strict/post - a listed route is relayed under strict_routes (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281812,7 +281812,7 @@
           }
         },
         {
-          "name": "[EXPECT-404] 270.12 DELETE /passthrough/generic_echo_strict/delete - an unlisted operation is refused under strict_routes (generic passthrough)",
+          "name": "[EXPECT-404] 270.12 DELETE /passthrough/generic_echo_strict/delete - an unlisted operation is refused under strict_routes (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281854,7 +281854,7 @@
           }
         },
         {
-          "name": "270.13 GET /passthrough/generic_echo/headers - a GET route listed without a billable flag keeps the method default and is not charged (generic passthrough)",
+          "name": "270.13 GET /passthrough/generic_echo/headers - a GET route listed without a billable flag keeps the method default and is not charged (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281904,7 +281904,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] 270.23 PUT /api/providers/generic_echo_sigv4 - switching a generic provider to an injecting auth type is refused while a stored key has no value (generic passthrough)",
+          "name": "[EXPECT-400] 270.14 PUT /api/providers/generic_echo_sigv4 - switching a generic provider to an injecting auth type is refused while a stored key has no value (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -281951,7 +281951,7 @@
           }
         },
         {
-          "name": "270.14 POST /passthrough/generic_echo_units/post - per-unit pricing: cost on the log row is units x rate plus the flat fee (generic passthrough)",
+          "name": "270.15 POST /passthrough/generic_echo_units/post - per-unit pricing: cost on the log row is units x rate plus the flat fee (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -282005,7 +282005,7 @@
           }
         },
         {
-          "name": "270.15 GET /passthrough/generic_echo/stream/1 - the word stream in a path does not select the streaming relay; the reply is buffered (generic passthrough)",
+          "name": "270.16 GET /passthrough/generic_echo/stream/1 - the word stream in a path does not select the streaming relay; the reply is buffered (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -282045,7 +282045,7 @@
           }
         },
         {
-          "name": "270.16 GET /passthrough/generic_echo_query/get?api_key=caller&foo=bar - query auth: configured key injected, caller api_key replaced (generic passthrough)",
+          "name": "270.17 GET /passthrough/generic_echo_query/get?api_key=caller&foo=bar - query auth: configured key injected, caller api_key replaced (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -282094,7 +282094,7 @@
           }
         },
         {
-          "name": "270.17 GET /passthrough/generic_echo_query/get?api_key=caller&x=%zz - query auth strips only the caller's api_key and forwards every other segment byte for byte (generic passthrough)",
+          "name": "270.18 GET /passthrough/generic_echo_query/get?api_key=caller&x=%zz - query auth strips only the caller's api_key and forwards every other segment byte for byte (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -282144,7 +282144,7 @@
           }
         },
         {
-          "name": "270.17 PUT /passthrough/generic_echo_units/put - body_chars bills request characters, not bytes: multi-byte text costs per character (generic passthrough)",
+          "name": "270.19 PUT /passthrough/generic_echo_units/put - body_chars bills request characters, not bytes: multi-byte text costs per character (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -282199,7 +282199,7 @@
           }
         },
         {
-          "name": "270.18 POST /passthrough/generic_echo/post - caller credential headers of any spelling are dropped, non-credential headers forwarded (generic passthrough)",
+          "name": "270.20 POST /passthrough/generic_echo/post - caller credential headers of any spelling are dropped, non-credential headers forwarded (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -282260,7 +282260,7 @@
           }
         },
         {
-          "name": "270.19 POST /passthrough/generic_echo_units/post with X-Amz-Target - a header-matched route prices the operation: 7 pages at the route's rate plus the inherited fee (generic passthrough)",
+          "name": "270.21 POST /passthrough/generic_echo_units/post with X-Amz-Target - a header-matched route prices the operation: 7 pages at the route's rate plus the inherited fee (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -282269,7 +282269,7 @@
                 "exec": [
                   "// generic_echo_units has a route on POST /post that also requires X-Amz-Target: Echo.Priced*. With the header the",
                   "// route's cost_per_unit 0.002 applies over the provider's units_path json.pages, and the provider's 0.01 fee is",
-                  "// inherited: 7 x 0.002 + 0.01 = 0.024. Case 270.14 sends the same body without the header and pays 0.017.",
+                  "// inherited: 7 x 0.002 + 0.01 = 0.024. Case 270.15 sends the same body without the header and pays 0.017.",
                   "pm.test('generic relay: request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
                   "var reqId = pm.response.headers.get('x-bifrost-request-id');",
                   "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
@@ -282319,7 +282319,7 @@
           }
         },
         {
-          "name": "270.20 PATCH /passthrough/generic_echo_units/patch - rounding: 250 characters bill as three 100-character blocks (generic passthrough)",
+          "name": "270.22 PATCH /passthrough/generic_echo_units/patch - rounding: 250 characters bill as three 100-character blocks (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -282373,7 +282373,7 @@
           }
         },
         {
-          "name": "270.21 POST /passthrough/generic_echo_units/post with stream:true - a caller's stream flag does not select the streaming relay: the reply is buffered and the pages are billed (generic passthrough)",
+          "name": "270.23 POST /passthrough/generic_echo_units/post with stream:true - a caller's stream flag does not select the streaming relay: the reply is buffered and the pages are billed (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -282428,7 +282428,7 @@
           }
         },
         {
-          "name": "270.22 POST /passthrough/generic_echo_units/post with X-Amz-Target Echo.StartJob - an async job is started, counted at the flat fee, and settled by the sweeper once its poll reports SUCCEEDED (generic passthrough)",
+          "name": "270.24 POST /passthrough/generic_echo_units/post with X-Amz-Target Echo.StartJob - an async job is started, counted at the flat fee, and settled by the sweeper once its poll reports SUCCEEDED (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",

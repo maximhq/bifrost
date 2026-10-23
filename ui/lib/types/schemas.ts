@@ -1188,13 +1188,20 @@ export const genericAuthConfigSchema = z
 	});
 
 // A route's header matchers are edited as name/value pairs; an incomplete pair is dropped on save.
-export const genericRouteHeaderSchema = z.object({
-	name: z
-		.string()
-		.trim()
-		.refine((n) => !/[\s:]/.test(n), "Header name must not contain spaces or colons"),
-	value: z.string().trim(),
-});
+export const genericRouteHeaderSchema = z
+	.object({
+		name: z
+			.string()
+			.trim()
+			.refine((n) => !/[\s:/]/.test(n), "Header name must not contain spaces, colons or slashes"),
+		value: z.string().trim(),
+	})
+	.superRefine((pair, ctx) => {
+		// A fully blank row is ignored on save; a half-filled one would be too, silently widening a
+		// strict route, so it is an error instead.
+		if (pair.name && !pair.value) ctx.addIssue({ code: "custom", message: "A header matcher needs a value glob", path: ["value"] });
+		if (!pair.name && pair.value) ctx.addIssue({ code: "custom", message: "A header matcher needs a header name", path: ["name"] });
+	});
 
 // A route's async job block is set through config.json or the API; the form carries it through
 // untouched so a save from the Passthrough tab never drops it.

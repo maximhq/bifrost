@@ -59,6 +59,14 @@ const DEFAULT_ALLOWED_REQUESTS = {
 	live: false,
 };
 
+const DEFAULT_GENERIC_AUTH = {
+	type: "bearer" as GenericAuthType,
+	header_name: "",
+	query_param: "",
+	value_prefix: "",
+	aws: { service: "", region: "" },
+};
+
 const formSchema = z
 	.object({
 		name: z.string().min(1),
@@ -106,7 +114,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			does_not_send_done_marker: false,
 			wait_for_usage: false,
 			allow_private_network: false,
-			generic_auth: { type: "bearer", header_name: "", query_param: "", value_prefix: "", aws: { service: "", region: "" } },
+			generic_auth: DEFAULT_GENERIC_AUTH,
 		},
 	});
 
@@ -193,6 +201,9 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 	useEffect(() => {
 		if (!isGeneric) {
 			form.setValue("allowed_requests", DEFAULT_ALLOWED_REQUESTS);
+			// The auth section is hidden off generic, so its half-filled fields must not keep the
+			// form from submitting.
+			form.setValue("generic_auth", DEFAULT_GENERIC_AUTH);
 			return;
 		}
 		const current = form.getValues("allowed_requests");
@@ -200,10 +211,11 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 		form.setValue("allowed_requests", { ...cleared, passthrough: true, passthrough_stream: true });
 	}, [isGeneric, form]);
 
+	// The keyless switch is disabled for every generic auth type but none, so the flag has to
+	// follow the auth type in both directions or a none-then-bearer sequence leaves it stuck on.
 	useEffect(() => {
-		if (isGeneric && genericAuthType === "none") {
-			form.setValue("is_key_less", true);
-		}
+		if (!isGeneric) return;
+		form.setValue("is_key_less", genericAuthType === "none");
 	}, [isGeneric, genericAuthType, form]);
 
 	// Clear the nested flag whenever its parent goes away: the provider update replaces

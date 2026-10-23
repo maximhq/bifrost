@@ -585,7 +585,7 @@ export type GenericUnitsSource = "response" | "request";
 export type GenericUnitsMeasure = "value" | "chars" | "body_bytes" | "body_chars";
 
 export const GenericUnitsSourceLabels: Record<GenericUnitsSource, string> = {
-	response: "Response body (a count the API reports)",
+	response: "Upstream response body",
 	request: "Request body (what the caller sent)",
 };
 
@@ -701,7 +701,8 @@ export interface GenericUsagePreview {
 	cost_per_unit: number;
 	cost_per_request: number;
 	extracted_cost: number | null;
-	tokens: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
+	// Go omits zero-valued token counts, so a preview with only a total carries no prompt or completion field.
+	tokens: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null;
 	cost: number;
 	notes: string[];
 }
