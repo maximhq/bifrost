@@ -12,6 +12,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 - Configurable request-body buffer pool limit via `bifrost.server.bodyBufferPoolLimitBytes`. Maps to `server.body_buffer_pool_limit_bytes` in config.json. Keep-alive connections free request-body buffers larger than this after each request instead of holding the largest body they ever read (default 4 MiB when unset; `0` means unlimited, the old behaviour).
 - Added `bifrost.disableOnboarding` (`disable_onboarding`) to hide the management UI setup checklist for every user. It is read from config.json on every start rather than the config store, so it stays in effect on stateless or provider-less deployments.
+- Added `bifrost.server.basePath` (`server.base_path`) to serve Bifrost under a URL path prefix behind an ingress (e.g. `https://abc.com/bifrost`). The UI, redirects and OAuth callback URLs use the prefix. Requests are accepted with or without it, so the ingress can forward or strip it and probes stay on `/health`.
 
 ### 2.1.45
 

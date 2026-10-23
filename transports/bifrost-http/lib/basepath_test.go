@@ -144,3 +144,27 @@ func TestBasePathSchemaPatternMatchesNormalize(t *testing.T) {
 	require.NotEmpty(t, pattern)
 	assertBasePathPatternMatchesNormalize(t, "config.schema.json", pattern)
 }
+
+func TestBasePathHelmSchemaPatternMatchesNormalize(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "helm-charts", "bifrost", "values.schema.json"))
+	require.NoError(t, err)
+	var schema struct {
+		Properties struct {
+			Bifrost struct {
+				Properties struct {
+					Server struct {
+						Properties struct {
+							BasePath struct {
+								Pattern string `json:"pattern"`
+							} `json:"basePath"`
+						} `json:"properties"`
+					} `json:"server"`
+				} `json:"properties"`
+			} `json:"bifrost"`
+		} `json:"properties"`
+	}
+	require.NoError(t, json.Unmarshal(data, &schema))
+	pattern := schema.Properties.Bifrost.Properties.Server.Properties.BasePath.Pattern
+	require.NotEmpty(t, pattern)
+	assertBasePathPatternMatchesNormalize(t, "values.schema.json", pattern)
+}
