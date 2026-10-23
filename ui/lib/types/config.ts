@@ -632,6 +632,19 @@ export const GenericRouteMethods: GenericRouteMethod[] = ["GET", "POST", "PUT", 
 // settings, DELETE cleans up.
 export const genericRouteBillableByDefault = (method: GenericRouteMethod): boolean => method === "POST";
 
+// GenericJobConfig matching Go's schemas.GenericJobConfig: a route that starts a provider-side job
+// billed once it completes. Edited through config.json or the API today; the UI carries it through.
+export interface GenericJobConfig {
+	id_path: string;
+	poll: { method?: string; path: string; headers?: Record<string, string>; body?: string; content_type?: string };
+	status_path: string;
+	succeeded: string[];
+	failed?: string[];
+	interval_seconds?: number;
+	timeout_seconds?: number;
+	usage?: GenericUsageConfig;
+}
+
 // GenericRouteConfig matching Go's schemas.GenericRouteConfig
 export interface GenericRouteConfig {
 	method: GenericRouteMethod;
@@ -641,6 +654,7 @@ export interface GenericRouteConfig {
 	billable?: boolean;
 	stream?: boolean;
 	usage?: GenericUsageConfig;
+	job?: GenericJobConfig;
 }
 
 // GenericProviderConfig matching Go's schemas.GenericProviderConfig: relay settings for a custom

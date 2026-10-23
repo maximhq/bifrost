@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/generic"
 	"github.com/maximhq/bifrost/core/schemas"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
@@ -121,6 +122,45 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	// Video jobs finish in minutes, not hours, so their sweeper runs on a much
 	// tighter tick than the batch one.
 	loggerPlugin.StartVideoAccountingSweeper(&bifrostVideoRetriever{client: s.Client}, 30*time.Second, s.Config.KVStore)
+	// Generic passthrough jobs (Textract, Transcribe and the like) finish in seconds to minutes.
+	loggerPlugin.StartGenericJobAccountingSweeper(&bifrostGenericJobPoller{client: s.Client}, 30*time.Second, s.Config.KVStore)
+}
+
+// bifrostGenericJobPoller sends a generic job's poll through the relay, with the key that started
+// the job and the plugin pipeline skipped, so the poll is neither counted nor charged and the
+// provider's own route matching decides nothing about it.
+type bifrostGenericJobPoller struct {
+	client *bifrost.Bifrost
+}
+
+func (f *bifrostGenericJobPoller) PollGenericJob(ctx context.Context, job *cstables.TableProviderJob, req generic.JobPollRequest) (*jobaccounting.GenericPollResponse, error) {
+	if f == nil || f.client == nil {
+		return nil, fmt.Errorf("bifrost client is nil")
+	}
+	if job == nil {
+		return nil, fmt.Errorf("generic job is nil")
+	}
+	resp, bifrostErr := f.client.Passthrough(internalJobContext(ctx, job.SelectedKeyID), schemas.ModelProvider(job.Provider), &schemas.BifrostPassthroughRequest{
+		Method:        req.Method,
+		Path:          req.Path,
+		Body:          req.Body,
+		SafeHeaders:   req.Headers,
+		ModelResolved: true,
+	})
+	if bifrostErr != nil {
+		return nil, jobaccounting.NewProviderCallError(bifrostErr)
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("generic job poll returned nil response")
+	}
+	contentType := ""
+	for k, v := range resp.Headers {
+		if strings.EqualFold(k, "content-type") {
+			contentType = v
+			break
+		}
+	}
+	return &jobaccounting.GenericPollResponse{StatusCode: resp.StatusCode, ContentType: contentType, Body: resp.Body}, nil
 }
 
 // setSettlementTracer gives the logging plugin the tracer for emitSettlementSpan.

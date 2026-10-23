@@ -282426,6 +282426,78 @@
               ]
             }
           }
+        },
+        {
+          "name": "270.22 POST /passthrough/generic_echo_units/post with X-Amz-Target Echo.StartJob - an async job is started, counted at the flat fee, and settled by the sweeper once its poll reports SUCCEEDED (generic passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The route with the job block reads the job id from the echoed body (json.job_id), charges the start call the",
+                  "// provider fee alone, and records a job. The sweeper polls GET /get?status=SUCCEEDED&pages=7 with the key that",
+                  "// started the job, reads args.pages, and writes a settlement row nested under the start row costing 7 x 0.001.",
+                  "pm.test('generic relay: job start relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkStart(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.cost !== undefined && row.cost !== null) {",
+                  "      pm.test('generic relay: the start call pays the flat fee only', function () { pm.expect(row.cost, JSON.stringify({cost: row.cost})).to.be.closeTo(0.01, 1e-6); });",
+                  "      checkSettlement(0);",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkStart(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: start log row appeared', function () { pm.expect.fail('log ' + reqId + ' has no cost after 10 reads'); });",
+                  "  });",
+                  "}",
+                  "function checkSettlement(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs?parent_request_id=' + reqId + '&limit=5', method: 'GET' }, function (err, res) {",
+                  "    var rows = (!err && res.code === 200 && res.json() && res.json().logs) ? res.json().logs : [];",
+                  "    var settled = rows.filter(function (r) { return r.cost !== undefined && r.cost !== null; });",
+                  "    if (settled.length > 0) {",
+                  "      pm.test('generic relay: the job settled once at pages x rate', function () { pm.expect(settled.length, 'one settlement row').to.eql(1); pm.expect(settled[0].cost, JSON.stringify({cost: settled[0].cost})).to.be.closeTo(0.007, 1e-6); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 90) { setTimeout(function () { checkSettlement(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: settlement row appeared', function () { pm.expect.fail('no settlement row under ' + reqId + ' after 90s: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkStart(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "Echo.StartJob"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_id\": \"job-{{$randomUUID}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_units/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_units",
+                "post"
+              ]
+            }
+          }
         }
       ]
     }

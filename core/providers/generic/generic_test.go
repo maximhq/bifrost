@@ -655,6 +655,58 @@ func TestNewGenericProviderRequiresBaseURL(t *testing.T) {
 	require.Error(t, err, "an invalid relay config is refused at construction")
 }
 
+// A route with a job block attaches the job id and the settlement snapshot to the start call's
+// usage, so the logging plugin can record the job; the start call is still counted and charged
+// as the route says. A start response that names no id starts no job.
+func TestGenericJobStartHandle(t *testing.T) {
+	up := jsonUpstream(t, http.StatusOK, `{"JobId":"job-42"}`)
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{
+		Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01), UnitsPath: "DocumentMetadata.Pages", CostPerUnit: schemas.Ptr(0.0015)},
+		Routes: []schemas.GenericRouteConfig{{
+			Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Start*"},
+			Usage: &schemas.GenericUsageConfig{CostPerUnit: schemas.Ptr(0.0)},
+			Job: &schemas.GenericJobConfig{
+				IDPath:          "JobId",
+				Poll:            schemas.GenericJobPoll{Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"}, Body: `{"JobId":"{{job.id}}"}`},
+				StatusPath:      "JobStatus",
+				Succeeded:       []string{"SUCCEEDED"},
+				Usage:           &schemas.GenericUsageConfig{CostPerUnit: schemas.Ptr(0.0015)},
+				IntervalSeconds: 15,
+			},
+		}},
+	})
+	resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/", "", `{"DocumentLocation":{}}`, map[string]string{"x-amz-target": "Textract.StartDocumentAnalysis", "content-type": "application/x-amz-json-1.1"}))
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, resp.PassthroughUsage, "the start call is counted")
+	require.NotNil(t, resp.PassthroughUsage.Cost)
+	assert.InDelta(t, 0.01, resp.PassthroughUsage.Cost.TotalCost, 1e-9, "the start call pays the flat fee and no units")
+	handle := resp.PassthroughUsage.ProviderJob
+	require.NotNil(t, handle, "the job handle rides on the usage")
+	assert.Equal(t, "job-42", handle.ID)
+	assert.Equal(t, 15, handle.IntervalSeconds)
+	snap, err := ParseJobSnapshot(handle.Params)
+	require.NoError(t, err)
+	assert.Equal(t, "JobStatus", snap.Job.StatusPath)
+	assert.Equal(t, []string{"SUCCEEDED"}, snap.Job.Succeeded)
+	require.NotNil(t, snap.Usage)
+	assert.Equal(t, "DocumentMetadata.Pages", snap.Usage.UnitsPath, "the provider's units path is merged into the snapshot")
+	assert.InDelta(t, 0.0015, *snap.Usage.CostPerUnit, 0, "the job's own rate wins over the route's zero")
+	assert.Nil(t, snap.Job.Usage, "the job usage is folded in, not carried twice")
+	poll := snap.PollRequest("job-42")
+	assert.Equal(t, "Textract.GetDocumentAnalysis", poll.Headers["x-amz-target"])
+	assert.JSONEq(t, `{"JobId":"job-42"}`, string(poll.Body))
+	usage, detail := snap.Price("job-42", "SUCCEEDED", "application/x-amz-json-1.1", []byte(`{"JobStatus":"SUCCEEDED","DocumentMetadata":{"Pages":7}}`))
+	require.NotNil(t, usage.Cost)
+	assert.InDelta(t, 7*0.0015+0.01, usage.Cost.TotalCost, 1e-9, "settlement prices pages at the job rate plus the inherited fee")
+	assert.InDelta(t, 7, *detail.Units, 0)
+
+	noID := newProvider(t, jsonUpstream(t, http.StatusOK, `{"Message":"accepted"}`), provider.cfg)
+	resp, bifrostErr = noID.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/", "", `{}`, map[string]string{"x-amz-target": "Textract.StartDocumentAnalysis", "content-type": "application/x-amz-json-1.1"}))
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, resp.PassthroughUsage)
+	assert.Nil(t, resp.PassthroughUsage.ProviderJob, "no job id in the response: no job")
+}
+
 func TestGenericStreams(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
 	provider := newProvider(t, up, &schemas.GenericProviderConfig{

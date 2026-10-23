@@ -11,6 +11,9 @@ import (
 const (
 	ProviderJobKindBatch = "batch"
 	ProviderJobKindVideo = "video"
+	// ProviderJobKindGenericPassthrough is a job a generic passthrough route started; its poll
+	// request and pricing live in the row's params, captured from the route at start.
+	ProviderJobKindGenericPassthrough = "generic_passthrough"
 )
 
 // Accounting lifecycle states for a TableProviderJob.

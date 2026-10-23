@@ -121,7 +121,7 @@ func NewGenericProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	usage := resolveUsage(cfg.Usage, nil)
 	usage.ignoreUpstreamCost = config.IgnoreProviderCost
 	usage.eventPaths = usage.collectEventPaths()
-	routes := compileRoutes(cfg)
+	routes := compileRoutesWithCostPolicy(cfg, config.IgnoreProviderCost)
 	for i := range routes {
 		routes[i].usage.ignoreUpstreamCost = config.IgnoreProviderCost
 		routes[i].usage.eventPaths = routes[i].usage.collectEventPaths()
@@ -308,6 +308,9 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 	var usage *schemas.BifrostPassthroughUsage
 	if billable && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		usage = extractUsage(usageMapping, resp.Header.Get("Content-Type"), body, requestUnits)
+		// A route that starts a job hands the job id and its settlement snapshot to the logging
+		// plugin, which records it for the sweeper. The start call is still counted here.
+		usage.ProviderJob = route.jobHandle(resp.Header.Get("Content-Type"), body)
 	}
 
 	response := &schemas.BifrostPassthroughResponse{
