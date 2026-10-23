@@ -280962,6 +280962,455 @@
               ]
             }
           }
+        },
+        {
+          "name": "267.16 Bedrock Mistral Large 3 unary auto (mistral native invoke) - #8940",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: native choices, not an Anthropic message or opaque 500', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.type, pm.response.text()).to.not.equal('message');",
+                  "  pm.expect(j.choices[0].message.role).to.equal('assistant');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 256,\n  \"temperature\": 0,\n  \"tool_choice\": \"auto\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the current weather in San Francisco, CA? Use get_weather.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "mistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.17 Bedrock Mistral Large 3 unary any (mistral native invoke) - #8940",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: native choices, not an Anthropic message or opaque 500', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.type, pm.response.text()).to.not.equal('message');",
+                  "  pm.expect(j.choices[0].message.role).to.equal('assistant');",
+                  "});",
+                  "pm.test('mistral native invoke: forced native function with JSON arguments', function () {",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.finish_reason, pm.response.text()).to.equal('tool_calls');",
+                  "  pm.expect(choice.message.tool_calls, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  var call = choice.message.tool_calls[0];",
+                  "  pm.expect(call.function.name).to.equal('get_weather');",
+                  "  pm.expect(JSON.parse(call.function.arguments).location).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 256,\n  \"temperature\": 0,\n  \"tool_choice\": \"any\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the current weather in San Francisco, CA? Use get_weather.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "mistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.18 Bedrock Mistral Large 3 streamed any (mistral native invoke) - #8940",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: AWS EventStream with native chat chunks and no exception', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('amazon.eventstream');",
+                  "  pm.expect(raw, raw).to.not.include(':exception-type');",
+                  "  var matches = raw.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, raw).to.be.above(0);",
+                  "  var chunks = matches.map(function (match) {",
+                  "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
+                  "  });",
+                  "  var name = '', args = '', text = '', finish = '', calls = 0;",
+                  "  chunks.forEach(function (chunk) {",
+                  "    pm.expect(chunk.object, JSON.stringify(chunk)).to.equal('chat.completion.chunk');",
+                  "    (chunk.choices || []).forEach(function (choice) {",
+                  "      if (choice.finish_reason) { finish = choice.finish_reason; }",
+                  "      var delta = choice.delta || {};",
+                  "      text += delta.content || '';",
+                  "      (delta.tool_calls || []).forEach(function (call) {",
+                  "        calls++;",
+                  "        name = call.function && call.function.name || name;",
+                  "        args += call.function && call.function.arguments || '';",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "  pm.expect(name, raw).to.equal('get_weather');",
+                  "  pm.expect(JSON.parse(args).location).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(finish, raw).to.equal('tool_calls');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 256,\n  \"temperature\": 0,\n  \"tool_choice\": \"any\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the current weather in San Francisco, CA? Use get_weather.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "mistral.mistral-large-3-675b-instruct",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.19 Bedrock Mistral Large 3 unary none replay (mistral native invoke) - #8940",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: native choices, not an Anthropic message or opaque 500', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.type, pm.response.text()).to.not.equal('message');",
+                  "  pm.expect(j.choices[0].message.role).to.equal('assistant');",
+                  "});",
+                  "pm.test('mistral native invoke: tool-result replay with none produces an answer, not another tool call', function () {",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  pm.expect(choice.finish_reason, pm.response.text()).to.not.equal('tool_calls');",
+                  "  pm.expect(choice.message.tool_calls || [], pm.response.text()).to.have.lengthOf(0);",
+                  "  pm.expect(choice.message.content, pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 128,\n  \"temperature\": 0,\n  \"tool_choice\": \"none\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Report the supplied weather result in one short sentence.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in San Francisco?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call12345\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"location\\\":\\\"San Francisco, CA\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call12345\",\n      \"content\": \"{\\\"temperature\\\":\\\"72 F\\\",\\\"condition\\\":\\\"sunny\\\"}\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "mistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.20 Bedrock Mistral Large 3 streamed none replay (mistral native invoke) - #8940",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: AWS EventStream with native chat chunks and no exception', function () {",
+                  "  var raw = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('amazon.eventstream');",
+                  "  pm.expect(raw, raw).to.not.include(':exception-type');",
+                  "  var matches = raw.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, raw).to.be.above(0);",
+                  "  var chunks = matches.map(function (match) {",
+                  "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
+                  "  });",
+                  "  var name = '', args = '', text = '', finish = '', calls = 0;",
+                  "  chunks.forEach(function (chunk) {",
+                  "    pm.expect(chunk.object, JSON.stringify(chunk)).to.equal('chat.completion.chunk');",
+                  "    (chunk.choices || []).forEach(function (choice) {",
+                  "      if (choice.finish_reason) { finish = choice.finish_reason; }",
+                  "      var delta = choice.delta || {};",
+                  "      text += delta.content || '';",
+                  "      (delta.tool_calls || []).forEach(function (call) {",
+                  "        calls++;",
+                  "        name = call.function && call.function.name || name;",
+                  "        args += call.function && call.function.arguments || '';",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "  pm.expect(calls, raw).to.equal(0);",
+                  "  pm.expect(text, raw).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(finish, raw).to.not.equal('tool_calls');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 128,\n  \"temperature\": 0,\n  \"tool_choice\": \"none\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Report the supplied weather result in one short sentence.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in San Francisco?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"\",\n      \"tool_calls\": [\n        {\n          \"id\": \"call12345\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"location\\\":\\\"San Francisco, CA\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call12345\",\n      \"content\": \"{\\\"temperature\\\":\\\"72 F\\\",\\\"condition\\\":\\\"sunny\\\"}\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get weather for a location.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"location\"\n          ]\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "mistral.mistral-large-3-675b-instruct",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.21 Bedrock Mistral Large 3 malformed unary [EXPECT-400] (mistral native invoke) - #8940",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: malformed tool is an actionable 400, not an internal error', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.__type, pm.response.text()).to.equal('ValidationException');",
+                  "  pm.expect(j.message, pm.response.text()).to.include('tools[0].function.name');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"parameters\": {\n          \"type\": \"object\"\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "mistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.22 Bedrock Mistral Large 3 malformed stream [EXPECT-400] (mistral native invoke) - #8940",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: malformed tool is an actionable 400, not an internal error', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.__type, pm.response.text()).to.equal('ValidationException');",
+                  "  pm.expect(j.message, pm.response.text()).to.include('tools[0].function.name');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"parameters\": {\n          \"type\": \"object\"\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/mistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "mistral.mistral-large-3-675b-instruct",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.23 Bedrock Mistral Large 3 malformed Responses tool [EXPECT-400] (mistral native invoke) - #8940",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mistral native invoke: neutral Responses missing name is also a 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.json().error.message, pm.response.text()).to.include('missing required name');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/mistral.mistral-large-3-675b-instruct\",\n  \"input\": \"Hello\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"parameters\": {\n        \"type\": \"object\"\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
         }
       ]
     }
