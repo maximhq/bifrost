@@ -74,6 +74,38 @@ batches:
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 batches-by-id:
+  delete:
+    operationId: deleteBatch
+    summary: Delete a terminal batch
+    description: Deletes a finished batch. This operation is not cancellation.
+    tags:
+    - Batch
+    parameters:
+    - name: batch_id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: provider
+      in: query
+      required: true
+      schema:
+        type: string
+    responses:
+      '200':
+        description: Batch deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/batch.yaml#/BatchDeleteResponse'
+      '409':
+        description: Batch is still active or results are not ready
+      '503':
+        description: Configured batch settlement has not completed; retry cleanup
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
   get:
     operationId: retrieveBatch
     summary: Retrieve a batch job

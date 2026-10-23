@@ -11,6 +11,8 @@ BatchStatus:
     - expired
     - cancelling
     - canceled
+    - cancelled
+    - deleted
     - ended
 
 BatchEndpoint:
@@ -27,6 +29,22 @@ BatchCreateRequest:
   required:
     - model
   properties:
+    provider:
+      description: Native OpenRouter provider preferences on the neutral route; Bifrost provider name on SDK routes.
+      oneOf:
+        - type: string
+        - type: object
+          properties:
+            only:
+              type: array
+              items:
+                type: string
+            allow_fallbacks:
+              type: boolean
+    extra_params:
+      type: object
+      additionalProperties: true
+      description: SDK provider parameters, enabled with x-bf-passthrough-extra-params.
     model:
       type: string
       description: Model in provider/model format
@@ -67,6 +85,17 @@ BatchRequestItem:
 BatchCreateResponse:
   type: object
   properties:
+    model:
+      type: string
+    provider:
+      type: string
+      description: Upstream provider selected by OpenRouter
+    usage:
+      $ref: '#/BatchUsage'
+    error:
+      $ref: '#/BatchResultError'
+    finalized_at:
+      type: integer
     id:
       type: string
     object:
@@ -145,6 +174,21 @@ BatchListResponse:
 BatchRetrieveResponse:
   type: object
   properties:
+    model:
+      type: string
+    provider:
+      type: string
+      description: Upstream provider selected by OpenRouter
+    usage:
+      $ref: '#/BatchUsage'
+    error:
+      $ref: '#/BatchResultError'
+    finalized_at:
+      type: integer
+    results:
+      type: array
+      items:
+        $ref: '#/BatchResultItem'
     id:
       type: string
     object:
@@ -257,6 +301,16 @@ BatchCancelResponse:
 BatchResultsResponse:
   type: object
   properties:
+    model:
+      type: string
+    status:
+      $ref: '#/BatchStatus'
+    usage:
+      $ref: '#/BatchUsage'
+    request_counts:
+      $ref: '#/BatchRequestCounts'
+    error:
+      $ref: '#/BatchResultError'
     batch_id:
       type: string
     results:
@@ -273,6 +327,8 @@ BatchResultsResponse:
 BatchResultItem:
   type: object
   properties:
+    id:
+      type: string
     custom_id:
       type: string
     response:
@@ -307,3 +363,37 @@ BatchResultError:
       type: string
     message:
       type: string
+
+    type:
+      type: string
+    param:
+      type: string
+    error_type:
+      type: string
+
+BatchUsage:
+  allOf:
+    - $ref: './usage.yaml#/BifrostLLMUsage'
+    - type: object
+      properties:
+        is_byok:
+          type: boolean
+        cost_details:
+          type: object
+          additionalProperties:
+            type: number
+
+BatchDeleteResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    object:
+      type: string
+    status:
+      $ref: '#/BatchStatus'
+    deletion:
+      type: object
+      additionalProperties: true
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
