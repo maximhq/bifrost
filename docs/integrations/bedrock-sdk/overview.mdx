@@ -230,6 +230,9 @@ tool results retain the OpenAI-style Mistral format. Replies contain `choices[]`
 streaming replies remain AWS EventStream `chunk.bytes` payloads, with native
 `chat.completion.chunk` JSON inside each chunk.
 
+Requests using Bifrost's existing Converse-style `toolConfig` compatibility input
+continue through Converse and return the same native Mistral response shape.
+
 ```python
 import json
 

@@ -279700,9 +279700,8 @@
       ]
     },
     {
-      "name": "267. Mistral native invoke responses (#8939 / PR #8948)",
-      "description": "Regression for #8939. Messages-based Mistral Invoke requests use the existing Responses/Converse pipeline but must return native chat.completion choices rather than Anthropic content blocks. Covers /bedrock and the shared Bedrock routes under /langchain, /litellm, /pydanticai and /cursor. Pins unary choices, finish_reason and usage, and native chat.completion.chunk JSON inside AWS EventStream chunks with stable header identity and one terminal event. Regional model id explicitly selects us-west-2; no cross-region profile is used. The tests must fail on any unexpected status, including credential/region/model-access errors. Native OpenAI-style tool request parsing (#8940) is a separate issue and is not part of these text-only egress cases.",
-      "item": [
+      "name": "267. Mistral native Invoke responses and tools (#8939 / #8940)",
+      "description": "Regressions for #8939 / #8940. Messages-based Mistral Invoke requests use the native chat codec; existing Converse-shaped toolConfig compatibility inputs retain Responses/Converse routing. Both return native chat.completion choices and chat.completion.chunk JSON inside AWS EventStream chunks. Covers /bedrock and shared routes under /langchain, /litellm, /pydanticai and /cursor, including stable stream identity, mixed-tool ordinals, finish_reason and usage. Native tool cases cover auto/any/none, tool-result replay and actionable 400 validation errors. Regional model id explicitly selects us-west-2. Unexpected statuses, including credential/region/model-access errors, must fail.",      "item": [
         {
           "name": "267.1 Bedrock Mistral Large 3 /invoke returns native choices (Mistral native invoke) - #8939",
           "event": [

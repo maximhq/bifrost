@@ -314,8 +314,9 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 	// Messages → chat/responses path
 	if node, _ := sonic.Get(body, "messages"); node.Exists() {
 		// Mistral's native messages/tools already use the OpenAI chat dialect.
-		// Select its codec before the Converse decoder drops tool-call IDs.
-		if schemas.IsMistralModel(decodedModelID) {
+		// Select its codec before the Converse decoder drops tool-call IDs, but
+		// retain the existing Converse path for toolConfig compatibility input.
+		if schemas.IsMistralModel(decodedModelID) && !providerUtils.JSONFieldExists(body, "toolConfig") {
 			return schemas.ChatCompletionRequest
 		}
 		if raw, err := node.Raw(); err == nil && raw != "null" && raw != "[]" {
@@ -1421,7 +1422,40 @@ func ToBedrockInvokeChatResponse(response *schemas.BifrostChatResponse) interfac
 	if response == nil {
 		return nil
 	}
-	out := toBedrockInvokeMistralResponse(response)
+	out := toBedrockInvokeMistralResponse(&response.ID, response.Created, response.Model, nil)
+	if response.Object == "chat.completion.chunk" {
+		out.Object = response.Object
+	}
+	if response.Usage != nil {
+		out.Usage = &BedrockInvokeAI21Usage{PromptTokens: response.Usage.PromptTokens, CompletionTokens: response.Usage.CompletionTokens, TotalTokens: response.Usage.TotalTokens}
+	}
+	out.Choices = make([]BedrockInvokeMistralChoice, len(response.Choices))
+	for i, choice := range response.Choices {
+		native := &out.Choices[i]
+		native.Index, native.FinishReason, native.LogProbs = choice.Index, choice.FinishReason, choice.LogProbs
+		if choice.ChatStreamResponseChoice != nil {
+			native.Delta = choice.Delta
+		} else if choice.ChatNonStreamResponseChoice != nil && choice.Message != nil {
+			message := choice.Message
+			native.Message = &BedrockInvokeMistralMessage{Role: string(message.Role)}
+			if message.Content != nil {
+				if message.Content.ContentStr != nil {
+					native.Message.Content = *message.Content.ContentStr
+				} else {
+					var text strings.Builder
+					for _, block := range message.Content.ContentBlocks {
+						if block.Text != nil {
+							text.WriteString(*block.Text)
+						}
+					}
+					native.Message.Content = text.String()
+				}
+			}
+			if message.ChatAssistantMessage != nil {
+				native.Message.ToolCalls = message.ToolCalls
+			}
+		}
+	}
 	out.GuardrailAction, _ = response.ExtraParams[anthropic.BedrockInvokeGuardrailActionKey].(string)
 	out.Trace, _ = response.ExtraParams[anthropic.BedrockInvokeGuardrailTraceKey].(json.RawMessage)
 	return out

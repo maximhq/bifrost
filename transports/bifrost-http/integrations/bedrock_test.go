@@ -129,7 +129,7 @@ func TestBedrockInvokeMistralWire(t *testing.T) {
 					require.NotNil(t, route.RequestConverter)
 					httpCtx := &fasthttp.RequestCtx{}
 					httpCtx.SetUserValue("modelId", model)
-					httpCtx.Request.SetBodyString(`{"max_tokens":256,"temperature":0,"messages":[{"role":"user","content":"Hello"}]}`)
+					httpCtx.Request.SetBodyString(`{"max_tokens":256,"temperature":0,"messages":[{"role":"user","content":"Hello"}],"toolConfig":{}}`)
 					if stop == "tool_use" {
 						// Use the existing Converse-shaped toolConfig compatibility input.
 						// Native tools[].function ingress is independently tracked in #8940.
@@ -534,8 +534,8 @@ func TestBedrockMistralInvokeHTTP(t *testing.T) {
 					}
 					if none {
 						chunks = []string{
-							`{"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"sunny"}}]}`,
-							`{"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}`,
+							`{"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"sunny"}}]}`,
+							`{"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}`,
 						}
 					}
 					chunks[len(chunks)-1] = strings.TrimSuffix(chunks[len(chunks)-1], "}") + `,"amazon-bedrock-guardrailAction":"NONE","amazon-bedrock-trace":{"guardrail":{"inputAssessment":{}}}}`
@@ -602,13 +602,24 @@ func TestBedrockMistralInvokeHTTP(t *testing.T) {
 					var finish string
 					var usage int64
 					var toolName string
-					var action string
+					var action, id string
+					var created int64
 					for reader.Len() > 0 {
 						frame, err := decoder.Decode(reader, nil)
 						require.NoError(t, err)
 						require.Equal(t, "chunk", frame.Headers.Get(":event-type").String())
 						var chunk bedrock.BedrockInvokeStreamChunkEvent
 						require.NoError(t, sonic.Unmarshal(frame.Payload, &chunk))
+						if id == "" {
+							id = gjson.GetBytes(chunk.Bytes, "id").String()
+						}
+						if created == 0 {
+							created = gjson.GetBytes(chunk.Bytes, "created").Int()
+						}
+						require.NotEmpty(t, id)
+						require.Positive(t, created)
+						assert.Equal(t, id, gjson.GetBytes(chunk.Bytes, "id").String())
+						assert.Equal(t, created, gjson.GetBytes(chunk.Bytes, "created").Int())
 						if value := gjson.GetBytes(chunk.Bytes, "amazon-bedrock-guardrailAction").String(); value != "" {
 							action = value
 						}
