@@ -169,6 +169,23 @@ func TestTokenExchangeMinter(t *testing.T) {
 		})
 	}
 
+	// OpenAI nests its error under "error" instead of the RFC 6749 code/description pair; the
+	// reason must still reach the operator, scrubbed of what the request sent.
+	t.Run("an OpenAI-shaped error keeps its reason and drops the subject token", func(t *testing.T) {
+		es := newExchangeServer(t)
+		es.status = http.StatusUnauthorized
+		es.body = `{"error":{"message":"The provided service_account_id mapping does not match token attributes for secret-subject-jwt.","type":"invalid_request_error","param":null,"code":"invalid_grant"}}`
+		file := filepath.Join(t.TempDir(), "token")
+		writeSubjectToken(t, file, "secret-subject-jwt")
+		mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: es.URL, SubjectTokenFile: file, Encoding: schemas.OAuthRequestEncodingJSON}, authClient(t))
+
+		_, bErr := mint(context.Background(), nil)
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "invalid_grant The provided service_account_id mapping does not match token attributes")
+		assert.NotContains(t, bErr.Error.Message, "secret-subject-jwt")
+		assert.NotContains(t, bErr.Error.Message, "(no detail)")
+	})
+
 	for _, encoding := range []schemas.OAuthRequestEncoding{schemas.OAuthRequestEncodingForm, schemas.OAuthRequestEncodingJSON} {
 		t.Run(string(encoding)+": an endpoint error never echoes the subject token", func(t *testing.T) {
 			es := newExchangeServer(t)

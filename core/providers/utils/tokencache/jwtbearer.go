@@ -50,11 +50,33 @@ type JWTBearerConfig struct {
 
 // tokenResponse is the RFC 6749 §5.1 success shape, and the fields of §5.2 an error carries.
 type tokenResponse struct {
-	AccessToken      string `json:"access_token"`
-	TokenType        string `json:"token_type"`
-	ExpiresIn        int64  `json:"expires_in"`
-	Error            string `json:"error"`
-	ErrorDescription string `json:"error_description"`
+	AccessToken      string     `json:"access_token"`
+	TokenType        string     `json:"token_type"`
+	ExpiresIn        int64      `json:"expires_in"`
+	Error            tokenError `json:"error"`
+	ErrorDescription string     `json:"error_description"`
+}
+
+// tokenError is the error field of a token response: the RFC 6749 §5.2 code string, or the
+// {"code", "message"} object OpenAI's token endpoint returns, flattened to "code message".
+type tokenError string
+
+func (e *tokenError) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '{' {
+		var obj struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		if sonic.Unmarshal(data, &obj) == nil {
+			*e = tokenError(strings.TrimSpace(obj.Code + " " + obj.Message))
+		}
+		return nil
+	}
+	var code string
+	if sonic.Unmarshal(data, &code) == nil {
+		*e = tokenError(code)
+	}
+	return nil
 }
 
 // JWTBearerMinter returns a Minter that signs a fresh assertion and exchanges it on hc.
@@ -196,7 +218,7 @@ func postToken(ctx context.Context, hc *http.Client, tokenURL string, body []byt
 	var parsed tokenResponse
 	_ = sonic.Unmarshal(respBody, &parsed)
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		bErr := tokenEndpointError(tokenURL, resp.StatusCode, scrubSubmitted(strings.TrimSpace(parsed.Error+" "+parsed.ErrorDescription), submitted))
+		bErr := tokenEndpointError(tokenURL, resp.StatusCode, scrubSubmitted(strings.TrimSpace(string(parsed.Error)+" "+parsed.ErrorDescription), submitted))
 		providerUtils.ApplyRetryAfterHTTP(bErr, resp.Header)
 		return "", time.Time{}, bErr
 	}
