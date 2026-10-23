@@ -540,6 +540,102 @@ func TestLogsFilterByWarpTopic(t *testing.T) {
 	})
 }
 
+// A deleted log takes its place among the topics and its wait in the pool
+// with it, on every backend, so it neither counts toward a topic nor turns up
+// in a discovery. The other logs' rows stay.
+func TestLogDeletesTakeTheTopicRowsWithThem(t *testing.T) {
+	forEachWarpTopicStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		base := warpTopicTestTime()
+		for _, id := range []string{"gone-1", "gone-2", "kept"} {
+			require.NoError(t, store.Create(ctx, &Log{ID: id, Timestamp: base, CreatedAt: base, Object: "chat.completion", Status: "success"}))
+		}
+		require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []WarpTopicAssignment{
+			warpTestAssignment("gone-1", "billing", base), warpTestAssignment("gone-2", "", base), warpTestAssignment("kept", "billing", base),
+		}))
+		require.NoError(t, store.AddWarpTopicUnmatched(ctx, []WarpTopicUnmatched{
+			warpTestUnmatched("gone-2", "sig", base, []float32{1}), warpTestUnmatched("kept", "sig", base, []float32{1}),
+		}))
+
+		require.NoError(t, store.DeleteLogs(ctx, []string{"gone-1", "gone-2"}))
+		assignments, err := store.ListWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{}, 10)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"kept"}, warpAssignmentLogIDs(assignments))
+		pooled, err := store.ListWarpTopicUnmatched(ctx, "sig", 10)
+		require.NoError(t, err)
+		require.Len(t, pooled, 1)
+		assert.Equal(t, "kept", pooled[0].LogID)
+
+		require.NoError(t, store.DeleteLog(ctx, "kept"))
+		assignments, err = store.ListWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{}, 10)
+		require.NoError(t, err)
+		assert.Empty(t, assignments)
+		count, err := store.CountWarpTopicUnmatched(ctx, "sig")
+		require.NoError(t, err)
+		assert.Zero(t, count)
+	})
+}
+
+// On the SQL stores the log delete and its topic cleanup are one transaction:
+// a cleanup that fails leaves the logs in place rather than deleting them with
+// their topic rows stranded.
+func TestLogDeleteRollsBackWhenTopicCleanupFails(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "topics.db")}, testLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+	base := warpTopicTestTime()
+	for _, id := range []string{"one", "two", "three"} {
+		require.NoError(t, store.Create(ctx, &Log{ID: id, Timestamp: base, CreatedAt: base, Object: "chat.completion", Status: "success"}))
+	}
+	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []WarpTopicAssignment{warpTestAssignment("one", "billing", base)}))
+	// The assignment delete succeeds and the pool delete after it fails.
+	require.NoError(t, store.db.Exec("DROP TABLE warp_topic_unmatched").Error)
+
+	require.Error(t, store.DeleteLogs(ctx, []string{"one", "two"}))
+	require.Error(t, store.DeleteLog(ctx, "three"))
+
+	for _, id := range []string{"one", "two", "three"} {
+		_, err := store.FindByID(ctx, id)
+		require.NoError(t, err, "log %s must survive a failed cleanup", id)
+	}
+	assignments, err := store.ListWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{}, 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"one"}, warpAssignmentLogIDs(assignments), "the assignment delete rolls back with the rest")
+}
+
+// Once the embedding model changes, the pooled vectors of the old one mean
+// nothing and are dropped; topic rows can be deleted outright.
+func TestWarpTopicStoreDropsWhatAnotherModelLeft(t *testing.T) {
+	forEachWarpTopicStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		base := warpTopicTestTime()
+		require.NoError(t, store.AddWarpTopicUnmatched(ctx, []WarpTopicUnmatched{
+			warpTestUnmatched("old-1", "old-model", base, []float32{1}), warpTestUnmatched("old-2", "old-model", base, []float32{1}),
+			warpTestUnmatched("new-1", "new-model", base, []float32{1}),
+		}))
+		dropped, err := store.DeleteWarpTopicUnmatchedExcept(ctx, "new-model")
+		require.NoError(t, err)
+		assert.EqualValues(t, 2, dropped)
+		kept, err := store.ListWarpTopicUnmatched(ctx, "new-model", 10)
+		require.NoError(t, err)
+		require.Len(t, kept, 1)
+		gone, err := store.CountWarpTopicUnmatched(ctx, "old-model")
+		require.NoError(t, err)
+		assert.Zero(t, gone)
+
+		require.NoError(t, store.UpsertWarpTopics(ctx, []WarpTopic{
+			{ID: "t-1", Label: "One", EmbeddingSignature: "sig"}, {ID: "t-2", Label: "Two", EmbeddingSignature: "sig"}, {ID: "t-3", Label: "Three", EmbeddingSignature: "sig"},
+		}))
+		require.NoError(t, store.DeleteWarpTopics(ctx, []string{"t-1", "t-3"}))
+		rows, err := store.ListWarpTopics(ctx, WarpTopicFilter{})
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		assert.Equal(t, "t-2", rows[0].ID)
+		require.NoError(t, store.DeleteWarpTopics(ctx, nil), "nothing to delete is not an error")
+	})
+}
+
 func TestWarpTopicUnmatchedPool(t *testing.T) {
 	forEachWarpTopicStore(t, func(t *testing.T, store LogStore) {
 		ctx := context.Background()

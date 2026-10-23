@@ -267,6 +267,14 @@ type WarpTopicStore interface {
 	// DeleteWarpTopicUnmatchedBatch deletes up to batchSize pool rows whose log
 	// was created before cutoff, for the retention cleaner.
 	DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+	// DeleteWarpTopicUnmatchedExcept drops every pool row embedded by a model
+	// other than embeddingSignature: once the embedding model changes, those
+	// vectors mean nothing and would never be clustered.
+	DeleteWarpTopicUnmatchedExcept(ctx context.Context, embeddingSignature string) (deletedCount int64, err error)
+
+	// DeleteWarpTopics removes topic and theme rows outright, for the upkeep
+	// that prunes rows retired long enough ago that nothing reads them.
+	DeleteWarpTopics(ctx context.Context, ids []string) error
 
 	// ListLogsForWarpTopics returns the assignment columns of the given logs:
 	// everything an assignment copies from its log, with TopicID, Similarity
@@ -671,6 +679,40 @@ func (s *RDBLogStore) PruneWarpTopicUnmatched(ctx context.Context, olderThan tim
 // created before cutoff, oldest first.
 func (s *RDBLogStore) DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
 	return s.deleteExpiredBatchByKey(ctx, "warp_topic_unmatched", "log_id", "created_at", cutoff, batchSize)
+}
+
+// DeleteWarpTopicUnmatchedExcept drops the pool rows of every other embedding
+// model.
+func (s *RDBLogStore) DeleteWarpTopicUnmatchedExcept(ctx context.Context, embeddingSignature string) (int64, error) {
+	result := s.db.WithContext(ctx).Where("embedding_signature <> ?", embeddingSignature).Delete(&WarpTopicUnmatched{})
+	return result.RowsAffected, result.Error
+}
+
+// DeleteWarpTopics removes topic and theme rows outright.
+func (s *RDBLogStore) DeleteWarpTopics(ctx context.Context, ids []string) error {
+	for chunk := range slices.Chunk(ids, warpTopicWriteBatch) {
+		if err := s.db.WithContext(ctx).Where("id IN ?", chunk).Delete(&WarpTopic{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteWarpTopicRowsForLogs removes what the topic tables hold about logs
+// that are being deleted: their place among the topics, and their wait in
+// the pool. Called by the log deletes, so a deleted request neither counts
+// toward a topic nor turns up in a discovery. tx is the transaction the log
+// delete runs in, so a failure here rolls the log delete back too.
+func deleteWarpTopicRowsForLogs(tx *gorm.DB, ids []string) error {
+	for chunk := range slices.Chunk(ids, warpTopicWriteBatch) {
+		if err := tx.Where("log_id IN ?", chunk).Delete(&WarpTopicAssignment{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("log_id IN ?", chunk).Delete(&WarpTopicUnmatched{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // WarpTopicAssignmentFromLog projects a log onto the assignment columns, for a

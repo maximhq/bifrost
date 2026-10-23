@@ -83,6 +83,18 @@ async function mockWarpTopics(page: Page, mock: TopicsMock) {
   await page.route('**/api/warp/log-index/backfill/status**', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(idle) }),
   )
+  await page.route('**/api/warp/log-index/status', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        state: 'ready',
+        vector_store_connected: true,
+        embedding_configured: true,
+        topics: { active_topics: 95, themes: 12, pooled: 340, requests_24h: 1000, unmatched_24h: 80, unmatched_share_24h: 0.08 },
+      }),
+    }),
+  )
   await page.route('**/api/warp/log-index/topics/status**', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mock.status()) }),
   )
@@ -114,6 +126,11 @@ test.describe('Warp topic clusters', () => {
     // Counted in requests: every model call is one, so "conversations" would overstate it.
     await expect(status).toContainText('7015 requests read')
     await expect(status).toContainText('95 topics written · 12 themes')
+    // Live filing, read from the index status rather than the run.
+    const health = page.getByTestId('warp-topics-health')
+    await expect(health).toContainText('95 active topics in 12 themes')
+    await expect(health).toContainText('340 requests waiting for a topic')
+    await expect(health).toContainText("8% of the last day's 1000 requests matched no topic")
     await expect(status).toContainText('Merged 2 near-duplicate cluster(s)')
     await expect(status).not.toContainText('fell back')
     await expect(status).not.toContainText('Latest error')

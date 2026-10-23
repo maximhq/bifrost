@@ -124,8 +124,18 @@ func newTestWarpHandler(store *recordingWarpStore) *WarpHandler {
 const validWarpConfigJSON = `{"enabled":true,"provider":"openai","model":"gpt-4o","embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`
 
 // adminCtx builds a request context that passes the local-admin gate.
-func adminCtx(body string) *fasthttp.RequestCtx {
+// requestCtx is a request context with a server behind it, as fasthttp's
+// handlers get one. A bare RequestCtx has no server, and its Done() - which
+// the store's connection pool consults - dereferences nil; the panic then
+// unwinds through the pool's own lock and the test's cleanup hangs on it.
+func requestCtx() *fasthttp.RequestCtx {
 	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&fasthttp.Request{}, nil, nil)
+	return ctx
+}
+
+func adminCtx(body string) *fasthttp.RequestCtx {
+	ctx := requestCtx()
 	ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
 	ctx.Request.SetBodyString(body)
 	return ctx
@@ -264,6 +274,8 @@ func TestWarpLogIndexStatusSummarisesState(t *testing.T) {
 	body := string(ctx.Response.Body())
 	require.Contains(t, body, `"state":"ready"`)
 	require.Contains(t, body, `"vector_store_connected":true`)
+	// Live filing comes with a usable index: nothing built, nothing filed.
+	require.Contains(t, body, `"topics":{"active_topics":0,"themes":0,"pooled":0,"requests_24h":0,"unmatched_24h":0,"unmatched_share_24h":0}`)
 
 	jobs.latest = &tables.TableSidekiqJob{ID: "job-f", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusFailed, LastError: "no keys found", Metadata: `{"scanned":100,"failed":100,"total":5000}`}
 	ctx = adminCtx("")
@@ -937,7 +949,7 @@ func TestWarpLogIndexStatusHidesProviderErrorFromNonAdmins(t *testing.T) {
 	}
 
 	// No local-admin marker on the context.
-	ctx := &fasthttp.RequestCtx{}
+	ctx := requestCtx()
 	handler.logIndexStatus(ctx)
 	body := string(ctx.Response.Body())
 	require.Contains(t, body, `"state":"failed"`, "the state itself is not sensitive")
@@ -955,7 +967,7 @@ func TestWarpLogIndexStatusHidesProviderErrorFromNonAdmins(t *testing.T) {
 // leaves it for an SSO caller it authorized: a user and role ID, and no
 // local-admin marker.
 func rbacAdminCtx(body string) *fasthttp.RequestCtx {
-	ctx := &fasthttp.RequestCtx{}
+	ctx := requestCtx()
 	ctx.SetUserValue(schemas.BifrostContextKeyUserID, "sso-admin")
 	ctx.SetUserValue(schemas.BifrostContextKeyUserRoleID, uint(1))
 	ctx.Request.SetBodyString(body)

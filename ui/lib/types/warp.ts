@@ -208,9 +208,23 @@ export interface WarpConversationDetail extends WarpConversation {
  */
 export type WarpLogIndexState = "unavailable" | "not_configured" | "indexing" | "failed" | "ready";
 
+/** How live topic filing is doing, from GET /api/warp/log-index/status. */
+export interface WarpTopicHealth {
+	active_topics: number;
+	themes: number;
+	/** Requests waiting in the pool for a topic to be discovered. */
+	pooled: number;
+	requests_24h: number;
+	unmatched_24h: number;
+	/** unmatched_24h over requests_24h; 0 when nothing was filed. */
+	unmatched_share_24h: number;
+}
+
 export interface WarpLogIndexStatus {
 	state: WarpLogIndexState;
 	vector_store_connected: boolean;
 	embedding_configured: boolean;
 	backfill?: WarpBackfillStatus;
+	/** Present when the index is usable and the log store keeps topics. */
+	topics?: WarpTopicHealth;
 }

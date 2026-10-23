@@ -86,8 +86,10 @@ type Service struct {
 	topicJobs      TopicJobQueue
 	// catalog prices Warp's own usage. Nil is supported: the panel then reports
 	// tokens without a cost, rather than reporting a cost of zero.
-	catalog      *modelcatalog.ModelCatalog
-	vectorStore  vectorstore.VectorStore
+	catalog     *modelcatalog.ModelCatalog
+	vectorStore vectorstore.VectorStore
+	// logRetention reports the logs' retention in days, for the vector sweep.
+	logRetention func() int
 	embed        EmbeddingExecutor
 	indexer      *LogIndexer
 	semantic     *SemanticSearcher
