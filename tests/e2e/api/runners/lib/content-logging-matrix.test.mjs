@@ -199,6 +199,19 @@ test("raw-override CLI fails visibly on GET and PUT errors", () => {
 	}
 });
 
+test("auth CLI preserves effective retention and authenticated account settings", () => {
+	for (const mode of ["enable", "disable"]) {
+		for (const days of [undefined, null, 0, -1, 1, 30, 365, 1000]) {
+			assertRetentionCliSave("set-auth-config.mjs", mode, days);
+		}
+	}
+	for (const method of ["GET", "PUT"]) {
+		const result = runConfigScript("set-auth-config.mjs", "enable", { client_config: { log_retention_days: 30 }, auth_config: { is_enabled: false } }, method);
+		assert.strictEqual(result.status, 1);
+		assert.match(result.stderr, /failed with 500: fixture failure/);
+		assert.deepStrictEqual(result.calls.map((call) => call.method), method === "GET" ? ["GET"] : ["GET", "PUT"]);
+	}
+});
 
 test("raw log row: disabled content leaves the marker in no column", () => {
 	const m = "m0123456789abcdef";

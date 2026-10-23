@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { normaliseRetentionDays } from "./lib/content-logging-matrix.mjs";
+
 const baseURL = (process.env.BIFROST_E2E_BASE_URL || process.env.BIFROST_BASE_URL || "http://localhost:8080").replace(/\/+$/, "");
 const mode = process.argv[2];
 const username = process.env.BIFROST_E2E_ADMIN_USERNAME || "admin";
@@ -94,11 +96,9 @@ if (mode === "enable" && adminExists) {
   authConfig.current_password = password;
 }
 
-// The server reports log_retention_days:0 by default but rejects that on write
-// (it must be >= 1), so a straight round-trip of client_config would 400. Coerce
-// the invalid default so enabling/disabling auth through this PUT succeeds.
-if (current.client_config && !(current.client_config.log_retention_days >= 1)) {
-  current.client_config.log_retention_days = 1;
+// PUT rejects an unset retention; preserve the cleaner's effective default.
+if (current.client_config) {
+  current.client_config.log_retention_days = normaliseRetentionDays(current.client_config.log_retention_days);
 }
 
 await request("PUT", "/api/config", {
