@@ -4074,6 +4074,107 @@ func responseHeadersTestConfig(t *testing.T, plugins ...schemas.BasePlugin) *lib
 	return config
 }
 
+// TestTransportRealtimeTurnMetadata verifies the actual HTTP plugin middleware
+// exposes opt-in metadata to the session snapshot while excluding ordinary values.
+func TestTransportRealtimeTurnMetadata(t *testing.T) {
+	type metadataKey uint8
+	const userKey metadataKey = 0
+	const requestOnlyKey metadataKey = 1
+	const preAuthKey metadataKey = 2
+	preAuthPlugin := &fakePreAuthPlugin{
+		name: "realtime-pre-auth-metadata",
+		hook: func(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			ctx.SetValueForRealtimeTurns(preAuthKey, "pre-auth")
+			return nil, nil
+		},
+	}
+	plugin := &fakeResponseHeadersPlugin{
+		name: "realtime-metadata",
+		hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+			return nil
+		},
+		preHook: func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			ctx.SetValueForRealtimeTurns(userKey, req.CaseInsensitiveHeaderLookup("X-Example-User-ID"))
+			ctx.SetValue(requestOnlyKey, "request-only")
+			return nil, nil
+		},
+	}
+	var snapshot map[any]any
+	config := responseHeadersTestConfig(t, preAuthPlugin, plugin)
+	handler := TransportPreAuthInterceptorMiddleware(config)(TransportInterceptorMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		snapshot = snapshotRealtimeMiddlewareValues(ctx)
+		requestCtx, requestCancel := lib.ConvertToBifrostContext(ctx, testWSHandlerStore{})
+		defer requestCancel()
+		relay, cancel := newRealtimeRelayContext(requestCtx)
+		defer cancel()
+		if relay.Value(userKey) != "test-alice" || relay.Value(preAuthKey) != "pre-auth" || relay.Value(requestOnlyKey) != nil {
+			t.Fatal("WebRTC relay lost opt-in metadata or inherited request-only values")
+		}
+	}))
+	ctx := preAuthTestCtx()
+	ctx.Request.SetRequestURI("/v1/realtime?model=openai/test-model")
+	ctx.Request.Header.Set("X-Example-User-ID", "test-alice")
+	handler(ctx)
+	if snapshot[userKey] != "test-alice" || snapshot[preAuthKey] != "pre-auth" || snapshot[requestOnlyKey] != nil {
+		t.Fatalf("session snapshot = %v", snapshot)
+	}
+}
+
+// TestTransportRealtimeTurnMetadataLaterWrites reconciles pre-auth opt-ins with later writes and clears.
+func TestTransportRealtimeTurnMetadataLaterWrites(t *testing.T) {
+	type metadataKey uint8
+	const userKey metadataKey = 0
+	const requestOnlyKey metadataKey = 1
+	for _, mode := range []string{"overwrite", "nil", "clear", "untouched"} {
+		t.Run(mode, func(t *testing.T) {
+			preAuth := &fakePreAuthPlugin{name: "mark", hook: func(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+				ctx.SetValueForRealtimeTurns(userKey, "pre-auth")
+				return nil, nil
+			}}
+			plugin := &fakeResponseHeadersPlugin{name: "update", hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+				return nil
+			}, preHook: func(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+				switch mode {
+				case "overwrite":
+					ctx.SetValue(userKey, "transport")
+				case "nil":
+					ctx.SetValue(userKey, nil)
+				case "clear":
+					ctx.ClearValue(userKey)
+				}
+				ctx.SetValue(requestOnlyKey, "request-only")
+				return nil, nil
+			}}
+			config := responseHeadersTestConfig(t, preAuth, plugin)
+			called := false
+			handler := TransportPreAuthInterceptorMiddleware(config)(TransportInterceptorMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+				called = true
+				var want any
+				if mode == "overwrite" {
+					want = "transport"
+				} else if mode == "untouched" {
+					want = "pre-auth"
+				}
+				snapshot := snapshotRealtimeMiddlewareValues(ctx)
+				value, exists := snapshot[userKey]
+				assert.True(t, exists)
+				assert.Equal(t, want, value)
+				_, exists = snapshot[requestOnlyKey]
+				assert.False(t, exists, "ordinary new keys must stay request-local")
+				requestCtx, cancel := lib.ConvertToBifrostContext(ctx, testWSHandlerStore{})
+				defer cancel()
+				relay, relayCancel := newRealtimeRelayContext(requestCtx)
+				defer relayCancel()
+				assert.Equal(t, want, relay.Value(userKey))
+			}))
+			ctx := preAuthTestCtx()
+			ctx.Request.SetRequestURI("/v1/realtime?model=openai/test-model")
+			handler(ctx)
+			assert.True(t, called)
+		})
+	}
+}
+
 func TestTransportResponseHeadersHook_NonStreaming(t *testing.T) {
 	var gotStatus int
 	var gotPath string

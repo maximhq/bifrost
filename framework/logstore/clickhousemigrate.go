@@ -554,6 +554,19 @@ func migrationClickHouseWarpConversationTables(ctx context.Context, db *gorm.DB,
 	return clickhouseReconcileColumns(ctx, db, &WarpMessage{}, "warp_messages", cluster, logger)
 }
 
+// migrationClickHouseUserAgentMappingsTable creates user_agent_mappings, which the SQL stores
+// create in migrationRecreateMatViewsWithUserAgentColumn.
+func migrationClickHouseUserAgentMappingsTable(ctx context.Context, db *gorm.DB, cluster string, _ int, logger schemas.Logger) error {
+	logger.Info("[logstore] clickhouse: creating table user_agent_mappings")
+	if err := clickhouseCreateTable(ctx, db, &UserAgentMapping{}, chTableOpts{
+		table:   "user_agent_mappings",
+		orderBy: "(id)",
+	}, cluster); err != nil {
+		return fmt.Errorf("clickhouse: create user_agent_mappings table: %w", err)
+	}
+	return clickhouseReconcileColumns(ctx, db, &UserAgentMapping{}, "user_agent_mappings", cluster, logger)
+}
+
 // clickhouseMigrationSteps lists the per-table migrations in execution order,
 // mirroring logstoreMigrationSteps for the SQL stores.
 var clickhouseMigrationSteps = []clickhouseMigrationStep{
@@ -563,6 +576,7 @@ var clickhouseMigrationSteps = []clickhouseMigrationStep{
 	migrationClickHouseAsyncJobsTable,
 	migrationClickHouseWebhookDeliveriesTable,
 	migrationClickHouseWarpConversationTables,
+	migrationClickHouseUserAgentMappingsTable,
 }
 
 // triggerClickHouseMigrations runs all registered ClickHouse table migrations

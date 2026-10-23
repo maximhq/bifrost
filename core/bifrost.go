@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/bedrockmantle"
+	"github.com/maximhq/bifrost/core/providers/byteplus"
 	"github.com/maximhq/bifrost/core/providers/cerebras"
 	"github.com/maximhq/bifrost/core/providers/cloudflare"
 	"github.com/maximhq/bifrost/core/providers/cohere"
@@ -35,6 +36,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/githubcopilot"
 	"github.com/maximhq/bifrost/core/providers/groq"
 	"github.com/maximhq/bifrost/core/providers/huggingface"
+	"github.com/maximhq/bifrost/core/providers/minimax"
 	"github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
@@ -5033,6 +5035,10 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return deepseek.NewDeepSeekProvider(config, bifrost.logger)
 	case schemas.Wafer:
 		return wafer.NewWaferProvider(config, bifrost.logger)
+	case schemas.MiniMax:
+		return minimax.NewMiniMaxProvider(config, bifrost.logger)
+	case schemas.BytePlus:
+		return byteplus.NewBytePlusProvider(config, bifrost.logger)
 	case schemas.Cloudflare:
 		return cloudflare.NewCloudflareProvider(config, bifrost.logger)
 	case schemas.Gemini:

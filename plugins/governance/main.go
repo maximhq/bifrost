@@ -1765,11 +1765,14 @@ func (p *GovernancePlugin) defaultAgentPermit(identity schemas.Identity) schemas
 // PreA2AHook is the Agent Gateway governance decision point. It authorizes each decoded operation
 // from the request's settled grant before any upstream effect. Anonymous requests pass through;
 // identified requests resolve access through the same path as every other governed request.
+// Identified is the test inference applies: a presented credential or a known user. An
+// authenticating layer can name the user without recording what it verified, and that user is
+// governed rather than passed through as anonymous.
 func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
 	if req == nil {
 		return req, nil, nil
 	}
-	if ctx == nil || ctx.Grant() == nil || ctx.Grant().Identity() == nil || !ctx.Grant().Identity().Presented() {
+	if ctx == nil || !presentedGrantBearingCredential(ctx) {
 		return req, nil, nil
 	}
 

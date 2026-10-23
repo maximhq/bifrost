@@ -23,6 +23,62 @@ const stubClaudeReasoningStream = `data: {"model":"m","choices":[{"delta":{"role
 
 const stubClaudeReasoningResponse = `{"model":"m","choices":[{"message":{"role":"assistant","content":[{"type":"reasoning","summary":[{"type":"summary_text","text":"17 * 23 = 391","signature":"sig-1"}]},{"type":"text","text":"391"}]},"index":0,"finish_reason":"stop"}],"usage":{"completion_tokens":9,"prompt_tokens":4,"total_tokens":13},"object":"chat.completion","id":"msg-1","created":1}`
 
+// TestDatabricksAdaptiveClaudeEffortOverTheWire pins the live gap on adaptive-only Claude
+// endpoints: reasoning_effort became {"type":"adaptive"} with the label discarded, so "max" and
+// "low" produced the same request. The label must reach Databricks as output_config.effort.
+func TestDatabricksAdaptiveClaudeEffortOverTheWire(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var gotBody map[string]any
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		mu.Lock()
+		gotBody = body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(stubClaudeReasoningResponse))
+	})
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	response, bErr := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+		Provider: schemas.Databricks,
+		Model:    "databricks-claude-opus-4-8",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("17*23?")}}},
+		Params: &schemas.ChatParameters{
+			Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("max")},
+		},
+	})
+	if bErr != nil || response == nil {
+		t.Fatalf("ChatCompletion failed: %v", bErr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if _, exists := gotBody["reasoning_effort"]; exists {
+		t.Errorf("reasoning_effort reached Databricks: %#v", gotBody["reasoning_effort"])
+	}
+	thinking, _ := gotBody["thinking"].(map[string]any)
+	if thinking["type"] != "adaptive" {
+		t.Errorf("thinking: got %#v, want adaptive", gotBody["thinking"])
+	}
+	outputConfig, _ := gotBody["output_config"].(map[string]any)
+	if outputConfig["effort"] != "max" {
+		t.Errorf("output_config: got %#v, want effort max", gotBody["output_config"])
+	}
+}
+
 // TestDatabricksClaudeReasoningOverTheWire reproduces the live gap: a reasoning request to a
 // Claude endpoint used to lose reasoning entirely (reasoning_effort dropped, nothing sent in
 // its place) and the endpoint's reasoning blocks were not readable. Now the request carries a
@@ -77,8 +133,8 @@ func TestDatabricksClaudeReasoningOverTheWire(t *testing.T) {
 		if thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(1500) {
 			t.Errorf("thinking: got %#v, want enabled with a 1500 budget", gotBody["thinking"])
 		}
-		if ceiling, _ := gotBody["max_completion_tokens"].(float64); ceiling <= 1500 {
-			t.Errorf("max_completion_tokens: got %v, want above the budget", gotBody["max_completion_tokens"])
+		if ceiling, _ := gotBody["max_tokens"].(float64); ceiling <= 1500 {
+			t.Errorf("max_tokens: got %v, want above the budget", gotBody["max_tokens"])
 		}
 	}
 

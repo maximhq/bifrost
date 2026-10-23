@@ -280,23 +280,23 @@ export const DefaultDatabricksKeyConfig: DatabricksKeyConfig = {
 	_auth_type: "pat",
 } as const satisfies Required<DatabricksKeyConfig>;
 
-// GithubCopilotKeyConfig matching Go's schemas.GithubCopilotKeyConfig
-export interface GithubCopilotKeyConfig {
-	app_id: SecretVar;
-	installation_id: SecretVar;
-	repository_id: SecretVar;
-	private_key: SecretVar;
-	github_domain?: SecretVar;
+// GithubCopilotDeviceCode is what the operator enters on github.com to finish signing in.
+export interface GithubCopilotDeviceCode {
+	device_code: string;
+	user_code: string;
+	verification_uri: string;
+	expires_in: number;
+	interval: number;
 }
 
-// Default GithubCopilotKeyConfig
-export const DefaultGithubCopilotKeyConfig: GithubCopilotKeyConfig = {
-	app_id: { value: "", ref: "" },
-	installation_id: { value: "", ref: "" },
-	repository_id: { value: "", ref: "" },
-	private_key: { value: "", ref: "" },
-	github_domain: { value: "", ref: "" },
-} as const satisfies Required<GithubCopilotKeyConfig>;
+// GithubCopilotSignInPollResult is one poll of the device flow. token is set when status is
+// complete; the key form saves it as the key's value.
+export interface GithubCopilotSignInPollResult {
+	status: "pending" | "complete" | "expired" | "denied";
+	interval?: number;
+	token?: string;
+	login?: string;
+}
 
 // OAuthKeyConfig matching Go's schemas.OAuthKeyConfig. Honoured by openai and by custom
 // providers whose base_provider_type is openai: with an empty key value, Bifrost mints the
@@ -375,7 +375,6 @@ export interface ModelProviderKey {
 	ollama_key_config?: OllamaKeyConfig;
 	sgl_key_config?: SGLKeyConfig;
 	databricks_key_config?: DatabricksKeyConfig;
-	github_copilot_key_config?: GithubCopilotKeyConfig;
 	cloudflare_key_config?: CloudflareKeyConfig;
 	oauth_key_config?: OAuthKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
@@ -781,6 +780,7 @@ export interface BifrostConfig {
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
 	env_label?: string;
+	disable_onboarding?: boolean;
 	agent_gateway?: {
 		grpc_base_domain: string;
 		grpc_port: number;

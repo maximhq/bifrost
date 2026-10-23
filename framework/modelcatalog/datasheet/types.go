@@ -605,6 +605,24 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 		}
 	}
 
+	// A row with no model_parameters list (93 Bedrock rows in the 2026-10-20
+	// datasheet, e.g. apac.anthropic.claude-sonnet-4-6) declares no parameter
+	// surface at all, so the loop below contributes nothing and the allowlist
+	// shrinks to the capability flags. compat's should_drop_params then strips
+	// max_tokens/temperature/top_p and the provider silently substitutes its
+	// own defaults (bedrock fills MaxTokens from the model default). An
+	// undisclosed parameter list means "unknown", not "unsupported": keep the
+	// universally-supported sampling and token-limit params in the allowlist.
+	// An explicit empty list ([]) is a declared empty surface and gets no defaults.
+	if parsed.ModelParameters == nil {
+		addParam("temperature")
+		addParam("top_p")
+		addParam("stop")
+		addParam("max_tokens")
+		addParam("max_completion_tokens")
+		addParam("max_output_tokens")
+	}
+
 	for _, mp := range parsed.ModelParameters {
 		switch mp.ID {
 		case "reasoning_effort", "reasoning_summary":

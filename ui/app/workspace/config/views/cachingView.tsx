@@ -86,8 +86,10 @@ const buildPayload = (config: EditorCacheConfig, mode: CacheMode): CacheConfig =
 		cache_by_model: config.cache_by_model,
 		cache_by_provider: config.cache_by_provider,
 		disable_identity_scoping: config.disable_identity_scoping ?? false,
-		vector_store_namespace: config.vector_store_namespace?.trim() || undefined,
-		default_cache_key: config.default_cache_key?.trim() || undefined,
+		// Sent as "" (not undefined) when blank so the server-side merge clears
+		// a previously saved value instead of keeping it.
+		vector_store_namespace: config.vector_store_namespace?.trim() ?? "",
+		default_cache_key: config.default_cache_key?.trim() ?? "",
 	};
 	if (mode === "direct") {
 		return { ...base, provider: "", embedding_model: "", dimension: 1 } as CacheConfig;
@@ -527,12 +529,12 @@ export default function CachingView() {
 												id="vector_store_namespace"
 												data-testid="caching-vector-store-namespace-input"
 												type="text"
-												placeholder="BifrostLocalCachePlugin"
+												placeholder="BifrostSemanticCachePlugin"
 												value={cacheConfig.vector_store_namespace ?? ""}
 												onChange={(e) => updateLocal({ vector_store_namespace: e.target.value })}
 											/>
 											<p className="text-muted-foreground text-xs">
-												Bucket/index name where cache entries live. Leave blank to use the default (<code>BifrostLocalCachePlugin</code>).
+												Bucket/index name where cache entries live. Leave blank to use the default (<code>BifrostSemanticCachePlugin</code>).
 												Changing this points the plugin at a different (possibly empty) bucket. Old entries are not deleted, they just stop
 												being queried.
 											</p>

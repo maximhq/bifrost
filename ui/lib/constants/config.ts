@@ -66,6 +66,8 @@ export const ModelPlaceholders = {
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
+	minimax: "e.g. MiniMax-M3, image-01, MiniMax-H3",
+	byteplus: "e.g. deepseek-v4-flash-260425, dola-seedream-5-0-pro-260628, dreamina-seedance-2-5-260628",
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
 	cloudflare: "e.g. @cf/meta/llama-4-scout-17b-16e-instruct, @cf/baai/bge-large-en-v1.5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
@@ -103,9 +105,11 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	fireworks: true,
 	sarvam: true,
 	wafer: true,
+	minimax: true,
+	byteplus: true,
 	databricks: false,
 	cloudflare: true,
-	"github-copilot": false,
+	"github-copilot": true,
 	typesafe: true,
 };
 

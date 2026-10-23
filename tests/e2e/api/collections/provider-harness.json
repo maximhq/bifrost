@@ -321,7 +321,7 @@
           "  // JSON or multipart body, or from the path on the Gemini-shaped routes, up to the last colon since",
           "  // a Bedrock id can contain one. Only standard provider names count as a prefix: a namespaced",
           "  // model such as meta-llama/Llama-3.1-8B names no provider, and a custom provider is not known here.",
-          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe'];",
+          "  var __standard = ['openai', 'azure', 'anthropic', 'bedrock', 'bedrock_mantle', 'cohere', 'vertex', 'mistral', 'ollama', 'opencode-go', 'opencode-zen', 'groq', 'sgl', 'parasail', 'perplexity', 'cerebras', 'deepseek', 'gemini', 'openrouter', 'elevenlabs', 'huggingface', 'nebius', 'xai', 'replicate', 'vllm', 'runway', 'runware', 'fireworks', 'sarvam', 'wafer', 'github-copilot', 'databricks', 'cloudflare', 'typesafe', 'minimax', 'byteplus'];",
           "  var __model = null;",
           "  try {",
           "    var __raw = pm.request && pm.request.body && pm.request.body.mode === 'raw' ? pm.request.body.raw : '';",
@@ -142208,6 +142208,159 @@
           }
         },
         {
+          "name": "databricks/databricks-claude-opus-4-8 /v1/chat/completions reasoning_effort becomes output_config.effort on adaptive-only Claude",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('adaptive-only Claude carries the effort label as output_config.effort', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  var raw = json.extra_fields && json.extra_fields.raw_request;",
+                  "  pm.expect(raw, 'raw request missing; x-bf-send-back-raw-request was not honoured: ' + body).to.exist;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw.thinking && raw.thinking.type, 'thinking not sent as adaptive: ' + JSON.stringify(raw.thinking)).to.equal('adaptive');",
+                  "  pm.expect(raw.output_config && raw.output_config.effort, 'effort label dropped, so max and low send the same request: ' + JSON.stringify(raw.output_config)).to.equal('max');",
+                  "  pm.expect(raw.reasoning_effort, 'reasoning_effort must not reach Databricks').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-claude-opus-4-8\", \"max_tokens\": 1024, \"reasoning_effort\": \"max\", \"messages\": [{\"role\": \"user\", \"content\": \"What is 17*23? Answer with just the number.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-meta-llama-3-3-70b-instruct /v1/chat/completions max_completion_tokens is sent as max_tokens",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Databricks Llama accepts the output ceiling as max_tokens', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.choices && json.choices[0] && json.choices[0].message, 'no chat completion message in a 200 response: ' + pm.response.text()).to.exist;",
+                  "  var raw = json.extra_fields && json.extra_fields.raw_request;",
+                  "  pm.expect(raw, 'raw request missing; x-bf-send-back-raw-request was not honoured: ' + pm.response.text()).to.exist;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw.max_completion_tokens, 'max_completion_tokens reached Databricks, Llama and gpt-oss endpoints reject it').to.be.undefined;",
+                  "  pm.expect(raw.max_tokens, 'max_tokens not sent: ' + JSON.stringify(raw)).to.equal(64);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-meta-llama-3-3-70b-instruct\", \"max_completion_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": \"Say hi in five words.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "databricks/databricks-gpt-oss-120b /v1/responses falls back to chat with max_tokens",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Databricks gpt-oss accepts the Responses fallback ceiling as max_tokens', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.output, 'no Responses output in a 200 response: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  var raw = json.extra_fields && json.extra_fields.raw_request;",
+                  "  pm.expect(raw, 'raw request missing; x-bf-send-back-raw-request was not honoured: ' + pm.response.text()).to.exist;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  pm.expect(raw.max_completion_tokens, 'max_completion_tokens reached Databricks, Llama and gpt-oss endpoints reject it').to.be.undefined;",
+                  "  pm.expect(raw.max_tokens, 'max_tokens not sent: ' + JSON.stringify(raw)).to.equal(64);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/databricks-gpt-oss-120b\", \"max_output_tokens\": 64, \"input\": \"Say hi in five words.\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
           "name": "databricks/databricks-gte-large-en /v1/embeddings",
           "event": [
             {
@@ -276765,11 +276918,2547 @@
       ]
     },
     {
-      "name": "263. Azure content-filter errors carry the categories that blocked the prompt (azure content filter errors)",
+      "name": "263. Bedrock tool result renders the same as a string or one text block (tool result rendering)",
+      "description": "On the chat-completions path, convertToolMessages sent a tool message whose content was a string through tryParseJSONIntoContentBlock (JSON output became a Converse json block) but always sent the same text as a text block when the content was a one-element array of text blocks. OpenAI-compatible clients that set the cache breakpoint by sending only the last message as an array (so it can carry cache_control) send each tool result as a block on the turn it is last and as a string on later turns, so the rendering flipped from text to json between turns, the bytes before the earlier checkpoint changed, and Bedrock prompt caching missed on every turn of an agent loop. Case 1 pins the one-block form with cache_control: the toolResult carries a json object and the cachePoint still trails it (red before the fix: the content was {\"text\": ...}). Case 2 pins the string form producing the same json (parity baseline). Case 3 pins /v1/responses, whose function_call_output blocks already went through the same helper, so both neutral routes render identically. Each case reads the outbound Converse body via x-bf-send-back-raw-request.",
+      "item": [
+        {
+          "name": "263.1 bedrock/claude-haiku-4-5 /v1/chat/completions one text block tool result with cache_control renders as json then cachePoint (tool result rendering)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// A tool result must render the same whether the client sent it as a string or as one",
+                  "// text block: clients that mark only the last message with cache_control send it as a",
+                  "// block on that turn and as a string afterwards, so a text/json flip breaks the cached prefix.",
+                  "pm.test('263.1 bedrock/claude-haiku-4-5 /v1/chat/completions one text block tool result with cache_control renders as json then cachePoint (tool result rendering): request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('263.1 bedrock/claude-haiku-4-5 /v1/chat/completions one text block tool result with cache_control renders as json then cachePoint (tool result rendering): toolResult carries the output as a json object', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var content = null; var idx = -1;",
+                  "  (rr.messages || []).forEach(function (m) { (m.content || []).forEach(function (b, i) { if (b.toolResult && idx < 0) { content = m.content; idx = i; } }); });",
+                  "  pm.expect(idx, 'no toolResult block reached Converse: ' + wire.slice(0, 600)).to.be.at.least(0);",
+                  "  var inner = content[idx].toolResult.content || [];",
+                  "  pm.expect(inner.length, 'toolResult content: ' + JSON.stringify(inner)).to.eql(1);",
+                  "  pm.expect(inner[0].text, 'tool output was sent as a text block instead of json: ' + JSON.stringify(inner)).to.be.undefined;",
+                  "  pm.expect(inner[0].json, 'toolResult json altered: ' + JSON.stringify(inner)).to.eql({\"files\":[\"a\",\"b\"],\"n\":2});",
+                  "  var next = content[idx + 1] || {};",
+                  "  pm.expect(next.cachePoint, 'cache_control on the tool block was dropped - no cachePoint after the toolResult: ' + JSON.stringify(content).slice(0, 600)).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"list_files\",\n        \"description\": \"Lists files in the workspace\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {}\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call list_files, then reply with only the number of files.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_list_files_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"list_files\",\n            \"arguments\": \"{}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_list_files_1\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{\\\"files\\\":[\\\"a\\\",\\\"b\\\"],\\\"n\\\":2}\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "263.2 bedrock/claude-haiku-4-5 /v1/chat/completions string tool result renders as json (tool result rendering)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// A tool result must render the same whether the client sent it as a string or as one",
+                  "// text block: clients that mark only the last message with cache_control send it as a",
+                  "// block on that turn and as a string afterwards, so a text/json flip breaks the cached prefix.",
+                  "pm.test('263.2 bedrock/claude-haiku-4-5 /v1/chat/completions string tool result renders as json (tool result rendering): request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('263.2 bedrock/claude-haiku-4-5 /v1/chat/completions string tool result renders as json (tool result rendering): toolResult carries the output as a json object', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var content = null; var idx = -1;",
+                  "  (rr.messages || []).forEach(function (m) { (m.content || []).forEach(function (b, i) { if (b.toolResult && idx < 0) { content = m.content; idx = i; } }); });",
+                  "  pm.expect(idx, 'no toolResult block reached Converse: ' + wire.slice(0, 600)).to.be.at.least(0);",
+                  "  var inner = content[idx].toolResult.content || [];",
+                  "  pm.expect(inner.length, 'toolResult content: ' + JSON.stringify(inner)).to.eql(1);",
+                  "  pm.expect(inner[0].text, 'tool output was sent as a text block instead of json: ' + JSON.stringify(inner)).to.be.undefined;",
+                  "  pm.expect(inner[0].json, 'toolResult json altered: ' + JSON.stringify(inner)).to.eql({\"files\":[\"a\",\"b\"],\"n\":2});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"list_files\",\n        \"description\": \"Lists files in the workspace\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {}\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call list_files, then reply with only the number of files.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_list_files_1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"list_files\",\n            \"arguments\": \"{}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_list_files_1\",\n      \"content\": \"{\\\"files\\\":[\\\"a\\\",\\\"b\\\"],\\\"n\\\":2}\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "263.3 bedrock/claude-haiku-4-5 /v1/responses function_call_output input_text block renders as json (tool result rendering)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// A tool result must render the same whether the client sent it as a string or as one",
+                  "// text block: clients that mark only the last message with cache_control send it as a",
+                  "// block on that turn and as a string afterwards, so a text/json flip breaks the cached prefix.",
+                  "pm.test('263.3 bedrock/claude-haiku-4-5 /v1/responses function_call_output input_text block renders as json (tool result rendering): request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('263.3 bedrock/claude-haiku-4-5 /v1/responses function_call_output input_text block renders as json (tool result rendering): toolResult carries the output as a json object', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var content = null; var idx = -1;",
+                  "  (rr.messages || []).forEach(function (m) { (m.content || []).forEach(function (b, i) { if (b.toolResult && idx < 0) { content = m.content; idx = i; } }); });",
+                  "  pm.expect(idx, 'no toolResult block reached Converse: ' + wire.slice(0, 600)).to.be.at.least(0);",
+                  "  var inner = content[idx].toolResult.content || [];",
+                  "  pm.expect(inner.length, 'toolResult content: ' + JSON.stringify(inner)).to.eql(1);",
+                  "  pm.expect(inner[0].text, 'tool output was sent as a text block instead of json: ' + JSON.stringify(inner)).to.be.undefined;",
+                  "  pm.expect(inner[0].json, 'toolResult json altered: ' + JSON.stringify(inner)).to.eql({\"files\":[\"a\",\"b\"],\"n\":2});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_output_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"list_files\",\n      \"description\": \"Lists files in the workspace\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call list_files, then reply with only the number of files.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"call_list_files_1\",\n      \"name\": \"list_files\",\n      \"arguments\": \"{}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"call_list_files_1\",\n      \"output\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{\\\"files\\\":[\\\"a\\\",\\\"b\\\"],\\\"n\\\":2}\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "264. MiniMax provider (minimax provider)",
+      "description": "MiniMax is reached through its OpenAI-compatible chat API, its /v1/image_generation API its /v2/video_generation task API, /v1/t2a_v2 for speech and /v1/speech_to_text for transcription. Bifrost sends reasoning_split true on chat so thinking comes back in reasoning_content instead of <think> tags inside the answer, maps reasoning_effort none to thinking disabled (dropped on M3.1, which always thinks), and turns a non-zero base_resp.status_code on a 200 into an error. Video generation is billed per output second, so it is covered by Go tests and not by a live case here. Speech audio comes back hex-encoded and Bifrost decodes it; an unknown voice is a 200 with base_resp 2054 that Bifrost turns into a 400.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - thinking arrives as reasoning, not <think> tags - minimax/MiniMax-M3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('answer is clean and served by minimax', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  var msg = j.choices[0].message;",
+                  "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(msg.content, 'reasoning leaked into content as <think> tags').to.not.include('<think>');",
+                  "  pm.expect(msg.content).to.include('391');",
+                  "  pm.expect(j.extra_fields.provider).to.eql('minimax');",
+                  "  pm.expect(j.usage.total_tokens, 'usage missing').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions stream - SSE chunks without <think> tags - minimax/MiniMax-M3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completes with content', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no SSE data lines').to.include('data:');",
+                  "  pm.expect(text, 'reasoning leaked into content as <think> tags').to.not.include('<think>');",
+                  "  pm.expect(text, 'no finish_reason in stream').to.match(/\"finish_reason\":\"(stop|length)\"/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - reasoning_effort none maps to thinking disabled - minimax/MiniMax-M3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('effort none is accepted and thinking is off', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(msg.reasoning || '', 'thinking still ran with effort none').to.eql('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"reasoning_effort\": \"none\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - function tool call - minimax/MiniMax-M3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tool call comes back in OpenAI shape', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  var calls = (choice.message || {}).tool_calls || [];",
+                  "  pm.expect(calls.length, 'no tool call: ' + pm.response.text().slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(calls[0].function.name).to.eql('get_weather');",
+                  "  pm.expect(JSON.parse(calls[0].function.arguments).city).to.be.a('string');",
+                  "  pm.expect(choice.finish_reason).to.eql('tool_calls');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in San Francisco? Use the get_weather tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - Responses shape via chat - minimax/MiniMax-M3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses output carries a message', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'output not an array').to.be.an('array');",
+                  "  var msg = j.output.filter(function (o) { return o.type === 'message'; })[0];",
+                  "  pm.expect(msg, 'no message item: ' + pm.response.text().slice(0, 500)).to.exist;",
+                  "  pm.expect(msg.content[0].text).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"input\": \"Name one primary color.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/chat/completions - OpenAI drop-in route - minimax/MiniMax-M3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai drop-in reaches minimax', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().choices[0].message.content).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/anthropic/v1/messages - Anthropic drop-in route - minimax/MiniMax-M3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic drop-in returns a text block', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var blocks = pm.response.json().content || [];",
+                  "  var text = blocks.filter(function (b) { return b.type === 'text'; })[0];",
+                  "  pm.expect(text, 'no text block: ' + pm.response.text().slice(0, 500)).to.exist;",
+                  "  pm.expect(text.text).to.not.include('<think>');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/images/generations - image-01 returns a URL - minimax/image-01",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image comes back as a URL', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var data = pm.response.json().data || [];",
+                  "  pm.expect(data.length, 'no images: ' + pm.response.text().slice(0, 500)).to.eql(1);",
+                  "  pm.expect(data[0].url).to.match(/^https?:\\/\\//);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/image-01\",\n  \"prompt\": \"A red apple on a wooden table, studio photo\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/images/generations - b64_json maps to base64 - minimax/image-01",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image comes back inline as base64', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var data = pm.response.json().data || [];",
+                  "  pm.expect(data.length, 'no images: ' + pm.response.text().slice(0, 500)).to.eql(1);",
+                  "  pm.expect(data[0].b64_json, 'b64_json missing').to.be.a('string').with.length.above(1000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/image-01\",\n  \"prompt\": \"A blue circle on white\",\n  \"n\": 1,\n  \"size\": \"1792x1024\",\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/speech - hex audio decoded to mp3 bytes - minimax/speech-2.8-turbo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('speech returns decoded audio, not hex', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var ct = pm.response.headers.get('Content-Type') || '';",
+                  "  pm.expect(ct, 'content type').to.match(/audio|octet-stream/);",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio too small').to.be.above(2000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3 (hex not decoded?): ' + head).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/speech-2.8-turbo\",\n  \"input\": \"Hello from MiniMax through Bifrost.\",\n  \"voice\": \"English_Graceful_Lady\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/speech stream - SSE deltas then done with usage - minimax/speech-2.8-turbo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('speech streams deltas and a done event', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no delta events').to.include('speech.audio.delta');",
+                  "  pm.expect(text, 'no done event').to.include('speech.audio.done');",
+                  "  pm.expect(text, 'no usage on done').to.match(/\"input_chars\":\\s*[1-9]/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/speech-2.8-turbo\",\n  \"input\": \"This is a streaming speech test for MiniMax.\",\n  \"voice\": \"English_Graceful_Lady\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/audio/speech - unknown voice_id is a 400, not a 200 - minimax/speech-2.8-turbo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unknown voice surfaces base_resp 2054 as a 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('voice id not exist');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/speech-2.8-turbo\",\n  \"input\": \"Hello.\",\n  \"voice\": \"not_a_real_minimax_voice\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/transcriptions - json text and duration usage - minimax/asr-1.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('transcription returns text and seconds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'empty text: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage && j.usage.seconds, 'usage seconds missing').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "minimax/asr-1.0",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/transcriptions - word timestamps become words with speakers - minimax/asr-1.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('word-level timestamps map to words', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.words, 'no words: ' + pm.response.text().slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.words[0].word).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.words[0].end).to.be.at.least(j.words[0].start);",
+                  "  pm.expect(j.words[0].speaker).to.match(/^S\\d+$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "minimax/asr-1.0",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "response_format",
+                  "value": "verbose_json",
+                  "type": "text"
+                },
+                {
+                  "key": "timestamp_granularities[]",
+                  "value": "word",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/transcriptions stream - deltas then done with full text - minimax/asr-1.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('transcription streams to a done event', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no done event: ' + text.slice(0, 500)).to.include('transcript.text.done');",
+                  "  pm.expect(text, 'no duration usage').to.match(/\"seconds\":\\s*[0-9.]+/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "minimax/asr-1.0",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "stream",
+                  "value": "true",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/audio/transcriptions stream - verbose_json is rejected before reaching MiniMax - minimax/asr-1.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streaming only allows json', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('only supports the json response format');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "minimax/asr-1.0",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "stream",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "verbose_json",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "258. BytePlus provider (byteplus provider)",
+      "description": "BytePlus ModelArk is reached through Ark's OpenAI-compatible /api/v3/chat/completions, its native /api/v3/responses, /api/v3/embeddings/multimodal for embeddings and /api/v3/images/generations for Seedream generation and editing. Bifrost maps reasoning_effort none to thinking disabled and clamps xhigh/max to high, since Ark rejects both. The multimodal embedding endpoint fuses a request into one vector, so Bifrost sends one call per input entry. Seedance video generation is billed per clip, so it is covered by Go tests and not by a live case here. Every model used here must be activated on the account, or Ark answers 404 ModelNotOpen.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - Seed answers through the Ark chat API - byteplus/deepseek-v4-flash-260425",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('answer served by byteplus with usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices[0].message.content, 'empty content: ' + pm.response.text()).to.include('391');",
+                  "  pm.expect(j.extra_fields.provider).to.eql('byteplus');",
+                  "  pm.expect(j.usage.total_tokens, 'usage missing').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/deepseek-v4-flash-260425\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23? Answer with just the number.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions stream - SSE chunks end with a finish_reason - byteplus/deepseek-v4-flash-260425",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no SSE data lines').to.include('data:');",
+                  "  pm.expect(text, 'no finish_reason in stream').to.match(/\"finish_reason\":\"(stop|length)\"/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/deepseek-v4-flash-260425\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in one short sentence.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - reasoning_effort none maps to thinking disabled - byteplus/deepseek-v4-flash-260425",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('effort none is accepted and thinking is off', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(msg.reasoning || '', 'thinking still ran with effort none').to.eql('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/deepseek-v4-flash-260425\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the word ok.\"\n    }\n  ],\n  \"reasoning_effort\": \"none\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - reasoning_effort xhigh is clamped to high - byteplus/deepseek-v4-flash-260425",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('xhigh is accepted and the model reasons', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.content, 'empty content: ' + pm.response.text()).to.include('4');",
+                  "  pm.expect(msg.reasoning, 'no reasoning returned').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/deepseek-v4-flash-260425\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 2 + 2? Answer with just the number.\"\n    }\n  ],\n  \"reasoning_effort\": \"xhigh\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - function tool call - byteplus/deepseek-v4-flash-260425",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tool call comes back in OpenAI shape', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var choice = pm.response.json().choices[0];",
+                  "  var calls = (choice.message || {}).tool_calls || [];",
+                  "  pm.expect(calls.length, 'no tool call: ' + pm.response.text().slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(calls[0].function.name).to.eql('get_weather');",
+                  "  pm.expect(JSON.parse(calls[0].function.arguments).city).to.be.a('string');",
+                  "  pm.expect(choice.finish_reason).to.eql('tool_calls');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/deepseek-v4-flash-260425\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in San Francisco? Use the get_weather tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - native Ark Responses API - byteplus/deepseek-v4-flash-260425",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses output carries a message', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'output not an array').to.be.an('array');",
+                  "  var msg = j.output.filter(function (o) { return o.type === 'message'; })[0];",
+                  "  pm.expect(msg, 'no message item: ' + pm.response.text().slice(0, 500)).to.exist;",
+                  "  pm.expect(msg.content[0].text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.extra_fields.provider).to.eql('byteplus');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/deepseek-v4-flash-260425\",\n  \"input\": \"Name one primary color.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses stream - native Ark Responses events - byteplus/deepseek-v4-flash-260425",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses stream completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no output_text deltas').to.include('response.output_text.delta');",
+                  "  pm.expect(text, 'no completed event').to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/deepseek-v4-flash-260425\",\n  \"input\": \"Say hello in one short sentence.\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/chat/completions - OpenAI drop-in route - byteplus/deepseek-v4-flash-260425",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai drop-in reaches byteplus', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().choices[0].message.content).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/deepseek-v4-flash-260425\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/embeddings - two inputs fan out to two multimodal calls - byteplus/skylark-embedding-vision-251215",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('one vector per input, in order', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data.length, 'wrong vector count: ' + pm.response.text().slice(0, 500)).to.eql(2);",
+                  "  pm.expect(j.data[0].index).to.eql(0);",
+                  "  pm.expect(j.data[1].index).to.eql(1);",
+                  "  pm.expect(j.data[0].embedding.length).to.eql(1024);",
+                  "  pm.expect(j.data[1].embedding.length).to.eql(1024);",
+                  "  pm.expect(j.data[0].embedding, 'both inputs got the same vector').to.not.eql(j.data[1].embedding);",
+                  "  pm.expect(j.usage.prompt_tokens, 'usage missing').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/skylark-embedding-vision-251215\",\n  \"input\": [\n    \"a small red square\",\n    \"a large blue circle\"\n  ],\n  \"dimensions\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/embeddings - text and image in one entry fuse into one vector - byteplus/skylark-embedding-vision-251215",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('one fused vector for the multimodal entry', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data.length, 'wrong vector count: ' + pm.response.text().slice(0, 500)).to.eql(1);",
+                  "  pm.expect(j.data[0].embedding).to.be.an('array').with.length.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/skylark-embedding-vision-251215\",\n  \"input\": [\n    [\n      {\n        \"type\": \"text\",\n        \"text\": \"a small red square\"\n      },\n      {\n        \"type\": \"image\",\n        \"image\": {\n          \"data\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOklEQVR4nO3RQREAQAjDwHKS8C8AWSchfPhlBZSZUNOdS+90PR5Y8AfIRMhEyETIRMhEyETIRMhEIR/EvwFs/VkrpgAAAABJRU5ErkJggg==\"\n        }\n      }\n    ]\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/embeddings - base64 encoding is rejected before reaching Ark - byteplus/skylark-embedding-vision-251215",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('non-float encoding is a 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('only return float vectors');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/skylark-embedding-vision-251215\",\n  \"input\": \"a red square\",\n  \"encoding_format\": \"base64\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/images/generations - Seedream returns a URL - byteplus/dola-seedream-5-0-pro-260628",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('one image URL served by byteplus', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var data = pm.response.json().data || [];",
+                  "  pm.expect(data.length, 'no images: ' + pm.response.text().slice(0, 500)).to.eql(1);",
+                  "  pm.expect(data[0].url, 'url missing').to.match(/^https:\\/\\//);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/dola-seedream-5-0-pro-260628\",\n  \"prompt\": \"A blue circle on white\",\n  \"size\": \"2048x2048\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/images/generations - b64_json comes back inline - byteplus/dola-seedream-5-0-pro-260628",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image comes back inline as base64', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var data = pm.response.json().data || [];",
+                  "  pm.expect(data.length, 'no images: ' + pm.response.text().slice(0, 500)).to.eql(1);",
+                  "  pm.expect(data[0].b64_json, 'b64_json missing').to.be.a('string').with.length.above(1000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/dola-seedream-5-0-pro-260628\",\n  \"prompt\": \"A blue circle on white\",\n  \"size\": \"2048x2048\",\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/images/edits - source image sent as a Seedream reference - byteplus/dola-seedream-5-0-pro-260628",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('edit returns an image', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var data = pm.response.json().data || [];",
+                  "  pm.expect(data.length, 'no images: ' + pm.response.text().slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(data[0].url || data[0].b64_json, 'no image payload').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "byteplus/dola-seedream-5-0-pro-260628",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background a deep blue",
+                  "type": "text"
+                },
+                {
+                  "key": "size",
+                  "value": "2048x2048",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/images/generations stream - each Seedream image arrives as its own event - byteplus/seedream-4-5-251128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream relays every image and ends with completed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  var partials = text.match(/\"type\":\"image_generation\\.partial_image\"/g) || [];",
+                  "  pm.expect(partials.length, 'expected one partial_image per requested image (n=2): ' + text.slice(0, 500)).to.be.at.least(2);",
+                  "  var completedAt = text.lastIndexOf('\"type\":\"image_generation.completed\"');",
+                  "  pm.expect(completedAt, 'no completed event: ' + text.slice(-500)).to.be.above(-1);",
+                  "  pm.expect(completedAt, 'completed must follow every partial_image: ' + text.slice(-500)).to.be.above(text.lastIndexOf('\"type\":\"image_generation.partial_image\"'));",
+                  "  pm.expect(text, 'no image payload in stream').to.match(/\"(url|b64_json)\":\"[^\"]+\"/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"The same lighthouse in spring and in winter\",\n  \"size\": \"2048x2048\",\n  \"n\": 2,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/images/generations - Seedream background extra param reaches Ark - byteplus/dola-seedream-5-0-pro-260628",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Ark rejects a transparent background with jpeg output', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400 from Ark, so background reached it: ' + pm.response.text()).to.eql(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/dola-seedream-5-0-pro-260628\",\n  \"prompt\": \"A red apple icon\",\n  \"background\": \"transparent\",\n  \"output_format\": \"jpeg\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/videos - Seedance service_tier extra param reaches Ark - byteplus/dreamina-seedance-2-5-260628",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Ark rejects flex on Seedance 2.5', function () {",
+                  "  if (pm.response.code === 200) {",
+                  "    var id = (pm.response.json() || {}).id;",
+                  "    if (id) {",
+                  "      pm.sendRequest({ url: pm.variables.get('baseUrl') + '/v1/videos/' + encodeURIComponent(id), method: 'DELETE' }, function () {});",
+                  "    }",
+                  "  }",
+                  "  pm.expect(pm.response.code, 'expected 400 from Ark, so service_tier reached it: ' + pm.response.text()).to.eql(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"prompt\": \"A paper boat drifting down a rainy street\",\n  \"seconds\": \"5\",\n  \"resolution\": \"480p\",\n  \"draft\": true,\n  \"service_tier\": \"flex\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "265. GitHub Copilot routes and sign-in (copilot routes)",
+      "description": "GitHub Copilot routing and Sign in with GitHub. Copilot rejects a bare-string embeddings input with a body-less 400, so a single input must go out as string[] (red before: 265.1 answered 400). Claude models are served from Copilot's Anthropic-compatible /v1/messages, reached from /v1/chat/completions (unary and streamed), /v1/responses and the native /anthropic route; rows read the provider-bound body back from extra_fields.raw_request (send_back_raw_request is on in the profile) and assert the Messages shape (top-level system, no Responses input). OpenAI models that advertise the Responses API go to Copilot's native /responses rather than through Chat Completions (raw body carries input, not messages). /v1/models lists the provider's models per key. The sign-in rows exercise the gateway's device-flow proxy: start returns a real GitHub device code (free, nothing is approved), an unknown device code and a missing one answer 400, and sign-in on any other provider answers 400. Inference rows need GITHUB_COPILOT_API_KEY (a fine-grained PAT with Copilot Requests) and run only under PROVIDER=github-copilot.",
+      "item": [
+        {
+          "name": "265.1 github-copilot/text-embedding-3-small /v1/embeddings single string input is sent as an array (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('265.1 github-copilot/text-embedding-3-small /v1/embeddings single string input is sent as an array (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('one embedding comes back', function () {",
+                  "  pm.expect(j.data, 'data: ' + pm.response.text().slice(0, 300)).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j.data[0].embedding, 'embedding vector').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('Copilot received input as string[] (it 400s on a bare string)', function () {",
+                  "  var rr = rawRequest(j);",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - is send_back_raw_request on for github-copilot?').to.be.an('object');",
+                  "  pm.expect(Array.isArray(rr.input), 'raw input: ' + JSON.stringify(rr.input)).to.equal(true);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/text-embedding-3-small\",\n  \"input\": \"harness copilot embedding\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "265.2 github-copilot/claude-sonnet-4-6 /v1/chat/completions is sent to Copilot's /v1/messages (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('265.2 github-copilot/claude-sonnet-4-6 /v1/chat/completions is sent to Copilot's /v1/messages (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('assistant message has content', function () {",
+                  "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
+                  "  pm.expect(msg && msg.content, 'message: ' + JSON.stringify(msg)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('Copilot received an Anthropic Messages body', function () {",
+                  "  var rr = rawRequest(j);",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - is send_back_raw_request on for github-copilot?').to.be.an('object');",
+                  "  pm.expect(rr.system, 'top-level system (Messages shape): ' + JSON.stringify(rr).slice(0, 400)).to.not.equal(undefined);",
+                  "  var sys = (rr.messages || []).filter(function (m) { return m.role === 'system'; });",
+                  "  pm.expect(sys.length, 'system role left in messages (Chat shape)').to.equal(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Reply with one word.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "265.3 github-copilot/claude-sonnet-4-6 /v1/chat/completions stream via /v1/messages (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "function sseFrames() {",
+                  "  var out = [];",
+                  "  pm.response.text().split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data: ') !== 0) { return; }",
+                  "    var data = line.slice(6).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    try { out.push(JSON.parse(data)); } catch (e) {}",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('265.3 github-copilot/claude-sonnet-4-6 /v1/chat/completions stream via /v1/messages (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('response is SSE', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('event-stream');",
+                  "});",
+                  "pm.test('stream carries assistant text', function () {",
+                  "  var text = sseFrames().map(function (f) { var d = f.choices && f.choices[0] && f.choices[0].delta; return (d && d.content) || ''; }).join('');",
+                  "  pm.expect(text, 'no delta content in: ' + pm.response.text().slice(0, 400)).to.not.be.empty;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Reply with one word.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ],\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "265.4 github-copilot/claude-sonnet-4-6 /v1/responses is sent to Copilot's /v1/messages (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('265.4 github-copilot/claude-sonnet-4-6 /v1/responses is sent to Copilot's /v1/messages (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('output carries an assistant message', function () {",
+                  "  var msgs = (j.output || []).filter(function (o) { return o.type === 'message'; });",
+                  "  pm.expect(msgs.length, 'output: ' + JSON.stringify(j.output).slice(0, 400)).to.be.above(0);",
+                  "});",
+                  "pm.test('Copilot received an Anthropic Messages body, not a Responses one', function () {",
+                  "  var rr = rawRequest(j);",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - is send_back_raw_request on for github-copilot?').to.be.an('object');",
+                  "  pm.expect(rr.messages, 'messages: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('array');",
+                  "  pm.expect(rr.system, 'instructions became top-level system').to.not.equal(undefined);",
+                  "  pm.expect(rr.input, 'Responses input sent to /v1/messages').to.equal(undefined);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4-6\",\n  \"max_output_tokens\": 64,\n  \"instructions\": \"Reply with one word.\",\n  \"input\": \"Say hi.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "265.5 github-copilot/claude-sonnet-4-6 /anthropic/v1/messages native route (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('265.5 github-copilot/claude-sonnet-4-6 /anthropic/v1/messages native route (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('Anthropic-shaped message with text', function () {",
+                  "  pm.expect(j.type, 'body: ' + pm.response.text().slice(0, 400)).to.equal('message');",
+                  "  var text = (j.content || []).filter(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(text.length, 'content: ' + JSON.stringify(j.content)).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"system\": \"Reply with one word.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "265.6 github-copilot/gpt-5-mini /v1/responses is sent to Copilot's native /responses (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('265.6 github-copilot/gpt-5-mini /v1/responses is sent to Copilot's native /responses (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('a Responses object comes back', function () {",
+                  "  pm.expect(j.object, 'body: ' + pm.response.text().slice(0, 400)).to.equal('response');",
+                  "  pm.expect(j.output, 'output').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('Copilot received a Responses body, not a Chat Completions one', function () {",
+                  "  var rr = rawRequest(j);",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - is send_back_raw_request on for github-copilot?').to.be.an('object');",
+                  "  pm.expect(rr.input, 'input: ' + JSON.stringify(rr).slice(0, 400)).to.not.equal(undefined);",
+                  "  pm.expect(rr.messages, 'Chat messages sent instead of input').to.equal(undefined);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/gpt-5-mini\",\n  \"max_output_tokens\": 512,\n  \"input\": \"Say hi in one word.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "265.7 github-copilot/gpt-5-mini /v1/responses stream via native /responses (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "function sseFrames() {",
+                  "  var out = [];",
+                  "  pm.response.text().split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data: ') !== 0) { return; }",
+                  "    var data = line.slice(6).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    try { out.push(JSON.parse(data)); } catch (e) {}",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('265.7 github-copilot/gpt-5-mini /v1/responses stream via native /responses (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('response is SSE', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('event-stream');",
+                  "});",
+                  "pm.test('stream completes', function () {",
+                  "  var done = sseFrames().filter(function (f) { return f.type === 'response.completed'; });",
+                  "  pm.expect(done.length, 'no response.completed in: ' + pm.response.text().slice(-400)).to.equal(1);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/gpt-5-mini\",\n  \"max_output_tokens\": 512,\n  \"input\": \"Say hi in one word.\",\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "265.8 github-copilot /v1/models lists Copilot models (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('265.8 github-copilot /v1/models lists Copilot models (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('models are listed, all under github-copilot/', function () {",
+                  "  pm.expect(j.data, 'body: ' + pm.response.text().slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  var foreign = j.data.filter(function (m) { return String(m.id).indexOf('github-copilot/') !== 0; });",
+                  "  pm.expect(foreign.length, 'non-Copilot ids: ' + JSON.stringify(foreign.slice(0, 3))).to.equal(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=github-copilot",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "github-copilot"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "265.9 POST /api/providers/github-copilot/sign-in returns a GitHub device code (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('265.9 POST /api/providers/github-copilot/sign-in returns a GitHub device code (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('device code fields are present', function () {",
+                  "  pm.expect(j.device_code, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.user_code, 'user_code').to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.verification_uri, 'verification_uri').to.include('github.com');",
+                  "  pm.expect(j.interval, 'interval').to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/github-copilot/sign-in",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "github-copilot",
+                "sign-in"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "265.10 [EXPECT-400] POST /api/providers/github-copilot/sign-in/poll with an unknown device_code (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('GitHub's incorrect_device_code becomes a 400 that says to start again', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text().slice(0, 500)).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error names the fix').to.include('start the sign-in again');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/github-copilot/sign-in/poll",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "github-copilot",
+                "sign-in",
+                "poll"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"device_code\": \"harness-not-a-real-device-code\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "265.11 [EXPECT-400] POST /api/providers/github-copilot/sign-in/poll without device_code (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('missing device_code is rejected before GitHub is called', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text().slice(0, 500)).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error names the fix').to.include('device_code is required');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/github-copilot/sign-in/poll",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "github-copilot",
+                "sign-in",
+                "poll"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "265.12 [EXPECT-400] POST /api/providers/openai/sign-in is github-copilot only (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('sign-in on another provider is rejected', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text().slice(0, 500)).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error names the fix').to.include('only available for github-copilot');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/openai/sign-in",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "sign-in"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "266. Extra-content-only chat stream deltas (extra content deltas)",
+      "description": "Local fixture regression, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1. The fixture model upstream-extra-content streams a text answer plus two chunks whose delta carries only extra_content (provider metadata, no text): one before finish_reason and one after it. Before the fix the OpenAI stream handler dropped both, because its forward check did not count extra_content. Both cases assert the two extra_content payloads arrive in order and the stream still ends with finish_reason stop and [DONE]. Setup and scoped run commands are in tests/e2e/api/README.md under Extra-content-only stream deltas.",
+      "item": [
+        {
+          "name": "266.1 openai openai/upstream-extra-content forwards extra_content-only deltas (extra content deltas)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var extras = [];",
+                  "var finish = null;",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0 || line === 'data: [DONE]') { return; }",
+                  "  var chunk = JSON.parse(line.slice(6));",
+                  "  var choice = chunk.choices && chunk.choices[0];",
+                  "  if (!choice) { return; }",
+                  "  if (choice.delta && choice.delta.extra_content) { extras.push(JSON.stringify(choice.delta.extra_content)); }",
+                  "  if (choice.finish_reason) { finish = choice.finish_reason; }",
+                  "});",
+                  "pm.test('stream completes with the fixture text', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "  pm.expect(finish, 'finish_reason missing: ' + raw).to.equal('stop');",
+                  "  pm.expect(raw, 'completion missing: ' + raw).to.include('[DONE]');",
+                  "});",
+                  "pm.test('extra_content-only deltas reach the client in order, including the one after finish_reason', function () {",
+                  "  pm.expect(extras, 'extra_content deltas dropped: ' + raw).to.eql(['{\"spans\":[[0,5,[1,2,3,4]]]}', '{\"spans\":[[0,5]]}']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-extra-content\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "266.2 openai upstream-extra-content forwards extra_content-only deltas on the OpenAI SDK route (extra content deltas)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var extras = [];",
+                  "var finish = null;",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0 || line === 'data: [DONE]') { return; }",
+                  "  var chunk = JSON.parse(line.slice(6));",
+                  "  var choice = chunk.choices && chunk.choices[0];",
+                  "  if (!choice) { return; }",
+                  "  if (choice.delta && choice.delta.extra_content) { extras.push(JSON.stringify(choice.delta.extra_content)); }",
+                  "  if (choice.finish_reason) { finish = choice.finish_reason; }",
+                  "});",
+                  "pm.test('stream completes with the fixture text', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(raw, 'fixture content missing: ' + raw).to.include('hello');",
+                  "  pm.expect(finish, 'finish_reason missing: ' + raw).to.equal('stop');",
+                  "  pm.expect(raw, 'completion missing: ' + raw).to.include('[DONE]');",
+                  "});",
+                  "pm.test('extra_content-only deltas reach the client in order, including the one after finish_reason', function () {",
+                  "  pm.expect(extras, 'extra_content deltas dropped: ' + raw).to.eql(['{\"spans\":[[0,5,[1,2,3,4]]]}', '{\"spans\":[[0,5]]}']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"upstream-extra-content\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "267. Azure content-filter errors carry the categories that blocked the prompt (azure content filter errors)",
       "description": "Local fixture regression like folders 154 and 159: run with providerErrorFixture=1 against the isolated gateway started from tests/e2e/api/provider_config/provider-error-fixture.config.json (see tests/e2e/api/README.md). When Azure's content filter blocks a prompt it answers HTTP 400 with code content_filter and the classification under innererror.content_filter_result (chat and completions) or content_filters (Responses API). Before the fix the gateway kept only code, message and param, so a caller could only learn which category blocked the prompt by turning on send_back_raw_response, which returns the whole upstream body. The fixture model azure-prompt-blocked answers with those bodies (the chat one as captured from Azure). Every case requires the 400 and the content_filter code to survive, error.content_filter_details.categories to list exactly the filtered categories with their severity, and nothing else from Azure's body (innererror, unfiltered categories, raw_response) to reach the client: red before the fix (content_filter_details absent), green after. Covered routes are the OpenAI-shaped surfaces that render Bifrost's error as-is: /v1/chat/completions unary and streamed (a blocked prompt fails before the stream starts, so the stream also answers a 400 JSON body), /v1/completions, /v1/responses unary and streamed, the OpenAI SDK drop-ins /openai/v1/chat/completions and /openai/v1/responses, and the Azure SDK deployment route. /anthropic, /genai, /bedrock and /cohere rebuild errors in their SDK's own envelope, which has no field for this, so they are not pinned here.",
       "item": [
         {
-          "name": "263.1 [EXPECT-400] azure /v1/chat/completions prompt block returns the filtered categories without the raw body (azure content filter errors) - #8799",
+          "name": "267.1 [EXPECT-400] azure /v1/chat/completions prompt block returns the filtered categories without the raw body (azure content filter errors) - #8799",
           "request": {
             "method": "POST",
             "header": [
@@ -276835,7 +279524,7 @@
           ]
         },
         {
-          "name": "263.2 [EXPECT-400] azure /v1/chat/completions stream prompt block returns the filtered categories before the stream starts (azure content filter errors) - #8799",
+          "name": "267.2 [EXPECT-400] azure /v1/chat/completions stream prompt block returns the filtered categories before the stream starts (azure content filter errors) - #8799",
           "request": {
             "method": "POST",
             "header": [
@@ -276901,7 +279590,7 @@
           ]
         },
         {
-          "name": "263.3 [EXPECT-400] azure /v1/completions prompt block returns the filtered categories without the raw body (azure content filter errors) - #8799",
+          "name": "267.3 [EXPECT-400] azure /v1/completions prompt block returns the filtered categories without the raw body (azure content filter errors) - #8799",
           "request": {
             "method": "POST",
             "header": [
@@ -276966,7 +279655,7 @@
           ]
         },
         {
-          "name": "263.4 [EXPECT-400] azure /v1/responses prompt block returns the filtered categories from content_filters (azure content filter errors) - #8799",
+          "name": "267.4 [EXPECT-400] azure /v1/responses prompt block returns the filtered categories from content_filters (azure content filter errors) - #8799",
           "request": {
             "method": "POST",
             "header": [
@@ -277031,7 +279720,7 @@
           ]
         },
         {
-          "name": "263.5 [EXPECT-400] azure /v1/responses stream prompt block returns the filtered categories before the stream starts (azure content filter errors) - #8799",
+          "name": "267.5 [EXPECT-400] azure /v1/responses stream prompt block returns the filtered categories before the stream starts (azure content filter errors) - #8799",
           "request": {
             "method": "POST",
             "header": [
@@ -277096,7 +279785,7 @@
           ]
         },
         {
-          "name": "263.6 [EXPECT-400] azure /openai/v1/chat/completions (OpenAI SDK route) prompt block returns the filtered categories (azure content filter errors) - #8799",
+          "name": "267.6 [EXPECT-400] azure /openai/v1/chat/completions (OpenAI SDK route) prompt block returns the filtered categories (azure content filter errors) - #8799",
           "request": {
             "method": "POST",
             "header": [
@@ -277163,7 +279852,7 @@
           ]
         },
         {
-          "name": "263.7 [EXPECT-400] azure /openai/v1/responses (OpenAI SDK route) prompt block returns the filtered categories (azure content filter errors) - #8799",
+          "name": "267.7 [EXPECT-400] azure /openai/v1/responses (OpenAI SDK route) prompt block returns the filtered categories (azure content filter errors) - #8799",
           "request": {
             "method": "POST",
             "header": [
@@ -277229,7 +279918,7 @@
           ]
         },
         {
-          "name": "263.8 [EXPECT-400] azure /openai/openai/deployments chat/completions (Azure SDK route) prompt block returns the filtered categories (azure content filter errors) - #8799",
+          "name": "267.8 [EXPECT-400] azure /openai/openai/deployments chat/completions (Azure SDK route) prompt block returns the filtered categories (azure content filter errors) - #8799",
           "request": {
             "method": "POST",
             "header": [

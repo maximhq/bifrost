@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"strings"
@@ -100,14 +101,15 @@ type pendingAgentInjectEntries struct {
 }
 
 // writeQueueEntry is an entry pushed to the batch write queue.
-// Exactly one of log (insert), logUpdate (partial update), mcpLog or agentLog is set.
+// Exactly one insert, partial update, transcript correction, MCP log or agent log is set.
 type writeQueueEntry struct {
-	log         *logstore.Log
-	logUpdate   *logstore.Log
-	mcpLog      *logstore.MCPToolLog
-	agentLog    *logstore.AgentLog
-	callback    func(entry *logstore.Log)
-	mcpCallback func(entry *logstore.MCPToolLog)
+	realtimeInput *realtimeInputUpdate
+	log           *logstore.Log
+	logUpdate     *logstore.Log
+	mcpLog        *logstore.MCPToolLog
+	agentLog      *logstore.AgentLog
+	callback      func(entry *logstore.Log)
+	mcpCallback   func(entry *logstore.MCPToolLog)
 }
 
 // batchWriter is the single writer goroutine that drains the write queue
@@ -512,6 +514,21 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	unwrittenUpdates := writeWithRecovery(p, ctx, "log update", logUpdates, func(ctx context.Context, chunk []*logstore.Log) error {
 		return p.store.BatchUpdate(ctx, chunk)
 	}, p.updateLogIndividually)
+	for _, entry := range batch {
+		if entry.realtimeInput != nil {
+			if err := p.writeRealtimeInputUpdate(ctx, entry.realtimeInput); err != nil {
+				// Trace injection may enqueue the original turn after its transcript.
+				// Reuse the bounded queue and normal write retry budget, with no waiter.
+				entry.realtimeInput.attempts++
+				if errors.Is(err, logstore.ErrNotFound) && entry.realtimeInput.attempts < batchWriteAttempts {
+					p.enqueueRealtimeInputUpdate(entry.realtimeInput)
+					continue
+				}
+				p.logger.Warn("failed to update realtime transcript for log %s: %v", entry.realtimeInput.connectionID, err)
+				p.countDrop()
+			}
+		}
+	}
 
 	// Map unwritten rows back to their queue entries. An entry carrying more
 	// than one log type is handed back whole if any part is unwritten; persisted
@@ -968,6 +985,9 @@ func (p *LoggerPlugin) enqueueAgentLogEntry(entry *logstore.AgentLog) {
 func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
 	if entry == nil {
 		return 0
+	}
+	if entry.realtimeInput != nil {
+		return len(entry.realtimeInput.raw) + len(entry.realtimeInput.connectionID) + len(entry.realtimeInput.itemID) + len(entry.realtimeInput.transcript)
 	}
 	if entry.agentLog != nil {
 		size := len(entry.agentLog.PluginLogs) + len(entry.agentLog.ErrorDetails) + 512

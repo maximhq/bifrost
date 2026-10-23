@@ -80,6 +80,8 @@ const (
 	Databricks    ModelProvider = "databricks"
 	Cloudflare    ModelProvider = "cloudflare"
 	Typesafe      ModelProvider = "typesafe"
+	MiniMax       ModelProvider = "minimax"
+	BytePlus      ModelProvider = "byteplus"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -130,6 +132,8 @@ var StandardProviders = []ModelProvider{
 	Databricks,
 	Cloudflare,
 	Typesafe,
+	MiniMax,
+	BytePlus,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -375,6 +379,7 @@ const (
 	BifrostContextKeyRealtimeProviderSessionID           BifrostContextKey = "bifrost-realtime-provider-session-id"             // string
 	BifrostContextKeyRealtimeSource                      BifrostContextKey = "bifrost-realtime-source"                          // string ("ei" or "lm")
 	BifrostContextKeyRealtimeEventType                   BifrostContextKey = "bifrost-realtime-event-type"                      // string
+	BifrostContextKeyRealtimeConnectionID                BifrostContextKey = "bifrost-realtime-connection-id"                   // string; transport-owned connection ID
 	BifrostContextKeyRealtimeTransport                   BifrostContextKey = "bifrost-realtime-transport"                       // string ("websocket" or "webrtc")
 	BifrostContextKeyA2ADownstreamTransport              BifrostContextKey = "bifrost-a2a-downstream-transport"                 // string (A2A binding accepted by the gateway)
 	BifrostContextKeyA2ARequestOrigin                    BifrostContextKey = "bifrost-a2a-request-origin"                       // string (absolute HTTP origin used to reach the Agent Gateway)

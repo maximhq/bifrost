@@ -1,6 +1,7 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { createPluginData } from './plugins.data'
 import { ensureTestPluginExists } from './plugins-test-helper'
+import { expectListLoadError } from '../../core/utils/test-helpers'
 
 // Track created plugins for cleanup
 const createdPlugins: string[] = []
@@ -261,6 +262,10 @@ test.describe('Plugins', () => {
       } else {
         await expect(errorToast).toBeVisible()
       }
+    })
+
+    test('should show the load error instead of the empty state when plugins fail to load', async ({ page }) => {
+      await expectListLoadError(page, '/api/plugins', 'plugins-load-error', 'plugins-empty-state')
     })
   })
 

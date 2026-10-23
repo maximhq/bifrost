@@ -2247,13 +2247,21 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 			// as objects carrying an empty-string key).
 			toolResultContent = append(toolResultContent, tryParseJSONIntoContentBlock(*msg.Content.ContentStr))
 		} else if msg.Content.ContentBlocks != nil {
+			// A lone text block renders exactly like the equivalent string. Clients that
+			// put cache_control on the last message send it as one block on that turn and
+			// as a string afterwards, so a text/json flip would break the cached prefix.
+			singleText := len(msg.Content.ContentBlocks) == 1
 			for _, block := range msg.Content.ContentBlocks {
 				switch block.Type {
 				case schemas.ChatContentBlockTypeText:
 					if block.Text != nil {
-						toolResultContent = append(toolResultContent, BedrockContentBlock{
-							Text: block.Text,
-						})
+						if singleText {
+							toolResultContent = append(toolResultContent, tryParseJSONIntoContentBlock(*block.Text))
+						} else {
+							toolResultContent = append(toolResultContent, BedrockContentBlock{
+								Text: block.Text,
+							})
+						}
 						if block.CacheControl != nil {
 							cacheControl = block.CacheControl
 						}

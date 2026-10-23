@@ -356,6 +356,10 @@
           "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Written into config.json as env_label.",
           "maxLength": 10
         },
+        "disableOnboarding": {
+          "type": "boolean",
+          "description": "Hides the management UI setup checklist for every user. Read from config.json on every start and never written to the config store, so it holds on stateless deployments. Written into config.json as disable_onboarding; overrides the BIFROST_DISABLE_ONBOARDING env var."
+        },
         "setupToken": {
           "type": "string",
           "description": "Operator-provisioned bootstrap secret required to create the very first admin account when none exists yet. Identical across every node so any node can authorize first-admin creation. Never persisted or logged; also read from the BIFROST_SETUP_TOKEN env var. Supports env.<ENV_VAR_NAME> and vault.<path> references. Renders into config.json setup_token."
@@ -7458,38 +7462,6 @@
             "client_id": ["client_secret"],
             "client_secret": ["client_id"]
           },
-          "additionalProperties": false
-        },
-        "github_copilot_key_config": {
-          "type": "object",
-          "description": "GitHub App credentials for a github-copilot provider key. Set this instead of value to mint installation tokens from a GitHub App.",
-          "properties": {
-            "app_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
-            },
-            "installation_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Installation to mint tokens for, digits only (can use env. prefix)"
-            },
-            "repository_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
-            },
-            "private_key": {
-              "type": "string",
-              "minLength": 1,
-              "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
-            },
-            "github_domain": {
-              "type": "string",
-              "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
-            }
-          },
-          "required": ["app_id", "installation_id", "repository_id", "private_key"],
           "additionalProperties": false
         },
         "cloudflare_key_config": {
