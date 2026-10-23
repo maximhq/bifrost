@@ -200,6 +200,7 @@ Sources:
 - [x] **Direct invoke** with Anthropic-native provider body, incl. image/tool_use/tool_result content blocks — folder 37 (#5560)
 - [x] **Direct invoke** with Cohere-native embedding body — folder 58.C (PR #6335)
 - [x] **Invoke streaming** (`POST /model/{modelId}/invoke-with-response-stream`) — folder 36 (#5629), folder 37 (#5560)
+- [x] **Mistral native chat envelopes** on Invoke and InvokeWithResponseStream — folder 267 (#8939); pins choices, finish reasons, usage and stable chunk identity rather than Anthropic content blocks
 - [x] **Async invocation jobs** (`POST /model-invocation-job` + list + get + stop) — built: folder 152.8 (list) + 155.5a-c [PREVIEW] (create, get, stop; set the bedrockBatch* variables)
 
 ### Cross-region inference profiles

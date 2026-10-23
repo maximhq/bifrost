@@ -279698,6 +279698,672 @@
           }
         }
       ]
+    },
+    {
+      "name": "267. Mistral native invoke responses (Mistral native invoke)",
+      "description": "Regression for #8939. Messages-based Mistral Invoke requests use the existing Responses/Converse pipeline but must return native chat.completion choices rather than Anthropic content blocks. Covers /bedrock and the shared Bedrock routes under /langchain, /litellm, /pydanticai and /cursor. Pins unary choices, finish_reason and usage, and native chat.completion.chunk JSON inside AWS EventStream chunks with stable header identity and one terminal event. Regional model id explicitly selects us-west-2; no cross-region profile is used. The tests must fail on any unexpected status, including credential/region/model-access errors. Native OpenAI-style tool request parsing (#8940) is a separate issue and is not part of these text-only egress cases.",
+      "item": [
+        {
+          "name": "267.1 Bedrock Mistral Large 3 /invoke returns native choices (Mistral native invoke) - #8939",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native Mistral invoke succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Mistral native unary envelope, finish reason and usage', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.object, pm.response.text()).to.eql('chat.completion');",
+                  "  pm.expect(body.choices, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(body.choices[0].message.role).to.eql('assistant');",
+                  "  pm.expect(body.choices[0].message.content).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.choices[0].finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "  pm.expect(body.usage.prompt_tokens).to.be.a('number');",
+                  "  pm.expect(body.usage.completion_tokens).to.be.a('number');",
+                  "  pm.expect(body.usage.total_tokens).to.be.a('number');",
+                  "  pm.expect(body).not.to.have.property('type');",
+                  "  pm.expect(body).not.to.have.property('extra_fields');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 32,\n  \"temperature\": 0,\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with only Hello.\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.2 Bedrock Mistral Large 3 /invoke-with-response-stream returns native choices (Mistral native invoke) - #8939",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native Mistral invoke succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Mistral native chat chunks inside AWS EventStream', function () {",
+                  "  var wire = pm.response.text() || '';",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), wire.slice(0, 300)).to.contain('application/vnd.amazon.eventstream');",
+                  "  var matches = wire.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, 'no EventStream chunk payloads: ' + wire.slice(0, 300)).to.be.above(0);",
+                  "  var chunks = matches.map(function (match) {",
+                  "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
+                  "  });",
+                  "  var text = '';",
+                  "  var terminal = [];",
+                  "  chunks.forEach(function (chunk) {",
+                  "    pm.expect(chunk.object, JSON.stringify(chunk)).to.eql('chat.completion.chunk');",
+                  "    pm.expect(chunk.choices, JSON.stringify(chunk)).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(chunk.id).to.eql(chunks[0].id);",
+                  "    pm.expect(chunk.created).to.eql(chunks[0].created);",
+                  "    pm.expect(chunk).not.to.have.property('type');",
+                  "    pm.expect(chunk).not.to.have.property('extra_fields');",
+                  "    var choice = chunk.choices[0];",
+                  "    pm.expect(choice.delta).to.be.an('object');",
+                  "    if (typeof choice.delta.content === 'string') { text += choice.delta.content; }",
+                  "    if (choice.finish_reason !== null && choice.finish_reason !== undefined) { terminal.push(chunk); }",
+                  "  });",
+                  "  pm.expect(text, JSON.stringify(chunks)).not.to.be.empty;",
+                  "  pm.expect(terminal, JSON.stringify(chunks)).to.have.lengthOf(1);",
+                  "  pm.expect(terminal[0].choices[0].finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "  pm.expect(terminal[0].usage.total_tokens).to.be.a('number');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 32,\n  \"temperature\": 0,\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with only Hello.\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.3 Bedrock Mistral Large 3 /langchain/invoke returns native choices (Mistral native invoke) - #8939",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native Mistral invoke succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Mistral native unary envelope, finish reason and usage', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.object, pm.response.text()).to.eql('chat.completion');",
+                  "  pm.expect(body.choices, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(body.choices[0].message.role).to.eql('assistant');",
+                  "  pm.expect(body.choices[0].message.content).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.choices[0].finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "  pm.expect(body.usage.prompt_tokens).to.be.a('number');",
+                  "  pm.expect(body.usage.completion_tokens).to.be.a('number');",
+                  "  pm.expect(body.usage.total_tokens).to.be.a('number');",
+                  "  pm.expect(body).not.to.have.property('type');",
+                  "  pm.expect(body).not.to.have.property('extra_fields');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 32,\n  \"temperature\": 0,\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with only Hello.\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.4 Bedrock Mistral Large 3 /langchain/invoke-with-response-stream returns native choices (Mistral native invoke) - #8939",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native Mistral invoke succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Mistral native chat chunks inside AWS EventStream', function () {",
+                  "  var wire = pm.response.text() || '';",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), wire.slice(0, 300)).to.contain('application/vnd.amazon.eventstream');",
+                  "  var matches = wire.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, 'no EventStream chunk payloads: ' + wire.slice(0, 300)).to.be.above(0);",
+                  "  var chunks = matches.map(function (match) {",
+                  "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
+                  "  });",
+                  "  var text = '';",
+                  "  var terminal = [];",
+                  "  chunks.forEach(function (chunk) {",
+                  "    pm.expect(chunk.object, JSON.stringify(chunk)).to.eql('chat.completion.chunk');",
+                  "    pm.expect(chunk.choices, JSON.stringify(chunk)).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(chunk.id).to.eql(chunks[0].id);",
+                  "    pm.expect(chunk.created).to.eql(chunks[0].created);",
+                  "    pm.expect(chunk).not.to.have.property('type');",
+                  "    pm.expect(chunk).not.to.have.property('extra_fields');",
+                  "    var choice = chunk.choices[0];",
+                  "    pm.expect(choice.delta).to.be.an('object');",
+                  "    if (typeof choice.delta.content === 'string') { text += choice.delta.content; }",
+                  "    if (choice.finish_reason !== null && choice.finish_reason !== undefined) { terminal.push(chunk); }",
+                  "  });",
+                  "  pm.expect(text, JSON.stringify(chunks)).not.to.be.empty;",
+                  "  pm.expect(terminal, JSON.stringify(chunks)).to.have.lengthOf(1);",
+                  "  pm.expect(terminal[0].choices[0].finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "  pm.expect(terminal[0].usage.total_tokens).to.be.a('number');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 32,\n  \"temperature\": 0,\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with only Hello.\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.5 Bedrock Mistral Large 3 /litellm/invoke returns native choices (Mistral native invoke) - #8939",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native Mistral invoke succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Mistral native unary envelope, finish reason and usage', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.object, pm.response.text()).to.eql('chat.completion');",
+                  "  pm.expect(body.choices, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(body.choices[0].message.role).to.eql('assistant');",
+                  "  pm.expect(body.choices[0].message.content).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.choices[0].finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "  pm.expect(body.usage.prompt_tokens).to.be.a('number');",
+                  "  pm.expect(body.usage.completion_tokens).to.be.a('number');",
+                  "  pm.expect(body.usage.total_tokens).to.be.a('number');",
+                  "  pm.expect(body).not.to.have.property('type');",
+                  "  pm.expect(body).not.to.have.property('extra_fields');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 32,\n  \"temperature\": 0,\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with only Hello.\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.6 Bedrock Mistral Large 3 /litellm/invoke-with-response-stream returns native choices (Mistral native invoke) - #8939",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native Mistral invoke succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Mistral native chat chunks inside AWS EventStream', function () {",
+                  "  var wire = pm.response.text() || '';",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), wire.slice(0, 300)).to.contain('application/vnd.amazon.eventstream');",
+                  "  var matches = wire.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, 'no EventStream chunk payloads: ' + wire.slice(0, 300)).to.be.above(0);",
+                  "  var chunks = matches.map(function (match) {",
+                  "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
+                  "  });",
+                  "  var text = '';",
+                  "  var terminal = [];",
+                  "  chunks.forEach(function (chunk) {",
+                  "    pm.expect(chunk.object, JSON.stringify(chunk)).to.eql('chat.completion.chunk');",
+                  "    pm.expect(chunk.choices, JSON.stringify(chunk)).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(chunk.id).to.eql(chunks[0].id);",
+                  "    pm.expect(chunk.created).to.eql(chunks[0].created);",
+                  "    pm.expect(chunk).not.to.have.property('type');",
+                  "    pm.expect(chunk).not.to.have.property('extra_fields');",
+                  "    var choice = chunk.choices[0];",
+                  "    pm.expect(choice.delta).to.be.an('object');",
+                  "    if (typeof choice.delta.content === 'string') { text += choice.delta.content; }",
+                  "    if (choice.finish_reason !== null && choice.finish_reason !== undefined) { terminal.push(chunk); }",
+                  "  });",
+                  "  pm.expect(text, JSON.stringify(chunks)).not.to.be.empty;",
+                  "  pm.expect(terminal, JSON.stringify(chunks)).to.have.lengthOf(1);",
+                  "  pm.expect(terminal[0].choices[0].finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "  pm.expect(terminal[0].usage.total_tokens).to.be.a('number');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 32,\n  \"temperature\": 0,\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with only Hello.\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.7 Bedrock Mistral Large 3 /pydanticai/invoke returns native choices (Mistral native invoke) - #8939",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native Mistral invoke succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Mistral native unary envelope, finish reason and usage', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.object, pm.response.text()).to.eql('chat.completion');",
+                  "  pm.expect(body.choices, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(body.choices[0].message.role).to.eql('assistant');",
+                  "  pm.expect(body.choices[0].message.content).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.choices[0].finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "  pm.expect(body.usage.prompt_tokens).to.be.a('number');",
+                  "  pm.expect(body.usage.completion_tokens).to.be.a('number');",
+                  "  pm.expect(body.usage.total_tokens).to.be.a('number');",
+                  "  pm.expect(body).not.to.have.property('type');",
+                  "  pm.expect(body).not.to.have.property('extra_fields');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 32,\n  \"temperature\": 0,\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with only Hello.\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.8 Bedrock Mistral Large 3 /pydanticai/invoke-with-response-stream returns native choices (Mistral native invoke) - #8939",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native Mistral invoke succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Mistral native chat chunks inside AWS EventStream', function () {",
+                  "  var wire = pm.response.text() || '';",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), wire.slice(0, 300)).to.contain('application/vnd.amazon.eventstream');",
+                  "  var matches = wire.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, 'no EventStream chunk payloads: ' + wire.slice(0, 300)).to.be.above(0);",
+                  "  var chunks = matches.map(function (match) {",
+                  "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
+                  "  });",
+                  "  var text = '';",
+                  "  var terminal = [];",
+                  "  chunks.forEach(function (chunk) {",
+                  "    pm.expect(chunk.object, JSON.stringify(chunk)).to.eql('chat.completion.chunk');",
+                  "    pm.expect(chunk.choices, JSON.stringify(chunk)).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(chunk.id).to.eql(chunks[0].id);",
+                  "    pm.expect(chunk.created).to.eql(chunks[0].created);",
+                  "    pm.expect(chunk).not.to.have.property('type');",
+                  "    pm.expect(chunk).not.to.have.property('extra_fields');",
+                  "    var choice = chunk.choices[0];",
+                  "    pm.expect(choice.delta).to.be.an('object');",
+                  "    if (typeof choice.delta.content === 'string') { text += choice.delta.content; }",
+                  "    if (choice.finish_reason !== null && choice.finish_reason !== undefined) { terminal.push(chunk); }",
+                  "  });",
+                  "  pm.expect(text, JSON.stringify(chunks)).not.to.be.empty;",
+                  "  pm.expect(terminal, JSON.stringify(chunks)).to.have.lengthOf(1);",
+                  "  pm.expect(terminal[0].choices[0].finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "  pm.expect(terminal[0].usage.total_tokens).to.be.a('number');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 32,\n  \"temperature\": 0,\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with only Hello.\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.9 Bedrock Mistral Large 3 /cursor/invoke returns native choices (Mistral native invoke) - #8939",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native Mistral invoke succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Mistral native unary envelope, finish reason and usage', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.object, pm.response.text()).to.eql('chat.completion');",
+                  "  pm.expect(body.choices, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(body.choices[0].message.role).to.eql('assistant');",
+                  "  pm.expect(body.choices[0].message.content).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.choices[0].finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "  pm.expect(body.usage.prompt_tokens).to.be.a('number');",
+                  "  pm.expect(body.usage.completion_tokens).to.be.a('number');",
+                  "  pm.expect(body.usage.total_tokens).to.be.a('number');",
+                  "  pm.expect(body).not.to.have.property('type');",
+                  "  pm.expect(body).not.to.have.property('extra_fields');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 32,\n  \"temperature\": 0,\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with only Hello.\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "267.10 Bedrock Mistral Large 3 /cursor/invoke-with-response-stream returns native choices (Mistral native invoke) - #8939",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('native Mistral invoke succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Mistral native chat chunks inside AWS EventStream', function () {",
+                  "  var wire = pm.response.text() || '';",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), wire.slice(0, 300)).to.contain('application/vnd.amazon.eventstream');",
+                  "  var matches = wire.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(matches.length, 'no EventStream chunk payloads: ' + wire.slice(0, 300)).to.be.above(0);",
+                  "  var chunks = matches.map(function (match) {",
+                  "    return JSON.parse(Buffer.from(match.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1], 'base64').toString('utf8'));",
+                  "  });",
+                  "  var text = '';",
+                  "  var terminal = [];",
+                  "  chunks.forEach(function (chunk) {",
+                  "    pm.expect(chunk.object, JSON.stringify(chunk)).to.eql('chat.completion.chunk');",
+                  "    pm.expect(chunk.choices, JSON.stringify(chunk)).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(chunk.id).to.eql(chunks[0].id);",
+                  "    pm.expect(chunk.created).to.eql(chunks[0].created);",
+                  "    pm.expect(chunk).not.to.have.property('type');",
+                  "    pm.expect(chunk).not.to.have.property('extra_fields');",
+                  "    var choice = chunk.choices[0];",
+                  "    pm.expect(choice.delta).to.be.an('object');",
+                  "    if (typeof choice.delta.content === 'string') { text += choice.delta.content; }",
+                  "    if (choice.finish_reason !== null && choice.finish_reason !== undefined) { terminal.push(chunk); }",
+                  "  });",
+                  "  pm.expect(text, JSON.stringify(chunks)).not.to.be.empty;",
+                  "  pm.expect(terminal, JSON.stringify(chunks)).to.have.lengthOf(1);",
+                  "  pm.expect(terminal[0].choices[0].finish_reason).to.be.oneOf(['stop', 'length']);",
+                  "  pm.expect(terminal[0].usage.total_tokens).to.be.a('number');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"max_tokens\": 32,\n  \"temperature\": 0,\n  \"messages\": [{\"role\": \"user\", \"content\": \"Reply with only Hello.\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cursor/model/us-west-2%2Fmistral.mistral-large-3-675b-instruct/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cursor",
+                "model",
+                "us-west-2%2Fmistral.mistral-large-3-675b-instruct",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
