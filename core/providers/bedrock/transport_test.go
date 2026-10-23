@@ -286,6 +286,90 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 		"net.OpError during EventStream decoding must use ErrProviderNetworkError message")
 }
 
+// TestRequest_ConnectionFailure_IsUpstreamError verifies that a connection the server
+// closes before responding reaches clients as a 502 upstream failure. Without a
+// status the error resolves to 400, which reads as a malformed request.
+func TestRequest_ConnectionFailure_IsUpstreamError(t *testing.T) {
+	requests := map[string]func(*BedrockProvider) *schemas.BifrostError{
+		"converse": func(p *BedrockProvider) *schemas.BifrostError {
+			req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse", strings.NewReader(`{}`))
+			require.NoError(t, err)
+			_, _, _, bifrostErr := p.executeBedrockRequest(req)
+			return bifrostErr
+		},
+		"agent runtime": func(p *BedrockProvider) *schemas.BifrostError {
+			_, _, _, bifrostErr := p.completeAgentRuntimeRequest(testBedrockCtx(), []byte(`{}`), "/rerank", testBedrockKey())
+			return bifrostErr
+		},
+		"stream": func(p *BedrockProvider) *schemas.BifrostError {
+			_, bifrostErr := p.makeStreamingRequest(testBedrockCtx(), []byte(`{}`), testBedrockKey(), "anthropic.claude-sonnet-4-5", "converse-stream")
+			return bifrostErr
+		},
+		"list models": func(p *BedrockProvider) *schemas.BifrostError {
+			_, bifrostErr := p.listModelsByKey(testBedrockCtx(), testBedrockKey(), &schemas.BifrostListModelsRequest{Provider: schemas.Bedrock})
+			return bifrostErr
+		},
+	}
+	for name, send := range requests {
+		t.Run(name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hj, ok := w.(http.Hijacker)
+				if !ok {
+					http.Error(w, "hijack not supported", http.StatusInternalServerError)
+					return
+				}
+				conn, _, _ := hj.Hijack()
+				conn.Close()
+			}))
+			defer ts.Close()
+
+			bifrostErr := send(newTestProviderWithServer(t, ts))
+
+			require.NotNil(t, bifrostErr)
+			assert.False(t, bifrostErr.IsBifrostError)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, http.StatusBadGateway, *bifrostErr.StatusCode)
+			require.NotNil(t, bifrostErr.Error)
+			require.NotNil(t, bifrostErr.Error.Type)
+			assert.Equal(t, schemas.ProviderConnectionFailed, *bifrostErr.Error.Type)
+			assert.Contains(t, []string{schemas.ErrProviderNetworkError, schemas.ErrProviderDoRequest}, bifrostErr.Error.Message)
+		})
+	}
+}
+
+func TestNewRequestError(t *testing.T) {
+	cases := []struct {
+		name           string
+		err            error
+		isBifrostError bool
+		status         int
+		errType        string
+		message        string
+	}{
+		{"cancelled", context.Canceled, false, 0, schemas.RequestCancelled, schemas.ErrRequestCancelled},
+		{"deadline", context.DeadlineExceeded, true, http.StatusGatewayTimeout, schemas.RequestTimedOut, schemas.ErrProviderRequestTimedOut},
+		{"network", &net.OpError{Op: "dial", Err: io.EOF}, false, http.StatusBadGateway, schemas.ProviderConnectionFailed, schemas.ErrProviderNetworkError},
+		{"other", io.ErrUnexpectedEOF, false, http.StatusBadGateway, schemas.ProviderConnectionFailed, schemas.ErrProviderDoRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostErr := newRequestError(tc.err, 25*time.Millisecond)
+
+			assert.Equal(t, tc.isBifrostError, bifrostErr.IsBifrostError)
+			if tc.status == 0 {
+				assert.Nil(t, bifrostErr.StatusCode)
+			} else {
+				require.NotNil(t, bifrostErr.StatusCode)
+				assert.Equal(t, tc.status, *bifrostErr.StatusCode)
+			}
+			require.NotNil(t, bifrostErr.Error.Type)
+			assert.Equal(t, tc.errType, *bifrostErr.Error.Type)
+			assert.Equal(t, tc.message, bifrostErr.Error.Message)
+			assert.Equal(t, int64(25), bifrostErr.ExtraFields.Latency)
+		})
+	}
+}
+
 // writeEventStreamException encodes a well-formed AWS EventStream exception
 // frame with the given exception type and message into w.
 // The frame format is: prelude (total_len + headers_len + CRC) + headers + payload + message_CRC.
