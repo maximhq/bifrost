@@ -2561,6 +2561,78 @@ func toolNames(tools []schemas.ResponsesTool) []string {
 	return names
 }
 
+func TestBuiltinToolRewritingScopedNamespaces(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	fn := func(name string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: new(name)}
+	}
+	ns := func(name string, tools ...schemas.ResponsesTool) schemas.ResponsesTool {
+		return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeNamespace, Name: new(name), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: tools}}
+	}
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.BedrockMantle, Model: "gpt-5.6-luna", Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{ns("web", fn("js")), ns("safe", fn("js"), fn("web__js"), schemas.ResponsesTool{Type: schemas.ResponsesToolTypeCustom, Name: new("freeform")})}}}
+	unchanged, err := FlattenResponsesNamespaceToolsMatching(ctx, req, []string{"missing"})
+	if err != nil || unchanged != req {
+		t.Fatalf("unmatched filter must be a no-op: %v", err)
+	}
+	out, err := FlattenResponsesNamespaceToolsMatching(ctx, req, []string{"web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Params.Tools[1].Type != schemas.ResponsesToolTypeNamespace || len(out.Params.Tools[1].ResponsesToolNamespace.Tools) != 3 {
+		t.Fatal("non-reserved native tools were altered")
+	}
+	if _, exists := out.NamespaceToolAliases["js"]; exists {
+		t.Fatal("ambiguous bare name must not be restored to the flattened namespace")
+	}
+	for _, namespace := range []string{"safe", "functions"} {
+		response := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{Type: new(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: new("web__js"), Namespace: new(namespace)}}}}}
+		RestoreResponsesNamespaceToolCalls(out.NamespaceToolAliases, response)
+		call := response.ResponsesResponse.Output[0]
+		if namespace == "safe" && (*call.Name != "web__js" || *call.Namespace != "safe") {
+			t.Fatal("native namespace call was stolen by an alias")
+		}
+		if namespace == "functions" && (*call.Name != "js" || *call.Namespace != "web") {
+			t.Fatal("flattened call was not restored")
+		}
+	}
+	req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeFunction, Name: new("js")}}
+	if _, err := FlattenResponsesNamespaceToolsMatching(ctx, req, []string{"web"}); err == nil || err.StatusCode == nil || *err.StatusCode != 400 {
+		t.Fatalf("ambiguous mixed namespace choice must fail closed: %v", err)
+	}
+}
+
+func TestBuiltinToolRewritingTopLevelNameWinsInEitherOrder(t *testing.T) {
+	for _, typ := range []schemas.ResponsesToolType{schemas.ResponsesToolTypeFunction, schemas.ResponsesToolTypeCustom} {
+		for _, first := range []bool{false, true} {
+			t.Run(fmt.Sprintf("type=%s/first=%v", typ, first), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				member := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: new("js")}
+				tools := []schemas.ResponsesTool{
+					{Type: schemas.ResponsesToolTypeNamespace, Name: new("web"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{member}}},
+					{Type: schemas.ResponsesToolTypeNamespace, Name: new("safe"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{member}}},
+				}
+				topLevel := schemas.ResponsesTool{Type: typ, Name: new("js")}
+				if first {
+					tools = append([]schemas.ResponsesTool{topLevel}, tools...)
+				} else {
+					tools = append(tools, topLevel)
+				}
+				req := &schemas.BifrostResponsesRequest{Provider: schemas.BedrockMantle, Model: "gpt-5.6-luna", Params: &schemas.ResponsesParameters{Tools: tools, ToolChoice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeFunction, Name: new("js")}}}}
+				out, err := FlattenResponsesNamespaceToolsMatching(ctx, req, []string{"web"})
+				if err != nil || *out.Params.ToolChoice.ResponsesToolChoiceStruct.Name != "js" {
+					t.Fatalf("top-level declaration lost priority: %v", err)
+				}
+				if _, exists := out.NamespaceToolAliases["js"]; exists {
+					t.Fatal("top-level call would be stolen by a bare alias")
+				}
+				if *req.Params.ToolChoice.ResponsesToolChoiceStruct.Name != "js" {
+					t.Fatal("shared tool choice was mutated")
+				}
+			})
+		}
+	}
+}
+
 func TestFlattenResponsesNamespaceTools_IssuePayloadGetsUniquePrefixedNames(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := issue7048Request()
@@ -4219,5 +4291,66 @@ func TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge(t *testing.T) {
 		if _, ok := AsBifrostBadRequestError(err); !ok {
 			t.Errorf("%s: err = %v, want a 400 invalid-request error", name, err)
 		}
+	}
+}
+
+func TestBuiltinToolRewritingNamespaceLabelCannotShadowFunction(t *testing.T) {
+	fn := func(name string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: new(name)}
+	}
+	ns := func(name string, tool schemas.ResponsesTool) schemas.ResponsesTool {
+		return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeNamespace, Name: new(name), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{tool}}}
+	}
+	for _, allowed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("allowed=%v", allowed), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			choice := &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeFunction, Name: new("js")}}
+			if allowed {
+				choice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeAllowedTools, Mode: new("auto"), Tools: []schemas.ResponsesToolChoiceAllowedToolDef{{Type: "function", Name: new("js")}}}}
+			}
+			req := &schemas.BifrostResponsesRequest{Provider: schemas.BedrockMantle, Model: "gpt-5.6-luna", Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{ns("web", fn("js")), ns("js", fn("keep"))}, ToolChoice: choice}}
+			out, err := FlattenResponsesNamespaceToolsMatching(ctx, req, []string{"web"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			name := out.Params.ToolChoice.ResponsesToolChoiceStruct.Name
+			if allowed {
+				name = out.Params.ToolChoice.ResponsesToolChoiceStruct.Tools[0].Name
+			}
+			if name == nil {
+				t.Fatal("tool choice lost its name")
+			}
+			if *name != "web__js" {
+				t.Errorf("callable js must be aliased, not mistaken for namespace container js: %q", *name)
+			}
+			response := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{Type: new(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: new("js"), Namespace: new("functions")}}}}}
+			RestoreResponsesNamespaceToolCalls(out.NamespaceToolAliases, response)
+			if *response.ResponsesResponse.Output[0].Namespace != "web" {
+				t.Errorf("namespace container incorrectly blocked bare-call restoration: %+v", response.ResponsesResponse.Output[0].ResponsesToolMessage)
+			}
+		})
+	}
+}
+
+func BenchmarkBuiltinToolRewritingScopedNamespaceScaling(b *testing.B) {
+	for _, n := range []int{16, 128, 512} {
+		b.Run(fmt.Sprintf("tools_%d", n), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			reserved, native := make([]schemas.ResponsesTool, n), make([]schemas.ResponsesTool, n)
+			choices := make([]schemas.ResponsesToolChoiceAllowedToolDef, n)
+			for i := 0; i < n; i++ {
+				name, nativeName := fmt.Sprintf("fn_%d", i), fmt.Sprintf("native_%d", i)
+				reserved[i] = schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: new(name)}
+				native[i] = schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: new(nativeName)}
+				choices[i] = schemas.ResponsesToolChoiceAllowedToolDef{Type: "function", Name: new(name)}
+			}
+			req := &schemas.BifrostResponsesRequest{Provider: schemas.BedrockMantle, Model: "gpt-5.6-luna", Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeNamespace, Name: new("web"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: reserved}}, {Type: schemas.ResponsesToolTypeNamespace, Name: new("safe"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: native}}}, ToolChoice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeAllowedTools, Mode: new("auto"), Tools: choices}}}}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := FlattenResponsesNamespaceToolsMatching(ctx, req, []string{"web"}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

@@ -571,6 +571,184 @@ func TestPrepareResponsesRequest_FlattensForUnsupportedWireAndIsolatesSharedRequ
 	require.Len(t, chat.Params.Tools, 2)
 }
 
+func TestDisableBuiltinToolRewritingPreservesMantleNamespace(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.BedrockMantle, "custom-mantle"} {
+		t.Run(string(provider), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.BedrockMantle)
+			r := responsesReqWithNamespaces(provider)
+			r.Model = "openai.gpt-6-sol"
+			r.Params.Tools = r.Params.Tools[:1]
+			r.Params.Tools[0].Name = new("web")
+			r.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeFunction, Name: new("js")}}
+			prepared, bifrostErr := prepareResponsesRequest(ctx, nil, namespaceCapableStub{stubProvider: stubProvider{key: provider}, supported: true}, schemas.Key{}, r)
+			require.Nil(t, bifrostErr)
+			out := openai.ToOpenAIResponsesRequest(ctx, prepared)
+			require.Len(t, out.Tools, 1)
+			require.Equal(t, schemas.ResponsesToolTypeFunction, out.Tools[0].Type)
+			assert.Equal(t, "web__js", *out.Tools[0].Name)
+			assert.Equal(t, "web__js", *out.ToolChoice.ResponsesToolChoiceStruct.Name)
+			assert.Equal(t, schemas.NamespaceToolAlias{Namespace: "web", Name: "js"}, prepared.NamespaceToolAliases["web__js"])
+			assert.Equal(t, schemas.ResponsesToolTypeNamespace, r.Params.Tools[0].Type, "fallback input must remain untouched")
+		})
+	}
+}
+
+func TestDisableBuiltinToolRewritingKeepsNonReservedNamespaces(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mixed=%v", mixed), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
+			r := responsesReqWithNamespaces(schemas.BedrockMantle)
+			r.Model = "openai.gpt-5.6-luna"
+			r.Params.Tools = r.Params.Tools[:1]
+			r.Params.Tools[0].Name = new("safe")
+			r.Params.Tools[0].ResponsesToolNamespace.Tools = append(r.Params.Tools[0].ResponsesToolNamespace.Tools, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeCustom, Name: new("freeform")})
+			if mixed {
+				r.Params.Tools = append(r.Params.Tools, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeNamespace, Name: new("web"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: new("js")}}}})
+			}
+			out, err := prepareResponsesRequest(ctx, nil, namespaceCapableStub{stubProvider: stubProvider{key: schemas.BedrockMantle}, supported: true}, schemas.Key{}, r)
+			require.Nil(t, err)
+			require.Equal(t, schemas.ResponsesToolTypeNamespace, out.Params.Tools[0].Type)
+			require.Len(t, out.Params.Tools[0].ResponsesToolNamespace.Tools, 2)
+			assert.Equal(t, schemas.ResponsesToolTypeCustom, out.Params.Tools[0].ResponsesToolNamespace.Tools[1].Type)
+			if mixed {
+				require.Equal(t, schemas.ResponsesToolTypeFunction, out.Params.Tools[1].Type)
+				response := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{Type: new(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: new("js"), Namespace: new("safe")}}}}}
+				providerUtils.RestoreResponsesNamespaceToolCalls(out.NamespaceToolAliases, response)
+				assert.Equal(t, "safe", *response.ResponsesResponse.Output[0].Namespace)
+			}
+		})
+	}
+}
+
+func TestDisableBuiltinToolRewritingMantleEndToEnd(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		for _, fallback := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%v/fallback=%v", streaming, fallback), func(t *testing.T) {
+				var mu sync.Mutex
+				var bodies []string
+				item := `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"js","namespace":"functions","arguments":"{}","status":"completed"}`
+				response := `{"id":"resp_1","object":"response","status":"completed","model":"openai.gpt-5.6-luna","output":[` + item + `],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+				upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					mu.Lock()
+					bodies = append(bodies, string(body))
+					mu.Unlock()
+					if !streaming {
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = io.WriteString(w, response)
+						return
+					}
+					w.Header().Set("Content-Type", "text/event-stream")
+					for _, event := range []string{
+						`{"type":"response.output_item.added","output_index":0,"item":` + item + `}`,
+						`{"type":"response.output_item.done","output_index":0,"item":` + item + `}`,
+						`{"type":"response.completed","response":` + response + `}`,
+					} {
+						_, _ = fmt.Fprintf(w, "data: %s\n\n", event)
+					}
+				}))
+				defer upstream.Close()
+				account := NewMockAccount()
+				account.AddProviderWithBaseURL(schemas.BedrockMantle, 1, 1, "")
+				account.configs[schemas.BedrockMantle].NetworkConfig.InsecureSkipVerify = true
+				account.configs[schemas.BedrockMantle].NetworkConfig.AllowPrivateNetwork = true
+				account.configs[schemas.BedrockMantle].NetworkConfig.MaxRetries = 0
+				account.SetKeysForProvider(schemas.BedrockMantle, []schemas.Key{{
+					ID: "mantle-key", Value: *schemas.NewSecretVar("test-bearer"), Models: schemas.WhiteList{"*"}, Weight: 1,
+					BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{Endpoints: &schemas.BedrockEndpoints{Mantle: schemas.NewSecretVar(strings.TrimPrefix(upstream.URL, "https://"))}},
+				}})
+				r := responsesReqWithNamespaces(schemas.BedrockMantle)
+				r.Model = "openai.gpt-5.6-luna"
+				r.Params.Tools = r.Params.Tools[:1]
+				r.Params.Tools[0].Name = new("web")
+				// A namespace container named js must not shadow web's callable js.
+				r.Params.Tools = append(r.Params.Tools, schemas.ResponsesTool{
+					Type: schemas.ResponsesToolTypeNamespace, Name: new("js"),
+					ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: new("keep")}}},
+				})
+				r.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{Type: schemas.ResponsesToolChoiceTypeFunction, Name: new("js")}}
+				if fallback {
+					primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusInternalServerError)
+						_, _ = io.WriteString(w, `{"error":{"message":"try fallback","type":"server_error"}}`)
+					}))
+					defer primary.Close()
+					account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, primary.URL)
+					account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+					account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+					r.Provider, r.Model = schemas.OpenAI, "gpt-5.6-luna"
+					r.Fallbacks = []schemas.Fallback{{Provider: schemas.BedrockMantle, Model: "openai.gpt-5.6-luna"}}
+				}
+				client := newStreamTestClient(t, account)
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+				defer ctx.Cancel()
+				ctx.SetValue(schemas.BifrostContextKeyDisableBuiltinToolRewriting, true)
+				if streaming {
+					chunks, err := client.ResponsesStreamRequest(ctx, r)
+					require.Nil(t, err)
+					seen := false
+					for chunk := range chunks {
+						require.Nil(t, chunk.BifrostError)
+						if chunk.BifrostResponsesStreamResponse != nil && chunk.BifrostResponsesStreamResponse.Item != nil {
+							call := chunk.BifrostResponsesStreamResponse.Item
+							require.NotNil(t, call.Name)
+							require.NotNil(t, call.Namespace)
+							require.Equal(t, "js", *call.Name)
+							require.Equal(t, "web", *call.Namespace)
+							seen = true
+						}
+					}
+					require.True(t, seen, "stream returned no function-call item")
+				} else {
+					result, err := client.ResponsesRequest(ctx, r)
+					require.Nil(t, err)
+					require.NotNil(t, result)
+					require.Len(t, result.Output, 1)
+					require.NotNil(t, result.Output[0].Name)
+					require.NotNil(t, result.Output[0].Namespace)
+					require.Equal(t, "js", *result.Output[0].Name)
+					require.Equal(t, "web", *result.Output[0].Namespace)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				require.Len(t, bodies, 1)
+				assert.Equal(t, "function", providerUtils.GetJSONField([]byte(bodies[0]), "tools.0.type").String())
+				assert.Equal(t, "web__js", providerUtils.GetJSONField([]byte(bodies[0]), "tools.0.name").String())
+				assert.Equal(t, "web__js", providerUtils.GetJSONField([]byte(bodies[0]), "tool_choice.name").String())
+				assert.Equal(t, "namespace", providerUtils.GetJSONField([]byte(bodies[0]), "tools.1.type").String())
+				assert.Equal(t, "js", providerUtils.GetJSONField([]byte(bodies[0]), "tools.1.name").String())
+				assert.NotContains(t, bodies[0], `"type":"web_search"`)
+				assert.Equal(t, schemas.ResponsesToolTypeNamespace, r.Params.Tools[0].Type)
+				assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyDisableBuiltinToolRewriting))
+			})
+		}
+	}
+}
+
+func BenchmarkBuiltinToolRewritingPreparation(b *testing.B) {
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.BedrockMantle} {
+		b.Run(string(provider), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			r := responsesReqWithText("hello")
+			r.Provider, r.Model = provider, "gpt-6-sol"
+			p := namespaceCapableStub{stubProvider: stubProvider{key: provider}, supported: true}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := prepareResponsesRequest(ctx, nil, p, schemas.Key{}, r); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestPrepareResponsesRequest_PassesThroughForOpenAI(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := responsesReqWithNamespaces(schemas.OpenAI)

@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -158,7 +159,20 @@ func isDefaultNamespaceTool(tool schemas.ResponsesTool) bool {
 // duplicated after flattening, or a tool_choice that matches functions in more than one
 // namespace, is a 400 here rather than an opaque upstream rejection.
 func FlattenResponsesNamespaceTools(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
-	if req == nil || req.Params == nil || !hasNamespaceTool(req.Params.Tools) {
+	return flattenResponsesNamespaceTools(ctx, req, nil)
+}
+
+// FlattenResponsesNamespaceToolsMatching flattens only the named namespaces,
+// preserving other namespace containers and their native tool definitions.
+func FlattenResponsesNamespaceToolsMatching(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest, names []string) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
+	if len(names) == 0 {
+		return req, nil
+	}
+	return flattenResponsesNamespaceTools(ctx, req, names)
+}
+
+func flattenResponsesNamespaceTools(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest, names []string) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
+	if req == nil || req.Params == nil || !hasNamespaceTool(req.Params.Tools, names) {
 		return req, nil
 	}
 
@@ -169,7 +183,7 @@ func FlattenResponsesNamespaceTools(ctx *schemas.BifrostContext, req *schemas.Bi
 	byFunction := make(map[string][]string)
 	flattened := make([]schemas.ResponsesTool, 0, len(req.Params.Tools))
 	for _, tool := range req.Params.Tools {
-		if tool.Type != schemas.ResponsesToolTypeNamespace {
+		if tool.Type != schemas.ResponsesToolTypeNamespace || (names != nil && (tool.Name == nil || !slices.Contains(names, *tool.Name))) {
 			flattened = append(flattened, tool)
 			continue
 		}
@@ -203,15 +217,16 @@ func FlattenResponsesNamespaceTools(ctx *schemas.BifrostContext, req *schemas.Bi
 	cp.Params = &params
 
 	if len(aliases) > 0 {
+		unaliasedNames := indexUnaliasedToolNames(flattened, aliases)
 		cp.Input = realiasNamespacedFunctionCalls(req.Input, aliases, limit)
-		toolChoice, bifrostErr := realiasToolChoice(req.Params.ToolChoice, flattened, byFunction, aliases)
+		toolChoice, bifrostErr := realiasToolChoice(req.Params.ToolChoice, unaliasedNames, byFunction, aliases)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
 		params.ToolChoice = toolChoice
 		// The response-side map also carries bare-name fallbacks; request-side
 		// re-aliasing above keeps using the qualified aliases only.
-		cp.NamespaceToolAliases = withBareNameFallbacks(aliases, byFunction, flattened)
+		cp.NamespaceToolAliases = withBareNameFallbacks(aliases, byFunction, unaliasedNames)
 	}
 	return &cp, nil
 }
@@ -240,7 +255,7 @@ func joinNamespaceDescription(namespace, member *string) *string {
 // was prefixed; mapping it back keeps the caller's dispatch working. Only the map
 // stored for the response side gets these entries; request-side lookups keep using
 // the qualified aliases.
-func withBareNameFallbacks(aliases map[string]schemas.NamespaceToolAlias, byFunction map[string][]string, tools []schemas.ResponsesTool) map[string]schemas.NamespaceToolAlias {
+func withBareNameFallbacks(aliases map[string]schemas.NamespaceToolAlias, byFunction map[string][]string, unaliasedNames map[string]bool) map[string]schemas.NamespaceToolAlias {
 	out := make(map[string]schemas.NamespaceToolAlias, len(aliases)+len(byFunction))
 	for alias, target := range aliases {
 		out[alias] = target
@@ -252,7 +267,7 @@ func withBareNameFallbacks(aliases map[string]schemas.NamespaceToolAlias, byFunc
 		if _, taken := out[bare]; taken {
 			continue
 		}
-		if isTopLevelToolName(bare, tools, aliases) {
+		if _, declared := unaliasedNames[bare]; declared {
 			continue
 		}
 		out[bare] = aliases[candidates[0]]
@@ -260,16 +275,41 @@ func withBareNameFallbacks(aliases map[string]schemas.NamespaceToolAlias, byFunc
 	return out
 }
 
-func isTopLevelToolName(name string, tools []schemas.ResponsesTool, aliases map[string]schemas.NamespaceToolAlias) bool {
+// indexUnaliasedToolNames indexes declarations that must not be mistaken for
+// flattened aliases. A true value marks a top-level tool; a present false value
+// marks a retained namespace member. Namespace container names are not callable.
+func indexUnaliasedToolNames(tools []schemas.ResponsesTool, aliases map[string]schemas.NamespaceToolAlias) map[string]bool {
+	var names map[string]bool
 	for _, tool := range tools {
-		if tool.Name == nil || *tool.Name != name {
+		if tool.Type == schemas.ResponsesToolTypeNamespace {
+			if tool.ResponsesToolNamespace != nil {
+				for _, nested := range tool.ResponsesToolNamespace.Tools {
+					if nested.Name == nil || *nested.Name == "" {
+						continue
+					}
+					if names == nil {
+						names = make(map[string]bool, len(tools))
+					}
+					// A real top-level declaration wins regardless of tool order.
+					if !names[*nested.Name] {
+						names[*nested.Name] = false
+					}
+				}
+			}
 			continue
 		}
-		if _, isAlias := aliases[*tool.Name]; !isAlias {
-			return true
+		if tool.Name == nil || *tool.Name == "" {
+			continue
 		}
+		if _, isAlias := aliases[*tool.Name]; isAlias {
+			continue
+		}
+		if names == nil {
+			names = make(map[string]bool, len(tools))
+		}
+		names[*tool.Name] = true
 	}
-	return false
+	return names
 }
 
 // RestoreResponsesNamespaceToolCalls rewrites function_call items whose name is a
@@ -407,9 +447,9 @@ func namespaceToolAlias(namespace, function string, limit ToolNameLimit) string 
 	return hash + "_" + semantic
 }
 
-func hasNamespaceTool(tools []schemas.ResponsesTool) bool {
+func hasNamespaceTool(tools []schemas.ResponsesTool, names []string) bool {
 	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeNamespace {
+		if tool.Type == schemas.ResponsesToolTypeNamespace && (names == nil || (tool.Name != nil && slices.Contains(names, *tool.Name))) {
 			return true
 		}
 	}
@@ -482,23 +522,22 @@ func realiasNamespacedFunctionCalls(input []schemas.ResponsesMessage, aliases ma
 // that lives in exactly one namespace is rewritten to its alias; one that lives in
 // several is ambiguous and rejected, since the upstream would otherwise pick, or
 // reject, silently. Unknown names pass through for the upstream to report.
-func realiasToolChoice(choice *schemas.ResponsesToolChoice, tools []schemas.ResponsesTool, byFunction map[string][]string, aliases map[string]schemas.NamespaceToolAlias) (*schemas.ResponsesToolChoice, *schemas.BifrostError) {
+func realiasToolChoice(choice *schemas.ResponsesToolChoice, unaliasedNames map[string]bool, byFunction map[string][]string, aliases map[string]schemas.NamespaceToolAlias) (*schemas.ResponsesToolChoice, *schemas.BifrostError) {
 	if choice == nil || choice.ResponsesToolChoiceStruct == nil {
 		return choice, nil
 	}
-	topLevel := make(map[string]bool, len(tools))
-	for _, tool := range tools {
-		if tool.Name != nil {
-			if _, isAlias := aliases[*tool.Name]; !isAlias {
-				topLevel[*tool.Name] = true
-			}
-		}
-	}
 	resolve := func(name *string) (*string, *schemas.BifrostError) {
-		if name == nil || *name == "" || topLevel[*name] {
+		if name == nil || *name == "" {
+			return name, nil
+		}
+		topLevel, declared := unaliasedNames[*name]
+		if topLevel {
 			return name, nil
 		}
 		candidates := byFunction[*name]
+		if declared && len(candidates) > 0 {
+			return nil, NewBifrostBadRequestError(fmt.Sprintf("tool_choice %q is ambiguous between a retained and a flattened namespace; use a qualified function name", *name))
+		}
 		switch len(candidates) {
 		case 0:
 			return name, nil
@@ -549,6 +588,9 @@ func restoreNamespacedItem(item *schemas.ResponsesMessage, aliases map[string]sc
 	}
 	alias, ok := aliases[*item.ResponsesToolMessage.Name]
 	if !ok {
+		return
+	}
+	if ns := item.ResponsesToolMessage.Namespace; ns != nil && *ns != "" && *ns != defaultToolNamespace && *ns != alias.Namespace {
 		return
 	}
 	item.ResponsesToolMessage.Name = new(alias.Name)

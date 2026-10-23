@@ -8727,7 +8727,13 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 	} else {
 		supported = providerUtils.ResponsesNamespaceToolsSupported(ctx, schemas.ResolveBaseProvider(ctx, provider.GetProviderKey()), r.Model)
 	}
-	if !supported {
+	// Preserve reserved client namespace functions instead of substituting built-ins.
+	// Supported, non-reserved namespaces must retain their native tool definitions.
+	var reservedNamespaces []string
+	if supported && ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableBuiltinToolRewriting) == true {
+		reservedNamespaces = openai.ReservedToolNamespaces(schemas.ResolveBaseProvider(ctx, provider.GetProviderKey()), schemas.ResolveCanonicalModel(ctx, r.Model))
+	}
+	if !supported || len(reservedNamespaces) > 0 {
 		var bifrostErr *schemas.BifrostError
 		r, bifrostErr = hoistResponsesAdditionalTools(r)
 		if bifrostErr != nil {
@@ -8744,6 +8750,10 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 	// When supported, namespaces pass through and the request carries no alias map.
 	if !supported {
 		if r, bifrostErr = providerUtils.FlattenResponsesNamespaceTools(ctx, r); bifrostErr != nil {
+			return nil, bifrostErr
+		}
+	} else if len(reservedNamespaces) > 0 {
+		if r, bifrostErr = providerUtils.FlattenResponsesNamespaceToolsMatching(ctx, r, reservedNamespaces); bifrostErr != nil {
 			return nil, bifrostErr
 		}
 	}
