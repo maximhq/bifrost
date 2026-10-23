@@ -71,7 +71,7 @@ var logsPageParams = map[string]struct{}{
 	"min_tokens": {}, "max_tokens": {},
 	"start_time": {}, "end_time": {}, "limit": {}, "offset": {}, "sort_by": {}, "order": {}, "polling": {},
 	"period": {}, "missing_cost_only": {}, "cache_hit_types": {}, "metadata_filters": {}, "selected_log": {},
-	"grouped": {},
+	"grouped": {}, "agent_names": {}, "agent_correlation_id": {},
 }
 
 // markdownLink matches an inline link, allowing one level of brackets in its
@@ -342,6 +342,7 @@ func logsViewLink(filters *logstore.SearchFilters) string {
 		{"apps", filters.Apps},
 		{"user_agents", filters.UserAgents},
 		{"cache_hit_types", filters.CacheHitTypes},
+		{"agent_names", filters.AgentNames},
 	}
 	for _, list := range lists {
 		if len(list.values) > 0 {
@@ -356,6 +357,7 @@ func logsViewLink(filters *logstore.SearchFilters) string {
 		{"request_id", filters.RequestID},
 		{"parent_request_id", filters.ParentRequestID},
 		{"session_id", filters.SessionID},
+		{"agent_correlation_id", filters.AgentCorrelationID},
 	}
 	for _, text := range texts {
 		if strings.TrimSpace(text.value) != "" {

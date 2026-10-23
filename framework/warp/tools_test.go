@@ -2369,7 +2369,7 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 		"routing_engine_used": []any{"loadbalancing"}, "complexity_tiers": []any{"COMPLEX"}, "complexity_mechanisms": []any{"semantic"},
 		"tool_call_names": []any{"get_weather"}, "user_agents": []any{"curl/8"},
 		"metadata_filters": map[string]any{"env": "prod"}, "session_id": "sess-1", "parent_request_id": "req-0", "request_id": "req-1",
-		"missing_cost_only": true,
+		"missing_cost_only": true, "agent_names": []any{"support-bot"}, "agent_correlation_id": "corr-1",
 	}, Now())
 	require.NoError(t, err)
 	require.Equal(t, []string{"rule-premium"}, filters.RoutingRuleIDs)
@@ -2385,6 +2385,8 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 	require.Equal(t, "req-0", filters.ParentRequestID)
 	require.Equal(t, "req-1", filters.RequestID)
 	require.True(t, filters.MissingCostOnly)
+	require.Equal(t, []string{"support-bot"}, filters.AgentNames)
+	require.Equal(t, "corr-1", filters.AgentCorrelationID)
 
 	// Refused, not dropped.
 	for _, bad := range []map[string]any{

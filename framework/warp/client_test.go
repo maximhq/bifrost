@@ -203,3 +203,20 @@ func TestWarpChatStampsIdentityOnEveryCall(t *testing.T) {
 	}
 	require.Equal(t, []string{"Suresh", "Suresh", "Suresh"}, stamped, "every model call of the turn is attributed to the user who asked")
 }
+
+// A background job has no dashboard caller to settle a grant for, and
+// governance refuses a request without one. Its model calls are Warp's own
+// work, so they are marked internal and skip the plugin pipeline, the way the
+// embedding calls of indexing do - while still using the key the settings pin.
+func TestWarpInferenceContextForBackgroundWork(t *testing.T) {
+	config := &schemas.WarpConfig{APIKeyID: "pinned-key"}
+
+	interactive, cancel := warpInferenceContext(context.Background(), config, "")
+	defer cancel()
+	require.Nil(t, interactive.Value(schemas.BifrostContextKeySkipPluginPipeline), "a dashboard turn goes through the plugins")
+
+	background, cancelBackground := warpInferenceContext(withBackgroundWork(context.Background()), config, "")
+	defer cancelBackground()
+	require.Equal(t, true, background.Value(schemas.BifrostContextKeySkipPluginPipeline))
+	require.Equal(t, "pinned-key", background.Value(schemas.BifrostContextKeyAPIKeyID))
+}
