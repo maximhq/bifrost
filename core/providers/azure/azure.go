@@ -711,7 +711,7 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 
 // Speech is not supported by the Azure provider.
 func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	if schemas.IsAzureSpeechModelFamily(ctx, request.Model) {
+	if useSpeechEndpoints(ctx, key) {
 		return provider.speechSynthesis(ctx, key, request)
 	}
 
@@ -828,7 +828,7 @@ func (provider *AzureProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key,
 // SpeechStream handles streaming for speech synthesis with Azure.
 // Azure sends raw binary audio bytes in SSE format, unlike OpenAI which sends JSON.
 func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	if schemas.IsAzureSpeechModelFamily(ctx, request.Model) {
+	if useSpeechEndpoints(ctx, key) {
 		return provider.speechSynthesisStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
 	}
 
@@ -1139,7 +1139,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 // Transcription is not supported by the Azure provider.
 func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	if schemas.IsAzureSpeechModelFamily(ctx, request.Model) {
+	if useSpeechEndpoints(ctx, key) {
 		return provider.speechTranscription(ctx, key, request)
 	}
 

@@ -22,12 +22,11 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// Azure AI Speech models are addressed as "speech/<model>". For text to speech, <model> is
-// "neural" (the voice is sent by name) or a voice suffix such as "DragonHDLatestNeural" or
+// Azure AI Speech serves keys and aliases with use_speech_endpoints. For text to speech the model
+// is "neural" (the voice is sent by name) or a voice suffix such as "DragonHDLatestNeural" or
 // "MAI-Voice-2.1-Flash". For speech to text it is "fast-transcription", "llm-speech" or a
 // MAI-Transcribe model such as "MAI-Transcribe-2".
 const (
-	azureSpeechModelPrefix         = "speech/"
 	azureSpeechNeuralModel         = "neural"
 	azureSpeechFastModel           = "fast-transcription"
 	azureSpeechLLMModel            = "llm-speech"
@@ -56,7 +55,7 @@ var (
 )
 
 // ToAzureSpeechSSML builds the SSML body for a text to speech request; an input that is already
-// SSML is sent as is. model is the part after "speech/".
+// SSML is sent as is.
 func ToAzureSpeechSSML(model string, request *schemas.BifrostSpeechRequest) (string, error) {
 	if request == nil || request.Input == nil {
 		return "", errors.New("speech input is not provided")
@@ -154,9 +153,8 @@ func isAzureSpeechEnvelopeTag(tag string) bool {
 	return name == "speak" || name == "voice"
 }
 
-// ToAzureSpeechTranscriptionDefinition builds the fast transcription definition. model is the
-// part after "speech/": "fast-transcription" is the classic model, "llm-speech" runs LLM Speech,
-// and any other value names a MAI-Transcribe model.
+// ToAzureSpeechTranscriptionDefinition builds the fast transcription definition. "fast-transcription"
+// is the classic model, "llm-speech" runs LLM Speech, and any other model names a MAI-Transcribe model.
 func ToAzureSpeechTranscriptionDefinition(model string, params *schemas.TranscriptionParameters) *AzureSpeechTranscriptionDefinition {
 	definition := &AzureSpeechTranscriptionDefinition{}
 	switch model {
@@ -336,6 +334,15 @@ func parseAzureSpeechError(resp *fasthttp.Response) *schemas.BifrostError {
 	return bifrostErr
 }
 
+// useSpeechEndpoints reports whether speech and transcription requests go to Azure AI Speech
+// rather than Azure OpenAI. A per-alias value wins over the key's.
+func useSpeechEndpoints(ctx *schemas.BifrostContext, key schemas.Key) bool {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.AzureAliasCfg != nil && ra.Config.AzureAliasCfg.UseSpeechEndpoints != nil {
+		return *ra.Config.AzureAliasCfg.UseSpeechEndpoints
+	}
+	return key.AzureKeyConfig != nil && key.AzureKeyConfig.UseSpeechEndpoints
+}
+
 // getAzureSpeechAuthHeaders returns auth headers for Azure AI Speech, which takes a resource key as
 // Ocp-Apim-Subscription-Key and answers 401 to api-key. Bearer tokens are sent unchanged.
 func (provider *AzureProvider) getAzureSpeechAuthHeaders(ctx *schemas.BifrostContext, key schemas.Key) (map[string]string, *schemas.BifrostError) {
@@ -365,7 +372,7 @@ func (provider *AzureProvider) prepareSpeechSynthesisRequest(ctx *schemas.Bifros
 	body, ok := providerUtils.CheckAndGetRawRequestBody(ctx, request)
 	if !ok {
 		ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
-		ssml, err := ToAzureSpeechSSML(strings.TrimPrefix(request.Model, azureSpeechModelPrefix), request)
+		ssml, err := ToAzureSpeechSSML(request.Model, request)
 		if ct != nil {
 			if err != nil {
 				ct.EndSpan(ch, schemas.SpanStatusError, err.Error())
@@ -603,7 +610,7 @@ func (provider *AzureProvider) speechTranscription(ctx *schemas.BifrostContext, 
 	}
 
 	ct, ch := providerUtils.StartPhaseSpan(ctx, "convertor")
-	definition := ToAzureSpeechTranscriptionDefinition(strings.TrimPrefix(request.Model, azureSpeechModelPrefix), request.Params)
+	definition := ToAzureSpeechTranscriptionDefinition(request.Model, request.Params)
 	if ct != nil {
 		ct.EndSpan(ch, schemas.SpanStatusOk, "")
 	}

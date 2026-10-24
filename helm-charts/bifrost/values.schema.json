@@ -7394,6 +7394,11 @@
             "api_version": {
               "type": "string",
               "description": "Azure API version"
+            },
+            "use_speech_endpoints": {
+              "type": "boolean",
+              "description": "Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI.",
+              "default": false
             }
           },
           "required": ["endpoint"],
@@ -7884,6 +7889,10 @@
                   "endpoint": {
                     "type": "string",
                     "description": "Per-alias Azure endpoint override (can use env. prefix)."
+                  },
+                  "use_speech_endpoints": {
+                    "type": "boolean",
+                    "description": "Per-alias Azure override of use_speech_endpoints: send this alias's speech and transcription requests to Azure AI Speech instead of Azure OpenAI."
                   },
                   "project_id": {
                     "type": "string",
@@ -8899,6 +8908,11 @@
                   "api_version": {
                     "type": "string",
                     "description": "Azure API version"
+                  },
+                  "use_speech_endpoints": {
+                    "type": "boolean",
+                    "description": "Send speech and transcription requests to Azure AI Speech (SSML text to speech, fast transcription) instead of Azure OpenAI.",
+                    "default": false
                   }
                 },
                 "dependentRequired": {
