@@ -174,8 +174,14 @@ func TestParseTopicIDsFilter(t *testing.T) {
 // with, so the inline parse blocks of both can be checked end to end.
 type topicFilterLogManager struct {
 	loggingplugin.LogManager
-	searched *logstore.SearchFilters
-	counted  *logstore.SearchFilters
+	searched     *logstore.SearchFilters
+	counted      *logstore.SearchFilters
+	histogrammed *logstore.SearchFilters
+}
+
+func (m *topicFilterLogManager) GetHistogram(_ context.Context, filters *logstore.SearchFilters, _ int64) (*logstore.HistogramResult, error) {
+	m.histogrammed = filters
+	return &logstore.HistogramResult{}, nil
 }
 
 func (m *topicFilterLogManager) Search(_ context.Context, filters *logstore.SearchFilters, _ *logstore.PaginationOptions) (*logstore.SearchResult, error) {
@@ -209,6 +215,33 @@ func TestLogsRoutesCarryTheTopicFilter(t *testing.T) {
 	h.getLogsStats(ctx)
 	if mgr.counted == nil || !reflect.DeepEqual(mgr.counted.TopicIDs, []string{"topic-a"}) {
 		t.Fatalf("GET /api/logs/stats counted with %#v", mgr.counted)
+	}
+}
+
+// TestLogsRoutesRejectTopicIDsNamingNoTopic checks a topic_ids that parses to
+// no id is refused before the store is queried. Read as absent, it widened the
+// rows, stats and histograms to every topic.
+func TestLogsRoutesRejectTopicIDsNamingNoTopic(t *testing.T) {
+	mgr := &topicFilterLogManager{}
+	h := &LoggingHandler{logManager: mgr, redactedKeysManager: noRedactedKeys{}, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	routes := map[string]fasthttp.RequestHandler{
+		"GET /api/logs":           h.getLogs,
+		"GET /api/logs/stats":     h.getLogsStats,
+		"GET /api/logs/histogram": h.getLogsHistogram,
+	}
+	for name, route := range routes {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("topic_ids", " , ")
+		route(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("%s answered %d: %s", name, ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+	if mgr.searched != nil || mgr.counted != nil || mgr.histogrammed != nil {
+		t.Fatalf("the store was queried: searched %#v, counted %#v, histogrammed %#v", mgr.searched, mgr.counted, mgr.histogrammed)
+	}
+	if !parseTopicIDsFilter(&fasthttp.RequestCtx{}, &logstore.SearchFilters{}) {
+		t.Fatal("an absent topic_ids must be accepted")
 	}
 }
 

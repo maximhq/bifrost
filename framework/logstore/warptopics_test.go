@@ -755,6 +755,31 @@ func TestWarpTopicUnmatchedPool(t *testing.T) {
 	})
 }
 
+// A failed seed run takes back the rows it filed under no topic by when it
+// filed them: every row with no topic assigned at or after its start, and no
+// row under a topic or from before it.
+func TestWarpTopicAssignmentsDeleteUnmatchedSince(t *testing.T) {
+	forEachWarpTopicStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		base := warpTopicTestTime()
+		row := func(logID, topicID string, assigned time.Time) WarpTopicAssignment {
+			assignment := warpTestAssignment(logID, topicID, base)
+			assignment.AssignedAt = assigned
+			return assignment
+		}
+		require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []WarpTopicAssignment{
+			row("before", "", base.Add(-time.Millisecond)),
+			row("at", "", base),
+			row("after", "", base.Add(time.Second)),
+			row("in-topic", "t-1", base.Add(time.Second)),
+		}))
+		require.NoError(t, store.DeleteWarpTopicAssignmentsUnmatchedSince(ctx, base))
+		left, err := store.ListWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{}, 10)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"before", "in-topic"}, warpAssignmentLogIDs(left))
+	})
+}
+
 // Both tables hold rows about individual logs. Retention removes them on the
 // log's own created time, so a row cannot outlive the log it describes.
 func TestWarpTopicRowsExpireWithTheirLogs(t *testing.T) {
