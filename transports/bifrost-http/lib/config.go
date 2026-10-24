@@ -9813,7 +9813,7 @@ func validateGenericCustomProvider(config configstore.ProviderConfig, cpc *schem
 
 // IgnoresProviderCostInCatalog reports whether the pricing engine should discard the cost a
 // provider reports on its responses. A generic relay is left out: its reported cost is the
-// operator's own flat fee, and the relay honours ignore_provider_cost itself by
+// operator's own flat fee and unit pricing, and the relay honours ignore_provider_cost itself by
 // not reading the upstream cost_path.
 func IgnoresProviderCostInCatalog(cfg configstore.ProviderConfig) bool {
 	if !cfg.IgnoreProviderCost {

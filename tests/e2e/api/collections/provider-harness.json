@@ -282020,6 +282020,169 @@
               ]
             }
           }
+        },
+        {
+          "name": "270.16 POST /passthrough/generic_echo_units/post - per-unit pricing: cost on the log row is units x rate plus the flat fee (generic passthrough) - #8784",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_units maps units_path json.pages (postman-echo echoes the JSON body under 'json') at",
+                  "// $0.001 per unit on top of a $0.01 flat fee, so a body with pages:7 must cost 0.017.",
+                  "pm.test('generic relay: units request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.passthrough_response_body !== undefined && row.cost !== undefined && row.cost !== null) {",
+                  "      pm.test('generic relay: cost is units x rate + flat fee', function () { pm.expect(row.cost, JSON.stringify({cost: row.cost})).to.be.closeTo(0.017, 1e-6); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: log row with cost appeared', function () { pm.expect.fail('log ' + reqId + ' has no cost after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pages\": 7\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_units/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_units",
+                "post"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.17 PUT /passthrough/generic_echo_units/put - body_chars bills request characters, not bytes: multi-byte text costs per character (generic passthrough) - #8784",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_units routes PUT /put to units_source request, units_measure body_chars at $0.001 per",
+                  "// character with the flat fee waived. The text/plain body 'héllo wörld' is 11 characters and 13 UTF-8",
+                  "// bytes, so the log row must cost 0.011; 0.013 would mean bytes were counted.",
+                  "pm.test('generic relay: body_chars request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.passthrough_response_body !== undefined && row.cost !== undefined && row.cost !== null) {",
+                  "      pm.test('generic relay: cost is characters x rate', function () { pm.expect(row.cost, JSON.stringify({cost: row.cost})).to.be.closeTo(0.011, 1e-6); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: log row with cost appeared', function () { pm.expect.fail('log ' + reqId + ' has no cost after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "text/plain; charset=utf-8"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "héllo wörld"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_units/put",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_units",
+                "put"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.18 PATCH /passthrough/generic_echo_units/patch - rounding: 250 characters bill as three 100-character blocks (generic passthrough) - #8784",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The PATCH /patch route bills request body_chars per started block of 100 with a minimum of 1 at 0.01 a block",
+                  "// and waives the flat fee: a 250-character body is 3 blocks, cost 0.03. An exact count would give 2.50.",
+                  "pm.test('generic relay: request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.passthrough_response_body !== undefined && row.cost !== undefined && row.cost !== null) {",
+                  "      pm.test('generic relay: per-block rounding applied', function () { pm.expect(row.cost, JSON.stringify({cost: row.cost})).to.be.closeTo(0.03, 1e-6); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: log row with cost appeared', function () { pm.expect.fail('log ' + reqId + ' has no cost after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "text/plain"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_units/patch",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_units",
+                "patch"
+              ]
+            }
+          }
         }
       ]
     }
