@@ -1154,11 +1154,18 @@ func TestStreamStartupStateAgreesWithStartupChecks(t *testing.T) {
 			committed := err == nil
 
 			startup := NewStreamStartupState(tc.isPreamble, tc.underDeadline)
+			commits := 0
 			for _, chunk := range tc.before {
-				startup.ObserveResult(ctx, &schemas.BifrostResponse{ChatResponse: chunk.BifrostChatResponse}, nil)
+				if startup.ObserveResult(ctx, &schemas.BifrostResponse{ChatResponse: chunk.BifrostChatResponse}, nil) {
+					commits++
+				}
 			}
 			if fails := startup.IsStartupError(failure.BifrostError); fails == committed {
 				t.Fatalf("checker committed the stream = %v, but StreamStartupState.IsStartupError = %v", committed, fails)
+			}
+			// The pause/resume gate commits a held stream on this report, so it must match the checker.
+			if want := map[bool]int{true: 1, false: 0}[committed]; commits != want {
+				t.Fatalf("ObserveResult reported a commit %d times, want %d (checker committed = %v)", commits, want, committed)
 			}
 		})
 	}
@@ -1168,13 +1175,98 @@ func TestStreamStartupStateAgreesWithStartupChecks(t *testing.T) {
 func TestStreamStartupStateIgnoresSkippedChunks(t *testing.T) {
 	startup := NewStreamStartupState(nil, false)
 	skip := &schemas.BifrostError{StreamControl: &schemas.StreamControl{SkipStream: new(true)}}
-	startup.ObserveResult(context.Background(), nil, skip)
+	if startup.ObserveResult(context.Background(), nil, skip) {
+		t.Fatal("a skipped chunk reported a commit")
+	}
 	failure := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "rate limit exceeded"}}
 	if !startup.IsStartupError(failure) {
 		t.Fatal("a skipped chunk committed the stream")
 	}
-	startup.ObserveResult(context.Background(), &schemas.BifrostResponse{ChatResponse: contentChunk().BifrostChatResponse}, nil)
+	if !startup.ObserveResult(context.Background(), &schemas.BifrostResponse{ChatResponse: contentChunk().BifrostChatResponse}, nil) {
+		t.Fatal("output did not report a commit")
+	}
 	if startup.IsStartupError(failure) {
 		t.Fatal("output did not commit the stream")
+	}
+	if startup.ObserveResult(context.Background(), &schemas.BifrostResponse{ChatResponse: contentChunk().BifrostChatResponse}, nil) {
+		t.Fatal("a commit was reported twice")
+	}
+}
+
+// collectStream drains ch, failing the test if it does not close in time.
+func collectStream(t *testing.T, ch chan *schemas.BifrostStreamChunk) []*schemas.BifrostStreamChunk {
+	t.Helper()
+	var out []*schemas.BifrostStreamChunk
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case c, ok := <-ch:
+			if !ok {
+				return out
+			}
+			out = append(out, c)
+		case <-timeout:
+			t.Fatal("stream did not close")
+		}
+	}
+}
+
+// A commit marker first (a plugin holds valid output) commits the stream at once: the marker
+// is consumed, never re-injected, and a late copy behind real chunks is dropped too.
+func TestCheckFirstStreamChunk_CommitMarkerCommitsWithoutForwarding(t *testing.T) {
+	output := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "output"}}
+	stream := make(chan *schemas.BifrostStreamChunk, 4)
+	stream <- schemas.StreamCommitMarker()
+	stream <- output
+	stream <- schemas.StreamCommitMarker()
+	close(stream)
+
+	wrapped, _, err := CheckFirstStreamChunkForError(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := collectStream(t, wrapped)
+	if len(got) != 1 || got[0] != output {
+		t.Fatalf("expected only the real chunk, got %d chunks: %+v", len(got), got)
+	}
+}
+
+// The preamble check treats a commit marker as the stream having started: it replays the
+// startup events it held and forwards the rest, dropping every marker.
+func TestCheckStreamPreamble_CommitMarkerCommitsAndReplaysPreamble(t *testing.T) {
+	preamble := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "metadata"}}
+	output := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "output"}}
+	stream := make(chan *schemas.BifrostStreamChunk, 4)
+	stream <- preamble
+	stream <- schemas.StreamCommitMarker()
+	stream <- output
+	stream <- schemas.StreamCommitMarker()
+	close(stream)
+
+	isPreamble := func(c *schemas.BifrostStreamChunk) bool { return c == preamble }
+	wrapped, _, err := CheckStreamPreambleForError(context.Background(), "req-commit-marker", stream, isPreamble)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := collectStream(t, wrapped)
+	if len(got) != 2 || got[0] != preamble || got[1] != output {
+		t.Fatalf("expected [preamble output], got %d chunks: %+v", len(got), got)
+	}
+}
+
+// BenchmarkCheckFirstStreamChunkForwarding measures the first-chunk check plus forwarding a
+// 64-chunk stream through its wrapper, the path every non-gated stream takes.
+func BenchmarkCheckFirstStreamChunkForwarding(b *testing.B) {
+	chunk := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "c"}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		stream := make(chan *schemas.BifrostStreamChunk, 64)
+		for j := 0; j < 64; j++ {
+			stream <- chunk
+		}
+		close(stream)
+		wrapped, _, _ := CheckFirstStreamChunkForError(context.Background(), stream)
+		for range wrapped {
+		}
 	}
 }
