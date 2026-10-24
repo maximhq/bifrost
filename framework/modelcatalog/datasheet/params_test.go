@@ -223,3 +223,52 @@ func TestLoadModelCapabilities_CarriesServerSideModel(t *testing.T) {
 		t.Fatalf("ServerSideModel = %+v, want deepseek-flash", caps)
 	}
 }
+
+// TestApplyModelParameters_ConditionallyUnsupportedFieldsInAllowlist drives the
+// sync with a row shaped like the public gpt-6-luna entry (issue #8848):
+// logprobs/top_logprobs appear only under conditionally_unsupported_fields —
+// accepted while reasoning is off — and not under model_parameters. The derived
+// allowlist feeds the compat plugin's parameter drop, so leaving the fields out
+// made compat strip them from every request regardless of reasoning effort. The
+// provider request shaper owns the condition, so the allowlist must carry the
+// fields; outright unsupported_fields entries stay out.
+func TestApplyModelParameters_ConditionallyUnsupportedFieldsInAllowlist(t *testing.T) {
+	s := &Store{}
+	row := json.RawMessage(`{
+		"provider": "openai",
+		"mode": "chat",
+		"supported_endpoints": ["/v1/chat/completions", "/v1/responses"],
+		"model_parameters": [
+			{"id": "reasoning_effort"},
+			{"id": "max_completion_tokens"}
+		],
+		"unsupported_fields": {
+			"stop": true,
+			"presence_penalty": true,
+			"frequency_penalty": true,
+			"logit_bias": true,
+			"web_search_options": true
+		},
+		"conditionally_unsupported_fields": {
+			"temperature": "when_effort_none",
+			"top_p": "when_effort_none",
+			"logprobs": "when_effort_none",
+			"top_logprobs": "when_effort_none"
+		}
+	}`)
+	if applied := s.applyModelParameters(map[string]json.RawMessage{"gpt-6-luna": row}); applied != 1 {
+		t.Fatalf("applied = %d, want 1", applied)
+	}
+
+	got := s.GetSupportedParameters("gpt-6-luna")
+	for _, want := range []string{"temperature", "top_p", "logprobs", "top_logprobs"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("conditionally-gated field %q missing from the compat allowlist, got %v", want, got)
+		}
+	}
+	for _, notWant := range []string{"stop", "presence_penalty", "frequency_penalty", "logit_bias", "web_search_options"} {
+		if slices.Contains(got, notWant) {
+			t.Errorf("outright unsupported field %q must not enter the compat allowlist, got %v", notWant, got)
+		}
+	}
+}

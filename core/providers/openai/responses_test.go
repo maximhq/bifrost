@@ -3535,11 +3535,13 @@ func TestSamplingParamGateReadsDatasheet(t *testing.T) {
 			ConditionallyUnsupportedFields: map[string]string{
 				schemas.FieldTopP:        schemas.ConditionWhenEffortNone,
 				schemas.FieldTemperature: schemas.ConditionWhenEffortNone,
+				schemas.FieldLogprobs:    schemas.ConditionWhenEffortNone,
+				schemas.FieldTopLogprobs: schemas.ConditionWhenEffortNone,
 			},
 		})
 
 		caps := schemas.ResolveModelCaps(schemas.OpenAI, model)
-		for _, field := range []string{schemas.FieldTopP, schemas.FieldTemperature} {
+		for _, field := range []string{schemas.FieldTopP, schemas.FieldTemperature, schemas.FieldLogprobs, schemas.FieldTopLogprobs} {
 			require.False(t, samplingParamUnsupported(caps, field, model, ""), "allowed while reasoning is off")
 			require.False(t, samplingParamUnsupported(caps, field, model, "none"))
 			require.True(t, samplingParamUnsupported(caps, field, model, "low"), "rejected once reasoning is on")

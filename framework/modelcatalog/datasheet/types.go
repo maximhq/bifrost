@@ -645,6 +645,28 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 		}
 	}
 
+	// Conditionally unsupported fields are ones the model accepts under a
+	// condition the row states ("when_effort_none": only while reasoning is
+	// off). They are deliberately not listed under model_parameters — gpt-6-luna
+	// names logprobs/top_logprobs only here (#8848) — but they are still fields
+	// the model can accept, so they must stay in the compat allowlist: the
+	// allowlist is condition-blind and dropping here strips the field from every
+	// request, while the provider request shaper reads the same record
+	// (FieldCondition) and enforces the condition on the actual effort. Only a
+	// label the runtime knows how to interpret qualifies; anything else keeps
+	// the conservative drop. Collected and sorted first: the row is a map, so
+	// iterating it straight would make the published allowlist order unstable.
+	condFields := make([]string, 0, len(parsed.ConditionallyUnsupportedFields))
+	for field, condition := range parsed.ConditionallyUnsupportedFields {
+		if condition == schemas.ConditionWhenEffortNone {
+			condFields = append(condFields, field)
+		}
+	}
+	slices.Sort(condFields)
+	for _, field := range condFields {
+		addParam(field)
+	}
+
 	if parsed.SupportsAssistantPrefill != nil && *parsed.SupportsAssistantPrefill {
 		// Not an actual request parameter; if present, trailing assistant messages are
 		// left in place instead of being trimmed. Read by anthropic and by bedrock's
