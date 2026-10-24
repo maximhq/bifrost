@@ -284987,6 +284987,123 @@
           ]
         }
       ]
+    },
+    {
+      "name": "271. Azure Voice Live: use_voice_live_endpoints aliases are WebSocket only (azure voice live)",
+      "description": "A key or alias with use_voice_live_endpoints sends realtime WebSocket sessions to {endpoint}/voice-live/realtime?api-version=2026-04-10&model=<model_id>; the profile alias gpt-realtime-vl (model_id gpt-realtime) sets it. newman cannot open a WebSocket, so these cases pin the HTTP routes Voice Live refuses. Voice Live signals WebRTC over its own WebSocket and reports usage on the browser data channel, so the WebRTC SDP exchange and client secret minting answer 400 before any upstream call. Without the flag both reached Azure OpenAI's /openai/v1/realtime routes.",
+      "item": [
+        {
+          "name": "[EXPECT-400] 271.1 azure gpt-realtime-vl alias WebRTC /v1/realtime/calls is refused as WebSocket only (azure voice live)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Voice Live is served over the realtime WebSocket only, so this route must refuse the",
+                  "// gpt-realtime-vl alias with a 400 before any upstream call; any other status is a failure.",
+                  "pm.test('azure voice live WebRTC (azure voice live): status is 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('azure voice live WebRTC (azure voice live): the 400 says Voice Live is WebSocket only', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 400 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('realtime websocket only');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/sdp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=msid-semantic: WMS\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:AAAA\r\na=ice-pwd:AAAAAAAAAAAAAAAAAAAAAA\r\na=fingerprint:sha-256 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00\r\na=setup:actpass\r\na=mid:0\r\na=sendrecv\r\na=rtpmap:0 PCMU/8000\r\n"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime/calls?model=azure/gpt-realtime-vl",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime",
+                "calls"
+              ],
+              "query": [
+                {
+                  "key": "model",
+                  "value": "azure/gpt-realtime-vl"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-400] 271.2 azure gpt-realtime-vl alias /v1/realtime/client_secrets is refused as WebSocket only (azure voice live)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// Voice Live is served over the realtime WebSocket only, so this route must refuse the",
+                  "// gpt-realtime-vl alias with a 400 before any upstream call; any other status is a failure.",
+                  "pm.test('azure voice live client secret (azure voice live): status is 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+                  "});",
+                  "pm.test('azure voice live client secret (azure voice live): the 400 says Voice Live is WebSocket only', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.error && body.error.message, 'unexpected 400 body: ' + txt.slice(0, 400)).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'unexpected message: ' + txt.slice(0, 400)).to.include('realtime websocket only');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/gpt-realtime-vl\",\n  \"expires_after\": {\n    \"seconds\": 60\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/realtime/client_secrets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "realtime",
+                "client_secrets"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

@@ -41,6 +41,8 @@ type TableKey struct {
 
 	AzureUseSpeechEndpoints *bool `gorm:"column:azure_use_speech_endpoints" json:"azure_use_speech_endpoints,omitempty"`
 
+	AzureUseVoiceLiveEndpoints *bool `gorm:"column:azure_use_voice_live_endpoints" json:"azure_use_voice_live_endpoints,omitempty"`
+
 	// Vertex config fields (embedded)
 	VertexProjectID               *schemas.SecretVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
 	VertexProjectNumber           *schemas.SecretVar `gorm:"type:text" json:"vertex_project_number,omitempty"`
@@ -225,6 +227,8 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 		useSpeech := k.AzureKeyConfig.UseSpeechEndpoints
 		k.AzureUseSpeechEndpoints = &useSpeech
+		useVoiceLive := k.AzureKeyConfig.UseVoiceLiveEndpoints
+		k.AzureUseVoiceLiveEndpoints = &useVoiceLive
 	} else {
 		k.AzureEndpoint = nil
 		k.AzureClientID = nil
@@ -232,6 +236,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.AzureTenantID = nil
 		k.AzureScopesJSON = nil
 		k.AzureUseSpeechEndpoints = nil
+		k.AzureUseVoiceLiveEndpoints = nil
 	}
 	if k.VertexKeyConfig != nil {
 		if k.VertexKeyConfig.ProjectID.IsSet() {
@@ -916,7 +921,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.UseOpenAIEndpoints = &useOpenAIEndpoints
 	}
 	// Reconstruct Azure config if fields are present
-	if k.AzureEndpoint != nil || k.AzureClientID != nil || k.AzureClientSecret != nil || k.AzureTenantID != nil || k.AzureUseSpeechEndpoints != nil || (k.AzureScopesJSON != nil && *k.AzureScopesJSON != "") {
+	if k.AzureEndpoint != nil || k.AzureClientID != nil || k.AzureClientSecret != nil || k.AzureTenantID != nil || k.AzureUseSpeechEndpoints != nil || k.AzureUseVoiceLiveEndpoints != nil || (k.AzureScopesJSON != nil && *k.AzureScopesJSON != "") {
 		var scopes []string
 		if k.AzureScopesJSON != nil && *k.AzureScopesJSON != "" {
 			if err := json.Unmarshal([]byte(*k.AzureScopesJSON), &scopes); err != nil {
@@ -936,6 +941,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if k.AzureUseSpeechEndpoints != nil {
 			azureConfig.UseSpeechEndpoints = *k.AzureUseSpeechEndpoints
+		}
+		if k.AzureUseVoiceLiveEndpoints != nil {
+			azureConfig.UseVoiceLiveEndpoints = *k.AzureUseVoiceLiveEndpoints
 		}
 
 		k.AzureKeyConfig = azureConfig

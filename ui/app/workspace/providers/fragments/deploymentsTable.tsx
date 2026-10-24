@@ -212,6 +212,14 @@ function AzureSection({ config, onChange, disabled }: ProviderSectionProps) {
 				disabled={disabled}
 				testId="deployment-azure-use-speech-endpoints"
 			/>
+			<TriStateOverrideRow
+				label="Use Azure Voice Live endpoints"
+				hint="Send this deployment's realtime WebSocket sessions to Azure Voice Live instead of Azure OpenAI."
+				value={config.use_voice_live_endpoints}
+				onChange={(next) => onChange({ use_voice_live_endpoints: next })}
+				disabled={disabled}
+				testId="deployment-azure-use-voice-live-endpoints"
+			/>
 		</div>
 	);
 }
