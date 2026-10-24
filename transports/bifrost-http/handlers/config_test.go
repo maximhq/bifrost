@@ -1038,6 +1038,36 @@ func TestUpdateConfig_RejectsFileURLsOverAPI(t *testing.T) {
 	}
 }
 
+// TestUpdateConfig_UnchangedFileURLsPassOverAPI pins that a file:// URL set in
+// config.json does not break later saves: GET /api/config returns the stored
+// URL, so a save that sends it back unchanged is accepted, while a different
+// file:// URL is still refused.
+func TestUpdateConfig_UnchangedFileURLsPassOverAPI(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	const stored = "file:///var/lib/bifrost/catalog.json"
+	require.NoError(t, store.UpdateFrameworkConfig(bgCtx(), &configtables.TableFrameworkConfig{
+		PricingURL:         bifrost.Ptr(stored),
+		ModelParametersURL: bifrost.Ptr(stored),
+		MCPLibraryURL:      bifrost.Ptr(stored),
+	}))
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	for _, field := range []string{"pricing_url", "model_parameters_url", "mcp_library_url"} {
+		t.Run(field, func(t *testing.T) {
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"` + field + `":"` + stored + `"}}`)
+			h.updateConfig(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+			ctx = putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"` + field + `":"file:///etc/hostname"}}`)
+			h.updateConfig(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), "config.json")
+		})
+	}
+}
+
 // TestUpdateProxyConfig_RejectsLinkLocalURL pins that the global proxy URL is held to the
 // same destination rule as a provider base URL. Every proxied request carries its provider
 // credentials to this host, so an address that can never be a legitimate egress proxy
