@@ -1470,6 +1470,29 @@ func (s *ClickHouseLogStore) DeleteWarpTopicUnmatched(ctx context.Context, logID
 	return nil
 }
 
+// AddWarpVectorDeletes records deleted logs whose vector delete failed. A log
+// recorded twice is one row once the table merges, and listed twice until
+// then, which costs a retry one more vector delete.
+func (s *ClickHouseLogStore) AddWarpVectorDeletes(ctx context.Context, rows []WarpVectorDelete) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := prepareWarpVectorDeletes(rows, time.Now()); err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Create(&rows).Error
+}
+
+// DeleteWarpVectorDeletes removes the rows of logs whose vector is gone.
+func (s *ClickHouseLogStore) DeleteWarpVectorDeletes(ctx context.Context, logIDs []string) error {
+	for chunk := range slices.Chunk(logIDs, chWarpTopicDeleteChunk) {
+		if err := s.chLightweightDelete(ctx, "warp_vector_deletes", "log_id IN ?", chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // PruneWarpTopicUnmatched bounds the pool by age and by count, with one
 // lightweight delete for both.
 func (s *ClickHouseLogStore) PruneWarpTopicUnmatched(ctx context.Context, olderThan time.Time, keep int) (int64, error) {
