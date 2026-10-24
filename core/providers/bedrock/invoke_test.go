@@ -2110,6 +2110,16 @@ func TestResponsesUsesAnthropicInvokePath_ToolReferenceResult(t *testing.T) {
 		req.Model = "amazon.nova-pro-v1:0"
 		require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
 	})
+	t.Run("reference with nil params routes to invoke", func(t *testing.T) {
+		req := withoutTools(t, toolReferenceOnlyContent)
+		req.Params = nil
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("plain tool result with nil params stays on converse", func(t *testing.T) {
+		req := withoutTools(t, `"no tools found"`)
+		req.Params = nil
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
 }
 
 func TestResponsesIngress_ToolReferenceResultReachesInvokeModel(t *testing.T) {
@@ -2147,6 +2157,7 @@ func BenchmarkResponsesUsesAnthropicInvokePath_ToolResult(b *testing.B) {
 		if err := sonic.Unmarshal([]byte(fmt.Sprintf(toolReferenceInvokeBody, bc.content)), &req); err != nil {
 			b.Fatal(err)
 		}
+		req.ModelID = "us.anthropic.claude-sonnet-5-5"
 		responsesReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
 		if err != nil {
 			b.Fatal(err)
