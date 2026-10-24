@@ -150,6 +150,10 @@
       "description": "PydanticAI compatible endpoints with multi-provider support (/pydanticai/*)"
     },
     {
+      "name": "Generic Passthrough Integration",
+      "description": "Raw relay to custom providers whose base type is generic, for non-LLM APIs (/passthrough/{provider}/*)"
+    },
+    {
       "name": "Health",
       "description": "Health check endpoints"
     },
@@ -28618,6 +28622,568 @@
             "ApiKeyAuth": []
           }
         ]
+      }
+    },
+    "/passthrough/{provider}/{path}": {
+      "parameters": [
+        {
+          "name": "provider",
+          "in": "path",
+          "required": true,
+          "description": "Name of a custom provider whose `base_provider_type` is `generic`.",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "path",
+          "in": "path",
+          "required": true,
+          "description": "Upstream path appended to the provider's `network_config.base_url`, slashes included (`v1/items/42`). OpenAPI path templating cannot express a catch-all segment, so a generated client must send the nested path verbatim, not percent-encode its slashes. The query string is forwarded byte for byte, with one exception: under query auth the caller's copy of the auth parameter is removed and the selected key is appended, and a query that cannot be parsed is refused with `400`.",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "genericPassthroughPost",
+        "summary": "Relay a request to a generic (non-LLM) provider",
+        "description": "Relays the request byte for byte to the generic provider named in the path. Bifrost strips\ncaller credentials, injects the key it selects from the provider's key pool per the provider's\n`generic_config.auth`, pins the upstream host to the provider's base URL, and returns the\nupstream status and body unchanged with the upstream headers, except hop-by-hop headers,\n`Set-Cookie`, `Proxy-Authenticate`, `WWW-Authenticate` and the headers the gateway sets\nitself, which are not relayed. The `400` and `404` responses below are Bifrost's own\nrefusals (path guard, unknown provider, strict routes, a provider mismatch, a duplicate model\nkey, an unmeasurable billed body) and carry\na Bifrost error; an upstream `400` or `404` is relayed with the upstream's own body, as\nevery other upstream status is (see `default`). Every dispatched call runs the plugin pipeline and is logged. The path guard, an unknown\nprovider, a strict-routes miss, a provider mismatch and a duplicate model key are refused\nbefore dispatch with no log row; an unmeasurable billed body is refused inside the relay and\nlogged as an error. With content\nlogging on, JSON request bodies and text response bodies are stored, multipart requests are\nsummarized and binary responses become size placeholders. A `2xx` on a billable route (`POST` by default, or any route with\n`billable: true`) reports usage so governance counts it as one request and charges\n`cost_per_request`, any unit price and any cost the usage mapping extracts; non-2xx responses\nand non-billable routes report none.\n\n`GET`, `PUT`, `PATCH`, `DELETE` and `HEAD` are relayed the same way. A request is served by the\nstreaming relay when the matching route says so, a `generic_config.streaming.paths` glob\nmatches, `Accept: text/event-stream` is sent (when `detect_from_accept_header` is on), or the\nJSON body carries `\"stream\": true` or a `GET` query carries `stream=true` (both when\n`detect_from_body` is on). The path's wording is never a signal.\n\nWith `strict_routes` on, an operation that matches no `routes[]` entry is refused with `404`\nbefore anything is forwarded.\n",
+        "tags": [
+          "Generic Passthrough Integration"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "description": "Forwarded unchanged. For JSON bodies the model is read from `generic_config.usage.model_path` (default `model`) for governance.",
+          "content": {
+            "*/*": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The upstream response, relayed unchanged. Bifrost adds `x-bifrost-provider` and `x-bifrost-request-id`, and `x-bifrost-passthrough-path` when `client.extra_fields_placement` is `headers`.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Either Bifrost's own refusal (path guard, unparseable query, an x-model-provider header naming another provider, a request body naming the model key twice, unmeasurable billed body), a JSON Bifrost error, or an upstream 400 relayed unchanged in whatever format the upstream sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    {}
+                  ]
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    {}
+                  ]
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Any other upstream status (201, 202, a redirect, an upstream 4xx or 5xx), relayed with the upstream body unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "genericPassthroughGet",
+        "summary": "Relay a GET request to a generic provider",
+        "description": "Same relay as the POST form. The query string is forwarded byte for byte, except that under query auth the caller's copy of the auth parameter is removed and the selected key appended, and a query that cannot be parsed is refused with `400`.",
+        "tags": [
+          "Generic Passthrough Integration"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The upstream response, relayed unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Either Bifrost's own refusal (path guard, unparseable query, an x-model-provider header naming another provider, a request body naming the model key twice, unmeasurable billed body), a JSON Bifrost error, or an upstream 400 relayed unchanged in whatever format the upstream sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    {}
+                  ]
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    {}
+                  ]
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Any other upstream status (201, 202, a redirect, an upstream 4xx or 5xx), relayed with the upstream body unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "genericPassthroughPut",
+        "summary": "Relay a PUT request to a generic provider",
+        "description": "Same relay as the POST form.",
+        "tags": [
+          "Generic Passthrough Integration"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "description": "Forwarded unchanged.",
+          "content": {
+            "*/*": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The upstream response, relayed unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Either Bifrost's own refusal (path guard, unparseable query, an x-model-provider header naming another provider, a request body naming the model key twice, unmeasurable billed body), a JSON Bifrost error, or an upstream 400 relayed unchanged in whatever format the upstream sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    {}
+                  ]
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    {}
+                  ]
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Any other upstream status (201, 202, a redirect, an upstream 4xx or 5xx), relayed with the upstream body unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "genericPassthroughPatch",
+        "summary": "Relay a PATCH request to a generic provider",
+        "description": "Same relay as the POST form.",
+        "tags": [
+          "Generic Passthrough Integration"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "description": "Forwarded unchanged.",
+          "content": {
+            "*/*": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The upstream response, relayed unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Either Bifrost's own refusal (path guard, unparseable query, an x-model-provider header naming another provider, a request body naming the model key twice, unmeasurable billed body), a JSON Bifrost error, or an upstream 400 relayed unchanged in whatever format the upstream sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    {}
+                  ]
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    {}
+                  ]
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Any other upstream status (201, 202, a redirect, an upstream 4xx or 5xx), relayed with the upstream body unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "genericPassthroughDelete",
+        "summary": "Relay a DELETE request to a generic provider",
+        "description": "Same relay as the POST form.",
+        "tags": [
+          "Generic Passthrough Integration"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "description": "Forwarded unchanged when present; some APIs take a body on DELETE.",
+          "content": {
+            "*/*": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The upstream response, relayed unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Either Bifrost's own refusal (path guard, unparseable query, an x-model-provider header naming another provider, a request body naming the model key twice, unmeasurable billed body), a JSON Bifrost error, or an upstream 400 relayed unchanged in whatever format the upstream sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    {}
+                  ]
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    {}
+                  ]
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Any other upstream status (201, 202, a redirect, an upstream 4xx or 5xx), relayed with the upstream body unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "genericPassthroughHead",
+        "summary": "Relay a HEAD request to a generic provider",
+        "description": "Same relay as the POST form.",
+        "tags": [
+          "Generic Passthrough Integration"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The upstream response, relayed unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Either Bifrost's own refusal (path guard, unparseable query, an x-model-provider header naming another provider, a request body naming the model key twice, unmeasurable billed body), a JSON Bifrost error, or an upstream 400 relayed unchanged in whatever format the upstream sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    {}
+                  ]
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BifrostError"
+                    },
+                    {}
+                  ]
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Any other upstream status (201, 202, a redirect, an upstream 4xx or 5xx), relayed with the upstream body unchanged.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/cohere/v1/tokenize": {
@@ -112675,6 +113241,7 @@
           "databricks",
           "cloudflare",
           "typesafe",
+          "generic",
           "minimax",
           "byteplus"
         ]
@@ -127646,6 +128213,313 @@
                 "additionalProperties": {
                   "type": "string"
                 }
+              },
+              "generic_config": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Relay settings for a custom provider whose base_provider_type is generic: a raw HTTP passthrough to a non-LLM API reached at /passthrough/{provider}/{path}.",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "How the selected key is presented to the upstream",
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "header"
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "header_name"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "query"
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "query_param"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "aws_sigv4"
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "aws"
+                          ],
+                          "properties": {
+                            "aws": {
+                              "required": [
+                                "service"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "bearer",
+                          "header",
+                          "query",
+                          "basic",
+                          "aws_sigv4",
+                          "none"
+                        ]
+                      },
+                      "header_name": {
+                        "type": "string",
+                        "description": "Header that carries the key (type header)"
+                      },
+                      "query_param": {
+                        "type": "string",
+                        "description": "Query parameter that carries the key (type query)"
+                      },
+                      "value_prefix": {
+                        "type": "string",
+                        "description": "Literal prefix before the key value (type header)"
+                      },
+                      "aws": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "SigV4 settings (type aws_sigv4); keys carry credentials in bedrock_key_config",
+                        "properties": {
+                          "service": {
+                            "type": "string",
+                            "description": "SigV4 signing name, e.g. textract"
+                          },
+                          "region": {
+                            "type": "string",
+                            "description": "Falls back to the key's bedrock_key_config.region"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "usage": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                    "properties": {
+                      "model_path": {
+                        "type": "string"
+                      },
+                      "input_tokens_path": {
+                        "type": "string"
+                      },
+                      "output_tokens_path": {
+                        "type": "string"
+                      },
+                      "total_tokens_path": {
+                        "type": "string"
+                      },
+                      "cost_path": {
+                        "type": "string"
+                      },
+                      "cost_per_request": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "units_path": {
+                        "type": "string",
+                        "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
+                      },
+                      "units_source": {
+                        "type": "string",
+                        "enum": [
+                          "response",
+                          "request"
+                        ]
+                      },
+                      "units_measure": {
+                        "type": "string",
+                        "enum": [
+                          "value",
+                          "chars",
+                          "body_bytes",
+                          "body_chars"
+                        ]
+                      },
+                      "cost_per_unit": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost. A positive rate needs a quantity source: units_path, or units_measure body_bytes or body_chars; a route may inherit those from the provider usage, so the requirement is checked on the merged mapping when the provider is saved"
+                      },
+                      "units_block_size": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                      },
+                      "units_minimum": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Least number of billed units once a quantity was read; default 0"
+                      },
+                      "disable_optimistic_parsing": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "streaming": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "paths": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Rooted segment globs that always stream, e.g. /v1/stream/**"
+                      },
+                      "detect_from_accept_header": {
+                        "type": "boolean"
+                      },
+                      "detect_from_body": {
+                        "type": "boolean",
+                        "description": "Treat stream:true in a JSON body (or ?stream=true on a GET) as a streaming request; off by default so a caller cannot skip response-side billing"
+                      }
+                    }
+                  },
+                  "routes": {
+                    "type": "array",
+                    "description": "Per-route overrides; the first matching route wins",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "method",
+                        "path"
+                      ],
+                      "properties": {
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "GET",
+                            "POST",
+                            "PUT",
+                            "PATCH",
+                            "DELETE",
+                            "HEAD"
+                          ]
+                        },
+                        "path": {
+                          "type": "string",
+                          "description": "Rooted segment glob; a trailing /** matches the prefix and everything below"
+                        },
+                        "billable": {
+                          "type": "boolean",
+                          "description": "false relays the call without counting or charging it; true counts it. Unset keeps the method default (only POST billable)"
+                        },
+                        "headers": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "description": "Request headers that must also match, header name to value glob (X-Amz-Target to Textract.Get*), so one route per operation on APIs that multiplex a path"
+                        },
+                        "stream": {
+                          "type": "boolean"
+                        },
+                        "usage": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                          "properties": {
+                            "model_path": {
+                              "type": "string"
+                            },
+                            "input_tokens_path": {
+                              "type": "string"
+                            },
+                            "output_tokens_path": {
+                              "type": "string"
+                            },
+                            "total_tokens_path": {
+                              "type": "string"
+                            },
+                            "cost_path": {
+                              "type": "string"
+                            },
+                            "cost_per_request": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "units_path": {
+                              "type": "string",
+                              "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
+                            },
+                            "units_source": {
+                              "type": "string",
+                              "enum": [
+                                "response",
+                                "request"
+                              ]
+                            },
+                            "units_measure": {
+                              "type": "string",
+                              "enum": [
+                                "value",
+                                "chars",
+                                "body_bytes",
+                                "body_chars"
+                              ]
+                            },
+                            "cost_per_unit": {
+                              "type": "number",
+                              "minimum": 0,
+                              "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost. A positive rate needs a quantity source: units_path, or units_measure body_bytes or body_chars; a route may inherit those from the provider usage, so the requirement is checked on the merged mapping when the provider is saved"
+                            },
+                            "units_block_size": {
+                              "type": "number",
+                              "exclusiveMinimum": 0,
+                              "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                            },
+                            "units_minimum": {
+                              "type": "number",
+                              "minimum": 0,
+                              "description": "Least number of billed units once a quantity was read; default 0"
+                            },
+                            "disable_optimistic_parsing": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "strict_routes": {
+                    "type": "boolean",
+                    "description": "Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist"
+                  }
+                }
               }
             }
           },
@@ -127920,6 +128794,313 @@
                 "additionalProperties": {
                   "type": "string"
                 }
+              },
+              "generic_config": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Relay settings for a custom provider whose base_provider_type is generic: a raw HTTP passthrough to a non-LLM API reached at /passthrough/{provider}/{path}.",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "How the selected key is presented to the upstream",
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "header"
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "header_name"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "query"
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "query_param"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "aws_sigv4"
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "aws"
+                          ],
+                          "properties": {
+                            "aws": {
+                              "required": [
+                                "service"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "bearer",
+                          "header",
+                          "query",
+                          "basic",
+                          "aws_sigv4",
+                          "none"
+                        ]
+                      },
+                      "header_name": {
+                        "type": "string",
+                        "description": "Header that carries the key (type header)"
+                      },
+                      "query_param": {
+                        "type": "string",
+                        "description": "Query parameter that carries the key (type query)"
+                      },
+                      "value_prefix": {
+                        "type": "string",
+                        "description": "Literal prefix before the key value (type header)"
+                      },
+                      "aws": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "SigV4 settings (type aws_sigv4); keys carry credentials in bedrock_key_config",
+                        "properties": {
+                          "service": {
+                            "type": "string",
+                            "description": "SigV4 signing name, e.g. textract"
+                          },
+                          "region": {
+                            "type": "string",
+                            "description": "Falls back to the key's bedrock_key_config.region"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "usage": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                    "properties": {
+                      "model_path": {
+                        "type": "string"
+                      },
+                      "input_tokens_path": {
+                        "type": "string"
+                      },
+                      "output_tokens_path": {
+                        "type": "string"
+                      },
+                      "total_tokens_path": {
+                        "type": "string"
+                      },
+                      "cost_path": {
+                        "type": "string"
+                      },
+                      "cost_per_request": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "units_path": {
+                        "type": "string",
+                        "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
+                      },
+                      "units_source": {
+                        "type": "string",
+                        "enum": [
+                          "response",
+                          "request"
+                        ]
+                      },
+                      "units_measure": {
+                        "type": "string",
+                        "enum": [
+                          "value",
+                          "chars",
+                          "body_bytes",
+                          "body_chars"
+                        ]
+                      },
+                      "cost_per_unit": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost. A positive rate needs a quantity source: units_path, or units_measure body_bytes or body_chars; a route may inherit those from the provider usage, so the requirement is checked on the merged mapping when the provider is saved"
+                      },
+                      "units_block_size": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                      },
+                      "units_minimum": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Least number of billed units once a quantity was read; default 0"
+                      },
+                      "disable_optimistic_parsing": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "streaming": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "paths": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Rooted segment globs that always stream, e.g. /v1/stream/**"
+                      },
+                      "detect_from_accept_header": {
+                        "type": "boolean"
+                      },
+                      "detect_from_body": {
+                        "type": "boolean",
+                        "description": "Treat stream:true in a JSON body (or ?stream=true on a GET) as a streaming request; off by default so a caller cannot skip response-side billing"
+                      }
+                    }
+                  },
+                  "routes": {
+                    "type": "array",
+                    "description": "Per-route overrides; the first matching route wins",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "method",
+                        "path"
+                      ],
+                      "properties": {
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "GET",
+                            "POST",
+                            "PUT",
+                            "PATCH",
+                            "DELETE",
+                            "HEAD"
+                          ]
+                        },
+                        "path": {
+                          "type": "string",
+                          "description": "Rooted segment glob; a trailing /** matches the prefix and everything below"
+                        },
+                        "billable": {
+                          "type": "boolean",
+                          "description": "false relays the call without counting or charging it; true counts it. Unset keeps the method default (only POST billable)"
+                        },
+                        "headers": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "description": "Request headers that must also match, header name to value glob (X-Amz-Target to Textract.Get*), so one route per operation on APIs that multiplex a path"
+                        },
+                        "stream": {
+                          "type": "boolean"
+                        },
+                        "usage": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                          "properties": {
+                            "model_path": {
+                              "type": "string"
+                            },
+                            "input_tokens_path": {
+                              "type": "string"
+                            },
+                            "output_tokens_path": {
+                              "type": "string"
+                            },
+                            "total_tokens_path": {
+                              "type": "string"
+                            },
+                            "cost_path": {
+                              "type": "string"
+                            },
+                            "cost_per_request": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "units_path": {
+                              "type": "string",
+                              "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
+                            },
+                            "units_source": {
+                              "type": "string",
+                              "enum": [
+                                "response",
+                                "request"
+                              ]
+                            },
+                            "units_measure": {
+                              "type": "string",
+                              "enum": [
+                                "value",
+                                "chars",
+                                "body_bytes",
+                                "body_chars"
+                              ]
+                            },
+                            "cost_per_unit": {
+                              "type": "number",
+                              "minimum": 0,
+                              "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost. A positive rate needs a quantity source: units_path, or units_measure body_bytes or body_chars; a route may inherit those from the provider usage, so the requirement is checked on the merged mapping when the provider is saved"
+                            },
+                            "units_block_size": {
+                              "type": "number",
+                              "exclusiveMinimum": 0,
+                              "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                            },
+                            "units_minimum": {
+                              "type": "number",
+                              "minimum": 0,
+                              "description": "Least number of billed units once a quantity was read; default 0"
+                            },
+                            "disable_optimistic_parsing": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "strict_routes": {
+                    "type": "boolean",
+                    "description": "Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist"
+                  }
+                }
               }
             }
           },
@@ -128151,6 +129332,313 @@
                 "type": "object",
                 "additionalProperties": {
                   "type": "string"
+                }
+              },
+              "generic_config": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Relay settings for a custom provider whose base_provider_type is generic: a raw HTTP passthrough to a non-LLM API reached at /passthrough/{provider}/{path}.",
+                "properties": {
+                  "auth": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "How the selected key is presented to the upstream",
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "header"
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "header_name"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "query"
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "query_param"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "aws_sigv4"
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "aws"
+                          ],
+                          "properties": {
+                            "aws": {
+                              "required": [
+                                "service"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "bearer",
+                          "header",
+                          "query",
+                          "basic",
+                          "aws_sigv4",
+                          "none"
+                        ]
+                      },
+                      "header_name": {
+                        "type": "string",
+                        "description": "Header that carries the key (type header)"
+                      },
+                      "query_param": {
+                        "type": "string",
+                        "description": "Query parameter that carries the key (type query)"
+                      },
+                      "value_prefix": {
+                        "type": "string",
+                        "description": "Literal prefix before the key value (type header)"
+                      },
+                      "aws": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "SigV4 settings (type aws_sigv4); keys carry credentials in bedrock_key_config",
+                        "properties": {
+                          "service": {
+                            "type": "string",
+                            "description": "SigV4 signing name, e.g. textract"
+                          },
+                          "region": {
+                            "type": "string",
+                            "description": "Falls back to the key's bedrock_key_config.region"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "usage": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                    "properties": {
+                      "model_path": {
+                        "type": "string"
+                      },
+                      "input_tokens_path": {
+                        "type": "string"
+                      },
+                      "output_tokens_path": {
+                        "type": "string"
+                      },
+                      "total_tokens_path": {
+                        "type": "string"
+                      },
+                      "cost_path": {
+                        "type": "string"
+                      },
+                      "cost_per_request": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "units_path": {
+                        "type": "string",
+                        "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
+                      },
+                      "units_source": {
+                        "type": "string",
+                        "enum": [
+                          "response",
+                          "request"
+                        ]
+                      },
+                      "units_measure": {
+                        "type": "string",
+                        "enum": [
+                          "value",
+                          "chars",
+                          "body_bytes",
+                          "body_chars"
+                        ]
+                      },
+                      "cost_per_unit": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost. A positive rate needs a quantity source: units_path, or units_measure body_bytes or body_chars; a route may inherit those from the provider usage, so the requirement is checked on the merged mapping when the provider is saved"
+                      },
+                      "units_block_size": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                      },
+                      "units_minimum": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Least number of billed units once a quantity was read; default 0"
+                      },
+                      "disable_optimistic_parsing": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "streaming": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "paths": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Rooted segment globs that always stream, e.g. /v1/stream/**"
+                      },
+                      "detect_from_accept_header": {
+                        "type": "boolean"
+                      },
+                      "detect_from_body": {
+                        "type": "boolean",
+                        "description": "Treat stream:true in a JSON body (or ?stream=true on a GET) as a streaming request; off by default so a caller cannot skip response-side billing"
+                      }
+                    }
+                  },
+                  "routes": {
+                    "type": "array",
+                    "description": "Per-route overrides; the first matching route wins",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "method",
+                        "path"
+                      ],
+                      "properties": {
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "GET",
+                            "POST",
+                            "PUT",
+                            "PATCH",
+                            "DELETE",
+                            "HEAD"
+                          ]
+                        },
+                        "path": {
+                          "type": "string",
+                          "description": "Rooted segment glob; a trailing /** matches the prefix and everything below"
+                        },
+                        "billable": {
+                          "type": "boolean",
+                          "description": "false relays the call without counting or charging it; true counts it. Unset keeps the method default (only POST billable)"
+                        },
+                        "headers": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "description": "Request headers that must also match, header name to value glob (X-Amz-Target to Textract.Get*), so one route per operation on APIs that multiplex a path"
+                        },
+                        "stream": {
+                          "type": "boolean"
+                        },
+                        "usage": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                          "properties": {
+                            "model_path": {
+                              "type": "string"
+                            },
+                            "input_tokens_path": {
+                              "type": "string"
+                            },
+                            "output_tokens_path": {
+                              "type": "string"
+                            },
+                            "total_tokens_path": {
+                              "type": "string"
+                            },
+                            "cost_path": {
+                              "type": "string"
+                            },
+                            "cost_per_request": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "units_path": {
+                              "type": "string",
+                              "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
+                            },
+                            "units_source": {
+                              "type": "string",
+                              "enum": [
+                                "response",
+                                "request"
+                              ]
+                            },
+                            "units_measure": {
+                              "type": "string",
+                              "enum": [
+                                "value",
+                                "chars",
+                                "body_bytes",
+                                "body_chars"
+                              ]
+                            },
+                            "cost_per_unit": {
+                              "type": "number",
+                              "minimum": 0,
+                              "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost. A positive rate needs a quantity source: units_path, or units_measure body_bytes or body_chars; a route may inherit those from the provider usage, so the requirement is checked on the merged mapping when the provider is saved"
+                            },
+                            "units_block_size": {
+                              "type": "number",
+                              "exclusiveMinimum": 0,
+                              "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                            },
+                            "units_minimum": {
+                              "type": "number",
+                              "minimum": 0,
+                              "description": "Least number of billed units once a quantity was read; default 0"
+                            },
+                            "disable_optimistic_parsing": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "strict_routes": {
+                    "type": "boolean",
+                    "description": "Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist"
+                  }
                 }
               }
             }

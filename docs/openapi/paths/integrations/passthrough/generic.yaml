@@ -1,0 +1,372 @@
+# Generic Passthrough - /passthrough/{provider}/{path}
+
+generic:
+  parameters:
+    - name: provider
+      in: path
+      required: true
+      description: Name of a custom provider whose `base_provider_type` is `generic`.
+      schema:
+        type: string
+    - name: path
+      in: path
+      required: true
+      description: >-
+        Upstream path appended to the provider's `network_config.base_url`, slashes included
+        (`v1/items/42`). OpenAPI path templating cannot express a catch-all segment, so a
+        generated client must send the nested path verbatim, not percent-encode its slashes.
+        The query string is forwarded byte for byte, with one exception: under query auth the
+        caller's copy of the auth parameter is removed and the selected key is appended, and a
+        query that cannot be parsed is refused with `400`.
+      schema:
+        type: string
+  post:
+    operationId: genericPassthroughPost
+    summary: Relay a request to a generic (non-LLM) provider
+    description: |
+      Relays the request byte for byte to the generic provider named in the path. Bifrost strips
+      caller credentials, injects the key it selects from the provider's key pool per the provider's
+      `generic_config.auth`, pins the upstream host to the provider's base URL, and returns the
+      upstream status and body unchanged with the upstream headers, except hop-by-hop headers,
+      `Set-Cookie`, `Proxy-Authenticate`, `WWW-Authenticate` and the headers the gateway sets
+      itself, which are not relayed. The `400` and `404` responses below are Bifrost's own
+      refusals (path guard, unknown provider, strict routes, a provider mismatch, a duplicate model
+      key, an unmeasurable billed body) and carry
+      a Bifrost error; an upstream `400` or `404` is relayed with the upstream's own body, as
+      every other upstream status is (see `default`). Every dispatched call runs the plugin pipeline and is logged. The path guard, an unknown
+      provider, a strict-routes miss, a provider mismatch and a duplicate model key are refused
+      before dispatch with no log row; an unmeasurable billed body is refused inside the relay and
+      logged as an error. With content
+      logging on, JSON request bodies and text response bodies are stored, multipart requests are
+      summarized and binary responses become size placeholders. A `2xx` on a billable route (`POST` by default, or any route with
+      `billable: true`) reports usage so governance counts it as one request and charges
+      `cost_per_request`, any unit price and any cost the usage mapping extracts; non-2xx responses
+      and non-billable routes report none.
+
+      `GET`, `PUT`, `PATCH`, `DELETE` and `HEAD` are relayed the same way. A request is served by the
+      streaming relay when the matching route says so, a `generic_config.streaming.paths` glob
+      matches, `Accept: text/event-stream` is sent (when `detect_from_accept_header` is on), or the
+      JSON body carries `"stream": true` or a `GET` query carries `stream=true` (both when
+      `detect_from_body` is on). The path's wording is never a signal.
+
+      With `strict_routes` on, an operation that matches no `routes[]` entry is refused with `404`
+      before anything is forwarded.
+    tags:
+      - Generic Passthrough Integration
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+    requestBody:
+      required: false
+      description: Forwarded unchanged. For JSON bodies the model is read from `generic_config.usage.model_path` (default `model`) for governance.
+      content:
+        '*/*':
+          schema:
+            type: string
+            format: binary
+    responses:
+      '200':
+        description: The upstream response, relayed unchanged. Bifrost adds `x-bifrost-provider` and `x-bifrost-request-id`, and `x-bifrost-passthrough-path` when `client.extra_fields_placement` is `headers`.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '400':
+        description: Either Bifrost's own refusal (path guard, unparseable query, an x-model-provider header naming another provider, a request body naming the model key twice, unmeasurable billed body), a JSON Bifrost error, or an upstream 400 relayed unchanged in whatever format the upstream sent.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '../../../schemas/inference/common.yaml#/BifrostError'
+                - {}
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '404':
+        description: Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '../../../schemas/inference/common.yaml#/BifrostError'
+                - {}
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      default:
+        description: Any other upstream status (201, 202, a redirect, an upstream 4xx or 5xx), relayed with the upstream body unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+  get:
+    operationId: genericPassthroughGet
+    summary: Relay a GET request to a generic provider
+    description: >-
+      Same relay as the POST form. The query string is forwarded byte for byte, except that under
+      query auth the caller's copy of the auth parameter is removed and the selected key appended,
+      and a query that cannot be parsed is refused with `400`.
+    tags:
+      - Generic Passthrough Integration
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+    responses:
+      '200':
+        description: The upstream response, relayed unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '400':
+        description: Either Bifrost's own refusal (path guard, unparseable query, an x-model-provider header naming another provider, a request body naming the model key twice, unmeasurable billed body), a JSON Bifrost error, or an upstream 400 relayed unchanged in whatever format the upstream sent.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '../../../schemas/inference/common.yaml#/BifrostError'
+                - {}
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '404':
+        description: Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '../../../schemas/inference/common.yaml#/BifrostError'
+                - {}
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      default:
+        description: Any other upstream status (201, 202, a redirect, an upstream 4xx or 5xx), relayed with the upstream body unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+  put:
+    operationId: genericPassthroughPut
+    summary: Relay a PUT request to a generic provider
+    description: Same relay as the POST form.
+    tags:
+      - Generic Passthrough Integration
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+    requestBody:
+      required: false
+      description: Forwarded unchanged.
+      content:
+        '*/*':
+          schema:
+            type: string
+            format: binary
+    responses:
+      '200':
+        description: The upstream response, relayed unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '400':
+        description: Either Bifrost's own refusal (path guard, unparseable query, an x-model-provider header naming another provider, a request body naming the model key twice, unmeasurable billed body), a JSON Bifrost error, or an upstream 400 relayed unchanged in whatever format the upstream sent.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '../../../schemas/inference/common.yaml#/BifrostError'
+                - {}
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '404':
+        description: Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '../../../schemas/inference/common.yaml#/BifrostError'
+                - {}
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      default:
+        description: Any other upstream status (201, 202, a redirect, an upstream 4xx or 5xx), relayed with the upstream body unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+  patch:
+    operationId: genericPassthroughPatch
+    summary: Relay a PATCH request to a generic provider
+    description: Same relay as the POST form.
+    tags:
+      - Generic Passthrough Integration
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+    requestBody:
+      required: false
+      description: Forwarded unchanged.
+      content:
+        '*/*':
+          schema:
+            type: string
+            format: binary
+    responses:
+      '200':
+        description: The upstream response, relayed unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '400':
+        description: Either Bifrost's own refusal (path guard, unparseable query, an x-model-provider header naming another provider, a request body naming the model key twice, unmeasurable billed body), a JSON Bifrost error, or an upstream 400 relayed unchanged in whatever format the upstream sent.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '../../../schemas/inference/common.yaml#/BifrostError'
+                - {}
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '404':
+        description: Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '../../../schemas/inference/common.yaml#/BifrostError'
+                - {}
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      default:
+        description: Any other upstream status (201, 202, a redirect, an upstream 4xx or 5xx), relayed with the upstream body unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+  delete:
+    operationId: genericPassthroughDelete
+    summary: Relay a DELETE request to a generic provider
+    description: Same relay as the POST form.
+    tags:
+      - Generic Passthrough Integration
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+    requestBody:
+      required: false
+      description: Forwarded unchanged when present; some APIs take a body on DELETE.
+      content:
+        '*/*':
+          schema:
+            type: string
+            format: binary
+    responses:
+      '200':
+        description: The upstream response, relayed unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '400':
+        description: Either Bifrost's own refusal (path guard, unparseable query, an x-model-provider header naming another provider, a request body naming the model key twice, unmeasurable billed body), a JSON Bifrost error, or an upstream 400 relayed unchanged in whatever format the upstream sent.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '../../../schemas/inference/common.yaml#/BifrostError'
+                - {}
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '404':
+        description: Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '../../../schemas/inference/common.yaml#/BifrostError'
+                - {}
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      default:
+        description: Any other upstream status (201, 202, a redirect, an upstream 4xx or 5xx), relayed with the upstream body unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+  head:
+    operationId: genericPassthroughHead
+    summary: Relay a HEAD request to a generic provider
+    description: Same relay as the POST form.
+    tags:
+      - Generic Passthrough Integration
+    security:
+      - BearerAuth: []
+      - VirtualKeyAuth: []
+    responses:
+      '200':
+        description: The upstream response, relayed unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '400':
+        description: Either Bifrost's own refusal (path guard, unparseable query, an x-model-provider header naming another provider, a request body naming the model key twice, unmeasurable billed body), a JSON Bifrost error, or an upstream 400 relayed unchanged in whatever format the upstream sent.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '../../../schemas/inference/common.yaml#/BifrostError'
+                - {}
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      '404':
+        description: Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '../../../schemas/inference/common.yaml#/BifrostError'
+                - {}
+          '*/*':
+            schema:
+              type: string
+              format: binary
+      default:
+        description: Any other upstream status (201, 202, a redirect, an upstream 4xx or 5xx), relayed with the upstream body unchanged.
+        content:
+          '*/*':
+            schema:
+              type: string
+              format: binary

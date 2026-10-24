@@ -568,7 +568,8 @@
               "integrations/langchain-sdk",
               "integrations/pydanticai-sdk",
               "integrations/typesafe-sdk",
-              "integrations/passthrough"
+              "integrations/passthrough",
+              "integrations/generic-passthrough"
             ]
           },
           {

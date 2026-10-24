@@ -24,6 +24,8 @@ When you use passthrough endpoints, the request still flows through Bifrost core
   Default provider: `gemini` (with automatic Vertex detection for clients configured to use Vertex)
 - `/bedrock_passthrough`
   Default provider: `bedrock` (restricted to three operations, see [Bedrock Passthrough](#bedrock-passthrough))
+- `/passthrough/{provider}`
+  Any custom provider whose base type is `generic`: a raw relay for non-LLM APIs, see [Generic Passthrough](./generic-passthrough)
 
 ---
 
