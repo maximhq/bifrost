@@ -1113,6 +1113,49 @@ export const allowedRequestsSchema = z.object({
 	live: z.boolean().optional(),
 });
 
+const gjsonPath = z.string().trim().optional();
+
+// Generic relay usage mapping (gjson paths, flat per-request fee)
+const genericUsageConfigBaseSchema = z.object({
+	model_path: gjsonPath,
+	input_tokens_path: gjsonPath,
+	output_tokens_path: gjsonPath,
+	total_tokens_path: gjsonPath,
+	cost_path: gjsonPath,
+	cost_per_request: z.number().min(0, "Cost per request must not be negative").optional(),
+	units_path: gjsonPath,
+	units_source: z.enum(["response", "request"]).optional(),
+	units_measure: z.enum(["value", "chars", "body_bytes", "body_chars"]).optional(),
+	cost_per_unit: z.number().min(0, "Cost per unit must not be negative").optional(),
+	units_block_size: z.number().positive("Block size must be above zero").optional(),
+	units_minimum: z.number().min(0, "Minimum units must not be negative").optional(),
+	disable_optimistic_parsing: z.boolean().optional(),
+});
+
+// The provider-level mapping must name a path for a positive rate. A route's mapping may inherit
+// that path from the provider, which the backend validates, so routes use the base object.
+export const genericUsageConfigSchema = genericUsageConfigBaseSchema.superRefine((usage, ctx) => {
+	if (
+		usage.cost_per_unit &&
+		usage.cost_per_unit > 0 &&
+		usage.units_measure !== "body_bytes" &&
+		usage.units_measure !== "body_chars" &&
+		!usage.units_path
+	) {
+		ctx.addIssue({
+			code: "custom",
+			message: "Units path is required unless the measure reads the whole body",
+			path: ["units_path"],
+		});
+	}
+});
+
+const genericRouteGlob = z
+	.string()
+	.trim()
+	.min(1, "Path is required")
+	.refine((p) => p.startsWith("/"), "Path must start with /");
+
 // Generic relay auth: the per-type required fields are checked here so the form reports them inline.
 export const genericAuthConfigSchema = z
 	.object({
@@ -1144,9 +1187,54 @@ export const genericAuthConfigSchema = z
 		}
 	});
 
+// A route's header matchers are edited as name/value pairs; an incomplete pair is dropped on save.
+export const genericRouteHeaderSchema = z
+	.object({
+		name: z
+			.string()
+			.trim()
+			.refine((n) => !/[\s:/]/.test(n), "Header name must not contain spaces, colons or slashes"),
+		value: z.string().trim(),
+	})
+	.superRefine((pair, ctx) => {
+		// A fully blank row is ignored on save; a half-filled one would be too, silently widening a
+		// strict route, so it is an error instead.
+		if (pair.name && !pair.value) ctx.addIssue({ code: "custom", message: "A header matcher needs a value glob", path: ["value"] });
+		if (!pair.name && pair.value) ctx.addIssue({ code: "custom", message: "A header matcher needs a header name", path: ["name"] });
+	});
+
+export const genericRouteConfigSchema = z.object({
+	method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
+	path: genericRouteGlob,
+	headers: z.record(z.string(), z.string()).optional(),
+	billable: z.boolean().optional(),
+	stream: z.boolean().optional(),
+	usage: genericUsageConfigBaseSchema.optional(),
+});
+
+// The Passthrough tab edits a route's header matchers as pairs; the config keeps the record.
+export const genericRouteFormSchema = genericRouteConfigSchema.omit({ headers: true }).extend({
+	headers: z.array(genericRouteHeaderSchema).optional(),
+});
+
 // Generic provider config schema matching Go's schemas.GenericProviderConfig
 export const genericProviderConfigSchema = z.object({
 	auth: genericAuthConfigSchema,
+	usage: genericUsageConfigSchema.optional(),
+	streaming: z
+		.object({
+			paths: z.array(genericRouteGlob).optional(),
+			detect_from_accept_header: z.boolean().optional(),
+			detect_from_body: z.boolean().optional(),
+		})
+		.optional(),
+	routes: z.array(genericRouteConfigSchema).optional(),
+	strict_routes: z.boolean().optional(),
+});
+
+// Form variant of the generic provider config: routes carry header matchers as name/value pairs.
+export const genericProviderFormSchema = genericProviderConfigSchema.extend({
+	routes: z.array(genericRouteFormSchema).optional(),
 });
 
 // Custom provider config schema

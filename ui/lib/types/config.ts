@@ -581,10 +581,76 @@ export interface GenericAuthConfig {
 	aws?: { service: string; region?: string };
 }
 
+export type GenericUnitsSource = "response" | "request";
+export type GenericUnitsMeasure = "value" | "chars" | "body_bytes" | "body_chars";
+
+export const GenericUnitsSourceLabels: Record<GenericUnitsSource, string> = {
+	response: "Upstream response body",
+	request: "Request body (what the caller sent)",
+};
+
+export const GenericUnitsMeasureLabels: Record<GenericUnitsMeasure, string> = {
+	value: "Number at the path",
+	chars: "Characters of the string at the path",
+	body_bytes: "Bytes of the whole body",
+	body_chars: "Characters of the whole body (any content type)",
+};
+
+// genericUnitsMeasureReadsWholeBody reports whether a measure needs no units path.
+export const genericUnitsMeasureReadsWholeBody = (m: GenericUnitsMeasure | undefined): boolean => m === "body_bytes" || m === "body_chars";
+
+// GenericUsageConfig matching Go's schemas.GenericUsageConfig (gjson paths)
+export interface GenericUsageConfig {
+	model_path?: string;
+	input_tokens_path?: string;
+	output_tokens_path?: string;
+	total_tokens_path?: string;
+	cost_path?: string;
+	cost_per_request?: number;
+	units_path?: string;
+	units_source?: GenericUnitsSource;
+	units_measure?: GenericUnitsMeasure;
+	cost_per_unit?: number;
+	units_block_size?: number;
+	units_minimum?: number;
+	disable_optimistic_parsing?: boolean;
+}
+
+// GenericStreamingConfig matching Go's schemas.GenericStreamingConfig
+export interface GenericStreamingConfig {
+	paths?: string[];
+	detect_from_accept_header?: boolean;
+	detect_from_body?: boolean;
+}
+
+export type GenericRouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
+
+export const GenericRouteMethods: GenericRouteMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
+
+// genericRouteBillableByDefault mirrors the relay's method default: only POST is counted and
+// charged unless a route says so. GET and HEAD are polls and listings, PUT and PATCH update
+// settings, DELETE cleans up.
+export const genericRouteBillableByDefault = (method: GenericRouteMethod): boolean => method === "POST";
+
+// GenericRouteConfig matching Go's schemas.GenericRouteConfig
+export interface GenericRouteConfig {
+	method: GenericRouteMethod;
+	path: string;
+	// Request headers that must also match: name (case-insensitive) to value glob, e.g. X-Amz-Target: Textract.Get*
+	headers?: Record<string, string>;
+	billable?: boolean;
+	stream?: boolean;
+	usage?: GenericUsageConfig;
+}
+
 // GenericProviderConfig matching Go's schemas.GenericProviderConfig: relay settings for a custom
 // provider whose base type is generic.
 export interface GenericProviderConfig {
 	auth: GenericAuthConfig;
+	usage?: GenericUsageConfig;
+	streaming?: GenericStreamingConfig;
+	routes?: GenericRouteConfig[];
+	strict_routes?: boolean;
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig
