@@ -37,6 +37,12 @@ type compiledRoute struct {
 	billable bool
 	stream   *bool
 	usage    resolvedUsage
+	// job, jobParams and jobInterval are set for a route that starts a provider-side job: the
+	// block itself, its settlement snapshot (built once here, attached to every start response)
+	// and the seconds until the first poll.
+	job         *schemas.GenericJobConfig
+	jobParams   string
+	jobInterval int
 }
 
 // headerMatch is one required request header: a lower-cased name and a value glob. AWS JSON
@@ -192,6 +198,12 @@ func billableByDefault(method string, explicit *bool) bool {
 }
 
 func compileRoutes(cfg *schemas.GenericProviderConfig) []compiledRoute {
+	return compileRoutesWithCostPolicy(cfg, false)
+}
+
+// compileRoutesWithCostPolicy is compileRoutes with the provider's ignore_provider_cost, which a
+// job snapshot has to carry since settlement runs without the provider in hand.
+func compileRoutesWithCostPolicy(cfg *schemas.GenericProviderConfig, ignoreUpstreamCost bool) []compiledRoute {
 	if cfg == nil || len(cfg.Routes) == 0 {
 		return nil
 	}
@@ -204,6 +216,15 @@ func compileRoutes(cfg *schemas.GenericProviderConfig) []compiledRoute {
 			billable: billableByDefault(route.Method, route.Billable),
 			stream:   route.Stream,
 			usage:    resolveUsage(cfg.Usage, route.Usage),
+		}
+		if route.Job != nil {
+			// Validate ran on the config, so the snapshot marshals; a failure here would be a
+			// programming error and the route simply starts no job.
+			if params, err := jobSnapshotFor(cfg, route, ignoreUpstreamCost); err == nil {
+				compiled.job = route.Job
+				compiled.jobParams = params
+				compiled.jobInterval = (&JobSnapshot{Job: *route.Job}).Interval()
+			}
 		}
 		routes = append(routes, compiled)
 	}

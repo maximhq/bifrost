@@ -245,7 +245,7 @@ type RepricedCost struct {
 // The settlers are constructed without a fetcher or retriever on purpose:
 // repricing reads the row, never the provider.
 func RepriceLog(entry *logstore.Log, pricing PricingManager) (*RepricedCost, error) {
-	for _, settler := range []Settler{NewBatchSettler(nil), NewVideoSettler(nil)} {
+	for _, settler := range []Settler{NewBatchSettler(nil), NewVideoSettler(nil), NewGenericJobSettler(nil)} {
 		repriced, err := settler.RepriceFromLog(entry, pricing)
 		if err != nil || repriced != nil {
 			return repriced, err

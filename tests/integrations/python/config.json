@@ -234,6 +234,33 @@
               }
             },
             {
+              "method": "POST",
+              "path": "/post",
+              "headers": {
+                "X-Amz-Target": "Echo.StartJob"
+              },
+              "usage": {
+                "cost_per_unit": 0
+              },
+              "job": {
+                "id_path": "json.job_id",
+                "poll": {
+                  "method": "GET",
+                  "path": "/get?status=SUCCEEDED&pages=7&job={{job.id}}"
+                },
+                "status_path": "args.status",
+                "succeeded": ["SUCCEEDED"],
+                "failed": ["FAILED"],
+                "interval_seconds": 5,
+                "timeout_seconds": 300,
+                "usage": {
+                  "units_path": "args.pages",
+                  "cost_per_unit": 0.001,
+                  "cost_per_request": 0
+                }
+              }
+            },
+            {
               "method": "PATCH",
               "path": "/patch",
               "billable": true,

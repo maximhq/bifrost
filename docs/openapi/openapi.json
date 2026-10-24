@@ -128243,6 +128243,133 @@
                               "type": "boolean"
                             }
                           }
+                        },
+                        "job": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "description": "Makes the route the start of a provider-side job billed once it completes; the job accounting sweeper polls with the given request and prices the terminal response with the job's usage mapping",
+                          "required": [
+                            "id_path",
+                            "poll",
+                            "status_path",
+                            "succeeded"
+                          ],
+                          "properties": {
+                            "id_path": {
+                              "type": "string"
+                            },
+                            "poll": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "path"
+                              ],
+                              "properties": {
+                                "method": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                },
+                                "headers": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  }
+                                },
+                                "body": {
+                                  "type": "string"
+                                },
+                                "content_type": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "status_path": {
+                              "type": "string"
+                            },
+                            "succeeded": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "failed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "interval_seconds": {
+                              "type": "integer"
+                            },
+                            "timeout_seconds": {
+                              "type": "integer"
+                            },
+                            "usage": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                              "properties": {
+                                "model_path": {
+                                  "type": "string"
+                                },
+                                "input_tokens_path": {
+                                  "type": "string"
+                                },
+                                "output_tokens_path": {
+                                  "type": "string"
+                                },
+                                "total_tokens_path": {
+                                  "type": "string"
+                                },
+                                "cost_path": {
+                                  "type": "string"
+                                },
+                                "cost_per_request": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "units_path": {
+                                  "type": "string",
+                                  "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
+                                },
+                                "units_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "response",
+                                    "request"
+                                  ]
+                                },
+                                "units_measure": {
+                                  "type": "string",
+                                  "enum": [
+                                    "value",
+                                    "chars",
+                                    "body_bytes",
+                                    "body_chars"
+                                  ]
+                                },
+                                "cost_per_unit": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
+                                },
+                                "units_block_size": {
+                                  "type": "number",
+                                  "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                                },
+                                "units_minimum": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "description": "Least number of billed units once a quantity was read; default 0"
+                                },
+                                "disable_optimistic_parsing": {
+                                  "type": "boolean"
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     }
@@ -128764,6 +128891,133 @@
                               "type": "boolean"
                             }
                           }
+                        },
+                        "job": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "description": "Makes the route the start of a provider-side job billed once it completes; the job accounting sweeper polls with the given request and prices the terminal response with the job's usage mapping",
+                          "required": [
+                            "id_path",
+                            "poll",
+                            "status_path",
+                            "succeeded"
+                          ],
+                          "properties": {
+                            "id_path": {
+                              "type": "string"
+                            },
+                            "poll": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "path"
+                              ],
+                              "properties": {
+                                "method": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                },
+                                "headers": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  }
+                                },
+                                "body": {
+                                  "type": "string"
+                                },
+                                "content_type": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "status_path": {
+                              "type": "string"
+                            },
+                            "succeeded": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "failed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "interval_seconds": {
+                              "type": "integer"
+                            },
+                            "timeout_seconds": {
+                              "type": "integer"
+                            },
+                            "usage": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                              "properties": {
+                                "model_path": {
+                                  "type": "string"
+                                },
+                                "input_tokens_path": {
+                                  "type": "string"
+                                },
+                                "output_tokens_path": {
+                                  "type": "string"
+                                },
+                                "total_tokens_path": {
+                                  "type": "string"
+                                },
+                                "cost_path": {
+                                  "type": "string"
+                                },
+                                "cost_per_request": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "units_path": {
+                                  "type": "string",
+                                  "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
+                                },
+                                "units_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "response",
+                                    "request"
+                                  ]
+                                },
+                                "units_measure": {
+                                  "type": "string",
+                                  "enum": [
+                                    "value",
+                                    "chars",
+                                    "body_bytes",
+                                    "body_chars"
+                                  ]
+                                },
+                                "cost_per_unit": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
+                                },
+                                "units_block_size": {
+                                  "type": "number",
+                                  "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                                },
+                                "units_minimum": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "description": "Least number of billed units once a quantity was read; default 0"
+                                },
+                                "disable_optimistic_parsing": {
+                                  "type": "boolean"
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     }
@@ -129241,6 +129495,133 @@
                             },
                             "disable_optimistic_parsing": {
                               "type": "boolean"
+                            }
+                          }
+                        },
+                        "job": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "description": "Makes the route the start of a provider-side job billed once it completes; the job accounting sweeper polls with the given request and prices the terminal response with the job's usage mapping",
+                          "required": [
+                            "id_path",
+                            "poll",
+                            "status_path",
+                            "succeeded"
+                          ],
+                          "properties": {
+                            "id_path": {
+                              "type": "string"
+                            },
+                            "poll": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "path"
+                              ],
+                              "properties": {
+                                "method": {
+                                  "type": "string"
+                                },
+                                "path": {
+                                  "type": "string"
+                                },
+                                "headers": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  }
+                                },
+                                "body": {
+                                  "type": "string"
+                                },
+                                "content_type": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "status_path": {
+                              "type": "string"
+                            },
+                            "succeeded": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "failed": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "interval_seconds": {
+                              "type": "integer"
+                            },
+                            "timeout_seconds": {
+                              "type": "integer"
+                            },
+                            "usage": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                              "properties": {
+                                "model_path": {
+                                  "type": "string"
+                                },
+                                "input_tokens_path": {
+                                  "type": "string"
+                                },
+                                "output_tokens_path": {
+                                  "type": "string"
+                                },
+                                "total_tokens_path": {
+                                  "type": "string"
+                                },
+                                "cost_path": {
+                                  "type": "string"
+                                },
+                                "cost_per_request": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "units_path": {
+                                  "type": "string",
+                                  "description": "gjson path of the billable quantity (pages, credits, text); ignored for body_bytes and body_chars"
+                                },
+                                "units_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "response",
+                                    "request"
+                                  ]
+                                },
+                                "units_measure": {
+                                  "type": "string",
+                                  "enum": [
+                                    "value",
+                                    "chars",
+                                    "body_bytes",
+                                    "body_chars"
+                                  ]
+                                },
+                                "cost_per_unit": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + extracted cost"
+                                },
+                                "units_block_size": {
+                                  "type": "number",
+                                  "description": "Bill per started block of this many raw units (100 for per-100-character pricing); default exact"
+                                },
+                                "units_minimum": {
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "description": "Least number of billed units once a quantity was read; default 0"
+                                },
+                                "disable_optimistic_parsing": {
+                                  "type": "boolean"
+                                }
+                              }
                             }
                           }
                         }

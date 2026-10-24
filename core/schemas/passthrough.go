@@ -181,6 +181,31 @@ type BifrostPassthroughUsage struct {
 	// datasheet estimation (there is often no datasheet rate for raw passthrough task types).
 	// Used by providers whose responses include their own cost, e.g. Runware's per-task `cost`.
 	Cost *BifrostCost
+
+	// ProviderJob is set when the call started a provider-side job that is billed once it
+	// completes (a generic route with a job block). The logging plugin records it for the job
+	// accounting sweeper; the call itself is counted and charged as usual.
+	ProviderJob *PassthroughProviderJob
+}
+
+// PassthroughProviderJob is the handle of a provider-side job a passthrough call started.
+type PassthroughProviderJob struct {
+	ID              string // the provider's job id, read from the start response
+	IntervalSeconds int    // seconds until the first poll
+	Params          string // JSON settlement input captured at start: how to poll, how to price
+}
+
+// PassthroughJobAccounting is the detail a generic job's settlement row carries, so the number
+// on the row can be read back and re-derived.
+type PassthroughJobAccounting struct {
+	JobID          string   `json:"job_id"`
+	Status         string   `json:"status"`
+	Units          *float64 `json:"units,omitempty"`
+	UnitsBilled    *float64 `json:"units_billed,omitempty"`
+	CostPerUnit    float64  `json:"cost_per_unit,omitempty"`
+	CostPerRequest float64  `json:"cost_per_request,omitempty"`
+	ExtractedCost  *float64 `json:"extracted_cost,omitempty"`
+	Failed         bool     `json:"failed,omitempty"` // ended on a failed status: priced at zero
 }
 
 type BifrostPassthroughResponse struct {
@@ -204,4 +229,6 @@ type PassthroughLogParams struct {
 	ModelParams  interface{}   `json:"model_params,omitempty"`  // model parameters parsed from the request body
 
 	MultipartSummary bool `json:"multipart_summary,omitempty"` // request body logged as its form fields and file sizes, not raw
+
+	JobAccounting *PassthroughJobAccounting `json:"job_accounting,omitempty"` // set on a generic job's settlement row only
 }
