@@ -574,6 +574,76 @@ func TestValidateKeyOAuthKeyConfig(t *testing.T) {
 	})
 }
 
+func TestValidateKeyAnthropicWorkloadIdentity(t *testing.T) {
+	wif := func(mutate func(*schemas.AnthropicWorkloadIdentityConfig)) *schemas.AnthropicKeyConfig {
+		c := &schemas.AnthropicWorkloadIdentityConfig{
+			FederationRuleID:  *schemas.NewSecretVar("fdrl_rule"),
+			OrganizationID:    *schemas.NewSecretVar("00000000-0000-0000-0000-000000000000"),
+			ServiceAccountID:  *schemas.NewSecretVar("svac_account"),
+			IdentityTokenFile: schemas.NewSecretVar("/var/run/secrets/anthropic.com/token"),
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return &schemas.AnthropicKeyConfig{WorkloadIdentity: c}
+	}
+
+	tests := []struct {
+		name      string
+		key       schemas.Key
+		wantError string
+	}{
+		{name: "a token file is sufficient", key: schemas.Key{AnthropicKeyConfig: wif(nil)}},
+		{name: "an inline token is sufficient", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentityTokenFile = nil
+			c.IdentityToken = schemas.NewSecretVar("eyJ.eyJ.sig")
+		})}},
+		{name: "env-backed references count as present", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.FederationRuleID = *schemas.NewSecretVar("env.ANTHROPIC_FEDERATION_RULE_ID_UNSET_IN_TEST")
+			c.IdentityTokenFile = nil
+			c.IdentityToken = schemas.NewSecretVar("env.ANTHROPIC_IDENTITY_TOKEN_UNSET_IN_TEST")
+		})}},
+		{name: "a value alongside an incomplete config keeps the key usable", key: schemas.Key{Value: *schemas.NewSecretVar("sk-ant"), AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.ServiceAccountID = schemas.SecretVar{}
+		})}},
+		{name: "an empty anthropic_key_config is ignored", key: schemas.Key{Value: *schemas.NewSecretVar("sk-ant"), AnthropicKeyConfig: &schemas.AnthropicKeyConfig{}}},
+		{name: "missing rule", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.FederationRuleID = *schemas.NewSecretVar(" ") })}, wantError: "federation_rule_id is required"},
+		{name: "missing organization", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.OrganizationID = schemas.SecretVar{} })}, wantError: "organization_id is required"},
+		{name: "missing service account", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.ServiceAccountID = schemas.SecretVar{} })}, wantError: "service_account_id is required"},
+		{name: "no token source", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) { c.IdentityTokenFile = nil })}, wantError: "exactly one of identity_token_file or identity_token"},
+		{name: "both token sources", key: schemas.Key{AnthropicKeyConfig: wif(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentityToken = schemas.NewSecretVar("eyJ.eyJ.sig")
+		})}, wantError: "exactly one of identity_token_file or identity_token"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.key
+			err := validateKey(schemas.Anthropic, &key)
+			if tt.wantError == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+	}
+
+	t.Run("a federated key may have no value only on an anthropic-based provider", func(t *testing.T) {
+		assert.True(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{AnthropicKeyConfig: wif(nil)}))
+		assert.False(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{}))
+		assert.False(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{AnthropicKeyConfig: &schemas.AnthropicKeyConfig{}}))
+		assert.False(t, keyValueMayBeEmpty(schemas.OpenAI, &schemas.Key{AnthropicKeyConfig: wif(nil)}))
+	})
+
+	t.Run("workload identity is refused on a provider that does not federate", func(t *testing.T) {
+		key := schemas.Key{AnthropicKeyConfig: wif(nil)}
+		err := validateKey(schemas.OpenAI, &key)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supported on anthropic")
+	})
+}
+
 // A request cancelled at the same instant its backoff expires must still be
 // reported as cancelled: Go's select picks uniformly among ready cases, so a
 // timer-only check lets roughly half of such requests run one more attempt

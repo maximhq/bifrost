@@ -138,6 +138,43 @@ func TestGenerateKeyHash_OAuthSecretsHashByReference(t *testing.T) {
 	require.NotEqual(t, viaRef, viaLiteral, "switching between a reference and a literal is an edit")
 }
 
+// TestGenerateKeyHash_AnthropicWorkloadIdentityHashesByReference pins that a rotated env-backed
+// identity token, which short-lived OIDC tokens always are, leaves an unchanged config.json key's
+// hash alone, while a real edit to the block still moves it.
+func TestGenerateKeyHash_AnthropicWorkloadIdentityHashesByReference(t *testing.T) {
+	build := func(token, workspace string) schemas.Key {
+		wif := &schemas.AnthropicWorkloadIdentityConfig{
+			FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+			OrganizationID:   *schemas.NewSecretVar("org-uuid"),
+			ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
+			IdentityToken:    schemas.NewSecretVar(token),
+		}
+		if workspace != "" {
+			wif.WorkspaceID = schemas.NewSecretVar(workspace)
+		}
+		return schemas.Key{ID: "k1", Name: "anthropic-wif", AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: wif}}
+	}
+	t.Setenv("HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", "jwt-v1")
+	before, err := GenerateKeyHash(build("env.HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", ""))
+	require.NoError(t, err)
+	t.Setenv("HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", "jwt-v2")
+	after, err := GenerateKeyHash(build("env.HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", ""))
+	require.NoError(t, err)
+	require.Equal(t, before, after, "rotating the env-backed identity token changed the hash of an unchanged file")
+
+	withWorkspace, err := GenerateKeyHash(build("env.HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", "wrkspc_01ghi"))
+	require.NoError(t, err)
+	require.NotEqual(t, before, withWorkspace, "adding a workspace is an edit")
+
+	literal, err := GenerateKeyHash(build("jwt-v2", ""))
+	require.NoError(t, err)
+	require.NotEqual(t, after, literal, "switching between a reference and a literal is an edit")
+
+	plain, err := GenerateKeyHash(schemas.Key{ID: "k1", Name: "anthropic-wif"})
+	require.NoError(t, err)
+	require.NotEqual(t, plain, before, "adding the block is an edit")
+}
+
 // TestGenerateKeyHash_AliasesIsOrderIndependent pins the same property for aliases, which is
 // also a map: a key whose only change is the encoder's walk order must not be treated as edited.
 func TestGenerateKeyHash_AliasesIsOrderIndependent(t *testing.T) {

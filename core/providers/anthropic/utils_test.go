@@ -5246,6 +5246,7 @@ var notEmittedByRequestGating = map[string]string{
 	"AnthropicContext1MBetaHeader":      "opted into via network config or passthrough headers, not derived from the request body",
 	"AnthropicRedactThinkingBetaHeader": "opted into via network config or passthrough headers, not derived from the request body",
 	"AnthropicSkillsBetaHeader":         "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicOAuthBetaHeader":          "added by setKeyAuth for a workload identity bearer, not derived from the request body",
 }
 
 // TestEveryBetaHeaderIsCoveredByTheCorpus makes a newly added beta header loud.

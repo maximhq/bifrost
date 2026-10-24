@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -733,6 +734,345 @@ func TestValidateProviderKeyOAuthKeyConfig(t *testing.T) {
 		targets := keyDialTargets(schemas.Key{OAuthKeyConfig: cc(nil)})
 		if targets["oauth_key_config.token_url"] == nil {
 			t.Fatal("oauth_key_config.token_url must be guarded as a caller-chosen dial target")
+		}
+	})
+}
+
+// anthropicWIFTestConfig is a complete workload identity block reading its token from a file.
+func anthropicWIFTestConfig(mutate func(*schemas.AnthropicWorkloadIdentityConfig)) *schemas.AnthropicKeyConfig {
+	wif := &schemas.AnthropicWorkloadIdentityConfig{
+		FederationRuleID:  *schemas.NewSecretVar("fdrl_01abc"),
+		OrganizationID:    *schemas.NewSecretVar("8c1d0f5e-0000-4000-8000-000000000001"),
+		ServiceAccountID:  *schemas.NewSecretVar("svac_01def"),
+		IdentityTokenFile: schemas.NewSecretVar("/var/run/secrets/anthropic/token"),
+	}
+	if mutate != nil {
+		mutate(wif)
+	}
+	return &schemas.AnthropicKeyConfig{WorkloadIdentity: wif}
+}
+
+// TestValidateProviderKeyAnthropicWorkloadIdentity pins the setup-time checks on
+// anthropic_key_config.workload_identity, which mirror core's validateKey: anthropic-based
+// providers only, and a whole block whenever the key has no static value.
+func TestValidateProviderKeyAnthropicWorkloadIdentity(t *testing.T) {
+	withToken := func(c *schemas.AnthropicWorkloadIdentityConfig) {
+		c.IdentityTokenFile = nil
+		c.IdentityToken = schemas.NewSecretVar("eyJhbGciOiJSUzI1NiJ9.e30.c2ln")
+	}
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		key      schemas.Key
+		wantErr  string
+	}{
+		{"token file on anthropic", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(nil)}, ""},
+		{"literal token on anthropic", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(withToken)}, ""},
+		{"env-backed identifiers are accepted unresolved", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.OrganizationID = *schemas.NewSecretVar("env.WIF_TEST_UNSET_ORG_ID")
+		})}, ""},
+		{"missing organization", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.OrganizationID = schemas.SecretVar{}
+		})}, "organization_id is required"},
+		{"both token sources", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentityToken = schemas.NewSecretVar("eyJhbGciOiJSUzI1NiJ9.e30.c2ln")
+		})}, "exactly one of identity_token_file or identity_token"},
+		{"no token source", schemas.Anthropic, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentityTokenFile = nil
+		})}, "exactly one of identity_token_file or identity_token"},
+		{"a half block behind a static value is accepted, as in core", schemas.Anthropic, schemas.Key{Value: *schemas.NewSecretVar("sk-ant"), AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.ServiceAccountID = schemas.SecretVar{}
+		})}, ""},
+		{"refused on openai", schemas.OpenAI, schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(nil)}, "only supported on anthropic"},
+		{"refused on openai behind a value", schemas.OpenAI, schemas.Key{Value: *schemas.NewSecretVar("sk"), AnthropicKeyConfig: anthropicWIFTestConfig(nil)}, "only supported on anthropic"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateProviderKeyURL(tt.provider, tt.key)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("got %v, want an error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+
+	t.Run("the identity token file is guarded like a dial target", func(t *testing.T) {
+		targets := keyDialTargets(schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(nil)})
+		if targets["anthropic_key_config.workload_identity.identity_token_file"] == nil {
+			t.Fatal("identity_token_file picks the local file posted upstream and must need a genuine admin session")
+		}
+		inline := keyDialTargets(schemas.Key{AnthropicKeyConfig: anthropicWIFTestConfig(withToken)})
+		if len(inline) != 0 {
+			t.Fatalf("an inline identity token reads no local file and dials nothing new, got %v", inline)
+		}
+	})
+}
+
+// TestMergeUpdatedKey_AnthropicWorkloadIdentity covers the masked-update path: the UI sends back
+// the mask it was shown for the identity token, and for identifiers that came back masked because
+// they were secret-backed, and the merge must restore the stored values.
+func TestMergeUpdatedKey_AnthropicWorkloadIdentity(t *testing.T) {
+	h := &ProviderHandler{}
+	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"
+	stored := func() schemas.Key {
+		return schemas.Key{Name: "k", AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentityTokenFile = nil
+			c.IdentityToken = schemas.NewSecretVar(jwt)
+			c.WorkspaceID = schemas.NewSecretVar("wrkspc_01ghi")
+		})}
+	}
+	masked := func(v string) *schemas.SecretVar {
+		return schemas.NewSecretVar(v[:4] + strings.Repeat("*", 24) + v[len(v)-4:])
+	}
+
+	t.Run("masks resolve back to the stored values", func(t *testing.T) {
+		update := schemas.Key{Name: "k", AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentityTokenFile = nil
+			c.IdentityToken = masked(jwt)
+			c.WorkspaceID = masked("wrkspc_01ghi")
+			c.ServiceAccountID = *schemas.NewSecretVar("svac_02new")
+		})}
+		merged, err := h.mergeUpdatedKey(stored(), update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		wif := merged.AnthropicKeyConfig.WorkloadIdentity
+		if got := wif.IdentityToken.GetValue(); got != jwt {
+			t.Errorf("identity_token: got %q, want the stored token", got)
+		}
+		if got := wif.WorkspaceID.GetValue(); got != "wrkspc_01ghi" {
+			t.Errorf("workspace_id: got %q, want the stored value", got)
+		}
+		if got := wif.ServiceAccountID.GetValue(); got != "svac_02new" {
+			t.Errorf("service_account_id: got %q, want the new literal", got)
+		}
+	})
+
+	t.Run("the redacted GET body round-trips to the stored token", func(t *testing.T) {
+		update := schemas.Key{Name: "k", AnthropicKeyConfig: stored().AnthropicKeyConfig.Redacted()}
+		merged, err := h.mergeUpdatedKey(stored(), update)
+		if err != nil {
+			t.Fatalf("mergeUpdatedKey returned error: %v", err)
+		}
+		if got := merged.AnthropicKeyConfig.WorkloadIdentity.IdentityToken.GetValue(); got != jwt {
+			t.Errorf("identity_token: got %q, want the stored token", got)
+		}
+	})
+
+	t.Run("a mask with no stored counterpart is rejected", func(t *testing.T) {
+		update := schemas.Key{Name: "k", AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentityTokenFile = nil
+			c.IdentityToken = masked(jwt)
+		})}
+		_, err := h.mergeUpdatedKey(schemas.Key{Name: "k"}, update)
+		if err == nil || !strings.Contains(err.Error(), "anthropic_key_config.workload_identity.identity_token") {
+			t.Fatalf("expected the mask to be refused naming the field, got %v", err)
+		}
+	})
+
+	t.Run("an update without the section keeps the stored one", func(t *testing.T) {
+		decoded, err := decodeKeyUpdate([]byte(`{"name":"renamed"}`), stored())
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate: %v", err)
+		}
+		if !decoded.AnthropicKeyConfig.HasWorkloadIdentity() || decoded.AnthropicKeyConfig.WorkloadIdentity.IdentityToken.GetValue() != jwt {
+			t.Fatal("an omitted anthropic_key_config must keep the stored section")
+		}
+	})
+
+	t.Run("an explicit null clears the stored section", func(t *testing.T) {
+		decoded, err := decodeKeyUpdate([]byte(`{"name":"k","value":"sk-ant","anthropic_key_config":null}`), stored())
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate: %v", err)
+		}
+		if decoded.AnthropicKeyConfig != nil {
+			t.Fatal("an explicit null must clear the stored anthropic_key_config")
+		}
+	})
+}
+
+// TestProviderKeyWrites_AnthropicWorkloadIdentity drives both write handlers: a valueless key is
+// accepted when it federates on an anthropic-based provider and refused everywhere else, an
+// incomplete block is a 400, and an update echoing the masked token keeps the stored token.
+func TestProviderKeyWrites_AnthropicWorkloadIdentity(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"
+	const block = `{"workload_identity":{"federation_rule_id":"fdrl_01abc","organization_id":"8c1d0f5e-0000-4000-8000-000000000001","service_account_id":"svac_01def","identity_token":"` + jwt + `"}}`
+
+	createCases := []struct {
+		name       string
+		provider   schemas.ModelProvider
+		config     configstore.ProviderConfig
+		body       string
+		wantStatus int
+		wantBody   string
+	}{
+		{"valueless federated key on anthropic", schemas.Anthropic, configstore.ProviderConfig{},
+			`{"name":"wif","weight":1,"anthropic_key_config":` + block + `}`, fasthttp.StatusOK, ""},
+		{"federated key with the UI's empty value object", schemas.Anthropic, configstore.ProviderConfig{},
+			`{"name":"wif","value":{"value":""},"weight":1,"anthropic_key_config":` + block + `}`, fasthttp.StatusOK, ""},
+		{"valueless federated key on a custom anthropic provider", "acme-anthropic",
+			configstore.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}},
+			`{"name":"wif","weight":1,"anthropic_key_config":` + block + `}`, fasthttp.StatusOK, ""},
+		{"federated key on openai", schemas.OpenAI, configstore.ProviderConfig{},
+			`{"name":"wif","weight":1,"anthropic_key_config":` + block + `}`, fasthttp.StatusBadRequest, "only supported on anthropic"},
+		{"both token sources", schemas.Anthropic, configstore.ProviderConfig{},
+			`{"name":"wif","weight":1,"anthropic_key_config":{"workload_identity":{"federation_rule_id":"fdrl_01abc","organization_id":"org","service_account_id":"svac_01def","identity_token":"t","identity_token_file":"/f"}}}`,
+			fasthttp.StatusBadRequest, "exactly one of identity_token_file or identity_token"},
+		{"missing federation rule", schemas.Anthropic, configstore.ProviderConfig{},
+			`{"name":"wif","weight":1,"anthropic_key_config":{"workload_identity":{"organization_id":"org","service_account_id":"svac_01def","identity_token_file":"/f"}}}`,
+			fasthttp.StatusBadRequest, "federation_rule_id is required"},
+		{"an empty key is still refused", schemas.Anthropic, configstore.ProviderConfig{},
+			`{"name":"wif","weight":1,"anthropic_key_config":{}}`, fasthttp.StatusBadRequest, "Key value must not be empty"},
+	}
+	for _, tc := range createCases {
+		t.Run("create "+tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{tc.provider: tc.config}},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(tc.provider))
+			h.createProviderKey(ctx)
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			body := string(ctx.Response.Body())
+			keys := h.inMemoryStore.Providers[tc.provider].Keys
+			if tc.wantStatus != fasthttp.StatusOK {
+				if !strings.Contains(body, tc.wantBody) {
+					t.Fatalf("expected the error to contain %q, got %s", tc.wantBody, body)
+				}
+				if len(keys) != 0 {
+					t.Fatalf("a rejected key must not be stored, got %d keys", len(keys))
+				}
+				return
+			}
+			if strings.Contains(body, jwt) {
+				t.Fatalf("the response must not echo the identity token: %s", body)
+			}
+			if len(keys) != 1 || !keys[0].AnthropicKeyConfig.HasWorkloadIdentity() || keys[0].AnthropicKeyConfig.WorkloadIdentity.IdentityToken.GetValue() != jwt {
+				t.Fatalf("expected the federated key stored with its token, got %+v", keys)
+			}
+		})
+	}
+
+	t.Run("update echoing the masked token keeps the stored token", func(t *testing.T) {
+		stored := schemas.Key{ID: "key-1", Name: "wif", Weight: 1, AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.IdentityTokenFile = nil
+			c.IdentityToken = schemas.NewSecretVar(jwt)
+		})}
+		h := &ProviderHandler{
+			inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {Keys: []schemas.Key{stored}}}},
+			modelsManager: &mockModelsManager{},
+		}
+		attachBifrostClient(t, h.inMemoryStore)
+		masked := jwt[:4] + strings.Repeat("*", 24) + jwt[len(jwt)-4:]
+		ctx := newTestRequestCtx(`{"name":"wif","weight":2,"anthropic_key_config":{"workload_identity":{"federation_rule_id":"fdrl_01abc","organization_id":"8c1d0f5e-0000-4000-8000-000000000001","service_account_id":"svac_01def","identity_token":"` + masked + `"}}}`)
+		ctx.SetUserValue("provider", string(schemas.Anthropic))
+		ctx.SetUserValue("key_id", "key-1")
+		h.updateProviderKey(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		got := h.inMemoryStore.Providers[schemas.Anthropic].Keys[0]
+		if got.Weight != 2 {
+			t.Fatalf("weight got %v, want the update applied", got.Weight)
+		}
+		if !got.AnthropicKeyConfig.HasWorkloadIdentity() || got.AnthropicKeyConfig.WorkloadIdentity.IdentityToken.GetValue() != jwt {
+			t.Fatalf("the stored identity token must survive a masked update, got %+v", got.AnthropicKeyConfig)
+		}
+	})
+
+	// The UI edits a key by sending back the GET body it was shown: value as {"value":""}, the
+	// masked token, and env-backed identifiers in their redacted object form.
+	t.Run("update sending the redacted GET body back keeps every stored secret", func(t *testing.T) {
+		t.Setenv("WIF_HANDLER_TEST_SVAC", "svac_from_environment_0123")
+		stored := schemas.Key{ID: "key-1", Name: "wif", Weight: 1, AnthropicKeyConfig: anthropicWIFTestConfig(func(c *schemas.AnthropicWorkloadIdentityConfig) {
+			c.ServiceAccountID = *schemas.NewSecretVar("env.WIF_HANDLER_TEST_SVAC")
+			c.IdentityTokenFile = nil
+			c.IdentityToken = schemas.NewSecretVar(jwt)
+		})}
+		h := &ProviderHandler{
+			inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {Keys: []schemas.Key{stored}}}},
+			modelsManager: &mockModelsManager{},
+		}
+		attachBifrostClient(t, h.inMemoryStore)
+		redacted, err := h.inMemoryStore.GetProviderKeyRedacted(schemas.Anthropic, "key-1")
+		if err != nil {
+			t.Fatalf("GetProviderKeyRedacted: %v", err)
+		}
+		redacted.Weight = 3
+		body, err := sonic.Marshal(redacted)
+		if err != nil {
+			t.Fatalf("marshal redacted key: %v", err)
+		}
+		if strings.Contains(string(body), jwt) || strings.Contains(string(body), "from_environment") {
+			t.Fatalf("precondition: the GET body must not carry the secrets: %s", body)
+		}
+		if !strings.Contains(string(body), `"value":{"value":""`) {
+			t.Fatalf("precondition: a federated key's value is sent as an empty SecretVar object: %s", body)
+		}
+		ctx := newTestRequestCtx(string(body))
+		ctx.SetUserValue("provider", string(schemas.Anthropic))
+		ctx.SetUserValue("key_id", "key-1")
+		h.updateProviderKey(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		got := h.inMemoryStore.Providers[schemas.Anthropic].Keys[0]
+		if got.Weight != 3 {
+			t.Fatalf("weight got %v, want the update applied", got.Weight)
+		}
+		wif := got.AnthropicKeyConfig.WorkloadIdentity
+		if wif.IdentityToken.GetValue() != jwt {
+			t.Errorf("identity_token: got %q, want the stored token", wif.IdentityToken.GetValue())
+		}
+		if !wif.ServiceAccountID.IsFromEnv() || wif.ServiceAccountID.GetRawRef() != "env.WIF_HANDLER_TEST_SVAC" {
+			t.Errorf("service_account_id: got %+v, want the stored env reference", wif.ServiceAccountID)
+		}
+		if wif.FederationRuleID.GetValue() != "fdrl_01abc" || wif.OrganizationID.GetValue() != "8c1d0f5e-0000-4000-8000-000000000001" {
+			t.Errorf("plain identifiers changed: %q %q", wif.FederationRuleID.GetValue(), wif.OrganizationID.GetValue())
+		}
+	})
+
+	t.Run("update patch semantics for the section", func(t *testing.T) {
+		newHandler := func(t *testing.T) *ProviderHandler {
+			stored := schemas.Key{ID: "key-1", Name: "wif", Weight: 1, AnthropicKeyConfig: anthropicWIFTestConfig(nil)}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Anthropic: {Keys: []schemas.Key{stored}}}},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+			return h
+		}
+		update := func(t *testing.T, h *ProviderHandler, body string) schemas.Key {
+			ctx := newTestRequestCtx(body)
+			ctx.SetUserValue("provider", string(schemas.Anthropic))
+			ctx.SetUserValue("key_id", "key-1")
+			h.updateProviderKey(ctx)
+			if ctx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			return h.inMemoryStore.Providers[schemas.Anthropic].Keys[0]
+		}
+
+		if got := update(t, newHandler(t), `{"weight":2}`); !got.AnthropicKeyConfig.HasWorkloadIdentity() {
+			t.Fatal("an update omitting anthropic_key_config must keep the stored section")
+		}
+		got := update(t, newHandler(t), `{"value":"sk-ant-api","anthropic_key_config":null}`)
+		if got.AnthropicKeyConfig != nil {
+			t.Fatalf("an explicit null must clear the stored section, got %+v", got.AnthropicKeyConfig)
+		}
+		if got.Value.GetValue() != "sk-ant-api" {
+			t.Fatalf("value got %q, want the new API key", got.Value.GetValue())
 		}
 	})
 }
@@ -1531,6 +1871,38 @@ func TestRejectUnknownOAuthKeyConfigFields(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := rejectUnknownOAuthKeyConfigFields([]byte(tc.body))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error got %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestRejectUnknownAnthropicKeyConfigFields pins the same parity for anthropic_key_config: a
+// misspelled workspace_id would otherwise save and mint for the rule's default workspace.
+func TestRejectUnknownAnthropicKeyConfigFields(t *testing.T) {
+	valid := `"federation_rule_id":"fdrl_x","organization_id":"org","service_account_id":"svac_x","identity_token_file":"/var/run/secrets/anthropic.com/token"`
+	cases := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{"no block", `{"value":"sk","weight":1}`, ""},
+		{"null block", `{"value":"sk","anthropic_key_config":null}`, ""},
+		{"known fields only", `{"anthropic_key_config":{"workload_identity":{` + valid + `,"workspace_id":"wrkspc_x"}}}`, ""},
+		{"secret references", `{"anthropic_key_config":{"workload_identity":{` + valid + `,"federation_rule_id":{"ref":"env.ANTHROPIC_FEDERATION_RULE_ID","type":"env"}}}}`, ""},
+		{"misspelled workspace", `{"anthropic_key_config":{"workload_identity":{` + valid + `,"workspace":"wrkspc_x"}}}`, `unknown field "workspace"`},
+		{"unknown block field", `{"anthropic_key_config":{"workload_identity_v2":{}}}`, `unknown field "workload_identity_v2"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := rejectUnknownAnthropicKeyConfigFields([]byte(tc.body))
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)

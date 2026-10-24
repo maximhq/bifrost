@@ -894,6 +894,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].CloudflareKeyConfig = cloudflareConfig
 		}
 
+		if key.AnthropicKeyConfig != nil {
+			// Identifiers readable unless secret-backed; the identity token always masked.
+			redactedConfig.Keys[i].AnthropicKeyConfig = key.AnthropicKeyConfig.Redacted()
+		}
+
 		// Redact Databricks key config if present
 		if key.DatabricksKeyConfig != nil {
 			databricksConfig := &schemas.DatabricksKeyConfig{
@@ -1160,6 +1165,34 @@ func oauthKeyConfigHashView(cfg *schemas.OAuthKeyConfig) *schemas.OAuthKeyConfig
 	return &view
 }
 
+// anthropicKeyConfigHashView is oauthKeyConfigHashView for anthropic_key_config: every field
+// hashes by its source, so a rotated env identity token does not read as a config.json edit.
+func anthropicKeyConfigHashView(cfg *schemas.AnthropicKeyConfig) *schemas.AnthropicKeyConfig {
+	view := &schemas.AnthropicKeyConfig{}
+	wif := cfg.WorkloadIdentity
+	if wif == nil {
+		return view
+	}
+	source := func(v *schemas.SecretVar) *schemas.SecretVar {
+		if v == nil {
+			return nil
+		}
+		if v.IsFromSecret() {
+			return &schemas.SecretVar{Val: "ref:" + v.GetRawRef()}
+		}
+		return &schemas.SecretVar{Val: "val:" + v.Val}
+	}
+	view.WorkloadIdentity = &schemas.AnthropicWorkloadIdentityConfig{
+		FederationRuleID:  *source(&wif.FederationRuleID),
+		OrganizationID:    *source(&wif.OrganizationID),
+		ServiceAccountID:  *source(&wif.ServiceAccountID),
+		WorkspaceID:       source(wif.WorkspaceID),
+		IdentityTokenFile: source(wif.IdentityTokenFile),
+		IdentityToken:     source(wif.IdentityToken),
+	}
+	return view
+}
+
 func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	hash := sha256.New()
 	// Hash Name
@@ -1270,6 +1303,14 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	// Hash CloudflareKeyConfig
 	if key.CloudflareKeyConfig != nil {
 		data, err := sonic.Marshal(key.CloudflareKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash AnthropicKeyConfig by source, as OAuthKeyConfig below.
+	if key.AnthropicKeyConfig != nil {
+		data, err := providerUtils.MarshalSorted(anthropicKeyConfigHashView(key.AnthropicKeyConfig))
 		if err != nil {
 			return "", err
 		}

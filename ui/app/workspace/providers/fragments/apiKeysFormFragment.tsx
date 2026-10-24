@@ -1,7 +1,7 @@
 import { ModelAccessSelector } from "@/components/modelAccess";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { DefaultVertexAWSWorkloadIdentityConfig, OAuthSigningAlgorithms } from "@/lib/types/config";
+import { DefaultAnthropicWorkloadIdentityConfig, DefaultVertexAWSWorkloadIdentityConfig, OAuthSigningAlgorithms } from "@/lib/types/config";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
@@ -163,6 +163,9 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	// openai, and every custom provider built on the openai base, may mint its bearer from
 	// oauth_key_config instead of carrying a static API key.
 	const isOpenAICompatible = effectiveProvider === "openai";
+	// anthropic, and every custom provider built on the anthropic base, may federate its credential
+	// through anthropic_key_config.workload_identity instead of carrying a static API key.
+	const isAnthropic = effectiveProvider === "anthropic";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
 
@@ -181,6 +184,10 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	// Auth type state for openai-based keys: a static API key, or an OAuth-minted bearer
 	const [openaiAuthType, setOpenaiAuthType] = useState<"api_key" | "oauth">("api_key");
 	const oauthGrantType = form.watch("key.oauth_key_config.grant_type") ?? "client_credentials";
+
+	// Auth type state for anthropic-based keys: a static API key, or Workload Identity Federation
+	const [anthropicAuthType, setAnthropicAuthType] = useState<"api_key" | "workload_identity">("api_key");
+	const anthropicTokenSource = form.watch("key.anthropic_key_config.workload_identity._token_source") ?? "file";
 
 	// Auth type state for Vertex: 'service_account' (ADC), 'service_account_json', 'api_key', or
 	// 'aws_workload_identity' (GCP Workload Identity Federation from the workload's AWS identity)
@@ -258,6 +265,23 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 		// oauthDefaults re-runs detection after the key form resets itself once the key
 		// resolves, for the same reason as databricksDefaults above.
 	}, [isOpenAICompatible, form, oauthDefaults]);
+
+	const anthropicDefaults = form.formState.defaultValues?.key?.anthropic_key_config;
+	useEffect(() => {
+		if (form.formState.isDirty) return;
+		if (isAnthropic) {
+			const wif = form.getValues("key.anthropic_key_config.workload_identity");
+			const detected: "api_key" | "workload_identity" = wif ? "workload_identity" : "api_key";
+			setAnthropicAuthType(detected);
+			form.setValue("key.anthropic_key_config._auth_type", detected);
+			if (wif) {
+				const token = wif.identity_token;
+				form.setValue("key.anthropic_key_config.workload_identity._token_source", token?.value || token?.ref ? "token" : "file");
+			}
+		}
+		// anthropicDefaults re-runs detection after the key form resets itself once the key
+		// resolves, for the same reason as databricksDefaults above.
+	}, [isAnthropic, form, anthropicDefaults]);
 
 	useEffect(() => {
 		if (form.formState.isDirty) return;
@@ -370,21 +394,28 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 				/>
 			</div>
 			{/* Hide API Key field for providers with dedicated auth tabs */}
-			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && !isDatabricks && !isOpenAICompatible && !isGithubCopilot && (
-				<FormField
-					control={control}
-					name={`key.value`}
-					render={({ field }) => (
-						<FormItem className="px-0.5">
-							<FormLabel>API Key {isVLLM ? "(Optional)" : ""}</FormLabel>
-							<FormControl>
-								<SecretVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
-							</FormControl>
-							<FormMessage />
-						</FormItem>
-					)}
-				/>
-			)}
+			{!isAzure &&
+				!isBedrock &&
+				!isBedrockMantle &&
+				!isVertex &&
+				!isDatabricks &&
+				!isOpenAICompatible &&
+				!isAnthropic &&
+				!isGithubCopilot && (
+					<FormField
+						control={control}
+						name={`key.value`}
+						render={({ field }) => (
+							<FormItem className="px-0.5">
+								<FormLabel>API Key {isVLLM ? "(Optional)" : ""}</FormLabel>
+								<FormControl>
+									<SecretVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				)}
 			<>
 				<FormField
 					control={control}
@@ -1565,6 +1596,194 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 													placeholder="api://my-llm-gateway"
 													{...field}
 													value={field.value ?? ""}
+												/>
+											</FormControl>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+							)}
+						</>
+					)}
+				</div>
+			)}
+			{isAnthropic && (
+				<div className="space-y-4">
+					<div className="space-y-2">
+						<FormLabel>Authentication Method</FormLabel>
+						<Tabs
+							value={anthropicAuthType}
+							onValueChange={(v) => {
+								const next = v as "api_key" | "workload_identity";
+								setAnthropicAuthType(next);
+								form.setValue("key.anthropic_key_config._auth_type", next, { shouldDirty: true, shouldValidate: true });
+								if (next === "workload_identity") {
+									// The static key and the federated token are alternatives, never both.
+									form.setValue("key.value", undefined, { shouldDirty: true });
+									if (!form.getValues("key.anthropic_key_config.workload_identity")) {
+										form.setValue(
+											"key.anthropic_key_config.workload_identity",
+											{ ...DefaultAnthropicWorkloadIdentityConfig },
+											{ shouldDirty: true },
+										);
+									}
+								}
+							}}
+						>
+							<TabsList className="grid w-full grid-cols-2">
+								<TabsTrigger data-testid="apikey-anthropic-api-key-tab" value="api_key">
+									API Key
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-anthropic-workload-identity-tab" value="workload_identity">
+									Workload Identity
+								</TabsTrigger>
+							</TabsList>
+						</Tabs>
+					</div>
+					{anthropicAuthType === "api_key" && (
+						<FormField
+							control={control}
+							name="key.value"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>API Key</FormLabel>
+									<FormControl>
+										<SecretVarInput data-testid="key-input-anthropic-api-key" placeholder="API Key or env.MY_KEY" type="text" {...field} />
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
+					{anthropicAuthType === "workload_identity" && (
+						<>
+							<p className="text-muted-foreground text-sm">
+								Bifrost exchanges the workload&apos;s OIDC identity token for a short-lived Anthropic access token and refreshes it before
+								it expires. No API key required.
+							</p>
+							<FormField
+								control={control}
+								name="key.anthropic_key_config.workload_identity.federation_rule_id"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Federation Rule ID</FormLabel>
+										<FormControl>
+											<SecretVarInput
+												data-testid="key-input-anthropic-wif-federation-rule-id"
+												placeholder="fdrl_… or env.ANTHROPIC_FEDERATION_RULE_ID"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name="key.anthropic_key_config.workload_identity.organization_id"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Organization ID</FormLabel>
+										<FormControl>
+											<SecretVarInput
+												data-testid="key-input-anthropic-wif-organization-id"
+												placeholder="Organization UUID or env.ANTHROPIC_ORGANIZATION_ID"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name="key.anthropic_key_config.workload_identity.service_account_id"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Service Account ID</FormLabel>
+										<FormControl>
+											<SecretVarInput
+												data-testid="key-input-anthropic-wif-service-account-id"
+												placeholder="svac_… or env.ANTHROPIC_SERVICE_ACCOUNT_ID"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name="key.anthropic_key_config.workload_identity.workspace_id"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Workspace ID (Optional)</FormLabel>
+										<FormDescription>Required when the federation rule spans several workspaces.</FormDescription>
+										<FormControl>
+											<SecretVarInput
+												data-testid="key-input-anthropic-wif-workspace-id"
+												placeholder="wrkspc_… or env.ANTHROPIC_WORKSPACE_ID"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name="key.anthropic_key_config.workload_identity._token_source"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Identity Token Source</FormLabel>
+										<Select value={field.value ?? "file"} onValueChange={field.onChange}>
+											<FormControl>
+												<SelectTrigger className="w-full" data-testid="key-select-anthropic-wif-token-source">
+													<SelectValue placeholder="Token File" />
+												</SelectTrigger>
+											</FormControl>
+											<SelectContent>
+												<SelectItem value="file">Token File</SelectItem>
+												<SelectItem value="token">Token</SelectItem>
+											</SelectContent>
+										</Select>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							{anthropicTokenSource === "file" && (
+								<FormField
+									control={control}
+									name="key.anthropic_key_config.workload_identity.identity_token_file"
+									render={({ field }) => (
+										<FormItem>
+											<FormLabel>Token File Path</FormLabel>
+											<FormDescription>Re-read on every exchange, so a rotated token is picked up.</FormDescription>
+											<FormControl>
+												<SecretVarInput
+													data-testid="key-input-anthropic-wif-identity-token-file"
+													placeholder="Path to the token file or env.ANTHROPIC_IDENTITY_TOKEN_FILE"
+													{...field}
+												/>
+											</FormControl>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+							)}
+							{anthropicTokenSource === "token" && (
+								<FormField
+									control={control}
+									name="key.anthropic_key_config.workload_identity.identity_token"
+									render={({ field }) => (
+										<FormItem>
+											<FormLabel>Identity Token</FormLabel>
+											<FormDescription>Stored as a secret and returned masked.</FormDescription>
+											<FormControl>
+												<SecretVarInput
+													data-testid="key-input-anthropic-wif-identity-token"
+													placeholder="env.ANTHROPIC_IDENTITY_TOKEN"
+													{...field}
 												/>
 											</FormControl>
 											<FormMessage />

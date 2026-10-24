@@ -5076,3 +5076,41 @@ func TestMigrationAddPassthroughJSONColumn_NonRollbackable(t *testing.T) {
 	require.NoError(t, db.Where("name = ?", "openai").First(&got).Error)
 	assert.Equal(t, policy, got.Passthrough)
 }
+
+// TestMigrationAddAnthropicWorkloadIdentityColumn pins the upgrade path of
+// add_anthropic_workload_identity_column: a config_keys table from before the release gains the
+// column, a replay is a no-op, and a rollback refuses so stored federation configs survive.
+func TestMigrationAddAnthropicWorkloadIdentityColumn(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	const column = "anthropic_workload_identity_json"
+
+	require.NoError(t, db.AutoMigrate(&tables.TableKey{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableKey{}, column))
+	require.False(t, db.Migrator().HasColumn(&tables.TableKey{}, column), "precondition: the column must be absent")
+
+	require.NoError(t, migrationAddAnthropicWorkloadIdentityColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, column))
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_anthropic_workload_identity_column").Error)
+	require.NoError(t, migrationAddAnthropicWorkloadIdentityColumn(ctx, db, testMigrationLogger), "a replay with the column present must not fail")
+
+	seed := tables.TableKey{
+		Name: "anthropic-wif", ProviderID: 1, Provider: "anthropic", KeyID: "anthropic-wif-migration",
+		AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+			FederationRuleID:  *schemas.NewSecretVar("fdrl_01abc"),
+			OrganizationID:    *schemas.NewSecretVar("org-uuid"),
+			ServiceAccountID:  *schemas.NewSecretVar("svac_01def"),
+			IdentityTokenFile: schemas.NewSecretVar("/var/run/secrets/anthropic/token"),
+		}},
+	}
+	require.NoError(t, db.Create(&seed).Error)
+
+	err := rollbackAnthropicWorkloadIdentityColumn(db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, column), "a refused rollback must leave the column intact")
+	var found tables.TableKey
+	require.NoError(t, db.Where("key_id = ?", seed.KeyID).First(&found).Error)
+	require.True(t, found.AnthropicKeyConfig.HasWorkloadIdentity(), "the stored federation config must survive the refused rollback")
+	assert.Equal(t, "svac_01def", found.AnthropicKeyConfig.WorkloadIdentity.ServiceAccountID.GetValue())
+}
