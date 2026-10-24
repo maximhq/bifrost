@@ -9029,5 +9029,3 @@ func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 		})
 	}
 }
-
-
