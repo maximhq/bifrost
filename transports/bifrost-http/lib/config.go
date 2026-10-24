@@ -9818,6 +9818,9 @@ func validateGenericCustomProvider(config configstore.ProviderConfig, cpc *schem
 	if len(cpc.RequestPathOverrides) > 0 {
 		return fmt.Errorf("custom provider validation failed: request_path_overrides does not apply to generic providers")
 	}
+	if name, dup := schemas.GenericExtraHeaderConflict(config.NetworkConfig.ExtraHeaders); dup {
+		return fmt.Errorf("custom provider validation failed: network_config.extra_headers names %q under two spellings; a generic provider matches routes on one value per header", name)
+	}
 	if cpc.GenericConfig == nil {
 		cpc.GenericConfig = &schemas.GenericProviderConfig{}
 	}

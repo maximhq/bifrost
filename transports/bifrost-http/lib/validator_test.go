@@ -4467,7 +4467,8 @@ func TestValidateConfigSchema_GenericProviderConfig(t *testing.T) {
 			"auth": {"type": "header", "header_name": "x-api-key", "value_prefix": "Key "},
 			"usage": {"model_path": "model", "cost_path": "usage.cost", "cost_per_request": 0.008, "disable_optimistic_parsing": false},
 			"streaming": {"paths": ["/v1/stream/**"], "detect_from_accept_header": true},
-			"routes": [{"method": "POST", "path": "/search", "billable": true, "stream": false, "usage": {"cost_per_request": 0.01}}]
+			"routes": [{"method": "POST", "path": "/search", "billable": true, "stream": false, "usage": {"cost_per_request": 0.01}}],
+			"strict_routes": true
 		}
 	}`)
 	if err := ValidateConfigSchema([]byte(full), loadLocalSchema(t)); err != nil {

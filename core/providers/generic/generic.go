@@ -23,8 +23,15 @@ import (
 // variable so tests can lower it; the streaming relay never buffers a body.
 var genericPassthroughMaxResponseBytes int64 = 64 << 20
 
+// DetectsStreamFlag reports whether a caller's "stream": true body or ?stream=true selects the
+// streaming relay (streaming.detect_from_body). The transport reads the body only when it does.
+func (provider *GenericProvider) DetectsStreamFlag() bool {
+	return provider.cfg.Streaming != nil && provider.cfg.Streaming.DetectFromBody
+}
+
 // RoutePlan is the outcome of matching one request against a provider's routes.
 type RoutePlan struct {
+	Allowed   bool   // false only under strict_routes when no route matched
 	ModelPath string // request body path the model is read from, "" for none
 	Streams   bool   // serve with the streaming relay
 	provider  *GenericProvider
@@ -40,17 +47,19 @@ func WithPlan(ctx *schemas.BifrostContext, plan RoutePlan) {
 }
 
 // Plan matches the request against the routes once and answers everything the transport needs
-// to dispatch it: the model path and the streaming decision. The transport stores the plan on
-// the request context with WithPlan so the relay does not match the routes a second time.
-func (provider *GenericProvider) Plan(method, path, accept string) RoutePlan {
-	route := provider.matchRoute(method, path)
+// to dispatch it: the allowlist, the model path and the streaming decision. headers is the
+// lower-cased caller header map, for routes that match on a header. The transport stores the
+// plan on the request context with WithPlan so the relay does not match the routes a second time.
+func (provider *GenericProvider) Plan(method, path, accept string, bodyStream bool, headers map[string]string) RoutePlan {
+	route := provider.matchRoute(method, path, headers)
 	usage := provider.usage
 	if route != nil {
 		usage = route.usage
 	}
 	return RoutePlan{
+		Allowed:   !provider.cfg.StrictRoutes || route != nil,
 		ModelPath: usage.effectiveModelPath(),
-		Streams:   provider.streams(route, path, accept),
+		Streams:   provider.streams(route, path, accept, bodyStream),
 		provider:  provider,
 		route:     route,
 	}
@@ -62,7 +71,7 @@ type GenericProvider struct {
 	client               *http.Client                  // unary client; Timeout bounds the whole response
 	streamingClient      *http.Client                  // streaming client; no whole-response timeout
 	networkConfig        schemas.NetworkConfig         // base URL, extra headers, timeouts
-	extraHeaderNames     map[string]struct{}           // lower-cased names of the operator's extra headers, which a caller may not replace
+	operatorHeaders      map[string]string             // the operator's extra headers by lower-cased name; a caller may not replace them
 	customProviderConfig *schemas.CustomProviderConfig // name, allowed requests, generic config
 	cfg                  *schemas.GenericProviderConfig
 	usage                resolvedUsage // provider-level usage mapping
@@ -98,6 +107,9 @@ func NewGenericProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		return nil, fmt.Errorf("generic provider config: %w", err)
 	}
 
+	if name, dup := schemas.GenericExtraHeaderConflict(config.NetworkConfig.ExtraHeaders); dup {
+		return nil, fmt.Errorf("generic provider config: network_config.extra_headers names %q under two spellings", name)
+	}
 	client, err := providerUtils.NewNetHTTPClient(config)
 	if err != nil {
 		return nil, err
@@ -125,7 +137,7 @@ func NewGenericProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		client:               client,
 		streamingClient:      providerUtils.BuildStreamingHTTPClient(client),
 		networkConfig:        config.NetworkConfig,
-		extraHeaderNames:     lowerHeaderNames(config.NetworkConfig.ExtraHeaders),
+		operatorHeaders:      lowerHeaderValues(config.NetworkConfig.ExtraHeaders),
 		customProviderConfig: config.CustomProviderConfig,
 		cfg:                  cfg,
 		usage:                usage,
@@ -142,11 +154,11 @@ func (provider *GenericProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // streams decides whether a request is served by the streaming relay: a route's explicit flag,
-// then the streaming.paths globs, then the Accept header when enabled. The path's wording is
-// never a signal: unlike an LLM API, a generic API with "stream" in a
-// path (/v1/streams/{id}) usually answers with plain JSON, and the streaming relay forwards a
-// non-SSE body unread, so the response-side usage mapping would be silently skipped.
-func (provider *GenericProvider) streams(route *compiledRoute, path, accept string) bool {
+// then the streaming.paths globs, then the Accept header when enabled, then the body's stream
+// flag when enabled. The path's wording is never a signal: unlike an LLM API, a generic API with
+// "stream" in a path (/v1/streams/{id}) usually answers with plain JSON, and the streaming relay
+// forwards a non-SSE body unread, so the response-side usage mapping would be silently skipped.
+func (provider *GenericProvider) streams(route *compiledRoute, path, accept string, bodyStream bool) bool {
 	if route != nil && route.stream != nil {
 		return *route.stream
 	}
@@ -155,7 +167,14 @@ func (provider *GenericProvider) streams(route *compiledRoute, path, accept stri
 			return true
 		}
 	}
-	return provider.cfg.Streaming != nil && provider.cfg.Streaming.DetectFromAcceptHeader && acceptsEventStream(accept)
+	if provider.cfg.Streaming != nil && provider.cfg.Streaming.DetectFromAcceptHeader && acceptsEventStream(accept) {
+		return true
+	}
+	// A caller's own stream flag counts only when the operator says so. The streaming relay forwards
+	// a non-SSE reply unread, so on a provider whose billing reads the response (Textract pages,
+	// Tavily credits) a caller could add "stream": true and pay the flat fee alone. LLM-shaped
+	// upstreams, where the flag is the protocol, turn detect_from_body on.
+	return bodyStream && provider.cfg.Streaming != nil && provider.cfg.Streaming.DetectFromBody
 }
 
 func acceptsEventStream(accept string) bool {
@@ -178,12 +197,12 @@ func isEventStream(contentType string) bool {
 // taken from the plan the transport stored on the context when it was made for this provider
 // instance, so the routes are matched once per request; the Go SDK path, which stores none,
 // matches here.
-func (provider *GenericProvider) resolve(ctx *schemas.BifrostContext, method, path string) (resolvedUsage, bool, *compiledRoute) {
+func (provider *GenericProvider) resolve(ctx *schemas.BifrostContext, method, path string, headers map[string]string) (resolvedUsage, bool, *compiledRoute) {
 	var route *compiledRoute
 	if plan, ok := ctx.Value(routePlanContextKey{}).(RoutePlan); ok && plan.provider == provider {
 		route = plan.route
 	} else {
-		route = provider.matchRoute(method, path)
+		route = provider.matchRoute(method, path, headers)
 	}
 	if route != nil {
 		return route.usage, route.billable, route
@@ -191,15 +210,28 @@ func (provider *GenericProvider) resolve(ctx *schemas.BifrostContext, method, pa
 	return provider.usage, billableByDefault(method, nil), nil
 }
 
-// lowerHeaderNames is the set of configured extra header names, lower-cased for the caller
-// header loop. Built once per provider.
-func lowerHeaderNames(extra map[string]schemas.SecretVar) map[string]struct{} {
+// strictRouteError refuses an operation that matches no route under strict_routes. The HTTP
+// transport refuses it before dispatch; this is the same guard for the Go SDK path, which reaches
+// the provider directly.
+func (provider *GenericProvider) strictRouteError(route *compiledRoute, req *schemas.BifrostPassthroughRequest) *schemas.BifrostError {
+	if !provider.cfg.StrictRoutes || route != nil {
+		return nil
+	}
+	bifrostErr := providerUtils.NewBifrostOperationError(fmt.Sprintf("no route for %s %s (strict_routes)", req.Method, req.Path), nil)
+	bifrostErr.StatusCode = schemas.Ptr(http.StatusNotFound)
+	return bifrostErr
+}
+
+// lowerHeaderValues maps the configured extra headers by lower-cased name, for the caller header
+// loop and for route header matching, which must see the value that is actually sent. Built once
+// per provider.
+func lowerHeaderValues(extra map[string]schemas.SecretVar) map[string]string {
 	if len(extra) == 0 {
 		return nil
 	}
-	out := make(map[string]struct{}, len(extra))
-	for name := range extra {
-		out[strings.ToLower(name)] = struct{}{}
+	out := make(map[string]string, len(extra))
+	for name, value := range extra {
+		out[strings.ToLower(name)] = value.GetValue()
 	}
 	return out
 }
@@ -242,7 +274,7 @@ func (provider *GenericProvider) buildRequest(ctx *schemas.BifrostContext, key s
 		}
 		// A header the operator configured (a tenant, an API version) is the operator's to set; a
 		// caller's copy of it is dropped rather than replacing it.
-		if _, operator := provider.extraHeaderNames[strings.ToLower(k)]; operator {
+		if _, operator := provider.operatorHeaders[strings.ToLower(k)]; operator {
 			continue
 		}
 		// Under SigV4 every forwarded x-amz-* header is signed with the operator's credentials, so
@@ -271,15 +303,23 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 	if err := providerUtils.CheckOperationAllowed(schemas.Generic, provider.customProviderConfig, schemas.PassthroughRequest); err != nil {
 		return nil, err
 	}
-	httpReq, bifrostErr := provider.buildRequest(ctx, key, req)
-	if bifrostErr != nil {
+	if name, dup := ambiguousHeader(req.SafeHeaders); dup {
+		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("header %s is set under two spellings; send it once", name))
+	}
+	usageMapping, billable, route := provider.resolve(ctx, req.Method, req.Path, req.SafeHeaders)
+	if bifrostErr := provider.strictRouteError(route, req); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	usageMapping, billable, route := provider.resolve(ctx, req.Method, req.Path)
 	if billable {
 		if err := usageMapping.requestBodyError(req.Body); err != nil {
 			return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 		}
+	}
+	// The request is built (key, auth, signature) only once the route and body are accepted, so a
+	// strict-route refusal is a 404 whatever the auth setup would have said.
+	httpReq, bifrostErr := provider.buildRequest(ctx, key, req)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 	streamingRoute := route != nil && route.stream != nil && *route.stream
 	requestUnits := usageMapping.requestUnits(req.Body)
@@ -349,15 +389,23 @@ func (provider *GenericProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 	if err := providerUtils.CheckOperationAllowed(schemas.Generic, provider.customProviderConfig, schemas.PassthroughStreamRequest); err != nil {
 		return nil, err
 	}
-	httpReq, bifrostErr := provider.buildRequest(ctx, key, req)
-	if bifrostErr != nil {
+	if name, dup := ambiguousHeader(req.SafeHeaders); dup {
+		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("header %s is set under two spellings; send it once", name))
+	}
+	usageMapping, billable, route := provider.resolve(ctx, req.Method, req.Path, req.SafeHeaders)
+	if bifrostErr := provider.strictRouteError(route, req); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	usageMapping, billable, _ := provider.resolve(ctx, req.Method, req.Path)
 	if billable {
 		if err := usageMapping.requestBodyError(req.Body); err != nil {
 			return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 		}
+	}
+	// The request is built (key, auth, signature) only once the route and body are accepted, so a
+	// strict-route refusal is a 404 whatever the auth setup would have said.
+	httpReq, bifrostErr := provider.buildRequest(ctx, key, req)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 	requestUnits := usageMapping.requestUnits(req.Body)
 

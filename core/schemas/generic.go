@@ -36,6 +36,16 @@ func ValidGenericProviderName(name string) bool {
 
 var genericAWSServiceRe = regexp.MustCompile(`^[a-z0-9-]+$`)
 
+// genericUnmatchableHeaders are request headers a route matcher may not name: hop-by-hop headers
+// and the Google key header, which the transport drops before the routes are consulted, and the
+// credential headers IsSensitiveHeader misses, which it drops before forwarding. With
+// IsSensitiveHeader they are the names whose caller value never reaches the upstream.
+var genericUnmatchableHeaders = map[string]struct{}{
+	"host": {}, "connection": {}, "transfer-encoding": {}, "accept-encoding": {}, "x-goog-api-key": {},
+	"ocp-apim-subscription-key": {}, "subscription-key": {}, "x-functions-key": {},
+	"content-length": {}, // the relay sends the body's real length, never the caller's
+}
+
 var genericRouteMethods = map[string]struct{}{
 	"GET": {}, "POST": {}, "PUT": {}, "PATCH": {}, "DELETE": {}, "HEAD": {},
 }
@@ -95,12 +105,29 @@ type GenericUsageConfig struct {
 type GenericStreamingConfig struct {
 	Paths                  []string `json:"paths,omitempty"`           // route globs that always stream
 	DetectFromAcceptHeader bool     `json:"detect_from_accept_header"` // Accept: text/event-stream selects streaming
+	DetectFromBody         bool     `json:"detect_from_body"`          // "stream": true in a JSON body, or ?stream=true on a GET, selects streaming
+}
+
+// GenericExtraHeaderConflict returns an extra_headers name that appears under two spellings
+// (X-Amz-Target and x-amz-target). A generic relay matches routes on the operator's value of a
+// header, so two spellings could approve one operation while the other is sent.
+func GenericExtraHeaderConflict(headers map[string]SecretVar) (string, bool) {
+	seen := make(map[string]struct{}, len(headers))
+	for name := range headers {
+		lower := strings.ToLower(name)
+		if _, dup := seen[lower]; dup {
+			return name, true
+		}
+		seen[lower] = struct{}{}
+	}
+	return "", false
 }
 
 // GenericRouteConfig overrides provider defaults for one upstream operation.
 type GenericRouteConfig struct {
 	Method   string              `json:"method"`             // GET | POST | PUT | PATCH | DELETE | HEAD
 	Path     string              `json:"path"`               // segment glob; a trailing /** matches the prefix and everything below
+	Headers  map[string]string   `json:"headers,omitempty"`  // request headers that must also match: name (case-insensitive) to value glob (X-Amz-Target: Textract.Get*)
 	Billable *bool               `json:"billable,omitempty"` // false: the call is relayed but not counted or charged
 	Stream   *bool               `json:"stream,omitempty"`   // forces the streaming or buffered handler
 	Usage    *GenericUsageConfig `json:"usage,omitempty"`    // field-by-field override of the provider usage mapping
@@ -109,10 +136,11 @@ type GenericRouteConfig struct {
 // GenericProviderConfig configures a custom provider whose base type is Generic: a raw HTTP relay
 // to a non-LLM API that still carries key injection, logging, governance and plugins.
 type GenericProviderConfig struct {
-	Auth      GenericAuthConfig       `json:"auth"`
-	Usage     *GenericUsageConfig     `json:"usage,omitempty"`
-	Streaming *GenericStreamingConfig `json:"streaming,omitempty"`
-	Routes    []GenericRouteConfig    `json:"routes,omitempty"`
+	Auth         GenericAuthConfig       `json:"auth"`
+	Usage        *GenericUsageConfig     `json:"usage,omitempty"`
+	Streaming    *GenericStreamingConfig `json:"streaming,omitempty"`
+	Routes       []GenericRouteConfig    `json:"routes,omitempty"`
+	StrictRoutes bool                    `json:"strict_routes,omitempty"` // refuse requests matching no routes[] entry with 404
 }
 
 // Validate checks the config is internally consistent. It runs when a provider is created or
@@ -140,6 +168,33 @@ func (c *GenericProviderConfig) Validate() error {
 		}
 		if err := validateGenericRouteGlob(route.Path); err != nil {
 			return fmt.Errorf("routes[%d]: %w", i, err)
+		}
+		seenHeaders := make(map[string]struct{}, len(route.Headers))
+		for name, glob := range route.Headers {
+			if !httpguts.ValidHeaderFieldName(name) {
+				return fmt.Errorf("routes[%d].headers: %q is not a valid header name", i, name)
+			}
+			injected := c.Auth.Type == GenericAuthHeader && strings.EqualFold(name, c.Auth.HeaderName)
+			if _, dropped := genericUnmatchableHeaders[strings.ToLower(name)]; dropped || injected || IsSensitiveHeader(name) || strings.HasPrefix(strings.ToLower(name), "x-bf-") {
+				return fmt.Errorf("routes[%d].headers: %q is never presented to route matching (credentials, gateway and hop-by-hop headers are dropped before the routes are consulted)", i, name)
+			}
+			// Under SigV4 the relay forwards no caller x-amz-* header but X-Amz-Target, so a matcher on
+			// another one would pick a route (and its price) from a header the upstream never receives.
+			if lower := strings.ToLower(name); c.Auth.Type == GenericAuthAWSSigV4 && strings.HasPrefix(lower, "x-amz-") && lower != "x-amz-target" {
+				return fmt.Errorf("routes[%d].headers: %q is not forwarded under aws_sigv4 (only X-Amz-Target is), so it cannot select a route", i, name)
+			}
+			// Names match case-insensitively, so two spellings of one header would both have to
+			// match a single value and the route would silently never fire.
+			if _, dup := seenHeaders[strings.ToLower(name)]; dup {
+				return fmt.Errorf("routes[%d].headers: %q duplicates a header name that differs only by case", i, name)
+			}
+			seenHeaders[strings.ToLower(name)] = struct{}{}
+			if strings.TrimSpace(glob) == "" {
+				return fmt.Errorf("routes[%d].headers[%s]: a value glob is required", i, name)
+			}
+			if _, err := path.Match(glob, ""); err != nil {
+				return fmt.Errorf("routes[%d].headers[%s]: %w", i, name, err)
+			}
 		}
 		if err := route.Usage.validate(fmt.Sprintf("routes[%d].usage", i), c.Usage); err != nil {
 			return err
@@ -296,6 +351,12 @@ func (c *GenericProviderConfig) Clone() *GenericProviderConfig {
 		out.Routes = make([]GenericRouteConfig, len(c.Routes))
 		for i, route := range c.Routes {
 			out.Routes[i] = route
+			if route.Headers != nil {
+				out.Routes[i].Headers = make(map[string]string, len(route.Headers))
+				for k, v := range route.Headers {
+					out.Routes[i].Headers[k] = v
+				}
+			}
 			if route.Billable != nil {
 				out.Routes[i].Billable = Ptr(*route.Billable)
 			}

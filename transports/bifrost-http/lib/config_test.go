@@ -25935,6 +25935,13 @@ func TestValidateCustomProvider_Generic(t *testing.T) {
 		}
 		require.NoError(t, ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{}), schemas.ModelProvider(strings.Repeat("a", 64))))
 	})
+	t.Run("extra headers under two spellings are refused", func(t *testing.T) {
+		cfg := withBase(&schemas.CustomProviderConfig{})
+		cfg.NetworkConfig.ExtraHeaders = map[string]schemas.SecretVar{"X-Amz-Target": *schemas.NewSecretVar("A"), "x-amz-target": *schemas.NewSecretVar("B")}
+		err := ValidateCustomProvider(cfg, "textract")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "two spellings")
+	})
 	t.Run("base url required", func(t *testing.T) {
 		err := ValidateCustomProvider(configstore.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic}}, "tavily")
 		require.Error(t, err)

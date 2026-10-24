@@ -13507,6 +13507,10 @@
           "items": {
             "$ref": "#/$defs/generic_route_config"
           }
+        },
+        "strict_routes": {
+          "type": "boolean",
+          "description": "Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist (for example one imported from the API's OpenAPI document)"
         }
       },
       "additionalProperties": false
@@ -13636,7 +13640,7 @@
     },
     "generic_streaming_config": {
       "type": "object",
-      "description": "Which relayed requests are served as streams, besides a route's stream flag (which wins) and Accept: text/event-stream when enabled. The path's wording is never a signal",
+      "description": "Which relayed requests are served as streams, besides a route's stream flag (which wins), Accept: text/event-stream when detect_from_accept_header is enabled, and a JSON body with stream: true when detect_from_body is enabled (off by default). The path's wording is never a signal",
       "properties": {
         "paths": {
           "type": "array",
@@ -13648,6 +13652,10 @@
         "detect_from_accept_header": {
           "type": "boolean",
           "description": "Treat Accept: text/event-stream as a streaming request"
+        },
+        "detect_from_body": {
+          "type": "boolean",
+          "description": "Treat stream: true in a JSON body, or ?stream=true on a GET, as a streaming request. Off by default: the streaming relay forwards a non-SSE reply unread, so a caller could otherwise skip response-side billing by adding the flag. Turn on for LLM-shaped upstreams"
         }
       },
       "additionalProperties": false
@@ -13674,6 +13682,13 @@
         "billable": {
           "type": "boolean",
           "description": "false relays the call without counting or charging it; true counts it. Left unset, the method default applies, with or without a route: only POST is billable; GET and HEAD are polls and listings, PUT and PATCH update settings, DELETE cleans up"
+        },
+        "headers": {
+          "type": "object",
+          "description": "Request headers that must also match for this route: header name (case-insensitive) to value glob. AWS JSON APIs send every operation to POST / and name it in X-Amz-Target, so one route per operation is {\"X-Amz-Target\": \"Textract.GetDocumentAnalysis\"} or a glob such as Textract.Get*",
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "stream": {
           "type": "boolean",

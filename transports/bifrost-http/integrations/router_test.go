@@ -2532,7 +2532,7 @@ func TestHeldStreamFirstTokenDeadline(t *testing.T) {
 type genericPassthroughTestAccount struct{ baseURL string }
 
 func (a genericPassthroughTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{"echo", schemas.OpenAI}, nil
+	return []schemas.ModelProvider{"echo", "strict", schemas.OpenAI}, nil
 }
 func (a genericPassthroughTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
 	return []schemas.Key{{ID: "k-" + string(p), Value: *schemas.NewSecretVar("operator-" + string(p)), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
@@ -2550,6 +2550,19 @@ func (a genericPassthroughTestAccount) GetConfigForProvider(p schemas.ModelProvi
 				Usage:     &schemas.GenericUsageConfig{ModelPath: "engine"},
 				Streaming: &schemas.GenericStreamingConfig{Paths: []string{"/live/**"}},
 				Routes:    []schemas.GenericRouteConfig{{Method: "POST", Path: "/named", Usage: &schemas.GenericUsageConfig{ModelPath: "name"}}},
+			},
+		}
+	case "strict":
+		cfg.CustomProviderConfig = &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.Generic,
+			GenericConfig: &schemas.GenericProviderConfig{
+				Auth:         schemas.GenericAuthConfig{Type: schemas.GenericAuthBearer},
+				StrictRoutes: true,
+				Routes: []schemas.GenericRouteConfig{
+					{Method: "POST", Path: "/post"},
+					{Method: "DELETE", Path: "/items/*"},
+					{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Svc.Allowed*"}},
+				},
 			},
 		}
 	case schemas.OpenAI:
@@ -2625,7 +2638,7 @@ func TestGenericPassthroughRoute(t *testing.T) {
 		{name: "DELETE relayed", method: fasthttp.MethodDelete, uri: "/passthrough/echo/jobs/1", wantStatus: fasthttp.StatusOK, wantUpstream: "/jobs/1"},
 		{name: "streaming.paths glob selects the streaming relay", method: fasthttp.MethodGet, uri: "/passthrough/echo/live/room", wantStatus: fasthttp.StatusOK, wantUpstream: "/live/room", wantStreamed: true},
 		{name: "the word stream in a path is not a streaming signal", method: fasthttp.MethodGet, uri: "/passthrough/echo/v1/streams/123", wantStatus: fasthttp.StatusOK, wantUpstream: "/v1/streams/123"},
-		{name: "a caller's stream flag is not a streaming signal", uri: "/passthrough/echo/search", body: `{"stream":true}`, wantStatus: fasthttp.StatusOK, wantUpstream: "/search"},
+		{name: "a caller's stream flag is not a streaming signal without detect_from_body", uri: "/passthrough/echo/search", body: `{"stream":true}`, wantStatus: fasthttp.StatusOK, wantUpstream: "/search"},
 		{name: "nor is ?stream=true on a GET", method: fasthttp.MethodGet, uri: "/passthrough/echo/jobs/1?stream=true", wantStatus: fasthttp.StatusOK, wantUpstream: "/jobs/1?stream=true"},
 		{name: "standard provider is not a generic passthrough", uri: "/passthrough/openai/v1/chat/completions", body: `{}`, wantStatus: fasthttp.StatusNotFound, wantBodyHas: "no generic passthrough provider named openai"},
 		{name: "unknown provider", uri: "/passthrough/nope/x", body: `{}`, wantStatus: fasthttp.StatusNotFound, wantBodyHas: "no generic passthrough provider named nope"},
@@ -2683,6 +2696,56 @@ func TestGenericPassthroughRoute(t *testing.T) {
 	}
 }
 
+// With strict_routes the routes list is an allowlist: an unlisted operation is a 404 before anything
+// is forwarded; a provider without the flag is untouched.
+func TestGenericPassthroughStrictRoutes(t *testing.T) {
+	r, takeHits := newGenericPassthroughFixture(t)
+	tests := []struct {
+		name, method, uri, header string
+		wantStatus                int
+		wantUpstream, wantBody    string
+	}{
+		{name: "listed op relayed", method: fasthttp.MethodPost, uri: "/passthrough/strict/post", wantStatus: fasthttp.StatusOK, wantUpstream: "/post"},
+		{name: "glob route relayed", method: fasthttp.MethodDelete, uri: "/passthrough/strict/items/42", wantStatus: fasthttp.StatusOK, wantUpstream: "/items/42"},
+		{name: "unlisted method is a 404", method: fasthttp.MethodDelete, uri: "/passthrough/strict/post", wantStatus: fasthttp.StatusNotFound, wantBody: "strict_routes"},
+		{name: "unlisted path is a 404", method: fasthttp.MethodPost, uri: "/passthrough/strict/other", wantStatus: fasthttp.StatusNotFound, wantBody: "no route for POST /other"},
+		{name: "provider without the flag relays anything", method: fasthttp.MethodDelete, uri: "/passthrough/echo/anything", wantStatus: fasthttp.StatusOK, wantUpstream: "/anything"},
+		{name: "header-routed operation is relayed", method: fasthttp.MethodPost, uri: "/passthrough/strict/", header: "Svc.AllowedOp", wantStatus: fasthttp.StatusOK, wantUpstream: "/"},
+		{name: "unlisted operation on the same path is a 404", method: fasthttp.MethodPost, uri: "/passthrough/strict/", header: "Svc.Other", wantStatus: fasthttp.StatusNotFound, wantBody: "no route for POST /"},
+		{name: "same path without the header is a 404", method: fasthttp.MethodPost, uri: "/passthrough/strict/", wantStatus: fasthttp.StatusNotFound, wantBody: "strict_routes"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			takeHits()
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.method)
+			ctx.Request.SetRequestURI(tc.uri)
+			ctx.Request.Header.SetContentType("application/json")
+			if tc.header != "" {
+				ctx.Request.Header.Set("X-Amz-Target", tc.header)
+			}
+			ctx.Request.SetBodyString(`{}`)
+			r.Handler(&ctx)
+			got := takeHits()
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			if tc.wantBody != "" {
+				require.Contains(t, string(ctx.Response.Body()), tc.wantBody)
+			}
+			if tc.wantUpstream == "" {
+				require.Empty(t, got, "a refused request never reaches the upstream")
+				return
+			}
+			require.Len(t, got, 1)
+			require.Equal(t, tc.wantUpstream, got[0].path)
+		})
+	}
+}
+
+func TestGenericBodyStreams(t *testing.T) {
+	assert.True(t, genericBodyStreams([]byte(`{"stream":true}`), "application/json"))
+	assert.False(t, genericBodyStreams([]byte(`{"stream":"true"}`), "application/json"))
+}
+
 // The model a request names is read at the route's model_path when the route has one, else at the
 // provider's, so governance and the log row see the field the operator pointed at.
 func TestGenericPassthroughRouteModelPath(t *testing.T) {
@@ -2697,9 +2760,9 @@ func TestGenericPassthroughRouteModelPath(t *testing.T) {
 	t.Cleanup(client.Shutdown)
 	_, gp, ok := resolveGenericProvider(client, "echo")
 	require.True(t, ok)
-	assert.Equal(t, "name", gp.Plan("POST", "/named", "").ModelPath)
-	assert.Equal(t, "engine", gp.Plan("POST", "/search", "").ModelPath)
-	assert.Equal(t, "engine", gp.Plan("GET", "/named", "").ModelPath, "the route is method-specific")
+	assert.Equal(t, "name", gp.Plan("POST", "/named", "", false, nil).ModelPath)
+	assert.Equal(t, "engine", gp.Plan("POST", "/search", "", false, nil).ModelPath)
+	assert.Equal(t, "engine", gp.Plan("GET", "/named", "", false, nil).ModelPath, "the route is method-specific")
 }
 
 func BenchmarkHandleGenericPassthrough(b *testing.B) {

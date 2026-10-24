@@ -8,6 +8,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/generic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -52,6 +53,22 @@ func resolveGenericProvider(client *bifrost.Bifrost, name string) (schemas.Model
 	return provider, gp, true
 }
 
+// genericBodyStreams reports a JSON body asking for a stream with "stream": true.
+func genericBodyStreams(body []byte, contentType string) bool {
+	return len(body) > 0 && looksLikeJSON(contentType, body) && gjson.GetBytes(body, "stream").Type == gjson.True
+}
+
+// looksLikeJSON accepts any JSON-derived media type (application/json, +json suffixes,
+// application/x-amz-json-1.1) and sniffs the body when none is declared.
+func looksLikeJSON(contentType string, body []byte) bool {
+	mediaType, _, _ := strings.Cut(contentType, ";")
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if mediaType != "" {
+		return strings.Contains(mediaType, "json")
+	}
+	return gjson.ValidBytes(body)
+}
+
 func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.RequestCtx) {
 	passthroughErr := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 		return err
@@ -78,13 +95,24 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 		return
 	}
 
-	// The routes are matched once here; the plan rides on the context so the relay reuses it.
+	// The routes are matched once here, with the caller's headers so a route may pick an
+	// operation by header (X-Amz-Target); the plan rides on the context so the relay reuses it.
 	method := string(ctx.Method())
 	body := ctx.Request.Body()
 	contentType := string(ctx.Request.Header.ContentType())
 	rawQuery := string(ctx.URI().QueryString())
 	safeHeaders, _ := collectPassthroughHeaders(ctx)
-	plan := gp.Plan(method, path, string(ctx.Request.Header.Peek("Accept")))
+	// The caller's own stream flag is read only when the provider opts in, so a large body is not
+	// scanned on the common path.
+	bodyStream := gp.DetectsStreamFlag() && (genericBodyStreams(body, contentType) || passthroughQueryStreams(method, rawQuery))
+	plan := gp.Plan(method, path, string(ctx.Request.Header.Peek("Accept")), bodyStream, safeHeaders)
+
+	// With strict_routes, an operation the operator did not list is refused before anything else
+	// is looked at, the same way the path guard refuses a malformed path.
+	if !plan.Allowed {
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "no route for "+method+" "+path+" on provider "+name+" (strict_routes)", fasthttp.StatusNotFound))
+		return
+	}
 
 	// x-model-provider, when sent, must name the provider the route resolved to.
 	if _, err := getPassthroughProvider(ctx, g.handlerStore, provider, false); err != nil {

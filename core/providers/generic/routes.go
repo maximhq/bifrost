@@ -2,6 +2,7 @@ package generic
 
 import (
 	"path"
+	"sort"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -32,9 +33,73 @@ type resolvedUsage struct {
 type compiledRoute struct {
 	method   string
 	glob     routeGlob
+	headers  []headerMatch // every one must match; nil for a route on method and path alone
 	billable bool
 	stream   *bool
 	usage    resolvedUsage
+}
+
+// headerMatch is one required request header: a lower-cased name and a value glob. AWS JSON
+// APIs (Textract, Translate) send every operation to POST / and name it in X-Amz-Target, so a
+// route on method and path alone cannot tell them apart.
+type headerMatch struct {
+	name    string
+	glob    string
+	literal bool // no glob metacharacter: compare equal instead of matching
+}
+
+// matchHeaders reports whether every required header is present with a matching value. Names are
+// looked up lower-cased, the form the transport collects them in; values match case-sensitively
+// with the same single-segment glob paths use, except that "/" is an ordinary character here
+// (application/x-amz-json-1.1).
+func (route *compiledRoute) matchHeaders(headers, operator map[string]string) bool {
+	for _, h := range route.headers {
+		value, ok := headerValue(h.name, headers, operator)
+		if !ok {
+			return false
+		}
+		if h.literal {
+			if value != h.glob {
+				return false
+			}
+			continue
+		}
+		if ok, _ := path.Match(strings.ReplaceAll(h.glob, "/", "\x01"), strings.ReplaceAll(value, "/", "\x01")); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// headerValue is the value a header will carry upstream: the operator's extra header when one is
+// configured, since it replaces the caller's copy, else the caller's. The transport lower-cases
+// caller names; a Go SDK caller may not, so a miss falls back to a case-insensitive scan.
+func headerValue(name string, headers, operator map[string]string) (string, bool) {
+	if v, ok := operator[name]; ok {
+		return v, true
+	}
+	if v, ok := headers[name]; ok {
+		return v, true
+	}
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+func compileHeaders(headers map[string]string) []headerMatch {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make([]headerMatch, 0, len(headers))
+	for name, glob := range headers {
+		out = append(out, headerMatch{name: strings.ToLower(name), glob: glob, literal: !strings.ContainsAny(glob, "*?[\\")})
+	}
+	// A fixed order keeps matching deterministic whatever the map's iteration order.
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out
 }
 
 // routeGlob is a rooted segment pattern. prefix is set for a trailing /**.
@@ -153,6 +218,7 @@ func compileRoutes(cfg *schemas.GenericProviderConfig) []compiledRoute {
 		compiled := compiledRoute{
 			method:   strings.ToUpper(route.Method),
 			glob:     compileGlob(route.Path),
+			headers:  compileHeaders(route.Headers),
 			billable: billableByDefault(route.Method, route.Billable),
 			stream:   route.Stream,
 			usage:    resolveUsage(cfg.Usage, route.Usage),
@@ -173,8 +239,9 @@ func compileStreamGlobs(cfg *schemas.GenericProviderConfig) []routeGlob {
 	return globs
 }
 
-// matchRoute returns the first routes[] entry whose method and glob fit, or nil.
-func (provider *GenericProvider) matchRoute(method, requestPath string) *compiledRoute {
+// matchRoute returns the first routes[] entry whose method, glob and required headers fit, or
+// nil. headers is the lower-cased caller header map; nil matches only routes without headers.
+func (provider *GenericProvider) matchRoute(method, requestPath string, headers map[string]string) *compiledRoute {
 	if len(provider.routes) == 0 {
 		return nil
 	}
@@ -187,7 +254,7 @@ func (provider *GenericProvider) matchRoute(method, requestPath string) *compile
 	segments := strings.Split(strings.TrimPrefix(requestPath, "/"), "/")
 	for i := range provider.routes {
 		route := &provider.routes[i]
-		if route.method == upper && route.glob.matchSegments(segments) {
+		if route.method == upper && route.glob.matchSegments(segments) && (len(route.headers) == 0 || route.matchHeaders(headers, provider.operatorHeaders)) {
 			return route
 		}
 	}
@@ -195,6 +262,41 @@ func (provider *GenericProvider) matchRoute(method, requestPath string) *compile
 }
 
 // isUpper reports whether s has no lower-case ASCII letter, the common case for an HTTP method.
+// ambiguousHeader returns a header name that headers holds under two spellings (X-Amz-Target and
+// x-amz-target). Route matching reads one spelling and forwarding could send the other, so such a
+// request is refused. Only a Go SDK caller can build one: the HTTP transport lower-cases names, so
+// on that path this is a scan with no allocation.
+func ambiguousHeader(headers map[string]string) (string, bool) {
+	mixed := false
+	for name := range headers {
+		if hasUpper(name) {
+			mixed = true
+			break
+		}
+	}
+	if !mixed {
+		return "", false
+	}
+	seen := make(map[string]struct{}, len(headers))
+	for name := range headers {
+		lower := strings.ToLower(name)
+		if _, dup := seen[lower]; dup {
+			return name, true
+		}
+		seen[lower] = struct{}{}
+	}
+	return "", false
+}
+
+func hasUpper(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			return true
+		}
+	}
+	return false
+}
+
 func isUpper(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] >= 'a' && s[i] <= 'z' {
