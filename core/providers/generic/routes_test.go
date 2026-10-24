@@ -151,7 +151,7 @@ func TestRouteOverridesZeroFeeAndModelPath(t *testing.T) {
 	usage, billable, _ := provider.resolve(testCtx(t), "POST", "/free")
 	assert.True(t, billable)
 	assert.InDelta(t, 0.0, usage.costPerRequest, 1e-9, "an explicit 0 waives the provider fee")
-	assert.Nil(t, usage.defaultUsage().Cost)
+	assert.Nil(t, usage.defaultUsage(usageFields{}).Cost)
 	assert.Equal(t, "name", provider.Plan("POST", "/named", "").ModelPath)
 	assert.Equal(t, "engine", provider.Plan("POST", "/other", "").ModelPath, "unrouted operations use the provider mapping")
 	assert.Equal(t, "model", (&GenericProvider{cfg: &schemas.GenericProviderConfig{}, usage: resolveUsage(nil, nil)}).Plan("POST", "/x", "").ModelPath)

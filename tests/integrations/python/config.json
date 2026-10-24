@@ -163,6 +163,74 @@
         "default_request_timeout_in_seconds": 60
       }
     },
+    "generic_echo_units": {
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Generic Echo Units Key",
+          "value": "harness-dummy",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": {
+            "type": "header",
+            "header_name": "x-api-key"
+          },
+          "usage": {
+            "units_path": "json.pages",
+            "cost_per_unit": 0.001,
+            "cost_per_request": 0.01
+          },
+          "routes": [
+            {
+              "method": "PATCH",
+              "path": "/patch",
+              "billable": true,
+              "usage": {
+                "units_source": "request",
+                "units_measure": "body_chars",
+                "units_block_size": 100,
+                "units_minimum": 1,
+                "cost_per_unit": 0.01,
+                "cost_per_request": 0
+              }
+            },
+            {
+              "method": "PUT",
+              "path": "/put",
+              "billable": true,
+              "usage": {
+                "units_source": "request",
+                "units_measure": "body_chars",
+                "cost_per_unit": 0.001,
+                "cost_per_request": 0
+              }
+            },
+            {
+              "method": "DELETE",
+              "path": "/delete",
+              "billable": true,
+              "usage": {
+                "units_source": "request",
+                "units_measure": "chars",
+                "units_path": "Text",
+                "cost_per_unit": 0.001,
+                "cost_per_request": 0
+              }
+            }
+          ]
+        }
+      },
+      "network_config": {
+        "base_url": "https://postman-echo.com",
+        "default_request_timeout_in_seconds": 60
+      }
+    },
     "generic_echo_query": {
       "store_raw_request_response": true,
       "keys": [

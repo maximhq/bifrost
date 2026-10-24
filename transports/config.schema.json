@@ -13590,6 +13590,43 @@
           "minimum": 0,
           "description": "Flat USD fee added to every billable call; on a route, 0 waives the provider fee"
         },
+        "units_path": {
+          "type": "string",
+          "description": "gjson path of the billable quantity, e.g. DocumentMetadata.Pages (response) or Text (request). Ignored when units_measure is body_bytes or body_chars"
+        },
+        "units_source": {
+          "type": "string",
+          "enum": [
+            "response",
+            "request"
+          ],
+          "description": "Body the quantity is read from: the upstream response (default) or the caller's request, which is what per-character APIs bill on"
+        },
+        "units_measure": {
+          "type": "string",
+          "enum": [
+            "value",
+            "chars",
+            "body_bytes",
+            "body_chars"
+          ],
+          "description": "value: the number at units_path (default); chars: the character count of the JSON string at units_path; body_bytes: the byte length of the whole body; body_chars: the character count of the whole body, any content type (what per-character APIs such as Azure Speech bill)"
+        },
+        "cost_per_unit": {
+          "type": "number",
+          "minimum": 0,
+          "description": "USD per unit; cost = units * cost_per_unit + cost_per_request + any extracted cost"
+        },
+        "units_block_size": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Bill per started block of this many raw units: 100 for an API priced per 100 characters. Default exact"
+        },
+        "units_minimum": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Least number of billed units once a quantity was read. Default 0"
+        },
         "disable_optimistic_parsing": {
           "type": "boolean",
           "description": "Read only the configured paths"

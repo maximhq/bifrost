@@ -2,7 +2,9 @@ package generic
 
 import (
 	"errors"
+	"math"
 	"strings"
+	"unicode/utf8"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -85,7 +87,7 @@ func (u resolvedUsage) effectiveModelPath() string {
 // as absent: a count below zero is never a measurement.
 func firstNumber(body []byte, paths []string) (float64, bool) {
 	for _, p := range paths {
-		if v := providerUtils.GetJSONField(body, p); v.Exists() && v.Type == gjson.Number && v.Float() >= 0 {
+		if v := providerUtils.GetJSONField(body, p); v.Exists() && v.Type == gjson.Number && finiteNonNegative(v.Float()) {
 			return v.Float(), true
 		}
 	}
@@ -101,7 +103,7 @@ func firstCost(body []byte, paths []string) (float64, bool) {
 			continue
 		}
 		if v.Type == gjson.Number {
-			if v.Float() < 0 {
+			if !finiteNonNegative(v.Float()) {
 				continue
 			}
 			return v.Float(), true
@@ -110,7 +112,7 @@ func firstCost(body []byte, paths []string) (float64, bool) {
 			var total float64
 			found := false
 			for _, item := range v.Array() {
-				if item.Type == gjson.Number && item.Float() >= 0 {
+				if item.Type == gjson.Number && finiteNonNegative(item.Float()) {
 					total += item.Float()
 					found = true
 				}
@@ -126,12 +128,142 @@ func firstCost(body []byte, paths []string) (float64, bool) {
 // usageFields is what one body (or one stream event) said about usage. Presence is tracked per
 // field so events that each carry part of the picture can be merged.
 type usageFields struct {
-	input, output, total, cost             float64
-	hasInput, hasOutput, hasTotal, hasCost bool
+	input, output, total, cost, units                float64
+	hasInput, hasOutput, hasTotal, hasCost, hasUnits bool
 }
 
 func (f usageFields) any() bool {
-	return f.hasInput || f.hasOutput || f.hasTotal || f.hasCost
+	return f.hasInput || f.hasOutput || f.hasTotal || f.hasCost || f.hasUnits
+}
+
+// billsUnits reports whether the mapping prices a quantity.
+func (u resolvedUsage) billsUnits() bool {
+	return u.costPerUnit > 0 && (u.unitsPath != "" || u.unitsMeasure == schemas.GenericUnitsBodyBytes || u.unitsMeasure == schemas.GenericUnitsBodyChars)
+}
+
+// measureUnits reads the billable quantity from a body per the mapping's measure.
+func (u resolvedUsage) measureUnits(contentType string, body []byte) (float64, bool) {
+	switch u.unitsMeasure {
+	case schemas.GenericUnitsBodyBytes:
+		// An empty body is a measured zero, so units_minimum still applies to it.
+		return float64(len(body)), true
+	case schemas.GenericUnitsBodyChars:
+		// What per-character APIs bill (Azure Speech counts characters of the SSML): runes, not
+		// bytes, so multi-byte text is not over-counted. Any content type, invalid UTF-8 counts
+		// byte-wise as Go does.
+		return float64(utf8.RuneCount(body)), true
+	default:
+		if !looksJSON(contentType, body) {
+			return 0, false
+		}
+		return sumQuantity(providerUtils.GetJSONField(body, u.unitsPath), u.unitsMeasure == schemas.GenericUnitsChars)
+	}
+}
+
+// sumQuantity reads the quantity at a path: the number there, or with chars the characters of
+// the string there. An array, which a path such as #.Text yields on a batch body, is summed so
+// every element is billed rather than none.
+func sumQuantity(v gjson.Result, chars bool) (float64, bool) {
+	if v.IsArray() {
+		var total float64
+		found := false
+		for _, item := range v.Array() {
+			if q, ok := sumQuantity(item, chars); ok {
+				total += q
+				found = true
+			}
+		}
+		return total, found && !math.IsInf(total, 0)
+	}
+	if chars {
+		if v.Type == gjson.String {
+			return float64(utf8.RuneCountInString(v.Str)), true
+		}
+		return 0, false
+	}
+	if v.Type == gjson.Number && finiteNonNegative(v.Float()) {
+		return v.Float(), true
+	}
+	return 0, false
+}
+
+// finiteNonNegative is the test every measured number passes: a negative value is not a count,
+// and an overflowing one (1e400 parses as +Inf) would make the cost unserialisable.
+func finiteNonNegative(f float64) bool {
+	return f >= 0 && !math.IsInf(f, 0) && !math.IsNaN(f)
+}
+
+// requestUnits reads the quantity from the caller's body when the mapping bills request-side units
+// (Translate text, TTS markup). It is known before the upstream answers, so it seeds both the
+// buffered and the streaming paths. The caller's Content-Type is not consulted: a caller could
+// otherwise label a JSON body text/plain and be billed for nothing.
+func (u resolvedUsage) requestUnits(body []byte) usageFields {
+	var f usageFields
+	if u.billsUnits() && u.unitsSource == schemas.GenericUnitsFromRequest {
+		f.units, f.hasUnits = u.measureUnits("", body)
+	}
+	return f
+}
+
+// maxRequestJSONDepth bounds the duplicate-key walk over a billed request body.
+const maxRequestJSONDepth = 64
+
+// requestBodyError refuses a request that a billable route reading its quantity at a path in the
+// caller's body (Translate's Text) cannot measure unambiguously: a body that is not JSON, which
+// would otherwise bill nothing, and a body naming one key twice in an object, case-insensitively,
+// which the relay would read first-wins while most upstream decoders read last-wins or fold case.
+// Whole-body measures need no check.
+func (u resolvedUsage) requestBodyError(body []byte) error {
+	if !u.billsUnits() || u.unitsSource != schemas.GenericUnitsFromRequest ||
+		u.unitsMeasure == schemas.GenericUnitsBodyBytes || u.unitsMeasure == schemas.GenericUnitsBodyChars {
+		return nil
+	}
+	if !gjson.ValidBytes(body) {
+		return errors.New("this route bills on " + u.unitsPath + " in the request body, which must be JSON")
+	}
+	if hasDuplicateKey(gjson.ParseBytes(body), 0) {
+		return errors.New("the request body names a key more than once (case-insensitively) or nests deeper than 64 levels, so the billed quantity is ambiguous")
+	}
+	if !finiteNonNegative(u.unitCharge(u.requestUnits(body))) {
+		return errors.New("the billed quantity in the request body is too large to price")
+	}
+	return nil
+}
+
+// unitCharge is the unit part of a call's cost: billed units times the rate, 0 with no quantity.
+func (u resolvedUsage) unitCharge(f usageFields) float64 {
+	if !f.hasUnits || u.costPerUnit <= 0 {
+		return 0
+	}
+	return u.billedUnits(f.units) * u.costPerUnit
+}
+
+// hasDuplicateKey reports whether any object in v names a key twice, case-insensitively, or v
+// nests deeper than maxRequestJSONDepth.
+func hasDuplicateKey(v gjson.Result, depth int) bool {
+	if depth > maxRequestJSONDepth {
+		return true
+	}
+	dup := false
+	if v.IsObject() {
+		seen := make(map[string]struct{})
+		v.ForEach(func(k, val gjson.Result) bool {
+			name := strings.ToLower(k.Str)
+			if _, ok := seen[name]; ok {
+				dup = true
+				return false
+			}
+			seen[name] = struct{}{}
+			dup = hasDuplicateKey(val, depth+1)
+			return !dup
+		})
+	} else if v.IsArray() {
+		v.ForEach(func(_, val gjson.Result) bool {
+			dup = hasDuplicateKey(val, depth+1)
+			return !dup
+		})
+	}
+	return dup
 }
 
 // merge overlays the fields o carries onto f.
@@ -148,12 +280,18 @@ func (f *usageFields) merge(o usageFields) {
 	if o.hasCost {
 		f.cost, f.hasCost = o.cost, true
 	}
+	if o.hasUnits {
+		f.units, f.hasUnits = o.units, true
+	}
 }
 
 // parse reads the mapped fields from a response body (or one stream event). Non-JSON bodies yield
-// nothing.
+// nothing, except a response-side body_bytes quantity.
 func (u resolvedUsage) parse(contentType string, body []byte) usageFields {
 	var f usageFields
+	if u.billsUnits() && u.unitsSource == schemas.GenericUnitsFromResponse {
+		f.units, f.hasUnits = u.measureUnits(contentType, body)
+	}
 	if len(body) == 0 || !looksJSON(contentType, body) {
 		return f
 	}
@@ -184,15 +322,38 @@ func (u resolvedUsage) build(f usageFields) *schemas.BifrostPassthroughUsage {
 	if f.hasCost {
 		cost += f.cost
 	}
+	// A charge that overflows (a huge quantity, or a tiny block size) is not a price; the request
+	// side refuses such a body before relaying it (requestBodyError), so only an upstream-reported
+	// quantity can reach this, and it bills no unit charge rather than +Inf.
+	if charge := u.unitCharge(f); finiteNonNegative(charge) {
+		cost += charge
+	}
 	if cost > 0 {
 		usage.Cost = &schemas.BifrostCost{TotalCost: cost}
 	}
 	return usage
 }
 
-// extractUsage reads tokens and cost from a buffered response body.
-func extractUsage(u resolvedUsage, contentType string, body []byte) *schemas.BifrostPassthroughUsage {
-	return u.build(u.parse(contentType, body))
+// billedUnits applies the mapping's rounding rules to a raw quantity: per started block of
+// unitsBlockSize (Comprehend Medical bills 100-character units), and never fewer than
+// unitsMinimum. With the defaults (no block, no minimum) the raw quantity is billed exactly.
+func (u resolvedUsage) billedUnits(raw float64) float64 {
+	units := raw
+	if u.unitsBlockSize > 0 {
+		units = math.Ceil(raw / u.unitsBlockSize)
+	}
+	if units < u.unitsMinimum {
+		units = u.unitsMinimum
+	}
+	return units
+}
+
+// extractUsage reads tokens, cost and a response-side quantity from a buffered response body and
+// merges them over whatever the request already established (request-side units).
+func extractUsage(u resolvedUsage, contentType string, body []byte, initial usageFields) *schemas.BifrostPassthroughUsage {
+	f := initial
+	f.merge(u.parse(contentType, body))
+	return u.build(f)
 }
 
 // hasUsageEvent is the cheap gate for streams: only events that carry one of the mapped (or
@@ -215,17 +376,27 @@ func (u resolvedUsage) collectEventPaths() []string {
 	paths = append(paths, u.tokenPaths(u.inputTokensPath, optimisticInputTokenPaths)...)
 	paths = append(paths, u.tokenPaths(u.outputTokensPath, optimisticOutputTokenPaths)...)
 	paths = append(paths, u.costPaths()...)
+	if u.billsUnits() && u.unitsSource == schemas.GenericUnitsFromResponse && u.unitsPath != "" {
+		paths = append(paths, u.unitsPath)
+	}
 	return paths
 }
 
 // streamObserver returns the per-event observer for one stream. Each field keeps the last value
 // any event reported (running totals, the OpenAI and Anthropic shape), never a sum of per-event
 // increments; a stream that reports input tokens on its first event and output tokens on its last
-// is billed for both, and an event that carries nothing leaves what was seen alone.
-func (u resolvedUsage) streamObserver() func(event []byte) *schemas.BifrostPassthroughUsage {
-	var acc usageFields
+// is billed for both, and an event that carries nothing leaves what was seen alone. initial
+// carries what the request already established (request-side units).
+func (u resolvedUsage) streamObserver(initial usageFields) func(event []byte) *schemas.BifrostPassthroughUsage {
+	acc := initial
 	return func(event []byte) *schemas.BifrostPassthroughUsage {
 		f := u.parse("application/json", event)
+		// A whole-body measure counts a buffered reply, never one SSE event: an event's size is not
+		// the quantity, so a response-side body_bytes or body_chars is left unread on a stream and
+		// the default usage (the fee, any request-side units) stands.
+		if u.unitsSource == schemas.GenericUnitsFromResponse && (u.unitsMeasure == schemas.GenericUnitsBodyBytes || u.unitsMeasure == schemas.GenericUnitsBodyChars) {
+			f.units, f.hasUnits = 0, false
+		}
 		if !f.any() {
 			return nil
 		}
@@ -235,9 +406,9 @@ func (u resolvedUsage) streamObserver() func(event []byte) *schemas.BifrostPasst
 }
 
 // defaultUsage is what a billable call reports when nothing could be read from the response:
-// the flat fee alone.
-func (u resolvedUsage) defaultUsage() *schemas.BifrostPassthroughUsage {
-	return u.build(usageFields{})
+// the flat fee plus any request-side units.
+func (u resolvedUsage) defaultUsage(initial usageFields) *schemas.BifrostPassthroughUsage {
+	return u.build(initial)
 }
 
 // ReadModel reads the model a JSON request body names at modelPath; an empty path reads none. It

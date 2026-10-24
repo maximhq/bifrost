@@ -15,6 +15,12 @@ type resolvedUsage struct {
 	totalTokensPath  string
 	costPath         string
 	costPerRequest   float64
+	unitsPath        string
+	unitsSource      schemas.GenericUnitsSource
+	unitsMeasure     schemas.GenericUnitsMeasure
+	costPerUnit      float64
+	unitsBlockSize   float64 // bill per started block of this many raw units; 0 means exact
+	unitsMinimum     float64 // least number of billed units once a quantity was read
 	optimistic       bool
 	// ignoreUpstreamCost drops the cost_path (and the optimistic usage.cost) while the flat fee and
 	// unit pricing, which the operator configured, still apply. Set from ignore_provider_cost.
@@ -73,7 +79,7 @@ func (g routeGlob) matchSegments(segments []string) bool {
 }
 
 func resolveUsage(base *schemas.GenericUsageConfig, override *schemas.GenericUsageConfig) resolvedUsage {
-	out := resolvedUsage{optimistic: true}
+	out := resolvedUsage{optimistic: true, unitsSource: schemas.GenericUnitsFromResponse, unitsMeasure: schemas.GenericUnitsValue}
 	apply := func(u *schemas.GenericUsageConfig) {
 		if u == nil {
 			return
@@ -95,6 +101,24 @@ func resolveUsage(base *schemas.GenericUsageConfig, override *schemas.GenericUsa
 		}
 		if u.CostPerRequest != nil {
 			out.costPerRequest = *u.CostPerRequest
+		}
+		if u.UnitsPath != "" {
+			out.unitsPath = u.UnitsPath
+		}
+		if u.UnitsSource != "" {
+			out.unitsSource = u.UnitsSource
+		}
+		if u.UnitsMeasure != "" {
+			out.unitsMeasure = u.UnitsMeasure
+		}
+		if u.CostPerUnit != nil {
+			out.costPerUnit = *u.CostPerUnit
+		}
+		if u.UnitsBlockSize != nil {
+			out.unitsBlockSize = *u.UnitsBlockSize
+		}
+		if u.UnitsMinimum != nil {
+			out.unitsMinimum = *u.UnitsMinimum
 		}
 		if u.DisableOptimisticParsing {
 			out.optimistic = false
