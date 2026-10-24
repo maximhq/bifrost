@@ -27,6 +27,13 @@ var genericAuthTypes = map[GenericAuthType]struct{}{
 
 var genericAWSServiceRe = regexp.MustCompile(`^[a-z0-9-]+$`)
 
+// genericUnmatchableHeaders are request headers the transport drops before the routes are
+// consulted (hop-by-hop headers and the Google key header); with IsSensitiveHeader they are the
+// names a route matcher could never see, so such a matcher would silently never fire.
+var genericUnmatchableHeaders = map[string]struct{}{
+	"host": {}, "connection": {}, "transfer-encoding": {}, "accept-encoding": {}, "x-goog-api-key": {},
+}
+
 var genericRouteMethods = map[string]struct{}{
 	"GET": {}, "POST": {}, "PUT": {}, "PATCH": {}, "DELETE": {}, "HEAD": {},
 }
@@ -86,12 +93,14 @@ type GenericUsageConfig struct {
 type GenericStreamingConfig struct {
 	Paths                  []string `json:"paths,omitempty"`           // route globs that always stream
 	DetectFromAcceptHeader bool     `json:"detect_from_accept_header"` // Accept: text/event-stream selects streaming
+	DetectFromBody         bool     `json:"detect_from_body"`          // "stream": true in a JSON body, or ?stream=true on a GET, selects streaming
 }
 
 // GenericRouteConfig overrides provider defaults for one upstream operation.
 type GenericRouteConfig struct {
 	Method   string              `json:"method"`             // GET | POST | PUT | PATCH | DELETE | HEAD
 	Path     string              `json:"path"`               // segment glob; a trailing /** matches the prefix and everything below
+	Headers  map[string]string   `json:"headers,omitempty"`  // request headers that must also match: name (case-insensitive) to value glob (X-Amz-Target: Textract.Get*)
 	Billable *bool               `json:"billable,omitempty"` // false: the call is relayed but not counted or charged
 	Stream   *bool               `json:"stream,omitempty"`   // forces the streaming or buffered handler
 	Usage    *GenericUsageConfig `json:"usage,omitempty"`    // field-by-field override of the provider usage mapping
@@ -100,10 +109,11 @@ type GenericRouteConfig struct {
 // GenericProviderConfig configures a custom provider whose base type is Generic: a raw HTTP relay
 // to a non-LLM API that still carries key injection, logging, governance and plugins.
 type GenericProviderConfig struct {
-	Auth      GenericAuthConfig       `json:"auth"`
-	Usage     *GenericUsageConfig     `json:"usage,omitempty"`
-	Streaming *GenericStreamingConfig `json:"streaming,omitempty"`
-	Routes    []GenericRouteConfig    `json:"routes,omitempty"`
+	Auth         GenericAuthConfig       `json:"auth"`
+	Usage        *GenericUsageConfig     `json:"usage,omitempty"`
+	Streaming    *GenericStreamingConfig `json:"streaming,omitempty"`
+	Routes       []GenericRouteConfig    `json:"routes,omitempty"`
+	StrictRoutes bool                    `json:"strict_routes,omitempty"` // refuse requests matching no routes[] entry with 404
 }
 
 // Validate checks the config is internally consistent. It runs when a provider is created or
@@ -131,6 +141,27 @@ func (c *GenericProviderConfig) Validate() error {
 		}
 		if err := validateGenericRouteGlob(route.Path); err != nil {
 			return fmt.Errorf("routes[%d]: %w", i, err)
+		}
+		seenHeaders := make(map[string]struct{}, len(route.Headers))
+		for name, glob := range route.Headers {
+			if !httpguts.ValidHeaderFieldName(name) {
+				return fmt.Errorf("routes[%d].headers: %q is not a valid header name", i, name)
+			}
+			if _, dropped := genericUnmatchableHeaders[strings.ToLower(name)]; dropped || IsSensitiveHeader(name) || strings.HasPrefix(strings.ToLower(name), "x-bf-") {
+				return fmt.Errorf("routes[%d].headers: %q is never presented to route matching (credentials, gateway and hop-by-hop headers are dropped before the routes are consulted)", i, name)
+			}
+			// Names match case-insensitively, so two spellings of one header would both have to
+			// match a single value and the route would silently never fire.
+			if _, dup := seenHeaders[strings.ToLower(name)]; dup {
+				return fmt.Errorf("routes[%d].headers: %q duplicates a header name that differs only by case", i, name)
+			}
+			seenHeaders[strings.ToLower(name)] = struct{}{}
+			if strings.TrimSpace(glob) == "" {
+				return fmt.Errorf("routes[%d].headers[%s]: a value glob is required", i, name)
+			}
+			if _, err := path.Match(glob, ""); err != nil {
+				return fmt.Errorf("routes[%d].headers[%s]: %w", i, name, err)
+			}
 		}
 		if err := route.Usage.validate(fmt.Sprintf("routes[%d].usage", i), c.Usage); err != nil {
 			return err
@@ -281,6 +312,12 @@ func (c *GenericProviderConfig) Clone() *GenericProviderConfig {
 		out.Routes = make([]GenericRouteConfig, len(c.Routes))
 		for i, route := range c.Routes {
 			out.Routes[i] = route
+			if route.Headers != nil {
+				out.Routes[i].Headers = make(map[string]string, len(route.Headers))
+				for k, v := range route.Headers {
+					out.Routes[i].Headers[k] = v
+				}
+			}
 			if route.Billable != nil {
 				out.Routes[i].Billable = Ptr(*route.Billable)
 			}
