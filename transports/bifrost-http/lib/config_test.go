@@ -384,9 +384,16 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/logging"
+	"github.com/maximhq/bifrost/plugins/maxim"
 	otelPlugin "github.com/maximhq/bifrost/plugins/otel"
+	"github.com/maximhq/bifrost/plugins/prompts"
+	"github.com/maximhq/bifrost/plugins/routing"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/semanticcache"
+	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
@@ -15179,6 +15186,32 @@ func TestSetPluginOrderInfo_Defaults(t *testing.T) {
 	info = config.pluginOrderMap["plugin-c"]
 	require.Equal(t, schemas.PluginPlacementBuiltin, info.Placement)
 	require.Equal(t, 1, info.Order)
+}
+
+// TestSetPluginOrderInfo_BuiltinPluginsUseFixedOrdering pins startup order across reloads.
+func TestSetPluginOrderInfo_BuiltinPluginsUseFixedOrdering(t *testing.T) {
+	expectedNames := []string{
+		telemetry.PluginName,
+		prompts.PluginName,
+		logging.PluginName,
+		governance.PluginName,
+		routing.PluginName,
+		otelPlugin.PluginName,
+		semanticcache.PluginName,
+		compat.PluginName,
+		maxim.PluginName,
+	}
+	require.Equal(t, expectedNames, builtinPluginNames, "must match startup registration order")
+	for i, name := range expectedNames {
+		t.Run(name, func(t *testing.T) {
+			config := newTestConfigForPlugins()
+			want := pluginOrderInfo{Placement: schemas.PluginPlacementBuiltin, Order: i + 1}
+			config.SetPluginOrderInfo(name, schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(99))
+			require.Equal(t, want, config.pluginOrderMap[name], "persisted values must not move a built-in plugin")
+			config.SetPluginOrderInfo(name, nil, nil)
+			require.Equal(t, want, config.pluginOrderMap[name], "omitted values must not move a built-in plugin")
+		})
+	}
 }
 
 // TestSortAndRebuildPlugins_PlacementGroups verifies plugins sort into pre_builtin → builtin → post_builtin.

@@ -1134,5 +1134,85 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
 });
 
+const orderingFolder = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"))
+  .item.find((item) => item.name.startsWith("270. Builtin plugin ordering"));
+assert.strictEqual(orderingFolder.item.length, 5);
+
+test("plugin ordering: harness augmentation uses the isolated gateway's setup token", () => {
+  const fixtureDir = join(here, "../provider_config/builtin-plugin-ordering");
+  const config = JSON.parse(readFileSync(join(fixtureDir, "config.json"), "utf8"));
+  const environment = JSON.parse(readFileSync(join(fixtureDir, "environment.json"), "utf8"));
+  assert.strictEqual(environment.values.find((entry) => entry.key === "setupToken").value, config.setup_token);
+  assert.strictEqual(config.providers.openai.network_config.base_url, "http://127.0.0.1:1");
+});
+
+function simulateOrdering(source, { code = 200, body = "", variables = {}, nextBody = body, pollError = null } = {}) {
+  const failures = [];
+  const vars = { baseUrl: "http://localhost:8799", ...variables };
+  let skipped = false;
+  let polls = 0;
+  const response = (text) => ({ code, text: () => text, json: () => JSON.parse(text) });
+  const pm = {
+    variables: { get: (key) => vars[key] },
+    collectionVariables: { get: (key) => vars[key], set: (key, value) => { vars[key] = value; }, unset: (key) => { delete vars[key]; } },
+    response: response(body),
+    execution: { skipRequest: () => { skipped = true; } },
+    expect: (value, message) => Object.assign(redactionExpect(value, message), { eql: (expected) => assert.deepStrictEqual(value, expected) }),
+    test: (name, fn) => { try { fn(); } catch (err) { failures.push(name + ": " + err.message); } },
+    sendRequest: (request, callback) => { polls++; assert.strictEqual(request.url, vars.baseUrl + "/metrics"); callback(pollError, response(nextBody)); },
+  };
+  new Function("pm", "setTimeout", source)(pm, (fn) => fn());
+  return { failures, vars, skipped, polls };
+}
+
+test("plugin ordering: fixture opt-in and loopback are required", () => {
+  const source = listenScript(orderingFolder, "prerequest");
+  assert.strictEqual(simulateOrdering(source).skipped, true);
+  const remote = simulateOrdering(source, { variables: { builtinPluginOrderingFixture: "1", baseUrl: "https://shared.example" } });
+  assert.strictEqual(remote.skipped, true);
+  assert.strictEqual(remote.failures.length, 1);
+  assert.strictEqual(simulateOrdering(source, { variables: { builtinPluginOrderingFixture: "1" } }).skipped, false);
+});
+
+test("plugin ordering: a wrong fixture cannot authorize mutation; cleanup only needs the fixture check", () => {
+  const wrong = simulateOrdering(listenScript(orderingFolder.item[0], "test"), {
+    body: JSON.stringify({ name: "telemetry", enabled: true, status: { status: "active" }, config: { custom_labels: [] } }),
+  });
+  assert.strictEqual(wrong.failures.length, 1);
+  assert.strictEqual(wrong.vars.builtinOrderingReady, undefined);
+  assert.strictEqual(simulateOrdering(listenScript(orderingFolder.item[1], "prerequest")).skipped, true);
+  assert.strictEqual(simulateOrdering(listenScript(orderingFolder.item[4], "prerequest"), { variables: { builtinOrderingReady: true } }).skipped, false);
+});
+
+test("plugin ordering: cleanup disables telemetry without sending unsupported builtin placement", () => {
+  const cleanup = orderingFolder.item[4];
+  assert.strictEqual(cleanup.request.method, "PUT");
+  assert.deepStrictEqual(JSON.parse(cleanup.request.body.raw), { enabled: false });
+  const body = { plugin: { name: "telemetry", enabled: false, status: { status: "disabled" } } };
+  assert.deepStrictEqual(simulateOrdering(listenScript(cleanup, "test"), { body: JSON.stringify(body) }).failures, []);
+  body.plugin.enabled = true;
+  assert.strictEqual(simulateOrdering(listenScript(cleanup, "test"), { body: JSON.stringify(body) }).failures.length, 1);
+});
+
+const orderingMetric = 'bifrost_error_requests_total{provider="openai",model="gpt-4o-mini",method="chat_completion",status_code="401",error_type="policy_access_denied"} 1\n';
+for (const [name, options, expectedFailures, expectedPolls] of [
+  ["records refusal", { body: orderingMetric }, 0, 0],
+  ["waits for asynchronous recording", { body: "", nextBody: orderingMetric }, 0, 1],
+  ["rejects missing telemetry", { body: "" }, 1, 20],
+  ["bounds failure diagnostics", { body: "x".repeat(16000) }, 1, 20],
+  ["rejects unrelated metrics", { body: orderingMetric.replace('status_code="401"', 'status_code="500"') }, 1, 20],
+  ["rejects duplicate counts", { body: orderingMetric.replace("} 1", "} 2") }, 1, 0],
+  ["rejects metrics auth errors", { code: 401, body: "unauthorized" }, 1, 0],
+  ["rejects metrics server errors", { code: 500, body: "failure" }, 1, 0],
+  ["rejects polling transport errors", { pollError: new Error("connection refused") }, 1, 1],
+]) {
+  test("plugin ordering: " + name, () => {
+    const result = simulateOrdering(listenScript(orderingFolder.item[3], "test"), options);
+    assert.strictEqual(result.failures.length, expectedFailures);
+    assert.strictEqual(result.polls, expectedPolls);
+    assert.ok(result.failures.every((message) => message.length < 1024));
+  });
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

@@ -281289,6 +281289,313 @@
           }
         }
       ]
+    },
+    {
+      "name": "270. Builtin plugin ordering (#7157 / PR #7158) [SERIAL]",
+      "description": "Opt-in, isolated telemetry/governance hot-reload regression. See README's Builtin plugin ordering section; requires builtinPluginOrderingFixture=1 and provider_config/builtin-plugin-ordering/config.json in a fresh temporary app directory. Never run against a shared gateway. Verify the fixture marker, reload telemetry with post_builtin/99, send an invalid virtual key to /v1/chat/completions (401), then require /metrics to count that refusal. Before the fix governance short-circuits before telemetry runs, so the counter is absent. A fresh registry is created on reload; poll at most five seconds for asynchronous recording. Disable fixture telemetry last, even when an earlier assertion fails; run the whole folder without --bail, then stop this disposable gateway. The API does not accept builtin placement, so do not attempt to restore startup metadata through it. No provider calls: the only provider has a dummy key and loopback base URL. This checks runtime order, not normalization of database/API ordering metadata.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('builtinPluginOrderingFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else if (!/^http:\\/\\/(127[.]0[.]0[.]1|localhost):[0-9]+$/.test(pm.variables.get('baseUrl') || '')) {",
+              "  pm.test('plugin ordering uses a loopback fixture', function () { throw new Error('Use the isolated loopback gateway documented in README'); });",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - verify isolated fixture - #7157",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "builtin-plugin-ordering-local-only"
+              }
+            ],
+            "url": "{{baseUrl}}/api/plugins/telemetry"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('builtinOrderingReady');",
+                  "pm.collectionVariables.unset('builtinOrderingReloaded');",
+                  "pm.collectionVariables.unset('builtinOrderingRefused');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('enabled telemetry belongs to the isolated ordering fixture', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var plugin = pm.response.json();",
+                  "  pm.expect(plugin.name).to.equal('telemetry');",
+                  "  pm.expect(plugin.enabled).to.equal(true);",
+                  "  pm.expect(plugin.status.status).to.equal('active');",
+                  "  pm.expect(plugin.config.custom_labels).to.eql(['builtin_plugin_ordering_fixture']);",
+                  "  pm.collectionVariables.set('builtinOrderingReady', true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - reload with post_builtin/99 - #7157",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "builtin-plugin-ordering-local-only"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true,\n  \"placement\": \"post_builtin\",\n  \"order\": 99\n}"
+            },
+            "url": "{{baseUrl}}/api/plugins/telemetry"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('builtinOrderingReady') !== true) {",
+                  "  pm.test('plugin ordering prerequisite succeeded', function () { throw new Error('Run the complete folder against its isolated fixture'); });",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('telemetry hot reload succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().plugin.name).to.equal('telemetry');",
+                  "  pm.expect(pm.response.json().plugin.enabled).to.equal(true);",
+                  "  pm.expect(pm.response.json().plugin.status.status).to.equal('active');",
+                  "  pm.collectionVariables.set('builtinOrderingReloaded', true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - governance refusal [EXPECT-401] - #7157",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-builtin-ordering-invalid"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply ok.\"\n    }\n  ],\n  \"max_tokens\": 1,\n  \"stream\": false\n}"
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('builtinOrderingReloaded') !== true) {",
+                  "  pm.test('plugin ordering prerequisite succeeded', function () { throw new Error('Run the complete folder against its isolated fixture'); });",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('governance rejects the unknown virtual key before any provider call', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "  pm.expect(pm.response.json().error.message, pm.response.text()).to.include('access not found');",
+                  "  pm.collectionVariables.set('builtinOrderingRefused', true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - observe refusal counter [NO-CONTENT] - #7157",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "builtin-plugin-ordering-local-only"
+              }
+            ],
+            "url": "{{baseUrl}}/metrics"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('builtinOrderingRefused') !== true) {",
+                  "  pm.test('plugin ordering prerequisite succeeded', function () { throw new Error('Run the complete folder against its isolated fixture'); });",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function checkMetrics(res, attempt) {",
+                  "  if (res.code !== 200) {",
+                  "    pm.test('metrics endpoint responds successfully', function () { throw new Error('HTTP ' + res.code + ': ' + res.text()); });",
+                  "    return;",
+                  "  }",
+                  "  var count = res.text().split('\\n').filter(function (line) {",
+                  "    return line.indexOf('bifrost_error_requests_total{') === 0 &&",
+                  "      line.indexOf('provider=\"openai\"') !== -1 && line.indexOf('model=\"gpt-4o-mini\"') !== -1 &&",
+                  "      line.indexOf('method=\"chat_completion\"') !== -1 && line.indexOf('status_code=\"401\"') !== -1 &&",
+                  "      line.indexOf('error_type=\"policy_access_denied\"') !== -1;",
+                  "  }).reduce(function (sum, line) { return sum + Number(line.split('}')[1].trim()); }, 0);",
+                  "  if (count !== 0 || attempt === 20) {",
+                  "    pm.test('telemetry still wraps the governance refusal after hot reload', function () {",
+                  "      pm.expect(count, 'expected exactly one refused request in the fresh telemetry registry; metrics excerpt: ' + res.text().slice(0, 512)).to.equal(1);",
+                  "    });",
+                  "    return;",
+                  "  }",
+                  "  setTimeout(function () {",
+                  "    pm.sendRequest({ url: pm.variables.get('baseUrl') + '/metrics', method: 'GET', header: { 'X-Bifrost-Setup-Token': 'builtin-plugin-ordering-local-only' } }, function (err, next) {",
+                  "      if (err) { pm.test('metrics polling succeeds', function () { throw err; }); return; }",
+                  "      checkMetrics(next, attempt + 1);",
+                  "    });",
+                  "  }, 250);",
+                  "}",
+                  "checkMetrics(pm.response, 0);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-4o-mini builtin plugin ordering - disable fixture telemetry - #7157",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Bifrost-Setup-Token",
+                "value": "builtin-plugin-ordering-local-only"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            },
+            "url": "{{baseUrl}}/api/plugins/telemetry"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('builtinOrderingReady') !== true) {",
+                  "  pm.test('plugin ordering prerequisite succeeded', function () { throw new Error('Run the complete folder against its isolated fixture'); });",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('fixture telemetry is disabled after the regression probe', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().plugin.name).to.equal('telemetry');",
+                  "  pm.expect(pm.response.json().plugin.enabled).to.equal(false);",
+                  "  pm.expect(pm.response.json().plugin.status.status).to.equal('disabled');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -6,6 +6,10 @@
 
 - **Dependency Upgrades** - Bumped core to v1.13.1 and framework to v1.10.1 across all modules
 
+## 🐞 Fixed
+
+- **Built-in Plugin Ordering** - Preserve built-in placement and startup execution order during hot reload, ignoring caller- or database-supplied ordering values. [@Constantine3](https://github.com/Constantine3) (#7157)
+
 ## 🗄️ Database Migrations
 
 - No new database migrations in this release.
