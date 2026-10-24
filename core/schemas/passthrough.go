@@ -135,15 +135,16 @@ func matchPassthroughSegment(pattern, segment string) bool {
 }
 
 type BifrostPassthroughRequest struct {
-	Provider    ModelProvider // provider extracted from path or body, used for key selection when non-empty
-	Model       string        // model extracted from path or body, used for key selection when non-empty
-	Method      string
-	Path        string // stripped path, e.g. "/v1/fine-tuning/jobs"
-	APIVersion  string // version segment stripped with the route prefix, e.g. "v1beta1"; empty when none
-	RawQuery    string // raw query string, no "?"
-	UpstreamURL string // optional base URL override for host-backed passthrough routes
-	Body        []byte
-	SafeHeaders map[string]string // client headers; auth stripped unless the caller's OAuth/JWT bearer is the upstream credential (Anthropic sk-ant-oat, OpenAI JWT)
+	Provider      ModelProvider // provider extracted from path or body, used for key selection when non-empty
+	Model         string        // model extracted from path or body, used for key selection when non-empty
+	Method        string
+	Path          string // stripped path, e.g. "/v1/fine-tuning/jobs"
+	APIVersion    string // version segment stripped with the route prefix, e.g. "v1beta1"; empty when none
+	RawQuery      string // raw query string, no "?"
+	UpstreamURL   string // optional base URL override for host-backed passthrough routes
+	Body          []byte
+	SafeHeaders   map[string]string // client headers; auth stripped unless the caller's OAuth/JWT bearer is the upstream credential (Anthropic sk-ant-oat, OpenAI JWT)
+	ModelResolved bool              // Model was read per the provider's own mapping (generic providers); governance must not rescan the body for one
 }
 
 // BifrostPassthroughUsage carries usage data extracted by the provider at stream

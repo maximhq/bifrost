@@ -1214,7 +1214,7 @@ func (s *BifrostHTTPServer) syncIgnoreProviderCost(provider schemas.ModelProvide
 		return
 	}
 	pc, err := s.Config.GetProviderConfigRaw(provider)
-	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, err == nil && pc != nil && pc.IgnoreProviderCost)
+	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, err == nil && pc != nil && lib.IgnoresProviderCostInCatalog(*pc))
 }
 
 // RemoveProvider removes a provider from the in-memory store
@@ -2172,9 +2172,11 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 	// Skip the fetch entirely when the provider has disabled list_models via
 	// allowed_requests — every per-(provider,keyID) call would just bounce with
 	// "operation not allowed", wasting two goroutines and one bfCtx per attempt.
+	// A generic relay has no model listing at all.
 	if pc, err := s.Config.GetProviderConfigRaw(provider); err == nil && pc != nil &&
 		pc.CustomProviderConfig != nil &&
-		!pc.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
+		(pc.CustomProviderConfig.BaseProviderType == schemas.Generic ||
+			!pc.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest)) {
 		return
 	}
 	// Captured before the upstream calls go out, and checked again by the
@@ -3408,7 +3410,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		var ignoreProviderCost, keyless []schemas.ModelProvider
 		for provider, providerConfig := range s.Config.Providers {
 			snapshot[provider] = providerConfig.Keys
-			if providerConfig.IgnoreProviderCost {
+			if lib.IgnoresProviderCostInCatalog(providerConfig) {
 				ignoreProviderCost = append(ignoreProviderCost, provider)
 			}
 			if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {

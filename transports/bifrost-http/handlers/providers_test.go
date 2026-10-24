@@ -3476,3 +3476,77 @@ func TestProviderBaseURLShape(t *testing.T) {
 		}
 	}
 }
+
+// TestAddProvider_GenericBase pins the management API for a generic relay provider: it is accepted
+// with a base URL, refused without one, and its relay config is validated on the way in.
+func TestAddProvider_GenericBase(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	cases := []struct {
+		name       string
+		payload    providerCreatePayload
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "accepted with base url",
+			payload: providerCreatePayload{
+				Provider:             "tavily",
+				NetworkConfig:        &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1"},
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "x-api-key"}}},
+			},
+			wantStatus: fasthttp.StatusOK,
+		},
+		{
+			name: "refused without base url",
+			payload: providerCreatePayload{
+				Provider:             "tavily",
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic},
+			},
+			wantStatus: fasthttp.StatusBadRequest,
+			wantBody:   "network_config.base_url",
+		},
+		{
+			name: "relay config validated",
+			payload: providerCreatePayload{
+				Provider:             "tavily",
+				NetworkConfig:        &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1"},
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: "magic"}}},
+			},
+			wantStatus: fasthttp.StatusBadRequest,
+			wantBody:   "auth.type",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				modelsManager: &mockModelsManager{},
+			}
+			body, err := schemas.MarshalSorted(tc.payload)
+			if err != nil {
+				t.Fatalf("failed to marshal request body: %v", err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI("/api/providers")
+			ctx.Request.SetBody(body)
+
+			h.addProvider(ctx)
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			if tc.wantBody != "" && !strings.Contains(string(ctx.Response.Body()), tc.wantBody) {
+				t.Fatalf("body %s does not mention %q", ctx.Response.Body(), tc.wantBody)
+			}
+			if tc.wantStatus == fasthttp.StatusOK {
+				stored := h.inMemoryStore.Providers["tavily"]
+				if stored.CustomProviderConfig == nil || stored.CustomProviderConfig.AllowedRequests == nil || !stored.CustomProviderConfig.AllowedRequests.Passthrough {
+					t.Fatalf("allowed_requests must default to passthrough for a generic provider: %#v", stored.CustomProviderConfig)
+				}
+			}
+		})
+	}
+}

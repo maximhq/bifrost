@@ -740,3 +740,49 @@ func TestAccounting_SessionContinuationSkipsRequestLimits(t *testing.T) {
 	assert.Equal(t, int64(1), updated.RequestCurrentUsage, "the continuation is not counted as a request")
 	assert.Equal(t, int64(1000), updated.TokenCurrentUsage, "the continuation's tokens are still charged")
 }
+
+// A generic relay to a non-LLM API reports no tokens: the provider attaches a usage that carries
+// only the operator's flat fee (or nothing at all) so the call still counts as one request. The
+// shape of the usage is what admits it, not the tokens in it.
+func TestAccounting_CostOnlyPassthroughCountsAsRequest(t *testing.T) {
+	plugin, store := governedPassthroughFixture(t)
+
+	ctx := presentCtx("sk-bf-pt")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.PassthroughRequest,
+		PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.Vertex,
+			Method:   "POST",
+			Path:     "/search",
+		},
+	})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+		PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode: 200,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.PassthroughRequest,
+				Provider:    schemas.Vertex,
+			},
+			PassthroughUsage: &schemas.BifrostPassthroughUsage{Cost: &schemas.BifrostCost{TotalCost: 0.008}},
+		},
+	}, nil)
+	require.NoError(t, err)
+	settleAccounting(t, plugin)
+
+	rateLimit := store.GetGovernanceData(context.Background()).RateLimits["rl-vk"]
+	assert.Equal(t, int64(1), rateLimit.RequestCurrentUsage, "a fee-only relay is one request")
+	assert.Equal(t, int64(0), rateLimit.TokenCurrentUsage, "and spends no tokens")
+}
+
+// A generic relay resolves the model through the operator's mapping and marks the request; the
+// governance body scan must not then treat a root "model" field as a model.
+func TestPassthroughBodyModelsSkipResolvedRequests(t *testing.T) {
+	body := []byte(`{"model":"pro","query":"x"}`)
+	scanned := passthroughBodyModels(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: body}})
+	assert.Equal(t, []string{"pro"}, scanned, "an ordinary passthrough body is scanned")
+	resolved := passthroughBodyModels(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: body, ModelResolved: true}})
+	assert.Empty(t, resolved, "a resolved request is not rescanned")
+}

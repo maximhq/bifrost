@@ -48,6 +48,7 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 		integrations.NewAzurePassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewBedrockPassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewRunwarePassthroughRouter(client, handlerStore, accessResolver, logger),
+		integrations.NewGenericPassthroughRouter(client, handlerStore, accessResolver, logger),
 		integrations.NewCursorRouter(client, handlerStore, accessResolver, logger),
 	}
 
