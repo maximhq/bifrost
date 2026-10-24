@@ -72,6 +72,7 @@ func TestConnectToMCPClient_SuccessfulDial_FiresToolsChangeCallback(t *testing.T
 	ts := buildGatedMCPServer(t, nil)
 
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newMakeBeforeBreakConfig("sticky-dial-client", ts.URL)
 	toolName := config.Name + "-echo"
 
@@ -128,6 +129,7 @@ func TestPerformCheck_PerCall_SuccessfulDiscovery_FiresToolsChangeCallback(t *te
 // discovery result should reach the callback.
 func TestAddClient_RestoreFromConfig_DoesNotFireToolsChangeCallback(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 
 	fired := false
 	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, _ string) {
