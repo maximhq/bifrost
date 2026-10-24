@@ -14,7 +14,7 @@ import (
 const databricksDecisionPath = "/api/2.0/ai-functions/ai-decide"
 
 // databricksSystemOnePath is where a workspace's Unity Gateway serves System One models
-// (system.ai.openjev-qwen35-4b) in Typesafe's systemone shapes.
+// (system.ai.openjev-qwen35-4b, system.ai.typesafeai-jev-1-14-0) in Typesafe's systemone shapes.
 const databricksSystemOnePath = "/ai-gateway/typesafe/v1/systemone"
 
 // databricksDecisionVersion pins the ai_decide function API version, so a change to
@@ -164,7 +164,8 @@ func (provider *DatabricksProvider) Decision(ctx *schemas.BifrostContext, key sc
 // systemOneDecision runs a decision on a System One model through the workspace's Unity
 // Gateway. Its body and response are Typesafe's systemone shapes, so Typesafe's handler is
 // reused; the model is the Unity Catalog name, sent as is, and a model service the gateway
-// does not serve is rejected by Databricks with its own error.
+// does not serve is rejected by Databricks with its own error. Images by reference and box
+// questions carry Typesafe's images header, which the gateway forwards and Jev requires.
 func (provider *DatabricksProvider) systemOneDecision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	url, bifrostErr := provider.workspaceAPIURL(key, providerUtils.GetPathFromContext(ctx, databricksSystemOnePath))
 	if bifrostErr != nil {
@@ -174,6 +175,7 @@ func (provider *DatabricksProvider) systemOneDecision(ctx *schemas.BifrostContex
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	typesafe.SetImagesHeader(authHeaders, request, provider.networkConfig.BetaHeaderOverrides)
 	return typesafe.HandleTypesafeDecisionRequest(
 		ctx,
 		provider.client,

@@ -327,6 +327,7 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 		{name: "microsoft decision model on openai marked", enabled: true, req: decision(schemas.OpenAI, "Microsoft-Decision-1"), wantConverted: true},
 		{name: "ai_decide on databricks is native", enabled: true, req: decision(schemas.Databricks, "ai_decide")},
 		{name: "openjev on databricks is native", enabled: true, req: decision(schemas.Databricks, "system.ai.openjev-qwen35-4b")},
+		{name: "typesafe jev on databricks is native", enabled: true, req: decision(schemas.Databricks, "system.ai.typesafeai-jev-1-14-0")},
 		{name: "serving endpoint model on databricks marked", enabled: true, req: decision(schemas.Databricks, "databricks-claude-sonnet-4"), wantConverted: true},
 		{name: "ai_decide on openai marked", enabled: true, req: decision(schemas.OpenAI, "ai_decide"), wantConverted: true},
 		{name: "typesafe provider never marked", enabled: true, req: decision(schemas.Typesafe, "jev-latest")},

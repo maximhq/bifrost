@@ -1638,20 +1638,20 @@ const databricksSystemOneResponseBody = `{"model":"databricks-openjev-qwen35-4b"
 
 // TestDatabricksDecisionSendsSystemOneBody pins the System One call: an OpenJev model goes
 // to the workspace's Unity Gateway /ai-gateway/typesafe/v1/systemone with the PAT, the body
-// is Typesafe's systemone request with the Unity Catalog name as the model, and the reply's
-// answers and usage are read as Typesafe's.
+// is Typesafe's systemone request with the Unity Catalog name as the model, a text-only
+// request carries no images header, and the reply's answers and usage are read as Typesafe's.
 func TestDatabricksDecisionSendsSystemOneBody(t *testing.T) {
 	t.Parallel()
 
 	type capturedRequest struct {
-		path, auth string
-		body       []byte
+		path, auth, images string
+		body               []byte
 	}
 	// The handler runs on the server's goroutine, so the request is handed over on a channel.
 	captured := make(chan capturedRequest, 1)
 	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		captured <- capturedRequest{path: r.URL.Path, auth: r.Header.Get("Authorization"), body: body}
+		captured <- capturedRequest{path: r.URL.Path, auth: r.Header.Get("Authorization"), images: r.Header.Get("TypeSafe-Danger-Zone-Images"), body: body}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(databricksSystemOneResponseBody))
 	})
@@ -1670,6 +1670,9 @@ func TestDatabricksDecisionSendsSystemOneBody(t *testing.T) {
 	}
 	if sent.auth != "Bearer dapi-secret-token" {
 		t.Errorf("Authorization = %q, want the PAT as Bearer", sent.auth)
+	}
+	if sent.images != "" {
+		t.Errorf("TypeSafe-Danger-Zone-Images = %q, want none on a text-only request", sent.images)
 	}
 	var gotBody, wantBody map[string]any
 	if err := json.Unmarshal(sent.body, &gotBody); err != nil {
@@ -1704,6 +1707,65 @@ func TestDatabricksDecisionSendsSystemOneBody(t *testing.T) {
 	}
 	if resp.Usage == nil || resp.Usage.PromptTokens != 66 {
 		t.Errorf("usage = %+v, want 66 input tokens", resp.Usage)
+	}
+}
+
+// TestDatabricksDecisionSystemOneSendsImagesByReference pins images on a System One model:
+// an image part with an id reaches the gateway as a Typesafe asset, and the request carries
+// Typesafe's images header, which Jev requires (live, Jev 1.14.0 rejects images without it).
+func TestDatabricksDecisionSystemOneSendsImagesByReference(t *testing.T) {
+	t.Parallel()
+
+	type capturedRequest struct {
+		images string
+		body   []byte
+	}
+	captured := make(chan capturedRequest, 1)
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		captured <- capturedRequest{images: r.Header.Get("TypeSafe-Danger-Zone-Images"), body: body}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"jev-1.14.0","answers":{"red":{"type":"noul","noul":0.99}},"usage":{"input_tokens":1066,"output_tokens":54}}`))
+	})
+
+	request := &schemas.BifrostDecisionRequest{
+		Provider: schemas.Databricks,
+		Model:    "system.ai.typesafeai-jev-1-14-0",
+		Input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("The photo is img1.")},
+			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("img1"), Data: []byte("\x89PNG\r\n\x1a\nIMG")},
+		}}}}},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("red"), Instructions: schemas.NewDecisionText("Is img1 mostly red?")}},
+	}
+	resp, bErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newDatabricksDecisionKey(t, server), request)
+	if bErr != nil {
+		t.Fatalf("Decision returned an error: %v", bErr.Error)
+	}
+	sent := <-captured
+
+	if sent.images != "true" {
+		t.Errorf("TypeSafe-Danger-Zone-Images = %q, want true on a request with an image", sent.images)
+	}
+	var gotBody, wantBody map[string]any
+	if err := json.Unmarshal(sent.body, &gotBody); err != nil {
+		t.Fatalf("decode sent body: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{
+		"model": "system.ai.typesafeai-jev-1-14-0",
+		"state": "The photo is img1.",
+		"assets": {"img1": {"type": "image", "format": "png", "data_base64": "iVBORw0KGgpJTUc="}},
+		"questions": {"red": {"type": "noul", "instructions": "Is img1 mostly red?"}}
+	}`), &wantBody); err != nil {
+		t.Fatalf("decode want body: %v", err)
+	}
+	if !reflect.DeepEqual(gotBody, wantBody) {
+		t.Errorf("sent body = %s, want the image as a Typesafe asset", sent.body)
+	}
+	if len(resp.Answers) != 1 {
+		t.Fatalf("answers = %+v, want 1", resp.Answers)
+	}
+	if p := resp.Answers[0].Probability; p == nil || *p != 0.99 {
+		t.Errorf("red probability = %v, want 0.99", p)
 	}
 }
 
