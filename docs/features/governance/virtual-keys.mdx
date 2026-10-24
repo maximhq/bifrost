@@ -268,7 +268,7 @@ curl -X DELETE http://localhost:8080/api/governance/virtual-keys/{vk_id}
 Each virtual key can decide whether the content of its requests and responses is stored. The `disable_content_logging` field is tri-state:
 
 - omitted or `null`: inherit `client.disable_content_logging`
-- `true`: content is not stored in the log store for this key's traffic (an allowed `x-bf-disable-content-logging: false` header can still re-enable it for one request), and OpenTelemetry export is stripped of content too
+- `true`: content is not stored in the log store for this key's traffic (an allowed `x-bf-disable-content-logging: false` header can still re-enable it for one request), and connectors strip it from their exports the way their own `disable_content_logging` would (Maxim applies it to Agent Gateway traces only; see [Content Logging](/features/observability/content-logging))
 - `false`: content is stored for this key's traffic even when the client setting is `true`
 
 ```bash
@@ -286,7 +286,7 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
   -d '{ "disable_content_logging": null }'
 ```
 
-Precedence is client setting, then the key, then the `x-bf-disable-content-logging` header when per-request overrides are allowed. See [Content Logging](/features/observability/content-logging) for how each layer treats the log store and observability connectors.
+Precedence is client setting, then the key, then the request's [project](/enterprise/projects#content-logging) when it has its own setting (Enterprise), then the `x-bf-disable-content-logging` header when per-request overrides are allowed. See [Content Logging](/features/observability/content-logging) for how each layer treats the log store and observability connectors.
 
 ### Metadata per key
 

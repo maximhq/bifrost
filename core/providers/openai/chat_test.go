@@ -417,6 +417,27 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 // reject reasoning_effort "none"; only minimal/low/medium/high are accepted. The
 // Vertex case should drop a "none" effort for these models while preserving it for
 // Mistral on Vertex (which does accept "none").
+func TestToOpenAIChatRequest_VertexEndpoint(t *testing.T) {
+	for _, model := range []string{"custom-qwen", "mistral-custom"} {
+		t.Run(model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{VertexAliasCfg: &schemas.VertexAliasCfg{
+				VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat},
+			}}})
+			request := &schemas.BifrostChatRequest{
+				Provider: schemas.Vertex, Model: model,
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+				Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: new("none")}},
+			}
+			result := ToOpenAIChatRequest(ctx, request)
+			require.NotNil(t, result)
+			require.Equal(t, model, result.Model)
+			require.NotNil(t, result.Reasoning)
+			require.Equal(t, "none", *result.Reasoning.Effort)
+		})
+	}
+}
+
 func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -1121,36 +1121,68 @@ func (c *cancelRecorder) requireCancelled(t *testing.T, msg string) {
 
 // passthroughTestAccount configures a single Anthropic provider whose BaseURL points at a
 // local test upstream, so passthrough tests can observe exactly what (if anything) reaches it.
+// Anthropic-shaped custom providers the passthrough tests reach through x-model-provider:
+// one opted in with a passthrough policy, one never did.
+const (
+	passthroughSidecar    schemas.ModelProvider = "passthrough-sidecar"
+	passthroughSidecarOff schemas.ModelProvider = "passthrough-sidecar-off"
+)
+
 type passthroughTestAccount struct {
-	baseURL string
+	baseURL              string
+	anthropicPassthrough *schemas.PassthroughPolicy
 }
 
 func (a passthroughTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{schemas.Anthropic}, nil
+	return []schemas.ModelProvider{schemas.Anthropic, passthroughSidecar, passthroughSidecarOff}, nil
 }
 
 func (a passthroughTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
-	if p != schemas.Anthropic {
+	value := "sk-ant-test-operator-key"
+	switch p {
+	case schemas.Anthropic:
+	case passthroughSidecar, passthroughSidecarOff:
+		value = "sk-" + string(p)
+	default:
 		return nil, nil
 	}
 	return []schemas.Key{{
-		ID:     "passthrough-test-key",
-		Value:  *schemas.NewSecretVar("sk-ant-test-operator-key"),
+		ID:     "passthrough-test-key-" + string(p),
+		Value:  *schemas.NewSecretVar(value),
 		Models: schemas.WhiteList{"*"},
 		Weight: 1.0,
 	}}, nil
 }
 
 func (a passthroughTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
-	if p != schemas.Anthropic {
-		return nil, fmt.Errorf("unsupported provider %s", p)
-	}
 	nc := schemas.DefaultNetworkConfig
 	nc.BaseURL = a.baseURL
-	return &schemas.ProviderConfig{
+	config := &schemas.ProviderConfig{
 		NetworkConfig:            nc,
 		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-	}, nil
+	}
+	switch p {
+	case schemas.Anthropic:
+		config.Passthrough = a.anthropicPassthrough
+	case passthroughSidecar:
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}
+		config.Passthrough = &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+			{Methods: []string{fasthttp.MethodPost}, Path: "/v1/models/*/predict"},
+		}}
+	case passthroughSidecarOff:
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}
+	default:
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	return config, nil
+}
+
+// passthroughTestStore reports the test account's custom providers the way lib.Config does.
+func passthroughTestStore() *mockHandlerStore {
+	return &mockHandlerStore{customProviders: map[schemas.ModelProvider]mockCustomProvider{
+		passthroughSidecar:    {base: schemas.Anthropic, passthrough: true},
+		passthroughSidecarOff: {base: schemas.Anthropic},
+	}}
 }
 
 type passthroughUpstreamHit struct {
@@ -1259,8 +1291,9 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 
 	r := router.New()
 	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
-	NewGenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
-	NewAnthropicPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+	store := passthroughTestStore()
+	NewGenAIPassthroughRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewAnthropicPassthroughRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
 
 	upstreamHost := strings.TrimPrefix(upstream.URL, "http://")
 
@@ -1273,6 +1306,7 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 		wantUpstream string // expected upstream request URI; empty means no upstream request allowed
 		wantBodyHas  string
 		wantStreamed bool
+		wantKey      string // upstream credential; empty means the anthropic operator key
 	}{
 		{
 			// "/genai_passthrough/v1" no longer matches past the boundary, so the bare prefix
@@ -1336,6 +1370,35 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 			wantStatus:  fasthttp.StatusBadRequest,
 			wantBodyHas: "provider does not match",
 		},
+		{
+			name:         "custom provider with a passthrough policy is reachable on its base route",
+			uri:          "/anthropic_passthrough/v1/models/m1/predict",
+			provider:     string(passthroughSidecar),
+			wantStatus:   fasthttp.StatusOK,
+			wantUpstream: "/v1/models/m1/predict",
+			wantKey:      "sk-" + string(passthroughSidecar),
+		},
+		{
+			name:        "route outside a custom provider's policy is refused",
+			uri:         "/anthropic_passthrough/v1/files",
+			provider:    string(passthroughSidecar),
+			wantStatus:  fasthttp.StatusForbidden,
+			wantBodyHas: "passthrough route POST /v1/files is not allowed for provider " + string(passthroughSidecar),
+		},
+		{
+			name:        "custom provider without a passthrough policy is refused",
+			uri:         "/anthropic_passthrough/v1/messages",
+			provider:    string(passthroughSidecarOff),
+			wantStatus:  fasthttp.StatusForbidden,
+			wantBodyHas: "passthrough is not enabled for provider " + string(passthroughSidecarOff),
+		},
+		{
+			name:        "custom provider on another wire format's route is refused",
+			uri:         "/genai_passthrough/v1beta/models/m1:generateContent",
+			provider:    string(passthroughSidecar),
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "provider does not match",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1368,9 +1431,64 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 			}
 			require.Len(t, got, 1)
 			require.Equal(t, tc.wantUpstream, got[0].path)
-			require.Equal(t, "sk-ant-test-operator-key", got[0].apiKey)
+			wantKey := tc.wantKey
+			if wantKey == "" {
+				wantKey = "sk-ant-test-operator-key"
+			}
+			require.Equal(t, wantKey, got[0].apiKey)
 		})
 	}
+}
+
+// TestHandlePassthrough_ProviderPolicy drives a built-in provider whose passthrough policy allows
+// only POST /v1/messages: that route is forwarded, every other route or method is refused with 403
+// and an error naming the route, and nothing refused reaches the upstream.
+func TestHandlePassthrough_ProviderPolicy(t *testing.T) {
+	var mu sync.Mutex
+	var hits []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughTestAccount{baseURL: upstream.URL, anthropicPassthrough: &schemas.PassthroughPolicy{
+			AllowedRoutes: []schemas.PassthroughRouteRule{{Methods: []string{"POST"}, Path: "/v1/messages"}},
+		}},
+		Logger: bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	NewAnthropicPassthroughRouter(client, passthroughTestStore(), nil, &testLogger{}).RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next })
+
+	for _, tc := range []struct {
+		method, uri string
+		wantStatus  int
+		wantBodyHas string
+	}{
+		{fasthttp.MethodPost, "/anthropic_passthrough/v1/messages", fasthttp.StatusOK, ""},
+		{fasthttp.MethodPost, "/anthropic_passthrough/v1/files", fasthttp.StatusForbidden, "passthrough route POST /v1/files is not allowed for provider anthropic"},
+		{fasthttp.MethodGet, "/anthropic_passthrough/v1/messages", fasthttp.StatusForbidden, "passthrough route GET /v1/messages is not allowed"},
+		{fasthttp.MethodPost, "/anthropic_passthrough/v1/messages/batches", fasthttp.StatusForbidden, "add it to the provider's passthrough allowed routes"},
+	} {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(tc.method)
+		ctx.Request.SetRequestURI(tc.uri)
+		ctx.Request.Header.SetContentType("application/json")
+		ctx.Request.SetBodyString(`{}`)
+		r.Handler(&ctx)
+		require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "%s %s: %s", tc.method, tc.uri, ctx.Response.Body())
+		require.Contains(t, string(ctx.Response.Body()), tc.wantBodyHas, "%s %s", tc.method, tc.uri)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"POST /v1/messages"}, hits, "only the allowed route may reach the upstream")
 }
 
 // directKeyHandlerStore is the shared mock store with direct keys allowed.
@@ -1534,94 +1652,6 @@ func TestPassthroughQueryStreams(t *testing.T) {
 	assert.False(t, passthroughQueryStreams(http.MethodGet, "include_input=true"))
 	assert.False(t, passthroughQueryStreams(http.MethodGet, ""))
 	assert.False(t, passthroughQueryStreams(http.MethodPost, "stream=true"), "a POST declares streaming in its body")
-}
-
-func TestPassthroughInferenceRoutes(t *testing.T) {
-	for _, tc := range []struct {
-		provider schemas.ModelProvider
-		path     string
-	}{
-		{schemas.OpenAI, "/v1/chat/completions"}, {schemas.OpenAI, "/v1/responses"},
-		{schemas.OpenAI, "/v1/audio/transcriptions"}, {schemas.Anthropic, "/v1/messages"},
-		{schemas.Anthropic, "/v1/messages/count_tokens"}, {schemas.Azure, "/openai/deployments/gpt-4o/chat/completions"},
-		{schemas.Azure, "/openai/v1/responses"}, {schemas.Gemini, "/models/gemini-2.5-flash:streamGenerateContent"},
-		{schemas.Gemini, "/projects/p/locations/us/publishers/google/models/gemini-2.5-flash:generateContent"},
-		{schemas.Runware, "/v1"},
-		{schemas.Gemini, "/interactions"}, {schemas.Gemini, "/projects/p/locations/global/interactions"},
-	} {
-		cfg := &PassthroughConfig{Provider: tc.provider}
-		require.True(t, passthroughInferenceRoute(cfg, "POST", tc.path), "%s %s", tc.provider, tc.path)
-		for _, method := range []string{"GET", "DELETE", "PATCH", "PUT", "HEAD"} {
-			require.False(t, passthroughInferenceRoute(cfg, method, tc.path), "%s %s", method, tc.path)
-		}
-	}
-	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Azure, schemas.Gemini, schemas.Runware} {
-		for _, path := range []string{"/v1/files", "/v1/fine_tuning/jobs", "/v1/organization/users", "/v1/chat/completions/id/messages", "/v1/messages/batches", "/v1/responses/id", "/models/m:delete", "/v1/./responses", "/v1/%72esponses", "/models/x:generateContent/extra",
-			"/interactions/abc", "/interactions/abc/cancel", "/projects/p/locations/global/interactions/abc", "/projects/p/interactions"} {
-			require.False(t, passthroughInferenceRoute(&PassthroughConfig{Provider: provider}, "POST", path), "%s %s", provider, path)
-		}
-	}
-}
-
-// The Bedrock passthrough forwards only the operations the provider allow-lists, so the
-// route policy must accept exactly those and nothing else.
-func TestPassthroughInferenceRoutesBedrockUsesProviderAllowList(t *testing.T) {
-	cfg := &PassthroughConfig{Provider: schemas.Bedrock}
-	for _, path := range []string{
-		"/agents/AGENT12345/agentAliases/ALIAS12345/sessions/s1/text",
-		"/knowledgebases/KB12345678/retrieve",
-		"/guardrail/gr1a2b3c4d5e/version/DRAFT/apply",
-	} {
-		require.True(t, passthroughInferenceRoute(cfg, "POST", path), path)
-		require.False(t, passthroughInferenceRoute(cfg, "GET", path), "GET %s", path)
-	}
-	for _, path := range []string{
-		"/model/amazon.titan-text-express-v1/invoke",
-		"/knowledgebases/KB12345678/retrieve/extra",
-		"/knowledgebases/kb-with-dash/retrieve",
-		"/agents/AGENT12345/agentAliases/ALIAS12345/sessions/../text",
-	} {
-		require.False(t, passthroughInferenceRoute(cfg, "POST", path), path)
-	}
-}
-
-// Requests outside the Bedrock allow-list are refused by the route policy with 403
-// before the provider, key selection, or AWS is reached.
-func TestBedrockPassthroughRefusalsUseRoutePolicy(t *testing.T) {
-	t.Skip("passthrough route policy is commented out in handlePassthrough")
-	r := router.New()
-	NewBedrockPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
-	for _, tc := range []struct{ method, uri string }{
-		{"POST", "/bedrock_passthrough/model/amazon.titan-text-express-v1/invoke"},
-		{"POST", "/bedrock_passthrough/agents/..%2Fmodel/agentAliases/a/sessions/s/text"},
-		{"GET", "/bedrock_passthrough/knowledgebases/KB12345678/retrieve"},
-		{"POST", "/bedrock_passthrough/agents/AGENT123456/agentAliases/ALIAS12345/sessions/.../text"},
-	} {
-		var ctx fasthttp.RequestCtx
-		ctx.Request.Header.SetMethod(tc.method)
-		ctx.Request.SetRequestURI(tc.uri)
-		r.Handler(&ctx)
-		require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), "%s %s: %s", tc.method, tc.uri, ctx.Response.Body())
-		require.Contains(t, string(ctx.Response.Body()), "supported inference endpoint", "%s %s", tc.method, tc.uri)
-	}
-}
-
-func TestPassthroughManagementRoutesNeverForward(t *testing.T) {
-	t.Skip("passthrough route policy is commented out in handlePassthrough")
-	r := router.New()
-	NewOpenAIPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
-	NewAnthropicPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
-	NewAzurePassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
-	NewGenAIPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
-	for _, prefix := range []string{"openai", "anthropic", "azure", "genai"} {
-		for _, method := range []string{"GET", "POST", "DELETE", "PUT", "PATCH", "HEAD"} {
-			var ctx fasthttp.RequestCtx
-			ctx.Request.Header.SetMethod(method)
-			ctx.Request.SetRequestURI("/" + prefix + "_passthrough/v1/files")
-			r.Handler(&ctx)
-			require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), "%s %s: %s", prefix, method, ctx.Response.Body())
-		}
-	}
 }
 
 // After provider-injected tools ran, a non-stream response is assembled from several

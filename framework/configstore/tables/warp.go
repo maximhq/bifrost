@@ -51,6 +51,7 @@ type TableWarpConfig struct {
 	LogVectorStoreNamespace         string  `gorm:"type:varchar(255);default:''" json:"log_vector_store_namespace"`
 	SemanticSearchThreshold         float64 `gorm:"default:0" json:"semantic_search_threshold"`
 	SemanticSearchLimit             int     `gorm:"default:0" json:"semantic_search_limit"`
+	TopicDiscoveryMinRequests       int     `gorm:"default:0" json:"topic_discovery_min_requests"`
 	RetiredLogVectorStoreNamespaces *string `gorm:"type:text" json:"-"`
 
 	CreatedAt time.Time `gorm:"not null" json:"created_at"`

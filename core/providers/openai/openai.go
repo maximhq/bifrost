@@ -1857,6 +1857,7 @@ func HandleOpenAIChatCompletionStreaming(
 						choice.ChatStreamResponseChoice.Delta.Reasoning != nil ||
 						len(choice.ChatStreamResponseChoice.Delta.ReasoningDetails) > 0 ||
 						choice.ChatStreamResponseChoice.Delta.Audio != nil ||
+						len(choice.ChatStreamResponseChoice.Delta.Images) > 0 ||
 						len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0 ||
 						len(choice.ChatStreamResponseChoice.Delta.ExtraContent) > 0) {
 					if choice.FinishReason != nil && *choice.FinishReason != "" {
@@ -4382,7 +4383,7 @@ func (provider *OpenAIProvider) Decision(ctx *schemas.BifrostContext, key schema
 		provider.client,
 		provider.buildRequestURL(ctx, openAIDecisionsPath, schemas.DecisionRequest),
 		request,
-		key,
+		BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),

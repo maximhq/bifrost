@@ -31,6 +31,13 @@ type mockHandlerStore struct {
 	availableProviders         []schemas.ModelProvider
 	mcpHeaderCombinedAllowlist schemas.WhiteList
 	modelCatalog               *modelcatalog.ModelCatalog
+	customProviders            map[schemas.ModelProvider]mockCustomProvider
+}
+
+// mockCustomProvider is what GetCustomProviderPassthrough reports for one custom provider.
+type mockCustomProvider struct {
+	base        schemas.ModelProvider
+	passthrough bool
 }
 
 func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -80,6 +87,11 @@ func (m *mockHandlerStore) IsProviderConfigured(provider schemas.ModelProvider) 
 		}
 	}
 	return false
+}
+
+func (m *mockHandlerStore) GetCustomProviderPassthrough(provider schemas.ModelProvider) (schemas.ModelProvider, bool, bool) {
+	custom, ok := m.customProviders[provider]
+	return custom.base, custom.passthrough, ok
 }
 
 func (m *mockHandlerStore) GetMCPExternalServerURL() string {

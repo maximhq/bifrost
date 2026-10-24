@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sync"
@@ -1108,5 +1109,46 @@ func TestBuildChatMessageFromChunksWithoutAccumulator(t *testing.T) {
 	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	if viaAccumulator := accumulator.buildCompleteMessageFromChatStreamChunks(makeChunks()); !reflect.DeepEqual(viaAccumulator, message) {
 		t.Fatalf("exported builder diverged from Accumulator method:\n got %+v\nwant %+v", message, viaAccumulator)
+	}
+}
+
+// Streamed delta.images (OpenRouter image models) must survive the delta copy and
+// land on the accumulated message that logging and post-hooks read.
+func TestBuildChatMessageFromChunksKeepsGeneratedImages(t *testing.T) {
+	const imageURL = "data:image/png;base64,iVBORw0KGgo="
+	frames := []string{
+		`{"role":"assistant","content":"Here is a cat. "}`,
+		`{"role":"assistant","content":"","images":[{"type":"image_url","image_url":{"url":"` + imageURL + `"}}]}`,
+		`{"role":"assistant","content":"Enjoy!"}`,
+	}
+	chunks := make([]*ChatStreamChunk, 0, len(frames))
+	for i, frame := range frames {
+		var delta schemas.ChatStreamResponseChoiceDelta
+		if err := schemas.Unmarshal([]byte(frame), &delta); err != nil {
+			t.Fatalf("decode frame %d: %v", i, err)
+		}
+		chunks = append(chunks, &ChatStreamChunk{ChunkIndex: i, Delta: deepCopyChatStreamDelta(&delta)})
+	}
+
+	encoded, err := json.Marshal(BuildChatMessageFromChunks(chunks))
+	if err != nil {
+		t.Fatalf("encode message: %v", err)
+	}
+	var got struct {
+		Content *string `json:"content"`
+		Images  []struct {
+			ImageURL struct {
+				URL string `json:"url"`
+			} `json:"image_url"`
+		} `json:"images"`
+	}
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatalf("re-decode %s: %v", encoded, err)
+	}
+	if got.Content == nil || *got.Content != "Here is a cat. Enjoy!" {
+		t.Fatalf("unexpected content: %s", encoded)
+	}
+	if len(got.Images) != 1 || got.Images[0].ImageURL.URL != imageURL {
+		t.Fatalf("streamed image missing from accumulated message: %s", encoded)
 	}
 }

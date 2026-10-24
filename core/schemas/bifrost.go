@@ -269,10 +269,12 @@ const (
 	MCPContextKeyIncludeClients BifrostContextKey = "mcp-include-clients" // Context key for whitelist client filtering
 	MCPContextKeyIncludeTools   BifrostContextKey = "mcp-include-tools"   // Context key for whitelist tool filtering (Note: toolName should be in "clientName-toolName" format for individual tools, or "clientName-*" for wildcard)
 
-	// BifrostContextKeyGovernanceDisableContentLogging is the resolved virtual key's own content-logging
-	// decision (bool): true forces content off, false forces it on for the log store, absent means inherit
-	// client.disable_content_logging. It sits between the client flag and the x-bf-disable-content-logging
-	// header in precedence. Set by the bifrost governance plugin - DO NOT SET THIS MANUALLY.
+	// BifrostContextKeyGovernanceDisableContentLogging is governance's content-logging decision for the
+	// request (bool): the resolved virtual key's own, or that of a project the request is scoped to,
+	// which overrides the key's in both directions. True forces content off, false forces it on for the
+	// log store, absent means inherit client.disable_content_logging. It sits between the client flag and
+	// the x-bf-disable-content-logging header in precedence. Set by the bifrost governance plugin - DO NOT
+	// SET THIS MANUALLY.
 	BifrostContextKeyGovernanceDisableContentLogging BifrostContextKey = "bifrost-governance-disable-content-logging"
 
 	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"                 // string (to store the selected key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))

@@ -7,6 +7,7 @@ import { useDebouncedValue } from "@/hooks/useDebounce";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useGetCoreConfigQuery, useGetMCPClientsQuery, useGetVirtualKeysQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { Link } from "@tanstack/react-router";
 import { Check, Fingerprint, Globe2, KeyRound, Server, ShieldCheck, SquareTerminal } from "lucide-react";
@@ -75,11 +76,16 @@ export function MCPUsageGuideSheet() {
 	// ── Queries ──────────────────────────────────────────────────────────
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true }, { skip: !open });
 	// The identity-provider path is enterprise-only and needs an enabled provider to
-	// authenticate against. The SCIM query is stubbed to [] in OSS builds.
-	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !open || !IS_ENTERPRISE });
+	// authenticate against. The SCIM query is stubbed to [] in OSS builds. Each lookup
+	// is skipped without the View its endpoint needs, so a caller missing one sees no
+	// identity provider / no keys to pick rather than a 403.
+	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
+	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
+	const canReadScimProviders = IS_ENTERPRISE && hasUserProvisioningAccess;
+	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !open || !canReadScimProviders });
 	const { data: virtualKeysData, isFetching: isFetchingVirtualKeys } = useGetVirtualKeysQuery(
 		{ limit: 50, search: debouncedVirtualKeySearch || undefined },
-		{ skip: !open || urlState.auth !== "virtual_key" },
+		{ skip: !open || urlState.auth !== "virtual_key" || !hasVirtualKeysAccess },
 	);
 	const { data: mcpClientsData, isFetching: isFetchingMCPClients } = useGetMCPClientsQuery(
 		{ limit: 50 },
@@ -160,10 +166,10 @@ export function MCPUsageGuideSheet() {
 	// Waits for both sources availability is derived from, so a link carrying a
 	// still-valid method is not rewritten while the config is in flight.
 	useEffect(() => {
-		if (!open || !bifrostConfig || (IS_ENTERPRISE && !scimProviders)) return;
+		if (!open || !bifrostConfig || (canReadScimProviders && !scimProviders)) return;
 		if (availableAuthMethods.length === 0 || availableAuthMethods.includes(urlState.auth)) return;
 		setUrlState({ auth: availableAuthMethods[0] });
-	}, [availableAuthMethods, bifrostConfig, open, scimProviders, setUrlState, urlState.auth]);
+	}, [availableAuthMethods, bifrostConfig, canReadScimProviders, open, scimProviders, setUrlState, urlState.auth]);
 
 	// Resolve the persisted virtual-key id into its full object, otherwise
 	// fall back to auto-selecting the first active key. Auto-selection is kept

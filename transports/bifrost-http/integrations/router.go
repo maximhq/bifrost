@@ -3701,12 +3701,6 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Route policy disabled: a hardcoded allowlist blocks new provider endpoints until Bifrost is upgraded.
-	// if !passthroughInferenceRoute(cfg, string(ctx.Method()), path) {
-	// 	g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "passthrough requires a supported inference endpoint and method", fasthttp.StatusForbidden))
-	// 	return
-	// }
-
 	body := ctx.Request.Body()
 	// Parse body once to get both model and stream flag.
 	contentType := string(ctx.Request.Header.ContentType())
@@ -3720,9 +3714,14 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	if cfg.ProviderDetector != nil {
 		provider = cfg.ProviderDetector(ctx, bodyModel)
 	}
-	provider, err = getPassthroughProvider(ctx, provider)
+	// Host-backed routes have a fixed upstream and route list, so only their own provider serves them.
+	provider, err = getPassthroughProvider(ctx, g.handlerStore, provider, cfg.UpstreamURL == "")
 	if err != nil {
-		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
+		status := fasthttp.StatusBadRequest
+		if errors.Is(err, errPassthroughNotEnabled) {
+			status = fasthttp.StatusForbidden
+		}
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), status))
 		return
 	}
 

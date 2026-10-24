@@ -1380,6 +1380,12 @@ paths:
     $ref: "./paths/management/warp.yaml#/warp-backfill-status"
   /api/warp/log-index/backfill/cancel:
     $ref: "./paths/management/warp.yaml#/warp-backfill-cancel"
+  /api/warp/log-index/topics:
+    $ref: "./paths/management/warp.yaml#/warp-topics"
+  /api/warp/log-index/topics/status:
+    $ref: "./paths/management/warp.yaml#/warp-topics-status"
+  /api/warp/log-index/topics/cancel:
+    $ref: "./paths/management/warp.yaml#/warp-topics-cancel"
   /api/warp/chat:
     $ref: "./paths/management/warp.yaml#/warp-session"
   /api/warp/log-index/status:
@@ -2381,6 +2387,14 @@ components:
       $ref: "./schemas/management/auditlogs.yaml#/AuditFilterDataResponse"
     AuditVerifyResult:
       $ref: "./schemas/management/auditlogs.yaml#/AuditVerifyResult"
+    AuditSeverity:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditSeverity"
+    AuditAuthMethod:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditAuthMethod"
+    AuditFieldChange:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditFieldChange"
+    AuditChangeSet:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditChangeSet"
 
     # API Keys
     APIKey:
@@ -2474,6 +2488,12 @@ components:
       $ref: "./schemas/management/warp.yaml#/WarpBackfillRequest"
     WarpBackfillStatus:
       $ref: "./schemas/management/warp.yaml#/WarpBackfillStatus"
+    WarpTopicsRequest:
+      $ref: "./schemas/management/warp.yaml#/WarpTopicsRequest"
+    WarpTopicsStatus:
+      $ref: "./schemas/management/warp.yaml#/WarpTopicsStatus"
+    WarpTopicSummary:
+      $ref: "./schemas/management/warp.yaml#/WarpTopicSummary"
     WarpUnavailable:
       $ref: "./schemas/management/warp.yaml#/WarpUnavailable"
     WarpSessionRequest:

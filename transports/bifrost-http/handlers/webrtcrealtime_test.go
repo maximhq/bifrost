@@ -138,6 +138,10 @@ func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool  { re
 func (s testHandlerStore) GetMCPExternalServerURL() string                  { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                  { return "" }
 
+func (s testHandlerStore) GetCustomProviderPassthrough(schemas.ModelProvider) (schemas.ModelProvider, bool, bool) {
+	return "", false, false
+}
+
 func TestExtractRealtimeTokenFromAuth(t *testing.T) {
 	t.Parallel()
 
