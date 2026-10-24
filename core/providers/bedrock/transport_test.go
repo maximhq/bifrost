@@ -23,6 +23,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/maximhq/bifrost/core/network/proxytest"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -227,29 +228,7 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 	// Server: returns 200 + correct headers, writes a truncated EventStream
 	// prelude (not a valid frame), then forcibly resets the TCP connection —
 	// producing a *net.OpError on the client's read side.
-	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
-		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		// Write a partial EventStream frame header (3 bytes, not a valid frame).
-		_, _ = w.Write([]byte{0x00, 0x00, 0x00})
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		hj, ok := w.(http.Hijacker)
-		if !ok {
-			return
-		}
-		conn, _, _ := hj.Hijack()
-		// RST instead of FIN — guarantees a *net.OpError on the client read.
-		if tc, ok := conn.(*net.TCPConn); ok {
-			_ = tc.SetLinger(0)
-		}
-		conn.Close()
-	}))
-	ts.Start()
+	ts := newMidStreamResetServer()
 	defer ts.Close()
 
 	provider := newTestProviderWithServer(t, ts)
@@ -286,6 +265,84 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 		"net.OpError during EventStream decoding must use ErrProviderNetworkError message")
 }
 
+
+// newMidStreamResetServer returns a server that answers 200, writes a truncated
+// EventStream prelude (not a valid frame), then resets the TCP connection, which
+// produces a *net.OpError on the client's read side.
+func newMidStreamResetServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = w.Write([]byte{0x00, 0x00, 0x00})
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			return
+		}
+		conn, _, _ := hj.Hijack()
+		// RST instead of FIN — guarantees a *net.OpError on the client read.
+		if tc, ok := conn.(*net.TCPConn); ok {
+			_ = tc.SetLinger(0)
+		}
+		conn.Close()
+	}))
+}
+
+// TestStream_MidStreamDrop_IsUpstreamError verifies that a connection dropped after
+// the 200 reaches clients as a 502 upstream failure. Without a status the error
+// resolves to 400, which the Anthropic surface reports as invalid_request_error, a
+// type clients do not retry.
+func TestStream_MidStreamDrop_IsUpstreamError(t *testing.T) {
+	content := "hello"
+	streams := map[string]func(*BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError){
+		"text": func(p *BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return p.TextCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), &schemas.BifrostTextCompletionRequest{
+				Model: "mistral.mistral-7b-instruct-v0:2",
+				Input: &schemas.TextCompletionInput{PromptStr: &content},
+			})
+		},
+		"chat": func(p *BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return p.ChatCompletionStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), testChatRequest())
+		},
+		"responses": func(p *BedrockProvider) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return p.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), &schemas.BifrostResponsesRequest{
+				Model: "anthropic.claude-sonnet-4-5",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: &content},
+				}},
+			})
+		},
+	}
+	for name, stream := range streams {
+		t.Run(name, func(t *testing.T) {
+			ts := newMidStreamResetServer()
+			defer ts.Close()
+
+			streamChan, bifrostErr := stream(newTestProviderWithServer(t, ts))
+			require.Nil(t, bifrostErr)
+
+			var streamErr *schemas.BifrostError
+			for chunk := range streamChan {
+				if chunk != nil && chunk.BifrostError != nil && streamErr == nil {
+					streamErr = chunk.BifrostError
+				}
+			}
+
+			require.NotNil(t, streamErr, "expected an error chunk from the stream")
+			assert.False(t, streamErr.IsBifrostError)
+			require.NotNil(t, streamErr.StatusCode)
+			assert.Equal(t, http.StatusBadGateway, *streamErr.StatusCode)
+			assert.Equal(t, "api_error", anthropic.ToAnthropicChatCompletionError(streamErr).Error.Type)
+	})
+	}
+}
+       
 // TestRequest_ConnectionFailure_IsUpstreamError verifies that a connection the server
 // closes before responding reaches clients as a 502 upstream failure. Without a
 // status the error resolves to 400, which reads as a malformed request.

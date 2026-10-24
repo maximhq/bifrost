@@ -233,6 +233,19 @@ func isStreamTransportError(err error) bool {
 	return errors.As(err, &opErr) || errors.As(err, &dnsErr)
 }
 
+// newStreamTransportError reports a connection lost after the 200 as a 502 from
+// upstream. Without a status the error resolves to 400, a client fault.
+func newStreamTransportError(err error) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     schemas.Ptr(fasthttp.StatusBadGateway),
+		Error: &schemas.ErrorField{
+			Message: schemas.ErrProviderNetworkError,
+			Error:   err,
+		},
+	}
+}
+
 // retryableBedrockExceptions maps AWS Bedrock EventStream exception types (the
 // camelCase shape names AWS uses for ConverseStream / InvokeModelWithResponseStream
 // in-stream exception members) to a retryable HTTP status code. These exceptions
@@ -1152,13 +1165,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
 				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
 				if isStreamTransportError(err) {
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: schemas.ErrProviderNetworkError,
-							Error:   err,
-						},
-					}, responseChan, provider.logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, newStreamTransportError(err), responseChan, provider.logger, postHookSpanFinalizer)
 				} else {
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
 				}
@@ -1550,13 +1557,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
 				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
 				if isStreamTransportError(err) {
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: schemas.ErrProviderNetworkError,
-							Error:   err,
-						},
-					}, responseChan, provider.logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, newStreamTransportError(err), responseChan, provider.logger, postHookSpanFinalizer)
 				} else {
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
 				}
@@ -2008,13 +2009,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
 				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
 				if isStreamTransportError(err) {
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: schemas.ErrProviderNetworkError,
-							Error:   err,
-						},
-					}, responseChan, provider.logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, newStreamTransportError(err), responseChan, provider.logger, postHookSpanFinalizer)
 				} else {
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
 				}
