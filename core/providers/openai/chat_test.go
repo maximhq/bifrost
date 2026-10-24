@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -10,12 +11,136 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
+
+// Issue #8749: zero counts must survive the upstream parser and wire encoding,
+// for both custom and built-in OpenAI providers, including the final SSE usage.
+func TestChatCompletionPreservesZeroUsage(t *testing.T) {
+	for _, providerName := range []schemas.ModelProvider{schemas.OpenAI, "gemini-web"} {
+		for _, usage := range []string{
+			`{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`,
+			`{"total_tokens":12}`,
+			`{"prompt_tokens":204,"completion_tokens":2,"total_tokens":206}`,
+			`null`,
+		} {
+			for _, streaming := range []bool{false, true} {
+				// Streams already synthesize a final usage object; the nil control
+				// here pins unary responses, where missing usage stays absent.
+				if streaming && usage == "null" {
+					continue
+				}
+				name := string(providerName) + "/" + usage + "/unary"
+				if streaming {
+					name = string(providerName) + "/" + usage + "/stream"
+				}
+				t.Run(name, func(t *testing.T) {
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+							t.Errorf("unexpected upstream request: %s %s", r.Method, r.URL.Path)
+							w.WriteHeader(http.StatusNotFound)
+							return
+						}
+						if streaming {
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = io.WriteString(w, chatChunk("hello", nil)+chatChunk("", schemas.Ptr("stop")))
+							_, _ = io.WriteString(w, `data: {"id":"chatcmpl-usage","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[],"usage":`+usage+"}\n\n")
+							_, _ = io.WriteString(w, "data: [DONE]\n\n")
+						} else {
+							w.Header().Set("Content-Type", "application/json")
+							_, _ = io.WriteString(w, `{"id":"chatcmpl-usage","object":"chat.completion","created":1,"model":"repro-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":`+usage+`}`)
+						}
+					}))
+					defer server.Close()
+					config := &schemas.ProviderConfig{
+						NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true},
+					}
+					if providerName != schemas.OpenAI {
+						config.CustomProviderConfig = &schemas.CustomProviderConfig{
+							BaseProviderType: schemas.OpenAI, CustomProviderKey: string(providerName),
+						}
+					}
+					provider := NewOpenAIProvider(config, testNoopLogger{})
+					ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					req := basicChatRequest()
+					req.Provider = providerName
+					checkUsage := func(response *schemas.BifrostChatResponse) {
+						t.Helper()
+						assertCompletionUsage(t, response.WithPreservedUsage(), usage)
+					}
+					if !streaming {
+						response, bifrostErr := provider.ChatCompletion(ctx, testKey(), req)
+						require.Nil(t, bifrostErr)
+						require.NotNil(t, response)
+						checkUsage(response)
+						return
+					}
+					req.Params = &schemas.ChatParameters{StreamOptions: &schemas.ChatStreamOptions{IncludeUsage: schemas.Ptr(true)}}
+					stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), req)
+					require.Nil(t, bifrostErr)
+					sawUsage := false
+					for _, chunk := range collectChunks(t, stream) {
+						require.Nil(t, chunk.BifrostError)
+						if response := chunk.BifrostChatResponse; response != nil && response.Usage != nil {
+							sawUsage = true
+							checkUsage(response)
+						}
+					}
+					require.Equal(t, usage != "null", sawUsage)
+				})
+			}
+		}
+	}
+}
+
+func assertCompletionUsage(t *testing.T, response any, want string) {
+	t.Helper()
+	wire, err := schemas.MarshalSorted(response)
+	require.NoError(t, err)
+	var body struct{ Usage json.RawMessage }
+	require.NoError(t, json.Unmarshal(wire, &body))
+	require.JSONEq(t, want, string(body.Usage))
+}
+
+// Includes response decoding, zero detection and output encoding so the JSON
+// lookups needed only by zero/unknown counts are included in the measured cost.
+func BenchmarkCompletionUsageDecodeAndMarshal(b *testing.B) {
+	for _, tc := range []struct{ name, usage string }{
+		{"nil", `null`}, {"nonzero", `{"prompt_tokens":204,"completion_tokens":2,"total_tokens":206}`},
+		{"zero", `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`}, {"missing", `{"total_tokens":12}`},
+	} {
+		body := []byte(`{"id":"bench","object":"chat.completion","model":"fixture","choices":[{"index":0,"message":{"role":"assistant","content":"hello"}}],"usage":` + tc.usage + `}`)
+		for _, preserve := range []bool{false, true} {
+			name := tc.name + "/before"
+			if preserve {
+				name = tc.name + "/after"
+			}
+			b.Run(name, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var response schemas.BifrostChatResponse
+					if err := sonic.Unmarshal(body, &response); err != nil {
+						b.Fatal(err)
+					}
+					var wire any = &response
+					if preserve {
+						response.Usage.PreserveTokenCountZeros(body, "usage.prompt_tokens", "usage.completion_tokens")
+						wire = response.WithPreservedUsage()
+					}
+					if _, err := providerUtils.MarshalSorted(wire); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
 
 func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 	// Create tool parameters with keys in non-alphabetical order:

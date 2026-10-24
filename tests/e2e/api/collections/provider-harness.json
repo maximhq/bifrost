@@ -281289,6 +281289,461 @@
           }
         }
       ]
+    },
+    {
+      "name": "270. OpenAI zero-token-usage survives completion wire serialization (#8749)",
+      "description": "Local regression for #8749 using a Custom OpenAI-compatible provider. Eight zero-usage cases cover Chat/Text on /v1 and /openai/v1, both unary and SSE. Representative controls pin total-only usage, nonzero counts, absent usage and unchanged embedding behavior. The full missing/null/partial-zero matrix lives in Go tests. One folder-level script checks every response; no paid provider calls.\n\nStart the fixture in a fresh directory: node tests/e2e/api/runners/run-zero-token-usage-fixture.mjs /tmp/bifrost-zero-token-usage. In another terminal: make dev PORT=3022 APP_DIR=/tmp/bifrost-zero-token-usage. Verify port 3022 is free beforehand and wait for /health. Log in at POST /api/session/login with username usage-fixture and password fixture-only-password; export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\" for the management preflight. Run: make run-provider-harness-test PROVIDER=openai FEATURE=\"zero-token-usage\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3022. Stop the gateway and fixture afterward. PREVIEW excludes these fixture cases from paid sweeps.",
+      "item": [
+        {
+          "name": "270.1 [PREVIEW] OpenAI gemini-web/zero /v1/chat/completions unary zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "270.2 [PREVIEW] OpenAI gemini-web/zero /v1/chat/completions SSE zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "270.3 [PREVIEW] OpenAI gemini-web/zero /openai/v1/chat/completions unary zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "270.4 [PREVIEW] OpenAI gemini-web/zero /openai/v1/chat/completions SSE zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "270.5 [PREVIEW] OpenAI gemini-web/zero /v1/completions unary zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "270.6 [PREVIEW] OpenAI gemini-web/zero /v1/completions SSE zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "270.7 [PREVIEW] OpenAI gemini-web/zero /openai/v1/completions unary zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "270.8 [PREVIEW] OpenAI gemini-web/zero /openai/v1/completions SSE zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "270.17 [PREVIEW] OpenAI gemini-web/nonzero /v1/chat/completions unary zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/nonzero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "270.19 [PREVIEW] OpenAI gemini-web/no-usage /v1/chat/completions unary zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/no-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "270.21 [PREVIEW] OpenAI gemini-web/zero /v1/embeddings unary zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"input\": \"hello\"\n}"
+            }
+          }
+        },
+        {
+          "name": "270.23 [PREVIEW] OpenAI gemini-web/total-only /v1/chat/completions unary zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "270.24 [PREVIEW] OpenAI gemini-web/total-only /v1/chat/completions SSE zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "270.29 [PREVIEW] OpenAI gemini-web/total-only /openai/v1/completions unary zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/total-only\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "270.30 [PREVIEW] OpenAI gemini-web/total-only /openai/v1/completions SSE zero-token-usage - #8749",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/total-only\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+              "var request = JSON.parse(pm.request.body.raw);",
+              "var model = request.model.split('/').pop();",
+              "var expected = {",
+              "  'zero': { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },",
+              "  'total-only': { total_tokens: 12 },",
+              "  'nonzero': { prompt_tokens: 204, completion_tokens: 2, total_tokens: 206 },",
+              "  'no-usage': null",
+              "}[model];",
+              "var usages;",
+              "if (request.stream) {",
+              "  var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+              "  pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+              "  var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+              "  pm.test('stream preserves content without errors', function () {",
+              "    chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+              "    var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+              "    pm.expect(content, text).to.eql('fixture response');",
+              "  });",
+              "  usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+              "  pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+              "} else {",
+              "  var body = pm.response.json();",
+              "  if (request.input) {",
+              "    expected = { total_tokens: 0 };",
+              "    pm.test('embedding survives', function () { pm.expect(body.data[0].embedding, text).to.eql([0.25, 0.75]); });",
+              "  } else {",
+              "    pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+              "  }",
+              "  usages = [body.usage == null ? null : body.usage];",
+              "}",
+              "pm.test('usage preserves reported counts without adding missing counts', function () {",
+              "  usages.forEach(function (usage) { pm.expect(usage, text).to.eql(expected); });",
+              "});"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

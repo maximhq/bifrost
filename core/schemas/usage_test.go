@@ -1,6 +1,134 @@
 package schemas
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestNonCompletionUsageKeepsOptionalCounts(t *testing.T) {
+	for _, usage := range []*BifrostLLMUsage{
+		{},
+		{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true},
+		{PromptTokens: 39, TotalTokens: 39},
+		{SearchUnits: Ptr(1)},
+	} {
+		for _, tc := range []struct {
+			name     string
+			response any
+		}{
+			{"embedding", &BifrostEmbeddingResponse{Usage: usage}},
+			{"rerank", &BifrostRerankResponse{Usage: usage}},
+			{"decision", &BifrostDecisionResponse{Usage: usage}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				wire, err := MarshalSorted(tc.response)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var body struct {
+					Usage map[string]json.RawMessage `json:"usage"`
+				}
+				if err := json.Unmarshal(wire, &body); err != nil {
+					t.Fatal(err)
+				}
+				for field, count := range map[string]int{
+					"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens,
+				} {
+					if _, exists := body.Usage[field]; exists != (count != 0) {
+						t.Errorf("%s presence changed for non-completion usage: %s", field, wire)
+					}
+				}
+			})
+		}
+	}
+}
+
+// Keep the full presence matrix here; provider and transport tests cover wiring.
+func TestCompletionWirePreservesReportedTokenCounts(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{`null`, `null`},
+		{`{}`, `{"total_tokens":0}`},
+		{`{"total_tokens":12}`, `{"total_tokens":12}`},
+		{`{"prompt_tokens":null,"completion_tokens":null,"total_tokens":12}`, `{"total_tokens":12}`},
+		{`{"prompt_tokens":0,"total_tokens":12}`, `{"prompt_tokens":0,"total_tokens":12}`},
+		{`{"completion_tokens":0,"total_tokens":12}`, `{"completion_tokens":0,"total_tokens":12}`},
+		{`{"prompt_tokens":12,"total_tokens":12}`, `{"prompt_tokens":12,"total_tokens":12}`},
+		{`{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`, `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`},
+		{`{"prompt_tokens":0,"completion_tokens":2,"total_tokens":2}`, `{"prompt_tokens":0,"completion_tokens":2,"total_tokens":2}`},
+		{`{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}`, `{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}`},
+		{`{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}`, `{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}`},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			var usage *BifrostLLMUsage
+			require.NoError(t, Unmarshal([]byte(tc.input), &usage))
+			usage.PreserveTokenCountZeros([]byte(`{"usage":`+tc.input+`}`), "usage.prompt_tokens", "usage.completion_tokens")
+			before := usage.DeepCopy()
+			chat := &BifrostChatResponse{ID: "usage-test", Model: "fixture", Usage: usage}
+			text := &BifrostTextCompletionResponse{ID: "usage-test", Model: "fixture", Usage: usage}
+			if !usage.hasExplicitZeroTokens() {
+				require.Same(t, chat, chat.WithPreservedUsage())
+				require.Same(t, text, text.WithPreservedUsage())
+			}
+			for name, response := range map[string]any{
+				"chat": chat.WithPreservedUsage(), "text": text.WithPreservedUsage(),
+				"chat stream": &BifrostStreamChunk{BifrostChatResponse: chat},
+				"text stream": &BifrostStreamChunk{BifrostTextCompletionResponse: text},
+			} {
+				for encoder, marshal := range map[string]func(any) ([]byte, error){"sonic": MarshalSorted, "stdlib": json.Marshal} {
+					t.Run(name+"/"+encoder, func(t *testing.T) {
+						wire, err := marshal(response)
+						require.NoError(t, err)
+						var body struct {
+							ID, Model string
+							Usage     json.RawMessage
+						}
+						require.NoError(t, json.Unmarshal(wire, &body))
+						require.Equal(t, "usage-test", body.ID)
+						require.Equal(t, "fixture", body.Model)
+						// Exact JSON equality checks both values and missing fields.
+						require.JSONEq(t, tc.want, string(body.Usage))
+					})
+				}
+			}
+			require.Equal(t, before, usage, "serialization must not mutate shared usage")
+		})
+	}
+}
+
+func TestMergeBifrostLLMUsageExplicitZero(t *testing.T) {
+	zero := &BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}
+	for _, tc := range []struct {
+		name        string
+		left, right *BifrostLLMUsage
+		reported    bool
+	}{
+		{"both reported", zero, zero, true},
+		{"unknown earlier turn", &BifrostLLMUsage{TotalTokens: 12}, zero, false},
+		{"unknown later turn", zero, &BifrostLLMUsage{TotalTokens: 12}, false},
+		{"absent earlier turn", nil, zero, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := MergeBifrostLLMUsage(tc.left, tc.right).DeepCopy()
+			wire, err := MarshalSorted((&BifrostChatResponse{Usage: usage}).WithPreservedUsage())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body struct {
+				Usage map[string]json.RawMessage `json:"usage"`
+			}
+			if err := json.Unmarshal(wire, &body); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"prompt_tokens", "completion_tokens"} {
+				if _, exists := body.Usage[field]; exists != tc.reported {
+					t.Errorf("%s presence wrong: %s", field, wire)
+				}
+			}
+		})
+	}
+}
 
 func TestMergeBifrostLLMUsage(t *testing.T) {
 	base := &BifrostLLMUsage{

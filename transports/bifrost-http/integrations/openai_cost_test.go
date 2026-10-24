@@ -1,12 +1,57 @@
 package integrations
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
+
+// Transport coverage focuses on dispatch and coexistence with cost/details.
+func TestOpenAICompletionWirePreservesReportedTokenCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		usage schemas.BifrostLLMUsage
+		want  string
+	}{
+		{"zero", schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}, `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`},
+		{"partial", schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, TotalTokens: 12}, `{"prompt_tokens":0,"total_tokens":12}`},
+	} {
+		for _, withCost := range []bool{false, true} {
+			usage := tc.usage.DeepCopy()
+			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{ReasoningTokens: 1}
+			want := tc.want[:len(tc.want)-1] + `,"completion_tokens_details":{"reasoning_tokens":1}`
+			variant := "/without cost"
+			if withCost {
+				variant = "/with cost"
+				usage.Cost = &schemas.BifrostCost{TotalCost: 0.25}
+				want += `,"cost":0.25`
+			}
+			want += `}`
+			before := usage.DeepCopy()
+			for name, response := range map[string]any{
+				"chat": &schemas.BifrostChatResponse{ID: "usage-test", Usage: usage},
+				"text": &schemas.BifrostTextCompletionResponse{ID: "usage-test", Usage: usage},
+			} {
+				t.Run(name+"/"+tc.name+variant, func(t *testing.T) {
+					wire, err := schemas.MarshalSorted(openAIWireCostResponse(response))
+					require.NoError(t, err)
+					var body struct {
+						ID    string
+						Usage json.RawMessage
+					}
+					require.NoError(t, json.Unmarshal(wire, &body))
+					require.Equal(t, "usage-test", body.ID)
+					require.JSONEq(t, want, string(body.Usage))
+				})
+			}
+			require.Equal(t, before, usage, "serialization must not mutate shared usage")
+		}
+	}
+}
 
 // TestOpenAIWireCostResponse verifies 2A: the OpenAI-compatible wire renders
 // usage.cost as the bare total (float), the legacy shape SDKs accept, instead of
@@ -123,8 +168,8 @@ func TestOpenAIWireCostResponse(t *testing.T) {
 		}
 	})
 
-	t.Run("chat without cost passes through the same pointer", func(t *testing.T) {
-		resp := &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{TotalTokens: 15}}
+	t.Run("chat without cost and with nonzero counts passes through the same pointer", func(t *testing.T) {
+		resp := &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}}
 		if out := openAIWireCostResponse(resp); any(out) != any(resp) {
 			t.Error("cost-free response should pass through unchanged")
 		}
