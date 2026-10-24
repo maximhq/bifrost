@@ -282117,7 +282117,7 @@
     },
     {
       "name": "273. Bedrock invoke keeps tool_reference inside a client tool_result (invoke tool reference) (#8976 / PR #9005)",
-      "description": "Regression for #8976. Client-side tool search (Claude Code's ToolSearch) marks tools defer_loading and answers a search with an ordinary tool_result whose content is tool_reference blocks; Anthropic expands each reference into the tool's definition. On /bedrock/model/{id}/invoke and /invoke-with-response-stream, BedrockContentBlock.UnmarshalJSON had no tool_reference case (the block decoded empty) and the Converse-shaped ingress flattened the tool_result to a string, so InvokeModel received the result as content \"\" and the model searched again (issue: input_tokens 574 vs 664 direct). The fix carries the reference through as a tool_reference output block, which the InvokeModel egress already writes (#7813). Both cases send the issue payload and pin that the model calls fetch_weather_report with the parameter only its definition names.",
+      "description": "Regression for #8976. Client-side tool search (Claude Code's ToolSearch) marks tools defer_loading and answers a search with an ordinary tool_result whose content is tool_reference blocks; Anthropic expands each reference into the tool's definition. On /bedrock/model/{id}/invoke and /invoke-with-response-stream, BedrockContentBlock.UnmarshalJSON had no tool_reference case (the block decoded empty) and the Converse-shaped ingress flattened the tool_result to a string, so InvokeModel received the result as content \"\" and the model searched again (issue: input_tokens 574 vs 664 direct). The fix carries the reference through as a tool_reference output block, which the InvokeModel egress already writes (#7813). The two native cases send the issue payload. The /v1/responses case sends the same conversation in neutral shape with no anthropic-beta and also pins, through the raw request, that it is served by InvokeModel with the tool_reference intact. All three pin that the model calls fetch_weather_report with the parameter only its definition names.",
       "item": [
         {
           "name": "Bedrock invoke: tool_reference in a client tool_result loads the deferred tool (Sonnet 5) - #8976",
@@ -282230,6 +282230,72 @@
                 "model",
                 "global.anthropic.claude-sonnet-5",
                 "invoke-with-response-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-5 /v1/responses: tool_reference in a function_call_output loads the deferred tool - #8976",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('bedrock/global.anthropic.claude-sonnet-5 /v1/responses tool_reference (invoke tool reference) - #8976: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('bedrock/global.anthropic.claude-sonnet-5 /v1/responses tool_reference (invoke tool reference) - #8976: served by InvokeModel with the tool_reference inside the tool_result', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.anthropic_version, 'not an InvokeModel body (Converse drops tool_reference): ' + wire.slice(0, 600)).to.be.a('string');",
+                  "  var results = [];",
+                  "  (Array.isArray(rr.messages) ? rr.messages : []).forEach(function (m) {",
+                  "    (Array.isArray(m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { results.push(b); } });",
+                  "  });",
+                  "  var refs = results.length ? (results[results.length - 1].content || []).filter(function (c) { return c && c.type === 'tool_reference'; }) : [];",
+                  "  pm.expect(refs.length, 'tool_reference lost on the way to Bedrock: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  pm.expect(refs[0].tool_name, 'tool_reference names the wrong tool: ' + JSON.stringify(refs[0])).to.eql('fetch_weather_report');",
+                  "});",
+                  "pm.test('bedrock/global.anthropic.claude-sonnet-5 /v1/responses tool_reference (invoke tool reference) - #8976: the loaded tool is called with its deferred parameter', function () {",
+                  "  var items = Array.isArray(body.output) ? body.output : [];",
+                  "  var call = items.filter(function (o) { return o && o.type === 'function_call' && o.name === 'fetch_weather_report'; })[0];",
+                  "  pm.expect(call, 'fetch_weather_report was not called (tool_reference lost?): ' + JSON.stringify(items).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(String(call.arguments || ''), 'deferred parameter name missing: ' + JSON.stringify(call)).to.include('zq_city_code_v7');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-5\",\n  \"max_output_tokens\": 400,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"tool_search\",\n      \"description\": \"Load deferred tool definitions by name.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\",\n            \"description\": \"IATA city code\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it.\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"toolu_01\",\n      \"name\": \"tool_search\",\n      \"arguments\": \"{\\\"query\\\":\\\"select:fetch_weather_report\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"toolu_01\",\n      \"output\": [\n        {\n          \"type\": \"tool_reference\",\n          \"tool_name\": \"fetch_weather_report\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
               ]
             }
           }

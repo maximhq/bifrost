@@ -2112,6 +2112,31 @@ func TestResponsesUsesAnthropicInvokePath_ToolReferenceResult(t *testing.T) {
 	})
 }
 
+func TestResponsesIngress_ToolReferenceResultReachesInvokeModel(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type": "message", "role": "user", "content": "Use fetch_weather_report for Tokyo."},
+		{"type": "function_call", "call_id": "toolu_01", "name": "tool_search", "arguments": "{\"query\":\"select:fetch_weather_report\"}"},
+		{"type": "function_call_output", "call_id": "toolu_01", "output": [{"type": "tool_reference", "tool_name": "fetch_weather_report"}]}
+	]`), &input))
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-sonnet-5-5",
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(400)},
+	}
+	require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+
+	provider := &BedrockProvider{}
+	body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(req.Model, false, true, nil))
+	require.Nil(t, bifrostErr)
+	result := gjson.GetBytes(body, `messages.#(role=="user")#.content.#(type=="tool_result")`).Array()
+	require.NotEmpty(t, result, "body=%s", body)
+	assert.Equal(t, "tool_reference", result[len(result)-1].Get("content.0.type").String(), "body=%s", body)
+	assert.Equal(t, "fetch_weather_report", result[len(result)-1].Get("content.0.tool_name").String(), "body=%s", body)
+}
+
 func BenchmarkResponsesUsesAnthropicInvokePath_ToolResult(b *testing.B) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	for _, bc := range []struct{ name, content string }{
