@@ -1602,8 +1602,8 @@ func TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields(t *testing.T) {
 
 // TestCreateProviderKey_GenericRequiresValuePerAuthType pins that a generic provider's key must
 // carry a value for every auth type that injects it. CanProviderKeyValueBeEmpty is true for the
-// generic base (keyless providers carry none), so this is the check that catches an empty bearer
-// or header key.
+// generic base (SigV4 keys hold AWS credentials instead), so this is the check that catches an
+// empty bearer or header key.
 func TestCreateProviderKey_GenericRequiresValuePerAuthType(t *testing.T) {
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})

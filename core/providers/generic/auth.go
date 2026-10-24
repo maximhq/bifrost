@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/maximhq/bifrost/core/providers/bedrock"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -23,7 +25,7 @@ func (provider *GenericProvider) authHeader() string {
 	switch provider.cfg.Auth.Type {
 	case schemas.GenericAuthHeader:
 		return provider.cfg.Auth.HeaderName
-	case schemas.GenericAuthBearer, schemas.GenericAuthBasic:
+	case schemas.GenericAuthBearer, schemas.GenericAuthBasic, schemas.GenericAuthAWSSigV4:
 		return "Authorization"
 	}
 	return ""
@@ -80,7 +82,7 @@ func (provider *GenericProvider) appendAuthQuery(rawQuery string, key schemas.Ke
 }
 
 // applyAuth injects the selected key into the upstream request per the configured auth type.
-// A key with no value injects nothing (keyless providers).
+// A key with no value injects nothing (keyless providers, or SigV4 keys that carry AWS credentials).
 func (provider *GenericProvider) applyAuth(ctx *schemas.BifrostContext, httpReq *http.Request, key schemas.Key) *schemas.BifrostError {
 	value := key.Value.GetValue()
 	switch provider.cfg.Auth.Type {
@@ -96,8 +98,34 @@ func (provider *GenericProvider) applyAuth(ctx *schemas.BifrostContext, httpReq 
 		if value != "" {
 			httpReq.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(value)))
 		}
+	case schemas.GenericAuthAWSSigV4:
+		return provider.signAWSRequest(ctx, httpReq, key)
 	case schemas.GenericAuthQuery, schemas.GenericAuthNone:
 		// query auth rides on the URL (appendAuthQuery); none injects nothing
 	}
 	return nil
+}
+
+// sigv4CallerHeaders are the signature-bearing headers a caller may send that must never be
+// signed or forwarded: the signer owns them. Other x-amz-* headers (X-Amz-Target names the
+// Textract or Translate operation) are the request itself and are kept.
+var sigv4CallerHeaders = []string{"X-Amz-Date", "X-Amz-Security-Token", "X-Amz-Content-Sha256", "X-Amz-Credential", "X-Amz-Signature", "X-Amz-Algorithm", "X-Amz-Signedheaders", "X-Amz-Expires"}
+
+// signAWSRequest SigV4-signs the request with the key's bedrock_key_config credentials for the
+// configured service. The region comes from auth.aws.region, else the key's region.
+func (provider *GenericProvider) signAWSRequest(ctx *schemas.BifrostContext, httpReq *http.Request, key schemas.Key) *schemas.BifrostError {
+	region := ""
+	if provider.cfg.Auth.AWS != nil {
+		region = provider.cfg.Auth.AWS.Region
+	}
+	if region == "" && key.BedrockKeyConfig != nil && key.BedrockKeyConfig.Region != nil {
+		region = key.BedrockKeyConfig.Region.GetValue()
+	}
+	if region == "" {
+		return providerUtils.NewBifrostBadRequestError("aws_sigv4 auth needs a region: set generic_config.auth.aws.region or the key's bedrock_key_config.region")
+	}
+	for _, name := range sigv4CallerHeaders {
+		httpReq.Header.Del(name)
+	}
+	return bedrock.SignAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, provider.cfg.Auth.AWS.Service)
 }

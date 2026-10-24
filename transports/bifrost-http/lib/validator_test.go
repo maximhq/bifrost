@@ -4363,12 +4363,17 @@ func TestValidateConfigSchema_GenericProviderConfig(t *testing.T) {
 	if err := ValidateConfigSchema([]byte(full), loadLocalSchema(t)); err != nil {
 		t.Fatalf("expected the generic provider config to validate, got: %v", err)
 	}
+	sigv4 := wrap(`{"base_provider_type": "generic", "generic_config": {"auth": {"type": "aws_sigv4", "aws": {"service": "textract", "region": "us-east-1"}}}}`)
+	if err := ValidateConfigSchema([]byte(sigv4), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected the sigv4 generic config to validate, got: %v", err)
+	}
 
 	for name, bad := range map[string]string{
 		"unknown generic_config field": wrap(`{"base_provider_type": "generic", "generic_config": {"auth": {"type": "bearer"}, "cost": 1}}`),
 		"unknown auth type":            wrap(`{"base_provider_type": "generic", "generic_config": {"auth": {"type": "magic"}}}`),
 		"route without a path":         wrap(`{"base_provider_type": "generic", "generic_config": {"routes": [{"method": "POST"}]}}`),
 		"negative fee":                 wrap(`{"base_provider_type": "generic", "generic_config": {"usage": {"cost_per_request": -1}}}`),
+		"sigv4 without a service":      wrap(`{"base_provider_type": "generic", "generic_config": {"auth": {"type": "aws_sigv4", "aws": {"region": "us-east-1"}}}}`),
 	} {
 		if err := ValidateConfigSchema([]byte(bad), loadLocalSchema(t)); err == nil {
 			t.Fatalf("%s: expected the config to be rejected", name)
