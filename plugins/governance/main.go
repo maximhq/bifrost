@@ -1452,7 +1452,9 @@ func forEachKey(object gjson.Result, name string, fn func(gjson.Result)) {
 // JSON object body, or of each task in a JSON array body (Runware). The router has already
 // refused malformed model keys, so a model that is not a string is simply not one here.
 func passthroughBodyModels(req *schemas.BifrostRequest) []string {
-	if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 || !gjson.ValidBytes(req.PassthroughRequest.Body) {
+	// A generic relay resolved the model through the operator's mapping (or none at all); a root
+	// "model" in such a body is not necessarily a model and must not be evaluated as one.
+	if req.PassthroughRequest == nil || req.PassthroughRequest.ModelResolved || len(req.PassthroughRequest.Body) == 0 || !gjson.ValidBytes(req.PassthroughRequest.Body) {
 		return nil
 	}
 	root := gjson.ParseBytes(req.PassthroughRequest.Body)

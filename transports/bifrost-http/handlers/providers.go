@@ -391,6 +391,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Missing provider")
 		return
 	}
+	if payload.CustomProviderConfig == nil && payload.Provider == schemas.Generic {
+		SendError(ctx, fasthttp.StatusBadRequest, "generic is a base type for custom providers, not a provider; set custom_provider_config.base_provider_type to generic and give the provider its own name")
+		return
+	}
 	if payload.CustomProviderConfig != nil {
 		// custom provider key should not be same as standard provider names
 		if bifrost.IsStandardProvider(payload.Provider) {
@@ -661,8 +665,12 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Build a prospective config with the requested CustomProviderConfig (including nil)
+	// and the requested network config: a PUT that creates the provider has no stored one, and a
+	// generic provider is judged on the base URL it is about to get.
 	prospective := config
 	prospective.CustomProviderConfig = payload.CustomProviderConfig
+	prospectiveNetwork := payload.NetworkConfig
+	prospective.NetworkConfig = &prospectiveNetwork
 	if err := lib.ValidateCustomProviderUpdate(prospective, *oldConfigRaw, provider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid custom provider config: %v", err))
 		return

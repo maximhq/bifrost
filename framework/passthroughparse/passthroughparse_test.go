@@ -282,6 +282,8 @@ func TestParseUnknownRoutesReturnNil(t *testing.T) {
 		// The parser keys off the wire format, so a custom provider's own name is not enough;
 		// the caller resolves it to its BaseProviderType first (see TestParseCustomProviderBaseType).
 		{"custom provider name without base type", Input{Provider: "my-openai", Method: "POST", Path: "/v1/chat/completions", StatusCode: 200, RequestBody: []byte(openAIChatRequest)}},
+		// The generic base type has no wire format: a relayed non-LLM call keeps its raw bodies only.
+		{"generic base type", Input{Provider: schemas.Generic, Method: "POST", Path: "/v1/chat/completions", StatusCode: 200, RequestBody: []byte(openAIChatRequest)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -290,6 +292,13 @@ func TestParseUnknownRoutesReturnNil(t *testing.T) {
 			require.Nil(t, r)
 		})
 	}
+}
+
+// TestInferRequestTypeGenericStaysPassthrough pins that a generic relay row is never retyped: the
+// logging plugin keeps it as a passthrough row whatever path it was sent to.
+func TestInferRequestTypeGenericStaysPassthrough(t *testing.T) {
+	require.Equal(t, schemas.RequestType(""), InferRequestType(schemas.Generic, "", "POST", "/v1/chat/completions", false))
+	require.Equal(t, schemas.RequestType(""), InferRequestType(schemas.Generic, "gpt-4o", "POST", "/v1/chat/completions", true))
 }
 
 // TestParseCustomProviderBaseType pins that a custom provider parses through the wire format of its

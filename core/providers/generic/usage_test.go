@@ -160,3 +160,33 @@ func BenchmarkHasUsageEvent(b *testing.B) {
 		}
 	}
 }
+
+func TestReadModel(t *testing.T) {
+	model := func(body, contentType, path string) string {
+		t.Helper()
+		m, err := ReadModel([]byte(body), contentType, path)
+		require.NoError(t, err)
+		return m
+	}
+	assert.Equal(t, "gpt-4o", model(`{"model":"gpt-4o"}`, "application/json", "model"))
+	assert.Equal(t, "fast", model(`{"engine":"fast"}`, "application/json", "engine"))
+	assert.Equal(t, "", model(`{"model":7}`, "application/json", "model"), "a non-string model is no model, not an error")
+	assert.Equal(t, "", model(`{"model":"x"}`, "text/plain", "model"), "a declared non-JSON body is not read")
+	assert.Equal(t, "x", model(`{"model":"x"}`, "", "model"), "no content type sniffs JSON")
+	assert.Equal(t, "x", model(`{"model":"x"}`, "application/x-amz-json-1.1", "model"), "AWS JSON is JSON")
+	assert.Equal(t, "", model(`{"model":"x"}`, "application/json", ""), "an empty path reads no model")
+	assert.Equal(t, "", model(``, "application/json", "model"))
+	assert.Equal(t, "", model(`{"Model":"large"}`, "application/json", "model"), "a lone case variant is no model, not an error")
+	assert.Equal(t, "b", model(`{"cfg":{"name":"b"},"name":"a","Name":"z"}`, "application/json", "cfg.name"), "only the objects along the path are checked")
+
+	for name, tc := range map[string]struct{ body, path string }{
+		"duplicate":                  {`{"model":"small","model":"large"}`, "model"},
+		"case variant":               {`{"model":"small","Model":"large"}`, "model"},
+		"nested duplicate":           {`{"cfg":{"name":"small","NAME":"large"}}`, "cfg.name"},
+		"duplicate parent object":    {`{"cfg":{"name":"small"},"cfg":{"name":"large"}}`, "cfg.name"},
+		"case-variant parent object": {`{"cfg":{"name":"small"},"Cfg":{"name":"large"}}`, "cfg.name"},
+	} {
+		_, err := ReadModel([]byte(tc.body), "application/json", tc.path)
+		assert.Errorf(t, err, "%s must be refused", name)
+	}
+}

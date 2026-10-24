@@ -25878,14 +25878,27 @@ func TestRotateMCPTokenExchangeConfigFromFile_IDJAGFields(t *testing.T) {
 		existing, file *schemas.MCPTokenExchangeConfig
 		reauth         bool
 	}{
-		"unchanged direct block":       {existing: direct(), file: direct()},
-		"unchanged id_jag block":       {existing: idjag(), file: idjag()},
-		"direct switched to id_jag":    {existing: direct(), file: idjag(), reauth: true},
-		"resource changed":             {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.Resource = "https://x.example.com"; return c }(), reauth: true},
+		"unchanged direct block":        {existing: direct(), file: direct()},
+		"unchanged id_jag block":        {existing: idjag(), file: idjag()},
+		"direct switched to id_jag":     {existing: direct(), file: idjag(), reauth: true},
+		"resource changed":              {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.Resource = "https://x.example.com"; return c }(), reauth: true},
 		"resource token endpoint moved": {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceTokenEndpoint = &moved; return c }(), reauth: true},
-		"resource client ID changed":    {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceClientID = schemas.NewSecretVar("other"); return c }(), reauth: true},
-		"resource secret rotated":       {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceClientSecret = schemas.NewSecretVar("rotated"); return c }(), reauth: true},
-		"secret switched to a key":      {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceClientSecret = nil; c.ResourcePrivateKey = schemas.NewSecretVar("pem"); return c }(), reauth: true},
+		"resource client ID changed": {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig {
+			c := idjag()
+			c.ResourceClientID = schemas.NewSecretVar("other")
+			return c
+		}(), reauth: true},
+		"resource secret rotated": {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig {
+			c := idjag()
+			c.ResourceClientSecret = schemas.NewSecretVar("rotated")
+			return c
+		}(), reauth: true},
+		"secret switched to a key": {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig {
+			c := idjag()
+			c.ResourceClientSecret = nil
+			c.ResourcePrivateKey = schemas.NewSecretVar("pem")
+			return c
+		}(), reauth: true},
 	} {
 		store := &reauthRecordingStore{}
 		rotateMCPTokenExchangeConfigFromFile(context.Background(), store, "client-1", "linear", tc.file, tc.existing)
@@ -25893,4 +25906,133 @@ func TestRotateMCPTokenExchangeConfigFromFile_IDJAGFields(t *testing.T) {
 			t.Errorf("%s: marked needs_reauth = %v, want %v", name, got, tc.reauth)
 		}
 	}
+}
+
+// TestValidateCustomProvider_Generic pins what the management API accepts for a generic relay:
+// a base URL is mandatory, the relay config must be internally valid, keyless needs auth none,
+// request_path_overrides has nothing to override, and only the passthrough operations may be on.
+func TestValidateCustomProvider_Generic(t *testing.T) {
+	withBase := func(cpc *schemas.CustomProviderConfig) configstore.ProviderConfig {
+		cpc.BaseProviderType = schemas.Generic
+		return configstore.ProviderConfig{NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.tavily.com"}, CustomProviderConfig: cpc}
+	}
+
+	t.Run("defaults are filled in", func(t *testing.T) {
+		cfg := withBase(&schemas.CustomProviderConfig{})
+		require.NoError(t, ValidateCustomProvider(cfg, "tavily"))
+		require.NotNil(t, cfg.CustomProviderConfig.GenericConfig)
+		assert.Equal(t, schemas.GenericAuthBearer, cfg.CustomProviderConfig.GenericConfig.Auth.Type)
+		require.NotNil(t, cfg.CustomProviderConfig.AllowedRequests)
+		assert.True(t, cfg.CustomProviderConfig.AllowedRequests.Passthrough)
+		assert.True(t, cfg.CustomProviderConfig.AllowedRequests.PassthroughStream)
+		assert.False(t, cfg.CustomProviderConfig.AllowedRequests.ChatCompletion)
+	})
+	t.Run("a name the passthrough route cannot serve is refused", func(t *testing.T) {
+		for _, name := range []string{strings.Repeat("a", 65), "my provider", "tavily/v2"} {
+			err := ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{}), schemas.ModelProvider(name))
+			require.Errorf(t, err, "%q must be refused", name)
+			assert.Contains(t, err.Error(), "reachable at /passthrough/{provider}")
+		}
+		require.NoError(t, ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{}), schemas.ModelProvider(strings.Repeat("a", 64))))
+	})
+	t.Run("base url required", func(t *testing.T) {
+		err := ValidateCustomProvider(configstore.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic}}, "tavily")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "network_config.base_url")
+	})
+	t.Run("relay config is validated", func(t *testing.T) {
+		err := ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader}}}), "tavily")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "auth.header_name")
+	})
+	t.Run("keyless needs auth none", func(t *testing.T) {
+		err := ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{IsKeyLess: true}), "tavily")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "is_key_less")
+		require.NoError(t, ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{IsKeyLess: true, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthNone}}}), "tavily"))
+	})
+	t.Run("request path overrides rejected", func(t *testing.T) {
+		err := ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{RequestPathOverrides: map[schemas.RequestType]string{schemas.ChatCompletionRequest: "/x"}}), "tavily")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "request_path_overrides")
+	})
+	t.Run("typed operations cannot be enabled", func(t *testing.T) {
+		err := ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{AllowedRequests: &schemas.AllowedRequests{Passthrough: true, ChatCompletion: true}}), "tavily")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only serve passthrough")
+		require.NoError(t, ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{AllowedRequests: &schemas.AllowedRequests{Passthrough: true}}), "tavily"))
+	})
+	t.Run("standard provider name refused", func(t *testing.T) {
+		err := ValidateCustomProvider(withBase(&schemas.CustomProviderConfig{}), schemas.OpenAI)
+		require.Error(t, err)
+	})
+}
+
+func TestGenericKeyValueRequired(t *testing.T) {
+	assert.False(t, GenericKeyValueRequired(nil))
+	assert.False(t, GenericKeyValueRequired(&schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}))
+	assert.True(t, GenericKeyValueRequired(&schemas.CustomProviderConfig{BaseProviderType: schemas.Generic}), "bearer by default")
+	for _, authType := range []schemas.GenericAuthType{schemas.GenericAuthBearer, schemas.GenericAuthHeader, schemas.GenericAuthQuery, schemas.GenericAuthBasic} {
+		assert.True(t, GenericKeyValueRequired(&schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: authType}}}), string(authType))
+	}
+	for _, authType := range []schemas.GenericAuthType{schemas.GenericAuthNone} {
+		assert.False(t, GenericKeyValueRequired(&schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: authType}}}), string(authType))
+	}
+}
+
+// TestIgnoresProviderCostInCatalog pins that a generic relay stays off the pricing engine's
+// ignore list: its reported cost is the operator's own fee and unit pricing, and the relay honours
+// ignore_provider_cost itself by not reading the upstream cost_path.
+func TestIgnoresProviderCostInCatalog(t *testing.T) {
+	assert.False(t, IgnoresProviderCostInCatalog(configstore.ProviderConfig{}))
+	assert.True(t, IgnoresProviderCostInCatalog(configstore.ProviderConfig{IgnoreProviderCost: true}))
+	assert.True(t, IgnoresProviderCostInCatalog(configstore.ProviderConfig{IgnoreProviderCost: true, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}}))
+	assert.False(t, IgnoresProviderCostInCatalog(configstore.ProviderConfig{IgnoreProviderCost: true, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic}}))
+}
+
+// TestValidateGenericKeys pins the config.json rule: an injecting auth type needs a key value,
+// an env reference counts as one, and none keys may be empty.
+func TestValidateGenericKeys(t *testing.T) {
+	generic := func(authType schemas.GenericAuthType, keys ...schemas.Key) configstore.ProviderConfig {
+		return configstore.ProviderConfig{
+			Keys: keys,
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{
+				Auth: schemas.GenericAuthConfig{Type: authType, HeaderName: "x-api-key"},
+			}},
+		}
+	}
+	err := ValidateGenericKeys(generic(schemas.GenericAuthBearer, schemas.Key{Name: "k1"}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `key "k1" has no value`)
+	require.Error(t, ValidateGenericKeys(generic(schemas.GenericAuthHeader, schemas.Key{Name: "k1", Value: *schemas.NewSecretVar("")})))
+	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthBearer, schemas.Key{Name: "k1", Value: *schemas.NewSecretVar("env.TAVILY_KEY")})), "an env reference is a value")
+	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthBearer, schemas.Key{Name: "k1", Value: *schemas.NewSecretVar("tvly-x")})))
+	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthNone, schemas.Key{Name: "k1"})))
+	require.NoError(t, ValidateGenericKeys(configstore.ProviderConfig{Keys: []schemas.Key{{Name: "k1"}}, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}}), "other base types are untouched")
+}
+
+// TestValidateCustomProviderUpdate_GenericAuthTypeChangeChecksKeys pins the provider update rule:
+// switching a generic provider from none (keys may carry no value) to an injecting auth type
+// is refused while its stored keys carry no value, and allowed once they do or when the new type
+// injects nothing.
+func TestValidateCustomProviderUpdate_GenericAuthTypeChangeChecksKeys(t *testing.T) {
+	withAuth := func(authType schemas.GenericAuthType, keys ...schemas.Key) configstore.ProviderConfig {
+		return configstore.ProviderConfig{
+			Keys:          keys,
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.tavily.com"},
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{
+				Auth: schemas.GenericAuthConfig{Type: authType, HeaderName: "x-api-key"},
+			}},
+		}
+	}
+	valueless := schemas.Key{Name: "k0"}
+	existing := withAuth(schemas.GenericAuthNone, valueless)
+
+	err := ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthBearer, valueless), existing, "tavily")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `key "k0" has no value`)
+	require.Error(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthHeader, valueless), existing, "tavily"))
+
+	require.NoError(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthNone, valueless), existing, "tavily"), "unchanged: none injects nothing")
+	require.NoError(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthBearer, schemas.Key{Name: "k", Value: *schemas.NewSecretVar("tvly-x")}), existing, "tavily"), "a key with a value fits bearer")
 }

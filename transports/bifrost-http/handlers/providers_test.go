@@ -261,6 +261,40 @@ func TestAddProvider_RejectsBaseURLComponents(t *testing.T) {
 
 // The update path must reject the same base URL components as creation, before
 // saving or reloading the provider.
+// PUT creates a provider that does not exist yet, so a generic provider's base URL check must read
+// the network config in the request, not the empty stored one.
+func TestUpdateProvider_CreatesGenericProviderWithBaseURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{ClientConfig: &configstore.ClientConfig{}, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: &mockModelsManager{},
+	}
+	attachBifrostClient(t, h.inMemoryStore)
+	body, err := schemas.MarshalSorted(providerUpdatePayload{
+		NetworkConfig:            schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1"},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+		CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.Request.SetRequestURI("/api/providers/tavily")
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue("provider", "tavily")
+
+	h.updateProvider(ctx)
+
+	if strings.Contains(string(ctx.Response.Body()), "network_config.base_url") {
+		t.Fatalf("a PUT carrying a base URL was refused for lacking one: %s", ctx.Response.Body())
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
 func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
@@ -3611,5 +3645,79 @@ func TestProviderBaseURLShape(t *testing.T) {
 		if err := validateProviderBaseURLShape(raw); err != nil {
 			t.Errorf("rejected %q: %v", raw, err)
 		}
+	}
+}
+
+// TestAddProvider_GenericBase pins the management API for a generic relay provider: it is accepted
+// with a base URL, refused without one, and its relay config is validated on the way in.
+func TestAddProvider_GenericBase(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	cases := []struct {
+		name       string
+		payload    providerCreatePayload
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "accepted with base url",
+			payload: providerCreatePayload{
+				Provider:             "tavily",
+				NetworkConfig:        &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1"},
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "x-api-key"}}},
+			},
+			wantStatus: fasthttp.StatusOK,
+		},
+		{
+			name: "refused without base url",
+			payload: providerCreatePayload{
+				Provider:             "tavily",
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic},
+			},
+			wantStatus: fasthttp.StatusBadRequest,
+			wantBody:   "network_config.base_url",
+		},
+		{
+			name: "relay config validated",
+			payload: providerCreatePayload{
+				Provider:             "tavily",
+				NetworkConfig:        &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1"},
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: "magic"}}},
+			},
+			wantStatus: fasthttp.StatusBadRequest,
+			wantBody:   "auth.type",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				modelsManager: &mockModelsManager{},
+			}
+			body, err := schemas.MarshalSorted(tc.payload)
+			if err != nil {
+				t.Fatalf("failed to marshal request body: %v", err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI("/api/providers")
+			ctx.Request.SetBody(body)
+
+			h.addProvider(ctx)
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			if tc.wantBody != "" && !strings.Contains(string(ctx.Response.Body()), tc.wantBody) {
+				t.Fatalf("body %s does not mention %q", ctx.Response.Body(), tc.wantBody)
+			}
+			if tc.wantStatus == fasthttp.StatusOK {
+				stored := h.inMemoryStore.Providers["tavily"]
+				if stored.CustomProviderConfig == nil || stored.CustomProviderConfig.AllowedRequests == nil || !stored.CustomProviderConfig.AllowedRequests.Passthrough {
+					t.Fatalf("allowed_requests must default to passthrough for a generic provider: %#v", stored.CustomProviderConfig)
+				}
+			}
+		})
 	}
 }

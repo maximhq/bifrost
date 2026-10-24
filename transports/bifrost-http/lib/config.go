@@ -1940,6 +1940,9 @@ func processProvider(
 	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
 		return err
 	}
+	if provider == schemas.Generic && providerCfgInFile.CustomProviderConfig == nil {
+		return fmt.Errorf("provider %s: generic is a base type for custom providers, not a provider; set custom_provider_config.base_provider_type", provider)
+	}
 	if err := providerCfgInFile.Passthrough.Validate(); err != nil {
 		return fmt.Errorf("invalid passthrough for provider %s: %w", provider, err)
 	}
@@ -9794,7 +9797,95 @@ func ValidateCustomProvider(config configstore.ProviderConfig, provider schemas.
 		return fmt.Errorf("custom provider validation failed: Bedrock providers cannot be keyless (is_key_less=true)")
 	}
 
+	if cpc.BaseProviderType == schemas.Generic {
+		if !schemas.ValidGenericProviderName(string(provider)) {
+			return fmt.Errorf("custom provider validation failed: a generic provider name must be 1 to 64 letters, digits, '.', '_' or '-' to be reachable at /passthrough/{provider}")
+		}
+		return validateGenericCustomProvider(config, cpc)
+	}
+
 	return nil
+}
+
+// validateGenericCustomProvider checks a custom provider whose base type is generic. The relay
+// needs a base URL to know where to send requests, carries no typed operations (so the allowed
+// requests default to the two passthrough kinds and nothing else may be turned on), and has no
+// provider paths for request_path_overrides to replace.
+func validateGenericCustomProvider(config configstore.ProviderConfig, cpc *schemas.CustomProviderConfig) error {
+	if config.NetworkConfig == nil || strings.TrimSpace(config.NetworkConfig.BaseURL) == "" {
+		return fmt.Errorf("custom provider validation failed: generic providers require network_config.base_url")
+	}
+	if len(cpc.RequestPathOverrides) > 0 {
+		return fmt.Errorf("custom provider validation failed: request_path_overrides does not apply to generic providers")
+	}
+	if cpc.GenericConfig == nil {
+		cpc.GenericConfig = &schemas.GenericProviderConfig{}
+	}
+	if cpc.GenericConfig.Auth.Type == "" {
+		cpc.GenericConfig.Auth.Type = schemas.GenericAuthBearer
+	}
+	if err := cpc.GenericConfig.Validate(); err != nil {
+		return fmt.Errorf("custom provider validation failed: generic_config: %w", err)
+	}
+	if cpc.IsKeyLess && cpc.GenericConfig.Auth.Type != schemas.GenericAuthNone {
+		return fmt.Errorf("custom provider validation failed: is_key_less requires generic_config.auth.type \"none\"")
+	}
+	// The keys the provider already holds (or declares in config.json) must fit the auth type: a
+	// switch from none to an injecting type would otherwise leave valueless keys that
+	// send every request upstream with no credential at all.
+	if err := ValidateGenericKeys(config); err != nil {
+		return fmt.Errorf("custom provider validation failed: %w", err)
+	}
+	if cpc.AllowedRequests == nil {
+		cpc.AllowedRequests = &schemas.AllowedRequests{Passthrough: true, PassthroughStream: true}
+		return nil
+	}
+	allowed := *cpc.AllowedRequests
+	allowed.Passthrough, allowed.PassthroughStream = false, false
+	if allowed != (schemas.AllowedRequests{}) {
+		return fmt.Errorf("custom provider validation failed: generic providers only serve passthrough and passthrough_stream")
+	}
+	return nil
+}
+
+// IgnoresProviderCostInCatalog reports whether the pricing engine should discard the cost a
+// provider reports on its responses. A generic relay is left out: its reported cost is the
+// operator's own flat fee, and the relay honours ignore_provider_cost itself by
+// not reading the upstream cost_path.
+func IgnoresProviderCostInCatalog(cfg configstore.ProviderConfig) bool {
+	if !cfg.IgnoreProviderCost {
+		return false
+	}
+	return cfg.CustomProviderConfig == nil || cfg.CustomProviderConfig.BaseProviderType != schemas.Generic
+}
+
+// ValidateGenericKeys applies the same rule the key API enforces to the keys a provider config
+// carries, whether declared in config.json or already stored when the auth type changes through
+// the provider API: a generic provider whose auth type injects the key value refuses a key without
+// one, so the relay never sends an unauthenticated request and reports a 401 nobody can explain.
+func ValidateGenericKeys(cfg configstore.ProviderConfig) error {
+	if !GenericKeyValueRequired(cfg.CustomProviderConfig) {
+		return nil
+	}
+	for _, key := range cfg.Keys {
+		if !key.Value.IsSet() {
+			return fmt.Errorf("key %q has no value, which generic auth type %q injects on every request", key.Name, cfg.CustomProviderConfig.GenericConfig.Auth.Type)
+		}
+	}
+	return nil
+}
+
+// GenericKeyValueRequired reports whether a key for a generic provider must carry a value: every
+// auth type injects the value except none.
+func GenericKeyValueRequired(cpc *schemas.CustomProviderConfig) bool {
+	if cpc == nil || cpc.BaseProviderType != schemas.Generic {
+		return false
+	}
+	authType := schemas.GenericAuthBearer
+	if cpc.GenericConfig != nil && cpc.GenericConfig.Auth.Type != "" {
+		authType = cpc.GenericConfig.Auth.Type
+	}
+	return authType != schemas.GenericAuthNone
 }
 
 // PromptCacheTTLExtended is the only explicit prompt-cache TTL the gateway accepts.

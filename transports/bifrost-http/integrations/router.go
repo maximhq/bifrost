@@ -55,6 +55,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -3650,26 +3651,42 @@ func applyPassthroughCallerAuth(bifrostCtx *schemas.BifrostContext, safeHeaders 
 	bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 }
 
-func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
-	cfg := g.passthroughCfg
-
+// collectPassthroughHeaders copies the caller headers a relay may forward, lower-cased, and returns
+// the caller's Authorization value separately. Credentials, hop-by-hop headers (RFC 9110 section
+// 7.6.1, including any header the caller's Connection header names) and every x-bf-* gateway header
+// are dropped.
+func collectPassthroughHeaders(ctx *fasthttp.RequestCtx) (map[string]string, string) {
 	safeHeaders := make(map[string]string)
 	var callerAuth string
+	var nominated []string
+	if conn := ctx.Request.Header.Peek(fasthttp.HeaderConnection); bytes.IndexByte(conn, ',') >= 0 || (len(conn) > 0 && !bytes.EqualFold(conn, []byte("keep-alive")) && !bytes.EqualFold(conn, []byte("close"))) {
+		for _, token := range strings.Split(string(conn), ",") {
+			nominated = append(nominated, strings.ToLower(strings.TrimSpace(token)))
+		}
+	}
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 		switch keyStr {
 		case "authorization":
 			callerAuth = string(value)
 		case "api-key", "x-api-key", "x-goog-api-key",
-			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding":
+			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding",
+			"keep-alive", "te", "trailer", "upgrade", "proxy-connection", "proxy-authenticate":
 		default:
-			if strings.HasPrefix(keyStr, "x-bf-") {
-				return true // drop internal gateway headers
+			if strings.HasPrefix(keyStr, "x-bf-") || slices.Contains(nominated, keyStr) {
+				return true // drop internal gateway headers and headers the caller marked hop-by-hop
 			}
 			safeHeaders[keyStr] = string(value)
 		}
 		return true
 	})
+	return safeHeaders, callerAuth
+}
+
+func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
+	cfg := g.passthroughCfg
+
+	safeHeaders, callerAuth := collectPassthroughHeaders(ctx)
 
 	passthroughErr := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 		return err

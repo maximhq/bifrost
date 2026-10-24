@@ -3,6 +3,7 @@ package schemas
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 
 	"golang.org/x/net/http/httpguts"
@@ -21,6 +22,15 @@ const (
 
 var genericAuthTypes = map[GenericAuthType]struct{}{
 	GenericAuthBearer: {}, GenericAuthHeader: {}, GenericAuthQuery: {}, GenericAuthBasic: {}, GenericAuthNone: {},
+}
+
+// genericProviderNameRe is the provider names the /passthrough/{provider} route serves; a generic
+// provider is refused at creation when its name falls outside it, so it can never be unreachable.
+var genericProviderNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// ValidGenericProviderName reports whether name can be served at /passthrough/{name}.
+func ValidGenericProviderName(name string) bool {
+	return genericProviderNameRe.MatchString(name)
 }
 
 var genericRouteMethods = map[string]struct{}{

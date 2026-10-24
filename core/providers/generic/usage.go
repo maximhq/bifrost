@@ -1,6 +1,7 @@
 package generic
 
 import (
+	"errors"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -237,4 +238,43 @@ func (u resolvedUsage) streamObserver() func(event []byte) *schemas.BifrostPasst
 // the flat fee alone.
 func (u resolvedUsage) defaultUsage() *schemas.BifrostPassthroughUsage {
 	return u.build(usageFields{})
+}
+
+// ReadModel reads the model a JSON request body names at modelPath; an empty path reads none. It
+// is lenient on purpose: a non-LLM API has no model, and a body that is not JSON names none. The
+// one refusal is a body that names a key of the path more than once in the same object, counting
+// case variants, as every other passthrough route refuses: the relay reads the first while most
+// upstream decoders take the last or fold case, so governance would check one model and the
+// upstream run another. Every object along a plain dotted path is checked; a path using gjson
+// escapes, wildcards or modifiers is checked at no level. A lone case variant ("Model") is no
+// model, which a model-restricted virtual key refuses anyway, so PascalCase APIs keep working.
+func ReadModel(body []byte, contentType, modelPath string) (string, error) {
+	if modelPath == "" || len(body) == 0 || !looksJSON(contentType, body) {
+		return "", nil
+	}
+	if !strings.ContainsAny(modelPath, `\*?#|@!`) {
+		obj := gjson.ParseBytes(body)
+		for _, segment := range strings.Split(modelPath, ".") {
+			if !obj.IsObject() {
+				break
+			}
+			var next gjson.Result
+			seen := 0
+			obj.ForEach(func(key, value gjson.Result) bool {
+				if strings.EqualFold(key.Str, segment) {
+					seen++
+					next = value
+				}
+				return seen < 2
+			})
+			if seen > 1 {
+				return "", errors.New("passthrough request body must carry the model key at most once (" + modelPath + ")")
+			}
+			obj = next
+		}
+	}
+	if v := gjson.GetBytes(body, modelPath); v.Type == gjson.String {
+		return strings.TrimSpace(v.Str), nil
+	}
+	return "", nil
 }

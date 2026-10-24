@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"mime"
 	"regexp"
 	"strconv"
 	"strings"
@@ -778,6 +779,18 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 	if err := p.batchStore.UpsertProviderJob(p.ctx, job); err != nil {
 		p.logger.Warn("failed to record batch job lifecycle for provider=%s batch_id=%s: %v", job.Provider, job.JobID, err)
 	}
+}
+
+// isJSONRequestMediaType reports whether a passthrough request body is JSON worth storing:
+// application/json, any +json suffix, and the AWS JSON protocol (application/x-amz-json-1.1).
+// It parses the media type, so application/jsonp or a profile=json parameter do not count.
+func isJSONRequestMediaType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	mediaType = strings.ToLower(mediaType)
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json") || strings.HasPrefix(mediaType, "application/x-amz-json-")
 }
 
 // isVideoJobRequestType reports whether a request type either starts a video job or
@@ -3827,7 +3840,7 @@ func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *sch
 		if len(req.PassthroughRequest.Body) > 0 {
 			rawCT := req.PassthroughRequest.SafeHeaders["content-type"]
 			ct := strings.ToLower(rawCT)
-			if strings.Contains(ct, "application/json") {
+			if isJSONRequestMediaType(rawCT) {
 				initialData.PassthroughRequestBody = string(req.PassthroughRequest.Body)
 			} else if strings.HasPrefix(ct, "multipart/form-data") {
 				// Uploads (audio, images) are logged as their form fields plus the name and size of
