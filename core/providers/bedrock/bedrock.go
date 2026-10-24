@@ -693,30 +693,9 @@ func stripHeadersForSigning(header http.Header) []restoredHeader {
 	return restore
 }
 
-func signAWSRequest(
-	ctx *schemas.BifrostContext,
-	req *http.Request,
-	keyCfg *schemas.BedrockKeyConfig,
-	region, service string,
-) (signErr *schemas.BifrostError) {
-	// "request-sign" overhead phase: AWS SigV4 signing is real per-request work. The
-	// nested "credentials-fetch" span (below) isolates the network portion (STS
-	// AssumeRole / credential-provider Retrieve) from the CPU crypto, so a cold
-	// credential cache on an idle box reads as its own bucket.
-	// Scoped so the nested "credentials-fetch" span below is a true child and its
-	// time is subtracted from request-sign's self-time exactly once (not double-counted
-	// in both buckets). restore() reinstates the prior parent before the span ends.
-	if st, sh, restore := providerUtils.StartScopedPhaseSpan(ctx, "request-sign"); st != nil {
-		defer func() {
-			restore()
-			if signErr != nil {
-				st.EndSpan(sh, schemas.SpanStatusError, "request signing failed")
-			} else {
-				st.EndSpan(sh, schemas.SpanStatusOk, "")
-			}
-		}()
-	}
-
+// ResolveAWSCredentials resolves the AWS credentials for keyCfg: explicit keys, else the default
+// chain, with an optional STS AssumeRole on top (cached per role and source identity).
+func ResolveAWSCredentials(ctx *schemas.BifrostContext, keyCfg *schemas.BedrockKeyConfig, region string) (aws.Credentials, *schemas.BifrostError) {
 	var accessKey, secretKey schemas.SecretVar
 	var sessionToken, roleARN, externalID, sessionName *schemas.SecretVar
 
@@ -728,35 +707,6 @@ func signAWSRequest(
 		externalID = keyCfg.ExternalID
 		sessionName = keyCfg.RoleSessionName
 	}
-
-	// Set required headers before signing (only if not already set)
-	if req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/json")
-	}
-
-	// Calculate SHA256 hash of the request body
-	var bodyHash string
-	if req.Body != nil {
-		bodyBytes, err := io.ReadAll(req.Body)
-		if err != nil {
-			return providerUtils.NewBifrostOperationError("error reading request body", err)
-		}
-		// Restore the body for subsequent reads
-		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-		hash := sha256.Sum256(bodyBytes)
-		bodyHash = hex.EncodeToString(hash[:])
-	} else {
-		// For empty body, use the hash of an empty string
-		hash := sha256.Sum256([]byte{})
-		bodyHash = hex.EncodeToString(hash[:])
-	}
-
-	// Set x-amz-content-sha256 header (required for S3, harmless for other AWS services)
-	req.Header.Set("x-amz-content-sha256", bodyHash)
 
 	var cfg aws.Config
 	var err error
@@ -784,7 +734,7 @@ func signAWSRequest(
 		)
 	}
 	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to load aws config", err)
+		return aws.Credentials{}, providerUtils.NewBifrostOperationError("failed to load aws config", err)
 	}
 
 	if roleARN != nil && roleARN.GetValue() != "" {
@@ -836,13 +786,6 @@ func signAWSRequest(
 		}
 	}
 
-	// The SDK signs every header still on the request, so lift the volatile ones out for
-	// the duration of signing and put them back before the request goes out.
-	restoreHeaders := stripHeadersForSigning(req.Header)
-
-	// Create the AWS signer
-	signer := v4.NewSigner()
-
 	// Get credentials. Nested "credentials-fetch" span: on a cache miss this triggers a
 	// network round trip (STS AssumeRole when RoleARN is set, or the default provider
 	// chain's IMDS/env/STS lookup), which is the dominant cost on an idle box whose
@@ -857,11 +800,78 @@ func signAWSRequest(
 		}
 	}
 	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
+		return aws.Credentials{}, providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
+	}
+	return creds, nil
+}
+
+func signAWSRequest(
+	ctx *schemas.BifrostContext,
+	req *http.Request,
+	keyCfg *schemas.BedrockKeyConfig,
+	region, service string,
+) (signErr *schemas.BifrostError) {
+	// "request-sign" overhead phase: AWS SigV4 signing is real per-request work. The
+	// nested "credentials-fetch" span (below) isolates the network portion (STS
+	// AssumeRole / credential-provider Retrieve) from the CPU crypto, so a cold
+	// credential cache on an idle box reads as its own bucket.
+	// Scoped so the nested "credentials-fetch" span below is a true child and its
+	// time is subtracted from request-sign's self-time exactly once (not double-counted
+	// in both buckets). restore() reinstates the prior parent before the span ends.
+	if st, sh, restore := providerUtils.StartScopedPhaseSpan(ctx, "request-sign"); st != nil {
+		defer func() {
+			restore()
+			if signErr != nil {
+				st.EndSpan(sh, schemas.SpanStatusError, "request signing failed")
+			} else {
+				st.EndSpan(sh, schemas.SpanStatusOk, "")
+			}
+		}()
 	}
 
+	// Set required headers before signing (only if not already set)
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json")
+	}
+
+	// Calculate SHA256 hash of the request body
+	var bodyHash string
+	if req.Body != nil {
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			return providerUtils.NewBifrostOperationError("error reading request body", err)
+		}
+		// Restore the body for subsequent reads
+		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+		hash := sha256.Sum256(bodyBytes)
+		bodyHash = hex.EncodeToString(hash[:])
+	} else {
+		// For empty body, use the hash of an empty string
+		hash := sha256.Sum256([]byte{})
+		bodyHash = hex.EncodeToString(hash[:])
+	}
+
+	// Set x-amz-content-sha256 header (required for S3, harmless for other AWS services)
+	req.Header.Set("x-amz-content-sha256", bodyHash)
+
+	creds, bifrostErr := ResolveAWSCredentials(ctx, keyCfg, region)
+	if bifrostErr != nil {
+		return bifrostErr
+	}
+
+	// The SDK signs every header still on the request, so lift the volatile ones out for
+	// the duration of signing and put them back before the request goes out.
+	restoreHeaders := stripHeadersForSigning(req.Header)
+
+	// Create the AWS signer
+	signer := v4.NewSigner()
+
 	// Sign the request with AWS Signature V4
-	err = signer.SignHTTP(ctx, creds, req, bodyHash, service, region, time.Now())
+	err := signer.SignHTTP(ctx, creds, req, bodyHash, service, region, time.Now())
 	for _, h := range restoreHeaders {
 		req.Header[h.name] = h.values
 	}

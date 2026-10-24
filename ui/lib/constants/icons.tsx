@@ -128,6 +128,34 @@ export const ProviderIcons = {
 		);
 	},
 
+	// Placeholder mark for AWS SageMaker in the AWS machine-learning teal (unique gradient id).
+	sagemaker: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 28 28"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<rect x="1" y="1" width="26" height="26" rx="6" fill="url(#paint0_linear_sagemaker)" />
+				<path d="M9 18.5L14 9.5L19 18.5" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+				<path d="M9 18.5H19" stroke="white" strokeWidth="1.6" strokeLinecap="round" />
+				<circle cx="14" cy="9.5" r="2.2" fill="white" />
+				<circle cx="9" cy="18.5" r="2.2" fill="white" />
+				<circle cx="19" cy="18.5" r="2.2" fill="white" />
+				<defs>
+					<linearGradient id="paint0_linear_sagemaker" x1="1" y1="27" x2="27" y2="1" gradientUnits="userSpaceOnUse">
+						<stop stopColor="#055F4E" />
+						<stop offset="1" stopColor="#56C0A7" />
+					</linearGradient>
+				</defs>
+			</svg>
+		);
+	},
+
 	cerebras: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
