@@ -92,6 +92,14 @@ type OAuth2Provider struct {
 	// token exchange. Same atomic-pointer rationale as tempTokens: written
 	// once at startup, read on the request path, and never guarded by p.mu.
 	exchangeIdP atomic.Pointer[schemas.TokenExchangeIdPResolver]
+
+	// resourceEndpoints caches discovered upstream token endpoints for
+	// id_jag token-exchange clients, keyed by MCP client ID (one entry each).
+	resourceEndpoints sync.Map
+
+	// idjagGrants holds the ID-JAG last issued per (user, MCP client) for
+	// re-presentation until it expires; bounded like userTokens. See idjagGrant.
+	idjagGrants *idjagGrantCache
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -104,6 +112,7 @@ func NewOAuth2Provider(configStore configstore.ConfigStore, logger schemas.Logge
 		configStore:    configStore,
 		retryBaseDelay: time.Second,
 		userTokens:     newUserTokenCache(defaultUserTokenCacheCapacity),
+		idjagGrants:    newIDJAGGrantCache(defaultUserTokenCacheCapacity),
 	}
 }
 
@@ -1351,11 +1360,22 @@ func (p *OAuth2Provider) requirePublicTargetFor(ctx context.Context, mcpClientID
 	return true
 }
 
+// tokenRequestOption adjusts a token endpoint request before it is sent.
+type tokenRequestOption func(*http.Request)
+
+// withBasicClientAuth sends client credentials with HTTP Basic, each half
+// form-encoded first as RFC 6749 §2.3.1 requires.
+func withBasicClientAuth(clientID, secret string) tokenRequestOption {
+	return func(req *http.Request) {
+		req.SetBasicAuth(url.QueryEscape(clientID), url.QueryEscape(secret))
+	}
+}
+
 // callTokenEndpoint makes a POST request to the OAuth token endpoint with retry logic.
 // A response without an access token is classified by classifyTokenRejection:
 // transient ones are retried up to maxTokenRetries times with exponential
 // backoff, and dead grants or refused clients are returned as PermanentOAuthError.
-func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string, data url.Values) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string, data url.Values, opts ...tokenRequestOption) (*schemas.OAuth2TokenExchangeResponse, error) {
 	client := newOAuthDiscoveryHTTPClient(ctx, networkTimeout)
 	var lastErr error
 
@@ -1366,6 +1386,9 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "application/json")
+		for _, opt := range opts {
+			opt(req)
+		}
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -1968,6 +1991,7 @@ func (p *OAuth2Provider) EvictUserTokensByMCPClient(mcpClientID string) {
 		return
 	}
 	p.userTokens.EvictByMCPClient(mcpClientID)
+	p.evictIDJAGGrants(func(k idjagGrantKey) bool { return k.clientID == mcpClientID })
 }
 
 // EvictUserTokensByVirtualKey drops every cached vk-mode access token bound
@@ -1990,6 +2014,7 @@ func (p *OAuth2Provider) EvictUserTokensByUser(userID string) {
 		return
 	}
 	p.userTokens.EvictByUser(userID)
+	p.evictIDJAGGrants(func(k idjagGrantKey) bool { return k.userID == userID })
 }
 
 // FlushUserTokenCache drops every cached per-user access token. The coarse
@@ -2000,4 +2025,5 @@ func (p *OAuth2Provider) FlushUserTokenCache() {
 		return
 	}
 	p.userTokens.Flush()
+	p.evictIDJAGGrants(func(idjagGrantKey) bool { return true })
 }

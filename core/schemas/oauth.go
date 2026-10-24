@@ -186,6 +186,29 @@ type TokenExchangeIdPResolver interface {
 	StoredSubjectToken(ctx context.Context, userID string, rejected bool) (string, error)
 }
 
+// Subject token types for the id_jag profile's identity-provider exchange.
+const (
+	TokenTypeIDToken      = "urn:ietf:params:oauth:token-type:id_token"
+	TokenTypeRefreshToken = "urn:ietf:params:oauth:token-type:refresh_token"
+)
+
+// IDJAGSubjectToken is the user's identity-provider credential an ID-JAG is
+// requested with. Identity providers accept only an ID token or a refresh
+// token issued to the requesting (SSO) application, never an access token.
+// SECURITY: live credential - never log Token.
+type IDJAGSubjectToken struct {
+	Token     string
+	TokenType string // TokenTypeIDToken or TokenTypeRefreshToken
+}
+
+// IDJAGSubjectResolver is optionally implemented by a TokenExchangeIdPResolver
+// to supply a user's ID-JAG subject for the id_jag profile from their stored
+// SSO session. Returns ErrExchangeSubjectTokenMissing when the user has no
+// usable session.
+type IDJAGSubjectResolver interface {
+	IDJAGSubjectForUser(ctx context.Context, userID string) (*IDJAGSubjectToken, error)
+}
+
 // OauthConfig represents OAuth client configuration
 type OAuth2Config struct {
 	ID              string     `json:"id"`
@@ -241,4 +264,6 @@ type OAuth2TokenExchangeResponse struct {
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int    `json:"expires_in"`
 	Scope        string `json:"scope,omitempty"`
+	// IssuedTokenType is set by RFC 8693 responses (e.g. the ID-JAG token type).
+	IssuedTokenType string `json:"issued_token_type,omitempty"`
 }
