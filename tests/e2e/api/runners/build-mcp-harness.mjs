@@ -1767,6 +1767,325 @@ const ADM82 = folder("ADM-82 Stored OpenAPI spec endpoint", "Setup: alpha (echo_
   deleteClient("ADM-82", "adm82-c"), deleteClient("ADM-82", "adm82-q"),
 ]);
 
+// ================================================================ AUTH and CONN tests on the fleet
+
+// execTool runs a tool through POST /v1/mcp/tool/execute (chat format) with no admin credentials.
+// session, when given, is sent as x-bf-mcp-session-id. Clients these tests run tools on set
+// tools_to_execute ["*"], since an unset list executes nothing.
+const execTool = (id, title, tool, asserts, { session, headers = [] } = {}) => request(id, title, "POST", "/v1/mcp/tool/execute", {
+  noAuth: true, noCookies: true, asserts,
+  body: { id: "c1", type: "function", function: { name: tool, arguments: lit({ text: "hi" }) } },
+  headers: [...(session ? [{ key: "x-bf-mcp-session-id", value: session }] : []), ...headers],
+});
+// gwCall sends tools/call for tool to /mcp with no credentials.
+const gwCall = (id, title, tool, asserts, headers = []) => rpc(id, title, call(tool, { text: "hi" }), { headers: [MCP_ACCEPT, ...headers], asserts: [A.status(200), ...asserts] });
+const mockAuth = (id, server, title, auth) => mockPost(id, server, "auth", title, { auth });
+const counterIs = (name, v) => A.custom(`counters.${name} is ${v}`, [`pm.expect(pm.response.json().counters[${lit(name)}], 'body: ' + pm.response.text()).to.equal(${v});`]);
+const callsIs = (tool, n) => A.custom(`calls[${tool}] is ${n}`, [`pm.expect((pm.response.json().counters.calls || {})[${lit(tool)}] || 0, 'body: ' + pm.response.text()).to.equal(${n});`]);
+const identityCalls = (identity, n) => A.custom(`calls_by_identity[${identity}] is ${n}`, [`pm.expect((pm.response.json().counters.calls_by_identity || {})[${lit(identity)}], 'body: ' + pm.response.text()).to.equal(${n});`]);
+const identityCallsAre = (map) => A.custom(`calls_by_identity is ${lit(map)}`, [`pm.expect(pm.response.json().counters.calls_by_identity || {}, 'body: ' + pm.response.text()).to.eql(${lit(map)});`]);
+const noIdentity = (identity) => A.custom(`calls_by_identity has no ${identity}`, [`pm.expect(pm.response.json().counters.calls_by_identity || {}, 'body: ' + pm.response.text()).to.not.have.property(${lit(identity)});`]);
+// saveSessions keeps a server's counters.sessions in varName; sessionsPlus compares against it.
+const saveSessions = (id, server, varName) => mockGet(id, server, `setup: record ${server}'s session count`, [], [`pm.collectionVariables.set(${lit(varName)}, pm.response.json().counters.sessions);`]);
+const sessionsPlus = (varName, n) => A.custom(`sessions is ${n} more than the recorded count`, [
+  `var before = Number(pm.collectionVariables.get(${lit(varName)}));`,
+  `pm.expect(pm.response.json().counters.sessions, 'body: ' + pm.response.text()).to.equal(before + ${n});`,
+]);
+const messageStarts = (m) => A.custom(`message starts with ${lit(m)}`, [
+  "var b = pm.response.json();",
+  "pm.expect(b.message, 'body: ' + pm.response.text()).to.be.a('string');",
+  `pm.expect(b.message.indexOf(${lit(m)}), 'message: ' + b.message).to.equal(0);`,
+]);
+// waitForClient polls the client list for up to about 5s until cond (ES5 on the client c) holds.
+const waitForClient = (clientId, cond) => [
+  "var left = 20;",
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp/clients?server=${clientId}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
+  "    var list = !err && res.code === 200 ? res.json().clients : null;",
+  "    var c = list && list[0];",
+  `    if ((c && (${cond})) || --left <= 0) { return; }`,
+  "    setTimeout(poll, 250);",
+  "  });",
+  "}",
+  "poll();",
+];
+
+// T1 is the bearer token AUTH and CONN servers require; the mock maps it to identity id1.
+const T1 = "auth-t1-token";
+const T1_TEXT = (server) => `${server} (echo_tool, add_tool) requires bearer T1 (${T1}), which it maps to id1`;
+const requiresT1 = (id, server) => [
+  ...freshServer(id, server, ["echo_tool", "add_tool"]),
+  mockAuth(id, server, `setup: ${server} requires bearer T1, mapped to id1`, { bearer: { [T1]: "id1" }, require: true }),
+];
+const t1Client = (clientId, name, over = {}) => httpClient(clientId, name, "alpha", { auth_type: "headers", headers: { Authorization: `Bearer ${T1}` }, tools_to_execute: ["*"], ...over });
+const T1_CLIENT_TEXT = "an HTTP client on alpha with auth headers \"Authorization: Bearer T1\"";
+
+// AUTH-01's mock counts calls under the X-Static value; a forwarded "Bearer leak" would override that identity
+// with "leak", so one exact count proves X-Static was sent and Authorization was not.
+const AUTH01 = folder("AUTH-01 none auth sends static headers, drops Authorization", "Setup: alpha (echo_tool, add_tool) counts calls under the X-Static value, counts the bearer token \"leak\" as identity \"leak\" instead, and serves callers without a token; an HTTP client on alpha with auth none, per call, headers X-Static and \"Authorization: Bearer leak\", tools_to_execute [\"*\"].", [
+  ...freshServer("AUTH-01", "alpha", ["echo_tool", "add_tool"]),
+  mockAuth("AUTH-01", "alpha", "setup: alpha counts calls under X-Static, Bearer leak as identity leak, token optional", { bearer: { leak: "leak" }, identity_header: "X-Static" }),
+  createExpect("AUTH-01", "create with X-Static and Authorization: Bearer leak", httpClient("auth01-c", "auth01_c", "alpha", { headers: { "X-Static": "static-1", Authorization: "Bearer leak" }, tools_to_execute: ["*"] }), [A.status(200)]),
+  execTool("AUTH-01", "execute auth01_c-echo_tool", "auth01_c-echo_tool", [A.status(200)]),
+  mockGet("AUTH-01", "alpha", "the call was counted under X-Static's value, never as leak", [identityCallsAre({ "static-1": 1 })]),
+  deleteClient("AUTH-01", "auth01-c"),
+]);
+
+const AUTH02 = folder("AUTH-02 headers auth, sticky", `Setup: ${T1_TEXT("alpha")}; ${T1_CLIENT_TEXT}, needs_session_stickiness true, tools_to_execute ["*"].`, [
+  ...requiresT1("AUTH-02", "alpha"),
+  createExpect("AUTH-02", "create the sticky client", t1Client("auth02-c", "auth02_c", { needs_session_stickiness: true }), [A.status(200)]),
+  ...[1, 2, 3].map((i) => execTool("AUTH-02", `execute ${i} of 3`, "auth02_c-echo_tool", [A.status(200)])),
+  mockGet("AUTH-02", "alpha", "one session, one initialize, three calls under id1", [counterIs("sessions", 1), counterIs("initializes", 1), identityCalls("id1", 3)]),
+  deleteClient("AUTH-02", "auth02-c"),
+]);
+
+const AUTH03 = folder("AUTH-03 headers auth, per call", `Setup: ${T1_TEXT("alpha")}; ${T1_CLIENT_TEXT}, per call (needs_session_stickiness omitted), tools_to_execute ["*"].`, [
+  ...requiresT1("AUTH-03", "alpha"),
+  createExpect("AUTH-03", "create the per-call client", t1Client("auth03-c", "auth03_c"), [A.status(200)]),
+  saveSessions("AUTH-03", "alpha", "auth03_s0"),
+  ...[1, 2, 3].flatMap((i) => [
+    execTool("AUTH-03", `execute ${i} of 3`, "auth03_c-echo_tool", [A.status(200)]),
+    mockGet("AUTH-03", "alpha", `alpha opened one session per execute call (${i} so far)`, [sessionsPlus("auth03_s0", i), ...(i === 3 ? [identityCalls("id1", 3)] : [])]),
+  ]),
+  request("AUTH-03", "reconnect the per-call client", "POST", "/api/mcp/client/auth03-c/reconnect", { asserts: [A.status(400), A.msgContains("reconnect is not applicable for this client type")] }),
+  deleteClient("AUTH-03", "auth03-c"),
+]);
+
+const AUTH05 = folder("AUTH-05 Token revoked after connect", `Setup: ${T1_TEXT("alpha")}; ${T1_CLIENT_TEXT}, needs_session_stickiness true, tools_to_execute ["*"] (as AUTH-02); then alpha revokes T1.`, [
+  ...requiresT1("AUTH-05", "alpha"),
+  createClient("AUTH-05", t1Client("auth05-c", "auth05_c", { needs_session_stickiness: true }), "setup: create the sticky client"),
+  mockPost("AUTH-05", "alpha", "auth/revoke", "setup: revoke T1", { token: T1 }),
+  execTool("AUTH-05", "execute after the revoke", "auth05_c-echo_tool", [A.status(400), A.msgContains("MCP tool call failed for"), A.msgContains("401")]),
+  gwCall("AUTH-05", "/mcp tools/call after the revoke", "auth05_c-echo_tool", [toolResultError("Tool execution failed:", null)]),
+  getClient("AUTH-05", "auth05-c", "the client list shows unstable, last_failure.stage connect", [clientState("unstable"), clientField("last_failure.stage", "connect")],
+    { pre: waitForClient("auth05-c", "c.state === 'unstable'") }),
+  deleteClient("AUTH-05", "auth05-c"),
+]);
+
+const AUTH06 = folder("AUTH-06 Masked round trip and rejected rotation", `Setup: ${T1_TEXT("alpha")}; ${T1_CLIENT_TEXT}, needs_session_stickiness true, tools_to_execute ["*"] (as AUTH-02).`, [
+  ...requiresT1("AUTH-06", "alpha"),
+  createClient("AUTH-06", t1Client("auth06-c", "auth06_c", { needs_session_stickiness: true }), "setup: create the sticky client"),
+  getClient("AUTH-06", "auth06-c", "the client list masks Authorization", [A.custom("config.headers.Authorization.value matches ^.{4}\\*{24}.{4}$", [
+    "var h = pm.response.json().clients[0].config.headers;",
+    "pm.expect(h && h.Authorization && h.Authorization.value, 'body: ' + pm.response.text()).to.match(/^.{4}\\*{24}.{4}$/);",
+  ])], { extraTests: ["pm.collectionVariables.set('auth06_headers', JSON.stringify(pm.response.json().clients[0].config.headers));"] }),
+  request("AUTH-06", "PUT the masked headers back", "PUT", "/api/mcp/client/auth06-c", { raw: "{\"headers\":{{auth06_headers}}}", asserts: [A.status(200)] }),
+  saveSessions("AUTH-06", "alpha", "auth06_s1"),
+  request("AUTH-06", "setup: reconnect, so the next call uses the stored header", "POST", "/api/mcp/client/auth06-c/reconnect", { asserts: [A.status(200)] }),
+  execTool("AUTH-06", "execute after the masked PUT", "auth06_c-echo_tool", [A.status(200)]),
+  mockGet("AUTH-06", "alpha", "the call ran as id1 on a new session", [identityCallsAre({ id1: 1 }), sessionsPlus("auth06_s1", 1)]),
+  request("AUTH-06", "PUT Authorization: Bearer BAD", "PUT", "/api/mcp/client/auth06-c", { body: { headers: { Authorization: "Bearer BAD" } },
+    asserts: [A.status(422), A.msgContains("The new headers were rejected by the MCP server, so nothing was changed")] }),
+  saveSessions("AUTH-06", "alpha", "auth06_s2"),
+  request("AUTH-06", "setup: reconnect again, so the next call uses the stored header", "POST", "/api/mcp/client/auth06-c/reconnect", { asserts: [A.status(200)] }),
+  execTool("AUTH-06", "execute after the rejected PUT", "auth06_c-echo_tool", [A.status(200)]),
+  mockGet("AUTH-06", "alpha", "the call still ran as id1 on a new session", [identityCallsAre({ id1: 2 }), sessionsPlus("auth06_s2", 1)]),
+  deleteClient("AUTH-06", "auth06-c"),
+]);
+
+// AUTH-09's callers send both headers; the mock counts calls under one header's value at a time,
+// which shows whether that header reached it.
+const AUTH09_CALLER = [{ key: "X-Tenant-Id", value: "tenant-1" }, { key: "X-Other", value: "other-1" }];
+const AUTH09 = folder("AUTH-09 allowed_extra_headers is per client", "Setup: alpha and beta (echo_tool, add_tool); the tenant client (auth09_a) on alpha with allowed_extra_headers [\"x-tenant-id\"], the plain client (auth09_b) on beta with none; both HTTP, auth none, per call, tools_to_execute [\"*\"]. Callers send X-Tenant-Id: tenant-1 and X-Other: other-1.", [
+  ...freshServer("AUTH-09", "alpha", ["echo_tool", "add_tool"]),
+  ...freshServer("AUTH-09", "beta", ["echo_tool", "add_tool"]),
+  createExpect("AUTH-09", "create the tenant client, allowing x-tenant-id", httpClient("auth09-a", "auth09_a", "alpha", { allowed_extra_headers: ["x-tenant-id"], tools_to_execute: ["*"] }), [A.status(200)]),
+  createExpect("AUTH-09", "create the plain client, allowing no extra headers", httpClient("auth09-b", "auth09_b", "beta", { tools_to_execute: ["*"] }), [A.status(200)]),
+  ...[["X-Tenant-Id", "tenant-1"], ["X-Other", "other-1"]].flatMap(([header, value], phase) => [
+    ...["alpha", "beta"].map((s) => mockAuth("AUTH-09", s, `setup: ${s} counts calls under ${header}`, { identity_header: header })),
+    execTool("AUTH-09", `execute the tenant client with X-Tenant-Id and X-Other (${header} check)`, "auth09_a-echo_tool", [A.status(200)], { headers: AUTH09_CALLER }),
+    execTool("AUTH-09", `execute the plain client with X-Tenant-Id and X-Other (${header} check)`, "auth09_b-echo_tool", [A.status(200)], { headers: AUTH09_CALLER }),
+    phase === 0
+      ? mockGet("AUTH-09", "alpha", "the tenant client forwarded X-Tenant-Id", [identityCalls(value, 1)])
+      : mockGet("AUTH-09", "alpha", "the tenant client never sent X-Other", [noIdentity(value), callsIs("echo_tool", 2)]),
+    mockGet("AUTH-09", "beta", `the plain client never sent ${header}`, [noIdentity(value), callsIs("echo_tool", phase + 1)]),
+  ]),
+  createExpect("AUTH-09", "create with allowed_extra_headers [\"*\",\"x-a\"]", httpClient("auth09-x", "auth09_x", "alpha", { allowed_extra_headers: ["*", "x-a"] }), [A.status(400), A.msgContains("Invalid allowed_extra_headers")]),
+  deleteClient("AUTH-09", "auth09-a"),
+  deleteClient("AUTH-09", "auth09-b"),
+]);
+
+// KEY_A: alpha accepts only X-Api-Key: key-a and counts calls under the X-Api-Key value.
+const KEY_A_TEXT = "alpha (echo_tool, add_tool) accepts only X-Api-Key: key-a and counts calls under the X-Api-Key value";
+const alphaKeyA = (id) => [
+  ...freshServer(id, "alpha", ["echo_tool", "add_tool"]),
+  mockAuth(id, "alpha", "setup: alpha accepts only X-Api-Key key-a and counts calls under it", { identity_header: "X-Api-Key", require_headers: { "X-Api-Key": "key-a" } }),
+];
+const perUser = (clientId, name, over = {}) => HEADERS_BASE(clientId, name, { tools_to_execute: ["*"], ...over });
+const PER_USER_KEY_A = { per_user_header_keys: ["x-api-key"], user_headers: { "x-api-key": "key-a" } };
+// headersFlow checks a 400's extra_fields.mcp_auth_required for the per-user headers flow and keeps the
+// flow id H from submit_url in saveAs. With sameAs it checks H equals the one kept there; with full it
+// also checks the key lists.
+const headersFlow = ({ saveAs, sameAs, full }) => A.custom(`mcp_auth_required kind "headers", submit_url ...auth?flow=<flow id>&kind=headers${sameAs ? ", the same flow id" : ""}${full ? ", required_header_keys [\"x-api-key\"], admin_header_keys [\"X-Org\"]" : ""}`, [
+  "var b = pm.response.json();",
+  "var r = b.extra_fields && b.extra_fields.mcp_auth_required;",
+  "pm.expect(r, 'body: ' + pm.response.text()).to.be.an('object');",
+  "pm.expect(r.kind).to.equal('headers');",
+  "var m = /auth\\?flow=([^&#]+)&kind=headers$/.exec(r.submit_url);",
+  "pm.expect(m, 'submit_url: ' + r.submit_url).to.not.equal(null);",
+  ...(saveAs ? [`pm.collectionVariables.set(${lit(saveAs)}, m[1]);`] : []),
+  ...(sameAs ? [`pm.expect(m[1]).to.equal(pm.collectionVariables.get(${lit(sameAs)}));`] : []),
+  ...(full ? ["pm.expect(r.required_header_keys).to.eql(['x-api-key']);", "pm.expect(r.admin_header_keys).to.eql(['X-Org']);"] : []),
+]);
+const noCredential = () => A.custom("there is no credential", ["pm.expect(pm.response.json().clients[0], 'body: ' + pm.response.text()).to.not.have.property('credential');"]);
+
+const AUTH41 = folder("AUTH-41 per_user_headers create", `Setup: ${KEY_A_TEXT}; per_user_headers clients on alpha with tools_to_execute ["*"].`, [
+  ...alphaKeyA("AUTH-41"),
+  createExpect("AUTH-41", "no per_user_header_keys", perUser("auth41-c", "auth41_c", { user_headers: { "x-api-key": "key-a" } }), [A.status(400)]),
+  createExpect("AUTH-41", "no sample user_headers", perUser("auth41-c", "auth41_c", { per_user_header_keys: ["x-api-key"] }), [A.status(400), A.msgEquals("sample user_headers missing values for required keys: x-api-key")]),
+  createExpect("AUTH-41", "a rejected sample", perUser("auth41-c", "auth41_c", { per_user_header_keys: ["x-api-key"], user_headers: { "x-api-key": "BAD" } }), [A.status(422), A.msgStartsWith("Verification failed:")]),
+  createExpect("AUTH-41", "a valid sample", perUser("auth41-c", "auth41_c", PER_USER_KEY_A), [A.status(200), messageStarts("MCP client registered. 2 tools discovered.")]),
+  deleteClient("AUTH-41", "auth41-c"),
+]);
+
+const AUTH42_CLIENT = (clientId, name) => perUser(clientId, name, { ...PER_USER_KEY_A, headers: { "X-Org": "org-1" } });
+const AUTH42_TEXT = `${KEY_A_TEXT}; a per_user_headers client on alpha with per_user_header_keys ["x-api-key"], sample key-a, static header X-Org, tools_to_execute ["*"]`;
+const AUTH42 = folder("AUTH-42 Per-user headers caller without a credential", `Setup: ${AUTH42_TEXT}; the caller sends x-bf-mcp-session-id auth42-sess1 and has no credential.`, [
+  ...alphaKeyA("AUTH-42"),
+  createClient("AUTH-42", AUTH42_CLIENT("auth42-c", "auth42_c"), "setup: create the per_user_headers client with static header X-Org"),
+  execTool("AUTH-42", "execute without a credential", "auth42_c-echo_tool", [A.status(400), headersFlow({ saveAs: "auth42_h", full: true })], { session: "auth42-sess1" }),
+  execTool("AUTH-42", "execute again without a credential", "auth42_c-echo_tool", [A.status(400), headersFlow({ sameAs: "auth42_h", full: true })], { session: "auth42-sess1" }),
+  gwCall("AUTH-42", "/mcp tools/call without a credential", "auth42_c-echo_tool", [toolResultError(null, "Open this URL to submit the required headers")], [{ key: "x-bf-mcp-session-id", value: "auth42-sess1" }]),
+  deleteClient("AUTH-42", "auth42-c"),
+]);
+
+const AUTH43_FLOW = "/api/mcp/per-user-headers/flows/{{auth43_h}}";
+const AUTH43 = folder("AUTH-43 Header submission", `Setup: as AUTH-42 (${AUTH42_TEXT}); an execute call as session auth43-sess1 opens a header flow.`, [
+  ...alphaKeyA("AUTH-43"),
+  createClient("AUTH-43", AUTH42_CLIENT("auth43-c", "auth43_c"), "setup: create the per_user_headers client with static header X-Org"),
+  execTool("AUTH-43", "setup: execute as auth43-sess1 opens a header flow", "auth43_c-echo_tool", [A.status(400), headersFlow({ saveAs: "auth43_h" })], { session: "auth43-sess1" }),
+  request("AUTH-43", "flow detail", "GET", AUTH43_FLOW, { asserts: [A.status(200), A.jsonEquals("has_active_credential", false)] }),
+  request("AUTH-43", "submit {}", "PUT", AUTH43_FLOW, { body: {}, asserts: [A.status(400)] }),
+  request("AUTH-43", "submit x-api-key BAD", "PUT", AUTH43_FLOW, { body: { headers: { "x-api-key": "BAD" } }, asserts: [A.status(422)] }),
+  request("AUTH-43", "submit key-a plus X-Extra", "PUT", AUTH43_FLOW, { body: { headers: { "x-api-key": "key-a", "X-Extra": "extra-1" } }, asserts: [A.status(200), A.custom("credential_id is a non-empty string", [
+    "var b = pm.response.json();",
+    "pm.expect(b.credential_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+  ])] }),
+  execTool("AUTH-43", "execute with the submitted headers", "auth43_c-echo_tool", [A.status(200)], { session: "auth43-sess1" }),
+  mockGet("AUTH-43", "alpha", "the call ran under key-a's identity", [identityCalls("key-a", 1)]),
+  mockAuth("AUTH-43", "alpha", "setup: alpha still accepts only key-a and now counts calls under X-Extra", { identity_header: "X-Extra", require_headers: { "X-Api-Key": "key-a" } }),
+  execTool("AUTH-43", "execute again", "auth43_c-echo_tool", [A.status(200)], { session: "auth43-sess1" }),
+  mockGet("AUTH-43", "alpha", "X-Extra never reached alpha", [noIdentity("extra-1"), callsIs("echo_tool", 2)]),
+  deleteClient("AUTH-43", "auth43-c"),
+]);
+
+const verifyHeaders = (id, title, clientId, userHeaders, asserts) => request(id, title, "POST", `/api/mcp/client/${clientId}/verify-headers`, { body: { user_headers: userHeaders }, asserts });
+const AUTH45 = folder("AUTH-45 verify-headers", `Setup: ${KEY_A_TEXT}; the AUTH-41 per_user_headers client on alpha (per_user_header_keys ["x-api-key"], sample key-a); a headers client on alpha; an OpenAPI per_user_headers client from an inline Petstore document.`, [
+  ...alphaKeyA("AUTH-45"),
+  createClient("AUTH-45", perUser("auth45-c", "auth45_c", PER_USER_KEY_A), "setup: create the per_user_headers client"),
+  createClient("AUTH-45", httpClient("auth45-h", "auth45_h", "alpha", { auth_type: "headers", headers: { "X-Api-Key": "key-a" } }), "setup: create the headers client"),
+  createClient("AUTH-45", { client_id: "auth45-o", name: "auth45_o", connection_type: "openapi", auth_type: "per_user_headers", per_user_header_keys: ["x-api-key"], tools_to_execute: ["*"], openapi_config: { spec: PETSTORE } }, "setup: create the OpenAPI per_user_headers client"),
+  getClient("AUTH-45", "auth45-c", "control: no credential before verify-headers", [noCredential()]),
+  verifyHeaders("AUTH-45", "verify-headers on the headers client", "auth45-h", { "x-api-key": "key-a" }, [A.status(400)]),
+  verifyHeaders("AUTH-45", "verify-headers on the OpenAPI client", "auth45-o", { "x-api-key": "key-a" }, [A.status(400), A.msgContains("verify-headers does not apply to openapi clients")]),
+  verifyHeaders("AUTH-45", "verify-headers with an empty x-api-key", "auth45-c", { "x-api-key": "" }, [A.status(400)]),
+  verifyHeaders("AUTH-45", "verify-headers with key-a", "auth45-c", { "x-api-key": "key-a" }, [A.status(200), A.jsonEquals("tools_count", 2)]),
+  getClient("AUTH-45", "auth45-c", "the credential: kind headers, active, key names without values", [A.custom("credential kind \"headers\", status \"active\", header_keys [\"x-api-key\"], no value", [
+    "var cr = pm.response.json().clients[0].credential;",
+    "pm.expect(cr, 'body: ' + pm.response.text()).to.be.an('object');",
+    "pm.expect(cr.kind).to.equal('headers');",
+    "pm.expect(cr.status).to.equal('active');",
+    "pm.expect(cr.header_keys).to.eql(['x-api-key']);",
+    "pm.expect(JSON.stringify(cr)).to.not.include('key-a');",
+  ])]),
+  deleteClient("AUTH-45", "auth45-c"),
+  deleteClient("AUTH-45", "auth45-h"),
+  deleteClient("AUTH-45", "auth45-o"),
+]);
+
+const AUTH48 = folder("AUTH-48 token_exchange update and verify-exchange are refused", "Setup: alpha (echo_tool, add_tool); a headers client on alpha.", [
+  ...freshServer("AUTH-48", "alpha", ["echo_tool", "add_tool"]),
+  createClient("AUTH-48", httpClient("auth48-h", "auth48_h", "alpha", { auth_type: "headers", headers: { Authorization: `Bearer ${T1}` } }), "setup: create the headers client"),
+  request("AUTH-48", "PUT a token_exchange block", "PUT", "/api/mcp/client/auth48-h", { body: { token_exchange: { audience: "api://mcp-harness" } },
+    asserts: [A.status(400), A.msgEquals("token_exchange can only be set for token_exchange clients")] }),
+  request("AUTH-48", "verify-exchange on the headers client", "POST", "/api/mcp/client/auth48-h/verify-exchange", { body: {}, asserts: [A.status(400)] }),
+  request("AUTH-48", "verify-exchange on an unknown id", "POST", "/api/mcp/client/auth48-no-such-client/verify-exchange", { body: {}, asserts: [A.status(404)] }),
+  deleteClient("AUTH-48", "auth48-h"),
+]);
+
+const CONN02 = folder("CONN-02 HTTP per call (default)", "Setup: alpha (echo_tool, add_tool); an HTTP client on alpha, auth none, per call (needs_session_stickiness omitted), tools_to_execute [\"*\"].", [
+  ...freshServer("CONN-02", "alpha", ["echo_tool", "add_tool"]),
+  createClient("CONN-02", httpClient("conn02-c", "conn02_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the per-call client"),
+  saveSessions("CONN-02", "alpha", "conn02_s0"),
+  ...[1, 2, 3].flatMap((i) => [
+    execTool("CONN-02", `execute ${i} of 3`, "conn02_c-echo_tool", [A.status(200)]),
+    mockGet("CONN-02", "alpha", `alpha opened one session per execute call (${i} so far)`, [sessionsPlus("conn02_s0", i)]),
+  ]),
+  request("CONN-02", "refresh-tools", "POST", "/api/mcp/client/conn02-c/refresh-tools", { asserts: [A.status(200), A.jsonEquals("tool_count", 2)] }),
+  request("CONN-02", "reconnect", "POST", "/api/mcp/client/conn02-c/reconnect", { asserts: [A.status(400), A.msgContains("not applicable for this client type")] }),
+  deleteClient("CONN-02", "conn02-c"),
+]);
+
+const STICKY_ONLY = (type) => `needs_session_stickiness cannot be false for connection_type "${type}": only 'http' supports a per-call connection`;
+const sseClient = (clientId, name, server, over = {}) => ({ client_id: clientId, name, connection_type: "sse", connection_string: `${CHAOS}/s/${server}/sse`, auth_type: "none", ...over });
+const stdioClient = (clientId, name, server, over = {}) => ({ client_id: clientId, name, connection_type: "stdio", auth_type: "none", stdio_config: { command: "{{chaos_bin}}", args: ["-stdio", "-fleet", CHAOS, "-server", server], envs: [] }, ...over });
+const CONN03 = folder("CONN-03 Per-call only for HTTP", "Setup: alpha (echo_tool, add_tool); SSE and STDIO creates with needs_session_stickiness false; an SSE client on alpha then PUT to false.", [
+  ...freshServer("CONN-03", "alpha", ["echo_tool", "add_tool"]),
+  createExpect("CONN-03", "SSE with needs_session_stickiness false", sseClient("conn03-sse", "conn03_sse", "alpha", { needs_session_stickiness: false }), [A.status(400), A.msgEquals(STICKY_ONLY("sse"))]),
+  createExpect("CONN-03", "STDIO with needs_session_stickiness false", stdioClient("conn03-stdio", "conn03_stdio", "alpha", { needs_session_stickiness: false }), [A.status(400), A.msgEquals(STICKY_ONLY("stdio"))]),
+  createClient("CONN-03", sseClient("conn03-s", "conn03_s", "alpha"), "setup: create an SSE client"),
+  request("CONN-03", "PUT the SSE client to needs_session_stickiness false", "PUT", "/api/mcp/client/conn03-s", { body: { needs_session_stickiness: false }, asserts: [A.status(400), A.msgEquals(STICKY_ONLY("sse"))] }),
+  deleteClient("CONN-03", "conn03-s"),
+]);
+
+// CONN-04 creates can take about 31s each: permanent connect errors are retried today.
+const CONN04_FAULTS = [["refuse", { refuse: true }], ["init", { init_fail: true }], ["list", { list_fail: true }], ["version", { bad_version: "1999-01-01" }]];
+const CONN04 = folder("CONN-04 Upstream failing at create (sticky)", "Setup: alpha (echo_tool, add_tool) with one fault at a time: refuse, init_fail, list_fail, bad_version 1999-01-01. Each create is an HTTP client on alpha, auth none, needs_session_stickiness true, tools_to_execute [\"*\"], and may take about 35s.", [
+  ...freshServer("CONN-04", "alpha", ["echo_tool", "add_tool"]),
+  ...CONN04_FAULTS.flatMap(([label, faults]) => {
+    const fault = Object.keys(faults)[0];
+    return [
+      mockPost("CONN-04", "alpha", "faults", `setup: alpha fault ${fault}`, { faults }),
+      createExpect("CONN-04", `create while alpha has ${fault}`, httpClient(`conn04-${label}`, `conn04_${label}`, "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }),
+        [A.status(500), A.msgStartsWith("Failed to connect MCP client:"), ...(label === "list" ? [A.msgContains("failed to retrieve tools from MCP client")] : [])]),
+      request("CONN-04", `conn04-${label} is not listed`, "GET", `/api/mcp/clients?server=conn04-${label}`, { asserts: [A.status(200), A.custom("no client is returned", [
+        "pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);",
+      ])] }),
+      mockPost("CONN-04", "alpha", "faults/clear", `teardown: clear alpha's ${fault} fault`),
+    ];
+  }),
+]);
+
+const CONN17 = folder("CONN-17 SSE with header auth", `Setup: a fleet server ${T1_TEXT("gamma")}; an SSE client on /s/gamma/sse with auth headers "Authorization: Bearer T1", tools_to_execute ["*"].`, [
+  ...requiresT1("CONN-17", "gamma"),
+  createExpect("CONN-17", "create the SSE client", sseClient("conn17-c", "conn17_c", "gamma", { auth_type: "headers", headers: { Authorization: `Bearer ${T1}` }, tools_to_execute: ["*"] }), [A.status(200)]),
+  getClient("CONN-17", "conn17-c", "the client list shows healthy", [clientState("healthy")]),
+  execTool("CONN-17", "execute conn17_c-echo_tool", "conn17_c-echo_tool", [A.status(200)]),
+  mockGet("CONN-17", "gamma", "the call ran under id1 on one session", [identityCalls("id1", 1), counterIs("sessions", 1)]),
+  deleteClient("CONN-17", "conn17-c"),
+  request("CONN-17", "teardown: remove gamma", "POST", "/control", { base: CHAOS, noAuth: true, body: { remove: "gamma" }, asserts: [A.status(200)] }),
+]);
+
+const CONN18 = folder("CONN-18 SSE stream dropped", "Setup: alpha (echo_tool, add_tool); an SSE client on alpha, auth none, tool_execution_timeout 3s, tools_to_execute [\"*\"]; then POST /control/alpha/streams/drop.", [
+  ...freshServer("CONN-18", "alpha", ["echo_tool", "add_tool"]),
+  createClient("CONN-18", sseClient("conn18-c", "conn18_c", "alpha", { tool_execution_timeout: 3, tools_to_execute: ["*"] }), "setup: create the SSE client with a 3s tool timeout"),
+  mockPost("CONN-18", "alpha", "streams/drop", "setup: drop alpha's SSE streams"),
+  getClient("CONN-18", "conn18-c", "the client list still shows healthy", [clientState("healthy")]),
+  execTool("CONN-18", "execute on the dropped stream", "conn18_c-echo_tool", [A.status(400)]),
+  saveSessions("CONN-18", "alpha", "conn18_s1"),
+  request("CONN-18", "reconnect", "POST", "/api/mcp/client/conn18-c/reconnect", { asserts: [A.status(200)] }),
+  execTool("CONN-18", "execute after the reconnect", "conn18_c-echo_tool", [A.status(200)]),
+  mockGet("CONN-18", "alpha", "the reconnect opened one session", [sessionsPlus("conn18_s1", 1)]),
+  deleteClient("CONN-18", "conn18-c"),
+]);
+
+const CONN22 = folder("CONN-22 STDIO child exit", "Setup: alpha (echo_tool, add_tool); a STDIO client bridging to alpha, auth none, tools_to_execute [\"*\"].", [
+  ...freshServer("CONN-22", "alpha", ["echo_tool", "add_tool"]),
+  createClient("CONN-22", stdioClient("conn22-c", "conn22_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the STDIO client"),
+  mockGet("CONN-22", "alpha", "setup: record the STDIO child's pid", [A.custom("stdio_pid is set", ["pm.expect(pm.response.json().stdio_pid, 'body: ' + pm.response.text()).to.be.above(0);"])],
+    ["pm.collectionVariables.set('conn22_pid', pm.response.json().stdio_pid);"]),
+  mockPost("CONN-22", "alpha", "stdio/kill", "stdio/kill"),
+  execTool("CONN-22", "execute after the child exits", "conn22_c-echo_tool", [A.status(400)]),
+  request("CONN-22", "reconnect", "POST", "/api/mcp/client/conn22-c/reconnect", { asserts: [A.status(200)] }),
+  mockGet("CONN-22", "alpha", "a new STDIO child is running", [A.custom("stdio_pid is set and differs from the first", [
+    "var pid = pm.response.json().stdio_pid;",
+    "pm.expect(pid, 'body: ' + pm.response.text()).to.be.above(0);",
+    "pm.expect(pid).to.not.equal(Number(pm.collectionVariables.get('conn22_pid')));",
+  ])]),
+  execTool("CONN-22", "execute after the reconnect", "conn22_c-echo_tool", [A.status(200)]),
+  deleteClient("CONN-22", "conn22-c"),
+]);
+
 // ================================================================ EP slugs, credentials and auth modes
 
 const wwwPresent = () => A.custom("WWW-Authenticate is present", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"]);
@@ -1851,6 +2170,8 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM16, ADM17, ADM18, ADM19, ADM20, ADM22, ADM42, ADM44, ADM46, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM81, ADM82, ADM83]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
+    section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN17, CONN18, CONN22]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP04, EP09, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("INF Inference", "Inference tests.", [INF23, INF56]),
