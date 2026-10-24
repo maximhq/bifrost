@@ -107,7 +107,16 @@ func ToGeminiInteractionTranscriptionRequest(bifrostReq *schemas.BifrostTranscri
 		}
 		for _, key := range []string{"language_codes", "mode", "diarization_mode", "custom_vocabulary"} {
 			if value, ok := bifrostReq.Params.ExtraParams[key]; ok {
-				transcriptionConfig[key] = value
+				if key == "diarization_mode" {
+					mode, ok := transcriptionConfig["mode"].(map[string]interface{})
+					if !ok {
+						mode = map[string]interface{}{"type": "verbatim"}
+					}
+					mode["diarization_mode"] = value
+					transcriptionConfig["mode"] = mode
+				} else {
+					transcriptionConfig[key] = value
+				}
 			}
 		}
 	}
