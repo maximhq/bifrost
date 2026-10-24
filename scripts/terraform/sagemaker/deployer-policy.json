@@ -1,0 +1,70 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SageMakerBifrostResources",
+      "Effect": "Allow",
+      "Action": [
+        "sagemaker:CreateModel", "sagemaker:DescribeModel", "sagemaker:DeleteModel",
+        "sagemaker:CreateEndpointConfig", "sagemaker:DescribeEndpointConfig", "sagemaker:DeleteEndpointConfig",
+        "sagemaker:CreateEndpoint", "sagemaker:DescribeEndpoint", "sagemaker:UpdateEndpoint", "sagemaker:DeleteEndpoint",
+        "sagemaker:CreateInferenceComponent", "sagemaker:DescribeInferenceComponent", "sagemaker:UpdateInferenceComponent", "sagemaker:DeleteInferenceComponent",
+        "sagemaker:AddTags", "sagemaker:DeleteTags", "sagemaker:ListTags",
+        "sagemaker:InvokeEndpoint", "sagemaker:InvokeEndpointWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:sagemaker:*:*:model/bifrost-*",
+        "arn:aws:sagemaker:*:*:endpoint-config/bifrost-*",
+        "arn:aws:sagemaker:*:*:endpoint/bifrost-*",
+        "arn:aws:sagemaker:*:*:inference-component/bifrost-*"
+      ]
+    },
+    {
+      "Sid": "SageMakerListAndBearerTokens",
+      "Effect": "Allow",
+      "Action": [
+        "sagemaker:ListEndpoints", "sagemaker:ListEndpointConfigs", "sagemaker:ListModels", "sagemaker:ListInferenceComponents",
+        "sagemaker:CallWithBearerToken"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassExecutionRoleToSageMakerOnly",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::*:role/bifrost-sagemaker-exec",
+      "Condition": { "StringEquals": { "iam:PassedToService": "sagemaker.amazonaws.com" } }
+    },
+    {
+      "Sid": "PassTeardownRoleToSchedulerOnly",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::*:role/bifrost-sagemaker-teardown",
+      "Condition": { "StringEquals": { "iam:PassedToService": "scheduler.amazonaws.com" } }
+    },
+    {
+      "Sid": "TeardownSchedules",
+      "Effect": "Allow",
+      "Action": ["scheduler:CreateSchedule", "scheduler:GetSchedule", "scheduler:UpdateSchedule", "scheduler:DeleteSchedule"],
+      "Resource": "arn:aws:scheduler:*:*:schedule/default/bifrost-*"
+    },
+    {
+      "Sid": "EndpointLogs",
+      "Effect": "Allow",
+      "Action": ["logs:DescribeLogStreams", "logs:GetLogEvents", "logs:FilterLogEvents", "logs:StartLiveTail"],
+      "Resource": "arn:aws:logs:*:*:log-group:/aws/sagemaker/Endpoints/bifrost-*"
+    },
+    {
+      "Sid": "AwsLoginForCli",
+      "Effect": "Allow",
+      "Action": ["signin:AuthorizeOAuth2Access", "signin:CreateOAuth2Token"],
+      "Resource": "arn:aws:signin:*:*:oauth2/public-client/*"
+    },
+    {
+      "Sid": "ReadQuotasAndLogGroups",
+      "Effect": "Allow",
+      "Action": ["servicequotas:ListServiceQuotas", "servicequotas:GetServiceQuota", "logs:DescribeLogGroups"],
+      "Resource": "*"
+    }
+  ]
+}
