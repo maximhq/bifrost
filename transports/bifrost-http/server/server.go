@@ -185,7 +185,9 @@ type ServerCallbacks interface {
 	EnableMCPClient(ctx context.Context, id string) error
 	// EvictOauthTokenCacheByID drops the cached per-user MCP OAuth access
 	// token backed by the given token row ID after a database write that
-	// bypassed the OAuth provider's own write paths.
+	// bypassed the OAuth provider's own write paths. The server also forwards
+	// the provider's own write evictions here, since those reach only this
+	// process.
 	EvictOauthTokenCacheByID(ctx context.Context, tokenID string)
 	// EvictOauthTokenCacheByMCPClient drops every cached per-user MCP OAuth
 	// access token bound to the given MCP client after a client-level
@@ -2971,6 +2973,14 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.Config.MCPHeadersProvider != nil {
 		s.Config.MCPHeadersProvider.SetOnCredentialWritten(func(ctx context.Context, credentialID string) {
 			go callbacks.EvictMCPHeaderCredentialCacheByID(context.WithoutCancel(ctx), credentialID)
+		})
+	}
+	// Same for token rows the OAuth provider writes. Off the write path
+	// matters more here: the hook also fires inside refreshes that other
+	// callers are waiting on.
+	if s.Config.OAuthProvider != nil {
+		s.Config.OAuthProvider.SetOnTokenWritten(func(ctx context.Context, tokenID string) {
+			go callbacks.EvictOauthTokenCacheByID(context.WithoutCancel(ctx), tokenID)
 		})
 	}
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
