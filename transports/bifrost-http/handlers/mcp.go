@@ -400,8 +400,8 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 // or was abandoned, the linked oauth_configs row may still exist with a
 // non-authorized status. We always create a fresh row on every click —
 // once oauth_config_id is repointed the previous row is unreferenced and
-// inert (its status can never become authorized), it is just not cleaned
-// up automatically.
+// inert (its status can never become authorized), and the OAuth sweep
+// worker removes it (DeleteAbandonedOauthConfigs).
 func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
