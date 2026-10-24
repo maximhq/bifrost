@@ -31,6 +31,140 @@ import (
 // Mock time.Sleep to avoid real delays in tests
 var mockSleep func(time.Duration)
 
+type a2aBodyDemandTestPlugin struct {
+	name         string
+	required     bool
+	panicDemand  bool
+	invalidOwner bool
+	foreignOwner bool
+	demandCalls  int
+	bodies       []*string
+}
+
+func (p *a2aBodyDemandTestPlugin) GetName() string { return p.name }
+func (p *a2aBodyDemandTestPlugin) Cleanup() error  { return nil }
+func (p *a2aBodyDemandTestPlugin) PreA2AHook(_ *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *a2aBodyDemandTestPlugin) PostA2AHook(_ *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, err *schemas.BifrostError) (*schemas.BifrostA2AResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+func (p *a2aBodyDemandTestPlugin) ObserveA2AEvent(_ *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
+	p.bodies = append(p.bodies, event.Body)
+}
+func (p *a2aBodyDemandTestPlugin) A2AEventBodyDemand(_ *schemas.BifrostContext) (schemas.A2AEventObserver, bool) {
+	p.demandCalls++
+	if p.panicDemand {
+		panic("demand failed")
+	}
+	if p.invalidOwner {
+		return nil, false
+	}
+	if p.foreignOwner {
+		return &a2aBodyDemandTestPlugin{name: "different-instance"}, false
+	}
+	return p, p.required
+}
+
+// An observer implemented by a slice-containing value cannot be compared by
+// interface equality. The demand guard must recover and keep the full body.
+type nonComparableA2ABodyObserver struct {
+	*a2aBodyDemandTestPlugin
+	state []byte
+}
+
+func (p nonComparableA2ABodyObserver) A2AEventBodyDemand(*schemas.BifrostContext) (schemas.A2AEventObserver, bool) {
+	return p, false
+}
+
+type legacyA2ABodyObserver struct {
+	schemas.A2APlugin
+	observer schemas.A2AEventObserver
+}
+
+func (p *legacyA2ABodyObserver) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
+	p.observer.ObserveA2AEvent(ctx, event)
+}
+
+type wrappedA2ABodyObserver struct {
+	*a2aBodyDemandTestPlugin
+	observed int
+}
+
+func (p *wrappedA2ABodyObserver) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
+	p.observed++
+	p.a2aBodyDemandTestPlugin.ObserveA2AEvent(ctx, event)
+}
+
+func TestA2AEventBodyDemandPreservesUnknownAndWrappedObservers(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		kind     string
+		required bool
+	}{
+		{name: "metadata only", kind: "metadata"},
+		{name: "body consumer", kind: "full", required: true},
+		{name: "legacy consumer", kind: "legacy", required: true},
+		{name: "promoted declaration", kind: "wrapped", required: true},
+		{name: "invalid owner", kind: "invalid", required: true},
+		{name: "different owner instance", kind: "foreign", required: true},
+		{name: "non-comparable observer", kind: "non-comparable", required: true},
+		{name: "panic", kind: "panic", required: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := &a2aBodyDemandTestPlugin{name: "test", required: test.kind == "full", panicDemand: test.kind == "panic", invalidOwner: test.kind == "invalid", foreignOwner: test.kind == "foreign"}
+			var plugin schemas.A2APlugin = base
+			if test.kind == "non-comparable" {
+				plugin = nonComparableA2ABodyObserver{a2aBodyDemandTestPlugin: base, state: []byte("state")}
+			}
+			if test.kind == "legacy" {
+				plugin = &legacyA2ABodyObserver{A2APlugin: base, observer: base}
+			}
+			var wrapped *wrappedA2ABodyObserver
+			if test.kind == "wrapped" {
+				wrapped = &wrappedA2ABodyObserver{a2aBodyDemandTestPlugin: base}
+				plugin = wrapped
+			}
+			pipeline := &PluginPipeline{a2aPlugins: []schemas.A2APlugin{plugin}, logger: NewDefaultLogger(schemas.LogLevelError)}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if got := pipeline.A2AEventBodyRequired(ctx, 1); got != test.required {
+				t.Fatalf("body required = %t, want %t", got, test.required)
+			}
+			body := `{"messageId":"complete"}`
+			pipeline.ObserveA2AEvent(ctx, &schemas.BifrostA2AEvent{Body: &body}, 1)
+			if len(base.bodies) != 1 || base.bodies[0] != &body {
+				t.Fatal("legacy observation changed")
+			}
+			if wrapped != nil && wrapped.observed != 1 {
+				t.Fatal("overridden wrapper observation was bypassed")
+			}
+		})
+	}
+}
+
+func TestA2AEventBodyDemandOnlyIncludesEnteredObservers(t *testing.T) {
+	metadata := &a2aBodyDemandTestPlugin{name: "metadata"}
+	full := &a2aBodyDemandTestPlugin{name: "full", required: true}
+	pipeline := &PluginPipeline{a2aPlugins: []schemas.A2APlugin{metadata, full}, logger: NewDefaultLogger(schemas.LogLevelError)}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, count := range []int{-1, 0, 1} {
+		if pipeline.A2AEventBodyRequired(ctx, count) {
+			t.Fatalf("unentered full observer affected demand with count %d", count)
+		}
+	}
+	if full.demandCalls != 0 {
+		t.Fatal("queried unentered observer")
+	}
+	for _, count := range []int{2, 10} {
+		if !pipeline.A2AEventBodyRequired(ctx, count) {
+			t.Fatalf("lost entered full observer with count %d", count)
+		}
+	}
+	if !pipeline.A2AEventBodyRequired(nil, 2) {
+		t.Fatal("missing context must stay conservative")
+	}
+}
+
 // Override time.Sleep in tests and setup logger
 func init() {
 	mockSleep = func(d time.Duration) {

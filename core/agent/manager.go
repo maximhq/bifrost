@@ -2882,7 +2882,8 @@ func forwardUpstreamStream(ctx context.Context, h *proxyRequestHandler, envelope
 		opRan := false
 		var events int64
 		consumerStopped := false
-		_, gateErr := h.manager.RunWithPluginPipeline(gateCtx, envelope, func(_ *schemas.BifrostA2ARequest, observe func(*schemas.BifrostA2AEvent)) (*schemas.BifrostA2AResponse, error) {
+		eventBodyRequired := true
+		_, gateErr := h.manager.runWithPluginPipeline(gateCtx, envelope, func(_ *schemas.BifrostA2ARequest, observe func(*schemas.BifrostA2AEvent)) (*schemas.BifrostA2AResponse, error) {
 			opRan = true
 			// a2a.prepare covers prepared-client acquire plus the upstream
 			// context/auth-header build; it ends before the pull loop starts.
@@ -2928,11 +2929,14 @@ func forwardUpstreamStream(ctx context.Context, h *proxyRequestHandler, envelope
 				if eventErr == nil {
 					events++
 					if observe != nil {
-						// Per-event describe (payload re-encode) + observe is Bifrost
-						// mapping work; accumulate it like the LLM path's per-chunk
-						// conversion instead of opening a span per event.
+						// Extract metadata for every observation, but only construct
+						// the additional JSON body when a consumer requires it.
 						observeStart := time.Now()
-						observe(describeA2AEvent(envelope, events, event))
+						if eventBodyRequired {
+							observe(describeA2AEvent(envelope, events, event))
+						} else {
+							observe(describeA2AEventMetadata(envelope, events, event))
+						}
 						schemas.AddStreamConvert(gateCtx, time.Since(observeStart))
 					}
 				}
@@ -2960,7 +2964,7 @@ func forwardUpstreamStream(ctx context.Context, h *proxyRequestHandler, envelope
 			resp.PopulateUpstreamLatency(gateCtx)
 			resp.PopulateOverheadLatency(gateCtx, time.Since(start))
 			return resp, nil
-		})
+		}, &eventBodyRequired)
 		// Stamp at stream completion: the accumulators keep growing until the
 		// stream drains, mirroring the LLM streaming path.
 		gateCtx.StampUpstreamLatency()
@@ -2983,7 +2987,14 @@ func forwardUpstreamStream(ctx context.Context, h *proxyRequestHandler, envelope
 }
 
 func describeA2AEvent(envelope *schemas.BifrostA2ARequest, sequence int64, event a2a.Event) *schemas.BifrostA2AEvent {
-	observed := &schemas.BifrostA2AEvent{Sequence: sequence, Body: marshalA2APayload(event)}
+	body := marshalA2APayload(event)
+	observed := describeA2AEventMetadata(envelope, sequence, event)
+	observed.Body = body
+	return observed
+}
+
+func describeA2AEventMetadata(envelope *schemas.BifrostA2ARequest, sequence int64, event a2a.Event) *schemas.BifrostA2AEvent {
+	observed := &schemas.BifrostA2AEvent{Sequence: sequence}
 	if envelope != nil {
 		observed.RequestType = envelope.RequestType
 		observed.AgentName = envelope.AgentName

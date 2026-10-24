@@ -78,6 +78,18 @@ func (m *Manager) RunWithPluginPipeline(
 	req *schemas.BifrostA2ARequest,
 	op A2AOpFunc,
 ) (finalResponse *schemas.BifrostA2AResponse, finalError *schemas.BifrostError) {
+	return m.runWithPluginPipeline(ctx, req, op, nil)
+}
+
+// runWithPluginPipeline reports body demand only for the internal stream caller.
+// Public/unary operations retain their callback contract and do not query demand.
+// The output is a small synchronous handle; it never retains event content.
+func (m *Manager) runWithPluginPipeline(
+	ctx *schemas.BifrostContext,
+	req *schemas.BifrostA2ARequest,
+	op A2AOpFunc,
+	eventBodyRequired *bool,
+) (finalResponse *schemas.BifrostA2AResponse, finalError *schemas.BifrostError) {
 	// Card and background operations may arrive without a request ID.
 	if ctx != nil {
 		requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
@@ -220,6 +232,9 @@ func (m *Manager) RunWithPluginPipeline(
 		if observation != nil {
 			observe = observation.observe
 		}
+		if eventBodyRequired != nil {
+			*eventBodyRequired = observation != nil && observation.content
+		}
 		resp, opErr := op(req, observe)
 		if opErr != nil {
 			return resp, wrapA2AOpError(opErr, reqType, agentName)
@@ -307,6 +322,13 @@ func (m *Manager) RunWithPluginPipeline(
 
 	startOpSpan(preReq)
 	activeObservation := observation
+	if eventBodyRequired != nil {
+		required := activeObservation != nil && activeObservation.content
+		if !required {
+			required = m.a2aEventBodyRequired(ctx, pipeline, preCount)
+		}
+		*eventBodyRequired = required
+	}
 	observe := func(event *schemas.BifrostA2AEvent) {
 		if event != nil {
 			activeObservation.observe(event)
@@ -322,6 +344,24 @@ func (m *Manager) RunWithPluginPipeline(
 		bErr = wrapA2AOpError(opErr, reqType, agentName)
 	}
 	return runPost(resp, bErr)
+}
+
+// a2aEventBodyRequired preserves legacy custom pipelines and retains bodies on
+// optional demand-query panics, just like observation-only callback failures.
+func (m *Manager) a2aEventBodyRequired(ctx *schemas.BifrostContext, pipeline PluginPipeline, runThrough int) (required bool) {
+	demand, ok := pipeline.(interface {
+		A2AEventBodyRequired(*schemas.BifrostContext, int) bool
+	})
+	if !ok {
+		return true
+	}
+	required = true
+	defer func() {
+		if recovered := recover(); recovered != nil && m.logger != nil {
+			m.logger.Warn("panic in A2A pipeline body demand: %v", recovered)
+		}
+	}()
+	return demand.A2AEventBodyRequired(ctx, runThrough)
 }
 
 // a2aErrorType classifies a failed A2A operation for the error.type span

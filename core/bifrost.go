@@ -9953,6 +9953,45 @@ func (p *PluginPipeline) RunA2APostHooks(ctx *schemas.BifrostContext, a2aResp *s
 	return a2aResp, nil
 }
 
+// A2AEventBodyRequired conservatively unions the entered observers' stable body
+// demand. Unknown consumers, promoted declarations on wrappers, and failures
+// retain complete bodies. It is queried once per stream, not for unary requests.
+func (p *PluginPipeline) A2AEventBodyRequired(ctx *schemas.BifrostContext, runThrough int) bool {
+	if runThrough > len(p.a2aPlugins) {
+		runThrough = len(p.a2aPlugins)
+	}
+	for i := 0; i < runThrough; i++ {
+		observer, ok := p.a2aPlugins[i].(schemas.A2AEventObserver)
+		if !ok {
+			continue
+		}
+		demand, ok := observer.(schemas.A2AEventBodyDemandProvider)
+		if !ok || ctx == nil {
+			return true
+		}
+		required := true
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					required = true
+					p.logger.Warn("panic in A2A event body demand: %v", recovered)
+				}
+			}()
+			pluginName := p.a2aPlugins[i].GetName()
+			pluginCtx := ctx.WithPluginScope(&pluginName)
+			defer pluginCtx.ReleasePluginScope()
+			owner, needsBody := demand.A2AEventBodyDemand(pluginCtx)
+			if owner == observer {
+				required = needsBody
+			}
+		}()
+		if required {
+			return true
+		}
+	}
+	return false
+}
+
 // ObserveA2AEvent dispatches an immutable event observation only to optional
 // observers in the already-entered operation pipeline generation. This is not a
 // hook phase: it cannot mutate, govern, short-circuit, or affect forwarding.

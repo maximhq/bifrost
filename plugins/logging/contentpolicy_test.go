@@ -192,3 +192,77 @@ func TestResolveContentPolicyRetainOffKeepsCurrentBehaviour(t *testing.T) {
 	assert.False(t, policy.storeContent)
 	assert.False(t, policy.hidden)
 }
+
+func TestA2AEventBodyDemandOnlyDeclinesStableSuppression(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		global   bool
+		retain   bool
+		object   bool
+		allowed  bool
+		values   map[schemas.BifrostContextKey]bool
+		required bool
+	}{
+		{name: "default content", required: true},
+		{name: "global disable is live", global: true, required: true},
+		{name: "VK suppression", values: map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyGovernanceDisableContentLogging: true}},
+		{name: "VK enables content", global: true, values: map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyGovernanceDisableContentLogging: false}, required: true},
+		{name: "ignored header", values: map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyDisableContentLogging: true}, required: true},
+		{name: "allowed suppression", allowed: true, values: map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyDisableContentLogging: true}},
+		{name: "header enables over VK", allowed: true, values: map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyGovernanceDisableContentLogging: true, schemas.BifrostContextKeyDisableContentLogging: false}, required: true},
+		{name: "header suppresses over VK", allowed: true, values: map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyGovernanceDisableContentLogging: false, schemas.BifrostContextKeyDisableContentLogging: true}},
+		{name: "object storage may enable hidden retention", object: true, values: map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyGovernanceDisableContentLogging: true}, required: true},
+		{name: "hidden retention", object: true, retain: true, values: map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyGovernanceDisableContentLogging: true}, required: true},
+		{name: "retention cannot operate without object storage", retain: true, values: map[schemas.BifrostContextKey]bool{schemas.BifrostContextKeyGovernanceDisableContentLogging: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plugin := policyTestPlugin(&test.global, &test.retain, test.object)
+			ctx := policyCtx(test.allowed, test.values)
+			owner, required := plugin.A2AEventBodyDemand(ctx)
+			assert.Same(t, plugin, owner)
+			assert.Equal(t, test.required, required)
+			if !required {
+				// A subsequent global update cannot re-enable content against the
+				// captured request policy; missing object storage still means drop.
+				test.global = !test.global
+				test.retain = !test.retain
+				assert.False(t, plugin.resolveContentPolicy(ctx).storeContent)
+			}
+		})
+	}
+	plugin := policyTestPlugin(nil, nil, false)
+	_, required := plugin.A2AEventBodyDemand(nil)
+	assert.True(t, required)
+}
+
+func TestA2AEventBodyDemandPreservesLivePolicyChanges(t *testing.T) {
+	for _, hiddenRetention := range []bool{false, true} {
+		name := "global content enabled"
+		if hiddenRetention {
+			name = "hidden retention enabled"
+		}
+		t.Run(name, func(t *testing.T) {
+			disabled, retain := true, false
+			plugin := policyTestPlugin(&disabled, &retain, hiddenRetention)
+			plugin.writeQueue = make(chan *writeQueueEntry, 1)
+			ctx := policyCtx(false, nil)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "live-policy-operation")
+			if hiddenRetention {
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+			}
+			owner, required := plugin.A2AEventBodyDemand(ctx)
+			assert.Same(t, plugin, owner)
+			assert.True(t, required, "a live policy must not discard bodies for the whole operation")
+			if hiddenRetention {
+				retain = true
+			} else {
+				disabled = false
+			}
+			body := `{"messageId":"later-event","parts":[{"text":"retained"}]}`
+			plugin.ObserveA2AEvent(ctx, &schemas.BifrostA2AEvent{Sequence: 2, Body: &body})
+			entry := (<-plugin.writeQueue).agentLog
+			assert.Equal(t, &body, entry.EventBody)
+			assert.Equal(t, hiddenRetention, entry.ContentHidden)
+		})
+	}
+}
