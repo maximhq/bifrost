@@ -535,6 +535,19 @@ bifrost:
   #         #   agent_runtime: "vpce-0abc123-x1y2z3.bedrock-agent-runtime.us-east-1.vpce.amazonaws.com"  # Rerank
   #         #   s3: "bucket.vpce-0abc123-x1y2z3.s3.us-east-1.vpce.amazonaws.com"                   # Batch file I/O; needs the bucket. prefix
   #
+  # # AWS SageMaker real-time endpoints example (requires sagemaker_key_config)
+  # # Models are endpoint names: sagemaker/<endpoint>[/<inference-component>]
+  # sagemaker:
+  #   keys:
+  #     - name: "sagemaker-key"
+  #       models: ["my-qwen3-endpoint"]
+  #       weight: 1
+  #       sagemaker_key_config:
+  #         region: "us-east-1"
+  #         # Leave access_key/secret_key out to use the default AWS credential chain (IRSA, instance role)
+  #         access_key: "env.AWS_ACCESS_KEY_ID"
+  #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #
   # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)
   # bedrock_mantle:
   #   keys:
