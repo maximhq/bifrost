@@ -282183,6 +282183,249 @@
               ]
             }
           }
+        },
+        {
+          "name": "270.19 POST /passthrough/generic_openai/v1/chat/completions stream:true - openai gpt-4o-mini SSE relayed (generic passthrough) - #8784",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// stream:true in the body selects the streaming relay; SSE bytes are forwarded unchanged and the",
+                  "// usage on the final event is observed for governance without buffering the stream.",
+                  "pm.test('generic relay: openai stream relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('generic relay: upstream content type kept', function () { pm.expect(pm.response.headers.get('content-type') || '', 'content-type').to.include('text/event-stream'); });",
+                  "pm.test('generic relay: SSE bytes forwarded unchanged', function () { pm.expect(text, text.slice(0, 400)).to.include('data: ').and.to.include('[DONE]'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": { \"include_usage\": true },\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hi via the generic relay stream.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.20 POST /passthrough/generic_echo_strict/post - a listed route is relayed under strict_routes (generic passthrough) - #8784",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_strict lists POST /post and GET /get with strict_routes on: the list is an allowlist.",
+                  "pm.test('generic relay: listed route relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('generic relay: body relayed', function () { pm.expect(j.json, JSON.stringify(j.json)).to.eql({q: 'hi'}); });",
+                  "pm.test('generic relay: key injected', function () { pm.expect(j.headers['x-api-key']).to.eql('harness-dummy'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"q\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_strict/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_strict",
+                "post"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] 270.21 DELETE /passthrough/generic_echo_strict/delete - an unlisted operation is refused under strict_routes (generic passthrough) - #8784",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('generic relay: unlisted operation is a 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('strict_routes');",
+                  "});",
+                  "pm.test('generic relay: refused before dispatch', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'no provider header on a router refusal').to.be.undefined; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_strict/delete",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_strict",
+                "delete"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.22 POST /passthrough/generic_echo_units/post with X-Amz-Target - a header-matched route prices the operation: 7 pages at the route's rate plus the inherited fee (generic passthrough) - #8784",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_units has a route on POST /post that also requires X-Amz-Target: Echo.Priced*. With the header the",
+                  "// route's cost_per_unit 0.002 applies over the provider's units_path json.pages, and the provider's 0.01 fee is",
+                  "// inherited: 7 x 0.002 + 0.01 = 0.024. Case 270.16 sends the same body without the header and pays 0.017.",
+                  "pm.test('generic relay: request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.passthrough_response_body !== undefined && row.cost !== undefined && row.cost !== null) {",
+                  "      pm.test('generic relay: header-matched route rate applied', function () { pm.expect(row.cost, JSON.stringify({cost: row.cost})).to.be.closeTo(0.024, 1e-6); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: log row with cost appeared', function () { pm.expect.fail('log ' + reqId + ' has no cost after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "Echo.PricedOp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pages\": 7\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_units/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_units",
+                "post"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.23 POST /passthrough/generic_echo_units/post with stream:true - a caller's stream flag does not select the streaming relay: the reply is buffered and the pages are billed (generic passthrough) - #8784",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_units has no detect_from_body, so \"stream\": true in the body is just another field: the buffered",
+                  "// handler serves the call (no X-Accel-Buffering), the echoed pages are read, and the row costs 7 x 0.001 + 0.01.",
+                  "// Had the flag selected the streaming relay, the non-SSE reply would be forwarded unread and only the fee billed.",
+                  "pm.test('generic relay: request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "pm.test('generic relay: buffered handler served it', function () { pm.expect(pm.response.headers.get('x-accel-buffering'), 'x-accel-buffering must be absent').to.not.eql('no'); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (row && row.passthrough_response_body !== undefined && row.cost !== undefined && row.cost !== null) {",
+                  "      pm.test('generic relay: response-side pages still billed', function () { pm.expect(row.cost, JSON.stringify({cost: row.cost})).to.be.closeTo(0.017, 1e-6); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: log row with cost appeared', function () { pm.expect.fail('log ' + reqId + ' has no cost after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pages\": 7,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_units/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_units",
+                "post"
+              ]
+            }
+          }
         }
       ]
     }

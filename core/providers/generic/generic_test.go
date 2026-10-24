@@ -672,6 +672,23 @@ func TestGenericOperatorHeadersWinOverCaller(t *testing.T) {
 	assert.Equal(t, "abc", got[0].Header.Get("X-Trace"), "other caller headers are forwarded")
 }
 
+// strict_routes holds on the Go SDK path too: the provider refuses an unlisted operation with 404
+// before anything is sent, the same way the HTTP transport does.
+func TestGenericStrictRoutesOnProvider(t *testing.T) {
+	up := jsonUpstream(t, http.StatusOK, `{}`)
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{StrictRoutes: true, Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/search"}}})
+	_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/other", "", `{}`, nil))
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, http.StatusNotFound, *bifrostErr.StatusCode)
+	_, bifrostErr = provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("k"), relayRequest(http.MethodPost, "/other", "", `{}`, nil))
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, http.StatusNotFound, *bifrostErr.StatusCode)
+	assert.Empty(t, up.requests(), "nothing reached the upstream")
+	resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/search", "", `{}`, nil))
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "a listed operation is relayed")
+}
+
 func TestGenericStreams(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
 	provider := newProvider(t, up, &schemas.GenericProviderConfig{
@@ -681,13 +698,17 @@ func TestGenericStreams(t *testing.T) {
 			{Method: "POST", Path: "/v1/events", Stream: schemas.Ptr(true)},
 		},
 	})
-	assert.False(t, provider.Plan("POST", "/v1/stream-but-not", "text/event-stream").Streams, "a route's stream flag wins over every heuristic")
-	assert.True(t, provider.Plan("POST", "/v1/events", "").Streams)
-	assert.True(t, provider.Plan("GET", "/v1/live/room/1", "").Streams, "streaming.paths glob")
-	assert.True(t, provider.Plan("POST", "/v1/chat", "text/event-stream").Streams, "Accept header when enabled")
-	assert.False(t, provider.Plan("POST", "/v1/chat/stream", "").Streams, "the path's wording is not a signal: a non-SSE reply would be forwarded unread and under-billed")
-	assert.False(t, provider.Plan("GET", "/v1/streams/123", "").Streams)
-	assert.False(t, provider.Plan("POST", "/v1/chat", "application/json").Streams)
+	assert.False(t, provider.Plan("POST", "/v1/stream-but-not", "", true, nil).Streams, "a route's stream flag wins over every heuristic")
+	assert.True(t, provider.Plan("POST", "/v1/events", "", false, nil).Streams)
+	assert.True(t, provider.Plan("GET", "/v1/live/room/1", "", false, nil).Streams, "streaming.paths glob")
+	assert.True(t, provider.Plan("POST", "/v1/chat", "text/event-stream", false, nil).Streams, "Accept header when enabled")
+	assert.False(t, provider.Plan("POST", "/v1/chat", "", true, nil).Streams, "a caller's stream flag is not a signal unless the operator opted in: the streaming relay skips response-side billing")
+	optIn := newProvider(t, up, &schemas.GenericProviderConfig{Streaming: &schemas.GenericStreamingConfig{DetectFromBody: true}})
+	assert.True(t, optIn.Plan("POST", "/v1/chat", "", true, nil).Streams, "body stream flag when enabled")
+	assert.False(t, optIn.Plan("POST", "/v1/chat", "", false, nil).Streams)
+	assert.False(t, provider.Plan("POST", "/v1/chat/stream", "", false, nil).Streams, "the path's wording is not a signal: a non-SSE reply would be forwarded unread and under-billed")
+	assert.False(t, provider.Plan("GET", "/v1/streams/123", "", false, nil).Streams)
+	assert.False(t, provider.Plan("POST", "/v1/chat", "application/json", false, nil).Streams)
 }
 
 func BenchmarkGenericPassthroughUnary(b *testing.B) {
@@ -721,7 +742,7 @@ func BenchmarkGenericPassthroughUnary(b *testing.B) {
 // an OpenAPI import produces. Plan runs once per request in the transport and the relay reuses it
 // through the context, so this is the whole per-request matching cost.
 func BenchmarkGenericRoutePlan(b *testing.B) {
-	cfg := &schemas.GenericProviderConfig{}
+	cfg := &schemas.GenericProviderConfig{StrictRoutes: true}
 	for i := 0; i < 200; i++ {
 		cfg.Routes = append(cfg.Routes, schemas.GenericRouteConfig{Method: "POST", Path: fmt.Sprintf("/v1/resource%d/*/action", i)})
 	}
@@ -731,12 +752,12 @@ func BenchmarkGenericRoutePlan(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		plan := provider.Plan("POST", "/v1/resource199/42/action", "")
-		if plan.route == nil {
+		plan := provider.Plan("POST", "/v1/resource199/42/action", "", false, nil)
+		if !plan.Allowed {
 			b.Fatal("route must match")
 		}
 		WithPlan(ctx, plan)
-		if _, _, route := provider.resolve(ctx, "POST", "/v1/resource199/42/action"); route == nil {
+		if _, _, route := provider.resolve(ctx, "POST", "/v1/resource199/42/action", nil); route == nil {
 			b.Fatal("plan must be reused")
 		}
 	}
