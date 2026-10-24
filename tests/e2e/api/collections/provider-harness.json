@@ -281289,6 +281289,211 @@
           }
         }
       ]
+    },
+    {
+      "name": "270. Drop-in model routes enrich from the model catalog (catalog enrichment) (#7319)",
+      "description": "GET /anthropic/v1/models and GET /openai/v1/models (plus /openai/v1/models/{model}) used to hand the provider answer straight to the SDK converter, so max_input_tokens / max_tokens / context_window were never backfilled from the pricing catalog, while GET /v1/models on the same instance reported them (#7319). GenericRouter.handleRequest now applies the same modelcatalog enrichment the native route does. Each case pins one drop-in route: the catalog limit must be present and positive for a model the catalog knows. 270.1 is smoke coverage only: Anthropic reports both limits itself, so it passes before the fix. 270.4 is the red-before-green pin for the /anthropic route: x-bf-model-provider: openai lists OpenAI models in the Anthropic shape, OpenAI reports no limits, so max_input_tokens and max_tokens can only come from the catalog.",
+      "item": [
+        {
+          "name": "270.1 anthropic/claude-haiku-4-5 via /anthropic/v1/models carries max_input_tokens and max_tokens (catalog enrichment) - #7319",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('270.1 anthropic/claude-haiku-4-5 via /anthropic/v1/models carries max_input_tokens and max_tokens (catalog enrichment) - #7319 succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var entry = (body.data || []).filter(function (m) { return typeof m.id === 'string' && m.id.indexOf('claude-haiku-4-5') === 0; })[0];",
+                  "pm.test('the catalog limits reach the drop-in route (#7319)', function () {",
+                  "  pm.expect(entry, 'model not listed: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(entry['max_input_tokens'], 'max_input_tokens missing on ' + JSON.stringify(entry)).to.be.a('number').above(0);",
+                  "  pm.expect(entry['max_tokens'], 'max_tokens missing on ' + JSON.stringify(entry)).to.be.a('number').above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-model-provider",
+                "value": "anthropic"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.2 openai/gpt-4o-mini via /openai/v1/models carries context_window (catalog enrichment) - #7319",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('270.2 openai/gpt-4o-mini via /openai/v1/models carries context_window (catalog enrichment) - #7319 succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var entry = (body.data || []).filter(function (m) { return m.id === 'openai/gpt-4o-mini'; })[0];",
+                  "pm.test('the catalog limits reach the drop-in route (#7319)', function () {",
+                  "  pm.expect(entry, 'model not listed: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(entry['context_window'], 'context_window missing on ' + JSON.stringify(entry)).to.be.a('number').above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-model-provider",
+                "value": "openai"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.3 openai/gpt-4o-mini via /openai/v1/models/{model} retrieve carries context_window (catalog enrichment) - #7319",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('270.3 openai/gpt-4o-mini via /openai/v1/models/{model} retrieve carries context_window (catalog enrichment) - #7319 succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var entry = body;",
+                  "pm.test('the catalog limits reach the drop-in route (#7319)', function () {",
+                  "  pm.expect(entry, 'model not listed: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(entry['context_window'], 'context_window missing on ' + JSON.stringify(entry)).to.be.a('number').above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-model-provider",
+                "value": "openai"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/models/gpt-4o-mini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "models",
+                "gpt-4o-mini"
+              ]
+            }
+          }
+        },
+        {
+          "name": "270.4 openai/gpt-4o-mini via /anthropic/v1/models carries max_input_tokens and max_tokens (catalog enrichment) - #7319",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('270.4 openai/gpt-4o-mini via /anthropic/v1/models carries max_input_tokens and max_tokens (catalog enrichment) - #7319 succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var entry = (body.data || []).filter(function (m) { return m.id === 'gpt-4o-mini' || m.id === 'openai/gpt-4o-mini'; })[0];",
+                  "pm.test('limits OpenAI never reports reach the /anthropic route from the catalog (#7319)', function () {",
+                  "  pm.expect(entry, 'model not listed: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(entry['max_input_tokens'], 'max_input_tokens missing on ' + JSON.stringify(entry)).to.be.a('number').above(0);",
+                  "  pm.expect(entry['max_tokens'], 'max_tokens missing on ' + JSON.stringify(entry)).to.be.a('number').above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{openaiKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-model-provider",
+                "value": "openai"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
