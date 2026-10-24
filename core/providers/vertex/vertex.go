@@ -86,13 +86,14 @@ const (
 // different source types, so the same URL is forwarded for one and downloaded for the
 // other.
 //
-// http(s) -- always fetched, for both families. Vertex's FileData is documented as Cloud
+// http(s) -- normally fetched, for both families. Vertex's FileData is documented as Cloud
 // Storage only ("fileUri: Required. The URI of the file in Google Cloud Storage" -- the v1
-// aiplatform discovery document), so an https URI has no supported form here. Forwarding
-// one was measured against harness 47.10 and Vertex rejected all six endpoint shapes with
-// "Cannot fetch content from the provided URL ... Status:
-// URL_REJECTED-REJECTED_FC_TOO_MANY_PENDING" after ~59s each: the server-side crawler is
-// undocumented best-effort and saturates. Inlining costs a download but is deterministic.
+// aiplatform discovery document), so arbitrary https URIs have no supported form here.
+// Forwarding them was measured against harness 47.10 and Vertex rejected all six endpoint
+// shapes with "Cannot fetch content from the provided URL ... Status:
+// URL_REJECTED-REJECTED_FC_TOO_MANY_PENDING" after ~59s each. Gemini/Gemma is the documented
+// exception for public YouTube video URLs: those are read by Gemini itself, so forwarding
+// them avoids downloading the HTML watch page. Claude-on-Vertex remains on the fetch path.
 //
 // gs:// -- forwarded for Gemini/Gemma as fileData.fileUri. This is the documented form, it
 // resolves under the caller's own project IAM with no crawler involved, and it sidesteps
@@ -118,7 +119,12 @@ func classifyURLSource(rawURL string, isAnthropicFamily bool) urlSourceDispositi
 		return urlSourceForward
 	}
 	switch parsed.Scheme {
-	case "http", "https":
+	case "http":
+		return urlSourceFetchHTTP
+	case "https":
+		if !isAnthropicFamily && isYouTubeVideoURL(parsed) {
+			return urlSourceForward
+		}
 		return urlSourceFetchHTTP
 	case "data":
 		return urlSourceForward
@@ -130,6 +136,37 @@ func classifyURLSource(rawURL string, isAnthropicFamily bool) urlSourceDispositi
 	default:
 		return urlSourceForward
 	}
+}
+
+// isYouTubeVideoURL reports whether parsed uses a supported HTTPS YouTube video URL form.
+func isYouTubeVideoURL(parsed *url.URL) bool {
+	if parsed == nil || parsed.Scheme != "https" {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	switch {
+	case host == "youtube.com" || strings.HasSuffix(host, ".youtube.com"):
+		return parsed.Path == "/watch" && parsed.Query().Get("v") != ""
+	case host == "youtu.be":
+		videoID := strings.TrimPrefix(parsed.Path, "/")
+		return videoID != "" && !strings.Contains(videoID, "/")
+	default:
+		return false
+	}
+}
+
+// setYouTubeVideoMIMETypeIfMissing supplies the MIME type Vertex requires for
+// forwarded YouTube videos without overriding a type explicitly provided by the caller.
+func setYouTubeVideoMIMETypeIfMissing(rawURL string, fileType **string) {
+	if fileType == nil || *fileType != nil {
+		return
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || !isYouTubeVideoURL(parsed) {
+		return
+	}
+	mimeType := "video/mp4"
+	*fileType = &mimeType
 }
 
 // vertexCredentialIdentity returns the string that identifies which credentials a key authenticates
@@ -558,9 +595,9 @@ func (provider *VertexProvider) fetchGCSObjectEncoded(ctx *schemas.BifrostContex
 // cancellation/deadlines abort in-flight downloads.
 //
 // classifyURLSource holds the per-scheme, per-family rules and cites the provider docs
-// behind each one; the short version is that http(s) is always fetched, gs:// is forwarded
-// to Gemini and fetched for Claude, and object-store URIs other than gs:// are resolvable
-// by neither side.
+// behind each one; the short version is that arbitrary http(s) is fetched, YouTube HTTPS
+// URLs and gs:// are forwarded to Gemini, gs:// is fetched for Claude, and object-store
+// URIs other than gs:// are resolvable by neither side.
 func (provider *VertexProvider) inlineRemoteURLSources(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) error {
 	if request == nil || request.Input == nil {
 		return nil
@@ -585,7 +622,9 @@ func (provider *VertexProvider) inlineRemoteURLSources(ctx *schemas.BifrostConte
 				if err != nil {
 					return err
 				}
-				if !forward {
+				if forward {
+					setYouTubeVideoMIMETypeIfMissing(*block.File.FileURL, &block.File.FileType)
+				} else {
 					block.File.FileData = &encoded
 					if mediaType != "" && block.File.FileType == nil {
 						block.File.FileType = &mediaType
@@ -648,7 +687,9 @@ func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.Bifrost
 				if err != nil {
 					return err
 				}
-				if !forward {
+				if forward {
+					setYouTubeVideoMIMETypeIfMissing(*f.FileURL, &f.FileType)
+				} else {
 					f.FileData = &encoded
 					if mediaType != "" && f.FileType == nil {
 						f.FileType = &mediaType
