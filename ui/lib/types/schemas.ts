@@ -1204,15 +1204,52 @@ export const allowedRequestsSchema = z.object({
 	live: z.boolean().optional(),
 });
 
+// Generic relay auth: the per-type required fields are checked here so the form reports them inline.
+export const genericAuthConfigSchema = z
+	.object({
+		type: z.enum(["bearer", "header", "query", "basic", "aws_sigv4", "none"]),
+		header_name: z.string().trim().optional(),
+		query_param: z.string().trim().optional(),
+		value_prefix: z.string().optional(),
+		aws: z
+			.object({
+				service: z.string().trim().optional(),
+				region: z.string().trim().optional(),
+			})
+			.optional(),
+	})
+	.superRefine((auth, ctx) => {
+		if (auth.type === "header" && !auth.header_name) {
+			ctx.addIssue({ code: "custom", message: "Header name is required for header auth", path: ["header_name"] });
+		}
+		if (auth.type === "query" && !auth.query_param) {
+			ctx.addIssue({ code: "custom", message: "Query parameter is required for query auth", path: ["query_param"] });
+		}
+		if (auth.type === "aws_sigv4") {
+			const service = auth.aws?.service ?? "";
+			if (!service) {
+				ctx.addIssue({ code: "custom", message: "AWS service is required for SigV4 auth", path: ["aws", "service"] });
+			} else if (!/^[a-z0-9-]+$/.test(service)) {
+				ctx.addIssue({ code: "custom", message: "AWS service must match [a-z0-9-]+", path: ["aws", "service"] });
+			}
+		}
+	});
+
+// Generic provider config schema matching Go's schemas.GenericProviderConfig
+export const genericProviderConfigSchema = z.object({
+	auth: genericAuthConfigSchema,
+});
+
 // Custom provider config schema
 export const customProviderConfigSchema = z
 	.object({
-		base_provider_type: knownProviderSchema,
+		base_provider_type: z.union([knownProviderSchema, z.literal("generic")]),
 		is_key_less: z.boolean().optional(),
 		does_not_send_done_marker: z.boolean().optional(),
 		wait_for_usage: z.boolean().optional(),
 		allowed_requests: allowedRequestsSchema.optional(),
 		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
+		generic_config: genericProviderConfigSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -1236,6 +1273,7 @@ export const formCustomProviderConfigSchema = z
 		wait_for_usage: z.boolean().optional(),
 		allowed_requests: allowedRequestsSchema.optional(),
 		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
+		generic_config: genericProviderConfigSchema.optional(),
 	})
 	.refine(
 		(data) => {

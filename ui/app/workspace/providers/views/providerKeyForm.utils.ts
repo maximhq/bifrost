@@ -100,3 +100,22 @@ export const applyAuthMethod = (key: KeyPayload, isEditing: boolean): Record<str
 	}
 	return out;
 };
+type RegionSecret = { value?: string; ref?: string };
+type KeyFormWithRegion = { key?: { bedrock_key_config?: { region?: RegionSecret } } };
+
+// withProviderRegion gives a key the provider's region for validation only. A generic SigV4
+// provider that sets auth.aws.region signs with it when the key has none, so the Bedrock key
+// schema's region check is judged as the relay would see the key.
+export const withProviderRegion = <T extends KeyFormWithRegion>(values: T, region: string): T => {
+	const cfg = values.key?.bedrock_key_config;
+	if (!cfg || isSet(cfg.region)) return values;
+	return { ...values, key: { ...values.key, bedrock_key_config: { ...cfg, region: { value: region } } } };
+};
+
+// keepKeyRegion puts the region the user entered back into the validated values, so the borrowed
+// provider region is never saved onto the key.
+export const keepKeyRegion = <T extends KeyFormWithRegion>(parsed: T, entered: KeyFormWithRegion): T => {
+	const cfg = parsed.key?.bedrock_key_config;
+	if (!cfg) return parsed;
+	return { ...parsed, key: { ...parsed.key, bedrock_key_config: { ...cfg, region: entered.key?.bedrock_key_config?.region } } };
+};

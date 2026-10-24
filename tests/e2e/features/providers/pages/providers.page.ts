@@ -39,6 +39,10 @@ export class ProvidersPage extends BasePage {
   readonly baseUrlInput: Locator
   readonly customProviderSaveBtn: Locator
   readonly customProviderCancelBtn: Locator
+  // Generic (non-LLM relay) base type: upstream auth fields on the custom provider sheet
+  readonly genericAuthSection: Locator
+  readonly genericAuthTypeSelect: Locator
+  readonly genericAuthHeaderNameInput: Locator
 
   // Keys table empty state (when provider has no keys)
   readonly keysTableEmptyState: Locator
@@ -68,6 +72,9 @@ export class ProvidersPage extends BasePage {
     this.baseUrlInput = page.getByTestId('base-url-input')
     this.customProviderSaveBtn = page.getByTestId('custom-provider-save-btn')
     this.customProviderCancelBtn = page.getByTestId('custom-provider-cancel-btn')
+    this.genericAuthSection = page.getByTestId('generic-auth-section')
+    this.genericAuthTypeSelect = page.getByTestId('generic-auth-type-select')
+    this.genericAuthHeaderNameInput = page.getByTestId('generic-auth-header-name-input')
 
     // Keys table empty state
     this.keysTableEmptyState = page.getByTestId('keys-table-empty-state')
@@ -355,6 +362,15 @@ export class ProvidersPage extends BasePage {
     if (config.baseUrl) {
       await this.baseUrlInput.fill(config.baseUrl)
     }
+
+    // Generic relay: pick the upstream auth type and its header name
+    if (config.baseProviderType === 'generic' && config.genericAuthType) {
+      await this.genericAuthTypeSelect.click()
+      await this.page.getByTestId(`generic-auth-type-option-${config.genericAuthType}`).click()
+      if (config.genericAuthType === 'header' && config.genericAuthHeaderName) {
+        await this.genericAuthHeaderNameInput.fill(config.genericAuthHeaderName)
+      }
+    }
   }
 
   /**
@@ -580,6 +596,7 @@ export class ProvidersPage extends BasePage {
       cohere: 'Cohere',
       bedrock: 'AWS Bedrock',
       typesafe: 'TypeSafe',
+      generic: 'Generic HTTP API (passthrough)',
     }
     return labels[type] || type
   }
