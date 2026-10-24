@@ -308,6 +308,11 @@ const LIB08 = folder("LIB-08 Publish an HTTP custom entry", "Setup: name \"Chaos
 
 const stdioConfig = { command: "mcp-harness-stdio", args: ["--flag", "value"], envs: ["MCP_HARNESS_ENV"] };
 const LIB09 = folder("LIB-09 Publish a STDIO custom entry", "Setup: stdio_config with command, args, envs. The folder deletes its entry at the end.", [
+  request("LIB-09", "filterdata lacks stdio before the publish", "GET", "/api/mcp/library/filterdata", {
+    asserts: [A.status(200), A.custom("connection_types has no \"stdio\"", [
+      "pm.expect(pm.response.json().connection_types || [], 'body: ' + pm.response.text()).to.not.include('stdio');",
+    ])],
+  }),
   request("LIB-09", "publish a stdio entry", "POST", "/api/mcp/library", {
     body: { name: "LIB-09 stdio entry", connection_type: "stdio", stdio_config: stdioConfig },
     asserts: [A.status(200), A.custom("stdio_config is echoed", [
