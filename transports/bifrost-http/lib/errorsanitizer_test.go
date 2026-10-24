@@ -78,3 +78,28 @@ func TestSanitizeBifrostErrorForClientPreservesNonSensitiveServerMessage(t *test
 		t.Fatalf("expected non-sensitive server message to be preserved, got %q", sanitized.Error.Message)
 	}
 }
+
+// TestSanitizeBifrostErrorForClientPreservesContentFilterDetails pins that the sanitizer's
+// copy of the error keeps a provider's content-filter classification, which is meant for
+// the caller (#8799).
+func TestSanitizeBifrostErrorForClientPreservesContentFilterDetails(t *testing.T) {
+	statusCode := fasthttp.StatusBadRequest
+	details := &schemas.ContentFilterDetails{Categories: []schemas.ContentFilterCategory{
+		{Category: "violence", Severity: schemas.Ptr("medium"), Filtered: true},
+	}}
+	err := &schemas.BifrostError{
+		StatusCode: &statusCode,
+		Error: &schemas.ErrorField{
+			Code:                 schemas.Ptr("content_filter"),
+			Message:              "The response was filtered due to the prompt triggering Azure OpenAI's content management policy.",
+			Param:                "prompt",
+			ContentFilterDetails: details,
+		},
+	}
+
+	sanitized := SanitizeBifrostErrorForClient(err)
+
+	if sanitized.Error.ContentFilterDetails != details {
+		t.Fatalf("expected content_filter_details to be preserved, got %+v", sanitized.Error.ContentFilterDetails)
+	}
+}

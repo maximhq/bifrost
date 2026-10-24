@@ -2248,12 +2248,29 @@ type StreamControl struct {
 
 // ErrorField represents detailed error information.
 type ErrorField struct {
-	Type    *string     `json:"type,omitempty"`
-	Code    *string     `json:"code,omitempty"`
-	Message string      `json:"message"`
-	Error   error       `json:"-"`
-	Param   interface{} `json:"param,omitempty"`
-	EventID *string     `json:"event_id,omitempty"`
+	Type                 *string               `json:"type,omitempty"`
+	Code                 *string               `json:"code,omitempty"`
+	Message              string                `json:"message"`
+	Error                error                 `json:"-"`
+	Param                interface{}           `json:"param,omitempty"`
+	EventID              *string               `json:"event_id,omitempty"`
+	ContentFilterDetails *ContentFilterDetails `json:"content_filter_details,omitempty"` // set when a provider's content filter blocked the request
+}
+
+// ContentFilterDetails is the part of a provider's safety classification a caller may
+// see when the provider blocked the request: which categories caused the block, and how
+// severe they were. It never carries the provider's raw body, the classified text,
+// citations or blocklist names, so it is returned without send_back_raw_response.
+type ContentFilterDetails struct {
+	Categories []ContentFilterCategory `json:"categories"`
+}
+
+// ContentFilterCategory is one category that caused a content-filter block.
+type ContentFilterCategory struct {
+	Category string  `json:"category"`           // provider's category name, e.g. "violence", "self_harm", "jailbreak"
+	Severity *string `json:"severity,omitempty"` // severity level ("safe", "low", "medium", "high") for severity-scored categories
+	Filtered bool    `json:"filtered"`           // whether this category blocked the request
+	Detected *bool   `json:"detected,omitempty"` // set by binary detectors such as jailbreak, profanity and protected material
 }
 
 // MarshalJSON implements custom JSON marshaling for ErrorField.
@@ -2278,12 +2295,13 @@ func (e *ErrorField) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON normalizes provider error fields whose code or message shapes vary.
 func (e *ErrorField) UnmarshalJSON(data []byte) error {
 	aux := &struct {
-		Type    *string     `json:"type,omitempty"`
-		Code    interface{} `json:"code,omitempty"`
-		Message string      `json:"message"`
-		Error   *string     `json:"error,omitempty"`
-		Param   interface{} `json:"param,omitempty"`
-		EventID *string     `json:"event_id,omitempty"`
+		Type                 *string               `json:"type,omitempty"`
+		Code                 interface{}           `json:"code,omitempty"`
+		Message              string                `json:"message"`
+		Error                *string               `json:"error,omitempty"`
+		Param                interface{}           `json:"param,omitempty"`
+		EventID              *string               `json:"event_id,omitempty"`
+		ContentFilterDetails *ContentFilterDetails `json:"content_filter_details,omitempty"`
 	}{}
 
 	if err := json.Unmarshal(data, aux); err != nil {
@@ -2294,6 +2312,7 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 	e.Message = aux.Message
 	e.Param = aux.Param
 	e.EventID = aux.EventID
+	e.ContentFilterDetails = aux.ContentFilterDetails
 	if aux.Error != nil {
 		e.Error = errors.New(*aux.Error)
 	}

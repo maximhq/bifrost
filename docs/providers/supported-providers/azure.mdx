@@ -684,6 +684,49 @@ Streaming uses OpenAI or Anthropic format depending on model type:
 - **OpenAI models**: Standard OpenAI streaming with `chat.completion.chunk` events
 - **Anthropic models**: Anthropic streaming format with content blocks
 
+## Content-Filter Errors
+
+When Azure's content filter blocks a prompt, Azure answers `400` with code `content_filter`. Bifrost keeps that status, code, message and `param`, and adds the categories that caused the block under `error.content_filter_details`:
+
+```json
+{
+  "is_bifrost_error": false,
+  "status_code": 400,
+  "error": {
+    "code": "content_filter",
+    "message": "The response was filtered due to the prompt triggering Azure OpenAI's content management policy. ...",
+    "param": "prompt",
+    "content_filter_details": {
+      "categories": [
+        { "category": "hate", "severity": "low", "filtered": true },
+        { "category": "violence", "severity": "medium", "filtered": true }
+      ]
+    }
+  }
+}
+```
+
+- Only the categories Azure **filtered** are listed. Each has its `category` name, a `severity` for the severity-scored categories (`hate`, `sexual`, `violence`, `self_harm`), and `detected` for detectors such as `jailbreak`, `profanity` and protected material.
+- Nothing else from Azure's classification goes into `content_filter_details`: no inner error code, unfiltered categories, blocklist names, citations or offsets. Azure's full error body is returned in `extra_fields.raw_response` only when `send_back_raw_response` is on, or when a request sets the `x-bf-send-back-raw-response` header.
+- The categories are read from `innererror.content_filter_result` on Chat Completions and Text Completions, and from `content_filters` on the [Responses API](#2-responses-api). Streaming requests get the same error: Azure blocks the prompt before the stream starts, so the reply is a `400` JSON body, not an SSE event.
+- A `content_filter` error that carries no classification is returned as before, without `content_filter_details`.
+- The field is returned on `/v1/chat/completions`, `/v1/completions`, `/v1/responses` and the OpenAI and Azure SDK drop-in routes, and as `BifrostError.Error.ContentFilterDetails` in the Go SDK. The Anthropic, GenAI, Bedrock and Cohere drop-in routes return their SDK's own error shape, which has no field for it.
+
+The OpenAI Python SDK puts the `error` object on the exception's `body`, so the categories are one lookup away:
+
+```python
+import openai
+
+try:
+    client.chat.completions.create(model="azure/gpt-4o", messages=messages)
+except openai.BadRequestError as e:
+    details = (e.body or {}).get("content_filter_details")
+    if details:
+        blocked_by = [c["category"] for c in details["categories"]]
+```
+
+Output that Azure filters mid-generation is not an error: the choice finishes with `finish_reason: "content_filter"`, and Azure's `content_filter_results` annotations are passed through on the choice.
+
 ---
 
 # 2. Responses API
@@ -752,6 +795,7 @@ resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDe
 - Uses `/openai/v1/responses` endpoint
 - All request body conversions handled automatically
 - Supports raw request body passthrough for advanced cases
+- A prompt Azure's content filter blocks returns the categories that blocked it in `error.content_filter_details`, as described in [Content-Filter Errors](#content-filter-errors)
 
 **OpenAI Models - gpt-oss Special Message Handling:**
 For OpenAI models through Azure, see [OpenAI Responses API documentation](/providers/supported-providers/openai) for details on special gpt-oss model handling regarding reasoning conversion (summaries vs. content blocks).

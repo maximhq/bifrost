@@ -664,3 +664,179 @@ func TestAzureDecisionPassesAzureErrorsThrough(t *testing.T) {
 		})
 	}
 }
+
+// Azure answers a prompt its content filter blocks with HTTP 400 and code content_filter.
+// Chat and text completions carry the classification under innererror, the Responses API
+// under content_filters.
+const (
+	azureChatContentFilterBody      = `{"error":{"message":"The response was filtered due to the prompt triggering Azure OpenAI's content management policy.","type":null,"param":"prompt","code":"content_filter","status":400,"innererror":{"code":"ResponsibleAIPolicyViolation","content_filter_result":{"hate":{"filtered":false,"severity":"safe"},"violence":{"filtered":true,"severity":"medium"}}}}}`
+	azureResponsesContentFilterBody = `{"error":{"message":"The response was filtered due to the prompt triggering Azure OpenAI's content management policy.","type":"invalid_request_error","param":"prompt","code":"content_filter","innererror":{"code":"ContentFiltered"},"content_filters":[{"blocked":true,"source_type":"prompt","content_filter_results":{"self_harm":{"filtered":true,"severity":"medium"}}}]}}`
+)
+
+// assertAzureContentFilterError checks that a blocked prompt came back as Azure's 400
+// content_filter error carrying exactly the want categories.
+func assertAzureContentFilterError(t *testing.T, bifrostErr *schemas.BifrostError, want []schemas.ContentFilterCategory) {
+	t.Helper()
+	if bifrostErr == nil || bifrostErr.Error == nil {
+		t.Fatalf("error = %v, want Azure's content_filter error", bifrostErr)
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
+	}
+	if bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "content_filter" {
+		t.Errorf("code = %v, want content_filter", bifrostErr.Error.Code)
+	}
+	if bifrostErr.Error.ContentFilterDetails == nil || !reflect.DeepEqual(bifrostErr.Error.ContentFilterDetails.Categories, want) {
+		wantJSON, _ := json.Marshal(want)
+		t.Errorf("error = %s, want content_filter_details categories %s", bifrostErr, wantJSON)
+	}
+}
+
+// TestAzureContentFilterErrorDetails pins #8799 on every Azure text-generation path: a
+// blocked prompt comes back with the categories that blocked it in
+// error.content_filter_details without send_back_raw_response, and Azure's raw body still
+// only rides along when send_back_raw_response is on.
+func TestAzureContentFilterErrorDetails(t *testing.T) {
+	// The datasheet subtest installs the process-global capability resolver, so this test
+	// must not run in parallel with anything else that does.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		if r.URL.Path == "/openai/v1/responses" {
+			_, _ = io.WriteString(w, azureResponsesContentFilterBody)
+			return
+		}
+		_, _ = io.WriteString(w, azureChatContentFilterBody)
+	}))
+	defer server.Close()
+
+	key := schemas.Key{
+		Value:          *schemas.NewSecretVar("test-key"),
+		Models:         []string{"*"},
+		AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar(server.URL)},
+	}
+	newProvider := func(t *testing.T, sendBackRawResponse bool) *azure.AzureProvider {
+		t.Helper()
+		provider, err := azure.NewAzureProvider(&schemas.ProviderConfig{
+			NetworkConfig:       schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10},
+			SendBackRawResponse: sendBackRawResponse,
+		}, routingTestLogger{})
+		if err != nil {
+			t.Fatalf("NewAzureProvider: %v", err)
+		}
+		return provider
+	}
+	passthroughPostHook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return resp, err
+	}
+	// Azure refuses the prompt before streaming, so the error is the call's own and no
+	// stream may open.
+	streamError := func(t *testing.T, stream chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError) *schemas.BifrostError {
+		t.Helper()
+		if stream != nil {
+			for range stream {
+			}
+			t.Fatal("a stream opened for a prompt Azure refused before streaming")
+		}
+		return bifrostErr
+	}
+	chatRequest := func(model string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Azure,
+			Model:    model,
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		}
+	}
+	textRequest := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.Azure,
+		Model:    "gpt-35-turbo-instruct",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+	}
+	responsesRequest := func(model string) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Azure,
+			Model:    model,
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+		}
+	}
+	chatCategories := []schemas.ContentFilterCategory{{Category: "violence", Severity: schemas.Ptr("medium"), Filtered: true}}
+	responsesCategories := []schemas.ContentFilterCategory{{Category: "self_harm", Severity: schemas.Ptr("medium"), Filtered: true}}
+
+	type call func(t *testing.T, ctx *schemas.BifrostContext, provider *azure.AzureProvider) *schemas.BifrostError
+	chatCompletion := func(model string) call {
+		return func(t *testing.T, ctx *schemas.BifrostContext, provider *azure.AzureProvider) *schemas.BifrostError {
+			_, bifrostErr := provider.ChatCompletion(ctx, key, chatRequest(model))
+			return bifrostErr
+		}
+	}
+	responses := func(model string) call {
+		return func(t *testing.T, ctx *schemas.BifrostContext, provider *azure.AzureProvider) *schemas.BifrostError {
+			_, bifrostErr := provider.Responses(ctx, key, responsesRequest(model))
+			return bifrostErr
+		}
+	}
+	responsesStream := func(model string) call {
+		return func(t *testing.T, ctx *schemas.BifrostContext, provider *azure.AzureProvider) *schemas.BifrostError {
+			stream, bifrostErr := provider.ResponsesStream(ctx, passthroughPostHook, nil, key, responsesRequest(model))
+			return streamError(t, stream, bifrostErr)
+		}
+	}
+	cases := []struct {
+		name string
+		call call
+		want []schemas.ContentFilterCategory
+	}{
+		{"ChatCompletion", chatCompletion("gpt-4o"), chatCategories},
+		{"ChatCompletionStream", func(t *testing.T, ctx *schemas.BifrostContext, provider *azure.AzureProvider) *schemas.BifrostError {
+			stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, key, chatRequest("gpt-4o"))
+			return streamError(t, stream, bifrostErr)
+		}, chatCategories},
+		{"TextCompletion", func(t *testing.T, ctx *schemas.BifrostContext, provider *azure.AzureProvider) *schemas.BifrostError {
+			_, bifrostErr := provider.TextCompletion(ctx, key, textRequest)
+			return bifrostErr
+		}, chatCategories},
+		{"TextCompletionStream", func(t *testing.T, ctx *schemas.BifrostContext, provider *azure.AzureProvider) *schemas.BifrostError {
+			stream, bifrostErr := provider.TextCompletionStream(ctx, passthroughPostHook, nil, key, textRequest)
+			return streamError(t, stream, bifrostErr)
+		}, chatCategories},
+		{"Responses", responses("gpt-4o"), responsesCategories},
+		{"ResponsesStream", responsesStream("gpt-4o"), responsesCategories},
+		// A model whose datasheet row lacks /v1/responses is served through chat
+		// completions (#6782), so the chat body's classification comes back.
+		{"ResponsesServedThroughChatCompletions", responses("FW-GLM-5.2"), chatCategories},
+		{"ResponsesStreamServedThroughChatCompletions", responsesStream("FW-GLM-5.2"), chatCategories},
+	}
+
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == schemas.Azure && model == "FW-GLM-5.2" {
+			return &schemas.ModelCapabilities{SupportedEndpoints: []string{"/v1/chat/completions"}}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			bifrostErr := tc.call(t, ctx, newProvider(t, false))
+			assertAzureContentFilterError(t, bifrostErr, tc.want)
+			if bifrostErr.ExtraFields.RawResponse != nil {
+				t.Errorf("raw_response = %v, want none without send_back_raw_response", bifrostErr.ExtraFields.RawResponse)
+			}
+		})
+	}
+
+	t.Run("RawResponseStillFollowsSendBackRawResponse", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		bifrostErr := chatCompletion("gpt-4o")(t, ctx, newProvider(t, true))
+		assertAzureContentFilterError(t, bifrostErr, chatCategories)
+		if bifrostErr.ExtraFields.RawResponse == nil {
+			t.Error("raw_response is missing with send_back_raw_response on")
+		}
+	})
+}

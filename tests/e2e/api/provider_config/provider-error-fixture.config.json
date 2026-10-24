@@ -1,4 +1,7 @@
 {
+  "client": {
+    "enforce_auth_on_inference": false
+  },
   "framework": {
     "pricing": {
       "pricing_url": "http://127.0.0.1:8791/pricing.json",
@@ -37,7 +40,8 @@
           "name": "local-error-fixture",
           "value": "test-key",
           "models": [
-            "azure-filtered"
+            "azure-filtered",
+            "azure-prompt-blocked"
           ],
           "weight": 1,
           "azure_key_config": {
