@@ -2,10 +2,12 @@ package warp
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/stretchr/testify/require"
 )
@@ -107,4 +109,107 @@ func TestWarpSweepsExpiredVectorsWhileWarpIsDisabled(t *testing.T) {
 	swept, err := never.sweepExpiredVectors(context.Background(), time.Now().UTC())
 	require.NoError(t, err)
 	require.Zero(t, swept)
+}
+
+// refusingVectors is a vector store whose deletes fail while down is set, or
+// once the context they are given has ended.
+type refusingVectors struct {
+	*fakeWarpVectorStore
+	down bool
+}
+
+func (r *refusingVectors) Delete(ctx context.Context, namespace, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if r.down {
+		return errors.New("vector store unavailable")
+	}
+	return r.fakeWarpVectorStore.Delete(ctx, namespace, id)
+}
+
+// flakyConfigStore fails to read the configuration while err is set.
+type flakyConfigStore struct {
+	*recordingStore
+	err error
+}
+
+func (f *flakyConfigStore) GetWarpConfig(ctx context.Context) (*tables.TableWarpConfig, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.recordingStore.GetWarpConfig(ctx)
+}
+
+// pendingVectorDeletes lists what is waiting to be retried, by log id.
+func pendingVectorDeletes(t *testing.T, service *Service) map[string]string {
+	t.Helper()
+	rows, err := service.topicStore().ListWarpVectorDeletes(context.Background(), 100)
+	require.NoError(t, err)
+	byLog := make(map[string]string, len(rows))
+	for _, row := range rows {
+		byLog[row.LogID] = row.Namespace
+	}
+	return byLog
+}
+
+// A delete whose vector cannot be removed - the vector store is down, or the
+// request was cancelled - still succeeds, since the log is already gone, and
+// the vector used to stay behind for good: nothing retried it, and with no
+// retention set nothing swept it. Now each one is recorded and the hourly
+// upkeep retries it until it goes, whether or not a topics job is running.
+func TestWarpForgetLogsRetriesWhatTheVectorStoreRefused(t *testing.T) {
+	service, fake := retentionTestService(t)
+	vectors := &refusingVectors{fakeWarpVectorStore: fake, down: true}
+	service.vectorStore = vectors
+	namespace := assignTestRow().LogVectorStoreNamespace
+
+	service.ForgetLogs(context.Background(), []string{"stale"})
+	require.Equal(t, []string{"fresh", "stale"}, retentionTestIDs(fake), "the store refused")
+	require.Equal(t, map[string]string{"stale": namespace}, pendingVectorDeletes(t, service), "and the delete is kept to retry")
+
+	// A request that ended before its deletes ran is retried the same way.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	vectors.down = false
+	service.ForgetLogs(cancelled, []string{"fresh", "never-indexed"})
+	require.Equal(t, map[string]string{"stale": namespace, "fresh": namespace, "never-indexed": namespace}, pendingVectorDeletes(t, service))
+
+	vectors.down = true
+	service.topicUpkeepTick(context.Background())
+	require.Len(t, pendingVectorDeletes(t, service), 3, "a pass that still cannot delete keeps every row")
+
+	vectors.down = false
+	service.topicUpkeepTick(context.Background())
+	require.Empty(t, retentionTestIDs(fake), "the vectors are gone")
+	require.Empty(t, pendingVectorDeletes(t, service), "and so are the rows; a vector already gone counts as removed")
+}
+
+// A configuration that cannot be read when the logs are deleted leaves the
+// namespace unknown. The deletes are kept without one, and the retry reads
+// the namespace configured by then.
+func TestWarpForgetLogsRetriesWhenTheNamespaceIsUnknown(t *testing.T) {
+	service, fake := retentionTestService(t)
+	config := &flakyConfigStore{recordingStore: service.store.(*recordingStore), err: errors.New("config store unavailable")}
+	service.store = config
+
+	service.ForgetLogs(context.Background(), []string{"stale"})
+	require.Equal(t, map[string]string{"stale": ""}, pendingVectorDeletes(t, service))
+	require.Equal(t, []string{"fresh", "stale"}, retentionTestIDs(fake))
+
+	config.err = nil
+	service.topicUpkeepTick(context.Background())
+	require.Equal(t, []string{"fresh"}, retentionTestIDs(fake))
+	require.Empty(t, pendingVectorDeletes(t, service))
+}
+
+// Nothing is recorded where nothing was indexed: a deployment with a vector
+// store but no embedding model never wrote a Warp vector, so a delete there
+// writes no row however the vector store is doing.
+func TestWarpForgetLogsRecordsNothingWithoutAnEmbeddingModel(t *testing.T) {
+	service, fake := retentionTestService(t)
+	service.vectorStore = &refusingVectors{fakeWarpVectorStore: fake, down: true}
+	service.store.(*recordingStore).row.EmbeddingModel = ""
+	service.ForgetLogs(context.Background(), []string{"stale"})
+	require.Empty(t, pendingVectorDeletes(t, service))
 }
