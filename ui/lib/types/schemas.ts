@@ -333,10 +333,12 @@ export const oauthKeyConfigComplete = (data: Record<string, unknown> | undefined
 		private_key?: { value?: string; ref?: string };
 		issuer?: string;
 		audience?: string;
+		subject_token_file?: string;
 	};
 	if (!isSecretVarSet(d.token_url)) return false;
 	if (d.grant_type === "client_credentials") return isSecretVarSet(d.client_id) && isSecretVarSet(d.client_secret);
 	if (d.grant_type === "jwt_bearer") return isSecretVarSet(d.private_key) && !!d.issuer?.trim() && !!d.audience?.trim();
+	if (d.grant_type === "token_exchange") return !!d.subject_token_file?.trim();
 	return false;
 };
 
@@ -407,7 +409,7 @@ const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: s
 export const oauthKeyConfigSchema = z
 	.object({
 		_auth_type: z.enum(["api_key", "oauth"]).optional(),
-		grant_type: z.enum(["client_credentials", "jwt_bearer"]).optional(),
+		grant_type: z.enum(["client_credentials", "jwt_bearer", "token_exchange"]).optional(),
 		token_url: secretVarSchema.optional(),
 		client_id: secretVarSchema.optional(),
 		client_secret: secretVarSchema.optional(),
@@ -423,6 +425,9 @@ export const oauthKeyConfigSchema = z
 		// Range-checked in superRefine, only while JWT bearer is active: the field is hidden on
 		// the other tabs, and a stale value in it must not block saving. 0 means "default".
 		assertion_lifetime_seconds: z.number().int().optional(),
+		subject_token_file: z.string().optional(),
+		subject_token_type: z.string().optional(),
+		request_encoding: z.enum(["form", "json"]).optional(),
 	})
 	.superRefine((data, ctx) => {
 		// The API-key tab leaves this block inert; only an OAuth block is checked.
@@ -475,6 +480,14 @@ export const oauthKeyConfigSchema = z
 					path: ["assertion_lifetime_seconds"],
 					message: "Assertion lifetime must be between 1 and 3600 seconds (0 for the default)",
 				});
+			}
+		}
+		if (data.grant_type === "token_exchange") {
+			const file = data.subject_token_file?.trim() ?? "";
+			if (!file) {
+				ctx.addIssue({ code: "custom", path: ["subject_token_file"], message: "Subject token file is required for token exchange" });
+			} else if (!file.startsWith("/")) {
+				ctx.addIssue({ code: "custom", path: ["subject_token_file"], message: "Subject token file must be an absolute path" });
 			}
 		}
 	});

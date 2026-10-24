@@ -3850,6 +3850,13 @@ func TestSchemaOAuthKeyConfig(t *testing.T) {
 		"signing_algorithm": "ES256",
 		"assertion_lifetime_seconds": 120
 	}`
+	const te = `"oauth_key_config": {
+		"grant_type": "token_exchange",
+		"token_url": "https://auth.openai.com/oauth/token",
+		"subject_token_file": "/var/run/secrets/openai/token",
+		"request_encoding": "json",
+		"extra_params": {"identity_provider_id": "idp_123", "service_account_id": "sa_456"}
+	}`
 
 	valid := []struct {
 		name   string
@@ -3857,6 +3864,8 @@ func TestSchemaOAuthKeyConfig(t *testing.T) {
 	}{
 		{"client_credentials", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, ` + cc)},
 		{"jwt_bearer", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, ` + jb)},
+		{"token_exchange", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, ` + te)},
+		{"token_exchange with defaults", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "token_exchange", "token_url": "https://idp/token", "subject_token_file": "/t"}`)},
 		{"alongside a value", customProvider(`"name": "k", "value": "sk", "models": ["*"], "weight": 1.0, ` + cc)},
 		// OAuthKeyConfig.Validate treats 0 as "use the default lifetime", so the schema must too.
 		{"zero assertion lifetime means the default", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": 0}`)},
@@ -3886,6 +3895,10 @@ func TestSchemaOAuthKeyConfig(t *testing.T) {
 		{"blank issuer", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "", "audience": "a"}`)},
 		{"blank audience", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": ""}`)},
 		{"negative assertion lifetime", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": -1}`)},
+		{"token_exchange without subject_token_file", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "token_exchange", "token_url": "https://idp/token"}`)},
+		{"token_exchange relative subject_token_file", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "token_exchange", "token_url": "https://idp/token", "subject_token_file": "token"}`)},
+		{"token_exchange unknown request_encoding", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "token_exchange", "token_url": "https://idp/token", "subject_token_file": "/t", "request_encoding": "xml"}`)},
+		{"subject_token_file on client_credentials", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id", "client_secret": "s", "subject_token_file": "/t"}`)},
 	}
 	for _, tt := range invalid {
 		t.Run("invalid "+tt.name, func(t *testing.T) {

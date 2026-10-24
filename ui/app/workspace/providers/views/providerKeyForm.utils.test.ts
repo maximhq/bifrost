@@ -96,6 +96,22 @@ describe("stripOAuthAuthDiscriminator", () => {
 			auth_style: "body",
 		});
 		expect(jwt).toEqual({ grant_type: "jwt_bearer", token_url: tokenUrl, private_key: { value: "pem" }, issuer: "i", audience: "a" });
+
+		const exchange = stripOAuthAuthDiscriminator({
+			_auth_type: "oauth",
+			grant_type: "token_exchange",
+			token_url: tokenUrl,
+			subject_token_file: "/t",
+			request_encoding: "json",
+			client_id: { value: "id" },
+			private_key: { value: "pem" },
+		});
+		expect(exchange).toEqual({ grant_type: "token_exchange", token_url: tokenUrl, subject_token_file: "/t", request_encoding: "json" });
+
+		// A grant switched away from token_exchange must not carry its fields, which the server refuses.
+		const switched = stripOAuthAuthDiscriminator({ _auth_type: "oauth", ...cc, subject_token_file: "/t", request_encoding: "json" });
+		expect(switched).not.toHaveProperty("subject_token_file");
+		expect(switched).not.toHaveProperty("request_encoding");
 	});
 });
 

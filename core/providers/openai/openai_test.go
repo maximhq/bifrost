@@ -2,11 +2,14 @@ package openai_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -145,6 +148,77 @@ func TestOAuthKeyConfigMintsBearer(t *testing.T) {
 		if a != "Bearer minted-token" {
 			t.Fatalf("Authorization = %q, want the minted bearer", a)
 		}
+	}
+}
+
+// Workload identity federation end to end: subject token file → JSON token exchange → bearer.
+func TestOAuthKeyConfigTokenExchangeMintsBearer(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		contentType string
+		exchange    map[string]string
+		auths       []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/oauth/token" {
+			contentType = r.Header.Get("Content-Type")
+			_ = json.NewDecoder(r.Body).Decode(&exchange)
+			_, _ = w.Write([]byte(`{"access_token":"wif-token","token_type":"Bearer","expires_in":3600}`))
+			return
+		}
+		auths = append(auths, r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1700000000,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	tokenDir := t.TempDir()
+	t.Setenv(schemas.SubjectTokenDirsEnv, tokenDir)
+	tokenFile := filepath.Join(tokenDir, "token")
+	if err := os.WriteFile(tokenFile, []byte("k8s-projected-jwt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider := openai.NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: srv.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, oauthTestLogger{})
+	key := schemas.Key{
+		Models: []string{"*"},
+		OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType:        schemas.OAuthGrantTokenExchange,
+			TokenURL:         *schemas.NewSecretVar(srv.URL + "/oauth/token"),
+			SubjectTokenFile: tokenFile,
+			RequestEncoding:  schemas.OAuthRequestEncodingJSON,
+			ExtraParams:      map[string]string{"identity_provider_id": "idp_1", "service_account_id": "sa_1"},
+		},
+	}
+	if err := key.OAuthKeyConfig.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	for i := range 2 {
+		if bErr := oauthChat(t, provider, key); bErr != nil {
+			t.Fatalf("ChatCompletion attempt %d: %v", i+1, bErr.Error.Message)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if contentType != "application/json" {
+		t.Fatalf("token request Content-Type = %q, want application/json", contentType)
+	}
+	want := map[string]string{
+		"grant_type":           "urn:ietf:params:oauth:grant-type:token-exchange",
+		"subject_token":        "k8s-projected-jwt",
+		"subject_token_type":   "urn:ietf:params:oauth:token-type:jwt",
+		"identity_provider_id": "idp_1",
+		"service_account_id":   "sa_1",
+	}
+	if !reflect.DeepEqual(exchange, want) {
+		t.Fatalf("token request = %v, want %v", exchange, want)
+	}
+	if len(auths) != 2 || auths[0] != "Bearer wif-token" || auths[1] != "Bearer wif-token" {
+		t.Fatalf("upstream Authorization headers = %v, want the exchanged bearer twice", auths)
 	}
 }
 

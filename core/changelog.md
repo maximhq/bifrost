@@ -1,3 +1,4 @@
+- feat: oauth_key_config token_exchange grant (RFC 8693) for workload identity federation: the subject token is read from subject_token_file on every exchange, and request_encoding json covers OpenAI's token endpoint. The file must be inside a directory listed in BIFROST_SUBJECT_TOKEN_DIRS
 - fix: omit synthetic reasoning signature on bridged Chat Completions thinking blocks (#8549)
 - feat: openapi MCP connection type, backed by an in-process server built through the new MCPConfig.InProcessServerFactory hook (#8307)
 - feat: cache_control on chat assistant tool_calls reaches the Anthropic and Bedrock tool_use block (#8494)

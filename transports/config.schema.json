@@ -7064,9 +7064,10 @@
               "type": "string",
               "enum": [
                 "client_credentials",
-                "jwt_bearer"
+                "jwt_bearer",
+                "token_exchange"
               ],
-              "description": "client_credentials (RFC 6749 §4.4) or jwt_bearer (RFC 7523: Bifrost signs an assertion with private_key)."
+              "description": "client_credentials (RFC 6749 §4.4), jwt_bearer (RFC 7523: Bifrost signs an assertion with private_key) or token_exchange (RFC 8693: Bifrost exchanges the subject token read from subject_token_file, e.g. for workload identity federation)."
             },
             "token_url": {
               "type": "string",
@@ -7097,7 +7098,7 @@
             },
             "audience": {
               "type": "string",
-              "description": "jwt_bearer: aud claim (required); client_credentials: optional audience form parameter"
+              "description": "jwt_bearer: aud claim (required); client_credentials, token_exchange: optional audience parameter"
             },
             "issuer": {
               "type": "string",
@@ -7150,6 +7151,27 @@
               "maximum": 3600,
               "default": 300,
               "description": "jwt_bearer: seconds from issue until the assertion expires (exp = now + value); 0 or omitted uses the default of 300. iat is backdated by 30 seconds for clock skew, so the assertion's exp - iat span is this value plus 30."
+            },
+            "subject_token_file": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^/",
+              "description": "token_exchange: absolute path of the subject token, such as a Kubernetes projected service account token. Must be inside a directory listed in the BIFROST_SUBJECT_TOKEN_DIRS environment variable. Re-read on every exchange, so a token the platform rotates in place is picked up."
+            },
+            "subject_token_type": {
+              "type": "string",
+              "minLength": 1,
+              "default": "urn:ietf:params:oauth:token-type:jwt",
+              "description": "token_exchange: RFC 8693 token type URI of the subject token"
+            },
+            "request_encoding": {
+              "type": "string",
+              "enum": [
+                "form",
+                "json"
+              ],
+              "default": "form",
+              "description": "token_exchange: encode the token request as a form (RFC 8693 default) or as JSON (required by OpenAI's token endpoint)"
             }
           },
           "required": [
@@ -7190,6 +7212,41 @@
                   "audience": {
                     "minLength": 1
                   }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "grant_type": {
+                    "const": "token_exchange"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "subject_token_file"
+                ]
+              },
+              "else": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "subject_token_file"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "subject_token_type"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "request_encoding"
+                      ]
+                    }
+                  ]
                 }
               }
             }
