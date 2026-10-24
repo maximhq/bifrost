@@ -282114,6 +282114,127 @@
           }
         }
       ]
+    },
+    {
+      "name": "273. Bedrock invoke keeps tool_reference inside a client tool_result (invoke tool reference) (#8976 / PR #9005)",
+      "description": "Regression for #8976. Client-side tool search (Claude Code's ToolSearch) marks tools defer_loading and answers a search with an ordinary tool_result whose content is tool_reference blocks; Anthropic expands each reference into the tool's definition. On /bedrock/model/{id}/invoke and /invoke-with-response-stream, BedrockContentBlock.UnmarshalJSON had no tool_reference case (the block decoded empty) and the Converse-shaped ingress flattened the tool_result to a string, so InvokeModel received the result as content \"\" and the model searched again (issue: input_tokens 574 vs 664 direct). The fix carries the reference through as a tool_reference output block, which the InvokeModel egress already writes (#7813). Both cases send the issue payload and pin that the model calls fetch_weather_report with the parameter only its definition names.",
+      "item": [
+        {
+          "name": "Bedrock invoke: tool_reference in a client tool_result loads the deferred tool (Sonnet 5) - #8976",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// #8976: the invoke ingress dropped a tool_reference nested in a tool_result, so the result",
+                  "// reached Bedrock as content \"\" and the model, never shown fetch_weather_report's schema,",
+                  "// called tool_search again. zq_city_code_v7 cannot be guessed, so a call that uses it proves",
+                  "// the definition was expanded. Red before the fix, green after.",
+                  "pm.test('Bedrock invoke tool_reference (Sonnet 5) - #8976: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock invoke tool_reference (Sonnet 5) - #8976: the loaded tool is called with its deferred parameter', function () {",
+                  "  var blocks = Array.isArray(body.content) ? body.content : [];",
+                  "  var call = blocks.filter(function (b) { return b && b.type === 'tool_use' && b.name === 'fetch_weather_report'; })[0];",
+                  "  pm.expect(call, 'fetch_weather_report was not called (tool_reference lost?): ' + JSON.stringify(blocks).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(Object.keys(call.input || {}), 'deferred parameter name missing: ' + JSON.stringify(call)).to.include('zq_city_code_v7');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"anthropic_beta\": [\n    \"tool-search-tool-2025-10-19\"\n  ],\n  \"max_tokens\": 400,\n  \"tools\": [\n    {\n      \"name\": \"tool_search\",\n      \"description\": \"Load deferred tool definitions by name.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\",\n            \"description\": \"IATA city code\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_01\",\n          \"name\": \"tool_search\",\n          \"input\": {\n            \"query\": \"select:fetch_weather_report\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_01\",\n          \"content\": [\n            {\n              \"type\": \"tool_reference\",\n              \"tool_name\": \"fetch_weather_report\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock invoke-with-response-stream: tool_reference in a client tool_result loads the deferred tool (Sonnet 5) - #8976",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var rawText = pm.response.text() || '';",
+                  "",
+                  "// #8976: the invoke ingress dropped a tool_reference nested in a tool_result, so the result",
+                  "// reached Bedrock as content \"\" and the model, never shown fetch_weather_report's schema,",
+                  "// called tool_search again. zq_city_code_v7 cannot be guessed, so a call that uses it proves",
+                  "// the definition was expanded. Red before the fix, green after.",
+                  "pm.test('Bedrock invoke-with-response-stream tool_reference (Sonnet 5) - #8976: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + rawText.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('Bedrock invoke-with-response-stream tool_reference (Sonnet 5) - #8976: the loaded tool streams with its deferred parameter', function () {",
+                  "  var b64Matches = rawText.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "  pm.expect(b64Matches.length, 'expected at least one invoke-stream chunk event: ' + rawText.slice(0, 300)).to.be.above(0);",
+                  "  var events = b64Matches.map(function (m) {",
+                  "    var b64 = m.match(/\"bytes\":\"([A-Za-z0-9+\\/=]+)\"/)[1];",
+                  "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e; });",
+                  "  var start = events.filter(function (e) { return e.type === 'content_block_start' && e.content_block && e.content_block.type === 'tool_use' && e.content_block.name === 'fetch_weather_report'; })[0];",
+                  "  pm.expect(start, 'fetch_weather_report was not called (tool_reference lost?): ' + JSON.stringify(events).slice(0, 600)).to.be.an('object');",
+                  "  var args = events.filter(function (e) { return e.type === 'content_block_delta' && e.index === start.index && e.delta && e.delta.type === 'input_json_delta'; })",
+                  "    .map(function (e) { return e.delta.partial_json || ''; }).join('');",
+                  "  pm.expect(args, 'deferred parameter name missing from the streamed input: ' + args).to.include('zq_city_code_v7');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"anthropic_beta\": [\n    \"tool-search-tool-2025-10-19\"\n  ],\n  \"max_tokens\": 400,\n  \"tools\": [\n    {\n      \"name\": \"tool_search\",\n      \"description\": \"Load deferred tool definitions by name.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\",\n            \"description\": \"IATA city code\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_01\",\n          \"name\": \"tool_search\",\n          \"input\": {\n            \"query\": \"select:fetch_weather_report\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_01\",\n          \"content\": [\n            {\n              \"type\": \"tool_reference\",\n              \"tool_name\": \"fetch_weather_report\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
