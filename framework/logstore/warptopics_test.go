@@ -576,32 +576,65 @@ func TestLogDeletesTakeTheTopicRowsWithThem(t *testing.T) {
 	})
 }
 
-// On the SQL stores the log delete and its topic cleanup are one transaction:
-// a cleanup that fails leaves the logs in place rather than deleting them with
-// their topic rows stranded.
-func TestLogDeleteRollsBackWhenTopicCleanupFails(t *testing.T) {
-	ctx := context.Background()
-	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "topics.db")}, testLogger{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close(ctx) })
-	base := warpTopicTestTime()
-	for _, id := range []string{"one", "two", "three"} {
-		require.NoError(t, store.Create(ctx, &Log{ID: id, Timestamp: base, CreatedAt: base, Object: "chat.completion", Status: "success"}))
-	}
-	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []WarpTopicAssignment{warpTestAssignment("one", "billing", base)}))
-	// The assignment delete succeeds and the pool delete after it fails.
-	require.NoError(t, store.db.Exec("DROP TABLE warp_topic_unmatched").Error)
+// A log delete whose topic cleanup fails is never reported as a plain
+// failure while the logs are gone. The SQL stores do both in one transaction,
+// so the logs stay; ClickHouse has no transactions, so it reports the logs
+// deleted and the cleanup not, for the caller to announce the delete anyway.
+func TestLogDeletesWhoseTopicCleanupFails(t *testing.T) {
+	forEachWarpTopicStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		base := warpTopicTestTime()
+		ids := []string{"one", "two", "three"}
+		for _, id := range ids {
+			require.NoError(t, store.Create(ctx, &Log{ID: id, Timestamp: base, CreatedAt: base, Object: "chat.completion", Status: "success"}))
+		}
+		require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []WarpTopicAssignment{
+			warpTestAssignment("one", "billing", base), warpTestAssignment("two", "billing", base),
+		}))
+		var db *gorm.DB
+		rename, partial := "ALTER TABLE %s RENAME TO %s", false
+		switch typed := store.(type) {
+		case *ClickHouseLogStore:
+			db, rename, partial = typed.db, "RENAME TABLE %s TO %s", true
+		case *RDBLogStore:
+			db = typed.db
+		}
+		require.NotNil(t, db)
+		// The pool table is renamed away, so its cleanup fails after the
+		// assignments' has run.
+		require.NoError(t, db.Exec(fmt.Sprintf(rename, "warp_topic_unmatched", "warp_topic_unmatched_away")).Error)
+		restored := false
+		restore := func() {
+			if !restored {
+				restored = true
+				require.NoError(t, db.Exec(fmt.Sprintf(rename, "warp_topic_unmatched_away", "warp_topic_unmatched")).Error)
+			}
+		}
+		t.Cleanup(restore)
 
-	require.Error(t, store.DeleteLogs(ctx, []string{"one", "two"}))
-	require.Error(t, store.DeleteLog(ctx, "three"))
-
-	for _, id := range []string{"one", "two", "three"} {
-		_, err := store.FindByID(ctx, id)
-		require.NoError(t, err, "log %s must survive a failed cleanup", id)
-	}
-	assignments, err := store.ListWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{}, 10)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"one"}, warpAssignmentLogIDs(assignments), "the assignment delete rolls back with the rest")
+		errOne := store.DeleteLog(ctx, "one")
+		errMany := store.DeleteLogs(ctx, []string{"two", "three"})
+		restore()
+		require.Error(t, errOne)
+		require.Error(t, errMany)
+		for _, id := range ids {
+			_, err := store.FindByID(ctx, id)
+			if partial {
+				require.ErrorIs(t, errOne, ErrPartialLogDelete)
+				require.ErrorIs(t, errMany, ErrPartialLogDelete)
+				require.ErrorIs(t, err, ErrNotFound, "log %s is gone, as the error says", id)
+			} else {
+				require.NotErrorIs(t, errOne, ErrPartialLogDelete)
+				require.NotErrorIs(t, errMany, ErrPartialLogDelete)
+				require.NoError(t, err, "log %s was rolled back with the cleanup", id)
+			}
+		}
+		if !partial {
+			assignments, err := store.ListWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{}, 10)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, []string{"one", "two"}, warpAssignmentLogIDs(assignments), "the assignments' cleanup was rolled back too")
+		}
+	})
 }
 
 // Once the embedding model changes, the pooled vectors of the old one mean
@@ -856,12 +889,12 @@ func TestListLogsForWarpTopics(t *testing.T) {
 		require.Len(t, rows, 1)
 		assert.Equal(t, "log-bare", rows[0].LogID)
 
-		// This read serves the job that assigns every request, so a scope on
-		// the context does not narrow it.
+		// A scope on the context narrows it as it narrows every log read. The
+		// jobs that file requests carry none, so they still read every log.
 		closed := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB { return db.Where("1 = 0") })
 		rows, err = store.ListLogsForWarpTopics(closed, []string{"log-full", "log-bare"}, time.Time{}, time.Time{})
 		require.NoError(t, err)
-		assert.Len(t, rows, 2)
+		assert.Empty(t, rows)
 
 		rows, err = store.ListLogsForWarpTopics(ctx, nil, time.Time{}, time.Time{})
 		require.NoError(t, err)

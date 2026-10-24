@@ -580,7 +580,7 @@ func TestWarpDiscoveryIsStartedWhenThePoolIsDue(t *testing.T) {
 	started, err := service.StartDiscoveryIfDue(ctx)
 	require.NoError(t, err)
 	require.False(t, started, "an empty pool")
-	poolSubject(t, reader, "refund", "how do I get a refund", 0, topicsDiscoveryMinPool, time.Now().UTC().Add(-time.Hour))
+	poolSubject(t, reader, "refund", "how do I get a refund", 0, schemas.WarpDefaultTopicDiscoveryMinRequests, time.Now().UTC().Add(-time.Hour))
 
 	jobs.inFlight[TopicsJobKind] = &tables.TableSidekiqJob{ID: "run"}
 	started, err = service.StartDiscoveryIfDue(ctx)
@@ -598,6 +598,91 @@ func TestWarpDiscoveryIsStartedWhenThePoolIsDue(t *testing.T) {
 	require.True(t, started)
 	require.Equal(t, []string{TopicDiscoveryJobKind}, queue.kinds)
 	require.Equal(t, []string{TopicsJobPartition}, queue.keys, "in the partition the runs use, so the two never interleave")
+}
+
+// racingDiscoveryJobs lets two schedulers' in-flight lookups overlap: each
+// waits a moment for the other before it answers, and what has been queued
+// counts as in flight.
+type racingDiscoveryJobs struct {
+	queue   *discoveryQueue
+	arrived atomic.Int32
+	both    chan struct{}
+}
+
+func (j *racingDiscoveryJobs) GetInFlightSidekiqJobByKind(_ context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	if j.arrived.Add(1) == 2 {
+		close(j.both)
+	}
+	select {
+	case <-j.both:
+	case <-time.After(200 * time.Millisecond):
+	}
+	j.queue.mu.Lock()
+	defer j.queue.mu.Unlock()
+	for _, queued := range j.queue.kinds {
+		if queued == kind {
+			return &tables.TableSidekiqJob{ID: "queued", Kind: kind}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (j *racingDiscoveryJobs) GetLatestSidekiqJobByKind(context.Context, string) (*tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
+// Two schedulers that find the pool due at once queue one discovery: the
+// lookup and the enqueue are admitted together.
+func TestWarpDiscoveryIsStartedOnceWhenTwoFindItDue(t *testing.T) {
+	service, reader := discoveryTestService(t, topicTestNaming)
+	queue := &discoveryQueue{}
+	service.topicJobs, service.backfillJobs = queue, &racingDiscoveryJobs{queue: queue, both: make(chan struct{})}
+	poolSubject(t, reader, "refund", "how do I get a refund", 0, schemas.WarpDefaultTopicDiscoveryMinRequests, time.Now().UTC().Add(-time.Hour))
+
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := service.StartDiscoveryIfDue(context.Background())
+			require.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, []string{TopicDiscoveryJobKind}, queue.kinds)
+}
+
+// The pool size that starts a discovery is configured: here thirty, so
+// twenty-nine waiting is not yet due and thirty is.
+func TestWarpDiscoveryIsDueAtTheConfiguredPoolSize(t *testing.T) {
+	service, reader := discoveryTestService(t, topicTestNaming)
+	service.store.(*recordingStore).row.TopicDiscoveryMinRequests = 30
+	queue := &discoveryQueue{}
+	service.topicJobs, service.backfillJobs = queue, &discoveryJobs{inFlight: map[string]*tables.TableSidekiqJob{}}
+	ctx := context.Background()
+	at := time.Now().UTC().Add(-time.Hour)
+
+	poolSubject(t, reader, "refund", "how do I get a refund", 0, 29, at)
+	started, err := service.StartDiscoveryIfDue(ctx)
+	require.NoError(t, err)
+	require.False(t, started, "29 of 30")
+
+	poolSubject(t, reader, "password", "reset my password", 1, 1, at)
+	started, err = service.StartDiscoveryIfDue(ctx)
+	require.NoError(t, err)
+	require.True(t, started)
+}
+
+// A discovery reads the same setting: a pool of twenty is clustered when
+// twenty is what the operator asked for.
+func TestWarpDiscoveryClustersAPoolAtTheConfiguredSize(t *testing.T) {
+	service, reader := discoveryTestService(t, topicTestNaming)
+	service.store.(*recordingStore).row.TopicDiscoveryMinRequests = 20
+	poolSubject(t, reader, "refund", "how do I get a refund", 0, 20, time.Now().UTC().Add(-time.Hour))
+	final := runDiscovery(t, service)
+	require.Equal(t, 20, final.Scanned)
+	require.NotContains(t, final.Message, "waiting for a topic")
+	require.Contains(t, final.Message, "Clustered 20 pooled request(s)")
 }
 
 // Upkeep rewrites topic rows whole, as the runs and discoveries that write

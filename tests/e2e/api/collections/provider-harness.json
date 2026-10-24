@@ -178172,6 +178172,13 @@
                   "    pm.expect(l.app, 'row not labelled Warp: ' + JSON.stringify([l.app, l.user_agent])).to.equal('Warp');",
                   "    pm.expect(l.provider, 'row not on the configured provider: ' + l.provider).to.equal('openai');",
                   "  });",
+                  "});",
+                  "// Warp calls its model over the streaming responses path, so each call is its own responses_stream row.",
+                  "pm.test('warp-inprocess: model calls run over the responses stream', function () {",
+                  "  pm.expect(logs.length, 'no log rows to check: ' + pm.response.text()).to.be.at.least(1);",
+                  "  logs.forEach(function (l) {",
+                  "    pm.expect(l.object, 'row not a responses stream: ' + JSON.stringify([l.id, l.object])).to.equal('responses_stream');",
+                  "  });",
                   "});"
                 ]
               }
@@ -279693,6 +279700,1590 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "267. Gemini long decode: continuationToken and CONTINUATION survive /genai (long decode)",
+      "description": "Gemini long decode (gemini-4-argon) generates past the per-call output cap in hops. A hop that fills the cap ends with finishReason CONTINUATION and a candidate-level continuationToken; the client resends the original request with only the latest top-level continuationToken. A hop that stops on the total budget ends with MAX_TOKENS and still carries a token. SDK auto-continuation keys on CONTINUATION plus a token.\n\nThe /genai generateContent and streamGenerateContent responses were rebuilt from Bifrost's neutral response, which had no home for either value: the token was dropped and CONTINUATION was rewritten to STOP, so an SDK read a truncated hop as a finished answer with no error. The fix carries the token through the response (unary and the stream terminal event), maps CONTINUATION to the lowercase Bifrost stop_reason continuation and back, and forwards the request-side continuationToken on the typed path.\n\nCases: 267.1 asks Google directly through /genai_passthrough and asserts MAX_TOKENS plus a token on a small budget (the cheap trigger; red here means Google, not Bifrost). 267.2 and 267.3 run the same request on /genai unary and SSE and assert the token reaches the client; both red before the fix. 267.4 resumes with the token saved by 267.2 and a larger budget (the explicit gemini/ route forwards the raw body, so this one pins the chain end to end and was not red before). 267.5 asks for a proof long enough to fill a 32,768-token non-streaming hop and asserts CONTINUATION plus a token; it costs about 32K output tokens per run in every sweep and can approach the 300s Gemini timeout in the harness config.\n\nNot pinned here: a real streaming CONTINUATION (a 64K hop), the typed request path on bare-model /genai routes (covered by TestGeminiContinuationRequestRoundTrip), mid-stream checkpoint tokens (not carried), and /v1/chat/completions and /v1/responses (Google documents no long decode on the OpenAI-compatible endpoint).",
+      "item": [
+        {
+          "name": "gemini/gemini-4-argon /genai_passthrough generateContent MAX_TOKENS carries a continuationToken (trigger check) - long decode",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-4-argon:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-4-argon:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write a long, detailed essay on the history of the Roman Empire, covering every emperor.\"}]}],\"generationConfig\":{\"maxOutputTokens\":128}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('long decode passthrough: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var cand = (body.candidates || [])[0] || {};",
+                  "pm.test('long decode passthrough: Google stopped on MAX_TOKENS and returned a continuationToken (trigger check: red here means Google changed the long-decode contract or this model, not a Bifrost bug)', function () {",
+                  "  pm.expect(cand.finishReason, 'finishReason: ' + txt.slice(0, 1500)).to.eql('MAX_TOKENS');",
+                  "  pm.expect(cand.continuationToken, 'continuationToken: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-4-argon /genai generateContent MAX_TOKENS: continuationToken reaches the client - long decode",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-4-argon:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-4-argon:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write a long, detailed essay on the history of the Roman Empire, covering every emperor.\"}]}],\"generationConfig\":{\"maxOutputTokens\":128}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('long decode /genai generateContent: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var cand = (body.candidates || [])[0] || {};",
+                  "pm.test('long decode /genai generateContent: finishReason MAX_TOKENS (trigger check, see the passthrough row)', function () {",
+                  "  pm.expect(cand.finishReason, 'finishReason: ' + txt.slice(0, 1500)).to.eql('MAX_TOKENS');",
+                  "});",
+                  "pm.test('long decode /genai generateContent: candidates[0].continuationToken reaches the client (red before the fix: the candidate had no such field, so the token was dropped)', function () {",
+                  "  pm.expect(cand.continuationToken, 'continuationToken dropped: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "if (typeof cand.continuationToken === 'string' && cand.continuationToken) {",
+                  "  pm.collectionVariables.set('longDecodeToken', cand.continuationToken);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-4-argon /genai streamGenerateContent MAX_TOKENS: continuationToken reaches the client (SSE) - long decode",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-4-argon:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-4-argon:streamGenerateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write a long, detailed essay on the history of the Roman Empire, covering every emperor.\"}]}],\"generationConfig\":{\"maxOutputTokens\":128}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('long decode /genai stream: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + raw.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var chunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  var t = line.trim();",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { chunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var terminal = {};",
+                  "chunks.forEach(function (c) {",
+                  "  var cand = (c.candidates || [])[0];",
+                  "  if (cand && cand.finishReason) { terminal = cand; }",
+                  "});",
+                  "pm.test('long decode /genai stream: the terminal chunk finishes with MAX_TOKENS (trigger check, see the passthrough row)', function () {",
+                  "  pm.expect(terminal.finishReason, 'terminal candidate: ' + JSON.stringify(terminal) + ' raw: ' + raw.slice(0, 1500)).to.eql('MAX_TOKENS');",
+                  "});",
+                  "pm.test('long decode /genai stream: the terminal chunk carries continuationToken (red before the fix: the token was dropped on the stream path)', function () {",
+                  "  pm.expect(terminal.continuationToken, 'continuationToken dropped: ' + raw.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-4-argon /genai generateContent resume: the saved continuationToken is accepted - long decode",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-4-argon:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-4-argon:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write a long, detailed essay on the history of the Roman Empire, covering every emperor.\"}]}],\"generationConfig\":{\"maxOutputTokens\":512},\"continuationToken\":\"{{longDecodeToken}}\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('long decode /genai resume: 200 (Google rejects an unusable token or a budget not above the tokens already used)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var cand = (body.candidates || [])[0] || {};",
+                  "var total = body.usageMetadata && typeof body.usageMetadata.totalTokenCount === 'number' ? body.usageMetadata.totalTokenCount : 0;",
+                  "pm.test('long decode /genai resume: the hop produced a candidate with a finishReason and token usage', function () {",
+                  "  pm.expect(cand.finishReason, 'candidate: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(total, 'totalTokenCount: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-4-argon /genai generateContent real CONTINUATION hop: finishReason and continuationToken survive - long decode",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-4-argon:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-4-argon:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write a complete, rigorous proof of the prime number theorem, with every lemma proved in full. Do not summarize and do not stop early.\"}]}],\"generationConfig\":{\"maxOutputTokens\":262144,\"thinkingConfig\":{\"thinkingLevel\":\"high\"}}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('long decode real hop: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var cand = (body.candidates || [])[0] || {};",
+                  "var u = body.usageMetadata || {};",
+                  "var used = (u.totalTokenCount || 0) - (u.promptTokenCount || 0);",
+                  "var hopFull = used >= 32000;",
+                  "pm.test('long decode real hop: the hop filled the per-hop cap (trigger check: red here means the model finished in ' + used + ' tokens, so the prompt needs to ask for more; not a Bifrost bug)', function () {",
+                  "  pm.expect(hopFull, 'finishReason ' + cand.finishReason + ' after ' + used + ' tokens: ' + txt.slice(0, 800)).to.eql(true);",
+                  "});",
+                  "pm.test('long decode real hop: a full hop reports CONTINUATION with a continuationToken, never STOP (red before the fix: CONTINUATION was rewritten to STOP and the token dropped)', function () {",
+                  "  if (!hopFull) { return; }",
+                  "  pm.expect(cand.finishReason, 'finishReason after ' + used + ' tokens: ' + txt.slice(0, 1500)).to.eql('CONTINUATION');",
+                  "  pm.expect(cand.continuationToken, 'continuationToken dropped: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "268. OpenRouter chat completions generated images on message.images (openrouter chat images)",
+      "description": "OpenRouter returns images generated by chat models (google/gemini-2.5-flash-image with modalities [image, text]) on message.images, and streams them as their own delta.images chunk. Neither ChatAssistantMessage nor ChatStreamResponseChoiceDelta had an images field, so the array was dropped at decode: HTTP 200, image tokens billed in usage.completion_tokens_details.image_tokens, and no image anywhere in the client response or the accumulated log. Bifrost now carries images in the same shape OpenRouter and LiteLLM use, with content left as an OpenAI string. The unary, streaming and /openai drop-in cases each assert the image is present whenever the run billed image tokens, since image generation is nondeterministic.",
+      "item": [
+        {
+          "name": "openrouter/google/gemini-2.5-flash-image /v1/chat/completions generated image on message.images unary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var message = ((body.choices || [])[0] || {}).message || {};",
+                  "var billedImageTokens = ((body.usage || {}).completion_tokens_details || {}).image_tokens || 0;",
+                  "pm.test('content stays an OpenAI string, not a content-block array', function () {",
+                  "  pm.expect(Array.isArray(message.content), 'content: ' + JSON.stringify(message.content)).to.eql(false);",
+                  "});",
+                  "// Image generation is nondeterministic; the defect is a billed image that never reaches the client.",
+                  "if (billedImageTokens > 0) {",
+                  "  pm.test('billed image is returned on message.images', function () {",
+                  "    var images = message.images || [];",
+                  "    pm.expect(images.length, 'billed ' + billedImageTokens + ' image tokens but message.images is empty: ' + pm.response.text().slice(0, 2000)).to.be.above(0);",
+                  "    pm.expect(images[0].type, 'image type').to.eql('image_url');",
+                  "    pm.expect(/^data:image\\//.test((images[0].image_url || {}).url || ''), 'image_url.url is not a data:image/ URL').to.eql(true);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/google/gemini-2.5-flash-image\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Generate an image of a small red apple on a white background.\"\n    }\n  ],\n  \"modalities\": [\"image\", \"text\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter/google/gemini-2.5-flash-image /v1/chat/completions generated image on delta.images streaming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 2000)).to.eql(200);",
+                  "});",
+                  "var lines = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l.indexOf('[DONE]') === -1; });",
+                  "var chunks = lines.map(function (l) { try { return JSON.parse(l.slice(6)); } catch (e) { return null; } }).filter(Boolean);",
+                  "var billedImageTokens = 0;",
+                  "var deltas = [];",
+                  "chunks.forEach(function (c) {",
+                  "  var t = ((c.usage || {}).completion_tokens_details || {}).image_tokens || 0;",
+                  "  if (t > billedImageTokens) billedImageTokens = t;",
+                  "  var delta = ((c.choices || [])[0] || {}).delta;",
+                  "  if (delta) deltas.push(delta);",
+                  "});",
+                  "pm.test('stream carried chunks', function () {",
+                  "  pm.expect(chunks.length, 'no SSE chunks parsed: ' + pm.response.text().slice(0, 2000)).to.be.above(0);",
+                  "});",
+                  "pm.test('no data URL is smuggled into delta.content', function () {",
+                  "  var smuggled = deltas.some(function (d) { return typeof d.content === 'string' && /^data:image\\//.test(d.content); });",
+                  "  pm.expect(smuggled, 'a delta.content carried a data:image/ URL').to.eql(false);",
+                  "});",
+                  "// Same nondeterminism guard as the unary case.",
+                  "if (billedImageTokens > 0) {",
+                  "  pm.test('billed image is streamed on delta.images', function () {",
+                  "    var hasImage = deltas.some(function (d) {",
+                  "      return (d.images || []).some(function (img) { return img.type === 'image_url' && /^data:image\\//.test((img.image_url || {}).url || ''); });",
+                  "    });",
+                  "    pm.expect(hasImage, 'billed ' + billedImageTokens + ' image tokens but no delta.images carried a data:image/ URL: ' + pm.response.text().slice(0, 2000)).to.eql(true);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/google/gemini-2.5-flash-image\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Generate an image of a small red apple on a white background.\"\n    }\n  ],\n  \"modalities\": [\"image\", \"text\"],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter/google/gemini-2.5-flash-image /openai/v1/chat/completions drop-in generated image on message.images unary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var message = ((body.choices || [])[0] || {}).message || {};",
+                  "var billedImageTokens = ((body.usage || {}).completion_tokens_details || {}).image_tokens || 0;",
+                  "pm.test('content stays an OpenAI string, not a content-block array', function () {",
+                  "  pm.expect(Array.isArray(message.content), 'content: ' + JSON.stringify(message.content)).to.eql(false);",
+                  "});",
+                  "// Image generation is nondeterministic; the defect is a billed image that never reaches the client.",
+                  "if (billedImageTokens > 0) {",
+                  "  pm.test('billed image is returned on message.images', function () {",
+                  "    var images = message.images || [];",
+                  "    pm.expect(images.length, 'billed ' + billedImageTokens + ' image tokens but message.images is empty: ' + pm.response.text().slice(0, 2000)).to.be.above(0);",
+                  "    pm.expect(images[0].type, 'image type').to.eql('image_url');",
+                  "    pm.expect(/^data:image\\//.test((images[0].image_url || {}).url || ''), 'image_url.url is not a data:image/ URL').to.eql(true);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openrouter/google/gemini-2.5-flash-image\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Generate an image of a small red apple on a white background.\"\n    }\n  ],\n  \"modalities\": [\"image\", \"text\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "265. Vertex rejects mid-conversation tool_addition / tool_removal blocks on the Claude Code raw passthrough (vertex-tool-changes)",
+      "description": "Claude Code puts tool_addition / tool_removal blocks (beta mid-conversation-tool-changes-2026-07-01, by-value definitions under inline-tools-2026-09-15) inside role:\"system\" messages in messages[]. The /anthropic/v1/messages route forwards a claude-cli request as raw bytes, and StripUnsupportedFieldsFromRawBody did not touch these blocks, so a surface without the beta received them while the beta header itself was dropped (ProviderFeatures.MidConvToolChanges is false for Vertex). Vertex rejects the unknown content block: \"messages.1.content.1: Input tag 'tool_addition' found using 'type' does not match any of the expected tags\" (seen in production on Opus 5.5 and Sonnet 5.5; the same request works against Anthropic direct). StripUnsupportedFieldsFromRawBody now removes tool_addition / tool_removal blocks (and a replayed compaction block's tool_changes) wherever the surface lacks the beta, keeps the text next to them, and drops a system message left with no content.\n\nCases: (1) vertex/claude-opus-5-5 and (2) vertex/claude-sonnet-5-5 on /anthropic/v1/messages with a claude-cli UA and a system item holding text + an inline tool_addition -> 200 with text (pre-fix: 400 naming tool_addition); (3) the same request streaming -> 200 SSE ending in message_stop with no error event; (4) a tool-change-only system item (tool_removal by reference) -> 200, the item dropped whole; (5) the neutral /v1/responses route with no anthropic-beta header: the typed conversion already inlines the system item as a <system-reminder> user turn and drops the tool block, so this row is green before and after and pins that the raw-path strip did not change the typed route. Not covered here: Bedrock InvokeModel and Azure share the same gate (MidConvToolChanges is false for both) and are unit-tested at the function level; Anthropic direct and Bedrock Mantle keep the blocks (folder 197).",
+      "item": [
+        {
+          "name": "vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough system item with text + tool_addition - tool-change block stripped for Vertex - vertex-tool-changes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex has no mid-conversation tool changes and rejected the block with 'Input tag tool_addition found using type does not match any of the expected tags'; StripUnsupportedFieldsFromRawBody now removes it.",
+                  "pm.test('vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough system item with text + tool_addition - tool-change block stripped for Vertex - vertex-tool-changes: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_addition'\");",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_removal'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Answer in lowercase.\"\n        },\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"name\": \"get_weather\",\n              \"description\": \"Get the current weather for a city.\",\n              \"input_schema\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"city\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-5-5 /anthropic/v1/messages Claude Code passthrough system item with text + tool_addition - tool-change block stripped for Vertex - vertex-tool-changes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex has no mid-conversation tool changes and rejected the block with 'Input tag tool_addition found using type does not match any of the expected tags'; StripUnsupportedFieldsFromRawBody now removes it.",
+                  "pm.test('vertex/claude-sonnet-5-5 /anthropic/v1/messages Claude Code passthrough system item with text + tool_addition - tool-change block stripped for Vertex - vertex-tool-changes: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_addition'\");",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_removal'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Answer in lowercase.\"\n        },\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"name\": \"get_weather\",\n              \"description\": \"Get the current weather for a city.\",\n              \"input_schema\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"city\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough stream system item with text + tool_addition completes - vertex-tool-changes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "",
+                  "// Same raw passthrough as the unary row, over SSE: a rejected block would surface as a non-200 or an error event.",
+                  "pm.test('vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough stream system item with text + tool_addition completes - vertex-tool-changes: stream completes without an error event', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_addition'\");",
+                  "  pm.expect(txt, 'stream carried an error event: ' + txt.slice(0, 400)).to.not.include('event: error');",
+                  "  pm.expect(txt, 'stream never reached message_stop: ' + txt.slice(0, 400)).to.include('message_stop');",
+                  "  pm.expect(txt, 'no text delta in the stream: ' + txt.slice(0, 400)).to.include('content_block_delta');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Answer in lowercase.\"\n        },\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"name\": \"get_weather\",\n              \"description\": \"Get the current weather for a city.\",\n              \"input_schema\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"city\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough tool-change-only system item (tool_removal) is dropped whole - vertex-tool-changes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough. Vertex has no mid-conversation tool changes and rejected the block with 'Input tag tool_addition found using type does not match any of the expected tags'; StripUnsupportedFieldsFromRawBody now removes it. A system item holding only the tool block is left with no content, so it is dropped whole rather than sent empty.",
+                  "pm.test('vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough tool-change-only system item (tool_removal) is dropped whole - vertex-tool-changes: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_addition'\");",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_removal'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"medium\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_removal\",\n          \"tool\": {\n            \"type\": \"tool_reference\",\n            \"name\": \"get_weather\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 /v1/responses system input with text + tool_addition is inlined as text (typed route unchanged) - vertex-tool-changes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// /v1/responses reaches Vertex through the typed conversion: the mid-conversation system item has no native placement there,",
+                  "// so it is inlined as a <system-reminder> user turn and the tool block is dropped. Green before and after the raw-path strip.",
+                  "pm.test('vertex/claude-opus-5-5 /v1/responses system input with text + tool_addition is inlined as text (typed route unchanged) - vertex-tool-changes: accepted (200 completed with text)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(txt, 'tool-change block reached Vertex: ' + txt.slice(0, 400)).to.not.include(\"Input tag 'tool_addition'\");",
+                  "  pm.expect(body.status, 'response status: ' + txt.slice(0, 300)).to.eql('completed');",
+                  "  var output = Array.isArray(body.output) ? body.output : [];",
+                  "  var hasText = output.some(function (o) { return o && Array.isArray(o.content) && o.content.some(function (c) { return c && c.type === 'output_text' && c.text; }); });",
+                  "  pm.expect(hasText, 'expected an output_text block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_output_tokens\": 512,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in lowercase.\"\n        },\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"type\": \"function\",\n              \"name\": \"get_weather\",\n              \"description\": \"Get the current weather for a city.\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"city\"\n                ]\n              }\n            }\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "269. thinking.display \"updates\" needs its beta on every Claude surface (thinking-display-updates)",
+      "description": "thinking.display accepts a third value, \"updates\" (beta header thinking-display-updates-2026-08-18): reasoning blocks come back empty and the short progress updates written between tool calls come back as text. Without the beta the value is rejected like an unknown one: \"thinking.adaptive.display: Input should be 'summarized', 'omitted'\" (seen in production on Vertex, Opus 5.5 and Sonnet 5.5; Anthropic direct works only when the client sends the beta itself). Bifrost kept the body field but never derived the beta, and dropped a client-sent copy for every provider except Anthropic, so Vertex always saw the value without its beta.\n\nThe fix derives the beta from thinking.display (adaptive or enabled thinking) wherever the surface ships it (ProviderFeatures.ThinkingDisplayUpdates: Anthropic, Vertex, Bedrock, Bedrock Mantle, Azure) and the model takes it (supports_thinking_display_updates; fallback: the adaptive-only generation, because Bedrock rejects \"updates\" with its beta on Opus 4.6, Opus 4.5 and Sonnet 4.5). Any other model gets the value downgraded to \"omitted\", which is what it returns on a model that writes no progress updates. The fix carries it on Bedrock Converse in additionalModelRequestFields.anthropic_beta (Bedrock's edge consumes the outer header), and makes the Vertex non-stream chat path send the anthropic-beta header next to the anthropic_beta body field: Vertex reads the header when it validates this field, and only that path sent the body array alone.\n\nRoutes: Claude Code raw passthrough on /anthropic/v1/messages (claude-cli UA) for Vertex, with and without the client sending the beta, plus streaming; /v1/chat/completions for Vertex (non-stream, where the header was missing, and stream) with reasoning.display and no anthropic-beta header, since these clients cannot set one; Anthropic direct on both routes; Bedrock Converse on /v1/chat/completions (non-stream and stream), which used to forward the value with no beta and 400 with the same message, plus the model gate and the enabled-thinking branches that used to drop display for every value (Opus 4.6, Sonnet 4.6, Opus 4.5); Bedrock Mantle and Azure on the raw route. Not covered: the neutral Responses shape has no \"updates\" value, so routes that convert through it (the typed /anthropic/v1/messages route for a non-Claude-Code UA, the Claude Code route to Bedrock, /bedrock/model/*/converse and /invoke) turn it into \"summarized\" or \"omitted\" rather than carry it.",
+      "item": [
+        {
+          "name": "vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough display updates without a client beta header - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough, which forwards thinking.display as sent. The value 'updates' is only valid together with thinking-display-updates-2026-08-18; Bifrost now derives that beta from the body, so the request must succeed whether or not the client sent the header.",
+                  "pm.test('vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough display updates without a client beta header - thinking-display-updates: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'display updates reached the provider without its beta: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"display\": \"updates\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough display updates with the client beta header - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough, which forwards thinking.display as sent. The value 'updates' is only valid together with thinking-display-updates-2026-08-18; Bifrost now derives that beta from the body, so the request must succeed whether or not the client sent the header.",
+                  "pm.test('vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough display updates with the client beta header - thinking-display-updates: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'display updates reached the provider without its beta: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "thinking-display-updates-2026-08-18"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"display\": \"updates\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough stream display updates completes - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "",
+                  "pm.test('vertex/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough stream display updates completes - thinking-display-updates: stream completes without an error event', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(txt, 'display updates reached the provider without its beta: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(txt, 'stream carried an error event: ' + txt.slice(0, 400)).to.not.include('event: error');",
+                  "  pm.expect(txt, 'stream never reached its end: ' + txt.slice(0, 400)).to.satisfy(function (t) { return t.indexOf('message_stop') !== -1 || t.indexOf('[DONE]') !== -1 || t.indexOf('finish_reason') !== -1; });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"display\": \"updates\"\n  },\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 /v1/chat/completions reasoning.display updates reaches Vertex with its beta - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('vertex/claude-opus-5-5 /v1/chat/completions reasoning.display updates reaches Vertex with its beta - thinking-display-updates: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'display updates reached the provider without its beta: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var content = body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content;",
+                  "  pm.expect(content, 'expected message content: ' + txt.slice(0, 300)).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('vertex/claude-opus-5-5 /v1/chat/completions reasoning.display updates reaches Vertex with its beta - thinking-display-updates: the outbound body keeps thinking.display updates and carries its beta', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect((rr.thinking || {}).display, 'thinking.display on the wire: ' + JSON.stringify(rr.thinking)).to.eql('updates');",
+                  "  pm.expect(rr.anthropic_beta, 'anthropic_beta on the wire: ' + JSON.stringify(rr.anthropic_beta)).to.include('thinking-display-updates-2026-08-18');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_completion_tokens\": 512,\n  \"reasoning\": {\n    \"effort\": \"high\",\n    \"display\": \"updates\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-5-5 /v1/chat/completions stream reasoning.display updates completes - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "",
+                  "pm.test('vertex/claude-opus-5-5 /v1/chat/completions stream reasoning.display updates completes - thinking-display-updates: stream completes without an error event', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(txt, 'display updates reached the provider without its beta: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(txt, 'stream carried an error event: ' + txt.slice(0, 400)).to.not.include('event: error');",
+                  "  pm.expect(txt, 'stream never reached its end: ' + txt.slice(0, 400)).to.satisfy(function (t) { return t.indexOf('message_stop') !== -1 || t.indexOf('[DONE]') !== -1 || t.indexOf('finish_reason') !== -1; });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-opus-5-5\",\n  \"max_completion_tokens\": 512,\n  \"reasoning\": {\n    \"effort\": \"high\",\n    \"display\": \"updates\"\n  },\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough display updates without a client beta header - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough, which forwards thinking.display as sent. The value 'updates' is only valid together with thinking-display-updates-2026-08-18; Bifrost now derives that beta from the body, so the request must succeed whether or not the client sent the header.",
+                  "pm.test('anthropic/claude-opus-5-5 /anthropic/v1/messages Claude Code passthrough display updates without a client beta header - thinking-display-updates: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'display updates reached the provider without its beta: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"display\": \"updates\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-opus-5-5 /v1/chat/completions reasoning.display updates is kept - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('anthropic/claude-opus-5-5 /v1/chat/completions reasoning.display updates is kept - thinking-display-updates: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'display updates reached the provider without its beta: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var content = body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content;",
+                  "  pm.expect(content, 'expected message content: ' + txt.slice(0, 300)).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('anthropic/claude-opus-5-5 /v1/chat/completions reasoning.display updates is kept - thinking-display-updates: the outbound body keeps thinking.display updates', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect((rr.thinking || {}).display, 'thinking.display on the wire: ' + JSON.stringify(rr.thinking)).to.eql('updates');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-opus-5-5\",\n  \"max_completion_tokens\": 512,\n  \"reasoning\": {\n    \"effort\": \"high\",\n    \"display\": \"updates\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-opus-4-8 /v1/chat/completions reasoning.display updates rides with its beta on Converse - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('bedrock/global.anthropic.claude-opus-4-8 /v1/chat/completions reasoning.display updates rides with its beta on Converse - thinking-display-updates: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'display updates reached Bedrock without its beta: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var content = body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content;",
+                  "  pm.expect(content, 'expected message content: ' + txt.slice(0, 300)).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('bedrock/global.anthropic.claude-opus-4-8 /v1/chat/completions reasoning.display updates rides with its beta on Converse - thinking-display-updates: Converse carries thinking.display updates and its beta in additionalModelRequestFields', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var fields = rr.additionalModelRequestFields || {};",
+                  "  pm.expect((fields.thinking || {}).display, 'thinking.display on the wire: ' + JSON.stringify(fields.thinking)).to.eql('updates');",
+                  "  pm.expect(fields.anthropic_beta, 'anthropic_beta on the wire (Bedrock drops the outer header): ' + JSON.stringify(fields.anthropic_beta)).to.include('thinking-display-updates-2026-08-18');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-8\",\n  \"max_completion_tokens\": 512,\n  \"reasoning\": {\n    \"effort\": \"high\",\n    \"display\": \"updates\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-opus-4-8 /v1/chat/completions stream reasoning.display updates completes - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "",
+                  "pm.test('bedrock/global.anthropic.claude-opus-4-8 /v1/chat/completions stream reasoning.display updates completes - thinking-display-updates: stream completes without an error event', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(txt, 'display updates reached the provider without its beta: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(txt, 'stream carried an error event: ' + txt.slice(0, 400)).to.not.include('event: error');",
+                  "  pm.expect(txt, 'stream never reached its end: ' + txt.slice(0, 400)).to.satisfy(function (t) { return t.indexOf('message_stop') !== -1 || t.indexOf('[DONE]') !== -1 || t.indexOf('finish_reason') !== -1; });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-8\",\n  \"max_completion_tokens\": 512,\n  \"reasoning\": {\n    \"effort\": \"high\",\n    \"display\": \"updates\"\n  },\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-opus-4-6-v1 /v1/chat/completions reasoning.display updates degrades to omitted on a model that rejects it - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('bedrock/global.anthropic.claude-opus-4-6-v1 /v1/chat/completions reasoning.display updates degrades to omitted on a model that rejects it - thinking-display-updates: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'display reached Bedrock in a form the model rejects: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var content = body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content;",
+                  "  pm.expect(content, 'expected message content: ' + txt.slice(0, 300)).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('bedrock/global.anthropic.claude-opus-4-6-v1 /v1/chat/completions reasoning.display updates degrades to omitted on a model that rejects it - thinking-display-updates: Converse sends thinking.type adaptive with display omitted and no updates beta', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var fields = rr.additionalModelRequestFields || {};",
+                  "  pm.expect((fields.thinking || {}).type, 'thinking.type on the wire: ' + JSON.stringify(fields.thinking)).to.eql('adaptive');",
+                  "  pm.expect((fields.thinking || {}).display, 'thinking.display on the wire (an enabled branch used to drop it): ' + JSON.stringify(fields.thinking)).to.eql('omitted');",
+                  "  pm.expect(JSON.stringify(fields.anthropic_beta || []), 'the updates beta must not ride with a value the model does not take').to.not.include('thinking-display-updates-2026-08-18');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-6-v1\",\n  \"max_completion_tokens\": 512,\n  \"reasoning\": {\n    \"effort\": \"high\",\n    \"display\": \"updates\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions reasoning.max_tokens + display updates degrades to omitted on the enabled branch - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions reasoning.max_tokens + display updates degrades to omitted on the enabled branch - thinking-display-updates: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'display reached Bedrock in a form the model rejects: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var content = body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content;",
+                  "  pm.expect(content, 'expected message content: ' + txt.slice(0, 300)).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions reasoning.max_tokens + display updates degrades to omitted on the enabled branch - thinking-display-updates: Converse sends thinking.type enabled with display omitted and no updates beta', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var fields = rr.additionalModelRequestFields || {};",
+                  "  pm.expect((fields.thinking || {}).type, 'thinking.type on the wire: ' + JSON.stringify(fields.thinking)).to.eql('enabled');",
+                  "  pm.expect((fields.thinking || {}).display, 'thinking.display on the wire (an enabled branch used to drop it): ' + JSON.stringify(fields.thinking)).to.eql('omitted');",
+                  "  pm.expect(JSON.stringify(fields.anthropic_beta || []), 'the updates beta must not ride with a value the model does not take').to.not.include('thinking-display-updates-2026-08-18');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_completion_tokens\": 4096,\n  \"reasoning\": {\n    \"max_tokens\": 2048,\n    \"display\": \"updates\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0 /v1/chat/completions reasoning.display omitted reaches the enabled thinking config - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0 /v1/chat/completions reasoning.display omitted reaches the enabled thinking config - thinking-display-updates: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'display reached Bedrock in a form the model rejects: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var content = body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content;",
+                  "  pm.expect(content, 'expected message content: ' + txt.slice(0, 300)).to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0 /v1/chat/completions reasoning.display omitted reaches the enabled thinking config - thinking-display-updates: Converse sends thinking.type enabled with display omitted and no updates beta', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var fields = rr.additionalModelRequestFields || {};",
+                  "  pm.expect((fields.thinking || {}).type, 'thinking.type on the wire: ' + JSON.stringify(fields.thinking)).to.eql('enabled');",
+                  "  pm.expect((fields.thinking || {}).display, 'thinking.display on the wire (an enabled branch used to drop it): ' + JSON.stringify(fields.thinking)).to.eql('omitted');",
+                  "  pm.expect(JSON.stringify(fields.anthropic_beta || []), 'the updates beta must not ride with a value the model does not take').to.not.include('thinking-display-updates-2026-08-18');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0\",\n  \"max_completion_tokens\": 4096,\n  \"reasoning\": {\n    \"effort\": \"high\",\n    \"display\": \"omitted\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/anthropic.claude-opus-4-8 /anthropic/v1/messages Claude Code passthrough display updates with the beta derived - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough, which forwards thinking.display as sent. The value 'updates' is only valid together with thinking-display-updates-2026-08-18; Bifrost now derives that beta from the body, so the request must succeed whether or not the client sent the header.",
+                  "pm.test('bedrock_mantle/anthropic.claude-opus-4-8 /anthropic/v1/messages Claude Code passthrough display updates with the beta derived - thinking-display-updates: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'display updates reached the provider without its beta: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/anthropic.claude-opus-4-8\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"display\": \"updates\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure/claude-opus-4-8 /anthropic/v1/messages Claude Code passthrough display updates with the beta derived - thinking-display-updates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "",
+                  "// Claude Code (claude-cli UA) takes the raw-body passthrough, which forwards thinking.display as sent. The value 'updates' is only valid together with thinking-display-updates-2026-08-18; Bifrost now derives that beta from the body, so the request must succeed whether or not the client sent the header.",
+                  "pm.test('azure/claude-opus-4-8 /anthropic/v1/messages Claude Code passthrough display updates with the beta derived - thinking-display-updates: accepted (200 with text)', function () {",
+                  "  pm.expect(txt, 'display updates reached the provider without its beta: ' + txt.slice(0, 400)).to.not.include(\"Input should be 'summarized', 'omitted'\");",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "User-Agent",
+                "value": "claude-cli/2.1.285 (external, cli)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/claude-opus-4-8\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\",\n    \"display\": \"updates\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
               ]
             }
           }

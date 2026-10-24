@@ -24,6 +24,10 @@ var (
 	// ErrInvalidConfig wraps every validation failure from SaveConfig, so a
 	// caller can map the whole family to one status without matching text.
 	ErrInvalidConfig = errors.New("warp: invalid configuration")
+	// ErrTopicsAlreadyBuilt refuses a seed run for an embedding model that
+	// already has topics: from there they are kept up to date as requests
+	// are indexed, and a run would only replace them.
+	ErrTopicsAlreadyBuilt = errors.New("warp: topics are already built for this embedding model")
 	// ErrNoVectorStore means Warp's required semantic index has no backend.
 	ErrNoVectorStore = errors.New("warp: vector store is not connected")
 )
@@ -84,6 +88,9 @@ type Service struct {
 	upkeepStopOnce sync.Once
 	stopUpkeep     chan struct{}
 	topicJobs      TopicJobQueue
+	// topicsAdmitMu admits jobs to TopicsJobPartition one at a time (see
+	// LockTopicsJobAdmission).
+	topicsAdmitMu sync.Mutex
 	// catalog prices Warp's own usage. Nil is supported: the panel then reports
 	// tokens without a cost, rather than reporting a cost of zero.
 	catalog     *modelcatalog.ModelCatalog
@@ -314,14 +321,15 @@ func (s *Service) costFuncFor(config *schemas.WarpConfig) CostFunc {
 		return nil
 	}
 	return func(usage *schemas.BifrostLLMUsage) float64 {
-		// ResponsesRequest, because that is what the agent calls. The catalog
+		// ResponsesStreamRequest, because that is what the agent calls (see
+		// StreamedResponses); it prices on the responses rate card. The catalog
 		// keeps separate chat and responses rates and only falls back when the
 		// requested mode is absent, so naming the wrong one silently prices the
 		// turn off the other rate card.
 		// costProviderFor, not config.Provider: a provider-qualified model routes
 		// by its own prefix, and pricing must follow routing or the turn is
 		// priced off the wrong rate card.
-		return s.catalog.CalculateCostForUsage(usage, costProviderFor(config), catalogModel(config.Model), schemas.ResponsesRequest, nil)
+		return s.catalog.CalculateCostForUsage(usage, costProviderFor(config), catalogModel(config.Model), schemas.ResponsesStreamRequest, nil)
 	}
 }
 

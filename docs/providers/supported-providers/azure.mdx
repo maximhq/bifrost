@@ -30,7 +30,7 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | Image Edit       | ✅            | ✅        | `/openai/v1/images/edits`       |
 | Video Generation | ✅            | -         | `/openai/v1/videos`             |
 | Context Compaction | ✅          | -         | `/openai/v1/responses/compact`  |
-| Decisions        | ✅            | -         | `/providers/microsoft/v1/systemone` |
+| Decisions        | ✅            | -         | `/openai/v1/decisions` (`gpt-6-luna`), `/providers/microsoft/v1/systemone` (`Microsoft-Decision-1`) |
 | Image Variation  | ❌            | ❌        | -                               |
 | Batch            | ❌            | ❌        | -                               |
 | Text Completions | ❌            | ❌        | -                               |
@@ -1010,11 +1010,38 @@ Bifrost routes the request to `{endpoint}/openai/v1/responses/compact` using the
 
 # 10. Decisions
 
-A [`Microsoft-Decision-1`](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision) deployment answers [`/v1/decisions`](/quickstart/gateway/decisions). Azure sends the deployment name as the model, so map the model name to your deployment with a key alias:
+Two kinds of Azure deployment answer [`/v1/decisions`](/quickstart/gateway/decisions), each on its own endpoint and in its own format:
+
+| Model | Azure endpoint | Format |
+|-------|----------------|--------|
+| [`gpt-6-luna`](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/decisions) | `/openai/v1/decisions` | OpenAI's decisions format |
+| [`Microsoft-Decision-1`](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision) | `/providers/microsoft/v1/systemone` | TypeSafe's System One format |
+
+Bifrost picks the endpoint by model name: a deployment of the `gpt-6-luna` family goes to `/openai/v1/decisions`, and any other deployment to `/providers/microsoft/v1/systemone`. Azure sends the deployment name as the model, so when your deployment is named differently, map the model name to it with a key alias. Bifrost then recognizes the deployment by the alias name:
 
 ```json
-{ "aliases": { "Microsoft-Decision-1": "my-decision-deployment" } }
+{ "aliases": { "gpt-6-luna": "my-luna-deployment", "Microsoft-Decision-1": "my-decision-deployment" } }
 ```
+
+## gpt-6-luna
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "azure/gpt-6-luna",
+    "input": "Customer message: I was double charged and nobody replied to my two emails.",
+    "questions": [
+      { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" },
+      { "type": "choice", "name": "category", "instructions": "Pick the ticket category",
+        "choices": [ { "value": "billing" }, { "value": "bug" }, { "value": "other" } ] }
+    ]
+  }'
+```
+
+Bifrost calls `POST {endpoint}/openai/v1/decisions` in OpenAI's decisions format, so requests and answers map as on [OpenAI](/providers/supported-providers/openai#15-decisions), including `input_image` parts (a base64 data URL or a public HTTPS URL). Authentication (API key, Entra ID, or managed identity) is applied as for every other Azure call, and no `api-version` is sent. Azure is rolling the endpoint out by region; a deployment in a region without it returns Azure's own error. See Microsoft's [Decisions API guide](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/decisions) for availability and limits.
+
+## Microsoft-Decision-1
 
 ```bash
 curl http://localhost:8080/v1/decisions \
@@ -1035,9 +1062,9 @@ Bifrost calls `POST {endpoint}/providers/microsoft/v1/systemone`, which uses Typ
 - **Limits.** Choice questions take 2-255 options and score questions 2-10 levels; the context window is 32,768 tokens.
 - **No response `id`.** Azure's `x-request-id` is in `extra_fields.provider_response_headers`.
 
-Azure does not gate decisions by model name: a deployment that does not serve decisions returns Azure's own error. With [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, `Microsoft-Decision-1` is still served natively. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use it as its classifier.
+Bifrost does not otherwise gate decisions on Azure by model name: a deployment that serves neither endpoint returns Azure's own error. With [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, `gpt-6-luna` and `Microsoft-Decision-1` are still served natively. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use `Microsoft-Decision-1` as its classifier.
 
-Until the model catalog lists its rates, a decision on Azure is priced at $0; add a [pricing override](/providers/custom-pricing) for the Decisions request type to bill it.
+A decision is priced from the model catalog: at the model's decision rates where it lists them, otherwise at its chat rates. A model the catalog does not list is priced at $0; add a [pricing override](/providers/custom-pricing) for the Decisions request type to bill it.
 
 ---
 

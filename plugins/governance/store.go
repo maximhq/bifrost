@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1759,6 +1760,28 @@ func (gs *LocalGovernanceStore) DetachVirtualMCPInMemory(vkID string, vmcpID uin
 		return
 	}
 	gs.virtualMCPIDsByVK.Store(vkID, next)
+}
+
+// SetVirtualMCPAssignmentsInMemory replaces a VK's whole assignment set in one write, under
+// virtualMCPAssignMu like Attach/Detach. A key reload uses it to converge the index on what the
+// database holds after a write that changed the assignments by other means (adoption into an
+// access profile strips them). An empty set drops the VK.
+func (gs *LocalGovernanceStore) SetVirtualMCPAssignmentsInMemory(vkID string, vmcpIDs []uint) {
+	gs.virtualMCPAssignMu.Lock()
+	defer gs.virtualMCPAssignMu.Unlock()
+	if len(vmcpIDs) == 0 {
+		gs.virtualMCPIDsByVK.Delete(vkID)
+		return
+	}
+	next := slices.Clone(vmcpIDs)
+	slices.Sort(next)
+	gs.virtualMCPIDsByVK.Store(vkID, slices.Compact(next))
+}
+
+// VirtualMCPAssignmentsInMemory returns a copy of the Virtual MCP IDs the in-memory index assigns a
+// VK directly, sorted, or nil. Callers that converge the index use it to check what it holds.
+func (gs *LocalGovernanceStore) VirtualMCPAssignmentsInMemory(vkID string) []uint {
+	return slices.Clone(gs.assignedVirtualMCPIDs(vkID))
 }
 
 // virtualKeyOf is the key row behind a permit, when the permit is a key's. Nothing else this store

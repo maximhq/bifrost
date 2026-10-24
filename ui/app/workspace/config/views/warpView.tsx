@@ -72,6 +72,10 @@ const DEFAULT_EMBEDDING_DIMENSION = 1536;
 const DEFAULT_VECTOR_NAMESPACE = "BifrostWarpLogs";
 const DEFAULT_SEARCH_THRESHOLD = 0.5;
 const DEFAULT_SEARCH_LIMIT = 10;
+// Mirrors schemas.WarpDefaultTopicDiscoveryMinRequests and its bounds.
+const DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS = 100;
+const MIN_TOPIC_DISCOVERY_MIN_REQUESTS = 10;
+const MAX_TOPIC_DISCOVERY_MIN_REQUESTS = 20000;
 const DEFAULT_BACKFILL_PERIOD = "7d";
 
 /** "xhigh" -> "Xhigh". Good enough for a Select item; these are short, plain words. */
@@ -100,6 +104,7 @@ interface WarpFormState {
 	namespace: string;
 	threshold: number;
 	searchLimit: number;
+	discoveryMinRequests: number;
 }
 
 const EMPTY_FORM: WarpFormState = {
@@ -118,6 +123,7 @@ const EMPTY_FORM: WarpFormState = {
 	namespace: DEFAULT_VECTOR_NAMESPACE,
 	threshold: DEFAULT_SEARCH_THRESHOLD,
 	searchLimit: DEFAULT_SEARCH_LIMIT,
+	discoveryMinRequests: DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS,
 };
 
 /**
@@ -346,6 +352,7 @@ export default function WarpView() {
 			namespace: config.log_vector_store_namespace || DEFAULT_VECTOR_NAMESPACE,
 			threshold: config.semantic_search_threshold || DEFAULT_SEARCH_THRESHOLD,
 			searchLimit: config.semantic_search_limit || DEFAULT_SEARCH_LIMIT,
+			discoveryMinRequests: config.topic_discovery_min_requests || DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS,
 		});
 	}, [config]);
 
@@ -399,7 +406,8 @@ export default function WarpView() {
 			form.embeddingDimension !== (config.embedding_dimension || DEFAULT_EMBEDDING_DIMENSION) ||
 			form.namespace !== (config.log_vector_store_namespace || DEFAULT_VECTOR_NAMESPACE) ||
 			form.threshold !== (config.semantic_search_threshold || DEFAULT_SEARCH_THRESHOLD) ||
-			form.searchLimit !== (config.semantic_search_limit || DEFAULT_SEARCH_LIMIT));
+			form.searchLimit !== (config.semantic_search_limit || DEFAULT_SEARCH_LIMIT) ||
+			form.discoveryMinRequests !== (config.topic_discovery_min_requests || DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS));
 
 	// The server enforces the same rules; checking here only saves a round trip.
 	const defaultModel = form.models[0];
@@ -418,6 +426,10 @@ export default function WarpView() {
 	const retentionError = validateWarpRetentionDays(form.historyRetentionDays);
 	const retentionInvalid = retentionError !== true;
 	const temperatureInvalid = form.temperature === "" || form.temperature < WARP_MIN_TEMPERATURE || form.temperature > WARP_MAX_TEMPERATURE;
+	const discoveryInvalid =
+		!Number.isInteger(form.discoveryMinRequests) ||
+		form.discoveryMinRequests < MIN_TOPIC_DISCOVERY_MIN_REQUESTS ||
+		form.discoveryMinRequests > MAX_TOPIC_DISCOVERY_MIN_REQUESTS;
 	const embeddingFields: WarpEmbeddingFields = form;
 	const embeddingValidation = validateWarpEmbedding(embeddingFields, form.enabled, config?.vector_store_connected ?? false);
 	const savedEmbeddingFields: WarpEmbeddingFields = {
@@ -449,6 +461,7 @@ export default function WarpView() {
 		timeoutInvalid ||
 		retentionInvalid ||
 		temperatureInvalid ||
+		discoveryInvalid ||
 		!!embeddingValidation ||
 		needsNewNamespace;
 
@@ -475,6 +488,7 @@ export default function WarpView() {
 			log_vector_store_namespace: form.namespace.trim(),
 			semantic_search_threshold: form.threshold,
 			semantic_search_limit: form.searchLimit,
+			topic_discovery_min_requests: form.discoveryMinRequests,
 		};
 		try {
 			await updateWarpConfig(payload).unwrap();
@@ -1126,6 +1140,32 @@ export default function WarpView() {
 								configured={!!config?.configured}
 								vectorStoreConnected={!!config?.vector_store_connected}
 								hasChanges={hasChanges}
+								discoveryField={
+									<WarpField
+										label="New topic threshold"
+										htmlFor="warp-topic-discovery-min-requests"
+										className="max-w-xs"
+										hint={`How many requests that matched no topic have to be waiting before Warp groups them into new topics, checked hourly. Lower finds new subjects sooner from fewer examples; higher waits for clearer patterns. ${MIN_TOPIC_DISCOVERY_MIN_REQUESTS} to ${MAX_TOPIC_DISCOVERY_MIN_REQUESTS}.`}
+										error={
+											discoveryInvalid
+												? `Must be a whole number from ${MIN_TOPIC_DISCOVERY_MIN_REQUESTS} to ${MAX_TOPIC_DISCOVERY_MIN_REQUESTS}`
+												: undefined
+										}
+									>
+										<Input
+											id="warp-topic-discovery-min-requests"
+											type="number"
+											min={MIN_TOPIC_DISCOVERY_MIN_REQUESTS}
+											max={MAX_TOPIC_DISCOVERY_MIN_REQUESTS}
+											step={1}
+											data-testid="warp-topic-discovery-min-requests-input"
+											className={discoveryInvalid ? "border-destructive" : ""}
+											value={form.discoveryMinRequests}
+											onChange={(event) => update("discoveryMinRequests", Number(event.target.value))}
+											disabled={!hasWarpUpdateAccess}
+										/>
+									</WarpField>
+								}
 							/>
 						</WarpSection>
 					</div>

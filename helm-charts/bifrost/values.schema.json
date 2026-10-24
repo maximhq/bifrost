@@ -731,6 +731,16 @@
               "description": "Delete expired virtual keys automatically. A daily cleanup job removes every key whose expiry has passed unless the key sets delete_after_expire to false; keys with delete_after_expire true are removed regardless. Maps to client.delete_expired_virtual_keys.",
               "default": false
             },
+            "skipAccessProfileUserVirtualKeyCreation": {
+              "type": "boolean",
+              "description": "Enterprise only. When true, a user's first access profile never creates a virtual key for them. Maps to client.skip_access_profile_user_virtual_key_creation.",
+              "default": false
+            },
+            "skipAccessProfileUserVirtualKeyDeletion": {
+              "type": "boolean",
+              "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys. Deleting the user still deletes their keys. Maps to client.skip_access_profile_user_virtual_key_deletion.",
+              "default": false
+            },
             "mcpDisableAutoToolInject": {
               "type": "boolean",
               "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use bifrost.mcp.toolManagerConfig.disableAutoToolInject.",
@@ -3451,6 +3461,11 @@
                       "apiToken": {
                         "type": "string",
                         "description": "Okta API token for Admin API access (optional; enables 24-hour background user/group reconciliation)"
+                      },
+                      "syncAllUsers": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Which Okta users directory sync (apiToken) keeps. True (the default when unset) syncs every app-assigned user except those SUSPENDED or DEPROVISIONED (deactivated); false syncs ACTIVE users only. Maps to scim_config.config.syncAllUsers."
                       },
                       "audience": {
                         "type": "string",

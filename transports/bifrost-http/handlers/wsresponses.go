@@ -176,6 +176,8 @@ func (h *WSResponsesHandler) eventLoop(conn *ws.Conn, session *bfws.Session, aut
 		switch schemas.WebSocketEventType(envelope.Type) {
 		case schemas.WSEventResponseCreate:
 			h.handleResponseCreate(session, auth, message)
+		case schemas.WSEventResponseInterrupt:
+			// Read only after its turn ends; OpenAI ignores it too, and an error here fails the client's next turn.
 		default:
 			writeWSError(session, 400, "invalid_request_error", "unsupported event type: "+envelope.Type)
 		}

@@ -988,10 +988,49 @@ func warpUnmatchedIDs(rows []logstore.WarpTopicUnmatched) []string {
 	return ids
 }
 
-// A recompute replaces the previous topics: they are retired rather than
-// deleted, so a request filed under one keeps its row, but the list never
-// shows a stale topic beside a fresh one or counts a request filed under one.
-func TestWarpTopicsJobReplacesPreviousTopics(t *testing.T) {
+// Topics are seeded once per embedding model, and admission holds that within
+// one process only: another instance sharing the job store can queue a run
+// beside this one's. The partition runs them one after another, so the second
+// finds the first one's topics and leaves them, and what was filed under them
+// stays filed.
+func TestWarpTopicsJobQueuedBehindASeedLeavesItsTopics(t *testing.T) {
+	service, start := topicTestService(t, newFakeWarpVectorStore(), nil, topicTestNaming)
+	store := service.topicStore()
+	ctx := context.Background()
+	// Both are built before either runs, as two instances admitting at once
+	// would build them.
+	first, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.NoError(t, err)
+	second, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.NoError(t, err)
+	_, err = service.RunTopicsJob(ctx, tables.TableSidekiqJob{ID: "first", Metadata: first}, func(string) error { return nil })
+	require.NoError(t, err)
+	seeded, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{})
+	require.NoError(t, err)
+	require.NotEmpty(t, seeded)
+	filed, err := store.ListWarpTopicAssignments(ctx, logstore.WarpTopicAssignmentFilter{}, 100)
+	require.NoError(t, err)
+	require.NotEmpty(t, filed)
+
+	finalJSON, err := service.RunTopicsJob(ctx, tables.TableSidekiqJob{ID: "second", Metadata: second}, func(string) error { return nil })
+	require.NoError(t, err, "a run with nothing to do has not failed")
+
+	after, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{})
+	require.NoError(t, err)
+	require.Equal(t, seeded, after, "nothing retired and nothing written")
+	refiled, err := store.ListWarpTopicAssignments(ctx, logstore.WarpTopicAssignmentFilter{}, 100)
+	require.NoError(t, err)
+	require.Equal(t, filed, refiled)
+	var final BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
+	require.Contains(t, final.Message, "already built")
+}
+
+// Once upkeep has retired every topic, the model is back to having none and
+// is seeded again. The retired topics keep their rows, so a request filed
+// under one keeps its row too, but the list never shows a stale topic beside
+// a fresh one or counts a request filed under one.
+func TestWarpTopicsJobReseedsOnceEveryTopicIsRetired(t *testing.T) {
 	// The model is unreachable this run: clusters still get written, with
 	// fallback names, and the failure is counted rather than fatal.
 	unreachable := func(context.Context, *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
@@ -1001,12 +1040,13 @@ func TestWarpTopicsJobReplacesPreviousTopics(t *testing.T) {
 	store := service.topicStore()
 	ctx := context.Background()
 	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{{
-		ID: "stale", Label: "Old", EmbeddingSignature: topicTestSignature(), Centroid: logstore.EncodeWarpVector([]float32{0, 0, 1}),
+		ID: "stale", Label: "Old", EmbeddingSignature: topicTestSignature(), Status: logstore.WarpTopicStatusRetired,
+		Centroid: logstore.EncodeWarpVector([]float32{0, 0, 1}),
 	}}))
+	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.NoError(t, err, "a retired topic does not make the model seeded")
 	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []logstore.WarpTopicAssignment{{LogID: "earlier", TopicID: "stale", Timestamp: start.Add(-time.Hour)}}))
 
-	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
-	require.NoError(t, err)
 	finalJSON, err := service.RunTopicsJob(ctx, tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
 	require.NoError(t, err)
 
@@ -1033,43 +1073,38 @@ func TestWarpTopicsJobReplacesPreviousTopics(t *testing.T) {
 	require.Equal(t, 6, total, "the request filed under the retired topic is not counted")
 }
 
-// A run replaces the topics list_topics serves - active topics under the
-// configured embedding model - and nothing else. A topic built with another
-// embedding model is not its to retire. The topic it does retire keeps its
-// centre: retiring rewrites the whole row. Themes are left out here: the run
-// regroups them afterwards (GroupTopics), which retires a theme left without
-// topics, and that is tested with the themes.
-func TestWarpTopicsJobRetiresOnlyTheTopicsItReplaces(t *testing.T) {
+// A run seeds the topics of the configured embedding model and touches no
+// other: a topic built with another embedding model neither holds the run
+// back nor is retired by it, and keeps its centre. Themes are left out here:
+// the run regroups them afterwards (GroupTopics), which retires a theme left
+// without topics, and that is tested with the themes.
+func TestWarpTopicsJobLeavesOtherModelsTopics(t *testing.T) {
 	service, start := topicTestService(t, newFakeWarpVectorStore(), nil, topicTestChat("Refund requests"))
 	store := service.topicStore()
 	ctx := context.Background()
 	centre := logstore.EncodeWarpVector([]float32{0, 0, 1})
 	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
-		{ID: "replaced", Label: "Old", EmbeddingSignature: topicTestSignature(), Centroid: centre},
 		{ID: "other-model", Label: "Other", EmbeddingSignature: "another-embedding-space", Centroid: centre},
 	}))
-
 	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
 	require.NoError(t, err)
-	_, err = service.RunTopicsJob(ctx, tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
-	require.NoError(t, err)
 
-	rows, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{IDs: []string{"replaced", "other-model"}})
+	finalJSON, err := service.RunTopicsJob(ctx, tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
 	require.NoError(t, err)
-	status := map[string]string{}
-	for _, row := range rows {
-		status[row.ID] = row.Status
-		require.Equal(t, centre, row.Centroid, "%s keeps its centre", row.ID)
-	}
-	require.Equal(t, map[string]string{
-		"replaced":    logstore.WarpTopicStatusRetired,
-		"other-model": logstore.WarpTopicStatusActive,
-	}, status)
+	var final BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
+	require.NotEmpty(t, final.Topics, "the run seeded this model's topics")
+
+	rows, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{IDs: []string{"other-model"}})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, logstore.WarpTopicStatusActive, rows[0].Status)
+	require.Equal(t, centre, rows[0].Centroid)
 }
 
 // A run that cannot finish writing retires what it wrote and leaves the
-// previous topics as they were, so a question asked afterwards is answered
-// from a whole set of topics rather than a few of the new ones.
+// previous topics as they were - here a re-seed's, which upkeep had retired -
+// so a question asked afterwards is never answered from a few of the new ones.
 func TestWarpTopicsJobKeepsPreviousTopicsWhenWriteFails(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	logs := topicTestLogs(start)
@@ -1078,20 +1113,26 @@ func TestWarpTopicsJobKeepsPreviousTopicsWhenWriteFails(t *testing.T) {
 	reader.topics = &failingTopicStore{LogStore: store, err: fmt.Errorf("log store unavailable")}
 	service, _ := topicTestService(t, newFakeWarpVectorStore(), reader, topicTestNaming)
 	ctx := context.Background()
-	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{{ID: "previous", Label: "Old", EmbeddingSignature: topicTestSignature()}}))
-
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{{
+		ID: "previous", Label: "Old", EmbeddingSignature: topicTestSignature(), Status: logstore.WarpTopicStatusRetired,
+	}}))
 	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
 	require.NoError(t, err)
+
 	finalJSON, err := service.RunTopicsJob(ctx, tables.TableSidekiqJob{ID: "job-1", Metadata: metaJSON}, func(string) error { return nil })
 	require.ErrorContains(t, err, "log store unavailable")
 
 	active, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{Statuses: []string{logstore.WarpTopicStatusActive}})
 	require.NoError(t, err)
-	require.Len(t, active, 1)
-	require.Equal(t, "previous", active[0].ID)
+	require.Empty(t, active, "none of the new topics is left active")
 	all, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{})
 	require.NoError(t, err)
 	require.Len(t, all, 3, "the new topics were written and then retired")
+	for _, topic := range all {
+		if topic.ID == "previous" {
+			require.Equal(t, "Old", topic.Label, "the previous topic is as it was")
+		}
+	}
 
 	var final BackfillJobMeta
 	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
@@ -1101,9 +1142,10 @@ func TestWarpTopicsJobKeepsPreviousTopicsWhenWriteFails(t *testing.T) {
 }
 
 // A run writes its assignments in batches, and each one replaces the row a
-// request already had. A run whose later batch fails puts back the rows its
-// earlier batches replaced, so the previous topics keep every request they
-// had rather than losing the ones the failed run got to first.
+// request already had - on a re-seed, the row under a topic upkeep retired. A
+// run whose later batch fails puts back the rows its earlier batches replaced,
+// so the previous topics keep every request they had rather than losing the
+// ones the failed run got to first.
 func TestWarpTopicsJobRestoresAssignmentsWhenALaterBatchFails(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	logs := topicTestLogs(start)
@@ -1111,9 +1153,9 @@ func TestWarpTopicsJobRestoresAssignmentsWhenALaterBatchFails(t *testing.T) {
 	store := reader.topics.(logstore.LogStore)
 	service, _ := topicTestService(t, newFakeWarpVectorStore(), reader, topicTestNaming)
 	ctx := context.Background()
+	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.NoError(t, err)
 	run := func(id string) (string, error) {
-		metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
-		require.NoError(t, err)
 		return service.RunTopicsJob(ctx, tables.TableSidekiqJob{ID: id, Metadata: metaJSON}, func(string) error { return nil })
 	}
 	assignments := func() map[string]string {
@@ -1125,8 +1167,11 @@ func TestWarpTopicsJobRestoresAssignmentsWhenALaterBatchFails(t *testing.T) {
 		}
 		return byLog
 	}
-	_, err := run("job-1")
+	_, err = run("job-1")
 	require.NoError(t, err)
+	// Upkeep retires every topic the first run wrote, so the second is a
+	// re-seed rather than a run queued behind a seeded model.
+	retireActiveTopics(t, ctx, store)
 	// One request with no row yet, so the failed run's first batch both
 	// replaces rows and adds one.
 	require.NoError(t, store.DeleteWarpTopicAssignments(ctx, []string{"log-0"}))
@@ -1137,7 +1182,6 @@ func TestWarpTopicsJobRestoresAssignmentsWhenALaterBatchFails(t *testing.T) {
 	window := TopicQuery{Filter: logstore.WarpTopicAssignmentFilter{StartTime: &start, EndTime: &end}, Limit: 15}
 	listBefore, err := reader2.ListTopics(ctx, window)
 	require.NoError(t, err)
-	require.NotEmpty(t, listBefore.Topics)
 
 	// Six requests in batches of four: the first batch lands, the second fails.
 	limits := defaultTopicLimits()
@@ -1151,6 +1195,15 @@ func TestWarpTopicsJobRestoresAssignmentsWhenALaterBatchFails(t *testing.T) {
 	listAfter, err := reader2.ListTopics(ctx, window)
 	require.NoError(t, err)
 	require.Equal(t, listBefore, listAfter, "the previous topics answer as they did, counts included")
+}
+
+// retireActiveTopics retires every active topic, as upkeep does once each
+// has gone quiet, so the model can be seeded again.
+func retireActiveTopics(t *testing.T, ctx context.Context, store logstore.WarpTopicStore) {
+	t.Helper()
+	active, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{Kinds: []string{logstore.WarpTopicKindTopic}, Statuses: []string{logstore.WarpTopicStatusActive}})
+	require.NoError(t, err)
+	require.NoError(t, retireTopics(ctx, store, active))
 }
 
 // failingTopicStore is a log store whose assignment writes fail: every one,
@@ -1189,6 +1242,21 @@ func TestWarpTopicsJobReportsAFailedCleanup(t *testing.T) {
 	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
 	require.Contains(t, final.LastError, "assignments unavailable")
 	require.Contains(t, final.LastError, "topics unavailable")
+
+	// The topics the failed run could not retire were never made active, so
+	// they do not read as a finished seed: a retry is admitted, and upkeep
+	// deletes them once they have sat long enough.
+	left, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{Kinds: []string{logstore.WarpTopicKindTopic}})
+	require.NoError(t, err)
+	require.NotEmpty(t, left)
+	for _, topic := range left {
+		require.Equal(t, logstore.WarpTopicStatusSeeding, topic.Status)
+	}
+	_, err = service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.NoError(t, err, "a failed seed does not lock the model out of seeding again")
+	pruned, err := pruneRetiredTopics(ctx, store, time.Now().UTC().Add(topicsRetireAfter+time.Hour), topicsRetireAfter)
+	require.NoError(t, err)
+	require.Equal(t, len(left), pruned)
 
 	// A cleanup that succeeds leaves the error as it was.
 	reader.topics = &failingTopicStore{LogStore: store, err: fmt.Errorf("assignments unavailable")}
@@ -2001,4 +2069,69 @@ func TestWarpTopicsJobAgainstLiveVectorStores(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Topics are seeded once per embedding model. From then on they are kept up
+// to date as requests are indexed - filed live, new subjects discovered from
+// the pool, the stale retired and the alike merged - and a second run would
+// only throw that away. Another model's topics, a retired topic and a theme
+// do not count: none of them is a topic this model's requests are filed under.
+func TestWarpTopicsSeedRunsOncePerEmbeddingModel(t *testing.T) {
+	service, start := topicTestService(t, newFakeWarpVectorStore(), nil, topicTestNaming)
+	store := service.topicStore()
+	ctx := context.Background()
+	centre := logstore.EncodeWarpVector([]float32{0, 0, 1})
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
+		{ID: "other-model", Label: "Other", EmbeddingSignature: "another-embedding-space", Centroid: centre},
+		{ID: "retired", Label: "Gone", EmbeddingSignature: topicTestSignature(), Status: logstore.WarpTopicStatusRetired, Centroid: centre},
+		{ID: "theme", Kind: logstore.WarpTopicKindTheme, Label: "Theme", EmbeddingSignature: topicTestSignature()},
+	}))
+	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.NoError(t, err, "nothing is filed under this model's topics yet")
+	_, err = service.RunTopicsJob(ctx, tables.TableSidekiqJob{ID: "seed", Metadata: metaJSON}, func(string) error { return nil })
+	require.NoError(t, err)
+
+	_, err = service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.ErrorIs(t, err, ErrTopicsAlreadyBuilt)
+}
+
+// A seed run clusters the vectors already indexed, so before any exist there
+// is nothing for it to do: the settings page asks for a backfill first. Only
+// Warp's own vectors count, and a store that cannot answer says so rather
+// than reading as empty.
+func TestWarpHasIndexedRequests(t *testing.T) {
+	service, _ := topicTestService(t, newFakeWarpVectorStore(), nil, topicTestNaming)
+	indexed, err := service.HasIndexedRequests(context.Background())
+	require.NoError(t, err)
+	require.True(t, indexed)
+
+	vectors := newFakeWarpVectorStore()
+	require.NoError(t, vectors.Add(context.Background(), schemas.WarpDefaultLogVectorStoreNamespace, "not-warps", []float32{1, 0, 0}, map[string]interface{}{"log_id": "x"}))
+	empty := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(vectors))
+	t.Cleanup(empty.Shutdown)
+	indexed, err = empty.HasIndexedRequests(context.Background())
+	require.NoError(t, err)
+	require.False(t, indexed, "another owner's entry is not an indexed request")
+
+	// A store that does not apply the filter can fill the first page with
+	// entries that are not Warp's. A log vector past it still counts.
+	for index := range 2 * topicsIndexedProbePage {
+		require.NoError(t, vectors.Add(context.Background(), schemas.WarpDefaultLogVectorStoreNamespace, fmt.Sprintf("a-other-%03d", index), []float32{1, 0, 0}, map[string]interface{}{"log_id": "x"}))
+	}
+	require.NoError(t, vectors.Add(context.Background(), schemas.WarpDefaultLogVectorStoreNamespace, "z-log", []float32{1, 0, 0}, map[string]interface{}{"log_id": "z", "warp_log": true}))
+	indexed, err = empty.HasIndexedRequests(context.Background())
+	require.NoError(t, err)
+	require.True(t, indexed, "a Warp log vector past the first page is found")
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = empty.HasIndexedRequests(cancelled)
+	require.ErrorIs(t, err, context.Canceled)
+
+	forgetful := newFakeWarpVectorStore()
+	forgetful.strict = true
+	unknown := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(forgetful))
+	t.Cleanup(unknown.Shutdown)
+	_, err = unknown.HasIndexedRequests(context.Background())
+	require.Error(t, err)
 }

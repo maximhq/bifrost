@@ -246,6 +246,15 @@ func (c ModelCaps) SupportsBetweenToolsThinking(fallback bool) bool {
 	return fallback
 }
 
+// SupportsThinkingDisplayUpdates reports whether the model accepts
+// thinking.display:"updates", which needs the thinking-display-updates beta.
+func (c ModelCaps) SupportsThinkingDisplayUpdates(fallback bool) bool {
+	if c.record != nil && c.record.SupportsThinkingDisplayUpdates != nil {
+		return *c.record.SupportsThinkingDisplayUpdates
+	}
+	return fallback
+}
+
 // SupportsDynamicReasoningBudget reports whether the model accepts a
 // self-managed thinking budget (Gemini's thinkingBudget: -1) rather than an
 // explicit token count.

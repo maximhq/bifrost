@@ -17,7 +17,7 @@ import VirtualMcpAccessProfiles from "@enterprise/components/virtual-mcps/virtua
 import { Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { type VirtualKeyOwner, resolvePickedVirtualKey } from "./virtualMcpAccessTab.utils";
+import { type PickedVirtualKey, type VirtualKeyOwner, resolvePickedVirtualKey } from "./virtualMcpAccessTab.utils";
 
 interface VirtualMCPAccessTabProps {
 	vmcpId: number;
@@ -42,6 +42,9 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 	const [fetchVirtualKey] = useLazyGetVirtualKeyQuery();
 	// A picked key that belongs to a team, business unit, customer or user, waiting on the confirmation.
 	const [pendingOwnedVk, setPendingOwnedVk] = useState<{ id: string; name: string; owner: VirtualKeyOwner } | null>(null);
+	// One ownership check at a time, so a late result cannot replace the key an open confirmation names.
+	const [checkingOwner, setCheckingOwner] = useState(false);
+	const checkingOwnerRef = useRef(false);
 	// The assignments as of the latest render. A pick that waits on a lookup adds to these, not to the
 	// list it saw when it started, so a key picked meanwhile is not dropped.
 	const latestValue = useRef(value);
@@ -85,8 +88,18 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 	// failed read assigns nothing: whose key it is is unknown, and the confirmation exists for exactly
 	// a key someone else owns.
 	const selectVk = async (vkId: string, label: string) => {
+		if (checkingOwnerRef.current) return;
+		checkingOwnerRef.current = true;
+		setCheckingOwner(true);
 		const listed = vkById.get(vkId);
-		const picked = await resolvePickedVirtualKey(listed, async () => (await fetchVirtualKey(vkId, true).unwrap()).virtual_key);
+		let picked: PickedVirtualKey;
+		try {
+			// A fresh read: a cached key can name an owner it no longer has.
+			picked = await resolvePickedVirtualKey(listed, async () => (await fetchVirtualKey(vkId).unwrap()).virtual_key);
+		} finally {
+			checkingOwnerRef.current = false;
+			setCheckingOwner(false);
+		}
 		if (picked.outcome === "lookupFailed") {
 			toast.error(`Could not check who owns "${label}", so it was not assigned. Try again.`);
 			return;
@@ -112,7 +125,7 @@ export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate,
 					onSelect={(opt) => void selectVk(opt.value, opt.label)}
 					contentClassName="w-72"
 					trigger={
-						<Button variant="outline" size="sm" data-testid="virtual-mcp-assign-vk-btn">
+						<Button variant="outline" size="sm" disabled={checkingOwner} data-testid="virtual-mcp-assign-vk-btn">
 							<Plus className="h-4 w-4" />
 							Assign virtual key
 						</Button>

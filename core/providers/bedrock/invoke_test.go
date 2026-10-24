@@ -3100,6 +3100,135 @@ func TestInvokeIngressTopLevelCacheControlBecomesCachePoint(t *testing.T) {
 	assert.Equal(t, "1h", *cp.TTL)
 }
 
+// invokeStreamMessageDeltaStopReason replays a ConverseStream turn through the production
+// converters behind /invoke-with-response-stream and returns message_delta.delta.stop_reason.
+func invokeStreamMessageDeltaStopReason(t *testing.T, events []*BedrockStreamEvent) string {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	state := NewBedrockResponsesStreamState()
+
+	var stream []*schemas.BifrostResponsesStreamResponse
+	for i, event := range events {
+		out, bifrostErr, _ := event.ToBifrostResponsesStream(i, state)
+		require.Nil(t, bifrostErr)
+		stream = append(stream, out...)
+	}
+	stream = append(stream, FinalizeBedrockStream(state, len(events),
+		&schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}, nil)...)
+
+	stopReason := ""
+	for _, resp := range stream {
+		_, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, resp)
+		require.NoError(t, err)
+		event, ok := out.(*BedrockStreamEvent)
+		if !ok || event == nil {
+			continue
+		}
+		for _, raw := range event.InvokeModelRawChunks {
+			if gjson.GetBytes(raw, "type").String() == "message_delta" {
+				stopReason = gjson.GetBytes(raw, "delta.stop_reason").String()
+			}
+		}
+	}
+	return stopReason
+}
+
+// TestToAnthropicInvokeStreamBytes_MessageDeltaStopReason is the regression test for #8550:
+// a Converse turn that ends in a tool call closed the invoke stream with stop_reason
+// "end_turn", so Anthropic-dialect clients treated it as finished and never ran the tool.
+// The non-streaming invoke converter already reports tool_use for the same turn.
+func TestToAnthropicInvokeStreamBytes_MessageDeltaStopReason(t *testing.T) {
+	idx := 0
+	textTurn := func(stopReason string) []*BedrockStreamEvent {
+		return []*BedrockStreamEvent{
+			{Role: schemas.Ptr("assistant")},
+			{ContentBlockIndex: &idx, Delta: &BedrockContentBlockDelta{Text: schemas.Ptr("Hello")}},
+			{ContentBlockIndex: &idx, ContentBlockStop: true},
+			{StopReason: schemas.Ptr(stopReason)},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		events   []*BedrockStreamEvent
+		expected string
+	}{
+		{
+			name: "tool_use",
+			events: []*BedrockStreamEvent{
+				{Role: schemas.Ptr("assistant")},
+				{ContentBlockIndex: &idx, Start: &BedrockContentBlockStart{
+					ToolUse: &BedrockToolUseStart{ToolUseID: "tooluse_1", Name: "get_weather"}}},
+				{ContentBlockIndex: &idx, Delta: &BedrockContentBlockDelta{
+					ToolUse: &BedrockToolUseDelta{Input: `{"city":"Paris"}`}}},
+				{ContentBlockIndex: &idx, ContentBlockStop: true},
+				{StopReason: schemas.Ptr("tool_use")},
+			},
+			expected: "tool_use",
+		},
+		{name: "end_turn", events: textTurn("end_turn"), expected: "end_turn"},
+		{name: "max_tokens", events: textTurn("max_tokens"), expected: "max_tokens"},
+		{name: "guardrail_intervened", events: textTurn("guardrail_intervened"), expected: "refusal"},
+		{name: "model_context_window_exceeded", events: textTurn("model_context_window_exceeded"), expected: "model_context_window_exceeded"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, invokeStreamMessageDeltaStopReason(t, tt.events))
+		})
+	}
+}
+
+// BenchmarkToAnthropicInvokeStreamBytes_TerminalEvent measures the terminal event of an
+// invoke stream (message_delta + message_stop), which runs once per streamed turn.
+func BenchmarkToAnthropicInvokeStreamBytes_TerminalEvent(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCompleted,
+		Response: &schemas.BifrostResponsesResponse{
+			StopReason: schemas.Ptr("tool_calls"),
+			Usage:      &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+		},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := toAnthropicInvokeStreamBytes(ctx, resp); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// The invoke-with-response-stream route can be served by other providers, whose stop
+// reasons reach the terminal event without IncompleteDetails. Only reasons Anthropic
+// defines may reach message_delta.stop_reason.
+func TestToAnthropicInvokeStreamBytes_StopReasonWithoutIncompleteDetails(t *testing.T) {
+	tests := []struct {
+		stopReason string
+		expected   string
+	}{
+		{stopReason: "tool_calls", expected: "tool_use"},
+		{stopReason: "stop", expected: "end_turn"},
+		{stopReason: "compaction", expected: "compaction"},
+		{stopReason: "pause_turn", expected: "pause_turn"},
+		{stopReason: "guardrail_intervened", expected: "refusal"},
+		{stopReason: "content_filter", expected: "refusal"},
+		{stopReason: "some_future_reason", expected: "end_turn"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.stopReason, func(t *testing.T) {
+			resp := &schemas.BifrostResponsesStreamResponse{
+				Type:     schemas.ResponsesStreamResponseTypeCompleted,
+				Response: &schemas.BifrostResponsesResponse{StopReason: schemas.Ptr(tt.stopReason)},
+			}
+			frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
+			require.NoError(t, err)
+			require.NotEmpty(t, frames)
+			assert.Equal(t, tt.expected, gjson.GetBytes(frames[0], "delta.stop_reason").String())
+		})
+	}
+}
+
 func TestInvokeBuildConfig_ExcludesInternalConverseFields(t *testing.T) {
 	provider := &BedrockProvider{}
 	config := provider.invokeBuildConfig("us.anthropic.claude-sonnet-4-6", false, false, nil)

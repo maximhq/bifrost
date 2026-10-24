@@ -143,7 +143,7 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 		opts = append(opts, warp.WithCallerRestrictionResolver(resolvers.CallerRestriction))
 	}
 	if client != nil {
-		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest), warp.WithResponsesExecutor(client.ResponsesRequest))
+		opts = append(opts, warp.WithEmbeddingExecutor(client.EmbeddingRequest), warp.WithResponsesExecutor(warp.StreamedResponses(client.ResponsesStreamRequest)))
 	}
 	if loggerPlugin != nil {
 		opts = append(opts, warp.WithLogReader(warpLogReader{loggerPlugin.GetPluginLogManager()}))
@@ -315,6 +315,11 @@ type warpBackfillStatus struct {
 type warpJobSpec struct {
 	kind      string
 	partition string
+	// conflicts are the kinds whose in-flight job refuses a start, and admit,
+	// when set, takes the lock a start is admitted under from that lookup to
+	// the enqueue.
+	conflicts []string
+	admit     func() (unlock func())
 	// noun and plural are how the job is called in messages: "backfill" and
 	// "backfills", "topic clustering" and "topic clustering runs".
 	noun   string
@@ -328,6 +333,7 @@ func (h *WarpHandler) backfillSpec() warpJobSpec {
 	return warpJobSpec{
 		kind:        warp.BackfillJobKind,
 		partition:   "warp_log_embeddings",
+		conflicts:   []string{warp.BackfillJobKind},
 		noun:        "backfill",
 		plural:      "backfills",
 		startDenied: "Only administrators can backfill Warp embeddings",
@@ -337,8 +343,13 @@ func (h *WarpHandler) backfillSpec() warpJobSpec {
 
 func (h *WarpHandler) topicsSpec() warpJobSpec {
 	return warpJobSpec{
-		kind:        warp.TopicsJobKind,
-		partition:   warp.TopicsJobPartition,
+		kind:      warp.TopicsJobKind,
+		partition: warp.TopicsJobPartition,
+		// A discovery writes topics in the same partition, so it holds a run
+		// back as another run does, and upkeep starts discoveries under the
+		// same lock.
+		conflicts:   warp.TopicsJobKinds,
+		admit:       h.service.LockTopicsJobAdmission,
 		noun:        "topic clustering",
 		plural:      "topic clustering runs",
 		startDenied: "Only administrators can start Warp topic clustering",
@@ -381,18 +392,26 @@ func (h *WarpHandler) startJob(ctx *fasthttp.RequestCtx, spec warpJobSpec) {
 		SendError(ctx, fasthttp.StatusBadRequest, "end_time must be after start_time")
 		return
 	}
-	if existing, err := h.backfillStore.GetInFlightSidekiqJobByKind(ctx, spec.kind); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to check running jobs")
-		return
-	} else if existing != nil {
-		ctx.SetStatusCode(fasthttp.StatusConflict)
-		SendJSON(ctx, warpBackfillStatusFromRow(existing))
-		return
+	if spec.admit != nil {
+		defer spec.admit()()
+	}
+	for _, kind := range spec.conflicts {
+		if existing, err := h.backfillStore.GetInFlightSidekiqJobByKind(ctx, kind); err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to check running jobs")
+			return
+		} else if existing != nil {
+			ctx.SetStatusCode(fasthttp.StatusConflict)
+			SendJSON(ctx, warpBackfillStatusFromRow(existing))
+			return
+		}
 	}
 	metadata, err := spec.buildMeta(ctx, request.StartTime, request.EndTime, request.Restart)
 	switch {
 	case errors.Is(err, warp.ErrInvalidConfig):
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	case errors.Is(err, warp.ErrTopicsAlreadyBuilt):
+		SendError(ctx, fasthttp.StatusConflict, err.Error())
 		return
 	case errors.Is(err, warp.ErrUnavailable), errors.Is(err, warp.ErrNoVectorStore):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
@@ -447,11 +466,13 @@ func (h *WarpHandler) jobStatus(ctx *fasthttp.RequestCtx, spec warpJobSpec) {
 		if err == nil && job == nil {
 			// Nothing running. A reloaded page still wants to see how the last
 			// run ended, so fall back to the newest job of any status - unless
-			// it is a backfill that ran under an embedding space that is no
-			// longer the configured one, in which case it says nothing about
-			// this space and the page shows its empty default instead.
+			// it ran under an embedding space that is no longer the configured
+			// one, in which case it says nothing about this space and the page
+			// shows its empty default instead. For topics that matters most:
+			// the run's "N topics written" sat beside "0 active topics", since
+			// its topics belong to a space nothing reads.
 			job, err = h.backfillStore.GetLatestSidekiqJobByKind(ctx, spec.kind)
-			if err == nil && job != nil && spec.kind == warp.BackfillJobKind && !h.service.BackfillMatchesConfig(ctx, job.Metadata) {
+			if err == nil && job != nil && !h.service.BackfillMatchesConfig(ctx, job.Metadata) {
 				job = nil
 			}
 		}
@@ -552,8 +573,13 @@ type warpLogIndexStatus struct {
 	EmbeddingConfigured  bool                `json:"embedding_configured"`
 	Backfill             *warpBackfillStatus `json:"backfill,omitempty"`
 	// Topics is how live topic filing is doing, when the index is usable and
-	// the log store keeps topics.
+	// the log store keeps topics. Deployment-wide, so absent for a caller
+	// whose reads are narrowed.
 	Topics *warp.TopicHealth `json:"topics,omitempty"`
+	// HasIndexedRequests says whether the namespace holds any indexed request
+	// to seed topics from. Only when Topics is present and has no active
+	// topics, and absent when the vector store cannot say.
+	HasIndexedRequests *bool `json:"has_indexed_requests,omitempty"`
 }
 
 const (
@@ -596,6 +622,16 @@ func (h *WarpHandler) logIndexStatus(ctx *fasthttp.RequestCtx) {
 			status.Topics = &health
 		} else if !errors.Is(err, warp.ErrUnavailable) {
 			logger.Warn("failed to read Warp topic health for index status: %v", err)
+		}
+		// Before the first topics, the settings page needs to know whether a
+		// seed run would find anything; after, the read would be wasted on
+		// every poll.
+		if status.Topics != nil && status.Topics.ActiveTopics == 0 {
+			if indexed, err := h.service.HasIndexedRequests(ctx); err == nil {
+				status.HasIndexedRequests = &indexed
+			} else {
+				logger.Warn("failed to check for indexed Warp requests: %v", err)
+			}
 		}
 	}
 	if h.backfillStore == nil || status.State != warpIndexStateReady {
