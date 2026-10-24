@@ -20,6 +20,7 @@
             "upstream-fixed-length-short",
             "upstream-fixed-length-ok",
             "upstream-extra-content",
+            "upstream-zero-cost",
             "gpt-5-pro"
           ],
           "weight": 1

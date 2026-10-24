@@ -3035,3 +3035,82 @@ func BenchmarkOpenAIChatRequestUnknownFields(b *testing.B) {
 		_ = OpenAIChatRequestUnknownFields(body)
 	}
 }
+
+func zeroCostUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Stream bool `json:"stream"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(`data: {"id":"chatcmpl-zero","object":"chat.completion.chunk","created":1,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}` + "\n\n" +
+				`data: {"id":"chatcmpl-zero","object":"chat.completion.chunk","created":1,"model":"deepseek-v4.1-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n" +
+				`data: {"id":"chatcmpl-zero","object":"chat.completion.chunk","created":1,"model":"deepseek-v4.1-flash","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0}}` + "\n\n" +
+				"data: [DONE]\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-zero","object":"chat.completion","created":1,"model":"deepseek-v4.1-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0}}`))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func newZeroCostProvider(baseURL string) *OpenAIProvider {
+	return NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig:        schemas.NetworkConfig{BaseURL: baseURL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, CustomProviderKey: "opencode-go"},
+	}, testNoopLogger{})
+}
+
+func zeroCostRequest() *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: "opencode-go",
+		Model:    "deepseek-v4.1-flash",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	}
+}
+
+func assertZeroCostOnWire(t *testing.T, usage *schemas.BifrostLLMUsage) {
+	t.Helper()
+	if usage == nil || usage.Cost == nil {
+		t.Fatalf("provider-reported zero cost was dropped on decode: %+v", usage)
+	}
+	out, err := sonic.ConfigStd.Marshal(usage)
+	require.NoError(t, err)
+	if !strings.Contains(string(out), `"cost":{"total_cost":0}`) {
+		t.Fatalf(`want "cost":{"total_cost":0}, got usage %s`, out)
+	}
+}
+
+func TestCustomProviderZeroCostReachesTheClient(t *testing.T) {
+	server := zeroCostUpstream(t)
+	provider := newZeroCostProvider(server.URL)
+
+	t.Run("non-streaming", func(t *testing.T) {
+		resp, bErr := provider.ChatCompletion(newStreamTestContext(), testKey(), zeroCostRequest())
+		if bErr != nil {
+			t.Fatalf("ChatCompletion: %+v", bErr.Error)
+		}
+		assertZeroCostOnWire(t, resp.Usage)
+	})
+
+	t.Run("streaming", func(t *testing.T) {
+		stream, bErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), zeroCostRequest())
+		if bErr != nil {
+			t.Fatalf("ChatCompletionStream: %+v", bErr.Error)
+		}
+		var usage *schemas.BifrostLLMUsage
+		for _, chunk := range collectChunks(t, stream) {
+			if chunk.BifrostError != nil {
+				t.Fatalf("stream error: %+v", chunk.BifrostError.Error)
+			}
+			if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+				usage = chunk.BifrostChatResponse.Usage
+			}
+		}
+		assertZeroCostOnWire(t, usage)
+	})
+}

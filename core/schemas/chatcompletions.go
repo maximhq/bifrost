@@ -2108,7 +2108,7 @@ type BifrostCost struct {
 	OutputCostDetails     *OutputCostDetails     `json:"output_cost_details,omitempty"`
 	AdditionalCost        float64                `json:"additional_cost,omitempty"`
 	AdditionalCostDetails *AdditionalCostDetails `json:"additional_cost_details,omitempty"`
-	TotalCost             float64                `json:"total_cost,omitempty"`
+	TotalCost             float64                `json:"total_cost"`
 }
 
 // MergeBifrostLLMUsage returns a usage value containing the sum of base and add.
