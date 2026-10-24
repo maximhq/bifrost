@@ -2090,6 +2090,52 @@ func TestToBedrockResponsesRequest_ToolReferenceResultOnConverse(t *testing.T) {
 	})
 }
 
+func TestResponsesUsesAnthropicInvokePath_ToolReferenceResult(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	withoutTools := func(t *testing.T, content string) *schemas.BifrostResponsesRequest {
+		req := toolReferenceResponsesRequest(t, ctx, content)
+		req.Params.Tools = nil
+		return req
+	}
+
+	t.Run("reference in a tool result routes to invoke", func(t *testing.T) {
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, withoutTools(t, toolReferenceOnlyContent)))
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, withoutTools(t, toolReferenceAndTextContent)))
+	})
+	t.Run("plain tool result stays on converse", func(t *testing.T) {
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, withoutTools(t, `"no tools found"`)))
+	})
+	t.Run("non-anthropic model stays on converse", func(t *testing.T) {
+		req := withoutTools(t, toolReferenceOnlyContent)
+		req.Model = "amazon.nova-pro-v1:0"
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+}
+
+func BenchmarkResponsesUsesAnthropicInvokePath_ToolResult(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, bc := range []struct{ name, content string }{
+		{"string_content", `"no tools found"`},
+		{"tool_reference", toolReferenceOnlyContent},
+	} {
+		var req BedrockInvokeRequest
+		if err := sonic.Unmarshal([]byte(fmt.Sprintf(toolReferenceInvokeBody, bc.content)), &req); err != nil {
+			b.Fatal(err)
+		}
+		responsesReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		responsesReq.Params.Tools = nil
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				responsesUsesAnthropicInvokePath(ctx, responsesReq)
+			}
+		})
+	}
+}
+
 func BenchmarkInvokeIngress_ToolResult(b *testing.B) {
 	for _, bc := range []struct{ name, content string }{
 		{"string_content", `"no tools found"`},

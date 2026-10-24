@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -4454,7 +4455,16 @@ func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *sche
 			return true
 		}
 	}
-	return false
+	return responsesInputHasToolReference(request.Input)
+}
+
+func responsesInputHasToolReference(input []schemas.ResponsesMessage) bool {
+	return slices.ContainsFunc(input, func(message schemas.ResponsesMessage) bool {
+		return message.ResponsesToolMessage != nil && message.Output != nil &&
+			slices.ContainsFunc(message.Output.ResponsesFunctionToolCallOutputBlocks, func(block schemas.ResponsesMessageContentBlock) bool {
+				return block.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference
+			})
+	})
 }
 
 // invokeIngressThinkingNeedsInvokePath reports whether a request from the
