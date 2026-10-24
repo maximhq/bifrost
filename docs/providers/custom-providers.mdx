@@ -258,6 +258,7 @@ Custom providers can be built on these supported providers:
 - `gemini` - Gemini
 - `replicate` - Replicate
 - `typesafe` - TypeSafe (decisions and model listing only; see [TypeSafe](/providers/supported-providers/typesafe#custom-typesafe-providers))
+- `generic` - a raw HTTP relay for any non-LLM API (Tavily, AWS Textract, Azure Speech, ...), reached at `/passthrough/{provider}/{path}` with key injection, logging and governance; see [Generic Passthrough](/integrations/generic-passthrough)
 
 ### Authentication (OAuth-minted keys)
 

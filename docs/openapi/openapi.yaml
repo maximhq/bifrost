@@ -131,6 +131,8 @@ tags:
     description: LangChain compatible endpoints with multi-provider support (/langchain/*)
   - name: PydanticAI Integration
     description: PydanticAI compatible endpoints with multi-provider support (/pydanticai/*)
+  - name: Generic Passthrough Integration
+    description: Raw relay to custom providers whose base type is generic, for non-LLM APIs (/passthrough/{provider}/*)
   # Management APIs
   - name: Health
     description: Health check endpoints
@@ -542,6 +544,10 @@ paths:
     $ref: "./paths/integrations/typesafe/systemone.yaml#/systemone"
   /typesafe/v1/models:
     $ref: "./paths/integrations/typesafe/systemone.yaml#/models"
+
+  # Generic Passthrough Integration
+  /passthrough/{provider}/{path}:
+    $ref: "./paths/integrations/passthrough/generic.yaml#/generic"
 
   # Tokenize (v1)
   /cohere/v1/tokenize:

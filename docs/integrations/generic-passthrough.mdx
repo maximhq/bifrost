@@ -1,0 +1,270 @@
+---
+title: "Generic Passthrough"
+description: "Put any non-LLM HTTP API (Tavily, AWS Textract, Azure Speech, ...) behind Bifrost as a custom provider, with key injection, logging, governance and plugins."
+icon: "plug"
+---
+
+## Overview
+
+A **generic passthrough provider** is a custom provider whose `base_provider_type` is `generic`. It is a raw HTTP relay: Bifrost forwards the request bytes untouched to the API you configured and returns the upstream status, headers and body unchanged. Nothing about the request has to look like an LLM call.
+
+What Bifrost still does on every call:
+
+- Selects a key from the provider's key pool and injects it the way the API expects (bearer, custom header, query parameter, HTTP basic, or AWS Signature V4). Caller credentials are stripped.
+- Pins the upstream host to the provider's `network_config.base_url`.
+- Runs the plugin pipeline, writes a log row with the raw request and response bodies, and reports usage so governance counts the request against rate limits and charges budgets.
+- Optionally confines the provider to the operations you listed (`strict_routes`), a list you can import from the API's OpenAPI document in the UI.
+
+Each API is its own provider. The first segment after `/passthrough/` selects it:
+
+```
+POST /passthrough/tavily/search                  → https://api.tavily.com/search
+POST /passthrough/textract/                      → https://textract.us-east-1.amazonaws.com/   (SigV4)
+POST /passthrough/azure-tts/cognitiveservices/v1 → https://eastus.tts.speech.microsoft.com/cognitiveservices/v1
+```
+
+<Warning>
+**Authenticate to Bifrost with your Bifrost virtual key, not the upstream API key.** Caller `authorization`, `x-api-key` and similar headers never reach the upstream; Bifrost always injects the key it selects from the provider's configured keys.
+</Warning>
+
+---
+
+## Configuration
+
+<Tabs>
+<Tab title="Web UI">
+1. Go to **Providers** and choose **Add New Provider → Custom provider...**
+2. Set a name (this becomes the route segment), choose **generic** as the base format, and enter the API's base URL.
+3. Pick the **Auth type** and fill its fields (header name for `header`, query parameter for `query`, service and region for `aws_sigv4`).
+4. Save, then add a key. For `aws_sigv4` the key carries AWS credentials (access key, secret key, region, or a role ARN) instead of a value.
+5. Open the provider's **Passthrough** tab to set usage and cost mapping, streaming rules and per-route overrides, or import them from the API's OpenAPI document. **Test this mapping** at the bottom of the tab runs a sample request and response through the mapping as it stands in the form and shows the route matched, the quantity read, the tokens and the cost the log row would carry, so a wrong path is caught before it bills zero in production.
+</Tab>
+<Tab title="API">
+```bash
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "tavily",
+    "network_config": { "base_url": "https://api.tavily.com" },
+    "custom_provider_config": {
+      "base_provider_type": "generic",
+      "generic_config": {
+        "auth": { "type": "bearer" },
+        "usage": { "cost_per_request": 0.008 }
+      }
+    }
+  }'
+
+curl -X POST http://localhost:8080/api/providers/tavily/keys \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "tavily-prod", "value": "tvly-...", "weight": 1, "models": ["*"] }'
+```
+</Tab>
+<Tab title="config.json">
+```json
+{
+  "providers": {
+    "tavily": {
+      "keys": [{ "name": "tavily-prod", "value": "env.TAVILY_API_KEY", "weight": 1, "models": ["*"] }],
+      "network_config": { "base_url": "https://api.tavily.com" },
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": { "type": "bearer" },
+          "usage": { "units_path": "usage.credits", "cost_per_unit": 0.008 },
+          "routes": [
+            { "method": "POST", "path": "/search", "billable": true },
+            { "method": "GET", "path": "/usage", "billable": false }
+          ]
+        }
+      }
+    },
+    "textract": {
+      "keys": [{
+        "name": "aws",
+        "value": "",
+        "weight": 1,
+        "models": ["*"],
+        "bedrock_key_config": { "access_key": "env.AWS_ACCESS_KEY_ID", "secret_key": "env.AWS_SECRET_ACCESS_KEY", "region": "us-east-1" }
+      }],
+      "network_config": { "base_url": "https://textract.us-east-1.amazonaws.com" },
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": { "type": "aws_sigv4", "aws": { "service": "textract", "region": "us-east-1" } },
+          "usage": { "units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.0015 },
+          "strict_routes": true,
+          "routes": [
+            { "method": "POST", "path": "/", "headers": { "X-Amz-Target": "Textract.AnalyzeDocument" }, "usage": { "cost_per_unit": 0.05 } },
+            { "method": "POST", "path": "/", "headers": { "X-Amz-Target": "Textract.Get*" }, "billable": false },
+            { "method": "POST", "path": "/", "headers": { "X-Amz-Target": "Textract.Start*" }, "usage": { "cost_per_request": 0.01, "cost_per_unit": 0 } },
+            { "method": "POST", "path": "/", "headers": { "X-Amz-Target": "Textract.*" } }
+          ]
+        }
+      }
+    },
+    "translate": {
+      "keys": [{
+        "name": "aws",
+        "value": "",
+        "weight": 1,
+        "models": ["*"],
+        "bedrock_key_config": { "access_key": "env.AWS_ACCESS_KEY_ID", "secret_key": "env.AWS_SECRET_ACCESS_KEY", "region": "us-east-1" }
+      }],
+      "network_config": { "base_url": "https://translate.us-east-1.amazonaws.com" },
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": { "type": "aws_sigv4", "aws": { "service": "translate" } },
+          "usage": { "units_source": "request", "units_measure": "chars", "units_path": "Text", "cost_per_unit": 0.000015 }
+        }
+      }
+    }
+  }
+}
+```
+</Tab>
+</Tabs>
+
+`network_config.base_url` is required. `allowed_requests` defaults to `passthrough` and `passthrough_stream`; no typed operation can be enabled on a generic provider, and `request_path_overrides` does not apply.
+
+---
+
+## `generic_config` reference
+
+### `auth`
+
+| Field | Applies to | Description |
+| --- | --- | --- |
+| `type` | all | `bearer` (default), `header`, `query`, `basic`, `aws_sigv4`, `none` |
+| `header_name` | `header` | Header that carries the key, e.g. `x-api-key` or `Ocp-Apim-Subscription-Key` |
+| `value_prefix` | `header` | Literal prefix placed before the key value, e.g. `Token ` |
+| `query_param` | `query` | Query parameter that carries the key, e.g. `api_key` |
+| `aws.service` | `aws_sigv4` | SigV4 signing name, e.g. `textract`, `translate`, `execute-api` |
+| `aws.region` | `aws_sigv4` | AWS region; falls back to the key's `bedrock_key_config.region` |
+
+- `bearer` sends `Authorization: Bearer <key>`; `basic` sends `Authorization: Basic base64(<key>)` where the key value is `user:password`.
+- `aws_sigv4` signs the request with the key's `bedrock_key_config` credentials (static keys, an assumed role, or the default AWS credential chain when the key holds none). Caller signature headers (`x-amz-date`, `x-amz-security-token`, `x-amz-content-sha256`, ...) are dropped before signing; operation headers such as `X-Amz-Target` are kept.
+- `none` injects nothing. A provider with `is_key_less: true` must use it.
+- With `aws_sigv4`, a key that carries no credentials signs with the gateway's own AWS credential chain (instance role, environment, shared config), the same way Bedrock keys do. The caller chooses the operation through headers such as `X-Amz-Target`, so that role's permissions on the service are what every virtual key holder can exercise. Give such providers a dedicated key with scoped credentials or a role ARN.
+- Every auth type except `none` and `aws_sigv4` requires the key to have a value, whether the key is created through the API or declared in config.json. Changing a provider's auth type to one of those is refused while any of its stored keys has no value (for example keys that held AWS credentials for `aws_sigv4`), so the relay never sends an unauthenticated request.
+
+### `usage`
+
+Paths are [gjson](https://github.com/tidwall/gjson) paths. Tokens and cost are read from the JSON response body; the model from the JSON request body.
+
+| Field | Description |
+| --- | --- |
+| `model_path` | Request body path for the model name (default `model`). Used for governance model restrictions and the log row |
+| `input_tokens_path`, `output_tokens_path`, `total_tokens_path` | Response body paths for tokens |
+| `cost_path` | Response body path for a provider-reported USD cost; an array of numbers is summed |
+| `cost_per_request` | Flat USD fee added to every billable call. A route may set `0` to waive the provider fee |
+| `units_path` | gjson path of a billable quantity (pages, credits, text). Ignored when `units_measure` is `body_bytes` or `body_chars` |
+| `units_source` | `response` (default): a count the API reports. `request`: what the caller sent, which per-character APIs bill on |
+| `units_measure` | `value` (default): the number at the path. `chars`: the character count of the JSON string at the path (the body must be JSON). `body_bytes`: the byte length of the whole body. `body_chars`: the character count of the whole body, any content type |
+| `cost_per_unit` | USD per unit. A route may set `0` to waive the provider's unit pricing |
+| `units_block_size` | Bill per started block of this many raw units: `100` for an API priced per 100 characters (Comprehend Medical). Default exact |
+| `units_minimum` | Least number of billed units once a quantity was read, e.g. `1`. Default `0` |
+| `disable_optimistic_parsing` | Read only the configured paths |
+
+**Per-unit pricing.** Most non-LLM APIs bill by quantity, and the quantity is in a different place for each:
+
+| API | Bills per | Mapping |
+| --- | --- | --- |
+| AWS Textract | page | `units_path: DocumentMetadata.Pages`, `cost_per_unit: 0.0015` (response) |
+| Tavily | API credit | `units_path: usage.credits`, `cost_per_unit: 0.008` (response; send `include_usage: true`) |
+| AWS Translate | character of input, spaces included | `units_source: request`, `units_measure: chars`, `units_path: Text`, `cost_per_unit: 0.000015` |
+| Azure TTS (neural voices) | character of SSML, markup included | `units_source: request`, `units_measure: body_chars`, `cost_per_unit: 0.000016` (the body is `application/ssml+xml`, so `chars` with a path cannot read it, and `body_bytes` would over-count multi-byte text) |
+
+Cost per call is `billed units × cost_per_unit + cost_per_request + extracted cost`, where billed units is the raw quantity unless `units_block_size` or `units_minimum` is set: then it is `max(units_minimum, ceil(quantity / units_block_size))`, the way APIs priced per started 100-character block bill. Request-side quantities count what the upstream itself bills on: a caller cannot send less text than it wants translated, and padding the text raises the upstream bill as much as the Bifrost charge. A quantity that is missing, negative or not JSON (unless the measure is `body_bytes` or `body_chars`, which read the whole body whatever its type) adds nothing. On an SSE stream a response-side quantity is read per event and the last value reported wins (map a field that carries a running total); `body_bytes` and `body_chars` on the response side are read from buffered responses only. A request-side quantity is known before the upstream answers and is kept on every path; an unframed stream (audio) reports it on its final chunk. Azure TTS Avatar bills per second of a batch job, which no synchronous relay can see; use a flat fee for it.
+
+**Optimistic defaults.** With no mapping, Bifrost reads the shapes most APIs borrow: request `model`; response `usage.prompt_tokens` or `usage.input_tokens`, `usage.completion_tokens` or `usage.output_tokens`, `usage.total_tokens`; cost `usage.cost`. A root-level `cost` is never read by default, since on many APIs it is a product price rather than a bill. Naming any token path turns the optimistic token lookup off, so a half-mapped response is never topped up from a block you did not map. `disable_optimistic_parsing` also stops the default `model` lookup. Negative numbers are ignored. Bodies are scanned when their `Content-Type` is any JSON media type, including `application/x-amz-json-1.1`.
+
+**`ignore_provider_cost`.** On a generic provider the Pricing tab's "ignore provider cost" switch drops only what the upstream reports (`cost_path`); the flat fee and unit pricing are yours and keep applying.
+
+**What gets charged.** Every successful (2xx) call on a billable route reports usage, even when nothing could be read from the response, so it counts as one request against rate limits. Cost is `billed units × cost_per_unit + cost_per_request + extracted cost` (the formula above); budgets are charged when that is above zero. Non-2xx responses and non-billable routes report no usage, so they are never charged; as on every passthrough route, a call that names a model (by default the request's `model` field) still counts as one request against rate limits. Only `POST` is billable by default, with or without a route: `GET` and `HEAD` are usually polls and listings, `PUT` and `PATCH` update settings, and `DELETE` cleans up (an Azure avatar job, a Tavily crawl). Add a route with `billable: true` for an API that bills another method.
+
+**Streams.** Each usage field keeps the last value any SSE event reported, so an API that reports input tokens on its first event and output tokens on its last is billed for both. Values are not summed: map fields that carry running totals (as OpenAI and Anthropic report them), not per-event increments.
+
+### `streaming`
+
+| Field | Description |
+| --- | --- |
+| `paths` | Rooted segment globs (`/v1/stream/**`) that are always served as streams |
+| `detect_from_accept_header` | Treat `Accept: text/event-stream` as a streaming request |
+| `detect_from_body` | Treat `"stream": true` in a JSON body (or `?stream=true` on a `GET`) as a streaming request. Off by default: the streaming relay forwards a non-SSE reply unread, so on a provider billed from the response a caller could otherwise add the flag and pay the flat fee alone. Turn it on for LLM-shaped upstreams, where the flag is the protocol |
+
+Detection order: the matching route's `stream` flag, then `streaming.paths`, then the Accept header (when enabled), then a JSON body with `"stream": true` or `?stream=true` on a `GET` (when enabled). The path's wording is never a signal: a generic API with `stream` in a path usually answers with plain JSON, which the streaming relay would forward unread. SSE bodies are framed so usage on the final event is observed; any other stream (chunked JSON, binary audio) is forwarded unframed and reports the route's `cost_per_request` plus any request-side units when it completes, never anything read from the response. Set `stream: false` on a route whose reply you need parsed.
+
+### `routes[]`
+
+| Field | Description |
+| --- | --- |
+| `method` | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD` |
+| `path` | Rooted segment glob: `*` matches within a segment (`/jobs/*`), a trailing `/**` matches the prefix and everything below |
+| `headers` | Request headers that must also match: header name (case-insensitive) to value glob, e.g. `{"X-Amz-Target": "Textract.Get*"}`. For APIs that send every operation to one path and name it in a header |
+| `billable` | `false` relays the call without counting or charging it (status polls, listings); `true` counts it. Unset keeps the method default: only `POST` is billable |
+| `stream` | Forces the streaming (`true`) or buffered (`false`) relay for this route |
+| `usage` | Field-by-field override of the provider `usage` mapping |
+
+The first matching route wins, so list the specific operation before its catch-all. A request matching no route uses the provider defaults and the method default for billing, so listing every operation of an API as routes (for example from an OpenAPI import) does not start charging its polls and listings.
+
+**One path, many operations.** AWS JSON-protocol APIs (Textract, Translate, Comprehend) send every operation to `POST /` and name it in the `X-Amz-Target` header, so a route on method and path alone cannot tell them apart. Add `headers` to the route, as the Textract example above does: `AnalyzeDocument` at its own rate, result polls (`Get*`) free, job starts (`Start*`) at a flat fee, everything else at the base rate. An async job's pages are reported on every `Get*` result page, so leave those polls non-billable and charge the start, rather than billing the pages once per poll. The OpenAPI importer turns AWS path keys of the form `/#X-Amz-Target=Service.Operation` into these routes.
+
+### `strict_routes`
+
+With `strict_routes: true`, a request that matches no `routes[]` entry is refused with `404` before anything is forwarded, so the routes list doubles as an allowlist. Without it, routes are overrides and every operation is relayed.
+
+### Importing from an OpenAPI document
+
+On the Passthrough tab, **Import from an OpenAPI document** accepts a pasted document, an uploaded file, or a URL fetched by your browser. Its operations become routes (a path parameter becomes `*` wherever it sits, so `/files/{id}.json` becomes `/files/*.json`, and glob characters in literal text are escaped), its first security scheme sets the auth type and header name, and `strict_routes` is switched on. The server URL is shown as a hint for the Network tab. The document is parsed in the browser and never sent to or stored by Bifrost; review the fields it filled in and save them like any others. The URL option works only when the vendor allows cross-origin reads of the file; otherwise paste or upload it.
+
+---
+
+## Making requests
+
+```bash
+# Tavily search through Bifrost, authenticated with a Bifrost virtual key.
+# include_usage makes Tavily report usage.credits, which the mapping above bills;
+# without it the call is counted but costs nothing.
+curl -X POST http://localhost:8080/passthrough/tavily/search \
+  -H "Authorization: Bearer sk-bf-..." \
+  -H "Content-Type: application/json" \
+  -d '{"query": "bifrost ai gateway", "max_results": 3, "include_usage": true}'
+
+# AWS Textract, SigV4-signed by Bifrost
+curl -X POST http://localhost:8080/passthrough/textract/ \
+  -H "Authorization: Bearer sk-bf-..." \
+  -H "Content-Type: application/x-amz-json-1.1" \
+  -H "X-Amz-Target: Textract.DetectDocumentText" \
+  -d '{"Document": {"Bytes": "<base64>"}}'
+```
+
+The response carries the upstream headers plus `x-bifrost-provider`, `x-bifrost-request-id` and `x-bifrost-passthrough-path`. The query string is forwarded unchanged (the auth query parameter, when configured, is stripped from the caller's query and re-added with the selected key).
+
+Only custom providers with the generic base type are served by `/passthrough/{provider}`. A standard provider name, or a custom provider of another base type, is a `404`; standard providers keep their own passthrough routes (see [Passthrough](./passthrough)).
+
+---
+
+## Governance and logs
+
+- **Virtual keys** scope access by provider name, so a key may allow `tavily` and not `textract`. Budgets and rate limits attach per provider as for any other.
+- A virtual key that **restricts models** refuses a passthrough call that names no model. Non-LLM APIs rarely do, so allow `*` on generic providers, or map `usage.model_path` to a request field that should act as the model.
+- The model is **read from the caller's body** at `usage.model_path` (default `model`), and only there: a caller can name any value in that field. Treat model restrictions on generic providers as routing hints, not access control; provider-level allowlists on the virtual key are the access control. With `disable_optimistic_parsing` and no `model_path`, no model is read, so a virtual key that restricts models refuses every call on the provider; give such keys `*` on generic providers.
+- **Logs** keep a generic relay as a `passthrough` row with the raw JSON request and response bodies. Multipart bodies are summarized; other content types are not stored. Tokens and cost read through the usage mapping appear on the row.
+
+---
+
+## Security notes
+
+- The upstream host is pinned: a path that would change the authority (`//host`, `@host`, a scheme) is refused before dispatch.
+- Caller `authorization`, `api-key`, `x-api-key`, `x-goog-api-key`, cookies and every `x-bf-*` header are dropped; the header or query parameter named by `auth` is replaced with the configured key.
+- `base_url` is validated like any provider URL (`allow_private_network` governs private targets).
+- Redirects are never followed: a 3xx from the upstream is returned to the caller as is, so the injected key never reaches a host the upstream named.
+- Transport errors name the upstream host and path but never the query string, which for query auth carries the key.
+- Response headers are scrubbed of a query-auth key before they reach the caller or the log row: a `Location` (or any other header) that echoes the request query loses the auth parameter.
+- With query auth, the caller's own copy of the auth parameter is removed and every other query segment is forwarded byte for byte, in its original order and encoding, so signed or compared query strings survive. A parameter name that cannot be decoded, or a `;` separator, is refused with 400 rather than relayed, since the caller's credential could be hiding in it.
+- Beyond `authorization`, `api-key`, `x-api-key`, `x-goog-api-key` and cookies, every caller header whose name marks it as a credential (`*-token`, `*secret*`, `*api-key*`, `*jwt*`, `cf-access-*`, `x-amzn-oidc-*`, `ocp-apim-subscription-key`, `subscription-key`, `x-functions-key`) is dropped, so a caller cannot route their own upstream account through the provider. Non-credential headers such as `x-idempotency-key` and `x-amz-target` are forwarded.
+- The buffered relay caps a response at 64 MiB; use a streaming route for anything larger.
+- A caller cannot choose the streaming relay unless the operator allows it (`detect_from_body`, `detect_from_accept_header`), so a response-billed call cannot be turned into a flat-fee call by adding `"stream": true`.
+- Request-side quantities should be `chars` or `body_chars` of what the upstream processes, never a number the caller supplies (`value` on a request field), since the caller would then set their own bill.
