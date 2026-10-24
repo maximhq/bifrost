@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -263,5 +264,32 @@ func TestBifrostTranscriptionResponse_UnmarshalJSON_LegacyDiarizedNoMarker(t *te
 	}
 	if len(reloaded.DiarizedSegments) != 1 || reloaded.DiarizedSegments[0].ID != "seg_0" {
 		t.Fatalf("expected legacy (unmarked) diarized data to still be sniffed correctly, got %+v", reloaded.DiarizedSegments)
+	}
+}
+
+func TestTranscriptionSegment_SpeakerRoundTrip(t *testing.T) {
+	in := `{"text":"a b","segments":[{"id":0,"start":0,"end":1,"text":"a","speaker":"1"},{"id":1,"start":1,"end":2,"text":"b"}]}`
+	var r BifrostTranscriptionResponse
+	if err := json.Unmarshal([]byte(in), &r); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(r.Segments) != 2 {
+		t.Fatalf("segments = %d, want 2", len(r.Segments))
+	}
+	if r.Segments[0].Speaker == nil || *r.Segments[0].Speaker != "1" {
+		t.Errorf("segment 0 speaker = %v, want \"1\"", r.Segments[0].Speaker)
+	}
+	if r.Segments[1].Speaker != nil {
+		t.Errorf("segment 1 speaker = %q, want nil", *r.Segments[1].Speaker)
+	}
+	if r.DiarizedSegments != nil {
+		t.Errorf("diarized segments = %v, want nil", r.DiarizedSegments)
+	}
+	out, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"speaker":"1"`) || strings.Count(string(out), `"speaker"`) != 1 {
+		t.Errorf("marshaled = %s, want exactly one speaker \"1\"", out)
 	}
 }
