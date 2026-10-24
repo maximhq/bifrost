@@ -1812,3 +1812,106 @@ func TestGenAISessionIDRidesAsPromptCacheKey(t *testing.T) {
 		}
 	})
 }
+
+// Long decode: a hop that hits the per-call cap ends with finishReason CONTINUATION and a
+// continuationToken the client resends. Dropping either makes an SDK's automatic
+// continuation read a truncated hop as a finished answer.
+func TestGeminiContinuationResponseRoundTrip(t *testing.T) {
+	upstream := `{"candidates":[{"content":{"role":"model","parts":[{"text":"hop one"}]},"finishReason":"CONTINUATION","continuationToken":"tok-1"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":65536,"totalTokenCount":65540}}`
+	var resp GenerateContentResponse
+	if err := sonic.Unmarshal([]byte(upstream), &resp); err != nil {
+		t.Fatalf("decode upstream: %v", err)
+	}
+
+	bifrostResp := resp.ToResponsesBifrostResponsesResponse()
+	if bifrostResp.StopReason == nil {
+		t.Error("bifrost stop reason = nil, want continuation")
+	} else if *bifrostResp.StopReason != "continuation" {
+		t.Errorf("bifrost stop reason = %q, want continuation (Bifrost-format reasons are lowercase)", *bifrostResp.StopReason)
+	}
+
+	out, err := sonic.Marshal(ToGeminiResponsesResponse(bifrostResp))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := gjson.GetBytes(out, "candidates.0.finishReason").String(); got != "CONTINUATION" {
+		t.Errorf("finishReason = %q, want CONTINUATION; body %s", got, out)
+	}
+	if got := gjson.GetBytes(out, "candidates.0.continuationToken").String(); got != "tok-1" {
+		t.Errorf("continuationToken = %q, want tok-1; body %s", got, out)
+	}
+}
+
+func TestGeminiContinuationStreamRoundTrip(t *testing.T) {
+	chunks := []*GenerateContentResponse{
+		{Candidates: []*Candidate{{Content: &Content{Role: "model", Parts: []*Part{{Text: "hop one"}}}}}},
+		{
+			Candidates:    []*Candidate{{FinishReason: FinishReasonContinuation, ContinuationToken: "tok-1"}},
+			UsageMetadata: &GenerateContentResponseUsageMetadata{PromptTokenCount: 4, CandidatesTokenCount: 65536, TotalTokenCount: 65540},
+		},
+	}
+	forward := &GeminiResponsesStreamState{}
+	forward.flush()
+	reverse := NewBifrostToGeminiStreamState()
+
+	var finish FinishReason
+	var token string
+	seq := 0
+	for _, chunk := range chunks {
+		events, bifrostErr := chunk.ToBifrostResponsesStream(seq, forward)
+		if bifrostErr != nil {
+			t.Fatalf("forward conversion: %v", bifrostErr)
+		}
+		seq += len(events)
+		for _, event := range events {
+			out := ToGeminiResponsesStreamResponse(event, reverse)
+			if out == nil {
+				continue
+			}
+			for _, candidate := range out.Candidates {
+				if candidate.FinishReason != "" {
+					finish = candidate.FinishReason
+				}
+				if candidate.ContinuationToken != "" {
+					token = candidate.ContinuationToken
+				}
+			}
+		}
+	}
+	if finish != FinishReasonContinuation {
+		t.Errorf("finishReason = %q, want CONTINUATION", finish)
+	}
+	if token != "tok-1" {
+		t.Errorf("continuationToken = %q, want tok-1", token)
+	}
+}
+
+// The next hop resends the original request plus only the latest token, in either spelling.
+func TestGeminiContinuationRequestRoundTrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for name, body := range map[string]string{
+		"camelCase":  `{"model":"gemini/gemini-4-argon","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":262144},"continuationToken":"tok-1"}`,
+		"snake_case": `{"model":"gemini/gemini-4-argon","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":262144},"continuation_token":"tok-1"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var in GeminiGenerationRequest
+			if err := sonic.Unmarshal([]byte(body), &in); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			out, err := ToGeminiResponsesRequest(ctx, in.ToBifrostResponsesRequest(ctx))
+			if err != nil {
+				t.Fatalf("ToGeminiResponsesRequest: %v", err)
+			}
+			wire, err := providerUtils.MarshalSorted(out)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if got := gjson.GetBytes(wire, "continuationToken").String(); got != "tok-1" {
+				t.Errorf("continuationToken = %q, want tok-1; body %s", got, wire)
+			}
+			if gjson.GetBytes(wire, "continuation_token").Exists() {
+				t.Errorf("snake_case continuation_token must not reach the wire; body %s", wire)
+			}
+		})
+	}
+}

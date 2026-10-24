@@ -1,5 +1,6 @@
 import { Budget, RateLimit, VirtualKey } from "@/lib/types/governance";
 import { getEffectiveBudgetLimit } from "@/lib/utils/governance";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetUserAccessProfilesQuery } from "@enterprise/lib/store/apis/accessProfileApi";
 import { useGetVirtualKeyUsersQuery } from "@enterprise/lib/store/apis/virtualKeyUsersApi";
 import { UserAccessProfile } from "@enterprise/lib/types/accessProfile";
@@ -19,7 +20,10 @@ export type VirtualKeyAssignee = Pick<User, "id" | "name" | "email">;
  * for a VK and returns budget/rate-limit values that prefer AP counters, falling back to the VK's
  * own when there is no managing profile.
  *
- * The AP query polls every 5s so bars reflect live usage without manual refresh.
+ * The AP query polls every 5s so bars reflect live usage without manual refresh. It needs
+ * AccessProfiles:View and is skipped without it, so callers lacking the permission do not poll
+ * a 403 per assignee; they get no managingProfile and fall back to the VK's own values, which
+ * the admin read paths already fill from the managing profile.
  *
  * The assignee comes off the VK itself (`assigned_user`), which the governance read paths
  * resolve for a whole page at a time. The per-VK /users request is only a fallback for rows
@@ -51,9 +55,11 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 		: (vkUsersData?.users ?? []);
 
 	const managingUserId = assignedUsers[0]?.id;
+	const hasAccessProfilesAccess = useRbac(RbacResource.AccessProfiles, RbacOperation.View);
+	const shouldFetchUserAPs = !!managingUserId && hasAccessProfilesAccess;
 	const { data: userAPsData } = useGetUserAccessProfilesQuery(managingUserId ?? "", {
-		skip: !managingUserId,
-		pollingInterval: managingUserId ? 5000 : 0,
+		skip: !shouldFetchUserAPs,
+		pollingInterval: shouldFetchUserAPs ? 5000 : 0,
 	});
 	const userAPs = userAPsData?.access_profiles ?? [];
 
@@ -61,8 +67,8 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	// No fallback to "first active" / "first AP" — that misattributed budgets in multi-AP setups.
 	const managingProfile = vk ? userAPs.find((p) => p.virtual_key_ids?.includes(vk.id)) : undefined;
 	// The server-computed flag is the sole source of truth for "is this managed": the
-	// access-profile call above is RBAC-gated and 403s for callers without AccessProfiles:View,
-	// which used to leave the VK looking unmanaged (and editable) here. managingProfile is now
+	// access-profile call above is RBAC-gated and skipped for callers without AccessProfiles:View,
+	// which would leave the VK looking unmanaged (and editable) if it decided this. managingProfile is now
 	// display-only — it resolves the profile name/actions when the caller can view access
 	// profiles; without that permission the VK is still locked, just without the profile name.
 	const isManagedByProfile = vk?.is_access_profile_managed ?? false;
