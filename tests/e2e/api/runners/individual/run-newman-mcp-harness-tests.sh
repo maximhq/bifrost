@@ -14,6 +14,9 @@
 # runner passes in as admin_auth_header. The setup token the server boots with
 # is what lets the runner create that first admin account.
 #
+# The MCP library syncs at boot from a one-entry mock catalog file the runner
+# writes, not from the public catalog, so library tests start from known entries.
+#
 # The upstream MCP servers are an mcpchaos fleet (tests/cmd/mcpconsole), built
 # and started here. Tests reach it through two collection variables: chaos_url,
 # the fleet's base URL for both its MCP endpoints and its control API, and
@@ -163,6 +166,9 @@ start_chaos() {
 
 write_config() {
     local dir="$1"
+    cat > "$dir/mcp-library.json" <<'EOF'
+{"servers": [{"name": "Harness Catalog Server", "description": "Mock catalog entry for the MCP harness", "connection_type": "http", "connection_url": "https://mcp.example.invalid/mcp", "auth_type": "none"}]}
+EOF
     cat > "$dir/config.json" <<EOF
 {
   "\$schema": "https://www.getbifrost.ai/schema",
@@ -175,7 +181,8 @@ write_config() {
     "max_request_body_size_mb": 100
   },
   "config_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/config.db" } },
-  "logs_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/logs.db" } }
+  "logs_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/logs.db" } },
+  "framework": { "pricing": { "mcp_library_url": "file://$dir/mcp-library.json" } }
 }
 EOF
 }
