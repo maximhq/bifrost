@@ -113,7 +113,7 @@ func NewGenericProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	usage := resolveUsage(cfg.Usage, nil)
 	usage.ignoreUpstreamCost = config.IgnoreProviderCost
 	usage.eventPaths = usage.collectEventPaths()
-	routes := compileRoutes(cfg)
+	routes := compileRoutesWithCostPolicy(cfg, config.IgnoreProviderCost)
 	for i := range routes {
 		routes[i].usage.ignoreUpstreamCost = config.IgnoreProviderCost
 		routes[i].usage.eventPaths = routes[i].usage.collectEventPaths()
@@ -200,8 +200,14 @@ func (provider *GenericProvider) resolve(ctx *schemas.BifrostContext, method, pa
 // strictRouteError refuses an operation that matches no route under strict_routes. The HTTP
 // transport refuses it before dispatch; this is the same guard for the Go SDK path, which reaches
 // the provider directly.
-func (provider *GenericProvider) strictRouteError(route *compiledRoute, req *schemas.BifrostPassthroughRequest) *schemas.BifrostError {
+func (provider *GenericProvider) strictRouteError(ctx *schemas.BifrostContext, route *compiledRoute, req *schemas.BifrostPassthroughRequest) *schemas.BifrostError {
 	if !provider.cfg.StrictRoutes || route != nil {
+		return nil
+	}
+	// An internal request (a job accounting poll, which runs with the plugin pipeline skipped) is
+	// the operator's own configured request, not a caller's: an operator who allowlists the start
+	// operation must not have to list the poll too, or the job would come back 404 and never be billed.
+	if internal, _ := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); internal {
 		return nil
 	}
 	bifrostErr := providerUtils.NewBifrostOperationError(fmt.Sprintf("no route for %s %s (strict_routes)", req.Method, req.Path), nil)
@@ -270,7 +276,7 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 		return nil, bifrostErr
 	}
 	usageMapping, billable, route := provider.resolve(ctx, req.Method, req.Path, req.SafeHeaders)
-	if bifrostErr := provider.strictRouteError(route, req); bifrostErr != nil {
+	if bifrostErr := provider.strictRouteError(ctx, route, req); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	streamingRoute := route != nil && route.stream != nil && *route.stream
@@ -312,6 +318,9 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 	var usage *schemas.BifrostPassthroughUsage
 	if billable && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		usage = extractUsage(usageMapping, resp.Header.Get("Content-Type"), body, requestUnits)
+		// A route that starts a job hands the job id and its settlement snapshot to the logging
+		// plugin, which records it for the sweeper. The start call is still counted here.
+		usage.ProviderJob = route.jobHandle(resp.Header.Get("Content-Type"), body)
 	}
 
 	response := &schemas.BifrostPassthroughResponse{
@@ -346,7 +355,7 @@ func (provider *GenericProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 		return nil, bifrostErr
 	}
 	usageMapping, billable, route := provider.resolve(ctx, req.Method, req.Path, req.SafeHeaders)
-	if bifrostErr := provider.strictRouteError(route, req); bifrostErr != nil {
+	if bifrostErr := provider.strictRouteError(ctx, route, req); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	requestUnits := usageMapping.requestUnits(req.SafeHeaders["content-type"], req.Body)

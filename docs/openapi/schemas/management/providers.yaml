@@ -557,6 +557,47 @@ GenericProviderConfig:
             type: boolean
           usage:
             $ref: '#/GenericUsageConfig'
+          job:
+            type: object
+            additionalProperties: false
+            description: Makes the route the start of a provider-side job billed once it completes; the job accounting sweeper polls with the given request and prices the terminal response with the job's usage mapping
+            required: [id_path, poll, status_path, succeeded]
+            properties:
+              id_path:
+                type: string
+              poll:
+                type: object
+                additionalProperties: false
+                required: [path]
+                properties:
+                  method:
+                    type: string
+                  path:
+                    type: string
+                  headers:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  body:
+                    type: string
+                  content_type:
+                    type: string
+              status_path:
+                type: string
+              succeeded:
+                type: array
+                items:
+                  type: string
+              failed:
+                type: array
+                items:
+                  type: string
+              interval_seconds:
+                type: integer
+              timeout_seconds:
+                type: integer
+              usage:
+                $ref: '#/GenericUsageConfig'
     strict_routes:
       type: boolean
       description: Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist

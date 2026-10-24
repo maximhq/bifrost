@@ -40,6 +40,13 @@ func TestGenericProviderConfigValidate(t *testing.T) {
 		{"block size above zero", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsBlockSize: Ptr(0.0)}}, "units_block_size must be above zero"},
 		{"minimum not negative", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsMinimum: Ptr(-1.0)}}, "units_minimum must not be negative"},
 		{"rounding ok", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsPath: "Text", UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsChars, UnitsBlockSize: Ptr(100.0), UnitsMinimum: Ptr(1.0), CostPerUnit: Ptr(0.01)}}, ""},
+		{"job ok", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{IDPath: "JobId", Poll: GenericJobPoll{Path: "/", Body: `{"JobId":"{{job.id}}"}`}, StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"}, Usage: &GenericUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: Ptr(0.0015)}}}}}, ""},
+		{"job needs id path", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{Poll: GenericJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "routes[0].job.id_path"},
+		{"job needs a succeeded status", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/"}, StatusPath: "s"}}}}, "succeeded"},
+		{"job poll path rooted", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "jobs"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "poll.path"},
+		{"job route must be billable", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Billable: Ptr(false), Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "must be billable"},
+		{"job on a PUT needs billable true", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "PUT", Path: "/", Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "must set billable: true"},
+		{"job usage validated", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}, Usage: &GenericUsageConfig{CostPerUnit: Ptr(1.0)}}}}}, "routes[0].job.usage.units_path"},
 		{"route fee", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "GET", Path: "/x", Usage: &GenericUsageConfig{CostPerRequest: Ptr(-0.1)}}}}, "routes[0].usage.cost_per_request"},
 		{"streaming glob", &GenericProviderConfig{Streaming: &GenericStreamingConfig{Paths: []string{"v1/*"}}}, "streaming.paths[0]"},
 		{"full valid", &GenericProviderConfig{
@@ -77,6 +84,14 @@ func TestGenericProviderConfigClone(t *testing.T) {
 	*dst.Usage.CostPerRequest = 2
 	dst.Streaming.Paths[0] = "/b"
 	*dst.Routes[0].Billable = true
+	src.Routes[0].Job = &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/", Headers: map[string]string{"X-Amz-Target": "Svc.Get"}}, StatusPath: "s", Succeeded: []string{"DONE"}, Usage: &GenericUsageConfig{CostPerUnit: Ptr(0.5)}}
+	withJob := src.Clone()
+	withJob.Routes[0].Job.Succeeded[0] = "CHANGED"
+	withJob.Routes[0].Job.Poll.Headers["X-Amz-Target"] = "Svc.Other"
+	*withJob.Routes[0].Job.Usage.CostPerUnit = 9
+	assert.Equal(t, "DONE", src.Routes[0].Job.Succeeded[0], "a clone's job block shares nothing with the source")
+	assert.Equal(t, "Svc.Get", src.Routes[0].Job.Poll.Headers["X-Amz-Target"])
+	assert.InDelta(t, 0.5, *src.Routes[0].Job.Usage.CostPerUnit, 0, "the job usage's pointer fields are copied too")
 	dst.Routes[0].Usage.CostPath = "d"
 	assert.Equal(t, "textract", src.Auth.AWS.Service)
 	assert.InDelta(t, 1.0, *src.Usage.CostPerRequest, 0)
