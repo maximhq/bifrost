@@ -981,6 +981,31 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	// A generic (non-LLM) HTTP relay has no vendor mark: a plug glyph stands in, drawn with
+	// currentColor so it follows the surrounding text in both themes.
+	generic: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				strokeWidth="2"
+				strokeLinecap="round"
+				strokeLinejoin="round"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Generic HTTP API</title>
+				<path d="M12 22v-5" />
+				<path d="M9 8V2" />
+				<path d="M15 8V2" />
+				<path d="M18 8v5a6 6 0 0 1-12 0V8Z" />
+			</svg>
+		);
+	},
 	// TypeSafe's geometric logomark, extracted from their brand wordmark SVG. The
 	// source art uses currentColor, so the icon follows the surrounding text in
 	// both themes without a theme branch. The wordmark's remaining letterforms are

@@ -13,10 +13,14 @@ export interface ProviderKeyConfig {
 
 export interface CustomProviderConfig {
   name: string
-  baseProviderType: 'openai' | 'anthropic' | 'gemini' | 'cohere' | 'bedrock' | 'typesafe' | string
+  baseProviderType: 'openai' | 'anthropic' | 'gemini' | 'cohere' | 'bedrock' | 'typesafe' | 'generic' | string
   baseUrl?: string
   authType?: 'api_key' | 'bearer' | 'basic' | 'none'
   isKeyless?: boolean
+  /** generic base type only: how the relay presents its key to the upstream */
+  genericAuthType?: 'bearer' | 'header' | 'query' | 'basic' | 'aws_sigv4' | 'none'
+  /** generic base type, header auth: the header that carries the key */
+  genericAuthHeaderName?: string
 }
 
 export interface VirtualKeyConfig {

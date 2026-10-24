@@ -6,8 +6,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Switch } from "@/components/ui/switch";
 import { DefaultNetworkConfig } from "@/lib/constants/config";
 import { getErrorMessage, useCreateProviderMutation } from "@/lib/store";
-import { BaseProvider, ModelProviderName } from "@/lib/types/config";
-import { allowedRequestsSchema } from "@/lib/types/schemas";
+import { BaseProvider, GenericAuthType, GenericAuthTypeLabels, GenericAuthTypes, ModelProviderName } from "@/lib/types/config";
+import { allowedRequestsSchema, genericAuthConfigSchema } from "@/lib/types/schemas";
 import { cleanPathOverrides } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -15,19 +15,77 @@ import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AllowedRequestsFields } from "../fragments/allowedRequestsFields";
 
-const formSchema = z.object({
-	name: z.string().min(1),
-	baseFormat: z.string().min(1),
-	base_url: z.string().min(1, "Base URL is required").url("Must be a valid URL"),
-	allowed_requests: allowedRequestsSchema,
-	request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
-	is_key_less: z.boolean().optional(),
-	does_not_send_done_marker: z.boolean().optional(),
-	wait_for_usage: z.boolean().optional(),
-	allow_private_network: z.boolean().optional(),
-});
+const DEFAULT_ALLOWED_REQUESTS = {
+	text_completion: true,
+	text_completion_stream: true,
+	chat_completion: true,
+	chat_completion_stream: true,
+	responses: true,
+	responses_stream: true,
+	responses_retrieve: true,
+	responses_delete: true,
+	responses_cancel: true,
+	responses_input_items: true,
+	embedding: true,
+	speech: true,
+	speech_stream: true,
+	transcription: true,
+	transcription_stream: true,
+	image_generation: true,
+	image_generation_stream: true,
+	image_edit: true,
+	image_edit_stream: true,
+	image_variation: true,
+	rerank: true,
+	decisions: true,
+	ocr: true,
+	ocr_stream: true,
+	video_generation: true,
+	video_edit: true,
+	video_retrieve: true,
+	video_download: true,
+	video_delete: true,
+	video_list: true,
+	video_remix: true,
+	passthrough: true,
+	passthrough_stream: true,
+	count_tokens: true,
+	list_models: true,
+	websocket_responses: true,
+	realtime: false,
+	live: false,
+};
+
+const DEFAULT_GENERIC_AUTH = {
+	type: "bearer" as GenericAuthType,
+	header_name: "",
+	query_param: "",
+	value_prefix: "",
+	aws: { service: "", region: "" },
+};
+
+const formSchema = z
+	.object({
+		name: z.string().min(1),
+		baseFormat: z.string().min(1),
+		base_url: z.string().min(1, "Base URL is required").url("Must be a valid URL"),
+		allowed_requests: allowedRequestsSchema,
+		request_path_overrides: z.record(z.string(), z.string().optional()).optional(),
+		is_key_less: z.boolean().optional(),
+		does_not_send_done_marker: z.boolean().optional(),
+		wait_for_usage: z.boolean().optional(),
+		allow_private_network: z.boolean().optional(),
+		// generic base type only: how the relay presents its key to the upstream
+		generic_auth: genericAuthConfigSchema.optional(),
+	})
+	.superRefine((data, ctx) => {
+		if (data.baseFormat === "generic" && data.is_key_less && data.generic_auth?.type !== "none") {
+			ctx.addIssue({ code: "custom", message: "A keyless generic provider must use auth type none", path: ["generic_auth", "type"] });
+		}
+	});
 
 type FormData = z.infer<typeof formSchema>;
 
@@ -50,51 +108,13 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			name: "",
 			baseFormat: "",
 			base_url: "",
-			allowed_requests: {
-				text_completion: true,
-				text_completion_stream: true,
-				chat_completion: true,
-				chat_completion_stream: true,
-				responses: true,
-				responses_stream: true,
-				responses_retrieve: true,
-				responses_delete: true,
-				responses_cancel: true,
-				responses_input_items: true,
-				embedding: true,
-				speech: true,
-				speech_stream: true,
-				transcription: true,
-				transcription_stream: true,
-				image_generation: true,
-				image_generation_stream: true,
-				image_edit: true,
-				image_edit_stream: true,
-				image_variation: true,
-				rerank: true,
-				decisions: true,
-				ocr: true,
-				ocr_stream: true,
-				video_generation: true,
-				video_edit: true,
-				video_retrieve: true,
-				video_download: true,
-				video_delete: true,
-				video_list: true,
-				video_remix: true,
-				passthrough: true,
-				passthrough_stream: true,
-				count_tokens: true,
-				list_models: true,
-				websocket_responses: true,
-				realtime: false,
-				live: false,
-			},
+			allowed_requests: DEFAULT_ALLOWED_REQUESTS,
 			request_path_overrides: undefined,
 			is_key_less: false,
 			does_not_send_done_marker: false,
 			wait_for_usage: false,
 			allow_private_network: false,
+			generic_auth: DEFAULT_GENERIC_AUTH,
 		},
 	});
 
@@ -105,16 +125,37 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 	}, [show]);
 
 	const onSubmit = (data: FormData) => {
+		const isGeneric = data.baseFormat === "generic";
+		const auth = data.generic_auth ?? { type: "bearer" as GenericAuthType };
+		// A generic relay serves only the two passthrough operations and has no provider paths to
+		// override, so those fields are fixed rather than taken from the form.
+		const customProviderConfig = isGeneric
+			? {
+					base_provider_type: "generic" as const,
+					allowed_requests: { ...data.allowed_requests, passthrough: true, passthrough_stream: true },
+					is_key_less: data.is_key_less ?? false,
+					does_not_send_done_marker: false,
+					wait_for_usage: false,
+					generic_config: {
+						auth: {
+							type: auth.type,
+							...(auth.type === "header" ? { header_name: auth.header_name, value_prefix: auth.value_prefix || undefined } : {}),
+							...(auth.type === "query" ? { query_param: auth.query_param } : {}),
+							...(auth.type === "aws_sigv4" ? { aws: { service: auth.aws?.service ?? "", region: auth.aws?.region || undefined } } : {}),
+						},
+					},
+				}
+			: {
+					base_provider_type: data.baseFormat as BaseProvider,
+					allowed_requests: data.allowed_requests,
+					request_path_overrides: cleanPathOverrides(data.request_path_overrides),
+					is_key_less: data.is_key_less ?? false,
+					does_not_send_done_marker: data.does_not_send_done_marker ?? false,
+					wait_for_usage: data.wait_for_usage ?? false,
+				};
 		const payload = {
 			provider: data.name as ModelProviderName,
-			custom_provider_config: {
-				base_provider_type: data.baseFormat as BaseProvider,
-				allowed_requests: data.allowed_requests,
-				request_path_overrides: cleanPathOverrides(data.request_path_overrides),
-				is_key_less: data.is_key_less ?? false,
-				does_not_send_done_marker: data.does_not_send_done_marker ?? false,
-				wait_for_usage: data.wait_for_usage ?? false,
-			},
+			custom_provider_config: customProviderConfig,
 			network_config: {
 				base_url: data.base_url,
 				allow_private_network: data.allow_private_network ?? false,
@@ -139,6 +180,8 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 	};
 
 	const baseFormat = form.watch("baseFormat") as BaseProvider;
+	const isGeneric = baseFormat === "generic";
+	const genericAuthType = form.watch("generic_auth.type");
 	const isKeyLessDisabled = baseFormat === "bedrock";
 	// Only the OpenAI stream loops read this flag; every other base format ignores it.
 	const isDoneMarkerToggleDisabled = baseFormat !== "openai";
@@ -151,6 +194,31 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			form.setValue("does_not_send_done_marker", false);
 		}
 	}, [isDoneMarkerToggleDisabled, form]);
+
+	// A generic relay has no typed operations: clear the grid so the stored allowed_requests
+	// carries only the passthrough pair, and restore the defaults when the format moves off
+	// generic so the grid is not left fully switched off. is_key_less follows auth type none.
+	useEffect(() => {
+		if (!isGeneric) {
+			form.setValue("allowed_requests", DEFAULT_ALLOWED_REQUESTS);
+			// The auth section is hidden off generic, so its half-filled fields must not keep the
+			// form from submitting, and a keyless flag that auth type none switched on must not be
+			// submitted for a format whose switch is hidden (bedrock) or that the user never toggled.
+			form.setValue("generic_auth", DEFAULT_GENERIC_AUTH);
+			form.setValue("is_key_less", false);
+			return;
+		}
+		const current = form.getValues("allowed_requests");
+		const cleared = Object.fromEntries(Object.keys(current).map((k) => [k, false])) as typeof current;
+		form.setValue("allowed_requests", { ...cleared, passthrough: true, passthrough_stream: true });
+	}, [isGeneric, form]);
+
+	// The keyless switch is disabled for every generic auth type but none, so the flag has to
+	// follow the auth type in both directions or a none-then-bearer sequence leaves it stuck on.
+	useEffect(() => {
+		if (!isGeneric) return;
+		form.setValue("is_key_less", genericAuthType === "none");
+	}, [isGeneric, genericAuthType, form]);
 
 	// Clear the nested flag whenever its parent goes away: the provider update replaces
 	// custom_provider_config wholesale, so a stale true would otherwise be persisted.
@@ -251,6 +319,144 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 								</FormItem>
 							)}
 						/>
+						{isGeneric && (
+							<div className="space-y-4 rounded-sm border p-3" data-testid="generic-auth-section">
+								<div>
+									<p className="text-sm font-medium">Upstream authentication</p>
+									<p className="text-muted-foreground text-sm">
+										How Bifrost presents the selected key to this API. Requests are relayed at{" "}
+										<code className="font-mono text-xs">/passthrough/{form.watch("name") || "<name>"}/…</code>
+									</p>
+								</div>
+								<FormField
+									control={form.control}
+									name="generic_auth.type"
+									render={({ field }) => (
+										<FormItem className="flex flex-col gap-2">
+											<FormLabel>Auth type</FormLabel>
+											<Select value={field.value} onValueChange={field.onChange} disabled={!hasProviderCreateAccess}>
+												<FormControl>
+													<SelectTrigger data-testid="generic-auth-type-select">
+														<SelectValue placeholder="Select auth type" />
+													</SelectTrigger>
+												</FormControl>
+												<SelectContent>
+													{GenericAuthTypes.map((t) => (
+														<SelectItem key={t} value={t} data-testid={`generic-auth-type-option-${t}`}>
+															{GenericAuthTypeLabels[t]}
+														</SelectItem>
+													))}
+												</SelectContent>
+											</Select>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+								{genericAuthType === "header" && (
+									<>
+										<FormField
+											control={form.control}
+											name="generic_auth.header_name"
+											render={({ field }) => (
+												<FormItem className="flex flex-col gap-2">
+													<FormLabel>Header name</FormLabel>
+													<FormControl>
+														<Input
+															placeholder="x-api-key"
+															data-testid="generic-auth-header-name-input"
+															disabled={!hasProviderCreateAccess}
+															{...field}
+														/>
+													</FormControl>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={form.control}
+											name="generic_auth.value_prefix"
+											render={({ field }) => (
+												<FormItem className="flex flex-col gap-2">
+													<FormLabel>Value prefix (optional)</FormLabel>
+													<FormControl>
+														<Input
+															placeholder="e.g. Token "
+															data-testid="generic-auth-value-prefix-input"
+															disabled={!hasProviderCreateAccess}
+															{...field}
+														/>
+													</FormControl>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+									</>
+								)}
+								{genericAuthType === "query" && (
+									<FormField
+										control={form.control}
+										name="generic_auth.query_param"
+										render={({ field }) => (
+											<FormItem className="flex flex-col gap-2">
+												<FormLabel>Query parameter</FormLabel>
+												<FormControl>
+													<Input
+														placeholder="api_key"
+														data-testid="generic-auth-query-param-input"
+														disabled={!hasProviderCreateAccess}
+														{...field}
+													/>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+								)}
+								{genericAuthType === "aws_sigv4" && (
+									<>
+										<FormField
+											control={form.control}
+											name="generic_auth.aws.service"
+											render={({ field }) => (
+												<FormItem className="flex flex-col gap-2">
+													<FormLabel>AWS service</FormLabel>
+													<FormControl>
+														<Input
+															placeholder="textract"
+															data-testid="generic-aws-service-input"
+															disabled={!hasProviderCreateAccess}
+															{...field}
+														/>
+													</FormControl>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={form.control}
+											name="generic_auth.aws.region"
+											render={({ field }) => (
+												<FormItem className="flex flex-col gap-2">
+													<FormLabel>AWS region (optional, falls back to the key's region)</FormLabel>
+													<FormControl>
+														<Input
+															placeholder="us-east-1"
+															data-testid="generic-aws-region-input"
+															disabled={!hasProviderCreateAccess}
+															{...field}
+														/>
+													</FormControl>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+										<p className="text-muted-foreground text-xs">
+											Keys for this provider carry AWS credentials (access key, secret, region or a role ARN) instead of a value.
+										</p>
+									</>
+								)}
+							</div>
+						)}
 						{!isKeyLessDisabled && (
 							<FormField
 								control={form.control}
@@ -269,7 +475,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 												size="md"
 												checked={field.value}
 												onCheckedChange={field.onChange}
-												disabled={!hasProviderCreateAccess}
+												disabled={!hasProviderCreateAccess || (isGeneric && genericAuthType !== "none")}
 												data-testid="custom-provider-keyless-switch"
 											/>
 										</div>
@@ -334,12 +540,14 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 								)}
 							/>
 						)}
-						{/* Allowed Requests Configuration */}
-						<AllowedRequestsFields
-							control={form.control}
-							providerType={form.watch("baseFormat") as BaseProvider}
-							disabled={!hasProviderCreateAccess}
-						/>
+						{/* Allowed Requests Configuration: a generic relay serves only passthrough, so the grid is not offered */}
+						{!isGeneric && (
+							<AllowedRequestsFields
+								control={form.control}
+								providerType={form.watch("baseFormat") as BaseProvider}
+								disabled={!hasProviderCreateAccess}
+							/>
+						)}
 					</div>
 					<div className="bg-card sticky bottom-0 ml-auto flex w-full flex-row gap-2 border-t px-4 py-4 md:px-8">
 						<Button type="button" variant="outline" onClick={onClose} className="ml-auto" data-testid="custom-provider-cancel-btn">
