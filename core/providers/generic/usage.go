@@ -406,11 +406,7 @@ func (u resolvedUsage) streamUsage(initial usageFields) (func(event []byte) *sch
 	acc := initial
 	wholeBody := u.wholeBodyResponse()
 	observe := func(event []byte) *schemas.BifrostPassthroughUsage {
-		f := u.parse("application/json", event)
-		// An event's size is not the quantity of a whole-body measure; the stream's total is.
-		if wholeBody {
-			f.units, f.hasUnits = 0, false
-		}
+		f := u.eventFields(event)
 		if !f.any() {
 			return nil
 		}
@@ -429,6 +425,18 @@ func (u resolvedUsage) streamUsage(initial usageFields) (func(event []byte) *sch
 		return u.build(acc)
 	}
 	return observe, final
+}
+
+// eventFields reads the usage fields one SSE event carries. A whole-body measure counts the whole
+// reply, never one event: an event's size is not the quantity, so a response-side body_bytes or
+// body_chars is left unread per event and streamUsage bills the stream's total at its end. The
+// relay's observer and the usage preview both read events through it.
+func (u resolvedUsage) eventFields(event []byte) usageFields {
+	f := u.parse("application/json", event)
+	if u.wholeBodyResponse() {
+		f.units, f.hasUnits = 0, false
+	}
+	return f
 }
 
 // defaultUsage is what a billable call reports when nothing could be read from the response:

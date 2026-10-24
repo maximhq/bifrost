@@ -58,7 +58,7 @@ func stripPassthroughPrefix(path string, prefixes []string) (string, string, boo
 	return "", "", false
 }
 
-// validatePassthroughPath rejects passthrough remainders that could change how the upstream
+// ValidatePassthroughPath rejects passthrough remainders that could change how the upstream
 // URL is interpreted once concatenated onto a provider base URL. The path must be rooted by
 // exactly one "/", must not carry a userinfo separator in its first segment, and must not
 // contain a scheme separator, backslashes, dot-dot segments, or control characters anywhere.
@@ -66,7 +66,7 @@ func stripPassthroughPrefix(path string, prefixes []string) (string, string, boo
 // through. Later segments may contain "@" because Vertex model versions use it
 // ("models/claude-sonnet-4-5@20250929"); past the first segment it can no longer reach
 // the authority, and the provider-side host check covers the remaining cases.
-func validatePassthroughPath(p string) error {
+func ValidatePassthroughPath(p string) error {
 	if err := checkPassthroughPathRules(p); err != nil {
 		return err
 	}

@@ -90,7 +90,7 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	if err := validatePassthroughPath(path); err != nil {
+	if err := ValidatePassthroughPath(path); err != nil {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
 		return
 	}

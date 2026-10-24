@@ -3721,3 +3721,79 @@ func TestAddProvider_GenericBase(t *testing.T) {
 		})
 	}
 }
+
+// TestPreviewGenericUsage pins the mapping preview endpoint: a sample call is run through the
+// stored relay config, or the unsaved one in the payload, and the numbers the relay would record
+// come back; non-generic providers and invalid configs are refused.
+func TestPreviewGenericUsage(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	stored := configstore.ProviderConfig{
+		NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://textract.us-east-1.amazonaws.com"},
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{
+			Auth:  schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}},
+			Usage: &schemas.GenericUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: schemas.Ptr(0.0015)},
+		}},
+	}
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			"textract": stored,
+			"openai":   {NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"}},
+		}},
+		modelsManager: &mockModelsManager{},
+	}
+	call := func(provider, body string) (*fasthttp.RequestCtx, map[string]any) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue("provider", provider)
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI("/api/providers/" + provider + "/generic-usage-preview")
+		ctx.Request.SetBodyString(body)
+		h.previewGenericUsage(ctx)
+		var out map[string]any
+		_ = sonic.Unmarshal(ctx.Response.Body(), &out)
+		return ctx, out
+	}
+
+	ctx, out := call("textract", `{"method":"POST","path":"/","request_content_type":"application/x-amz-json-1.1","request_body":"{}","response_content_type":"application/x-amz-json-1.1","response_body":"{\"DocumentMetadata\":{\"Pages\":7}}"}`)
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("status %d body %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if out["counted"] != true || out["units"] != 7.0 || out["cost"].(float64)-0.0105 > 1e-9 || out["cost"].(float64)-0.0105 < -1e-9 {
+		t.Fatalf("stored config: got %v", out)
+	}
+
+	ctx, out = call("textract", `{"method":"GET","path":"/jobs/1","response_body":"{}"}`)
+	if ctx.Response.StatusCode() != fasthttp.StatusOK || out["counted"] != false || out["billable"] != false {
+		t.Fatalf("an unrouted GET must preview as not counted: %d %v", ctx.Response.StatusCode(), out)
+	}
+
+	ctx, out = call("textract", `{"generic_config":{"auth":{"type":"bearer"},"usage":{"cost_per_request":0.02}},"method":"POST","path":"/search","response_body":"{\"ok\":true}"}`)
+	if ctx.Response.StatusCode() != fasthttp.StatusOK || out["cost"] != 0.02 {
+		t.Fatalf("the unsaved config in the payload must be used: %d %v", ctx.Response.StatusCode(), out)
+	}
+
+	// The relay refuses this path with 400 before matching (userinfo in the first segment), so the
+	// preview must not price it as a counted call.
+	ctx, _ = call("textract", `{"method":"POST","path":"/user@example/jobs?x=1","response_body":"{}"}`)
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), "passthrough path") {
+		t.Fatalf("a path the relay refuses must be refused by the preview: %d %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+
+	ctx, _ = call("textract", `{"method":"POST","path":"/v1/%252e%252e/admin","response_body":"{}"}`)
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("a double-encoded dot-dot the relay refuses must be refused by the preview: %d %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+
+	ctx, _ = call("textract", `{"generic_config":{"auth":{"type":"magic"}},"method":"POST","path":"/x"}`)
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), "auth.type") {
+		t.Fatalf("an invalid config must be refused: %d %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	ctx, _ = call("openai", `{"method":"POST","path":"/x"}`)
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("a non-generic provider must be refused: %d %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	ctx, _ = call("nope", `{"method":"POST","path":"/x"}`)
+	if ctx.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("an unknown provider is a 404: %d %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}

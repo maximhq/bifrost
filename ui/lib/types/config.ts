@@ -653,6 +653,46 @@ export interface GenericProviderConfig {
 	strict_routes?: boolean;
 }
 
+// GenericUsagePreviewRequest matching Go's generic.UsagePreviewInput plus the unsaved relay
+// config: one hypothetical call to run through the mapping.
+export interface GenericUsagePreviewRequest {
+	generic_config?: GenericProviderConfig;
+	method: string;
+	path: string;
+	headers?: Record<string, string>;
+	accept?: string;
+	request_content_type?: string;
+	request_body?: string;
+	status_code?: number;
+	response_content_type?: string;
+	response_body?: string;
+}
+
+// GenericUsagePreview matching Go's generic.UsagePreview: what the relay would record.
+export interface GenericUsagePreview {
+	route_index: number | null;
+	route_allowed: boolean;
+	billable: boolean;
+	streams: boolean;
+	counted: boolean;
+	model_path: string;
+	model: string;
+	units_source: GenericUnitsSource;
+	units_measure: GenericUnitsMeasure;
+	units_path: string;
+	units: number | null;
+	units_billed: number | null;
+	units_block_size: number;
+	units_minimum: number;
+	cost_per_unit: number;
+	cost_per_request: number;
+	extracted_cost: number | null;
+	// Go omits zero-valued token counts, so a preview with only a total carries no prompt or completion field.
+	tokens: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null;
+	cost: number;
+	notes: string[];
+}
+
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig
 export interface CustomProviderConfig {
 	base_provider_type: KnownProvider | "generic";

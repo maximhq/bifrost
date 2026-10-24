@@ -1235,7 +1235,7 @@ func TestValidatePassthroughPath(t *testing.T) {
 		"/openai/deployments/gpt-4o/chat/completions",
 	}
 	for _, p := range valid {
-		require.NoError(t, validatePassthroughPath(p), "path %q should be accepted", p)
+		require.NoError(t, ValidatePassthroughPath(p), "path %q should be accepted", p)
 	}
 
 	invalid := []string{
@@ -1256,7 +1256,7 @@ func TestValidatePassthroughPath(t *testing.T) {
 		"/v1/%zz",
 	}
 	for _, p := range invalid {
-		require.Error(t, validatePassthroughPath(p), "path %q should be rejected", p)
+		require.Error(t, ValidatePassthroughPath(p), "path %q should be rejected", p)
 	}
 }
 

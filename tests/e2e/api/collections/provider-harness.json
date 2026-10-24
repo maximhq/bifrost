@@ -285713,6 +285713,50 @@
           }
         },
         {
+          "name": "280.27 POST /api/providers/generic_echo_units/generic-usage-preview - the mapping preview prices a sample call as the relay would, through the server route (generic passthrough) - #8784",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_units prices json.pages at $0.001 plus a $0.01 fee; POST /post without X-Amz-Target matches",
+                  "// no route, so the provider mapping applies: 7 pages cost 0.017. Nothing is sent upstream or stored.",
+                  "pm.test('generic preview: endpoint answered', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var p = pm.response.json();",
+                  "pm.test('generic preview: provider defaults, counted', function () { pm.expect(p.route_index, JSON.stringify(p)).to.eql(null); pm.expect(p.counted, JSON.stringify(p)).to.eql(true); });",
+                  "pm.test('generic preview: units and cost as the relay would record them', function () { pm.expect(p.units, JSON.stringify(p)).to.eql(7); pm.expect(p.cost, JSON.stringify(p)).to.be.closeTo(0.017, 1e-9); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"method\": \"POST\", \"path\": \"/post\", \"response_content_type\": \"application/json\", \"response_body\": \"{\\\"json\\\": {\\\"pages\\\": 7}}\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/generic_echo_units/generic-usage-preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "generic_echo_units",
+                "generic-usage-preview"
+              ]
+            }
+          }
+        },
+        {
           "name": "280.31 POST /passthrough/generic_echo/post - hop-by-hop headers and headers the caller's Connection names are not forwarded (generic passthrough) - #8785",
           "event": [
             {

@@ -1341,6 +1341,18 @@ export const genericProviderFormSchema = genericProviderConfigSchema.extend({
 	routes: z.array(genericRouteFormSchema).optional(),
 });
 
+// Sample call for the Passthrough tab's "Test this mapping" box, checked before it is sent so the
+// field errors show inline rather than as a failed request.
+export const genericUsagePreviewSampleSchema = z.object({
+	method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
+	path: z.string().trim().min(1, "Path is required"),
+	status_code: z
+		.number()
+		.int("Status must be a whole number")
+		.min(100, "Status must be between 100 and 599")
+		.max(599, "Status must be between 100 and 599"),
+});
+
 // Custom provider config schema
 export const customProviderConfigSchema = z
 	.object({

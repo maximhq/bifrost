@@ -685,6 +685,49 @@ test.describe("Providers", () => {
       expect(streamOff.custom_provider_config?.allowed_requests?.passthrough).toBe(true);
       expect(streamOff.custom_provider_config?.allowed_requests?.passthrough_stream).toBe(false);
 
+      // Test this mapping: a sample is run through the mapping as it stands in the form,
+      // unsaved edits included. Enter in a sample input runs it instead of saving the form,
+      // and editing the sample clears the stale result.
+      await page.getByTestId("generic-streaming-accept-switch").click();
+      await page.getByTestId("generic-preview-path-input").fill("/search");
+      await page
+        .getByTestId("generic-preview-response-body-textarea")
+        .fill('{"usage":{"cost":0.25}}');
+      await page.getByTestId("generic-preview-path-input").press("Enter");
+      await expect(page.getByTestId("generic-preview-cost")).toContainText("0.25");
+      const unsaved = await page.request.get(`/api/providers/${providerData.name}`);
+      const unsavedCfg = (await unsaved.json()) as {
+        custom_provider_config?: {
+          generic_config?: { streaming?: { detect_from_accept_header?: boolean } };
+        };
+      };
+      expect(
+        unsavedCfg.custom_provider_config?.generic_config?.streaming
+          ?.detect_from_accept_header ?? false,
+        "Enter in the preview must not save the form",
+      ).toBe(false);
+      await page.getByTestId("generic-preview-path-input").fill("/other");
+      await expect(page.getByTestId("generic-preview-result")).toHaveCount(0);
+      // Two invalid fields: fixing one leaves the other's error in place.
+      await page.getByTestId("generic-preview-path-input").fill("");
+      await page.getByTestId("generic-preview-status-input").fill("0");
+      await page.getByTestId("generic-preview-status-input").press("Enter");
+      await expect(page.getByTestId("generic-preview-path-error")).toBeVisible();
+      await expect(page.getByTestId("generic-preview-status-error")).toBeVisible();
+      await page.getByTestId("generic-preview-path-input").fill("/search");
+      await expect(page.getByTestId("generic-preview-path-error")).toHaveCount(0);
+      await expect(page.getByTestId("generic-preview-status-error")).toBeVisible();
+      // The preview sits inside the mapping's form: an invalid sample status must not block Save.
+      const savedWithBadSample = page.waitForResponse(
+        (r) =>
+          new URL(r.url()).pathname.endsWith(`/api/providers/${providerData.name}`) &&
+          r.request().method() === "PUT",
+      );
+      await page.getByTestId("generic-passthrough-save-btn").click();
+      expect((await savedWithBadSample).status(), "Save is not blocked by the preview's status field").toBe(200);
+      await page.getByTestId("generic-preview-status-input").fill("200");
+      await expect(page.getByTestId("generic-preview-status-error")).toHaveCount(0);
+
       // Route usage fields the tab does not render (set through the API) survive
       // a save from it: a route-level units mapping and an explicit 0 that waives
       // the provider's unit price.
