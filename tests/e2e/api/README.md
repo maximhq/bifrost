@@ -132,6 +132,22 @@ Start the fixture and the isolated gateway as in
 make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
 ```
 
+## Provider-reported zero cost
+
+Folder 274 pins that a provider's zero `usage.cost` reaches the client as
+`"cost": {"total_cost": 0}` and not as `"cost": {}`. The fixture model `upstream-zero-cost`
+answers like `upstream-ok` and reports `usage.cost: 0`. The native `/v1/chat/completions` cases
+check the non-streaming response and the streamed usage chunk; the OpenAI SDK route case checks
+that the bare `cost: 0` is still there. These cases make no live provider calls and are skipped
+unless `providerErrorFixture=1`.
+
+Start the fixture and the isolated gateway as in
+[Fixed-length response truncation](#fixed-length-response-truncation), then run:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="zero provider cost" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live

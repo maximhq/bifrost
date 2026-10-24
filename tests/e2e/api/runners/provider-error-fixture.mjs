@@ -33,6 +33,13 @@ const behaviours = {
 };
 // upstream-slow answers as upstream-ok does, after SLOW_MS.
 behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });
+behaviours["upstream-zero-cost"] = () => {
+	const r = behaviours["upstream-ok"]();
+	const completion = JSON.parse(r.body);
+	completion.model = "upstream-zero-cost";
+	completion.usage.cost = 0;
+	return { ...r, body: JSON.stringify(completion) };
+};
 // upstream-cut starts answering as upstream-ok does and drops the connection partway: a stream gets its first
 // content chunk and then a closed socket, a non-streamed request a closed socket.
 behaviours["upstream-cut"] = () => ({ ...behaviours["upstream-ok"](), cut: true });
