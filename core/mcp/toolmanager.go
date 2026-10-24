@@ -913,8 +913,12 @@ func (m *ToolsManager) executeToolInternal(
 //   - Per-user (RequiresPerCallConnection==true): cheap and ephemeral, no
 //     rate limiter guards it — force a credential refresh, re-acquire a
 //     fresh connection, and retry the SAME call synchronously, exactly once.
-//     A dead session cannot persist here (every call dials fresh), so in
-//     practice only the auth reason reaches this branch.
+//     The refresh runs even when the safety opt-out suppresses the retry,
+//     detached so the caller's error is not held up for it: otherwise the
+//     credential just rejected stays cached, and every later call from this
+//     caller to this server, for any tool, reuses it and fails until it
+//     expires. A dead session cannot persist here (every call dials fresh),
+//     so in practice only the auth reason reaches this branch.
 //   - Shared (RequiresPerCallConnection==false): the bearer is baked into the
 //     persistent transport at connect time, and so is the session, so healing
 //     either requires a full ReconnectClient, which chains multiple retried
@@ -947,7 +951,7 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 
 	// Safety opt-out: a spurious retry against a destructive, non-idempotent
 	// tool could cause a real-world side effect twice. This gates only the
-	// retry; on the shared path the connection is still healed first.
+	// retry; on either path the credential or connection is still healed first.
 	//
 	// Fail closed on missing hints, matching the MCP spec's own defaults
 	// (destructiveHint defaults to true, idempotentHint to false, each only
@@ -984,12 +988,15 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 		return m.recoverSharedConnection(ctx, toolName, callRequest, executionConfig, toolExecutionTimeout, retryOptedOut)
 	}
 
-	if retryOptedOut {
+	if state == nil {
+		// No client state means no connection to re-acquire: nothing to retry.
 		return nil, false, false
 	}
 
-	if state == nil {
-		// No client state means no connection to re-acquire — nothing to retry.
+	if retryOptedOut {
+		// No retry will use the refreshed credential, so the caller's error is
+		// not held up for it; the next call picks it up.
+		go m.forceRefreshDetached(ctx, executionConfig, toolExecutionTimeout)
 		return nil, false, false
 	}
 
@@ -1024,6 +1031,20 @@ func (m *ToolsManager) attemptCallFailureRecovery(
 
 	m.logger.Debug("%s Auth-failure retry succeeded for %s", MCPLogPrefix, toolName)
 	return retryResponse, true, false
+}
+
+// forceRefreshDetached refreshes config's credential for the caller on ctx
+// without holding the caller up, for a failed call whose retry was skipped.
+// The refresh keeps ctx's values, which say whose credential it is, but not
+// its cancellation, since the request ends as soon as its error is returned;
+// timeout bounds it instead. A failure is only logged: the next call resolves
+// the credential again either way.
+func (m *ToolsManager) forceRefreshDetached(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig, timeout time.Duration) {
+	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	if err := m.credStore.ForceRefresh(schemas.NewBifrostContext(refreshCtx, schemas.NoDeadline), config); err != nil {
+		m.logger.Debug("%s Forced credential refresh after a skipped retry failed for %s: %v", MCPLogPrefix, config.Name, err)
+	}
 }
 
 // recoverSharedConnection handles the shared-connection half of

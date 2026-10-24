@@ -143,6 +143,7 @@ type reregisterFixture struct {
 	manager            *recordingMCPManager
 	oauthConfigID      string
 	registeredClientID string
+	lastCtx            *fasthttp.RequestCtx // the request the last call ran, for audit assertions
 }
 
 // newReregisterFixture bootstraps a shared-OAuth MCP client whose client_id was
@@ -209,6 +210,7 @@ func (f *reregisterFixture) call(t *testing.T, route func(*fasthttp.RequestCtx))
 	ctx.SetUserValue("id", reregisterMCPClientID)
 
 	route(ctx)
+	f.lastCtx = ctx
 
 	raw := string(ctx.Response.Body())
 	var body map[string]any
@@ -306,6 +308,16 @@ func TestReregisterMCPClient_ReportsACommittedRotationWhenConsentSetupFails(t *t
 
 	assert.Equal(t, []string{reregisterMCPClientID}, f.cache.evictedClients,
 		"the rotation committed, so its invalidation must have run regardless of what failed after it")
+}
+
+func TestReregisterMCPClient_AuditsCommittedRotationWhenConsentSetupFails(t *testing.T) {
+	f := newReregisterFixture(t)
+	f.store.failFlowCreate = true
+
+	f.call(t, f.handler.reregisterMCPClient)
+
+	change := requireSingleAuditChange(t, f.lastCtx, "mcp_client.reregistered")
+	assert.Equal(t, reregisterMCPClientID, change.TargetID)
 }
 
 // TestReauthorizeMCPClient_ConsentSetupFailure_ClaimsNoRotation is the

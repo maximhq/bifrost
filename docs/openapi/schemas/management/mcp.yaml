@@ -366,9 +366,12 @@ MCPClientCreateRequestBase:
       $ref: '#/MCPTokenExchangeConfig'
       description: |
         Required when creating a client with auth_type "token_exchange".
-        Verification runs automatically as the signed-in admin (see
-        POST /api/mcp/client/{id}/verify-exchange) — there is no sample-token
-        field on this request.
+        Verification runs automatically as the signed-in admin, exchanging the
+        identity-provider token on the request or, when it carries none, the
+        access token from the admin's own Bifrost sign-in (see
+        POST /api/mcp/client/{id}/verify-exchange). A request with neither,
+        such as one made with an API key, creates the client in
+        pending_verification. There is no sample-token field on this request.
     user_headers:
       type: object
       additionalProperties:

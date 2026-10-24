@@ -32,6 +32,8 @@ export class ConfigSettingsPage extends BasePage {
   readonly rateLimitingSection: Locator
   readonly enforceAuthOnInferenceSwitch: Locator
   readonly enforceVKObjectOwnershipSwitch: Locator
+  readonly skipAccessProfileUserVirtualKeyCreationSwitch: Locator
+  readonly skipAccessProfileUserVirtualKeyDeletionSwitch: Locator
   readonly requiredHeadersTextarea: Locator
   readonly vkRotationCooldownInput: Locator
   readonly dashboardAuthSwitch: Locator
@@ -80,6 +82,8 @@ export class ConfigSettingsPage extends BasePage {
     this.rateLimitingSection = page.locator('text=Rate Limiting').locator('..')
     this.enforceAuthOnInferenceSwitch = page.getByTestId('enforce-auth-on-inference-switch')
     this.enforceVKObjectOwnershipSwitch = page.getByTestId('security-enforce-vk-object-ownership-switch')
+    this.skipAccessProfileUserVirtualKeyCreationSwitch = page.getByTestId('security-skip-access-profile-user-virtual-key-creation-switch')
+    this.skipAccessProfileUserVirtualKeyDeletionSwitch = page.getByTestId('security-skip-access-profile-user-virtual-key-deletion-switch')
     this.requiredHeadersTextarea = page.getByTestId('required-headers-textarea')
     this.vkRotationCooldownInput = page.getByTestId('security-vk-rotation-cooldown-input')
     this.dashboardAuthSwitch = page.locator('#auth-enabled')

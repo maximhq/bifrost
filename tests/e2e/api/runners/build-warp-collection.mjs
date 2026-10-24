@@ -6,7 +6,8 @@
 // runners/individual/run-newman-warp-tests.sh on a throwaway Postgres database
 // seeded by tests/cmd/seed/warpseed, with a live model. Folders:
 //
-//   Setup               configure Warp, backfill the semantic index, wait for it
+//   Setup               configure Warp, backfill the semantic index, wait for it,
+//                       then compute topic clusters over what it indexed
 //   Request validation  deterministic 400/413s - no model call is made
 //   Streaming           SSE framing of one turn
 //   Incident ... Chains standard questions, checked against what the seed pins
@@ -14,6 +15,9 @@
 //   Charts              render_chart line and bar charts, expanded server-side
 //   Capabilities        files and actions Warp cannot do: say so, offer the
 //                       feature-request link, no tool loops
+//   Topics              list_topics answers what people ask about over a
+//                       window, with a trend per topic; what it still cannot
+//                       show is declined with the feature-request link
 //   Unanswerable        outside Bifrost's view, missing entities, secrets, PII,
 //                       its own prompt, harmful help, legal verdicts, forecasts
 //   Guardrails          out-of-scope refusals, instruction overrides, a
@@ -48,6 +52,10 @@ const CONTENT = ["semantic_search_logs", "query_logs", "get_log_detail"];
 const DRILL_DOWN = ["get_log_detail", "get_request_trace"];
 // A spend or usage total covers every request type. objects is an exact match,
 // so a call that adds it on its own drops streamed and Responses API traffic.
+// A topic question is answered from one list_topics call: a second returns the
+// same snapshot, and any other data tool is rebuilding a breakdown the topics
+// do not hold.
+const ONE_LIST_TOPICS = { toolsAll: ["list_topics"], toolsOnly: ["list_topics"], maxToolCalls: 1 };
 const NO_REQUEST_TYPE_FILTER = [{ pattern: '"objects"' }];
 // A one-sentence decline, with room for the issue-tracker link Warp offers.
 const REFUSAL_CHARS = 600;
@@ -56,6 +64,24 @@ const FEATURE_LINK = "github\\.com/maximhq/bifrost/issues/new";
 // A chart render_chart drew: the block, expanded server-side into a spec with
 // points - an unexpanded "chart-1" id alone would not match '"points"'.
 const CHART_BLOCK = ["```warp-chart", '"points":\\['];
+// A topic's name linked to one request: it says how many requests the topic
+// holds and opens one. Names link to the topic's requests (TOPIC_LINKED);
+// examples are the only links to a single request.
+const TOPIC_NAME_LINKED = "\\|\\s*\\[[^\\]|]+\\]\\([^)]*selected_log=";
+// A link into the Logs view narrowed to a topic, which is what a topic's name
+// links to.
+const TOPIC_LINKED = "\\]\\([^)]*topic_ids=";
+// A survey scoped to a window or a person is a list_topics call with that
+// window and those filters; describe_filter_space may resolve a name first.
+// Setup built topics, so the query_logs sample fallback never applies, and a
+// breakdown rebuilt from the logs is the behaviour this rules out. Topic names
+// link to their requests, as on the overview.
+const SCOPED_SURVEY = {
+  toolsAll: ["list_topics"],
+  toolsOnly: ["describe_filter_space", "ask_user", "list_topics"],
+  answerAll: [TOPIC_LINKED],
+  answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK],
+};
 // Wording of an off-topic decline - a greeting must never read like one.
 const REFUSAL_WORDING = ["only (answer|help with|discuss)", "outside (of )?(what|my)", "can['’]t help with that", "not able to help"];
 // A failures chart's "Open in Logs" must open the failures, not every request.
@@ -152,7 +178,16 @@ const FOLDERS = [
     name: "Conversation content",
     description: "Seeded prompts cover debugging, pricing/billing, and error explanations; searched through the semantic index the Setup folder backfills.",
     cases: [
-      { id: "content-themes", name: "Summarises what people ask about", ask: "What are people asking about most in the last 7 days?", expect: { toolsAny: CONTENT } },
+      // list_topics counts over any window and slice, so a survey that names a
+      // window or a person is one call with it. Its default window is the last
+      // 7 days, so the first case may leave start_time out.
+      { id: "content-themes", name: "Summarises what people asked about this week from the topics", ask: "What are people asking about most in the last 7 days?", expect: SCOPED_SURVEY },
+      {
+        id: "content-themes-user",
+        name: "Summarises what one user was doing from the topics",
+        ask: "What kinds of tasks was Alex Rivera doing this week?",
+        expect: { ...SCOPED_SURVEY, argsMatch: [{ tool: "list_topics", pattern: "user-alex-rivera" }] },
+      },
       { id: "content-debugging", name: "Finds debugging conversations", ask: "Find conversations about debugging code.", expect: { toolsAny: CONTENT, answerAny: ["bug|debug|panic|index|nil|get_user|code review|memory leak"] } },
       { id: "content-billing", name: "Finds pricing and billing questions", ask: "Has anyone asked about pricing or billing?", expect: { toolsAny: CONTENT, answerAny: ["refund|invoice|pricing|billing|subscription|payment"] } },
       { id: "content-error-explained", name: "Finds an assistant explaining an error", ask: "Find requests where the assistant explained an error to someone.", expect: { toolsAny: CONTENT, answerAny: ["429|rate limit|index out of range|panic|nil|error"] } },
@@ -283,6 +318,64 @@ const FOLDERS = [
       { id: "cap-schedule", name: "Declines to schedule a report", ask: "Email me this spend report every Monday morning.", expect: { maxToolCalls: 2, answerAll: [FEATURE_LINK], answerNone: NO_FAKE_ACTION } },
       { id: "cap-replay", name: "Declines to re-send a request", ask: "Re-send one of this week's failed openai requests to anthropic and tell me if it works.", expect: { maxToolCalls: 4, answerAll: [FEATURE_LINK], answerNone: NO_FAKE_ACTION } },
       { id: "cap-remember", name: "Declines to remember a preference", ask: "Remember that Platform Engineering is my team so you default to it next time.", expect: { maxToolCalls: 2, answerAll: [FEATURE_LINK], answerNone: ["I('ll| will) remember", "I('ve| have) (noted|saved|remembered)", "noted[.!]"] } },
+    ],
+  },
+  {
+    name: "Topics",
+    description:
+      "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with each topic's name linked to its own requests in the Logs view - never to a single example, which says how many requests the topic holds and opens one. Broad areas are the themes the topics are grouped into, one list_topics call with group_by theme. The requests behind a topic are reached through the topic_ids filter the other tools take. What topics still cannot show - a count of people - is declined with the feature-request link, without rebuilding a breakdown by slicing the logs.",
+    cases: [
+      {
+        id: "topics-overview",
+        name: "Lists what people ask about from the topic clusters",
+        ask: "What are people asking about the most, across the whole deployment?",
+        expect: { ...ONE_LIST_TOPICS, answerAll: ["\\brequests?\\b", TOPIC_LINKED], answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK] },
+      },
+      {
+        id: "topics-past-day",
+        name: "Lists topics for another time range in one call",
+        ask: "What topics came up in the past 24 hours, across the whole deployment?",
+        expect: {
+          ...ONE_LIST_TOPICS,
+          argsMatch: [{ tool: "list_topics", pattern: "\"start_time\"\\s*:\\s*\"-(24h|1d|1440m)\"" }],
+          answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK],
+        },
+      },
+      {
+        id: "topics-trend",
+        name: "Reads a topic trend off one call",
+        ask: "Which topics are growing this week compared to last week, across the whole deployment?",
+        expect: { ...ONE_LIST_TOPICS, answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK] },
+      },
+      {
+        id: "topics-themes",
+        name: "Answers broad areas from the themes",
+        ask: "What broad areas do people ask about, across the whole deployment?",
+        expect: {
+          toolsAll: ["list_topics"],
+          toolsOnly: ["list_topics"],
+          maxToolCalls: 2,
+          argsMatch: [{ tool: "list_topics", pattern: "\"group_by\"\\s*:\\s*\"theme\"" }],
+          answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK],
+        },
+      },
+      {
+        id: "topics-drill-down",
+        name: "Lists the requests in a topic through the topic filter",
+        ask: "List the requests in the largest topic.",
+        expect: {
+          toolsAll: ["list_topics", "query_logs"],
+          maxToolCalls: 4,
+          argsMatch: [{ tool: "query_logs", pattern: "\"topic_ids\"" }],
+          answerNone: [FEATURE_LINK],
+        },
+      },
+      {
+        id: "topics-people",
+        name: "Declines to count the people behind a topic",
+        ask: "How many different users asked about the largest topic?",
+        expect: { ...ONE_LIST_TOPICS, answerAll: [FEATURE_LINK], answerNone: ["\\b\\d+ (different |distinct |unique )?(users|people)\\b"] },
+      },
     ],
   },
   {
@@ -440,7 +533,60 @@ function setupFolder() {
     request("GET", url(["api", "warp", "log-index", "backfill", "status"], [{ key: "id", value: "{{backfill_id}}" }]), null),
     events(null, waitTest),
   );
-  return { id: "setup", name: "Setup", item: [configure, backfill, wait] };
+  // Topics are clustered from what the backfill indexed, over the same window.
+  const topicsTest = [
+    ...exact(202, "Topic clustering starts"),
+    "if (pm.response.code === 202) { pm.collectionVariables.set('topics_id', pm.response.json().id); }",
+  ];
+  const topics = item("setup-topics", "Setup: compute topic clusters", request("POST", url(["api", "warp", "log-index", "topics"]), {}), events(backfillPre, topicsTest));
+
+  const topicsWaitTest = [
+    "var attempt = parseInt(pm.collectionVariables.get('__topics_attempt') || '0', 10);",
+    "var job = {};",
+    "try { job = pm.response.json(); } catch (e) {}",
+    "var done = pm.response.code === 200 && job.status === 'completed';",
+    "var terminal = pm.response.code !== 200 || job.status === 'failed' || job.status === 'cancelled' || attempt >= 150;",
+    "if (!done && !terminal) {",
+    "  pm.collectionVariables.set('__topics_attempt', String(attempt + 1));",
+    "  var start = Date.now(); while (Date.now() - start < 2000) {}",
+    "  pm.execution.setNextRequest(pm.info.requestName);",
+    "  return;",
+    "}",
+    "pm.collectionVariables.set('__topics_attempt', '0');",
+    "pm.test('Topic clustering completes', function () {",
+    "  pm.expect(done, 'status ' + pm.response.code + ' after ' + attempt + ' polls: ' + pm.response.text()).to.be.true;",
+    "  pm.expect(job.scanned, 'requests read: ' + pm.response.text()).to.be.above(0);",
+    "  pm.expect(job.clustered, 'requests clustered').to.equal(job.scanned);",
+    "  pm.expect(job.indexed, 'topics written').to.be.above(0);",
+    "  pm.expect(job.failed || 0, 'topics named from their own words because the model failed: ' + job.last_error).to.equal(0);",
+    "});",
+    "pm.test('Topic clustering reports each topic it wrote', function () {",
+    "  pm.expect(job.topics, pm.response.text()).to.be.an('array').with.lengthOf(job.indexed);",
+    "  var inTopics = 0;",
+    "  job.topics.forEach(function (topic) {",
+    "    pm.expect(topic.label, 'topic name').to.be.a('string').and.not.empty;",
+    "    pm.expect(topic.size, 'requests in ' + topic.label).to.be.above(0);",
+    "    pm.expect(topic.cohesion, 'cohesion of ' + topic.label).to.be.within(0, 1.001);",
+    "    inTopics += topic.size;",
+    "  });",
+    "  pm.expect(inTopics + (job.unassigned || 0), 'every request read is in a topic or counted as in none').to.equal(job.scanned);",
+    "  var names = job.topics.map(function (topic) { return topic.label.toLowerCase(); });",
+    "  pm.expect(names.filter(function (name, index) { return names.indexOf(name) !== index; }), 'topics sharing a name').to.be.empty;",
+    "});",
+  ];
+  const topicsWait = item(
+    "setup-topics-wait",
+    "Setup: wait for topic clusters",
+    request("GET", url(["api", "warp", "log-index", "topics", "status"], [{ key: "id", value: "{{topics_id}}" }]), null),
+    events(null, topicsWaitTest),
+  );
+  return { id: "setup", name: "Setup", item: [configure, backfill, wait, topics, topicsWait] };
+}
+
+function rawTopics(id, name, body, status) {
+  const req = request("POST", url(["api", "warp", "log-index", "topics"]), null, [{ key: "Content-Type", value: "application/json" }]);
+  req.body = { mode: "raw", raw: body };
+  return item(id, name, req, events(null, exact(status, name)));
 }
 
 function rawChat(id, name, body, status, prerequest) {
@@ -468,6 +614,15 @@ function validationFolder() {
       rawChat("validation-model-not-exposed", "Rejects a model the configuration does not expose", JSON.stringify({ messages: [{ role: "user", content: "hi" }], provider: "openai", model: "warp-e2e-not-an-exposed-model", stream: false }), 400),
       rawChat("validation-model-without-provider", "Rejects a model named without its provider", JSON.stringify({ messages: [{ role: "user", content: "hi" }], model: "warp-e2e-not-an-exposed-model", stream: false }), 400),
       rawChat("validation-oversize", "Rejects a conversation over 256 KB", "{}", 413, oversize),
+      // Rejected before a job is queued, so exact and deterministic.
+      rawTopics("validation-topics-no-window", "Rejects topic clustering with no window", "{}", 400),
+      rawTopics("validation-topics-invalid-json", "Rejects topic clustering with a body that is not JSON", "{", 400),
+      rawTopics(
+        "validation-topics-inverted",
+        "Rejects topic clustering over a window that ends before it starts",
+        JSON.stringify({ start_time: "2026-09-02T00:00:00Z", end_time: "2026-09-01T00:00:00Z" }),
+        400,
+      ),
     ],
   };
 }
@@ -523,6 +678,7 @@ const collection = {
     { key: "warp_namespace", value: "WarpE2eLogs", type: "string" },
     { key: "warp_lib", value: createWarpLib.toString(), type: "string" },
     { key: "backfill_id", value: "", type: "string" },
+    { key: "topics_id", value: "", type: "string" },
   ],
   event: events(COLLECTION_PREREQUEST, null),
   item: [

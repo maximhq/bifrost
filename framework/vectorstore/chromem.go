@@ -215,16 +215,22 @@ func (s *ChromemStore) GetAll(ctx context.Context, namespace string, queries []Q
 		return nil, nil, err
 	}
 
+	includeVectors := IncludeVectorsRequested(ctx)
 	filtered := make([]SearchResult, 0, len(docs))
 	for _, doc := range docs {
 		props := decodeChromemMetadata(doc.Metadata)
 		if !matchesChromemQueries(props, queries) {
 			continue
 		}
-		filtered = append(filtered, SearchResult{
+		result := SearchResult{
 			ID:         doc.ID,
 			Properties: applyChromemSelectFields(props, selectFields),
-		})
+		}
+		if includeVectors {
+			// The stored slice itself, copied below once the page is known.
+			result.Vector = doc.Embedding
+		}
+		filtered = append(filtered, result)
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].ID < filtered[j].ID })
 
@@ -251,7 +257,17 @@ func (s *ChromemStore) GetAll(ctx context.Context, namespace string, queries []Q
 	if remaining := total - offset; limit < remaining {
 		end = offset + limit
 	}
-	page := filtered[offset:end]
+	// Capped at end so the stored slices left in the rest of filtered cannot be
+	// reached by reslicing the page.
+	page := filtered[offset:end:end]
+	if includeVectors {
+		// chromem hands back the stored slice; a copy keeps callers from
+		// writing through to the collection. Only the page is copied: the rest
+		// of filtered is dropped.
+		for i := range page {
+			page[i].Vector = append([]float32(nil), page[i].Vector...)
+		}
+	}
 
 	var nextCursor *string
 	if end < total {

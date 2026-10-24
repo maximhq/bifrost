@@ -89,8 +89,13 @@ type OAuth2Provider interface {
 	// token (BifrostContextKeyMCPInboundBearer) for one scoped to
 	// config.TokenExchange.Audience. Results are cached in memory per
 	// (auth mode, identity, mcp client) until shortly before expiry.
+	// A request with no caller token that was authenticated through the
+	// user's own sign-in exchanges the stored token instead (see
+	// TokenExchangeIdPResolver.StoredSubjectToken).
 	// Returns ErrExchangeSubjectTokenMissing when the request carried no
-	// caller token, ErrTokenExchangeUnavailable when no identity-provider
+	// caller token and does not qualify for the stored one,
+	// ErrStoredSignInExpired when it qualifies but the stored sign-in can no
+	// longer produce one, ErrTokenExchangeUnavailable when no identity-provider
 	// integration is configured, and *TokenExchangeRejectedError when the
 	// provider refused the exchange.
 	GetExchangedAccessToken(ctx *BifrostContext, config *MCPClientConfig) (string, error)
@@ -103,6 +108,11 @@ type OAuth2Provider interface {
 // display; it never contains tokens.
 type TokenExchangeRejectedError struct {
 	Detail string
+	// SubjectRejected reports that the provider answered invalid_grant, which
+	// for an exchange names the subject token: invalid, expired or revoked.
+	// False means it refused the exchange client instead (invalid_client,
+	// unauthorized_client, or a bare 401), which no new subject token fixes.
+	SubjectRejected bool
 }
 
 func (e *TokenExchangeRejectedError) Error() string {
@@ -163,6 +173,17 @@ type TokenExchangeIdPResolver interface {
 	// (implementations should cache discovery internally) so provider
 	// reconfiguration takes effect without restarts.
 	Resolve(ctx context.Context, config *MCPClientConfig) (*TokenExchangeIdP, error)
+
+	// StoredSubjectToken returns the identity-provider access token stored
+	// from userID's own sign-in, the subject for a request that carried no
+	// token of its own (the stored-session fallback). Implementations refresh
+	// it first when it has expired or is about to. rejected reports that the
+	// identity provider just declined the token this method returned as a
+	// subject (TokenExchangeRejectedError.SubjectRejected): the implementation
+	// refreshes it when a refresh could help, and returns the current token
+	// unchanged when it cannot. Returns ErrStoredSignInExpired when only a new
+	// sign-in can produce a token.
+	StoredSubjectToken(ctx context.Context, userID string, rejected bool) (string, error)
 }
 
 // OauthConfig represents OAuth client configuration

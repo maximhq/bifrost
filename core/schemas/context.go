@@ -3,6 +3,7 @@ package schemas
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyRequestedModel:          {},
 	BifrostContextKeyProviderProxyConfig:     {},
 	BifrostContextKeyMCPInboundBearer:        {},
+	BifrostContextKeyAuthCredential:          {},
 	BifrostContextKeyMCPAgentServedRoute:     {},
 	BifrostContextKeyMCPInstructionsText:     {},
 }
@@ -92,7 +94,8 @@ type BifrostContext struct {
 	err                   error
 	errMu                 sync.RWMutex
 	userValues            map[any]any
-	trustedValues         map[any]any // read only by a holder of the key; see SetTrustedValue
+	realtimeTurnKeys      map[any]struct{} // opt-in keys copied from HTTP setup into a realtime or Live session
+	trustedValues         map[any]any      // read only by a holder of the key; see SetTrustedValue
 	valuesMu              sync.RWMutex
 	blockRestrictedWrites atomic.Bool
 	grant                 atomic.Pointer[Grant] // what the request has been granted; installed by the transport, root contexts only
@@ -525,6 +528,67 @@ func (bc *BifrostContext) SetValue(key, value any) {
 	bc.userValues[key] = value
 }
 
+// SetValueForRealtimeTurns sets a value and opts its key into the HTTP-to-session
+// snapshot for native realtime turns and Live billing units. Use small immutable
+// metadata under a plugin-owned key. Values are shallow-copied and retained for
+// the connection's lifetime; do not store credentials or request-owned resources.
+// Like SetValue, this is thread-safe and respects restricted writes. Later writes
+// or clears to the key are reflected in the snapshot taken at session setup.
+func (bc *BifrostContext) SetValueForRealtimeTurns(key, value any) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.SetValueForRealtimeTurns(key, value)
+		return
+	}
+	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any, 16)
+	}
+	bc.userValues[key] = value
+	if bc.realtimeTurnKeys == nil {
+		bc.realtimeTurnKeys = make(map[any]struct{})
+	}
+	bc.realtimeTurnKeys[key] = struct{}{}
+}
+
+// GetRealtimeTurnValues returns an independent, shallow snapshot of explicitly
+// opted-in values, including BifrostContext ancestors. An empty snapshot is nil.
+// Scoped plugin contexts delegate to their root. Mutating the returned map does
+// not change the context, but referenced values remain the plugin's responsibility.
+func (bc *BifrostContext) GetRealtimeTurnValues() map[any]any {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.GetRealtimeTurnValues()
+	}
+	var result map[any]any
+	if !isNonCancellingContext(bc.parent) {
+		if parent, ok := BifrostContextFromContext(bc.parent); ok {
+			result = parent.GetRealtimeTurnValues()
+			// Wrappers can override opted-in values without exposing the parent type.
+			for key := range result {
+				result[key] = bc.parent.Value(key)
+			}
+		}
+	}
+	bc.valuesMu.RLock()
+	defer bc.valuesMu.RUnlock()
+	if result == nil && len(bc.realtimeTurnKeys) > 0 {
+		result = make(map[any]any, len(bc.realtimeTurnKeys))
+	}
+	for key := range bc.realtimeTurnKeys {
+		result[key] = bc.userValues[key]
+	}
+	// Child values, including explicit clears, override inherited opted-in keys.
+	for key := range result {
+		if value, ok := bc.userValues[key]; ok {
+			result[key] = value
+		}
+	}
+	return result
+}
+
 // setReservedValue writes a Bifrost-owned reserved key, bypassing the
 // blockRestrictedWrites check that gates the public SetValue path. It mirrors
 // SetValue's valueDelegate recursion so writes from scoped plugin contexts
@@ -571,9 +635,15 @@ func (bc *BifrostContext) ClearValue(key any) {
 	}
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
-	if bc.userValues != nil {
-		bc.userValues[key] = nil
+	if bc.userValues == nil {
+		// Clearing an empty context previously ignored keys that cannot be stored.
+		if key != nil && !reflect.ValueOf(key).Comparable() {
+			return
+		}
+		bc.userValues = make(map[any]any, 16)
 	}
+	// Preserve an explicit clear even when this context has not written values yet.
+	bc.userValues[key] = nil
 }
 
 // GetAndSetValue gets a value from the internal userValues map and sets it.

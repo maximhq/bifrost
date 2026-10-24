@@ -478,6 +478,41 @@ test.describe("LLM Logs", () => {
   });
 
   test.describe("Advanced Filtering", () => {
+    // The topics dimension is Warp's own list, so it is mocked here: what the
+    // browser has to show is that a topic the server offered can be picked by
+    // name, lands in the URL by id, and narrows the request for the rows.
+    test("should filter by a Warp topic and keep it in the URL", async ({ logsPage }) => {
+      await logsPage.page.route("**/api/logs/filterdata**", async (route) => {
+        const dimensions = new URL(route.request().url()).searchParams.get("dimensions");
+        if (dimensions !== "topics") return route.continue();
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            topics: [
+              { id: "topic-refunds", name: "Refund requests" },
+              { id: "topic-passwords", name: "Password resets" },
+            ],
+          }),
+        });
+      });
+      const logRequests: string[] = [];
+      logsPage.page.on("request", (request) => {
+        if (request.url().includes("/api/logs?")) logRequests.push(request.url());
+      });
+
+      await logsPage.filterByTopic("topic-refunds");
+
+      await expect
+        .poll(() => logsPage.page.url(), { timeout: 8000, intervals: [300, 500, 500] })
+        .toContain("topic_ids=topic-refunds");
+      await expect.poll(() => logRequests.some((url) => url.includes("topic_ids=topic-refunds")), { timeout: 8000 }).toBe(true);
+
+      // The chosen topic shows by name, and the sidebar counts it as a filter.
+      await expect(logsPage.page.getByTestId("topics-filter-checkbox-topic-refunds")).toBeChecked();
+      await expect(logsPage.page.getByText("Refund requests")).toBeVisible();
+    });
+
     test("should combine multiple filters", async ({ logsPage }) => {
       // Apply multiple filters if they're visible
       const searchVisible = await logsPage.searchInput

@@ -1,0 +1,40 @@
+---
+title: "v0.9.4"
+description: "Edge v0.9.4 changelog - 2026-10-21"
+---
+
+<Update label="Bifrost Edge" description="v0.9.4">
+
+## Changelog
+
+v0.9.4 adds Antigravity CLI and Antigravity Desktop support and removes the size limits on requests, responses, attachments and MCP messages: large payloads now go to encrypted disk pages. Captured AI traffic is now blocked until the user signs in. The Diagnostics window is redesigned on macOS, Windows and Linux. Gateway connections that fail silently now recover by themselves, and the MDM setup guide exports self-contained deploy, reload and uninstall scripts.
+
+## ✨ Features
+
+- **Antigravity CLI Support** - Edge identifies the `agy` process as `antigravity-cli` and routes its Gemini API-key traffic through the gateway, in both TUN and TRP. Edge manages `~/.gemini/antigravity-cli/settings.json` so the allowed gateway models appear as custom models. Tool calls go through native inspection. The new `antigravity_cli.helper_model` setting sends the CLI's fixed helper request (used for conversation titles) to a model you choose. Per-app passthrough uses the user's own Gemini key. Google OAuth and Vertex modes are not supported. Requires a matching server update.
+- **Antigravity Desktop Support** - The Antigravity desktop app has its own `antigravity-desktop` identity. Its model list, content generation (JSON and streaming) and token-count calls are served from the gateway catalog, and tool calls are inspected before they reach the app. Sign-in, onboarding and quota calls go to Google unchanged. Edge does not create Google sign-ins or entitlements. Requires a matching server update.
+- **Sign-in Required for AI Traffic** - Captured AI traffic is blocked until the user signs in to Edge or enters a valid virtual key. This rule applies before fleet disable, app exemptions and fail-open settings. Logging out closes open AI connections. On macOS TRP, known AI destinations stay blocked while the daemon is not available. If a blocked request cannot show its sign-in error, the tray shows a "Log in" notification, at most once every 5 minutes.
+- **No Size Limits on Requests and Responses** - Edge no longer rejects large requests, responses, streamed events, WebSocket messages or MCP messages. Data above 16 MiB goes to encrypted temporary files on disk and is inspected from there, so memory stays low. This applies to Claude, Codex, Cursor, ChatGPT, Gemini and Antigravity traffic, and to MCP over HTTP and stdio. Large Codex events are sent as fragmented WebSocket messages. Only tool-call arguments keep a 1 GiB limit. If the gateway rejects an MCP result as too large, the client gets a clear error that quotes the gateway.
+- **Smaller Attachment Storage** - Attachments stored on disk are compressed before encryption. Images, video, audio, fonts and archives are stored as they are. A file uploaded more than once is stored only once. Deleting a Claude web conversation frees its attachments within about 2 minutes.
+- **Redesigned Diagnostics Window** - The native Diagnostics window is rebuilt on macOS, Windows and Linux. Each page shows a clear status, checks with next steps and fix buttons, and rows you can copy or open in Finder or File Explorer. A new read-only Application routing page lists how each app is routed in TUN and TRP. The Logs page groups the lines of one request into a single row, and adds level and source filters, `key:value` search and a 60-second activity strip. The window can refresh the model list. On Linux, it also checks per-user browser trust stores. Application routing and Support Center moved from the tray menu to this window.
+- **Setup Guide: Self-Contained MDM Scripts** - The generated `deploy-edge` script now contains all of its inputs, so any MDM can run it alone. New reload and uninstall scripts are generated for every MDM and platform. An MDM uninstall can remove the macOS network extension without a user prompt. Each export includes a copy of the selected release package, checked against its pinned SHA-256. Every script keeps its own log file, which stays after uninstall. An existing vendor transparent-proxy profile can be merged with the Bifrost profile.
+- **Self-Healing Gateway Connections** - A gateway connection that stops answering is now detected with HTTP/2 PING checks and replaced, so requests no longer hang until a restart. Long, quiet streams are not cut. If a gateway request waits too long, Edge runs a health check on a new connection. When the new connection works, Edge closes the stuck one and keeps the status as connected. Only a failure on both connections shows the gateway as offline.
+- **Idle App Connections Closed After 2 Minutes** - App connections with no open request for 2 minutes are closed. Active requests, paused streams and WebSockets are not affected. The old limit of 1024 open connections is removed.
+- **Cursor WebSocket Run Transport** - When Cursor moves agent runs onto its WebSocket transport (it does this by itself after an HTTP/2 failure), Edge now serves those runs through the same governed engine. Before, this traffic went to Cursor unchanged.
+- **Codex Desktop Detected Inside ChatGPT.app** - Codex Desktop now ships inside `ChatGPT.app`. Edge finds it by bundle ID, reports it as Codex Desktop with its version, and applies the Codex Desktop settings to its traffic. Standalone Codex CLI installs are still reported as Codex CLI.
+
+## 🐞 Fixed
+
+- **Gemini, Antigravity and Cursor Reported When Not Installed** - Edge now counts an app as installed only when it finds files the app itself creates, and no longer recreates `~/.gemini` after the user deletes it.
+- **Claude Desktop Code Treated as Cowork** - Disabling Cowork no longer lets Claude Desktop Code requests skip inspection.
+- **Codex "Stream disconnected before completion"** - Edge now closes Codex WebSocket turns cleanly, so Codex no longer sees a broken pipe and retries the turn.
+- **Failed Gateway Streams Looked Complete** - A gateway stream that fails partway is now reported to the client as cut off, instead of ending normally.
+- **Long Claude Streams Rejected After 1 GiB** - A stream is no longer rejected because of its total size over time.
+- **ChatGPT and Codex Tool Calls Missing Their Session** - Native tool inspection now uses the session from the request body, also when native tool reporting is off.
+- **Tray Locked Out After Reboot** - On macOS and Linux, a user who signs in after the daemon starts can now connect to it without a daemon restart.
+- **Tray Showed Raw Startup Phase** - The tray now shows "Starting up" and "Waiting for configuration" instead of internal phase names, and "Refresh model list" now works when Edge runs as a background service.
+- **Cursor BYOK Toggle Not Repaired** - For eligible Cursor Free accounts, Edge turns the BYOK toggle back on when it was switched off, and keeps the existing key unchanged. Paid accounts are skipped.
+- **Hosted MCP Errors Shortened** - Hosted MCP RPC error messages are now passed to the client in full.
+- **macOS App Icon Too Large** - The Dock and Cmd+Tab icon now uses the standard macOS size.
+
+</Update>
