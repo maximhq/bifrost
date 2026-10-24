@@ -983,9 +983,12 @@ func TestClassifyURLSource(t *testing.T) {
 		want      urlSourceDisposition
 	}{
 		{name: "https to gemini is fetched", url: "https://example.com/a.pdf", want: urlSourceFetchHTTP},
-		{name: "youtube to gemini is forwarded", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", want: urlSourceForward},
-		{name: "short youtube link to gemini is forwarded", url: "https://youtu.be/dQw4w9WgXcQ", want: urlSourceForward},
+		{name: "youtube watch video to gemini is forwarded", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", want: urlSourceForward},
+		{name: "short youtube video link to gemini is forwarded", url: "https://youtu.be/dQw4w9WgXcQ", want: urlSourceForward},
+		{name: "youtube non-video path to gemini is fetched", url: "https://www.youtube.com/robots.txt", want: urlSourceFetchHTTP},
+		{name: "youtube watch without video id to gemini is fetched", url: "https://www.youtube.com/watch", want: urlSourceFetchHTTP},
 		{name: "youtube lookalike to gemini is fetched", url: "https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ", want: urlSourceFetchHTTP},
+		{name: "unsupported youtube video path to gemini is fetched", url: "https://www.youtube.com/shorts/dQw4w9WgXcQ", want: urlSourceFetchHTTP},
 		{name: "http youtube to gemini is fetched", url: "http://www.youtube.com/watch?v=dQw4w9WgXcQ", want: urlSourceFetchHTTP},
 		{name: "http to gemini is fetched", url: "http://example.com/a.pdf", want: urlSourceFetchHTTP},
 		{name: "gcs to gemini is forwarded", url: "gs://bucket/clip.mp4", want: urlSourceForward},
@@ -1183,6 +1186,7 @@ func TestInlineRemoteURLSourcesForwardsUnfetchableSchemes(t *testing.T) {
 	}
 }
 
+// TestVertexGeminiYouTubeVideoURLSurvivesInlining verifies the URL and explicit MIME type reach Gemini.
 func TestVertexGeminiYouTubeVideoURLSurvivesInlining(t *testing.T) {
 	t.Parallel()
 
@@ -1190,7 +1194,7 @@ func TestVertexGeminiYouTubeVideoURLSurvivesInlining(t *testing.T) {
 	provider := &VertexProvider{}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	fileURL := youtubeURL
-	fileType := "video/mp4"
+	fileType := "video/webm"
 	request := &schemas.BifrostChatRequest{
 		Model: "gemini-3.1-pro-preview",
 		Input: []schemas.ChatMessage{
@@ -1231,6 +1235,35 @@ func TestVertexGeminiYouTubeVideoURLSurvivesInlining(t *testing.T) {
 	}
 }
 
+// TestVertexGeminiYouTubeURLDefaultsVideoMIMEType checks the implicit type for forwarded URLs.
+func TestVertexGeminiYouTubeURLDefaultsVideoMIMEType(t *testing.T) {
+	t.Parallel()
+
+	const youtubeURL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+	provider := &VertexProvider{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	fileURL := youtubeURL
+	request := &schemas.BifrostChatRequest{
+		Model: "gemini-3.1-pro-preview",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+				Type: schemas.ChatContentBlockTypeFile,
+				File: &schemas.ChatInputFile{FileURL: &fileURL},
+			}}},
+		}},
+	}
+
+	if err := provider.inlineRemoteURLSources(ctx, schemas.Key{}, request); err != nil {
+		t.Fatalf("inlineRemoteURLSources returned error for YouTube file source: %v", err)
+	}
+	file := request.Input[0].Content.ContentBlocks[0].File
+	if file.FileType == nil || *file.FileType != "video/mp4" {
+		t.Errorf("file type = %v, want video/mp4", file.FileType)
+	}
+}
+
+// TestInlineDocumentURLsResponsesForwardsYouTubeVideo verifies Responses keeps YouTube files intact.
 func TestInlineDocumentURLsResponsesForwardsYouTubeVideo(t *testing.T) {
 	t.Parallel()
 
@@ -1265,6 +1298,9 @@ func TestInlineDocumentURLsResponsesForwardsYouTubeVideo(t *testing.T) {
 	}
 	if file.FileData != nil {
 		t.Errorf("file data = %q, want nil (the reference must be forwarded, not fetched)", *file.FileData)
+	}
+	if file.FileType == nil || *file.FileType != "video/mp4" {
+		t.Errorf("file type = %v, want video/mp4", file.FileType)
 	}
 }
 

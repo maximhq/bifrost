@@ -113,11 +113,6 @@ const (
 // Vertex cannot resolve it and Bifrost has no credentials to fetch it: AWS credentials
 // live only on BedrockKeyConfig, and core cannot reach framework/objectstore without a
 // module cycle. Callers should presign to https instead.
-func isYouTubeURL(parsed *url.URL) bool {
-	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
-	return host == "youtube.com" || strings.HasSuffix(host, ".youtube.com") || host == "youtu.be"
-}
-
 func classifyURLSource(rawURL string, isAnthropicFamily bool) urlSourceDisposition {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -127,7 +122,7 @@ func classifyURLSource(rawURL string, isAnthropicFamily bool) urlSourceDispositi
 	case "http":
 		return urlSourceFetchHTTP
 	case "https":
-		if !isAnthropicFamily && isYouTubeURL(parsed) {
+		if !isAnthropicFamily && isYouTubeVideoURL(parsed) {
 			return urlSourceForward
 		}
 		return urlSourceFetchHTTP
@@ -141,6 +136,37 @@ func classifyURLSource(rawURL string, isAnthropicFamily bool) urlSourceDispositi
 	default:
 		return urlSourceForward
 	}
+}
+
+// isYouTubeVideoURL reports whether parsed uses a supported HTTPS YouTube video URL form.
+func isYouTubeVideoURL(parsed *url.URL) bool {
+	if parsed == nil || parsed.Scheme != "https" {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	switch {
+	case host == "youtube.com" || strings.HasSuffix(host, ".youtube.com"):
+		return parsed.Path == "/watch" && parsed.Query().Get("v") != ""
+	case host == "youtu.be":
+		videoID := strings.TrimPrefix(parsed.Path, "/")
+		return videoID != "" && !strings.Contains(videoID, "/")
+	default:
+		return false
+	}
+}
+
+// setYouTubeVideoMIMETypeIfMissing supplies the MIME type Vertex requires for
+// forwarded YouTube videos without overriding a type explicitly provided by the caller.
+func setYouTubeVideoMIMETypeIfMissing(rawURL string, fileType **string) {
+	if fileType == nil || *fileType != nil {
+		return
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || !isYouTubeVideoURL(parsed) {
+		return
+	}
+	mimeType := "video/mp4"
+	*fileType = &mimeType
 }
 
 // vertexCredentialIdentity returns the string that identifies which credentials a key authenticates
@@ -596,7 +622,9 @@ func (provider *VertexProvider) inlineRemoteURLSources(ctx *schemas.BifrostConte
 				if err != nil {
 					return err
 				}
-				if !forward {
+				if forward {
+					setYouTubeVideoMIMETypeIfMissing(*block.File.FileURL, &block.File.FileType)
+				} else {
 					block.File.FileData = &encoded
 					if mediaType != "" && block.File.FileType == nil {
 						block.File.FileType = &mediaType
@@ -659,7 +687,9 @@ func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.Bifrost
 				if err != nil {
 					return err
 				}
-				if !forward {
+				if forward {
+					setYouTubeVideoMIMETypeIfMissing(*f.FileURL, &f.FileType)
+				} else {
 					f.FileData = &encoded
 					if mediaType != "" && f.FileType == nil {
 						f.FileType = &mediaType
