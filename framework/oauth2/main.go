@@ -81,8 +81,9 @@ type OAuth2Provider struct {
 	// never be guarded by p.mu, for the same reason tempTokens is not:
 	// p.mu is write-locked across token-endpoint network I/O, and a cached
 	// read that had to wait on it would lose the entire point of the cache.
-	// Write paths in this file evict inline; handler-level database writes
-	// that bypass the provider evict through the exported eviction methods.
+	// Write paths in this file evict through tokenWritten; handler-level
+	// database writes that bypass the provider evict through the exported
+	// eviction methods.
 	// Exchanged tokens (token_exchange auth) share this cache: same key
 	// scheme, same expiry-as-miss validator, same lifecycle evictions —
 	// they just carry no token row ID because nothing is persisted for them.
@@ -92,6 +93,10 @@ type OAuth2Provider struct {
 	// token exchange. Same atomic-pointer rationale as tempTokens: written
 	// once at startup, read on the request path, and never guarded by p.mu.
 	exchangeIdP atomic.Pointer[schemas.TokenExchangeIdPResolver]
+
+	// onTokenWritten, when set, runs after this provider writes a token row;
+	// see SetOnTokenWritten. Same atomic-pointer rationale as tempTokens.
+	onTokenWritten atomic.Pointer[func(ctx context.Context, tokenID string)]
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -350,7 +355,7 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 			}
 			// The row is no longer 'active'; drop any cached copy so lookups
 			// surface the re-auth requirement instead of a dead access token.
-			p.EvictUserTokenByID(token.ID)
+			p.tokenWritten(ctx, token.ID)
 			logger.Debug("OAuth refresh permanently rejected; token marked needs_reauth: mcp_client=%s auth_mode=%s upstream_status=%d",
 				token.MCPClientID, token.AuthMode, permErr.StatusCode)
 			return fmt.Errorf("refresh token rejected by upstream OAuth server, re-authentication required: %w", schemas.ErrOAuth2TokenExpired)
@@ -408,7 +413,7 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 
 	// Drop any cached copy of the old access token; the next lookup reads
 	// the freshly written row.
-	p.EvictUserTokenByID(token.ID)
+	p.tokenWritten(ctx, token.ID)
 
 	logger.Debug("OAuth token refreshed successfully: token_id=%s auth_mode=%s", token.ID, token.AuthMode)
 
@@ -544,7 +549,7 @@ func (p *OAuth2Provider) RevokeToken(ctx context.Context, oauthConfigID string) 
 	if err := p.configStore.DeleteSharedOauthTokensByConfigID(ctx, oauthConfigID); err != nil {
 		return fmt.Errorf("failed to delete token: %w", err)
 	}
-	p.EvictUserTokenByID(token.ID)
+	p.tokenWritten(ctx, token.ID)
 
 	logger.Debug("OAuth token revoked", "oauth_config_id", oauthConfigID)
 
@@ -997,7 +1002,7 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 	// CreateOauthToken upserts by binding and rewrites tokenRecord.ID to the
 	// reused row's ID when one existed, so this evicts exactly the row that
 	// was written. A fresh row has nothing cached and the evict is a no-op.
-	p.EvictUserTokenByID(tokenRecord.ID)
+	p.tokenWritten(ctx, tokenRecord.ID)
 
 	// Flow row's purpose ends here — same reasoning as CompleteUserOAuthFlow
 	// (see cleanupFlow): the token row is the durable record now. Harmless
@@ -1867,7 +1872,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	// CreateOauthToken upserts by binding and rewrites tokenRecord.ID to the
 	// reused row's ID when one existed, so this evicts exactly the row that
 	// was written; the next lookup for this binding reads the new credential.
-	p.EvictUserTokenByID(tokenRecord.ID)
+	p.tokenWritten(ctx, tokenRecord.ID)
 
 	// Token row is written; the flow row's purpose ends here. cleanupFlow
 	// deletes both the flow row (transient PKCE/state carrier — the token
@@ -1956,6 +1961,36 @@ func (p *OAuth2Provider) EvictUserTokenByID(tokenID string) {
 		return
 	}
 	p.userTokens.EvictByTokenID(tokenID)
+}
+
+// SetOnTokenWritten registers a callback invoked after this provider writes a
+// token row (a refresh, a re-authorization, a status change or a deletion),
+// with the row's ID, once the row is written and dropped from this process's
+// cache. That eviction reaches only this process; a deployment running
+// several processes over one token store uses the callback to have the others
+// drop the row too. The callback runs inline on the write path, including
+// inside refreshes other callers are waiting on, so it must return promptly.
+// Safe to call at any time; nil clears it.
+func (p *OAuth2Provider) SetOnTokenWritten(cb func(ctx context.Context, tokenID string)) {
+	if p == nil {
+		return
+	}
+	if cb == nil {
+		p.onTokenWritten.Store(nil)
+		return
+	}
+	p.onTokenWritten.Store(&cb)
+}
+
+// tokenWritten drops tokenID from this process's cache after this provider
+// wrote its row, then runs the SetOnTokenWritten callback. EvictUserTokenByID
+// stays local-only, so a process applying another process's eviction never
+// announces it again.
+func (p *OAuth2Provider) tokenWritten(ctx context.Context, tokenID string) {
+	p.userTokens.EvictByTokenID(tokenID)
+	if cb := p.onTokenWritten.Load(); cb != nil {
+		(*cb)(ctx, tokenID)
+	}
 }
 
 // EvictUserTokensByMCPClient drops every cached access token bound to the

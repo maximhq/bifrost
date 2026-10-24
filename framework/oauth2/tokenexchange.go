@@ -201,6 +201,8 @@ func (p *OAuth2Provider) RetainExchangeAdminCredential(ctx context.Context, conf
 	if err := p.configStore.CreateOauthToken(ctx, token); err != nil {
 		return fmt.Errorf("failed to retain admin exchange credential: %w", err)
 	}
+	// CreateOauthToken rewrites token.ID to the reused row's ID on a repair.
+	p.tokenWritten(ctx, token.ID)
 	return nil
 }
 
@@ -274,7 +276,7 @@ func (p *OAuth2Provider) refreshExchangeAdminToken(ctx context.Context, token *t
 	if err := p.configStore.UpdateOauthToken(ctx, token); err != nil {
 		return fmt.Errorf("failed to update admin exchange credential: %w", err)
 	}
-	p.EvictUserTokenByID(token.ID)
+	p.tokenWritten(ctx, token.ID)
 	logger.Debug("admin exchange credential renewed: token_id=%s mcp_client=%s", token.ID, token.MCPClientID)
 	return nil
 }
@@ -287,7 +289,7 @@ func (p *OAuth2Provider) markExchangeAdminNeedsReauth(token *tables.TableMCPOaut
 	if markErr := p.configStore.MarkOauthUserTokenNeedsReauthByID(context.Background(), token.ID, "admin token exchange failed: "+cause.Error()); markErr != nil {
 		return fmt.Errorf("admin exchange credential is dead but status update failed (mcp_client=%s): %w", token.MCPClientID, markErr)
 	}
-	p.EvictUserTokenByID(token.ID)
+	p.tokenWritten(context.Background(), token.ID)
 	logger.Debug("admin exchange credential marked needs_reauth: mcp_client=%s cause=%v", token.MCPClientID, cause)
 	return fmt.Errorf("admin exchange credential requires re-verification: %v: %w", cause, schemas.ErrOAuth2TokenExpired)
 }
