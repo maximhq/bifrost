@@ -33,6 +33,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/providers/fireworks"
 	"github.com/maximhq/bifrost/core/providers/gemini"
+	"github.com/maximhq/bifrost/core/providers/generic"
 	"github.com/maximhq/bifrost/core/providers/githubcopilot"
 	"github.com/maximhq/bifrost/core/providers/groq"
 	"github.com/maximhq/bifrost/core/providers/huggingface"
@@ -5069,6 +5070,12 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return databricks.NewDatabricksProvider(config, bifrost.logger)
 	case schemas.Typesafe:
 		return typesafe.NewTypesafeProvider(config, bifrost.logger)
+	case schemas.Generic:
+		// generic is a base type for custom providers, never a provider of its own.
+		if config.CustomProviderConfig == nil || config.CustomProviderConfig.BaseProviderType != schemas.Generic {
+			return nil, fmt.Errorf("provider %s: generic is a base type for custom providers; set custom_provider_config.base_provider_type", providerKey)
+		}
+		return generic.NewGenericProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
