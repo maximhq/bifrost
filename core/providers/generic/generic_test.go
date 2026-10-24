@@ -155,6 +155,7 @@ func TestGeneric(t *testing.T) {
 		t.Run("SigV4DropsCallerSignatureHeaders", testSigV4DropsCallerSignatureHeaders)
 		t.Run("RedirectsAreReturnedNotFollowed", testRedirectsAreReturnedNotFollowed)
 		t.Run("TransportErrorRedactsQueryCredential", testTransportErrorRedactsQueryCredential)
+		t.Run("UnitPricingEndToEnd", testUnitPricingEndToEnd)
 		t.Run("IgnoreProviderCostKeepsOperatorFees", testIgnoreProviderCostKeepsOperatorFees)
 	})
 }
@@ -163,7 +164,7 @@ func TestGeneric(t *testing.T) {
 // and unit pricing are not provider-reported and keep applying, on both relay paths.
 func testIgnoreProviderCostKeepsOperatorFees(t *testing.T) {
 	cfg := &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{
-		CostPath: "usage.cost", CostPerRequest: schemas.Ptr(0.01),
+		CostPath: "usage.cost", CostPerRequest: schemas.Ptr(0.01), UnitsPath: "pages", CostPerUnit: schemas.Ptr(0.002),
 	}}
 	build := func(up *upstream) *GenericProvider {
 		provider, err := NewGenericProvider(&schemas.ProviderConfig{
@@ -180,7 +181,7 @@ func testIgnoreProviderCostKeepsOperatorFees(t *testing.T) {
 	require.Nil(t, bifrostErr)
 	require.NotNil(t, resp.PassthroughUsage)
 	require.NotNil(t, resp.PassthroughUsage.Cost)
-	assert.InDelta(t, 0.01, resp.PassthroughUsage.Cost.TotalCost, 1e-9, "the upstream's 99 is ignored, the fee is not")
+	assert.InDelta(t, 0.01+3*0.002, resp.PassthroughUsage.Cost.TotalCost, 1e-9, "the upstream's 99 is ignored, the fee and units are not")
 
 	sse := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -192,7 +193,7 @@ func testIgnoreProviderCostKeepsOperatorFees(t *testing.T) {
 	_, usage := drainStream(t, ch)
 	require.NotNil(t, usage)
 	require.NotNil(t, usage.Cost)
-	assert.InDelta(t, 0.01, usage.Cost.TotalCost, 1e-9)
+	assert.InDelta(t, 0.01+2*0.002, usage.Cost.TotalCost, 1e-9)
 
 	// Without the flag the upstream cost is read as before.
 	trusting, err := NewGenericProvider(&schemas.ProviderConfig{
@@ -202,9 +203,54 @@ func testIgnoreProviderCostKeepsOperatorFees(t *testing.T) {
 	require.NoError(t, err)
 	resp, bifrostErr = trusting.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/scan", "", `{}`, nil))
 	require.Nil(t, bifrostErr)
-	assert.InDelta(t, 99+0.01, resp.PassthroughUsage.Cost.TotalCost, 1e-9)
+	assert.InDelta(t, 99+0.01+3*0.002, resp.PassthroughUsage.Cost.TotalCost, 1e-9)
 }
 
+// Per-unit pricing through the relay: a Textract-shaped response priced per page, a
+// Translate-shaped request priced per character, and a TTS-shaped SSML request with an audio
+// response priced per body byte, on both the buffered and the streaming paths.
+func testUnitPricingEndToEnd(t *testing.T) {
+	t.Run("response pages", func(t *testing.T) {
+		up := jsonUpstream(t, http.StatusOK, `{"Blocks":[],"DocumentMetadata":{"Pages":3}}`)
+		provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: schemas.Ptr(0.0015)}})
+		resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/", "", `{"Document":{"Bytes":"aGk="}}`, nil))
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, resp.PassthroughUsage)
+		require.NotNil(t, resp.PassthroughUsage.Cost)
+		assert.InDelta(t, 0.0045, resp.PassthroughUsage.Cost.TotalCost, 1e-9)
+	})
+	t.Run("request characters", func(t *testing.T) {
+		up := jsonUpstream(t, http.StatusOK, `{"TranslatedText":"hallo"}`)
+		provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{UnitsPath: "Text", UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsChars, CostPerUnit: schemas.Ptr(0.001)}})
+		resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/", "", `{"Text":"hello","SourceLanguageCode":"en","TargetLanguageCode":"de"}`, map[string]string{"content-type": "application/x-amz-json-1.1"}))
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, resp.PassthroughUsage.Cost)
+		assert.InDelta(t, 0.005, resp.PassthroughUsage.Cost.TotalCost, 1e-9)
+	})
+	t.Run("request body bytes with a streamed audio response", func(t *testing.T) {
+		up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "audio/mpeg")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ID3\x00binary"))
+		})
+		provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsBodyBytes, CostPerUnit: schemas.Ptr(0.01)}})
+		ssml := "<speak>Hi</speak>"
+		ch, bifrostErr := provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("k"), relayRequest(http.MethodPost, "/cognitiveservices/v1", "", ssml, map[string]string{"content-type": "application/ssml+xml"}))
+		require.Nil(t, bifrostErr)
+		_, usage := drainStream(t, ch)
+		require.NotNil(t, usage, "the unframed stream reports the request-side quantity on its final chunk")
+		require.NotNil(t, usage.Cost)
+		assert.InDelta(t, float64(len(ssml))*0.01, usage.Cost.TotalCost, 1e-9)
+
+		resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/cognitiveservices/v1", "", ssml, map[string]string{"content-type": "application/ssml+xml"}))
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, resp.PassthroughUsage.Cost)
+		assert.InDelta(t, float64(len(ssml))*0.01, resp.PassthroughUsage.Cost.TotalCost, 1e-9, "the buffered path agrees")
+	})
+}
+
+// A redirect is relayed to the caller as the upstream answered it. Following it would carry the
+// injected credential to the host the upstream named and step around the base URL pinning.
 func testRedirectsAreReturnedNotFollowed(t *testing.T) {
 	elsewhere := jsonUpstream(t, http.StatusOK, `{"leaked":true}`)
 	// The upstream echoes the request query into Location (a trailing-slash redirect does this on

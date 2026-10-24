@@ -46,16 +46,40 @@ type GenericAWSAuthConfig struct {
 	Region  string `json:"region,omitempty"` // falls back to the key's bedrock_key_config.region
 }
 
+// GenericUnitsSource names the body a billable quantity is read from.
+type GenericUnitsSource string
+
+const (
+	GenericUnitsFromResponse GenericUnitsSource = "response" // default: a count the upstream reports (Textract pages)
+	GenericUnitsFromRequest  GenericUnitsSource = "request"  // what the caller sent, which the upstream bills on (Translate text)
+)
+
+// GenericUnitsMeasure names how the quantity is taken from the body.
+type GenericUnitsMeasure string
+
+const (
+	GenericUnitsValue     GenericUnitsMeasure = "value"      // default: the number at units_path
+	GenericUnitsChars     GenericUnitsMeasure = "chars"      // the character count of the string at units_path
+	GenericUnitsBodyBytes GenericUnitsMeasure = "body_bytes" // the byte length of the whole body; units_path is ignored
+	GenericUnitsBodyChars GenericUnitsMeasure = "body_chars" // the character (rune) count of the whole body, any content type; units_path is ignored
+)
+
 // GenericUsageConfig maps a relayed request/response onto usage and cost. Paths are gjson paths;
 // an empty path keeps the optimistic default for that field.
 type GenericUsageConfig struct {
-	ModelPath                string   `json:"model_path,omitempty"`         // request body path for the model (default "model")
-	InputTokensPath          string   `json:"input_tokens_path,omitempty"`  // response body path for input tokens
-	OutputTokensPath         string   `json:"output_tokens_path,omitempty"` // response body path for output tokens
-	TotalTokensPath          string   `json:"total_tokens_path,omitempty"`  // response body path for total tokens
-	CostPath                 string   `json:"cost_path,omitempty"`          // response body path for a provider-reported cost (arrays are summed)
-	CostPerRequest           *float64 `json:"cost_per_request,omitempty"`   // flat USD fee added to every billable call; a route may set 0 to waive the provider fee
-	DisableOptimisticParsing bool     `json:"disable_optimistic_parsing"`   // only the configured paths are read
+	ModelPath                string              `json:"model_path,omitempty"`         // request body path for the model (default "model")
+	InputTokensPath          string              `json:"input_tokens_path,omitempty"`  // response body path for input tokens
+	OutputTokensPath         string              `json:"output_tokens_path,omitempty"` // response body path for output tokens
+	TotalTokensPath          string              `json:"total_tokens_path,omitempty"`  // response body path for total tokens
+	CostPath                 string              `json:"cost_path,omitempty"`          // response body path for a provider-reported cost (arrays are summed)
+	CostPerRequest           *float64            `json:"cost_per_request,omitempty"`   // flat USD fee added to every billable call; a route may set 0 to waive the provider fee
+	UnitsPath                string              `json:"units_path,omitempty"`         // path of the billable quantity (pages, credits, text)
+	UnitsSource              GenericUnitsSource  `json:"units_source,omitempty"`       // response (default) or request
+	UnitsMeasure             GenericUnitsMeasure `json:"units_measure,omitempty"`      // value (default), chars, body_bytes or body_chars
+	CostPerUnit              *float64            `json:"cost_per_unit,omitempty"`      // USD per unit; cost += units * cost_per_unit
+	UnitsBlockSize           *float64            `json:"units_block_size,omitempty"`   // bill per started block of this many raw units (100 characters); default 1, exact
+	UnitsMinimum             *float64            `json:"units_minimum,omitempty"`      // least number of billed units once a quantity was read; default 0
+	DisableOptimisticParsing bool                `json:"disable_optimistic_parsing"`   // only the configured paths are read
 }
 
 // GenericStreamingConfig decides which relayed requests are served as streams.
@@ -91,7 +115,7 @@ func (c *GenericProviderConfig) Validate() error {
 	if err := c.Auth.validate(); err != nil {
 		return err
 	}
-	if err := c.Usage.validate("usage"); err != nil {
+	if err := c.Usage.validate("usage", nil); err != nil {
 		return err
 	}
 	if c.Streaming != nil {
@@ -108,7 +132,7 @@ func (c *GenericProviderConfig) Validate() error {
 		if err := validateGenericRouteGlob(route.Path); err != nil {
 			return fmt.Errorf("routes[%d]: %w", i, err)
 		}
-		if err := route.Usage.validate(fmt.Sprintf("routes[%d].usage", i)); err != nil {
+		if err := route.Usage.validate(fmt.Sprintf("routes[%d].usage", i), c.Usage); err != nil {
 			return err
 		}
 	}
@@ -145,15 +169,54 @@ func (a GenericAuthConfig) validate() error {
 	return nil
 }
 
-// validate checks one usage block.
-func (u *GenericUsageConfig) validate(field string) error {
+// validate checks one usage block. base is the provider block a route inherits from, so a route
+// that sets only cost_per_unit is judged on the merged units_path and units_measure.
+func (u *GenericUsageConfig) validate(field string, base *GenericUsageConfig) error {
 	if u == nil {
 		return nil
 	}
 	if u.CostPerRequest != nil && *u.CostPerRequest < 0 {
 		return fmt.Errorf("%s.cost_per_request must not be negative", field)
 	}
+	if u.CostPerUnit != nil && *u.CostPerUnit < 0 {
+		return fmt.Errorf("%s.cost_per_unit must not be negative", field)
+	}
+	if u.UnitsBlockSize != nil && *u.UnitsBlockSize <= 0 {
+		return fmt.Errorf("%s.units_block_size must be above zero", field)
+	}
+	if u.UnitsMinimum != nil && *u.UnitsMinimum < 0 {
+		return fmt.Errorf("%s.units_minimum must not be negative", field)
+	}
+	switch u.UnitsSource {
+	case "", GenericUnitsFromResponse, GenericUnitsFromRequest:
+	default:
+		return fmt.Errorf("%s.units_source: unsupported value %q", field, u.UnitsSource)
+	}
+	switch u.UnitsMeasure {
+	case "", GenericUnitsValue, GenericUnitsChars, GenericUnitsBodyBytes, GenericUnitsBodyChars:
+	default:
+		return fmt.Errorf("%s.units_measure: unsupported value %q", field, u.UnitsMeasure)
+	}
+	// A zero cost_per_unit is "no unit pricing" (a route may set it to waive the provider's), so
+	// it needs no path to read a quantity from.
+	unitsPath, unitsMeasure := u.UnitsPath, u.UnitsMeasure
+	if base != nil {
+		if unitsPath == "" {
+			unitsPath = base.UnitsPath
+		}
+		if unitsMeasure == "" {
+			unitsMeasure = base.UnitsMeasure
+		}
+	}
+	if u.CostPerUnit != nil && *u.CostPerUnit > 0 && !unitsMeasureIsWholeBody(unitsMeasure) && unitsPath == "" {
+		return fmt.Errorf("%s.units_path is required with cost_per_unit unless units_measure is body_bytes or body_chars", field)
+	}
 	return nil
+}
+
+// unitsMeasureIsWholeBody reports whether a measure reads the whole body and so needs no path.
+func unitsMeasureIsWholeBody(m GenericUnitsMeasure) bool {
+	return m == GenericUnitsBodyBytes || m == GenericUnitsBodyChars
 }
 
 // validateGenericRouteGlob accepts a rooted segment glob: "/a/*/b", "/a/**". path.Match reports
@@ -185,6 +248,15 @@ func (u *GenericUsageConfig) clone() *GenericUsageConfig {
 	out := *u
 	if u.CostPerRequest != nil {
 		out.CostPerRequest = Ptr(*u.CostPerRequest)
+	}
+	if u.CostPerUnit != nil {
+		out.CostPerUnit = Ptr(*u.CostPerUnit)
+	}
+	if u.UnitsBlockSize != nil {
+		out.UnitsBlockSize = Ptr(*u.UnitsBlockSize)
+	}
+	if u.UnitsMinimum != nil {
+		out.UnitsMinimum = Ptr(*u.UnitsMinimum)
 	}
 	return &out
 }

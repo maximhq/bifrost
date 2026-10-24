@@ -249,6 +249,7 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 	}
 	usageMapping, billable, route := provider.resolve(ctx, req.Method, req.Path)
 	streamingRoute := route != nil && route.stream != nil && *route.stream
+	requestUnits := usageMapping.requestUnits(req.SafeHeaders["content-type"], req.Body)
 
 	client := provider.client
 	if streamingRoute {
@@ -285,7 +286,7 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 
 	var usage *schemas.BifrostPassthroughUsage
 	if billable && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		usage = extractUsage(usageMapping, resp.Header.Get("Content-Type"), body)
+		usage = extractUsage(usageMapping, resp.Header.Get("Content-Type"), body, requestUnits)
 	}
 
 	response := &schemas.BifrostPassthroughResponse{
@@ -320,6 +321,7 @@ func (provider *GenericProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 		return nil, bifrostErr
 	}
 	usageMapping, billable, _ := provider.resolve(ctx, req.Method, req.Path)
+	requestUnits := usageMapping.requestUnits(req.SafeHeaders["content-type"], req.Body)
 
 	startTime := time.Now()
 	resp, err := providerUtils.DoHTTPRequest(provider.streamingClient, httpReq)
@@ -342,10 +344,10 @@ func (provider *GenericProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 		Logger:           provider.logger,
 	}
 	if billable {
-		params.DefaultUsage = usageMapping.defaultUsage()
+		params.DefaultUsage = usageMapping.defaultUsage(requestUnits)
 		if !params.SkipFraming {
 			params.HasUsage = usageMapping.hasUsageEvent
-			params.Observe = usageMapping.streamObserver()
+			params.Observe = usageMapping.streamObserver(requestUnits)
 		}
 	}
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)

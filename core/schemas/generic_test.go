@@ -28,6 +28,9 @@ func TestGenericProviderConfigValidate(t *testing.T) {
 		{"route path must be rooted", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "GET", Path: "x"}}}, "must start with /"},
 		{"route glob syntax", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "GET", Path: "/[x"}}}, "routes[0]"},
 		{"double star only last", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "GET", Path: "/**/x"}}}, "only allowed as the last segment"},
+		{"block size above zero", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsBlockSize: Ptr(0.0)}}, "units_block_size must be above zero"},
+		{"minimum not negative", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsMinimum: Ptr(-1.0)}}, "units_minimum must not be negative"},
+		{"rounding ok", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsPath: "Text", UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsChars, UnitsBlockSize: Ptr(100.0), UnitsMinimum: Ptr(1.0), CostPerUnit: Ptr(0.01)}}, ""},
 		{"route fee", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "GET", Path: "/x", Usage: &GenericUsageConfig{CostPerRequest: Ptr(-0.1)}}}}, "routes[0].usage.cost_per_request"},
 		{"streaming glob", &GenericProviderConfig{Streaming: &GenericStreamingConfig{Paths: []string{"v1/*"}}}, "streaming.paths[0]"},
 		{"full valid", &GenericProviderConfig{
@@ -71,4 +74,35 @@ func TestGenericProviderConfigClone(t *testing.T) {
 	assert.Equal(t, "/a", src.Streaming.Paths[0])
 	assert.False(t, *src.Routes[0].Billable)
 	assert.Equal(t, "c", src.Routes[0].Usage.CostPath)
+}
+
+func TestGenericUsageConfigUnitsValidation(t *testing.T) {
+	ok := func(u *GenericUsageConfig) {
+		t.Helper()
+		assert.NoError(t, (&GenericProviderConfig{Usage: u}).Validate())
+	}
+	bad := func(u *GenericUsageConfig, msg string) {
+		t.Helper()
+		err := (&GenericProviderConfig{Usage: u}).Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), msg)
+	}
+	ok(&GenericUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: Ptr(0.0015)})
+	ok(&GenericUsageConfig{UnitsPath: "Text", UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsChars, CostPerUnit: Ptr(0.000015)})
+	ok(&GenericUsageConfig{UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsBodyBytes, CostPerUnit: Ptr(0.000016)})
+	ok(&GenericUsageConfig{UnitsPath: "pages"})
+	bad(&GenericUsageConfig{UnitsPath: "pages", CostPerUnit: Ptr(-1.0)}, "cost_per_unit must not be negative")
+	bad(&GenericUsageConfig{UnitsPath: "pages", UnitsSource: "header", CostPerUnit: Ptr(1.0)}, "units_source")
+	bad(&GenericUsageConfig{UnitsPath: "pages", UnitsMeasure: "words", CostPerUnit: Ptr(1.0)}, "units_measure")
+	bad(&GenericUsageConfig{CostPerUnit: Ptr(1.0)}, "units_path is required")
+	// A route inherits units_path and units_measure from the provider block, so a rate alone is
+	// enough there; without a provider path it is the same error.
+	rate := []GenericRouteConfig{{Method: "POST", Path: "/x", Usage: &GenericUsageConfig{CostPerUnit: Ptr(0.5)}}}
+	require.NoError(t, (&GenericProviderConfig{Usage: &GenericUsageConfig{UnitsPath: "pages"}, Routes: rate}).Validate())
+	require.NoError(t, (&GenericProviderConfig{Usage: &GenericUsageConfig{UnitsMeasure: GenericUnitsBodyBytes}, Routes: rate}).Validate())
+	err := (&GenericProviderConfig{Routes: rate}).Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "routes[0].usage.units_path is required")
+	ok(&GenericUsageConfig{CostPerUnit: Ptr(0.0)})                                                                                 // zero is "no unit pricing" and needs no path (a route waiving the provider's)
+	ok(&GenericUsageConfig{UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsBodyChars, CostPerUnit: Ptr(0.000016)}) // body_chars reads the whole body and needs no path
 }
