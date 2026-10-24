@@ -246,9 +246,10 @@ export const OPENROUTER_DECISION_MODEL = "~typesafe/jev-latest";
 // The picker lists every model the datasheet marks as serving decisions.
 export const OPENAI_DECISION_MODEL = "gpt-6-luna";
 
-// PERPLEXITY_DECISION_MODEL is the model a newly selected Perplexity provider starts on.
-// The picker lists the decider models Perplexity serves.
-export const PERPLEXITY_DECISION_MODEL = "pplx-decider-v1.1-27b";
+// PERPLEXITY_DECISION_MODEL is the model a newly selected Perplexity provider starts on:
+// the alias that follows Perplexity's newest decider. The picker lists the decider
+// models Perplexity serves.
+export const PERPLEXITY_DECISION_MODEL = "pplx-decider-latest";
 
 // AZURE_DECISION_MODEL is the model a newly selected Azure provider starts on: the model
 // name a key alias maps to the user's deployment. The picker lists Microsoft's decision models.

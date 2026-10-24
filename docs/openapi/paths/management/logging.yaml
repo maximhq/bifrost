@@ -47,6 +47,7 @@ logs:
         schema:
           type: string
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - name: routing_rule_ids
         in: query
         description: Comma-separated list of routing rule IDs to filter by
@@ -277,6 +278,7 @@ logs-stats:
         schema:
           type: string
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - name: routing_rule_ids
         in: query
         description: Comma-separated list of routing rule IDs to filter by
@@ -448,7 +450,7 @@ logs-filterdata:
           Comma-separated dimensions to return. One or more of `models`,
           `aliases`, `selected_keys`, `virtual_keys`, `routing_rules`,
           `routing_engines`, `stop_reasons`, `tool_call_names`, `apps`, `user_agents`,
-          `teams`, `customers`, `users`, `business_units`, `projects`, `metadata_keys`.
+          `teams`, `customers`, `users`, `business_units`, `projects`, `topics`, `metadata_keys`.
           Unrecognised values are ignored, and asking for none returns every
           dimension.
         schema:
@@ -546,6 +548,7 @@ logs-histogram:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -606,6 +609,7 @@ logs-histogram-tokens:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -662,6 +666,7 @@ logs-histogram-cost:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -724,6 +729,7 @@ logs-histogram-models:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -780,6 +786,7 @@ logs-histogram-latency:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -836,6 +843,7 @@ logs-histogram-cost-by-provider:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -892,6 +900,7 @@ logs-histogram-tokens-by-provider:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -948,6 +957,7 @@ logs-histogram-latency-by-provider:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -1009,6 +1019,7 @@ logs-histogram-throughput:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -1068,6 +1079,7 @@ logs-histogram-throughput-by-provider:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -1170,6 +1182,16 @@ _histogram-parameters:
     name: project_ids
     in: query
     description: Comma-separated list of project IDs to filter by
+    schema:
+      type: string
+  topic_ids:
+    name: topic_ids
+    in: query
+    description: >-
+      Comma-separated list of Warp topic IDs to filter by: the requests Warp
+      filed under any of them, as its list_topics tool reports them. A topic
+      merged into one of these counts as it. Requests Warp has not indexed
+      never match.
     schema:
       type: string
   routing_rule_ids:
@@ -1961,6 +1983,7 @@ logs-rankings:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -2042,6 +2065,7 @@ logs-rankings-by-dimension:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -2119,6 +2143,7 @@ logs-rankings-users:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
@@ -2180,6 +2205,7 @@ logs-dashboard:
       - $ref: "#/_histogram-parameters/user_ids"
       - $ref: "#/_histogram-parameters/business_unit_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -2262,6 +2288,7 @@ logs-histogram-cost-by-dimension:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -2325,6 +2352,7 @@ logs-histogram-tokens-by-dimension:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
@@ -2388,6 +2416,7 @@ logs-histogram-latency-by-dimension:
       - $ref: "#/_histogram-parameters/selected_key_ids"
       - $ref: "#/_histogram-parameters/virtual_key_ids"
       - $ref: "#/_histogram-parameters/project_ids"
+      - $ref: "#/_histogram-parameters/topic_ids"
       - $ref: "#/_histogram-parameters/routing_rule_ids"
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"

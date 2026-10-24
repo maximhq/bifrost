@@ -1195,6 +1195,10 @@ type InitialLogData struct {
 // LogCallback is a function that gets called when a new log entry is created
 type LogCallback func(ctx context.Context, logEntry *logstore.Log)
 
+// LogDeleteCallback is a function that gets called with the ids of logs a
+// caller deleted, once the store has deleted them.
+type LogDeleteCallback func(ctx context.Context, ids []string)
+
 // MCPToolLogCallback is a function that gets called when a new MCP tool log entry is created or updated
 type MCPToolLogCallback func(*logstore.MCPToolLog)
 
@@ -1268,6 +1272,8 @@ type LoggerPlugin struct {
 	logCallback                  LogCallback
 	logSubscribers               map[uint64]LogCallback
 	nextLogSubscriberID          uint64
+	logDeleteSubscribers         map[uint64]LogDeleteCallback
+	nextLogDeleteSubscriberID    uint64
 	batchUsageReporter           jobaccounting.UsageReporter
 	settlementTracer             schemas.Tracer     // tracer for settled batch/video cost spans; nil disables the bridge
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
@@ -1527,6 +1533,55 @@ func (p *LoggerPlugin) SubscribeLogCallback(callback LogCallback) func() {
 			delete(p.logSubscribers, id)
 			p.mu.Unlock()
 		})
+	}
+}
+
+// SubscribeLogDeleteCallback adds an observer of user-facing log deletes.
+// Retention sweeps do not notify: they are age, and an observer with
+// something to expire keeps its own clock. It returns an idempotent
+// unsubscribe function for reloads.
+func (p *LoggerPlugin) SubscribeLogDeleteCallback(callback LogDeleteCallback) func() {
+	if callback == nil {
+		return func() {}
+	}
+	p.mu.Lock()
+	p.nextLogDeleteSubscriberID++
+	id := p.nextLogDeleteSubscriberID
+	if p.logDeleteSubscribers == nil {
+		p.logDeleteSubscribers = make(map[uint64]LogDeleteCallback)
+	}
+	p.logDeleteSubscribers[id] = callback
+	p.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			p.mu.Lock()
+			delete(p.logDeleteSubscribers, id)
+			p.mu.Unlock()
+		})
+	}
+}
+
+// notifyLogDeleteCallbacks tells every observer which logs were deleted.
+func (p *LoggerPlugin) notifyLogDeleteCallbacks(ctx context.Context, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	p.mu.Lock()
+	callbacks := make([]LogDeleteCallback, 0, len(p.logDeleteSubscribers))
+	for _, callback := range p.logDeleteSubscribers {
+		callbacks = append(callbacks, callback)
+	}
+	p.mu.Unlock()
+	for _, callback := range callbacks {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil && p.logger != nil {
+					p.logger.Warn("log delete callback panicked and was recovered: %v", recovered)
+				}
+			}()
+			callback(ctx, ids)
+		}()
 	}
 }
 

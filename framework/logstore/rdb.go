@@ -355,6 +355,35 @@ func (s *RDBLogStore) applyAgentContextFilter(baseQuery *gorm.DB, agentNames []s
 	return baseQuery.Where("session_id IN (?)", contexts)
 }
 
+// applyTopicFilter narrows a logs query to the requests Warp filed under any
+// of the topics or themes, by id.
+//
+// A request's topic lives in warp_topic_assignments, not on the log row, so
+// the filter is a membership test against that table. An id names a topic,
+// the topics merged into it, or the topics of a theme. A merged topic's
+// requests were never refiled (see MaintainTopics in framework/warp), and
+// upkeep keeps every merged topic pointing at a live survivor and carrying
+// its survivor's theme, so one level of merged_into and one of parent_id is
+// the whole tree. The id list is bound three times, which at the 50 ids a
+// request may name is well inside any backend's parameter limit.
+//
+// Only topics still in use are followed through merged_into and parent_id. A
+// topic a later run retired keeps the theme and survivor it pointed at -
+// retiring changes only its status - but its requests are no longer theirs,
+// and Warp's own counts leave them out. Merged topics are followed: their
+// requests count under the survivor. A retired topic named directly still
+// matches through topic_id.
+//
+// Not scoped on its own: the assignment rows are only a key into the logs
+// table, and the caller's access scope applies to the log rows that come
+// back.
+func applyTopicFilter(baseQuery *gorm.DB, topicIDs []string) *gorm.DB {
+	return baseQuery.Where(
+		"id IN (SELECT log_id FROM warp_topic_assignments WHERE topic_id IN ? OR topic_id IN (SELECT id FROM warp_topics WHERE (merged_into IN ? OR parent_id IN ?) AND status <> ?))",
+		topicIDs, topicIDs, topicIDs, WarpTopicStatusRetired,
+	)
+}
+
 // applyFilters applies search filters to a GORM query. Callers are
 // responsible for starting from ScopedDB(ctx) when row visibility
 // should be respected; this helper only adds the per-call filter
@@ -445,6 +474,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	// one project, so there is no array column to OR against.
 	if len(filters.ProjectIDs) > 0 {
 		baseQuery = baseQuery.Where("project_id IN ?", filters.ProjectIDs)
+	}
+	if len(filters.TopicIDs) > 0 {
+		baseQuery = applyTopicFilter(baseQuery, filters.TopicIDs)
 	}
 	if len(filters.BusinessUnitIDs) > 0 {
 		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
@@ -5212,6 +5244,12 @@ func (s *RDBLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Ti
 // on the indexed column. MySQL rejects LIMIT inside an IN subquery, so it uses
 // its single-table DELETE ... ORDER BY ... LIMIT form instead.
 func (s *RDBLogStore) deleteExpiredBatch(ctx context.Context, table, column string, cutoff time.Time, batchSize int) (int64, error) {
+	return s.deleteExpiredBatchByKey(ctx, table, "id", column, cutoff, batchSize)
+}
+
+// deleteExpiredBatchByKey is deleteExpiredBatch for a table whose primary key
+// is not named id. key, like table and column, is an internal constant.
+func (s *RDBLogStore) deleteExpiredBatchByKey(ctx context.Context, table, key, column string, cutoff time.Time, batchSize int) (int64, error) {
 	if batchSize <= 0 {
 		return 0, nil
 	}
@@ -5219,7 +5257,7 @@ func (s *RDBLogStore) deleteExpiredBatch(ctx context.Context, table, column stri
 	if s.db.Dialector.Name() == "mysql" {
 		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s < ? ORDER BY %s LIMIT ?", table, column, column)
 	} else {
-		stmt = fmt.Sprintf("DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, table, column, column)
+		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, key, key, table, column, column)
 	}
 	result := s.db.WithContext(ctx).Exec(stmt, cutoff, batchSize)
 	if result.Error != nil {
@@ -5237,23 +5275,29 @@ func (s *RDBLogStore) Close(ctx context.Context) error {
 	return sqlDB.Close()
 }
 
-// DeleteLog deletes a log entry from the database by its ID.
+// DeleteLog deletes a log entry from the database by its ID, and with it
+// what Warp's topic tables hold about it, in one transaction.
 func (s *RDBLogStore) DeleteLog(ctx context.Context, id string) error {
-	if err := s.db.WithContext(ctx).Where("id = ?", id).Delete(&Log{}).Error; err != nil {
-		return err
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("id = ?", id).Delete(&Log{}).Error; err != nil {
+			return err
+		}
+		return deleteWarpTopicRowsForLogs(tx, []string{id})
+	})
 }
 
-// DeleteLogs deletes multiple log entries from the database by their IDs.
+// DeleteLogs deletes multiple log entries from the database by their IDs, and
+// with them what Warp's topic tables hold about them, in one transaction.
 func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
-		return err
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
+			return err
+		}
+		return deleteWarpTopicRowsForLogs(tx, ids)
+	})
 }
 
 // ============================================================================

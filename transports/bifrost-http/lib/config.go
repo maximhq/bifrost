@@ -236,6 +236,8 @@ type ConfigData struct {
 	// ProxyConfig is the global outbound proxy (the dashboard's proxy settings page), not a
 	// provider's own proxy_config.
 	ProxyConfig *GlobalProxyFileConfig `json:"proxy_config,omitempty"`
+	// Warp is the Warp settings page (models, behaviour, log search, topics).
+	Warp *WarpFileConfig `json:"warp,omitempty"`
 
 	presentSections           map[string]bool
 	presentGovernanceSections map[string]bool
@@ -574,6 +576,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 		FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
 		ProxyConfig       *GlobalProxyFileConfig                `json:"proxy_config,omitempty"`
+		Warp              *WarpFileConfig                       `json:"warp,omitempty"`
 		SkillsRegistry    *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
 	}
 
@@ -601,6 +604,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.WebSocket = temp.WebSocket
 	cd.FeatureFlags = temp.FeatureFlags
 	cd.ProxyConfig = temp.ProxyConfig
+	cd.Warp = temp.Warp
 	cd.presentGovernanceSections = nil
 	if rawGovernance, ok := raw["governance"]; ok && len(rawGovernance) > 0 {
 		var rawGovernanceFields map[string]json.RawMessage
@@ -732,6 +736,10 @@ type Config struct {
 	GovernanceConfig *configstore.GovernanceConfig
 	FrameworkConfig  *framework.FrameworkConfig
 	ProxyConfig      *configstoreTables.GlobalProxyConfig
+	// warpFileConfig is config.json's warp section, applied by ApplyWarpFileConfig once the Warp
+	// service exists; warpFileIsSourceOfTruth applies it on every boot rather than when it changes.
+	warpFileConfig          *WarpFileConfig
+	warpFileIsSourceOfTruth bool
 	// HTTPClientFactory hands out outbound clients that honour ProxyConfig per purpose
 	// and follow its changes live (see network.HTTPClientFactory).
 	HTTPClientFactory *network.HTTPClientFactory
@@ -1226,6 +1234,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	// 9a. Global proxy config (read by the enterprise build when it builds its outbound clients)
 	loadProxyConfig(ctx, config, &configData)
+	// 9b. Warp config from the file, applied later by the server through the Warp service
+	config.warpFileConfig = configData.Warp
+	config.warpFileIsSourceOfTruth = configData.isConfigJSONSourceOfTruth()
 	// 10. Plugins
 	loadPlugins(ctx, config, &configData)
 	// 11. Skills registry (after plugins, before framework)

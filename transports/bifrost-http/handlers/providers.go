@@ -1195,7 +1195,8 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // a model the datasheet marks supports_decisions, or without a row the
 // provider's name-based fallback (the gpt-6-luna family on OpenAI, a TypeSafe
 // System One model on OpenRouter, a Clef model on Cloudflare, a decider model on
-// Perplexity, a System One model on Ollama, a Microsoft decision model on Azure).
+// Perplexity, a System One model on Ollama, a Microsoft decision model or the
+// gpt-6-luna family on Azure, which serves it on /openai/v1/decisions).
 // Any other provider hosting gpt-6-luna serves it as a chat model (OpenRouter
 // serves its decisions under its own id, openai/gpt-6-luna-decisions, marked by
 // its datasheet row). A key alias is checked as the model it points at, as the
@@ -1216,7 +1217,8 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 	case provider == schemas.OpenAI:
 		fallback = schemas.DefaultSupportsDecisions(model)
 	case provider == schemas.Azure:
-		fallback = schemas.IsMicrosoftDecisionModel(listed) || schemas.IsMicrosoftDecisionModel(model)
+		fallback = schemas.IsMicrosoftDecisionModel(listed) || schemas.IsMicrosoftDecisionModel(model) ||
+			schemas.DefaultSupportsDecisions(listed) || schemas.DefaultSupportsDecisions(model)
 	case provider == schemas.OpenRouter:
 		fallback = schemas.IsTypesafeModel(model)
 	case provider == schemas.Cloudflare:

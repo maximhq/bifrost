@@ -371,6 +371,8 @@ bifrost:
     # allowedHeaders: []                     # Additional allowed headers for CORS and WebSocket
     # hideDeletedVirtualKeysInFilters: false # Omit deleted virtual keys from logs/MCP filter data
     # deleteExpiredVirtualKeys: false        # Daily job deletes virtual keys past expires_at (per-key delete_after_expire overrides)
+    # skipAccessProfileUserVirtualKeyCreation: false # Enterprise: when true, a user's first access profile does not create a virtual key for them
+    # skipAccessProfileUserVirtualKeyDeletion: false # Enterprise: when true, removing a user's last access profile does not delete their virtual keys (deleting the user still does)
     # whitelistedRoutes: []                  # Routes that bypass auth middleware
     # routingChainMaxDepth: 10               # Maximum depth for routing rule chain evaluation
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
@@ -1301,6 +1303,7 @@ bifrost:
       # clientId: ""
       # clientSecret: ""
       # apiToken: ""  # optional — enables background user/group reconciliation (every bulkSyncInterval, 24h by default)
+      # syncAllUsers: true  # directory sync keeps every app-assigned user except suspended/deactivated; false = active users only
       # audience: ""
       # # Extra OAuth scopes on top of the base openid/profile/email/offline_access set
       # # (for Custom Authorization Servers where claims like "groups" are gated behind a scope).

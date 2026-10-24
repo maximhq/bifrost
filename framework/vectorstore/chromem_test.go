@@ -355,6 +355,46 @@ func TestChromemStore_GetAllIncludesVectorsOnRequest(t *testing.T) {
 	for _, result := range again {
 		assert.Equal(t, stored[result.ID], result.Vector, "a returned vector aliases the stored embedding")
 	}
+
+	// Vectors are copied per page, so a page reached by cursor is copied too,
+	// and the page cannot be resliced into the uncopied rows past it.
+	first, cursor, err := ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, nil, 1)
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+	require.NotNil(t, cursor)
+	assert.Equal(t, 1, cap(first), "the page's capacity ends at the page")
+	second, _, err := ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, cursor, 1)
+	require.NoError(t, err)
+	require.Len(t, second, 1)
+	for index := range second[0].Vector {
+		second[0].Vector[index] = 42
+	}
+	again, _, err = ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, nil, 10)
+	require.NoError(t, err)
+	for _, result := range again {
+		assert.Equal(t, stored[result.ID], result.Vector, "a vector from a later page aliases the stored embedding")
+	}
+}
+
+// BenchmarkChromemStore_GetAllPageWithVectors pages a large namespace with
+// vectors, the shape of the topic clustering run: only the page's vectors
+// should be copied, not every matching document's.
+func BenchmarkChromemStore_GetAllPageWithVectors(b *testing.B) {
+	ctx := context.Background()
+	store, err := newChromemStore(ctx, &ChromemConfig{}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(b, err)
+	require.NoError(b, store.CreateNamespace(ctx, ChromemTestNamespace, ChromemTestDimension, nil))
+	for i := 0; i < 2000; i++ {
+		require.NoError(b, store.Add(ctx, ChromemTestNamespace, fmt.Sprintf("doc-%05d", i), generateTestEmbedding(ChromemTestDimension), map[string]interface{}{"key": i}))
+	}
+	vectorCtx := WithIncludeVectors(ctx)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, _, err := store.GetAll(vectorCtx, ChromemTestNamespace, nil, nil, nil, 100); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func TestChromemStore_DimensionHandling(t *testing.T) {
