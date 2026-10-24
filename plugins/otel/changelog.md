@@ -1,1 +1,2 @@
+- [feat]: expose trace export failures and circuit-breaker skips as OTLP counters [@Constantine3](https://github.com/Constantine3)
 - chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
