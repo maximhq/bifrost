@@ -2729,3 +2729,33 @@ func TestStopSequence_ChatResponseEgress(t *testing.T) {
 		})
 	}
 }
+
+func TestToAnthropicChatRequest_ThinkingContentBlockReplays(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+		{"role":"user","content":"compute"},
+		{"role":"assistant","content":[
+			{"type":"thinking","thinking":"I multiply.","signature":"SIG1"},
+			{"type":"redacted_thinking","data":"ENC1"}],
+		 "tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"submit","arguments":"{\"value\":1}"}}]},
+		{"role":"tool","tool_call_id":"toolu_1","content":"accepted"}]`), &input))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-opus-4-8",
+		Input:    input,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Messages, 3)
+
+	blocks := result.Messages[1].Content.ContentBlocks
+	require.Len(t, blocks, 3)
+	assert.Equal(t, AnthropicContentBlockTypeThinking, blocks[0].Type)
+	assert.Equal(t, "I multiply.", *blocks[0].Thinking)
+	assert.Equal(t, "SIG1", *blocks[0].Signature)
+	assert.Equal(t, AnthropicContentBlockTypeRedactedThinking, blocks[1].Type)
+	assert.Equal(t, "ENC1", *blocks[1].Data)
+	assert.Equal(t, AnthropicContentBlockTypeToolUse, blocks[2].Type)
+}

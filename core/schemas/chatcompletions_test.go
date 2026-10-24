@@ -287,3 +287,116 @@ func BenchmarkBifrostLLMUsageUnmarshal(b *testing.B) {
 		})
 	}
 }
+
+// LiteLLM-based clients, including the OpenAI Agents SDK, replay Anthropic
+// thinking as content blocks on the assistant message.
+func TestChatMessageThinkingContentBlocksBecomeReasoningDetails(t *testing.T) {
+	t.Run("thinking and redacted_thinking move to reasoning_details", func(t *testing.T) {
+		var msg ChatMessage
+		err := Unmarshal([]byte(`{"role":"assistant","content":[
+			{"type":"thinking","thinking":"I multiply.","signature":"SIG1"},
+			{"type":"redacted_thinking","data":"ENC1"},
+			{"type":"text","text":"Calling submit."}],
+			"tool_calls":[{"id":"c1","type":"function","function":{"name":"submit","arguments":"{}"}}]}`), &msg)
+		if err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if msg.Content == nil || len(msg.Content.ContentBlocks) != 1 || msg.Content.ContentBlocks[0].Type != ChatContentBlockTypeText {
+			t.Fatalf("only the text block should stay in content, got %+v", msg.Content)
+		}
+		if msg.ChatAssistantMessage == nil || len(msg.ChatAssistantMessage.ToolCalls) != 1 {
+			t.Fatalf("tool calls must be kept, got %+v", msg.ChatAssistantMessage)
+		}
+		details := msg.ChatAssistantMessage.ReasoningDetails
+		if len(details) != 2 {
+			t.Fatalf("want 2 reasoning details, got %+v", details)
+		}
+		if details[0].Type != BifrostReasoningDetailsTypeText || details[0].Index != 0 ||
+			details[0].Text == nil || *details[0].Text != "I multiply." ||
+			details[0].Signature == nil || *details[0].Signature != "SIG1" {
+			t.Fatalf("thinking block mapped wrong: %+v", details[0])
+		}
+		if details[1].Type != BifrostReasoningDetailsTypeEncrypted || details[1].Index != 1 ||
+			details[1].Data == nil || *details[1].Data != "ENC1" {
+			t.Fatalf("redacted_thinking block mapped wrong: %+v", details[1])
+		}
+	})
+
+	t.Run("content holding only thinking becomes null", func(t *testing.T) {
+		var msg ChatMessage
+		err := Unmarshal([]byte(`{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"s"}],
+			"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}`), &msg)
+		if err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if msg.Content != nil {
+			t.Fatalf("content should be nil, got %+v", msg.Content)
+		}
+		out, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), `"type":"thinking"`) {
+			t.Fatalf("thinking block must not be re-emitted as content, got %s", out)
+		}
+	})
+
+	t.Run("explicit reasoning_details win over thinking blocks", func(t *testing.T) {
+		var msg ChatMessage
+		err := Unmarshal([]byte(`{"role":"assistant","content":[{"type":"thinking","thinking":"block","signature":"s"},{"type":"text","text":"hi"}],
+			"reasoning_details":[{"index":0,"type":"reasoning.text","text":"detail","signature":"d"}]}`), &msg)
+		if err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		details := msg.ChatAssistantMessage.ReasoningDetails
+		if len(details) != 1 || *details[0].Text != "detail" {
+			t.Fatalf("reasoning_details should be kept as sent, got %+v", details)
+		}
+		if len(msg.Content.ContentBlocks) != 1 || msg.Content.ContentBlocks[0].Type != ChatContentBlockTypeText {
+			t.Fatalf("thinking block should still leave content, got %+v", msg.Content)
+		}
+	})
+
+	t.Run("an explicit empty reasoning_details array wins over thinking blocks", func(t *testing.T) {
+		var msg ChatMessage
+		err := Unmarshal([]byte(`{"role":"assistant","reasoning_details":[],
+			"content":[{"type":"thinking","thinking":"t","signature":"s"},{"type":"text","text":"hi"}]}`), &msg)
+		if err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ReasoningDetails) != 0 {
+			t.Fatalf("the empty array should be kept as sent, got %+v", msg.ChatAssistantMessage.ReasoningDetails)
+		}
+		if len(msg.Content.ContentBlocks) != 1 || msg.Content.ContentBlocks[0].Type != ChatContentBlockTypeText {
+			t.Fatalf("thinking block should still leave content, got %+v", msg.Content)
+		}
+	})
+
+	t.Run("signed thinking blocks win over details derived from reasoning_content", func(t *testing.T) {
+		var msg ChatMessage
+		err := Unmarshal([]byte(`{"role":"assistant","reasoning_content":"I multiply.",
+			"content":[{"type":"thinking","thinking":"I multiply.","signature":"SIG1"}],
+			"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}`), &msg)
+		if err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		details := msg.ChatAssistantMessage.ReasoningDetails
+		if len(details) != 1 || details[0].Signature == nil || *details[0].Signature != "SIG1" {
+			t.Fatalf("the signed thinking block should replace the unsigned derived detail, got %+v", details)
+		}
+		if msg.ChatAssistantMessage.Reasoning == nil || *msg.ChatAssistantMessage.Reasoning != "I multiply." {
+			t.Fatalf("reasoning_content should be kept, got %v", msg.ChatAssistantMessage.Reasoning)
+		}
+	})
+
+	t.Run("non-assistant messages are left alone", func(t *testing.T) {
+		var msg ChatMessage
+		err := Unmarshal([]byte(`{"role":"user","content":[{"type":"thinking","thinking":"t","signature":"s"}]}`), &msg)
+		if err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if msg.ChatAssistantMessage != nil || msg.Content == nil || len(msg.Content.ContentBlocks) != 1 {
+			t.Fatalf("user message should be unchanged, got %+v", msg)
+		}
+	})
+}

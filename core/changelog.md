@@ -1,3 +1,4 @@
+- [fix]: chat completions accept Anthropic thinking and redacted_thinking content blocks on assistant messages. LiteLLM-based clients such as the OpenAI Agents SDK replay thinking this way. Bedrock chat rejected the request with "unsupported content block type: thinking" and Anthropic dropped the blocks. Signed thinking never reached the model between tool turns. The blocks now map to reasoning_details (#8954) [@dinhxuanvu](https://github.com/dinhxuanvu)
 - fix: omit synthetic reasoning signature on bridged Chat Completions thinking blocks (#8549)
 - feat: openapi MCP connection type, backed by an in-process server built through the new MCPConfig.InProcessServerFactory hook (#8307)
 - feat: cache_control on chat assistant tool_calls reaches the Anthropic and Bedrock tool_use block (#8494)
