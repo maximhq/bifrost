@@ -3,6 +3,7 @@ package credstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -101,6 +102,43 @@ func TestTokenExchangeConnectionHeadersMissingSubjectNamesTheRejection(t *testin
 	}
 	if strings.Contains(authErr.Message, "Send your identity-provider access token as the Authorization bearer") {
 		t.Fatalf("a caller who sent a token must not be told to send one, got %q", authErr.Message)
+	}
+}
+
+// A request that used the stored sign-in is told to sign in to Bifrost again, and where when the
+// base URL is known, rather than to send a token it never had to carry.
+func TestTokenExchangeConnectionHeadersStoredSignInExpired(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{name: "base URL known", baseURL: "https://bifrost.example.com/", want: "Sign in to Bifrost again at https://bifrost.example.com, then retry"},
+		{name: "base URL unknown", want: "Sign in to Bifrost again, then retry"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &tokenExchangeResolver{provider: &fakeExchangeProvider{exchangedTokenErr: fmt.Errorf("stored sign-in: %w", schemas.ErrStoredSignInExpired)}}
+			ctx := newExchangeTestContext()
+			if tt.baseURL != "" {
+				ctx.SetValue(schemas.BifrostContextKeyMCPCallbackBaseURL, tt.baseURL)
+			}
+			_, err := r.ConnectionHeaders(ctx, exchangeClientConfig())
+
+			var authErr *schemas.MCPAuthRequiredError
+			if !errors.As(err, &authErr) {
+				t.Fatalf("expected *MCPAuthRequiredError, got %T: %v", err, err)
+			}
+			if authErr.Kind != schemas.MCPAuthRequiredKindExchange || !authErr.SubjectTokenMissing {
+				t.Fatalf("Kind = %q, SubjectTokenMissing = %v, want exchange and true", authErr.Kind, authErr.SubjectTokenMissing)
+			}
+			if !strings.Contains(authErr.Message, tt.want) {
+				t.Fatalf("Message = %q, want it to contain %q", authErr.Message, tt.want)
+			}
+			if strings.Contains(authErr.Message, "Send your identity-provider access token") {
+				t.Fatalf("a caller using the stored sign-in must not be told to send a token, got %q", authErr.Message)
+			}
+		})
 	}
 }
 

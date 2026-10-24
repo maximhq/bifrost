@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -304,6 +305,11 @@ type authRetryCredStore struct {
 	forceRefreshErr    error
 	forceRefreshCalls  atomic.Int32
 	forceRefreshSignal chan struct{}
+	// forceRefreshHold, when set, makes ForceRefresh wait for it to close (or
+	// for its context to end) before returning; forceRefreshCtxErr records the
+	// error its context held at that point.
+	forceRefreshHold   chan struct{}
+	forceRefreshCtxErr atomic.Value
 }
 
 func (s *authRetryCredStore) ConnectionHeaders(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) (http.Header, error) {
@@ -318,8 +324,15 @@ func (s *authRetryCredStore) RequiresPerCallConnection(_ *schemas.MCPClientConfi
 	return s.requiresPerCall
 }
 
-func (s *authRetryCredStore) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
+func (s *authRetryCredStore) ForceRefresh(ctx *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
 	s.forceRefreshCalls.Add(1)
+	if s.forceRefreshHold != nil {
+		select {
+		case <-s.forceRefreshHold:
+		case <-ctx.Done():
+		}
+		s.forceRefreshCtxErr.Store(fmt.Sprint(ctx.Err()))
+	}
 	if s.forceRefreshSignal != nil {
 		select {
 		case s.forceRefreshSignal <- struct{}{}:
@@ -822,8 +835,9 @@ func TestExecuteTool_AuthFailureRetry_Shared_Concurrent401sJoinOneReconnect(t *t
 
 // TestExecuteTool_AuthFailureRetry_DestructiveNonIdempotent_SkipsRetry covers
 // the safety opt-out: a destructive, non-idempotent tool must not be
-// auto-retried even on a clean auth-shaped failure — the original error
-// surfaces unchanged and none of the recovery machinery runs.
+// auto-retried even on a clean auth-shaped failure, so the original error
+// surfaces unchanged and no connection is re-acquired. The rejected
+// credential is still refreshed, so the next call does not reuse it.
 func TestExecuteTool_AuthFailureRetry_DestructiveNonIdempotent_SkipsRetry(t *testing.T) {
 	state, toolName := newAuthRetryClientState("testclient", "dotool", boolPtr(true), nil)
 
@@ -831,7 +845,7 @@ func TestExecuteTool_AuthFailureRetry_DestructiveNonIdempotent_SkipsRetry(t *tes
 	conn := client.NewClient(ft, client.WithSession())
 
 	cm := &authRetryClientManager{state: state, acquireConn: conn}
-	cs := &authRetryCredStore{requiresPerCall: true}
+	cs := &authRetryCredStore{requiresPerCall: true, forceRefreshSignal: make(chan struct{}, 1)}
 	tm := newAuthRetryToolsManager(cm, cs)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -847,8 +861,9 @@ func TestExecuteTool_AuthFailureRetry_DestructiveNonIdempotent_SkipsRetry(t *tes
 	if got := ft.CallCount(); got != 1 {
 		t.Errorf("destructive, non-idempotent tool must not be retried, got %d CallTool invocations", got)
 	}
-	if got := cs.forceRefreshCalls.Load(); got != 0 {
-		t.Errorf("ForceRefresh must not run when the retry is skipped, got %d calls", got)
+	awaitDetachedRefresh(t, cs)
+	if got := cs.forceRefreshCalls.Load(); got != 1 {
+		t.Errorf("ForceRefresh must still run once when the retry is skipped, got %d calls", got)
 	}
 	if got := cm.acquireCalls.Load(); got != 0 {
 		t.Errorf("AcquireClientConn must not run when the retry is skipped, got %d calls", got)
@@ -888,7 +903,8 @@ func TestExecuteTool_AuthFailureRetry_DestructiveButIdempotent_StillRetries(t *t
 // fail-closed default: a tool with no Annotations at all (both hints
 // optional per the MCP spec, so this is common) must be treated the same as
 // an explicitly destructive, non-idempotent one and skip the retry, rather
-// than defaulting to "safe" because neither hint was set.
+// than defaulting to "safe" because neither hint was set. Its rejected
+// credential is still refreshed, as for any skipped retry.
 func TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry(t *testing.T) {
 	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
 
@@ -896,7 +912,7 @@ func TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry(t *testing.T) {
 	conn := client.NewClient(ft, client.WithSession())
 
 	cm := &authRetryClientManager{state: state, acquireConn: conn}
-	cs := &authRetryCredStore{requiresPerCall: true}
+	cs := &authRetryCredStore{requiresPerCall: true, forceRefreshSignal: make(chan struct{}, 1)}
 	tm := newAuthRetryToolsManager(cm, cs)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -912,11 +928,86 @@ func TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry(t *testing.T) {
 	if got := ft.CallCount(); got != 1 {
 		t.Errorf("an unannotated tool must not be retried, got %d CallTool invocations", got)
 	}
-	if got := cs.forceRefreshCalls.Load(); got != 0 {
-		t.Errorf("ForceRefresh must not run when the retry is skipped, got %d calls", got)
+	awaitDetachedRefresh(t, cs)
+	if got := cs.forceRefreshCalls.Load(); got != 1 {
+		t.Errorf("ForceRefresh must still run once when the retry is skipped, got %d calls", got)
 	}
 	if got := cm.acquireCalls.Load(); got != 0 {
 		t.Errorf("AcquireClientConn must not run when the retry is skipped, got %d calls", got)
+	}
+}
+
+// TestExecuteTool_AuthFailureRetry_SkippedRetryRefreshFails_OriginalErrorSurfaces
+// pins that the refresh a skipped retry still runs is best-effort: when it
+// fails, the caller gets the tool call's own error, not the refresh's, and no
+// connection is re-acquired.
+func TestExecuteTool_AuthFailureRetry_SkippedRetryRefreshFails_OriginalErrorSurfaces(t *testing.T) {
+	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
+
+	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
+	conn := client.NewClient(ft, client.WithSession())
+
+	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cs := &authRetryCredStore{requiresPerCall: true, forceRefreshErr: errors.New("identity provider unreachable"), forceRefreshSignal: make(chan struct{}, 1)}
+	tm := newAuthRetryToolsManager(cm, cs)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := newAuthRetryToolCallRequest(toolName)
+
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	if err == nil || !errors.Is(err, ErrMCPToolCallFailed) || !strings.Contains(err.Error(), "401 Unauthorized") {
+		t.Fatalf("expected the tool call's own error to surface, got: %v", err)
+	}
+	awaitDetachedRefresh(t, cs)
+	if got := cs.forceRefreshCalls.Load(); got != 1 {
+		t.Errorf("expected one forced refresh, got %d", got)
+	}
+	if got := cm.acquireCalls.Load(); got != 0 {
+		t.Errorf("AcquireClientConn must not run when the retry is skipped, got %d calls", got)
+	}
+}
+
+// awaitDetachedRefresh waits for the refresh a skipped retry starts in the
+// background, failing the test if it never runs.
+func awaitDetachedRefresh(t *testing.T, cs *authRetryCredStore) {
+	t.Helper()
+	select {
+	case <-cs.forceRefreshSignal:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the refresh a skipped retry starts never ran")
+	}
+}
+
+// TestExecuteTool_AuthFailureRetry_SkippedRetryDoesNotWaitForRefresh pins that
+// a skipped retry returns its error without waiting for the credential
+// refresh, which then runs on a context the finished request does not cancel.
+// A slow or unreachable identity provider must not stretch the error to the
+// whole tool budget.
+func TestExecuteTool_AuthFailureRetry_SkippedRetryDoesNotWaitForRefresh(t *testing.T) {
+	state, toolName := newAuthRetryClientState("testclient", "dotool", nil, nil)
+
+	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
+	conn := client.NewClient(ft, client.WithSession())
+
+	hold := make(chan struct{})
+	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cs := &authRetryCredStore{requiresPerCall: true, forceRefreshHold: hold, forceRefreshSignal: make(chan struct{}, 1)}
+	tm := newAuthRetryToolsManager(cm, cs)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	start := time.Now()
+	_, err := tm.ExecuteTool(ctx, newAuthRetryToolCallRequest(toolName), conn, state.ExecutionConfig, state.ToolNameMapping)
+	if err == nil || !errors.Is(err, ErrMCPToolCallFailed) {
+		t.Fatalf("expected the tool call's own error, got: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("the error took %v; it must not wait for the refresh", elapsed)
+	}
+	ctx.Cancel()
+	close(hold)
+	awaitDetachedRefresh(t, cs)
+	if got := cs.forceRefreshCtxErr.Load(); got != "<nil>" {
+		t.Fatalf("the refresh ran on a context that had ended (%v); it must outlive the request", got)
 	}
 }
 

@@ -2307,6 +2307,45 @@ func TestCalculateCost_VideoResolutionBandEndToEnd(t *testing.T) {
 	assert.InDelta(t, 5.60, s.CalculateCost(resp, nil), 1e-9)
 }
 
+// A Seedance task created with return_last_frame lists its final frame (image/jpeg) after the video.
+// The frame is not a second clip, so it must not multiply the per-second charge.
+func TestCalculateCost_VideoLastFrameImageIsNotAClip(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("seedance", "openai", "video_generation"): {
+			Model: "seedance", Provider: "openai", Mode: "video_generation",
+			OutputCostPerVideoPerSecond: bifrost.Ptr(0.30),
+		},
+	})
+
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("5"),
+			Size:    "1280x720",
+			Videos: []schemas.VideoOutput{
+				{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/v.mp4"), ContentType: "video/mp4"},
+				{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/last.jpeg"), ContentType: "image/jpeg"},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "seedance"),
+			},
+		},
+	}
+
+	assert.InDelta(t, 1.50, s.CalculateCost(resp, nil), 1e-9)
+}
+
+func TestVideoDimensionsFromResponse_IgnoresImageOutputs(t *testing.T) {
+	resp := &schemas.BifrostVideoGenerationResponse{
+		Videos: []schemas.VideoOutput{
+			{Type: schemas.VideoOutputTypeURL, ContentType: "video/mp4"},
+			{Type: schemas.VideoOutputTypeURL, ContentType: "image/jpeg"},
+		},
+	}
+	assert.Equal(t, 1, VideoDimensionsFromResponse(resp).OutputCount)
+}
+
 // =========================================================================
 // 8. tieredInputRate / tieredOutputRate
 // =========================================================================

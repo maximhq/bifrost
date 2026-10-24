@@ -823,6 +823,7 @@ func applyRealtimeRawRequestBackfill(entry *logstore.Log, rawRequest any, conten
 	}
 	if inputHistory := extractRealtimeInputHistoryFromRawRequest(rawStr); len(inputHistory) > 0 {
 		entry.InputHistoryParsed = mergeRealtimeInputHistory(entry.InputHistoryParsed, inputHistory)
+		recordRealtimeInputItems(entry, rawStr)
 	}
 }
 

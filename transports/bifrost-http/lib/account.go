@@ -117,6 +117,9 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	if config.InjectedTools != nil {
 		providerConfig.InjectedTools = config.InjectedTools
 	}
+	if config.Passthrough != nil {
+		providerConfig.Passthrough = config.Passthrough
+	}
 	return providerConfig, nil
 }
 

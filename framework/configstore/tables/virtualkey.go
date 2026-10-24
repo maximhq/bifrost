@@ -271,8 +271,9 @@ type TableVirtualKey struct {
 	// DisableContentLogging is the key's own say on whether request and response content is
 	// persisted for its traffic. Tri-state on purpose: nil inherits client.disable_content_logging,
 	// true forces content off for every sink, false forces content on for the log store only (each
-	// observability connector keeps its own flag). No gorm default: a default tag would make GORM
-	// write the default for a nil pointer on insert and collapse "inherit" into "false".
+	// observability connector keeps its own flag). A project a request is scoped to can override it
+	// either way. No gorm default: a default tag would make GORM write the default for a nil pointer
+	// on insert and collapse "inherit" into "false".
 	DisableContentLogging *bool `gorm:"type:boolean" json:"disable_content_logging,omitempty"`
 
 	// Metadata is free-form key/value data the operator attaches to the key (cost center, project,

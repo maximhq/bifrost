@@ -353,6 +353,7 @@ func (h *AgentGatewayHandler) deletePushConfig(ctx *fasthttp.RequestCtx) {
 		sendAgentGatewayError(ctx, fasthttp.StatusNotFound, "agent push configuration not found")
 		return
 	}
+	lib.RecordAuditChange(ctx, "agent_push_config.deleted", "agent_push_config", configID, agentName, map[string]any{"agent": agentName, "task_id": taskID, "config_id": configID}, nil)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
@@ -382,6 +383,7 @@ func (h *AgentGatewayHandler) create(ctx *fasthttp.RequestCtx) {
 	}
 	h.config.SetEnabledAgent(view.Name, view.Enabled, view.AllowByDefault)
 	h.reloadGrantedVirtualKeys(workCtx, view.VirtualKeyIDs)
+	lib.RecordAuditChange(ctx, "agent.created", "agent", view.Name, view.Name, nil, auditAgentRegistration(&view))
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, view)
 }
@@ -453,6 +455,7 @@ func (h *AgentGatewayHandler) update(ctx *fasthttp.RequestCtx) {
 	}
 	h.config.SetEnabledAgent(view.Name, view.Enabled, view.AllowByDefault)
 	h.reloadGrantedVirtualKeys(workCtx, previous.VirtualKeyIDs, view.VirtualKeyIDs)
+	lib.RecordAuditChange(ctx, "agent.updated", "agent", view.Name, view.Name, auditAgentRegistration(&previous), auditAgentRegistration(&view))
 	SendJSON(ctx, view)
 }
 
@@ -500,6 +503,7 @@ func (h *AgentGatewayHandler) delete(ctx *fasthttp.RequestCtx) {
 	}
 	h.config.DeleteEnabledAgent(name)
 	h.reloadGrantedVirtualKeys(workCtx, previous.VirtualKeyIDs)
+	lib.RecordAuditChange(ctx, "agent.deleted", "agent", name, name, auditAgentRegistration(&previous), nil)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
@@ -562,6 +566,7 @@ func (h *AgentGatewayHandler) deleteHistory(ctx *fasthttp.RequestCtx) {
 		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "Failed to delete agent logs")
 		return
 	}
+	lib.RecordAuditChange(ctx, "agent_logs.deleted", "agent_logs", "agent_logs", "Agent logs", auditDeletedIDs(req.IDs), nil)
 	SendJSON(ctx, map[string]any{"message": "Agent logs deleted successfully"})
 }
 
@@ -1468,4 +1473,16 @@ func sendAgentGatewayError(ctx *fasthttp.RequestCtx, statusCode int, message str
 		StatusCode:     &statusCode,
 		Error:          &schemas.ErrorField{Message: message},
 	})
+}
+
+// auditAgentRegistration snapshots an already-redacted agent registration, also masking credentials embedded in its card URL.
+func auditAgentRegistration(view *schemas.AgentRegistrationView) json.RawMessage {
+	if view == nil {
+		return nil
+	}
+	c := *view
+	c.AgentCardURL = lib.RedactURLCredentials(c.AgentCardURL)
+	c.DiscoveryAuth = c.DiscoveryAuth.Redacted()
+	c.RuntimeAuth = c.RuntimeAuth.Redacted()
+	return lib.AuditSnapshot(c)
 }
