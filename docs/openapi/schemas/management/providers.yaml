@@ -186,6 +186,36 @@ BedrockKeyConfig:
               is_default:
                 type: boolean
 
+SageMakerKeyConfig:
+  type: object
+  description: AWS SageMaker real-time endpoint key configuration. Leave access_key and secret_key empty to use the default AWS credential chain; Bifrost mints the SageMaker bearer token from these credentials.
+  properties:
+    access_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    secret_key:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    session_token:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    region:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    role_arn:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    external_id:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    session_name:
+      $ref: '../../schemas/management/common.yaml#/EnvVar'
+    model_name:
+      type: string
+      description: Body "model" sent to the container; empty sends ""
+    endpoints:
+      type: object
+      description: Runtime host override (VPC endpoint, FIPS or dual-stack host)
+      properties:
+        runtime:
+          $ref: '../../schemas/management/common.yaml#/EnvVar'
+  required:
+    - region
+
 VllmKeyConfig:
   type: object
   description: VLLM-specific key configuration
@@ -371,6 +401,8 @@ Key:
       $ref: '#/VertexKeyConfig'
     bedrock_key_config:
       $ref: '#/BedrockKeyConfig'
+    sagemaker_key_config:
+      $ref: '#/SageMakerKeyConfig'
     vllm_key_config:
       $ref: '#/VllmKeyConfig'
     ollama_key_config:

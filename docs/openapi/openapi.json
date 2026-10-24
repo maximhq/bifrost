@@ -43383,7 +43383,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Create a key for a provider",
-        "description": "Creates a new API key for the specified provider. The key `id` is auto-generated\nif omitted. `enabled` defaults to `true` if omitted. `value` is required and must\nnot be empty. Keys cannot be created on keyless providers.\nSetting any field that chooses the host Bifrost sends this key's credentials to\nrequires a genuinely authenticated admin session - it is refused with 403 if dashboard\nauthentication is disabled or unconfigured, even though other management endpoints\nremain reachable in that state. ollama_key_config.url, sgl_key_config.url and\nvllm_key_config.url also follow the provider base_url destination rule: private and\nloopback hosts are accepted, link-local and unspecified addresses are refused with 400.\nKey-level and per-alias regions must be vendor region identifiers (lowercase letters,\ndigits and hyphens, e.g. us-east-1); any other value is refused with 400.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and\naliases.<name>.endpoint.\n",
+        "description": "Creates a new API key for the specified provider. The key `id` is auto-generated\nif omitted. `enabled` defaults to `true` if omitted. `value` is required and must\nnot be empty. Keys cannot be created on keyless providers.\nSetting any field that chooses the host Bifrost sends this key's credentials to\nrequires a genuinely authenticated admin session - it is refused with 403 if dashboard\nauthentication is disabled or unconfigured, even though other management endpoints\nremain reachable in that state. ollama_key_config.url, sgl_key_config.url and\nvllm_key_config.url also follow the provider base_url destination rule: private and\nloopback hosts are accepted, link-local and unspecified addresses are refused with 400.\nKey-level and per-alias regions must be vendor region identifiers (lowercase letters,\ndigits and hyphens, e.g. us-east-1); any other value is refused with 400.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*,\nsagemaker_key_config.endpoints.runtime, and\naliases.<name>.endpoint.\n",
         "tags": [
           "Providers"
         ],
@@ -43561,7 +43561,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update a key for a provider",
-        "description": "Updates an existing key. Send the full key object. Redacted values sent back\nunchanged are automatically preserved (the server merges them with the stored\nraw values).\nSetting, changing, or removing any field that chooses the host Bifrost sends this\nkey's credentials to requires a genuinely authenticated admin session - it is refused\nwith 403 if dashboard authentication is disabled or unconfigured, even though other\nmanagement endpoints remain reachable in that state. Sending the stored values back\nunchanged is allowed. ollama_key_config.url, sgl_key_config.url and\nvllm_key_config.url also follow the provider base_url destination rule: private and\nloopback hosts are accepted, link-local and unspecified addresses are refused with 400.\nKey-level and per-alias regions must be vendor region identifiers (lowercase letters,\ndigits and hyphens, e.g. us-east-1); any other value is refused with 400.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and\naliases.<name>.endpoint.\n",
+        "description": "Updates an existing key. Send the full key object. Redacted values sent back\nunchanged are automatically preserved (the server merges them with the stored\nraw values).\nSetting, changing, or removing any field that chooses the host Bifrost sends this\nkey's credentials to requires a genuinely authenticated admin session - it is refused\nwith 403 if dashboard authentication is disabled or unconfigured, even though other\nmanagement endpoints remain reachable in that state. Sending the stored values back\nunchanged is allowed. ollama_key_config.url, sgl_key_config.url and\nvllm_key_config.url also follow the provider base_url destination rule: private and\nloopback hosts are accepted, link-local and unspecified addresses are refused with 400.\nKey-level and per-alias regions must be vendor region identifiers (lowercase letters,\ndigits and hyphens, e.g. us-east-1); any other value is refused with 400.\nGuarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,\nazure_key_config.endpoint, databricks_key_config.workspace_url,\nbedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*,\nsagemaker_key_config.endpoints.runtime, and\naliases.<name>.endpoint.\n",
         "tags": [
           "Providers"
         ],
@@ -112122,6 +112122,7 @@
           "azure",
           "bedrock",
           "bedrock_mantle",
+          "sagemaker",
           "cerebras",
           "cohere",
           "deepseek",
@@ -128470,6 +128471,281 @@
                 }
               }
             }
+          },
+          "sagemaker_key_config": {
+            "type": "object",
+            "description": "AWS SageMaker real-time endpoint key configuration. Leave access_key and secret_key empty to use the default AWS credential chain; Bifrost mints the SageMaker bearer token from these credentials.",
+            "properties": {
+              "access_key": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "secret_key": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "session_token": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "region": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "role_arn": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "external_id": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "session_name": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "model_name": {
+                "type": "string",
+                "description": "Body \"model\" sent to the container; empty sends \"\""
+              },
+              "endpoints": {
+                "type": "object",
+                "description": "Runtime host override (VPC endpoint, FIPS or dual-stack host)",
+                "properties": {
+                  "runtime": {
+                    "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                      },
+                      {
+                        "type": "object",
+                        "description": "Resolved form, as returned by GET responses",
+                        "properties": {
+                          "value": {
+                            "type": "string",
+                            "description": "Resolved value (redacted in GET responses for secret fields)"
+                          },
+                          "ref": {
+                            "type": "string",
+                            "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "plain_text",
+                              "env",
+                              "vault"
+                            ],
+                            "description": "Source type of the value"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "required": [
+              "region"
+            ]
           },
           "vllm_key_config": {
             "type": "object",
