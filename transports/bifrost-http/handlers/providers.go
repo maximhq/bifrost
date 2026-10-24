@@ -391,6 +391,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Missing provider")
 		return
 	}
+	if payload.CustomProviderConfig == nil && payload.Provider == schemas.Generic {
+		SendError(ctx, fasthttp.StatusBadRequest, "generic is a base type for custom providers, not a provider; set custom_provider_config.base_provider_type to generic and give the provider its own name")
+		return
+	}
 	if payload.CustomProviderConfig != nil {
 		// custom provider key should not be same as standard provider names
 		if bifrost.IsStandardProvider(payload.Provider) {

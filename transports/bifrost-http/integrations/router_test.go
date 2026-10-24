@@ -2162,3 +2162,219 @@ func TestResponsesPassthroughFailureBeforeCreatedHasNoIdentity(t *testing.T) {
 	require.True(t, hasSeq)
 	assert.Equal(t, 0, seq)
 }
+
+// genericPassthroughTestAccount configures one generic custom provider ("echo", header auth) and a
+// standard provider, both pointed at the same upstream.
+type genericPassthroughTestAccount struct{ baseURL string }
+
+func (a genericPassthroughTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{"echo", schemas.OpenAI}, nil
+}
+func (a genericPassthroughTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "k-" + string(p), Value: *schemas.NewSecretVar("operator-" + string(p)), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+func (a genericPassthroughTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	nc.BaseURL = a.baseURL
+	cfg := &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}
+	switch p {
+	case "echo":
+		cfg.CustomProviderConfig = &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.Generic,
+			GenericConfig: &schemas.GenericProviderConfig{
+				Auth:      schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "x-api-key"},
+				Usage:     &schemas.GenericUsageConfig{ModelPath: "engine"},
+				Streaming: &schemas.GenericStreamingConfig{Paths: []string{"/live/**"}},
+				Routes:    []schemas.GenericRouteConfig{{Method: "POST", Path: "/named", Usage: &schemas.GenericUsageConfig{ModelPath: "name"}}},
+			},
+		}
+	case schemas.OpenAI:
+	default:
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	return cfg, nil
+}
+
+type genericUpstreamHit struct {
+	method, path, apiKey, authorization string
+	headers                             http.Header
+}
+
+func newGenericPassthroughFixture(t *testing.T) (*router.Router, func() []genericUpstreamHit) {
+	t.Helper()
+	var mu sync.Mutex
+	var hits []genericUpstreamHit
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, genericUpstreamHit{method: r.Method, path: r.URL.RequestURI(), apiKey: r.Header.Get("x-api-key"), authorization: r.Header.Get("Authorization"), headers: r.Header.Clone()})
+		mu.Unlock()
+		if strings.HasPrefix(r.URL.Path, "/live/") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("data: {\"tick\":1}\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Upstream", "echo")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(upstream.Close)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: genericPassthroughTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewGenericPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+	takeHits := func() []genericUpstreamHit {
+		mu.Lock()
+		defer mu.Unlock()
+		out := hits
+		hits = nil
+		return out
+	}
+	return r, takeHits
+}
+
+// /passthrough/{provider}/... serves exactly the custom providers whose base type is generic: the
+// segment is resolved per request, the configured key replaces whatever credential the caller
+// sent, and a standard or unknown provider name is a 404 before anything is forwarded.
+func TestGenericPassthroughRoute(t *testing.T) {
+	r, takeHits := newGenericPassthroughFixture(t)
+	tests := []struct {
+		name         string
+		method       string
+		uri          string
+		body         string
+		headers      map[string]string
+		wantStatus   int
+		wantUpstream string
+		wantBodyHas  string
+		wantStreamed bool
+		wantDropped  []string
+		wantKept     map[string]string
+	}{
+		{name: "POST relayed with the operator key", uri: "/passthrough/echo/search?q=1", body: `{"engine":"fast"}`, headers: map[string]string{"x-api-key": "caller", "Authorization": "Bearer caller"}, wantStatus: fasthttp.StatusOK, wantUpstream: "/search?q=1"},
+		{name: "GET relayed", method: fasthttp.MethodGet, uri: "/passthrough/echo/jobs/1", wantStatus: fasthttp.StatusOK, wantUpstream: "/jobs/1"},
+		{name: "DELETE relayed", method: fasthttp.MethodDelete, uri: "/passthrough/echo/jobs/1", wantStatus: fasthttp.StatusOK, wantUpstream: "/jobs/1"},
+		{name: "streaming.paths glob selects the streaming relay", method: fasthttp.MethodGet, uri: "/passthrough/echo/live/room", wantStatus: fasthttp.StatusOK, wantUpstream: "/live/room", wantStreamed: true},
+		{name: "the word stream in a path is not a streaming signal", method: fasthttp.MethodGet, uri: "/passthrough/echo/v1/streams/123", wantStatus: fasthttp.StatusOK, wantUpstream: "/v1/streams/123"},
+		{name: "a caller's stream flag is not a streaming signal", uri: "/passthrough/echo/search", body: `{"stream":true}`, wantStatus: fasthttp.StatusOK, wantUpstream: "/search"},
+		{name: "nor is ?stream=true on a GET", method: fasthttp.MethodGet, uri: "/passthrough/echo/jobs/1?stream=true", wantStatus: fasthttp.StatusOK, wantUpstream: "/jobs/1?stream=true"},
+		{name: "standard provider is not a generic passthrough", uri: "/passthrough/openai/v1/chat/completions", body: `{}`, wantStatus: fasthttp.StatusNotFound, wantBodyHas: "no generic passthrough provider named openai"},
+		{name: "unknown provider", uri: "/passthrough/nope/x", body: `{}`, wantStatus: fasthttp.StatusNotFound, wantBodyHas: "no generic passthrough provider named nope"},
+		{name: "path guard runs before dispatch", uri: "/passthrough/echo/@evil.example/x", body: `{}`, wantStatus: fasthttp.StatusBadRequest, wantBodyHas: "invalid passthrough path"},
+		{name: "x-model-provider must match the segment", uri: "/passthrough/echo/search", body: `{}`, headers: map[string]string{"x-model-provider": "openai"}, wantStatus: fasthttp.StatusBadRequest, wantBodyHas: "provider does not match"},
+		{name: "non-json body is relayed without model parsing", uri: "/passthrough/echo/upload", body: "<xml/>", headers: map[string]string{"Content-Type": "application/xml"}, wantStatus: fasthttp.StatusOK, wantUpstream: "/upload"},
+		{name: "caller credential headers of every spelling are dropped, other headers kept", uri: "/passthrough/echo/search", body: `{}`, headers: map[string]string{"Ocp-Apim-Subscription-Key": "caller", "X-Auth-Token": "caller", "X-Functions-Key": "caller", "X-Idempotency-Key": "idem-1", "X-Amz-Target": "Svc.Op"}, wantStatus: fasthttp.StatusOK, wantUpstream: "/search", wantDropped: []string{"Ocp-Apim-Subscription-Key", "X-Auth-Token", "X-Functions-Key"}, wantKept: map[string]string{"X-Idempotency-Key": "idem-1", "X-Amz-Target": "Svc.Op"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			takeHits()
+			var ctx fasthttp.RequestCtx
+			method := fasthttp.MethodPost
+			if tc.method != "" {
+				method = tc.method
+			}
+			ctx.Request.Header.SetMethod(method)
+			ctx.Request.SetRequestURI(tc.uri)
+			ctx.Request.Header.SetContentType("application/json")
+			for k, v := range tc.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			if tc.body != "" {
+				ctx.Request.SetBodyString(tc.body)
+			}
+			r.Handler(&ctx)
+			got := takeHits()
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			if tc.wantBodyHas != "" {
+				require.Contains(t, string(ctx.Response.Body()), tc.wantBodyHas)
+			}
+			require.Equal(t, tc.wantStreamed, string(ctx.Response.Header.Peek("X-Accel-Buffering")) == "no", "streaming handler")
+			if tc.wantUpstream == "" {
+				require.Empty(t, got, "no request may reach the upstream for %s", tc.uri)
+				return
+			}
+			require.Len(t, got, 1)
+			require.Equal(t, method, got[0].method)
+			require.Equal(t, tc.wantUpstream, got[0].path)
+			require.Equal(t, "operator-echo", got[0].apiKey, "the configured key replaces the caller's")
+			require.Empty(t, got[0].authorization, "caller authorization never reaches the upstream")
+			for _, name := range tc.wantDropped {
+				require.Empty(t, got[0].headers.Get(name), "caller credential header %s must not reach the upstream", name)
+			}
+			for name, value := range tc.wantKept {
+				require.Equal(t, value, got[0].headers.Get(name), "non-credential header %s must be forwarded", name)
+			}
+			if !tc.wantStreamed {
+				require.Equal(t, "echo", string(ctx.Response.Header.Peek("X-Upstream")), "upstream headers reach the caller")
+				require.Equal(t, "echo", string(ctx.Response.Header.Peek("x-bifrost-provider")))
+			}
+		})
+	}
+}
+
+func TestExtractGenericModel(t *testing.T) {
+	assert.Equal(t, "gpt-4o", extractGenericModel([]byte(`{"model":"gpt-4o"}`), "application/json", "model"))
+	assert.Equal(t, "fast", extractGenericModel([]byte(`{"engine":"fast"}`), "application/json", "engine"))
+	assert.Equal(t, "", extractGenericModel([]byte(`{"model":7}`), "application/json", "model"), "a non-string model is no model, not an error")
+	assert.Equal(t, "", extractGenericModel([]byte(`{"model":"x"}`), "text/plain", "model"), "a declared non-JSON body is not read")
+	assert.Equal(t, "x", extractGenericModel([]byte(`{"model":"x"}`), "", "model"), "no content type sniffs JSON")
+	assert.Equal(t, "x", extractGenericModel([]byte(`{"model":"x"}`), "application/x-amz-json-1.1", "model"), "AWS JSON is JSON")
+	assert.Equal(t, "", extractGenericModel([]byte(`{"model":"x"}`), "application/json", ""), "an empty path reads no model")
+	assert.Equal(t, "", extractGenericModel(nil, "application/json", "model"))
+}
+
+// The model a request names is read at the route's model_path when the route has one, else at the
+// provider's, so governance and the log row see the field the operator pointed at.
+func TestGenericPassthroughRouteModelPath(t *testing.T) {
+	r, takeHits := newGenericPassthroughFixture(t)
+	_ = r
+	takeHits()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: genericPassthroughTestAccount{baseURL: "http://127.0.0.1:1"},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	_, gp, ok := resolveGenericProvider(client, "echo")
+	require.True(t, ok)
+	assert.Equal(t, "name", gp.Plan("POST", "/named", "").ModelPath)
+	assert.Equal(t, "engine", gp.Plan("POST", "/search", "").ModelPath)
+	assert.Equal(t, "engine", gp.Plan("GET", "/named", "").ModelPath, "the route is method-specific")
+}
+
+func BenchmarkHandleGenericPassthrough(b *testing.B) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	b.Cleanup(upstream.Close)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: genericPassthroughTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(client.Shutdown)
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewGenericPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI("/passthrough/echo/search")
+		ctx.Request.Header.SetContentType("application/json")
+		ctx.Request.SetBodyString(`{"q":"x"}`)
+		r.Handler(&ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			b.Fatalf("status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+}
