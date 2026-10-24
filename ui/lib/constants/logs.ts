@@ -191,11 +191,20 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	typesafe: "TypeSafe",
 } as const;
 
+// BaseProviderOnlyLabels names the base provider types that are not providers in their own right
+// and so are not in ProviderLabels; the custom-provider base-format picker shows them.
+export const BaseProviderOnlyLabels: Record<string, string> = {
+	generic: "Generic HTTP API (passthrough)",
+};
+
 // Helper function to get provider label, supporting custom providers
 export const getProviderLabel = (provider: string): string => {
 	// Use hasOwnProperty for safe lookup without checking prototype chain
 	if (Object.prototype.hasOwnProperty.call(ProviderLabels, provider.toLowerCase().trim() as ProviderName)) {
 		return ProviderLabels[provider.toLowerCase().trim() as ProviderName];
+	}
+	if (Object.prototype.hasOwnProperty.call(BaseProviderOnlyLabels, provider.toLowerCase().trim())) {
+		return BaseProviderOnlyLabels[provider.toLowerCase().trim()];
 	}
 
 	// For custom providers, return the original provider name as is

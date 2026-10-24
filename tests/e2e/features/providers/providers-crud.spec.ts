@@ -1,6 +1,6 @@
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
-import { expectListLoadError } from "../../core/utils/test-helpers";
+import { expectListLoadError, fillSelect } from "../../core/utils/test-helpers";
 import {
   createCustomProviderData,
   createProviderKeyData,
@@ -525,6 +525,84 @@ test.describe("Providers", () => {
       await expect(hint).toContainText(`x-model-provider: ${providerData.name}`);
       // A custom provider stays off until it is given a policy.
       await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("Off");
+    });
+
+    test("should create a generic passthrough provider with header auth", async ({
+      providersPage,
+      page,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-generic-${Date.now()}`,
+        baseProviderType: "generic",
+        baseUrl: "https://api.tavily.com",
+        genericAuthType: "header",
+        genericAuthHeaderName: "x-api-key",
+      });
+
+      // Track for cleanup
+      createdProviders.push(providerData.name);
+
+      await providersPage.fillCustomProviderForm(providerData);
+
+      // A generic relay has no typed operations: the allowed-requests grid is not
+      // offered and the upstream auth section is.
+      await expect(providersPage.genericAuthSection).toBeVisible();
+      await expect(
+        page.getByTestId("allowed-request-switch-chat_completion"),
+      ).toHaveCount(0);
+
+      // Moving the format off generic brings the grid back with its defaults on,
+      // not all off.
+      await fillSelect(page, '[data-testid="base-provider-select"]', "OpenAI");
+      await expect(
+        page.getByTestId("allowed-request-switch-chat_completion"),
+      ).toBeChecked();
+      await fillSelect(page, '[data-testid="base-provider-select"]', "generic");
+      await expect(providersPage.genericAuthSection).toBeVisible();
+
+      // Leaving generic reset the auth fields to bearer, so pick header auth again.
+      await providersPage.genericAuthTypeSelect.click();
+      await page.getByTestId("generic-auth-type-option-header").click();
+      await providersPage.genericAuthHeaderNameInput.fill("x-api-key");
+
+      await providersPage.saveCustomProvider();
+
+      const providerItem = providersPage.getProviderItem(providerData.name);
+      await expect(providerItem).toBeVisible({ timeout: 15000 });
+
+      // The stored config carries the generic base, the auth mapping, and allows
+      // only passthrough.
+      const response = await page.request.get(
+        `/api/providers/${providerData.name}`,
+      );
+      expect(response.ok(), await response.text()).toBe(true);
+      const saved = (await response.json()) as {
+        custom_provider_config?: {
+          base_provider_type?: string;
+          allowed_requests?: {
+            passthrough?: boolean;
+            passthrough_stream?: boolean;
+            chat_completion?: boolean;
+          };
+          generic_config?: { auth?: { type?: string; header_name?: string } };
+        };
+      };
+      expect(saved.custom_provider_config?.base_provider_type).toBe("generic");
+      expect(saved.custom_provider_config?.allowed_requests?.passthrough).toBe(
+        true,
+      );
+      expect(
+        saved.custom_provider_config?.allowed_requests?.passthrough_stream,
+      ).toBe(true);
+      expect(
+        saved.custom_provider_config?.allowed_requests?.chat_completion,
+      ).toBeFalsy();
+      expect(saved.custom_provider_config?.generic_config?.auth?.type).toBe(
+        "header",
+      );
+      expect(
+        saved.custom_provider_config?.generic_config?.auth?.header_name,
+      ).toBe("x-api-key");
     });
 
     test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({
