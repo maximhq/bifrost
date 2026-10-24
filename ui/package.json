@@ -98,10 +98,10 @@
 		"typescript": "5.9.2",
 		"vite": "8.1.6",
 		"vite-plugin-monaco-editor": "1.1.0",
-		"vitest": "4.1.11"
+		"vitest": "4.1.12"
 	},
 	"overrides": {
-		"dompurify": "3.4.16",
+		"dompurify": "3.4.17",
 		"esbuild": "0.28.1",
 		"follow-redirects": "1.16.1",
 		"tar": "7.5.3",
