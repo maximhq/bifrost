@@ -386,6 +386,8 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 type GeminiStreamState struct {
 	nextToolCallIndex int
 	hadToolCalls      bool // true if any tool calls were seen in this stream
+	hadFinishReason   bool // true if a candidate finish reason was seen in this stream
+	groundingMetadata *GroundingMetadata
 }
 
 // NewGeminiStreamState returns initialised stream state for one streaming response.
@@ -521,8 +523,33 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 		state = NewGeminiStreamState()
 	}
 
-	// Handle empty candidates (filtered/malformed responses)
+	// Handle empty candidates (filtered/malformed responses, or a trailing usage-only chunk)
 	if len(response.Candidates) == 0 {
+		if response.UsageMetadata != nil && state.hadFinishReason {
+			streamResponse := &schemas.BifrostChatResponse{
+				ID:     response.ResponseID,
+				Model:  response.ModelVersion,
+				Object: "chat.completion.chunk",
+				Choices: []schemas.BifrostResponseChoice{{
+					Index: 0,
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{},
+					},
+				}},
+				Usage: ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata),
+			}
+			if !response.CreateTime.IsZero() {
+				streamResponse.Created = int(response.CreateTime.Unix())
+			}
+			applyGeminiSearchQueryChatUsage(streamResponse.Usage, state.groundingMetadata, response.ModelVersion)
+			if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
+				streamResponse.ServiceTier = t
+			} else if response.UsageMetadata.ServiceTier != "" {
+				tier := mapGeminiServiceTierToBifrost(response.UsageMetadata.ServiceTier)
+				streamResponse.ServiceTier = &tier
+			}
+			return streamResponse, nil, true
+		}
 		finishReason := ConvertGeminiFinishReasonToBifrost(FinishReasonMalformedFunctionCall)
 		if response.promptBlockError() != nil {
 			finishReason = ConvertGeminiFinishReasonToBifrost(FinishReasonSafety)
@@ -538,8 +565,15 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 		return createErrorResponse(response, finishReason, true), nil, true
 	}
 
+	if candidate.FinishReason != "" {
+		state.hadFinishReason = true
+	}
+	if candidate.GroundingMetadata != nil {
+		state.groundingMetadata = candidate.GroundingMetadata
+	}
+
 	// Determine if this is the last chunk based on finish reason and usage metadata
-	isLastChunk := candidate.FinishReason != "" && response.UsageMetadata != nil
+	isLastChunk := state.hadFinishReason && response.UsageMetadata != nil
 
 	// Create the streaming response
 	streamResponse := &schemas.BifrostChatResponse{
@@ -712,14 +746,14 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 	}
 
 	// Check if delta has any content - if not and it's not the last chunk, skip it
-	hasDeltaContent := delta.Role != nil || delta.Content != nil || delta.Audio != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0 || len(delta.Annotations) > 0
+	hasDeltaContent := delta.Role != nil || delta.Content != nil || delta.Audio != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0 || len(delta.Annotations) > 0 || candidate.FinishReason != "" || response.UsageMetadata != nil
 	if !hasDeltaContent && !isLastChunk {
 		return nil, nil, false
 	}
 
 	// Build the choice
 	var finishReason *string
-	if isLastChunk && candidate.FinishReason != "" {
+	if candidate.FinishReason != "" {
 		reason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
 		// Gemini uses "STOP" for both text completions and tool call responses.
 		// Override to "tool_calls" when tool calls were seen in this stream for uniformity.
@@ -740,10 +774,15 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 
 	streamResponse.Choices = []schemas.BifrostResponseChoice{choice}
 
-	// Add usage information if this is the last chunk
-	if isLastChunk && response.UsageMetadata != nil {
+	// Add usage information whenever present so running stream usage stays current
+	// and split finishReason / usageMetadata chunks both survive.
+	if response.UsageMetadata != nil {
 		streamResponse.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
-		applyGeminiSearchQueryChatUsage(streamResponse.Usage, candidate.GroundingMetadata, response.ModelVersion)
+		grounding := candidate.GroundingMetadata
+		if grounding == nil {
+			grounding = state.groundingMetadata
+		}
+		applyGeminiSearchQueryChatUsage(streamResponse.Usage, grounding, response.ModelVersion)
 		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
 			streamResponse.ServiceTier = t
 		} else if response.UsageMetadata.ServiceTier != "" {
