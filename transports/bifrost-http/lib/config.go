@@ -165,7 +165,8 @@ type pluginOrderInfo struct {
 }
 
 type ServerConfig struct {
-	ReadBufferSize int `json:"read_buffer_size,omitempty"`
+	ReadBufferSize int    `json:"read_buffer_size,omitempty"`
+	BasePath       string `json:"base_path,omitempty"` // URL path prefix behind a reverse proxy, e.g. "/bifrost"; see ResolveBasePath
 
 	// BodyBufferPoolLimitBytes caps the request-body buffer a pooled keep-alive
 	// connection keeps between requests; larger buffers are released after each

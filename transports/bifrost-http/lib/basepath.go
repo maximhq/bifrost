@@ -1,0 +1,79 @@
+package lib
+
+import (
+	"fmt"
+	"strings"
+)
+
+// NormalizeBasePath validates the URL path prefix Bifrost is mounted under
+// behind a reverse proxy (e.g. "/bifrost" for https://abc.com/bifrost) and
+// returns it in canonical form: a leading slash, no trailing slash, and "" for
+// the domain root. Accepted segments are limited to unreserved URL characters
+// so the value can be spliced into HTML, cookies, and Location headers as-is.
+func NormalizeBasePath(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" || value == "/" {
+		return "", nil
+	}
+	if !strings.HasPrefix(value, "/") {
+		return "", fmt.Errorf("base path %q must start with /", raw)
+	}
+	value = strings.TrimSuffix(value, "/")
+	for _, segment := range strings.Split(value[1:], "/") {
+		if segment == "" {
+			return "", fmt.Errorf("base path %q must not contain empty segments", raw)
+		}
+		if segment == "." || segment == ".." {
+			return "", fmt.Errorf("base path %q must not contain . or .. segments", raw)
+		}
+		for _, r := range segment {
+			if !isBasePathRune(r) {
+				return "", fmt.Errorf("base path %q contains invalid character %q", raw, r)
+			}
+		}
+	}
+	return value, nil
+}
+
+// ResolveBasePath picks the base path from the -base-path flag (or the
+// BIFROST_BASE_PATH env it defaults from) and falls back to server.base_path
+// from config.json, then normalizes it.
+func ResolveBasePath(cliValue string, serverConfig *ServerConfig) (string, error) {
+	value := cliValue
+	if strings.TrimSpace(value) == "" && serverConfig != nil {
+		value = serverConfig.BasePath
+	}
+	return NormalizeBasePath(value)
+}
+
+// CheckBasePathCollision rejects a base path whose first segment is also the
+// first segment of a registered route. Requests are accepted with or without
+// the prefix, so such a prefix would make "/<segment>/..." ambiguous between a
+// prefixed request and a direct hit on the route.
+func CheckBasePathCollision(basePath string, routes map[string][]string) error {
+	if basePath == "" {
+		return nil
+	}
+	first := firstPathSegment(basePath)
+	for _, paths := range routes {
+		for _, path := range paths {
+			if firstPathSegment(path) == first {
+				return fmt.Errorf("base path %q collides with route %q; choose a prefix whose first segment is not used by Bifrost", basePath, path)
+			}
+		}
+	}
+	return nil
+}
+
+func firstPathSegment(path string) string {
+	path = strings.TrimPrefix(path, "/")
+	if i := strings.IndexByte(path, '/'); i >= 0 {
+		return path[:i]
+	}
+	return path
+}
+
+func isBasePathRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+		r == '-' || r == '_' || r == '.' || r == '~'
+}
