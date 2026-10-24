@@ -42,6 +42,37 @@ func (mc *ModelCatalog) GetModelInfo(provider schemas.ModelProvider, model strin
 	return info
 }
 
+// EnrichListModelsResponse backfills every listed model from the catalog through
+// ApplyModelInfo, resolving each entry by its ID and then by its alias. Every
+// models route (native and SDK drop-in) calls this so they report the same
+// limits, pricing and deprecation for the same model.
+func (mc *ModelCatalog) EnrichListModelsResponse(resp *schemas.BifrostListModelsResponse) {
+	if mc == nil || resp == nil {
+		return
+	}
+	for i := range resp.Data {
+		mc.enrichModel(&resp.Data[i])
+	}
+}
+
+// EnrichModelRetrieveResponse applies the same backfill to a single retrieved
+// model, so one model reads the same whether it was listed or retrieved.
+func (mc *ModelCatalog) EnrichModelRetrieveResponse(resp *schemas.BifrostModelRetrieveResponse) {
+	if mc == nil || resp == nil {
+		return
+	}
+	mc.enrichModel(&resp.Model)
+}
+
+func (mc *ModelCatalog) enrichModel(model *schemas.Model) {
+	provider, modelName := schemas.ParseModelString(model.ID, "")
+	entry := mc.GetPricingEntryForModel(modelName, provider)
+	if entry == nil && model.Alias != nil {
+		entry = mc.GetPricingEntryForModel(*model.Alias, provider)
+	}
+	ApplyModelInfo(model, entry)
+}
+
 // ApplyModelInfo merges catalog metadata from entry into model, filling only
 // fields the caller has not already populated. Provider-reported values always
 // win: the catalog is a backfill for what a provider's list-models response

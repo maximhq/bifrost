@@ -911,7 +911,7 @@ Tool definitions are restructured:
 
 - `function.name` → `name` (preserved)
 - `function.parameters` → `inputSchema` (Schema format)
-- `function.strict` → Dropped (not supported by Bedrock)
+- `function.strict: true` → `toolSpec.strict` for Claude models ([strict tool use](https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html)); `strict: false` is the default and is omitted, and strict is dropped for other model families. Some inference profiles do not support structured outputs (for example Claude Haiku 4.5 through `in.anthropic`), and Bedrock returns a 400 for `strict: true` there
 
 ### Tool Choice Mapping
 

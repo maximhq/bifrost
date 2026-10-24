@@ -1369,6 +1369,9 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 			inputSchemaBytes, _ := providerUtils.MarshalSorted(inputSchema)
 			spec.InputSchema = BedrockToolInputSchema{JSON: json.RawMessage(inputSchemaBytes)}
 		}
+		if strict, ok := toolMap["strict"].(bool); ok {
+			spec.Strict = new(strict)
+		}
 		if deferLoading, ok := toolMap["defer_loading"].(bool); ok {
 			spec.DeferLoading = new(deferLoading)
 		}
