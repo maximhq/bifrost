@@ -48,3 +48,4 @@
 - [fix]: Bedrock invoke-with-response-stream ends a tool-call turn with stop_reason tool_use instead of end_turn, matching the non-streaming invoke response (thanks [@pcbeingused333](https://github.com/pcbeingused333)!) (#8550)
 - feat: MiniMax provider for chat, Responses, image generation, video generation, speech and transcription
 - feat: BytePlus ModelArk provider for Seed chat, native Responses, multimodal embeddings, Seedream image generation and editing, and Seedance video generation
+- fix: Bedrock batch jobs send the full inference profile ARN as modelId [@jeremym-tanium](https://github.com/jeremym-tanium)

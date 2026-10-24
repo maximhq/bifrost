@@ -161,6 +161,21 @@ func resolveBedrockARN(ctx *schemas.BifrostContext, key schemas.Key) string {
 	return ""
 }
 
+// resolveBedrockBatchModelID returns the modelId for CreateModelInvocationJob.
+// It joins the configured ARN prefix the same way getModelPathAndRegion does,
+// because the batch API rejects a bare inference profile ID as an invalid model
+// identifier.
+func resolveBedrockBatchModelID(ctx *schemas.BifrostContext, key schemas.Key, model string) string {
+	if strings.HasPrefix(model, "arn:") {
+		return model
+	}
+	_, bareModel := parseBedrockRegionAndModel(model)
+	if arn := resolveBedrockARN(ctx, key); arn != "" {
+		return fmt.Sprintf("%s/%s", arn, bareModel)
+	}
+	return model
+}
+
 var (
 	invalidCharRegex = regexp.MustCompile(`[^a-zA-Z0-9\s\-\(\)\[\]]`)
 	multiSpaceRegex  = regexp.MustCompile(`\s{2,}`)
