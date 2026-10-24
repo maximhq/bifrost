@@ -242,6 +242,10 @@ type WarpTopicStore interface {
 	// DeleteWarpTopicAssignments removes the given requests' assignments, for
 	// a run taking back the rows it wrote.
 	DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error
+	// DeleteWarpTopicAssignmentsUnmatchedSince removes the rows filed under no
+	// topic at or after since, for a failed seed run taking back what it filed
+	// there without keeping a list of every one.
+	DeleteWarpTopicAssignmentsUnmatchedSince(ctx context.Context, since time.Time) error
 	// BucketWarpTopicAssignments adds up the selected assignments per topic
 	// and per bucket of bucketSizeSeconds, oldest bucket first, within the
 	// caller's access scope. Buckets start at multiples of the size since the
@@ -547,6 +551,13 @@ func (s *RDBLogStore) ListWarpTopicAssignments(ctx context.Context, filter WarpT
 		Limit(limit).
 		Find(&assignments).Error
 	return assignments, err
+}
+
+// DeleteWarpTopicAssignmentsUnmatchedSince removes the rows filed under no
+// topic at or after since.
+func (s *RDBLogStore) DeleteWarpTopicAssignmentsUnmatchedSince(ctx context.Context, since time.Time) error {
+	placeholder, arg := warpTopicTimeArg(s.db, since)
+	return s.db.WithContext(ctx).Where("topic_id = ? AND assigned_at >= "+placeholder, "", arg).Delete(&WarpTopicAssignment{}).Error
 }
 
 // DeleteWarpTopicAssignments removes the given requests' assignments.
