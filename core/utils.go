@@ -32,6 +32,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Azure,
 	schemas.Bedrock,
 	schemas.BedrockMantle,
+	schemas.SageMaker,
 	schemas.BytePlus,
 	schemas.Cerebras,
 	schemas.Cohere,
@@ -77,7 +78,7 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.SageMaker || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
 }
 
 // isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
@@ -151,6 +152,11 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		// BedrockMantleKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
 		if key.BedrockMantleKeyConfig == nil {
 			key.BedrockMantleKeyConfig = &schemas.BedrockMantleKeyConfig{}
+		}
+	case schemas.SageMaker:
+		// SageMakerKeyConfig is optional — an empty config is valid for IRSA / ambient credential auth.
+		if key.SageMakerKeyConfig == nil {
+			key.SageMakerKeyConfig = &schemas.SageMakerKeyConfig{}
 		}
 	case schemas.Vertex:
 		if key.VertexKeyConfig == nil {

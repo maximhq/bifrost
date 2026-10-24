@@ -699,7 +699,7 @@ func signAWSRequest(
 	// Set x-amz-content-sha256 header (required for S3, harmless for other AWS services)
 	req.Header.Set("x-amz-content-sha256", bodyHash)
 
-	creds, credErr := resolveAWSCredentials(ctx, keyCfg, region)
+	creds, credErr := ResolveAWSCredentials(ctx, keyCfg, region)
 	if credErr != nil {
 		return credErr
 	}
@@ -721,8 +721,9 @@ func signWithCredentials(ctx context.Context, req *http.Request, creds aws.Crede
 	return nil
 }
 
-// resolveAWSCredentials loads explicit, assumed-role or default-chain credentials for SigV4 signing.
-func resolveAWSCredentials(ctx *schemas.BifrostContext, keyCfg *schemas.BedrockKeyConfig, region string) (aws.Credentials, *schemas.BifrostError) {
+// ResolveAWSCredentials resolves the AWS credentials for keyCfg: explicit keys, else the default
+// chain, with an optional STS AssumeRole on top (cached per role and source identity).
+func ResolveAWSCredentials(ctx *schemas.BifrostContext, keyCfg *schemas.BedrockKeyConfig, region string) (aws.Credentials, *schemas.BifrostError) {
 	var accessKey, secretKey schemas.SecretVar
 	var sessionToken, roleARN, externalID, sessionName *schemas.SecretVar
 

@@ -119,7 +119,7 @@ func (provider *BedrockProvider) ConnectRealtime(ctx *schemas.BifrostContext, ke
 	}
 	path, region := provider.getModelPathAndRegion(ctx, sonicBidirectionalAction, model, key)
 	credentials := func() (aws.Credentials, *schemas.BifrostError) {
-		return resolveAWSCredentials(ctx, key.BedrockKeyConfig, region)
+		return ResolveAWSCredentials(ctx, key.BedrockKeyConfig, region)
 	}
 	if _, credErr := credentials(); credErr != nil {
 		return nil, credErr
