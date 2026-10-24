@@ -983,11 +983,16 @@ func TestClassifyURLSource(t *testing.T) {
 		want      urlSourceDisposition
 	}{
 		{name: "https to gemini is fetched", url: "https://example.com/a.pdf", want: urlSourceFetchHTTP},
+		{name: "youtube to gemini is forwarded", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", want: urlSourceForward},
+		{name: "short youtube link to gemini is forwarded", url: "https://youtu.be/dQw4w9WgXcQ", want: urlSourceForward},
+		{name: "youtube lookalike to gemini is fetched", url: "https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ", want: urlSourceFetchHTTP},
+		{name: "http youtube to gemini is fetched", url: "http://www.youtube.com/watch?v=dQw4w9WgXcQ", want: urlSourceFetchHTTP},
 		{name: "http to gemini is fetched", url: "http://example.com/a.pdf", want: urlSourceFetchHTTP},
 		{name: "gcs to gemini is forwarded", url: "gs://bucket/clip.mp4", want: urlSourceForward},
 		{name: "data uri to gemini is forwarded", url: "data:image/png;base64,iVBORw0KGgo=", want: urlSourceForward},
 
 		{name: "https to claude is fetched", url: "https://example.com/a.pdf", anthropic: true, want: urlSourceFetchHTTP},
+		{name: "youtube to claude is fetched", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", anthropic: true, want: urlSourceFetchHTTP},
 		{name: "http to claude is fetched", url: "http://example.com/a.pdf", anthropic: true, want: urlSourceFetchHTTP},
 		{name: "gcs to claude is fetched from storage", url: "gs://bucket/clip.mp4", anthropic: true, want: urlSourceFetchGCS},
 		{name: "data uri to claude is forwarded", url: "data:image/png;base64,iVBORw0KGgo=", anthropic: true, want: urlSourceForward},
@@ -1015,8 +1020,9 @@ func TestClassifyURLSource(t *testing.T) {
 // forwardedGeminiURLs are the URL forms a Gemini-family request must reach Vertex with
 // intact. gs:// is the load-bearing case: downloading it fails outright today (the
 // reported bug) and forwarding keeps large media out of the 25 MiB inline path.
-// https is deliberately absent -- Vertex rejects a forwarded https fileUri, measured
-// against harness 47.10, so it stays on the fetch path. See classifyURLSource.
+// Arbitrary https is deliberately absent -- Vertex rejects a forwarded https fileUri,
+// measured against harness 47.10; only YouTube video URLs use the Gemini exception.
+// See classifyURLSource.
 var forwardedGeminiURLs = []struct {
 	name string
 	url  string
@@ -1174,6 +1180,91 @@ func TestInlineRemoteURLSourcesForwardsUnfetchableSchemes(t *testing.T) {
 				t.Errorf("file data = %q, want nil: bifrost must not have fetched anything", *block.File.FileData)
 			}
 		})
+	}
+}
+
+func TestVertexGeminiYouTubeVideoURLSurvivesInlining(t *testing.T) {
+	t.Parallel()
+
+	const youtubeURL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+	provider := &VertexProvider{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	fileURL := youtubeURL
+	fileType := "video/mp4"
+	request := &schemas.BifrostChatRequest{
+		Model: "gemini-3.1-pro-preview",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{
+							Type: schemas.ChatContentBlockTypeFile,
+							File: &schemas.ChatInputFile{FileURL: &fileURL, FileType: &fileType},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if err := provider.inlineRemoteURLSources(ctx, schemas.Key{}, request); err != nil {
+		t.Fatalf("inlineRemoteURLSources returned error for YouTube file source: %v", err)
+	}
+
+	result, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+	if err != nil {
+		t.Fatalf("converting YouTube file source failed: %v", err)
+	}
+	if len(result.Contents) != 1 || len(result.Contents[0].Parts) != 1 {
+		t.Fatalf("expected one part, got %#v", result.Contents)
+	}
+	part := result.Contents[0].Parts[0]
+	if part.FileData == nil {
+		t.Fatalf("expected a fileData part, got %#v", part)
+	}
+	if part.FileData.FileURI != youtubeURL {
+		t.Errorf("fileUri = %q, want %q", part.FileData.FileURI, youtubeURL)
+	}
+	if part.FileData.MIMEType != fileType {
+		t.Errorf("mimeType = %q, want %q", part.FileData.MIMEType, fileType)
+	}
+}
+
+func TestInlineDocumentURLsResponsesForwardsYouTubeVideo(t *testing.T) {
+	t.Parallel()
+
+	const youtubeURL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+	provider := &VertexProvider{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	fileURL := youtubeURL
+	role := schemas.ResponsesInputMessageRoleUser
+	request := &schemas.BifrostResponsesRequest{
+		Model: "gemini-3.1-pro-preview",
+		Input: []schemas.ResponsesMessage{
+			{
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+							ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileURL: &fileURL},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if err := provider.inlineDocumentURLsResponses(ctx, schemas.Key{}, request); err != nil {
+		t.Fatalf("inlineDocumentURLsResponses returned error for YouTube file source: %v", err)
+	}
+	file := request.Input[0].Content.ContentBlocks[0].ResponsesInputMessageContentBlockFile
+	if file.FileURL == nil || *file.FileURL != youtubeURL {
+		t.Errorf("file URL = %v, want %q untouched", file.FileURL, youtubeURL)
+	}
+	if file.FileData != nil {
+		t.Errorf("file data = %q, want nil (the reference must be forwarded, not fetched)", *file.FileData)
 	}
 }
 

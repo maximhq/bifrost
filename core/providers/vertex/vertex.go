@@ -86,13 +86,14 @@ const (
 // different source types, so the same URL is forwarded for one and downloaded for the
 // other.
 //
-// http(s) -- always fetched, for both families. Vertex's FileData is documented as Cloud
+// http(s) -- normally fetched, for both families. Vertex's FileData is documented as Cloud
 // Storage only ("fileUri: Required. The URI of the file in Google Cloud Storage" -- the v1
-// aiplatform discovery document), so an https URI has no supported form here. Forwarding
-// one was measured against harness 47.10 and Vertex rejected all six endpoint shapes with
-// "Cannot fetch content from the provided URL ... Status:
-// URL_REJECTED-REJECTED_FC_TOO_MANY_PENDING" after ~59s each: the server-side crawler is
-// undocumented best-effort and saturates. Inlining costs a download but is deterministic.
+// aiplatform discovery document), so arbitrary https URIs have no supported form here.
+// Forwarding them was measured against harness 47.10 and Vertex rejected all six endpoint
+// shapes with "Cannot fetch content from the provided URL ... Status:
+// URL_REJECTED-REJECTED_FC_TOO_MANY_PENDING" after ~59s each. Gemini/Gemma is the documented
+// exception for public YouTube video URLs: those are read by Gemini itself, so forwarding
+// them avoids downloading the HTML watch page. Claude-on-Vertex remains on the fetch path.
 //
 // gs:// -- forwarded for Gemini/Gemma as fileData.fileUri. This is the documented form, it
 // resolves under the caller's own project IAM with no crawler involved, and it sidesteps
@@ -112,13 +113,23 @@ const (
 // Vertex cannot resolve it and Bifrost has no credentials to fetch it: AWS credentials
 // live only on BedrockKeyConfig, and core cannot reach framework/objectstore without a
 // module cycle. Callers should presign to https instead.
+func isYouTubeURL(parsed *url.URL) bool {
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	return host == "youtube.com" || strings.HasSuffix(host, ".youtube.com") || host == "youtu.be"
+}
+
 func classifyURLSource(rawURL string, isAnthropicFamily bool) urlSourceDisposition {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return urlSourceForward
 	}
 	switch parsed.Scheme {
-	case "http", "https":
+	case "http":
+		return urlSourceFetchHTTP
+	case "https":
+		if !isAnthropicFamily && isYouTubeURL(parsed) {
+			return urlSourceForward
+		}
 		return urlSourceFetchHTTP
 	case "data":
 		return urlSourceForward
@@ -558,9 +569,9 @@ func (provider *VertexProvider) fetchGCSObjectEncoded(ctx *schemas.BifrostContex
 // cancellation/deadlines abort in-flight downloads.
 //
 // classifyURLSource holds the per-scheme, per-family rules and cites the provider docs
-// behind each one; the short version is that http(s) is always fetched, gs:// is forwarded
-// to Gemini and fetched for Claude, and object-store URIs other than gs:// are resolvable
-// by neither side.
+// behind each one; the short version is that arbitrary http(s) is fetched, YouTube HTTPS
+// URLs and gs:// are forwarded to Gemini, gs:// is fetched for Claude, and object-store
+// URIs other than gs:// are resolvable by neither side.
 func (provider *VertexProvider) inlineRemoteURLSources(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) error {
 	if request == nil || request.Input == nil {
 		return nil
