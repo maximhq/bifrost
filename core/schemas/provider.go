@@ -626,6 +626,7 @@ type CustomProviderConfig struct {
 	RequestPathOverrides  map[RequestType]string `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
 	DoesNotSendDoneMarker bool                   `json:"does_not_send_done_marker"`        // Upstream ends its SSE stream after finish_reason without sending data: [DONE]
 	WaitForUsage          bool                   `json:"wait_for_usage"`                   // With DoesNotSendDoneMarker, keep reading past finish_reason so the trailing usage-only chunk is not dropped (#7143). A silent upstream then ends on network_config.stream_idle_timeout_in_seconds
+	GenericConfig         *GenericProviderConfig `json:"generic_config,omitempty"`         // Relay settings for the generic base type (auth, usage mapping, routes, OpenAPI spec)
 }
 
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider
