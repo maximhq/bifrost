@@ -1,0 +1,81 @@
+# The area labels of a pull request, by the paths it changes, for
+# .github/workflows/labeler.yml (actions/labeler). The labels themselves are
+# .github/labels.yml's. An all-globs-to-any-file entry matches when one changed
+# file matches every glob in it, which is how core and framework leave out the
+# subtrees that have their own label.
+
+core:
+- changed-files:
+  - all-globs-to-any-file:
+    - core/**
+    - '!core/providers/**'
+    - '!core/mcp/**'
+providers:
+- changed-files:
+  - any-glob-to-any-file: core/providers/**
+mcp:
+- changed-files:
+  - any-glob-to-any-file:
+    - core/mcp/**
+    - framework/mcp_headers/**
+    - framework/mcpcatalog/**
+    - framework/openapimcp/**
+framework:
+- changed-files:
+  - all-globs-to-any-file:
+    - framework/**
+    - '!framework/mcp_headers/**'
+    - '!framework/mcpcatalog/**'
+    - '!framework/openapimcp/**'
+transport:
+- changed-files:
+  - all-globs-to-any-file:
+    - transports/**
+    - '!transports/bifrost-http/integrations/**'
+integrations:
+- changed-files:
+  - any-glob-to-any-file: transports/bifrost-http/integrations/**
+plugins:
+- changed-files:
+  - any-glob-to-any-file: plugins/**
+ui:
+- changed-files:
+  - any-glob-to-any-file: ui/**
+cli:
+- changed-files:
+  - any-glob-to-any-file:
+    - cli/**
+    - npx/**
+helm:
+- changed-files:
+  - any-glob-to-any-file: helm-charts/**
+terraform:
+- changed-files:
+  - any-glob-to-any-file: terraform/**
+documentation:
+- changed-files:
+  - any-glob-to-any-file:
+    - docs/**
+    - '*.md'
+tests:
+- changed-files:
+  - any-glob-to-any-file:
+    - tests/**
+    - cmd/e2eseed/**
+ci:
+- changed-files:
+  - any-glob-to-any-file:
+    - .github/**
+    - .claude/**
+    - Makefile
+    - flake.nix
+    - flake.lock
+    - nix/**
+    - scripts/**
+    - go.work
+    - .pre-commit-config.yaml
+examples:
+- changed-files:
+  - any-glob-to-any-file:
+    - examples/**
+    - recipes/**

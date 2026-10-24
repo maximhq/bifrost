@@ -47,7 +47,9 @@ export class ProviderSettingsPage extends BasePage {
   /**
    * Select a configuration tab
    */
-  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging' | 'tools'): Promise<void> {
+  async selectConfigTab(
+    tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging' | 'tools' | 'passthrough',
+  ): Promise<void> {
     await this.openConfigSheet()
 
     const tab = this.page.getByTestId(`provider-tab-${tabName}`)
@@ -347,6 +349,55 @@ export class ProviderSettingsPage extends BasePage {
       const input = this.page.locator('#providerRequestMaxLimit')
       await input.clear()
       await input.fill(String(config.requestLimit))
+    }
+  }
+
+  // ============================================
+  // Passthrough Configuration
+  // ============================================
+
+  getPassthroughModeSelect(): Locator {
+    return this.page.getByTestId('provider-passthrough-mode-select')
+  }
+
+  getPassthroughSaveBtn(): Locator {
+    return this.page.getByTestId('provider-passthrough-save-btn')
+  }
+
+  /**
+   * Pick a Passthrough tab mode from its select
+   */
+  async selectPassthroughMode(mode: 'all' | 'custom' | 'off'): Promise<void> {
+    await this.getPassthroughModeSelect().click()
+    await this.page.getByTestId(`provider-passthrough-mode-option-${mode}`).click()
+  }
+
+  /**
+   * Save the Passthrough tab, assert the PUT succeeded, and return the body it sent
+   */
+  async savePassthrough(provider: string): Promise<{ passthrough?: unknown }> {
+    const saved = this.page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname.endsWith(`/api/providers/${provider}`) && response.request().method() === 'PUT',
+    )
+    await this.getPassthroughSaveBtn().click()
+    const response = await saved
+    expect(response.status(), await response.text()).toBe(200)
+    // The toast follows the cache update, so the form has reloaded the saved policy by now.
+    await this.waitForSuccessToast('Passthrough routes updated')
+    return response.request().postDataJSON()
+  }
+
+  /**
+   * Put a built-in provider's passthrough back to its default (every route). Saves only
+   * when the tab shows a change, so it is safe to call from cleanup.
+   */
+  async resetPassthroughToDefault(provider: string): Promise<void> {
+    await this.selectConfigTab('passthrough')
+    await this.selectPassthroughMode('all')
+    await expect(this.getPassthroughModeSelect()).toContainText('All routes')
+    if (await this.getPassthroughSaveBtn().isEnabled()) {
+      await this.savePassthrough(provider)
     }
   }
 

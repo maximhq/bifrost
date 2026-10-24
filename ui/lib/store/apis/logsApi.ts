@@ -120,6 +120,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.project_ids && filters.project_ids.length > 0) {
 		params.project_ids = filters.project_ids.join(",");
 	}
+	if (filters.topic_ids && filters.topic_ids.length > 0) {
+		params.topic_ids = filters.topic_ids.join(",");
+	}
 	if (filters.apps && filters.apps.length > 0) {
 		params.apps = JSON.stringify(filters.apps);
 	}
@@ -258,11 +261,13 @@ export const logsApi = baseApi.injectEndpoints({
 			CostHistogramResponse,
 			{
 				filters: LogFilters;
+				// Overrides the bucket width the server derives from the time range.
+				bucketSizeSeconds?: number;
 			}
 		>({
-			query: ({ filters }) => ({
+			query: ({ filters, bucketSizeSeconds }) => ({
 				url: "/logs/histogram/cost",
-				params: buildFilterParams(filters),
+				params: { ...buildFilterParams(filters), ...(bucketSizeSeconds ? { bucket_size: bucketSizeSeconds } : {}) },
 			}),
 			providesTags: ["Logs"],
 		}),
@@ -426,6 +431,7 @@ export const logsApi = baseApi.injectEndpoints({
 				users?: { id: string; name: string }[];
 				business_units?: { id: string; name: string }[];
 				projects?: { id: string; name: string }[];
+				topics?: { id: string; name: string }[];
 				metadata_keys?: Record<string, string[]>;
 			},
 			{ dimensions?: string[]; q?: string } | void

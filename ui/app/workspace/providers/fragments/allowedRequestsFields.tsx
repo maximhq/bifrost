@@ -94,16 +94,21 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "count_tokens", label: "Count Tokens" },
 	{ key: "decisions", label: "Decisions" },
 	{ key: "live", label: "Live" },
+	{ key: "passthrough", label: "Passthrough" },
+	{ key: "passthrough_stream", label: "Passthrough Stream" },
 ];
 
 // Path overrides replace the default path verbatim; these request paths embed a
-// resource ID, so an override can never produce a valid URL for them.
+// resource ID, so an override can never produce a valid URL for them. Passthrough
+// forwards the client's own path, so it has no default path to override.
 const PathOverrideUnsupported = new Set<RequestType>([
 	"model_retrieve",
 	"responses_retrieve",
 	"responses_delete",
 	"responses_cancel",
 	"responses_input_items",
+	"passthrough",
+	"passthrough_stream",
 ]);
 
 export function AllowedRequestsFields({

@@ -2,16 +2,8 @@ import {
 	AnalyzerConfig,
 	COMPLEXITY_TIER_VALUES,
 	DEFAULT_DECISION_CONFIG,
-	DEFAULT_DECISION_MODEL,
 	DecisionGuidanceDefaults,
 	DecisionTier,
-	AZURE_DECISION_MODEL,
-	CLOUDFLARE_DECISION_MODEL,
-	DATABRICKS_DECISION_MODEL,
-	OPENAI_DECISION_MODEL,
-	OPENROUTER_DECISION_MODEL,
-	PERPLEXITY_DECISION_MODEL,
-	SELF_HOSTED_DECISION_MODELS,
 	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
 	MAX_DECISION_CRITERIA_ITEMS,
 	MAX_DECISION_DEFINITION_CHARACTERS,
@@ -32,11 +24,7 @@ import {
 } from "@/lib/types/complexityRouter";
 import { ModelProvider } from "@/lib/types/config";
 import { DBKey } from "@/lib/types/governance";
-import { clefModelFromProvider, namedSelfHostedGroup, type SelfHostedModelGroup } from "@/lib/utils/decisionModelProviders";
 import { z } from "zod";
-
-// Re-exported for the callers that read a provider's Clef model alongside the form helpers.
-export { clefModelFromProvider };
 
 // Form-owned duration values are always a single unit (the controls append
 // "ms"), so a plain positive-duration check is enough.
@@ -531,60 +519,6 @@ export function isRouterConfigured(config: AnalyzerConfig | undefined): boolean 
 // decision model runs through. "configured" is not a guarantee that decision
 // calls succeed — only a live request proves that — so the UI never calls it "ready".
 export type DecisionProviderState = "missing" | "failing" | "no-enabled-key" | "configured";
-
-// isDecisionProvider reports a provider that answers /v1/decisions natively:
-// Typesafe, OpenRouter, Cloudflare (Clef), Perplexity, Ollama, Azure
-// (Microsoft-Decision-1), Databricks (ai_decide), OpenAI or a custom provider built on it (their decision
-// models, such as gpt-6-luna), or a custom provider built on
-// the Typesafe base (Laya, Nimble, Clef). Other providers would only emulate
-// decisions through chat, which is what the LLM classifier is for.
-export function isDecisionProvider(provider: ModelProvider): boolean {
-	return (
-		provider.name === "typesafe" ||
-		provider.name === "openrouter" ||
-		provider.name === "cloudflare" ||
-		provider.name === "perplexity" ||
-		provider.name === "ollama" ||
-		provider.name === "azure" ||
-		provider.name === "databricks" ||
-		isOpenAIDecisionProvider(provider) ||
-		provider.custom_provider_config?.base_provider_type === "typesafe"
-	);
-}
-
-// isOpenAIDecisionProvider reports OpenAI or a custom provider built on it.
-// Only the models the datasheet marks as decision models are offered on it.
-export function isOpenAIDecisionProvider(provider: ModelProvider | undefined): boolean {
-	return provider?.name === "openai" || provider?.custom_provider_config?.base_provider_type === "openai";
-}
-
-// selfHostedModelGroups is the checkpoint list offered for a self-hosted provider
-// that cannot list its models: the checkpoints of the model it is named after,
-// otherwise every group.
-export function selfHostedModelGroups(providerName: string): SelfHostedModelGroup[] {
-	const named = namedSelfHostedGroup(providerName);
-	return named ? [named] : [...SELF_HOSTED_DECISION_MODELS];
-}
-
-// defaultDecisionModel is the model a newly selected provider starts on: Jev's
-// latest alias (named per provider), Clef Flash on Cloudflare, OpenAI's decision
-// model (a custom OpenAI-based provider starts empty, as only its listing says
-// what it serves), the Clef model a custom provider's Cloudflare URL serves, or
-// the first checkpoint of the model a self-hosted provider is named after (Laya
-// starts on english). A provider whose name says nothing starts empty, since only
-// the operator knows which model it runs.
-export function defaultDecisionModel(provider: ModelProvider | undefined): string {
-	if (provider?.name === "typesafe") return DEFAULT_DECISION_MODEL;
-	if (provider?.name === "openrouter") return OPENROUTER_DECISION_MODEL;
-	if (provider?.name === "cloudflare") return CLOUDFLARE_DECISION_MODEL;
-	if (provider?.name === "perplexity") return PERPLEXITY_DECISION_MODEL;
-	if (provider?.name === "ollama") return "";
-	if (provider?.name === "azure") return AZURE_DECISION_MODEL;
-	if (provider?.name === "databricks") return DATABRICKS_DECISION_MODEL;
-	if (provider?.name === "openai") return OPENAI_DECISION_MODEL;
-	if (isOpenAIDecisionProvider(provider)) return "";
-	return clefModelFromProvider(provider) ?? namedSelfHostedGroup(provider?.name ?? "")?.models[0] ?? "";
-}
 
 export function getDecisionProviderState(
 	providers: ModelProvider[] | undefined,

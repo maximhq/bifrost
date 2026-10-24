@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/tests/cmd/seed
 
-go 1.27.2
+go 1.27.3
 
 replace (
 	github.com/maximhq/bifrost/core => ../../../core
@@ -9,7 +9,7 @@ replace (
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.12.0
+	github.com/maximhq/bifrost/core v1.13.1
 	github.com/maximhq/bifrost/framework v1.3.16
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0

@@ -292,6 +292,111 @@
           }
         },
         {
+          "name": "Responses non-streaming keeps extra_fields in the body",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responses non-streaming returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the response output is intact', function () { pm.expect(pm.response.json().output, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "pm.test('extra_fields names the provider', function () { var ef = pm.response.json().extra_fields; pm.expect(ef, pm.response.text()).to.be.an('object'); pm.expect(ef.provider, pm.response.text()).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('the body carries exactly one extra_fields', function () { var t = pm.response.text(); pm.expect(t.split('\"extra_fields\"').length - 1, t).to.equal(1); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('body mode adds no x-bifrost-latency-ms header', function () { pm.expect(pm.response.headers.get('x-bifrost-latency-ms'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Responses streaming keeps one top-level extra_fields per event",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responses streaming returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the stream delivered SSE chunks', function () { var t = pm.response.text(); pm.expect(t, t).to.include('data: '); pm.expect(t, t).to.include('response.completed'); });",
+                  "var events = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "pm.test('every event carries a top-level extra_fields', function () { pm.expect(events.length, pm.response.text()).to.be.above(0); events.forEach(function (e) { pm.expect(e.extra_fields, JSON.stringify(e)).to.be.an('object'); }); });",
+                  "pm.test('no lifecycle event nests extra_fields in its response', function () { var lifecycle = events.filter(function (e) { return e.response; }); pm.expect(lifecycle.length, pm.response.text()).to.be.above(0); lifecycle.forEach(function (e) { pm.expect(e.response, JSON.stringify(e)).to.not.have.property('extra_fields'); }); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('body mode adds no x-bifrost-latency-ms header', function () { pm.expect(pm.response.headers.get('x-bifrost-latency-ms'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
           "name": "Chat non-streaming fallback reports the fallback in headers and body",
           "event": [
             {
@@ -807,7 +912,8 @@
                   "pm.test('The body carries no extra_fields', function () { pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"'); });",
                   "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
                   "pm.test('x-bifrost-latency-ms carries the latency', function () { pm.expect(pm.response.headers.get('x-bifrost-latency-ms') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^[0-9]+$/); });",
-                  "pm.test('x-bifrost-routing-info-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-routing-info-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('a bare model names no requested provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });",
                   "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
                   "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
                   "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
@@ -865,7 +971,8 @@
                   "pm.test('the stream delivered SSE chunks', function () { var t = pm.response.text(); pm.expect(t, t).to.include('data: '); pm.expect(t, t).to.include('\"choices\"'); });",
                   "pm.test('No chunk carries extra_fields', function () { pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"'); });",
                   "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
-                  "pm.test('x-bifrost-routing-info-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-routing-info-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('a bare model names no requested provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });",
                   "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
                   "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
                   "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",

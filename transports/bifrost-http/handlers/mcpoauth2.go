@@ -279,16 +279,34 @@ func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, response)
 }
 
+// auditOAuthConfigBefore snapshots an OAuth config for the audit log with URL credentials stripped.
+func auditOAuthConfigBefore(cfg *configstoreTables.TableOauthConfig) map[string]any {
+	return map[string]any{
+		"status":        cfg.Status,
+		"authorize_url": lib.RedactURLCredentials(cfg.AuthorizeURL),
+		"token_url":     lib.RedactURLCredentials(cfg.TokenURL),
+		"server_url":    lib.RedactURLCredentials(cfg.ServerURL),
+	}
+}
+
 // revokeOAuthConfig revokes an OAuth configuration and its associated token
 // DELETE /api/oauth/config/{id}
 func (h *OAuthHandler) revokeOAuthConfig(ctx *fasthttp.RequestCtx) {
 	configID := ctx.UserValue("id").(string)
+
+	var before map[string]any
+	if h.store != nil && h.store.ConfigStore != nil {
+		if cfg, err := h.store.ConfigStore.GetOauthConfigByID(ctx, configID); err == nil && cfg != nil {
+			before = auditOAuthConfigBefore(cfg)
+		}
+	}
 
 	if err := h.oauthProvider.RevokeToken(ctx, configID); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to revoke OAuth token: %v", err))
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "oauth_config.token_revoked", "oauth_config", configID, configID, before, nil)
 	SendJSON(ctx, map[string]interface{}{
 		"message": "OAuth token revoked successfully",
 	})

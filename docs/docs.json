@@ -151,6 +151,7 @@
                   "providers/supported-providers/azure-model-router",
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
+                  "providers/supported-providers/byteplus",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cloudflare",
                   "providers/supported-providers/cohere",
@@ -162,6 +163,7 @@
                   "providers/supported-providers/github-copilot",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
+                  "providers/supported-providers/minimax",
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
                   "providers/supported-providers/ollama",
@@ -557,7 +559,9 @@
               {
                 "group": "Cohere SDK",
                 "icon": "c",
-                "pages": ["integrations/cohere-sdk/overview"]
+                "pages": [
+                  "integrations/cohere-sdk/overview"
+                ]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -1555,6 +1559,9 @@
                   "POST /api/warp/log-index/backfill",
                   "GET /api/warp/log-index/backfill/status",
                   "POST /api/warp/log-index/backfill/cancel",
+                  "POST /api/warp/log-index/topics",
+                  "GET /api/warp/log-index/topics/status",
+                  "POST /api/warp/log-index/topics/cancel",
                   "POST /api/warp/chat",
                   "GET /api/warp/log-index/status",
                   "GET /api/warp/conversations",
@@ -1733,7 +1740,8 @@
                 "expanded": false,
                 "pages": [
                   "GET /api/governance/budgets",
-                  "GET /api/governance/rate-limits"
+                  "GET /api/governance/rate-limits",
+                  "POST /api/governance/budget-requests/{request_id}/approve"
                 ]
               },
               {
@@ -1999,6 +2007,8 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.3.2",
+              "changelogs/v2.3.1",
               "changelogs/v2.3.0",
               "changelogs/v2.2.6",
               "changelogs/v2.2.5",
@@ -2231,6 +2241,8 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.3.2",
+              "changelogs/ent-v2.3.1",
               "changelogs/ent-v2.3.0",
               "changelogs/ent-v2.2.6",
               "changelogs/ent-v2.2.5",
@@ -2337,6 +2349,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.9.4",
               "changelogs/edge-v0.9.3",
               "changelogs/edge-v0.9.2",
               {
@@ -2399,6 +2412,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.46",
               "changelogs/helm-v2.1.45",
               "changelogs/helm-v2.1.44",
               "changelogs/helm-v2.1.43",

@@ -352,7 +352,7 @@ func TestOpenAIDecisionRequestKeepsUnknownFields(t *testing.T) {
 
 // TestOpenAIDecisionRequestToBifrost pins the route's request conversion:
 // OpenAI's questions map onto the shared ones unchanged, and a model without a
-// provider prefix is OpenAI's.
+// provider prefix is left for routing to resolve rather than pinned to OpenAI.
 func TestOpenAIDecisionRequestToBifrost(t *testing.T) {
 	var request OpenAIDecisionRequest
 	require.NoError(t, json.Unmarshal([]byte(`{
@@ -367,7 +367,7 @@ func TestOpenAIDecisionRequestToBifrost(t *testing.T) {
 	}`), &request))
 	converted, err := request.ToBifrostDecisionRequest()
 	require.NoError(t, err)
-	assert.Equal(t, schemas.OpenAI, converted.Provider)
+	assert.Empty(t, converted.Provider)
 	assert.Equal(t, "gpt-6-luna", converted.Model)
 	assert.Equal(t, "state", *converted.Input.Text)
 	assert.Equal(t, "user-1", *converted.SafetyIdentifier)

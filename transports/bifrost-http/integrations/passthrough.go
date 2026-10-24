@@ -20,11 +20,6 @@ type PassthroughRouter struct {
 	*GenericRouter
 }
 
-var genAIInferencePath = regexp.MustCompile(`^/(projects/[^/]+/locations/[^/]+/publishers/[^/]+/)?(models|tunedModels)/[^/:]+:(generateContent|streamGenerateContent|countTokens|embedContent|batchEmbedContents|predict|rawPredict|streamRawPredict)$`)
-
-// genAIInteractionsPath admits only interaction creation; get/cancel/delete address stored interactions.
-var genAIInteractionsPath = regexp.MustCompile(`^/(projects/[^/]+/locations/[^/]+/)?interactions$`)
-
 var apiVersionSegment = regexp.MustCompile(`^v\d+((alpha|beta)\d*)?$`)
 
 // passthroughQueryStreams reports a GET that asks for SSE in its query, such as resuming an interaction with ?stream=true.
@@ -34,53 +29,6 @@ func passthroughQueryStreams(method, rawQuery string) bool {
 	}
 	q, err := url.ParseQuery(rawQuery)
 	return err == nil && strings.EqualFold(q.Get("stream"), "true")
-}
-
-// passthroughInferenceRoute limits HTTP passthrough to inference operations.
-// A provider key grants more capabilities than an inference credential; raw
-// forwarding must not expose the provider's object or account management APIs.
-func passthroughInferenceRoute(cfg *PassthroughConfig, method, path string) bool {
-	if method != fasthttp.MethodPost || strings.ContainsAny(path, "%?#\\") {
-		return false
-	}
-	for _, segment := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
-		if segment == "" || segment == "." || segment == ".." {
-			return false
-		}
-	}
-	if cfg.UpstreamURL != "" {
-		return cfg.UpstreamURL == "https://chatgpt.com" && path == "/backend-api/codex/responses"
-	}
-	switch cfg.Provider {
-	case schemas.OpenAI:
-		return openAIInferencePath(strings.TrimPrefix(path, "/v1"))
-	case schemas.Anthropic:
-		return path == "/v1/messages" || path == "/v1/messages/count_tokens" || path == "/v1/complete"
-	case schemas.Azure:
-		if strings.HasPrefix(path, "/openai/v1/") {
-			return openAIInferencePath(strings.TrimPrefix(path, "/openai/v1"))
-		}
-		parts := strings.SplitN(path, "/", 5)
-		return len(parts) == 5 && parts[1] == "openai" && parts[2] == "deployments" && parts[3] != "" && openAIInferencePath("/"+parts[4])
-	case schemas.Gemini, schemas.Vertex:
-		return genAIInferencePath.MatchString(path) || genAIInteractionsPath.MatchString(path)
-	case schemas.Runware:
-		return path == "/v1"
-	case schemas.Bedrock:
-		return bedrock.IsPassthroughRoute(method, path)
-	default:
-		return false
-	}
-}
-
-func openAIInferencePath(path string) bool {
-	switch path {
-	case "/chat/completions", "/completions", "/responses", "/embeddings", "/moderations",
-		"/audio/speech", "/audio/transcriptions", "/audio/translations",
-		"/images/generations", "/images/edits", "/images/variations":
-		return true
-	}
-	return false
 }
 
 // stripPassthroughPrefix removes the first configured prefix that matches path at a segment

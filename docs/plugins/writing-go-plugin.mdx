@@ -12,7 +12,7 @@ This guide walks you through creating a native Go plugin for Bifrost using our [
 
 Before you start, ensure you have:
 
-- **Go 1.27.2** installed (must match Bifrost's Go version)
+- **Go 1.27.3** installed (must match Bifrost's Go version)
 - **Linux or macOS** (Go plugins are not supported on Windows)
 - **Bifrost** installed and configured
 - Basic understanding of Go programming
@@ -53,7 +53,7 @@ Your `go.mod` should look like this:
 ```go
 module github.com/yourusername/my-plugin
 
-go 1.27.2
+go 1.27.3
 
 require github.com/maximhq/bifrost/core v1.2.38
 ```
@@ -370,6 +370,66 @@ func Cleanup() error {
 ```
   </Tab>
 </Tabs>
+
+### Carrying HTTP metadata into realtime and Live sessions
+
+Native realtime and Live handlers create a fresh session context because the HTTP
+setup request ends before the session does. A custom value written with
+`ctx.SetValue` in `HTTPTransportPreHook` is request-local and is not automatically
+copied into that session.
+
+Use `ctx.SetValueForRealtimeTurns` to set a value and explicitly include it in the
+session snapshot. Read it with `ctx.Value` in `PreLLMHook` or `PostLLMHook` as usual:
+
+```go
+type metadataKey uint8
+
+const userIDKey metadataKey = 0
+
+// HTTPTransportPreHook attaches demonstration metadata to this connection.
+func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+    // This header is metadata, not proof of the caller's identity. For access
+    // decisions, use a user identifier established by your authentication flow.
+    if userID := req.CaseInsensitiveHeaderLookup("X-Example-User-ID"); userID != "" {
+        ctx.SetValueForRealtimeTurns(userIDKey, userID)
+    }
+    return nil, nil
+}
+
+// PostLLMHook reads the setup metadata on each native realtime turn or Live unit.
+func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+    if userID, _ := ctx.Value(userIDKey).(string); userID != "" {
+        // Use userID for your plugin's tracking. Avoid logging personal data.
+    }
+    return resp, bifrostErr, nil
+}
+```
+
+This applies to Bifrost's native realtime WebSocket and WebRTC paths and to Live
+session billing units. A Live billing unit can be a voice window or a backend
+request, so it is not necessarily a conversation turn. HTTP transport hooks run
+on the setup request, not on every WebSocket frame. A plugin that takes ownership
+of the socket must manage context propagation itself.
+
+Each setup request owns its opt-in key set. Bifrost snapshots the current values
+into that session and copies them into each turn or billing unit. Later writes to
+a turn's context stay local to that turn. Writes after the setup snapshot do not
+update the session. Separate connections have independent maps, with no global
+session registry. The copied values can be retained until the session ends.
+
+<Warning>
+Only opt in small, immutable metadata under plugin-owned typed keys, such as user
+or tenant identifiers. Copies are shallow: pointers, maps, slices, and byte buffers
+still refer to the same underlying data. Copy request-backed data before storing
+it, and do not retain credentials, HTTP contexts, traces, callbacks, readers, or
+channels. Existing restricted-write rules still apply, auth-resolved values take
+precedence, and transport trace IDs are never inherited.
+</Warning>
+
+The [realtime-hooks example](https://github.com/maximhq/bifrost/tree/dev/examples/plugins/realtime-hooks)
+includes the HTTP setter and reads the value alongside per-unit usage and cost.
+Build native plugins against the same core revision and Go toolchain as the
+gateway to use this method.
 
 ### Understanding Each Function
 
@@ -1327,18 +1387,18 @@ Use `go version -m` to inspect the build info of both your plugin and the Bifros
 ```bash
 # Check what versions your plugin was built with:
 $ go version -m my-plugin.so
-my-plugin.so: go1.27.2
+my-plugin.so: go1.27.3
   dep  github.com/maximhq/bifrost/core  v1.3.50
   dep  github.com/valyala/fasthttp      v1.51.0
 
 # Check what versions Bifrost was built with:
 $ go version -m bifrost-http
-bifrost-http: go1.27.2
+bifrost-http: go1.27.3
   dep  github.com/maximhq/bifrost/core  v1.3.54   # <-- MISMATCH!
   dep  github.com/valyala/fasthttp      v1.55.0   # <-- MISMATCH!
 ```
 
-Notice that even though the Go version matches (`go1.27.2`), the **package versions** are different - this causes the error.
+Notice that even though the Go version matches (`go1.27.3`), the **package versions** are different - this causes the error.
 
 **Step 2: Update your plugin dependencies**
 

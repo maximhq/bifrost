@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/bedrockmantle"
+	"github.com/maximhq/bifrost/core/providers/byteplus"
 	"github.com/maximhq/bifrost/core/providers/cerebras"
 	"github.com/maximhq/bifrost/core/providers/cloudflare"
 	"github.com/maximhq/bifrost/core/providers/cohere"
@@ -35,6 +36,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/githubcopilot"
 	"github.com/maximhq/bifrost/core/providers/groq"
 	"github.com/maximhq/bifrost/core/providers/huggingface"
+	"github.com/maximhq/bifrost/core/providers/minimax"
 	"github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
@@ -542,12 +544,14 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 	return resp.ListModelsResponse, nil
 }
 
-// listAllModelsProviderTimeout bounds each provider's live poll inside
+// listAllModelsProviderTimeout bounds each page of a provider's live poll inside
 // ListAllModels. The fan-out previously ran with no deadline, so a single
 // unreachable provider held the aggregate response back until the shared
 // request timeout (DefaultRequestTimeoutInSeconds, 300s by default) expired.
 // Listing models is a metadata read and should not wait inference-scale
-// timeouts. A var rather than a const so package tests can shrink it.
+// timeouts. The bound is per page, not per provider: every page re-fetches the
+// upstream catalog, so one deadline across the whole walk cut a large catalog
+// off after its first page. A var rather than a const so package tests can shrink it.
 var listAllModelsProviderTimeout = 5 * time.Second
 
 // providerModelLister is the optional model-catalog capability ListAllModels
@@ -632,9 +636,9 @@ func (bifrost *Bifrost) lastKnownListModelsResponse(ctx *schemas.BifrostContext,
 
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
-// Each provider poll is bounded by listAllModelsProviderTimeout so one unreachable provider
-// cannot block the aggregate. A provider whose poll fails contributes its last-known models
-// from the model catalog (when one with per-provider listings is configured) instead; that
+// Each page of a provider poll is bounded by listAllModelsProviderTimeout so one unreachable
+// provider cannot block the aggregate, while a reachable provider still gets every page.
+// A provider whose poll fails contributes its last-known models from the model catalog (when one with per-provider listings is configured) instead; that
 // list is substituted in the worker, so the plugin post-hooks filter it like a live listing.
 // A poll still running at the deadline contributes nothing, since no post-hook has seen it.
 func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -709,14 +713,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 		go func(providerKey schemas.ModelProvider) {
 			defer wg.Done()
 
-			// Bound this provider's poll so one unreachable provider cannot
-			// hold the aggregate until the shared request timeout: at the
-			// deadline tryRequest stops waiting on the worker (the in-flight
-			// HTTP call is abandoned, not cancelled) and wg.Wait() finishes.
-			providerCtx := schemas.NewBifrostContext(ctx, time.Now().Add(listAllModelsProviderTimeout))
-			defer providerCtx.Cancel()
-			providerCtx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
-			providerCtx.SetValue(listAllModelsFallbackKey, true)
+			requestID := uuid.New().String()
 
 			providerModels := make([]schemas.Model, 0)
 			var providerKeyStatuses []schemas.KeyStatus
@@ -745,7 +742,15 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 					break
 				}
 
-				response, bifrostErr := bifrost.ListModelsRequest(providerCtx, providerRequest)
+				// Bound each page so one unreachable provider cannot hold the
+				// aggregate until the shared request timeout: at the deadline
+				// tryRequest stops waiting on the worker (the in-flight HTTP call
+				// is abandoned, not cancelled) and wg.Wait() finishes.
+				pageCtx := schemas.NewBifrostContext(ctx, time.Now().Add(listAllModelsProviderTimeout))
+				pageCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+				pageCtx.SetValue(listAllModelsFallbackKey, true)
+				response, bifrostErr := bifrost.ListModelsRequest(pageCtx, providerRequest)
+				pageCtx.Cancel()
 				if bifrostErr != nil {
 					// Some per-provider failures are expected when fanning out across all
 					// configured providers and must not be surfaced as a top-level error
@@ -5030,6 +5035,10 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return deepseek.NewDeepSeekProvider(config, bifrost.logger)
 	case schemas.Wafer:
 		return wafer.NewWaferProvider(config, bifrost.logger)
+	case schemas.MiniMax:
+		return minimax.NewMiniMaxProvider(config, bifrost.logger)
+	case schemas.BytePlus:
+		return byteplus.NewBytePlusProvider(config, bifrost.logger)
 	case schemas.Cloudflare:
 		return cloudflare.NewCloudflareProvider(config, bifrost.logger)
 	case schemas.Gemini:
@@ -5492,6 +5501,9 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 		}
 	}
 
+	// Transports settle the unit on a fresh context. Attach pre-hook logs now,
+	// since its copied values do not include the context's private log store.
+	drainAndAttachPluginLogs(ctx)
 	provider, model, _ = preReq.GetRequestFields()
 
 	return &RealtimeTurnHooks{
@@ -7747,6 +7759,10 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 	if baseProvider == schemas.Anthropic {
 		return
 	}
+	if baseProvider == schemas.Vertex && schemas.GetVertexEndpoint(ctx) != nil {
+		disableAnthropicPassthrough(ctx)
+		return
+	}
 	if (baseProvider == schemas.Vertex ||
 		baseProvider == schemas.Azure ||
 		baseProvider == schemas.BedrockMantle) &&
@@ -7787,6 +7803,11 @@ func clearGenAIPassthroughForNonGoogleProvider(ctx *schemas.BifrostContext, base
 		return
 	}
 	if baseProvider == schemas.Gemini {
+		return
+	}
+	if baseProvider == schemas.Vertex && schemas.GetVertexEndpoint(ctx) != nil {
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+		ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
 		return
 	}
 	if baseProvider == schemas.Vertex &&
@@ -7991,6 +8012,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 
 		bifrost.endCoreSpan(workerSetupSpan)
+
+		// Before key acquisition, so a refused route never touches a key or the upstream.
+		if config.Passthrough != nil && (req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest) &&
+			!passthroughRouteAllowed(config.Passthrough, req.BifrostRequest.PassthroughRequest) {
+			bifrost.sendWorkerError(req, newPassthroughRouteNotAllowedError(provider.GetProviderKey(), req.RequestType, req.BifrostRequest.PassthroughRequest))
+			continue
+		}
 
 		var keys []schemas.Key
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.

@@ -102,6 +102,15 @@ func a2aUserCtx() *schemas.BifrostContext {
 	return ctx
 }
 
+// a2aKnownUserCtx is the identity a request settles to when its authenticating layer named the user
+// but recorded no credential: a user and nothing presented.
+func a2aKnownUserCtx() *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetGrant(grant.New())
+	ctx.Grant().SetIdentity(grant.NewIdentity(schemas.Credential{}, &schemas.UserRef{ID: "user-1"}, nil, nil, nil, nil, nil))
+	return ctx
+}
+
 func anonymousA2ACtx() *schemas.BifrostContext {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetGrant(grant.New())
@@ -169,6 +178,32 @@ func TestPreA2AHook_AllowByDefaultForIdentifiedCallers(t *testing.T) {
 	p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
 	requireA2AAllowed(t, p, a2aVKCtx(a2aTestVKValue), operationReq("alpha"))
 	requireA2AAllowed(t, p, a2aUserCtx(), operationReq("alpha"))
+}
+
+// A user named without a recorded credential, as an Enterprise session can be, is governed as that
+// user rather than passed through as anonymous, the same as a user who presented an IdP token.
+func TestPreA2AHook_KnownUserWithoutCredentialIsGoverned(t *testing.T) {
+	t.Run("no access to a deny-by-default agent", func(t *testing.T) {
+		p, _, inMemory := newPluginForA2A(t, map[string]bool{"alpha": false}, nil)
+		requireA2ADenied(t, p, a2aKnownUserCtx(), operationReq("alpha"), DecisionAccessNotFound)
+		assert.NotZero(t, inMemory.reads, "the agent lookup must run for a known user")
+	})
+	t.Run("granted by an access profile", func(t *testing.T) {
+		p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": false}, nil)
+		ctx := a2aKnownUserCtx()
+		ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{
+			grant.NewPermit(grant.PermitAccessProfile, "profile-1", "agents", true, false, nil, nil, grant.WithAgentPermits([]string{"alpha"})),
+		}, nil, "", nil))
+		requireA2AAllowed(t, p, ctx, operationReq("alpha"))
+	})
+	t.Run("allowed by default", func(t *testing.T) {
+		p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
+		requireA2AAllowed(t, p, a2aKnownUserCtx(), operationReq("alpha"))
+	})
+	t.Run("disabled or unknown agent", func(t *testing.T) {
+		p, _, _ := newPluginForA2A(t, map[string]bool{"alpha": true}, nil)
+		requireA2ADenied(t, p, a2aKnownUserCtx(), operationReq("ghost"), DecisionAgentBlocked)
+	})
 }
 
 func TestPreA2AHook_UnresolvedCredentialDoesNotGetAllowByDefault(t *testing.T) {

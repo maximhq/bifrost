@@ -1236,7 +1236,7 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 	// Only set if any field is populated
 	if assistantMsg.Refusal != nil || assistantMsg.Reasoning != nil ||
 		len(assistantMsg.ReasoningDetails) > 0 || len(assistantMsg.Annotations) > 0 ||
-		len(assistantMsg.ToolCalls) > 0 || assistantMsg.Audio != nil {
+		len(assistantMsg.ToolCalls) > 0 || assistantMsg.Audio != nil || len(assistantMsg.Images) > 0 {
 		cm.ChatAssistantMessage = &assistantMsg
 	}
 
@@ -1583,6 +1583,7 @@ type ChatToolMessage struct {
 type ChatAssistantMessage struct {
 	Refusal          *string                          `json:"refusal"`
 	Audio            *ChatAudioMessageAudio           `json:"audio,omitempty"`
+	Images           []ChatAssistantMessageImage      `json:"images,omitempty"`
 	Reasoning        *string                          `json:"reasoning,omitempty"`
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
 	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
@@ -1711,6 +1712,12 @@ func pruneEmptyReasoningDetails(details []ChatReasoningDetails) []ChatReasoningD
 		return nil
 	}
 	return kept
+}
+
+// ChatAssistantMessageImage is a model-generated image, in OpenRouter's message.images shape.
+type ChatAssistantMessageImage struct {
+	Type     string         `json:"type"`
+	ImageURL ChatInputImage `json:"image_url"`
 }
 
 // ChatAssistantMessageAnnotation represents an annotation in a response.
@@ -1849,6 +1856,7 @@ type ChatStreamResponseChoiceDelta struct {
 	Content          *string                          `json:"content,omitempty"`   // May be empty string or null
 	Refusal          *string                          `json:"refusal,omitempty"`   // Refusal content if any
 	Audio            *ChatAudioMessageAudio           `json:"audio,omitempty"`     // Audio data if any
+	Images           []ChatAssistantMessageImage      `json:"images,omitempty"`    // Generated images, whole per chunk
 	Reasoning        *string                          `json:"reasoning,omitempty"` // May be empty string or null
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
 	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`   // URL citations from web search

@@ -237,20 +237,20 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 
 				referencesComplexity := celExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
 
-				// Lazy complexity: compute only when a rule references complexity and it hasn't been computed yet
-				if complexityResult == nil && ComputeComplexity != nil && referencesComplexity {
-					complexityResult = ComputeComplexity()
-					ComputeComplexity = nil // compute at most once
-					if complexityResult != nil {
-						variables["complexity_tier"] = complexityResult.Tier
-					}
-				}
-
 				program, err := re.rules.GetProgram(ctx, rule)
 				if err != nil {
 					re.logger.Warn("[Engine] Failed to compile rule %s: %v", rule.Name, err)
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' skipped: compile error: %v", rule.Name, err))
 					continue
+				}
+
+				// Lazy complexity: compute only when the rule's outcome depends on complexity and it hasn't been computed yet
+				if complexityResult == nil && ComputeComplexity != nil && referencesComplexity && celOutcomeDependsOn(program, variables, "complexity_tier") {
+					complexityResult = ComputeComplexity()
+					ComputeComplexity = nil // compute at most once
+					if complexityResult != nil {
+						variables["complexity_tier"] = complexityResult.Tier
+					}
 				}
 
 				var unknowns []*cel.AttributePatternType
@@ -421,6 +421,19 @@ func buildScopeChain(scope GovernanceScope) []ScopeLevel {
 
 	// Global level (lowest precedence), and the only one every request matches at.
 	return append(chain, ScopeLevel{ScopeName: "global", ScopeID: ""})
+}
+
+// celOutcomeDependsOn reports whether the program's result is undecided with identifier
+// marked unknown, so an expensive variable is only computed when the rule needs it
+// (e.g. model == "x" && complexity_tier == "SIMPLE" is already false for other models).
+// Evaluation errors report true, keeping the compute-then-evaluate path unchanged.
+func celOutcomeDependsOn(program cel.Program, variables map[string]any, identifier string) bool {
+	partial, err := cel.PartialVars(variables, cel.AttributePattern(identifier))
+	if err != nil {
+		return true
+	}
+	out, _, err := program.Eval(partial)
+	return err != nil || types.IsUnknown(out)
 }
 
 // evaluateCELExpression evaluates a compiled CEL program with given variables

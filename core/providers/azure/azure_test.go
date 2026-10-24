@@ -15,6 +15,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/azure"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -451,6 +452,99 @@ func TestAzureDecisionSendsTypesafeBodyToSystemOne(t *testing.T) {
 			}
 			if resp.Usage == nil || resp.Usage.PromptTokens != 64 || resp.Usage.CompletionTokens != 1 {
 				t.Errorf("usage = %+v, want 64 input and 1 output tokens", resp.Usage)
+			}
+		})
+	}
+}
+
+// azureOpenAIDecisionResponseBody is OpenAI's decisions reply, the shape Azure documents
+// for gpt-6-luna on /openai/v1/decisions; the values are synthetic.
+const azureOpenAIDecisionResponseBody = `{"model":"gpt-6-luna","answers":[{"type":"choice","name":"team","choice":"engineering","probabilities":[{"value":"billing","probability":0.01},{"value":"engineering","probability":0.98},{"value":"support","probability":0.01}],"confidence":0.97}],"usage":{"input_tokens":162,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":162}}`
+
+// TestAzureDecisionSendsOpenAIBodyToV1Decisions pins the gpt-6-luna route: a deployment of
+// an OpenAI decisions model, named for it or behind an alias that is, sends OpenAI's
+// decisions body (image parts included) to the resource's /openai/v1/decisions with no
+// api-version and Azure's own auth, and reads OpenAI's reply.
+func TestAzureDecisionSendsOpenAIBodyToV1Decisions(t *testing.T) {
+	cases := map[string]struct {
+		deployment string
+		alias      *schemas.ResolvedAlias
+		token      string
+	}{
+		"deployment named for the model":    {deployment: "gpt-6-luna"},
+		"dated deployment":                  {deployment: "gpt-6-luna-2026-09-22"},
+		"entra token":                       {deployment: "gpt-6-luna", token: "entra-token"},
+		"opaque deployment behind an alias": {deployment: "luna-prod", alias: &schemas.ResolvedAlias{Key: "gpt-6-luna", Config: &schemas.AliasConfig{ModelID: "luna-prod"}}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			request := newAzureDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
+				Role: "user",
+				Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+					{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Which team owns the error in this screenshot?")},
+					{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
+				}},
+			}}})
+			request.Model = tc.deployment
+			native, err := openai.ToOpenAIDecisionRequest(request)
+			if err != nil {
+				t.Fatalf("ToOpenAIDecisionRequest: %v", err)
+			}
+			wantBody, err := json.Marshal(native)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			type capturedRequest struct {
+				path, query, apiKey, auth string
+				body                      []byte
+			}
+			// The handler runs on the server's goroutine, so the request is handed over on a channel.
+			captured := make(chan capturedRequest, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				captured <- capturedRequest{path: r.URL.Path, query: r.URL.RawQuery, apiKey: r.Header.Get("api-key"), auth: r.Header.Get("Authorization"), body: body}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, azureOpenAIDecisionResponseBody)
+			}))
+			defer server.Close()
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.token != "" {
+				ctx.SetValue(azure.AzureAuthorizationTokenKey, tc.token)
+			}
+			if tc.alias != nil {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, tc.alias)
+			}
+			resp, bifrostErr := newAzureDecisionProvider(t).Decision(ctx, newAzureDecisionKey(server.URL), request)
+			if bifrostErr != nil {
+				t.Fatalf("Decision: %+v", bifrostErr.Error)
+			}
+			sent := <-captured
+
+			if sent.path != "/openai/v1/decisions" || sent.query != "" {
+				t.Errorf("request = %s?%s, want /openai/v1/decisions with no query", sent.path, sent.query)
+			}
+			if tc.token == "" && (sent.apiKey != "test-key" || sent.auth != "") {
+				t.Errorf("auth = api-key %q, Authorization %q, want api-key test-key only", sent.apiKey, sent.auth)
+			}
+			if tc.token != "" && (sent.auth != "Bearer "+tc.token || sent.apiKey != "") {
+				t.Errorf("auth = api-key %q, Authorization %q, want Bearer %s only", sent.apiKey, sent.auth, tc.token)
+			}
+			var got, want any
+			if err := json.Unmarshal(sent.body, &got); err != nil {
+				t.Fatalf("body is not JSON: %s", sent.body)
+			}
+			_ = json.Unmarshal(wantBody, &want)
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("body =\n%s\nwant OpenAI's\n%s", sent.body, wantBody)
+			}
+
+			if len(resp.Answers) != 1 || resp.Answers[0].Choice == nil || resp.Answers[0].Choice.Str == nil || *resp.Answers[0].Choice.Str != "engineering" {
+				t.Errorf("answers = %+v, want team=engineering", resp.Answers)
+			}
+			if resp.Usage == nil || resp.Usage.PromptTokens != 162 {
+				t.Errorf("usage = %+v, want 162 input tokens", resp.Usage)
 			}
 		})
 	}

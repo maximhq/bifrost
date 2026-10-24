@@ -109,8 +109,19 @@ func (s *SemanticSearcher) SearchVisible(ctx context.Context, queries []string, 
 	scores := make(map[string]float64, candidateLimit)
 	result := SemanticSearchResult{Rows: make([]SemanticSearchRow, 0, limit), Threshold: threshold}
 	prefilters := semanticPrefilters(filters, visible)
+	sessionDropped := false
 	for {
 		pages, err := s.nearestPages(ctx, config.EffectiveLogVectorStoreNamespace(), embeddings, prefilters, storeThreshold(threshold), candidateLimit)
+		if filters != nil && filters.SessionID != "" && !sessionDropped && missingSessionProperty(err) {
+			// A namespace made before session_id was stored may not have the
+			// property, and Weaviate refuses a filter on one it lacks. Search
+			// as before the prefilter existed: matchesSemanticFilters still
+			// narrows to the session, only with the cap's recall.
+			withoutSession := *filters
+			withoutSession.SessionID = ""
+			prefilters, sessionDropped = semanticPrefilters(&withoutSession, visible), true
+			pages, err = s.nearestPages(ctx, config.EffectiveLogVectorStoreNamespace(), embeddings, prefilters, storeThreshold(threshold), candidateLimit)
+		}
 		if err != nil {
 			return SemanticSearchResult{}, fmt.Errorf("search log embeddings: %w", err)
 		}
@@ -163,6 +174,20 @@ func (s *SemanticSearcher) SearchVisible(ctx context.Context, queries []string, 
 	}
 	result.Returned = len(result.Rows)
 	return result, nil
+}
+
+// missingSessionProperty reports whether a search failed because the namespace
+// has no session_id property to filter on: Weaviate's "no such prop with name
+// 'session_id'", RediSearch's "Unknown field ... session_id". Only that failure
+// is retried without the session; any other is the store's, and retrying it
+// with a weaker filter would answer a different question.
+func missingSessionProperty(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "session_id") &&
+		(strings.Contains(message, "no such prop") || strings.Contains(message, "unknown field"))
 }
 
 // normalizeSemanticQueries trims and de-duplicates the phrasings, and refuses
@@ -451,6 +476,14 @@ func semanticVectorFilters(filters *logstore.SearchFilters) []vectorstore.Query 
 	queries = appendScalarQuery(queries, "virtual_key_id", filters.VirtualKeyIDs)
 	queries = appendScalarQuery(queries, "user_id", filters.UserIDs)
 	queries = appendScalarQuery(queries, "app", filters.Apps)
+	// Exact, not lowered: a session id is opaque, and indexed as it is. A
+	// session is too small a slice of the index to find after hydration - the
+	// capped candidate page almost never holds any of its rows. Vectors indexed
+	// before the session was stored on them have none, so a session search
+	// misses them until they are indexed again.
+	if filters.SessionID != "" {
+		queries = append(queries, vectorstore.Query{Field: "session_id", Operator: vectorstore.QueryOperatorEqual, Value: filters.SessionID})
+	}
 	queries = appendContainsAnyQuery(queries, "team_ids", filters.TeamIDs)
 	queries = appendContainsAnyQuery(queries, "customer_ids", filters.CustomerIDs)
 	queries = appendContainsAnyQuery(queries, "business_unit_ids", filters.BusinessUnitIDs)
@@ -511,6 +544,11 @@ func matchesSemanticFilters(entry *logstore.Log, filters *logstore.SearchFilters
 		return false
 	}
 	if !matchesString(entry.Provider, filters.Providers) || !matchesString(entry.Model, filters.Models) || !matchesString(entry.Status, filters.Status) || !matchesPointer(entry.VirtualKeyID, filters.VirtualKeyIDs) || !matchesPointer(entry.UserID, filters.UserIDs) || !matchesPointer(entry.App, filters.Apps) {
+		return false
+	}
+	// Exact, not EqualFold: a session id is opaque, and the log store matches
+	// it exactly.
+	if filters.SessionID != "" && (entry.SessionID == nil || *entry.SessionID != filters.SessionID) {
 		return false
 	}
 	if !intersectsIDs(mergedIDs(entry.TeamID, entry.TeamIDs), filters.TeamIDs) || !intersectsIDs(mergedIDs(entry.CustomerID, entry.CustomerIDs), filters.CustomerIDs) || !intersectsIDs(mergedIDs(entry.BusinessUnitID, entry.BusinessUnitIDs), filters.BusinessUnitIDs) {

@@ -1,12 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import {
-	aliasConfigSchema,
-	githubCopilotKeyConfigComplete,
-	githubCopilotKeyConfigSchema,
-	oauthKeyConfigComplete,
-	oauthKeyConfigSchema,
-	secretVarSchema,
-} from "@/lib/types/schemas";
+import { aliasConfigSchema, oauthKeyConfigComplete, oauthKeyConfigSchema, secretVarSchema } from "@/lib/types/schemas";
 import { isValidAliases, isValidVertexAuthCredentials } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -233,7 +226,6 @@ const KeySchema = z.object({
 	bedrock_key_config: BedrockKeyConfigSchema.optional(),
 	bedrock_mantle_key_config: BedrockMantleKeyConfigSchema.optional(),
 	replicate_key_config: ReplicateKeyConfigSchema.optional(),
-	github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
 	oauth_key_config: oauthKeyConfigSchema.optional(),
 	use_for_batch_api: z.boolean().optional(),
 });
@@ -328,18 +320,7 @@ export const ProviderFormSchema = z
 			// Validate individual key values based on provider type
 			const effectiveProviderType = data.baseProviderType || data.selectedProvider;
 			data.keys.forEach((key, index) => {
-				// GitHub Copilot is checked separately below: the credential can live entirely
-				// in github_copilot_key_config, so an empty top-level value is only a fault
-				// when the App credentials are absent too.
-				if (effectiveProviderType === "github-copilot") {
-					if (!key.value.trim() && !githubCopilotKeyConfigComplete(key.github_copilot_key_config)) {
-						ctx.addIssue({
-							code: z.ZodIssueCode.custom,
-							message: "Set a Copilot API token, or fill in all four GitHub App credentials",
-							path: ["keys", index, "value"],
-						});
-					}
-				} else if (
+				if (
 					effectiveProviderType !== "vertex" &&
 					effectiveProviderType !== "bedrock" &&
 					!key.value.trim() &&
