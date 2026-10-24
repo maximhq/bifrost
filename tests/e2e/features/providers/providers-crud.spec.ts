@@ -527,8 +527,9 @@ test.describe("Providers", () => {
       await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("Off");
     });
 
-    test("should create a generic passthrough provider with header auth", async ({
+    test("should create a generic passthrough provider with header auth and see the Passthrough tab", async ({
       providersPage,
+      providerSettingsPage,
       page,
     }) => {
       const providerData = createCustomProviderData({
@@ -603,6 +604,180 @@ test.describe("Providers", () => {
       expect(
         saved.custom_provider_config?.generic_config?.auth?.header_name,
       ).toBe("x-api-key");
+
+      // The config sheet offers the Passthrough tab in place of API Structure.
+      await providersPage.selectProvider(providerData.name);
+      await providerSettingsPage.selectConfigTab("generic");
+      await expect(page.getByTestId("generic-passthrough-form")).toBeVisible();
+      await expect(page.getByTestId("provider-tab-api-structure")).toHaveCount(0);
+
+      // Adding a route and saving round-trips through the update API.
+      await page.getByTestId("generic-route-add-btn").click();
+      await page.getByTestId("generic-route-path-input-0").fill("/search");
+      // Every matcher name is saved as typed, even one a plain JS object would swallow.
+      await page.getByTestId("generic-route-header-add-btn-0").click();
+      await page.getByTestId("generic-route-header-name-input-0-0").fill("__proto__");
+      await page.getByTestId("generic-route-header-value-input-0-0").fill("kept");
+      const routeSaved = page.waitForResponse(
+        (r) =>
+          new URL(r.url()).pathname.endsWith(`/api/providers/${providerData.name}`) &&
+          r.request().method() === "PUT",
+      );
+      await page.getByTestId("generic-passthrough-save-btn").click();
+      expect((await routeSaved).status(), "the tab's save must succeed before its result is read").toBe(200);
+      await expect
+        .poll(
+          async () => {
+            const r = await page.request.get(
+              `/api/providers/${providerData.name}`,
+            );
+            const j = (await r.json()) as {
+              custom_provider_config?: {
+                generic_config?: { routes?: { method: string; path: string }[] };
+              };
+            };
+            return j.custom_provider_config?.generic_config?.routes?.[0]?.path;
+          },
+          { timeout: 10000 },
+        )
+        .toBe("/search");
+      const savedRoute = (
+        (await (await page.request.get(`/api/providers/${providerData.name}`)).json()) as {
+          custom_provider_config?: { generic_config?: { routes?: { headers?: Record<string, string> }[] } };
+        }
+      ).custom_provider_config?.generic_config?.routes?.[0];
+      expect(
+        savedRoute?.headers && Object.prototype.hasOwnProperty.call(savedRoute.headers, "__proto__") ? savedRoute.headers["__proto__"] : undefined,
+        "the __proto__ matcher is saved",
+      ).toBe("kept");
+
+      // Choosing auth "none" on this tab makes the provider keyless: it injects nothing, so a
+      // request must not wait for a key.
+      await page.getByTestId("generic-auth-type-select").click();
+      await page.getByTestId("generic-auth-type-option-none").click();
+      const keylessSaved = page.waitForResponse(
+        (r) =>
+          new URL(r.url()).pathname.endsWith(`/api/providers/${providerData.name}`) &&
+          r.request().method() === "PUT",
+      );
+      await page.getByTestId("generic-passthrough-save-btn").click();
+      const keylessResponse = await keylessSaved;
+      expect(keylessResponse.status(), await keylessResponse.text()).toBe(200);
+      const keyless = (await (await page.request.get(`/api/providers/${providerData.name}`)).json()) as {
+        custom_provider_config?: { is_key_less?: boolean; generic_config?: { auth?: { type?: string } } };
+      };
+      expect(keyless.custom_provider_config?.generic_config?.auth?.type).toBe("none");
+      expect(keyless.custom_provider_config?.is_key_less).toBe(true);
+
+      // The tab owns the two request switches the API Structure tab used to hold.
+      await page.getByTestId("generic-allowed-passthrough-stream-switch").click();
+      const streamOffSaved = page.waitForResponse(
+        (r) =>
+          new URL(r.url()).pathname.endsWith(`/api/providers/${providerData.name}`) &&
+          r.request().method() === "PUT",
+      );
+      await page.getByTestId("generic-passthrough-save-btn").click();
+      const streamOffResponse = await streamOffSaved;
+      expect(streamOffResponse.status(), await streamOffResponse.text()).toBe(200);
+      const streamOff = (await (await page.request.get(`/api/providers/${providerData.name}`)).json()) as {
+        custom_provider_config?: { allowed_requests?: { passthrough?: boolean; passthrough_stream?: boolean } };
+      };
+      expect(streamOff.custom_provider_config?.allowed_requests?.passthrough).toBe(true);
+      expect(streamOff.custom_provider_config?.allowed_requests?.passthrough_stream).toBe(false);
+
+      // Route usage fields the tab does not render (set through the API) survive
+      // a save from it: a route-level units mapping and an explicit 0 that waives
+      // the provider's unit price.
+      const configured = await page.request.put(
+        `/api/providers/${providerData.name}`,
+        {
+          data: {
+            network_config: { base_url: "https://api.tavily.com" },
+            concurrency_and_buffer_size: { concurrency: 1, buffer_size: 10 },
+            custom_provider_config: {
+              base_provider_type: "generic",
+              allowed_requests: { passthrough: true, passthrough_stream: true },
+              generic_config: {
+                auth: { type: "header", header_name: "x-api-key" },
+                usage: { units_path: "usage.credits", cost_per_unit: 0.008 },
+                routes: [
+                  {
+                    // Stored lower-case, which the server accepts; the tab must still save.
+                    method: "post",
+                    path: "/search",
+                    usage: {
+                      units_source: "request",
+                      units_measure: "chars",
+                      units_path: "query",
+                      cost_per_unit: 0,
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      );
+      expect(configured.ok(), await configured.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider(providerData.name);
+      await providerSettingsPage.selectConfigTab("generic");
+      await expect(page.getByTestId("generic-route-row-0")).toBeVisible();
+      // Save is disabled on a pristine form; flip a harmless switch so the save
+      // path really runs.
+      await page.getByTestId("generic-streaming-accept-switch").click();
+      await expect(page.getByTestId("generic-passthrough-save-btn")).toBeEnabled();
+      const usageSaved = page.waitForResponse(
+        (r) =>
+          new URL(r.url()).pathname.endsWith(`/api/providers/${providerData.name}`) &&
+          r.request().method() === "PUT",
+      );
+      await page.getByTestId("generic-passthrough-save-btn").click();
+      expect((await usageSaved).status(), "the tab's save must succeed before its result is read").toBe(200);
+      await expect
+        .poll(
+          async () => {
+            const r = await page.request.get(
+              `/api/providers/${providerData.name}`,
+            );
+            const j = (await r.json()) as {
+              custom_provider_config?: {
+                generic_config?: {
+                  routes?: {
+                    usage?: {
+                      units_source?: string;
+                      units_measure?: string;
+                      units_path?: string;
+                      cost_per_unit?: number;
+                    };
+                  }[];
+                };
+              };
+            };
+            return j.custom_provider_config?.generic_config?.routes?.[0]?.usage;
+          },
+          { timeout: 10000 },
+        )
+        .toEqual({
+          units_source: "request",
+          units_measure: "chars",
+          units_path: "query",
+          cost_per_unit: 0,
+          // The server always reports this switch; false is its default.
+          disable_optimistic_parsing: false,
+        });
+      const afterSave = await page.request.get(
+        `/api/providers/${providerData.name}`,
+      );
+      const savedCfg = (await afterSave.json()) as {
+        custom_provider_config?: {
+          generic_config?: { streaming?: { detect_from_accept_header?: boolean } };
+        };
+      };
+      expect(
+        savedCfg.custom_provider_config?.generic_config?.streaming
+          ?.detect_from_accept_header,
+      ).toBe(true);
     });
 
     test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({

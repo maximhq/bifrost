@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
 	ApiStructureFormFragment,
 	BetaHeadersFormFragment,
+	GenericPassthroughFormFragment,
 	GovernanceFormFragment,
 	InjectedToolsFormFragment,
 	OpenAIConfigFormFragment,
@@ -35,15 +36,27 @@ const OPENAI_CONFIG_TAB_LABELS: Record<string, string> = {
 	fireworks: "OpenAI Config",
 };
 
+// isGenericBased reports whether the provider is a generic (non-LLM) HTTP relay.
+export function isGenericBased(provider: ModelProvider): boolean {
+	return provider.custom_provider_config?.base_provider_type === "generic";
+}
+
 const availableTabs = (
 	hasCustomProviderConfig: boolean,
 	hasGovernanceAccess: boolean,
 	openAIConfigTabLabel: string | undefined,
 	hasBetaHeaders: boolean,
 	hasPassthrough: boolean,
+	isGeneric: boolean,
 ) => {
 	const tabs = [];
-	if (hasCustomProviderConfig) {
+	if (isGeneric) {
+		// A generic relay has no typed API structure to configure; its relay settings take that slot.
+		tabs.push({
+			id: "generic",
+			label: "Passthrough",
+		});
+	} else if (hasCustomProviderConfig) {
 		tabs.push({
 			id: "api-structure",
 			label: "API Structure",
@@ -85,7 +98,9 @@ const availableTabs = (
 		id: "tools",
 		label: "Tools",
 	});
-	if (hasPassthrough) {
+	// A generic relay's own Passthrough tab (above) is its relay config; the standard providers'
+	// passthrough policy tab does not apply to it.
+	if (hasPassthrough && !isGeneric) {
 		tabs.push({
 			id: "passthrough",
 			label: "Passthrough",
@@ -111,10 +126,11 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const openAIConfigTabLabel = OPENAI_CONFIG_TAB_LABELS[provider.name];
 	const hasBetaHeaders = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase()) || sendsTypesafeHeaders(provider);
 	const hasPassthrough = passthroughRoutePrefix(provider) !== undefined;
+	const isGeneric = isGenericBased(provider);
 
 	const tabs = useMemo(() => {
-		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, openAIConfigTabLabel, hasBetaHeaders, hasPassthrough);
-	}, [hasCustomProviderConfig, hasGovernanceAccess, openAIConfigTabLabel, hasBetaHeaders, hasPassthrough]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, openAIConfigTabLabel, hasBetaHeaders, hasPassthrough, isGeneric);
+	}, [hasCustomProviderConfig, hasGovernanceAccess, openAIConfigTabLabel, hasBetaHeaders, hasPassthrough, isGeneric]);
 
 	useEffect(() => {
 		setSelectedTab((previousTab) => {
@@ -165,6 +181,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							</div>
 							<TabsContent value="api-structure">
 								<ApiStructureFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="generic">
+								<GenericPassthroughFormFragment provider={provider} />
 							</TabsContent>
 							<TabsContent value="openai-config">
 								<OpenAIConfigFormFragment provider={provider} />
