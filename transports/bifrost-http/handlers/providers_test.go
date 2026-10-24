@@ -1690,6 +1690,69 @@ func TestListModels_DecisionsOllamaListsSystemOneModels(t *testing.T) {
 	}
 }
 
+// TestListModels_DecisionsVLLMListsEveryModel pins that decisions=true lists every
+// model a vLLM server serves: the engine answers /v1/systemone for whatever it loads.
+func TestListModels_DecisionsVLLMListsEveryModel(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"clef-flash", "Qwen/Qwen3-0.6B"}
+	h := providerHandlerForTest(schemas.VLLM, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=vllm&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"Qwen/Qwen3-0.6B", "clef-flash"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsSGLListsEveryModel pins the same for an SGLang server.
+func TestListModels_DecisionsSGLListsEveryModel(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"clef-flash", "jaredpalmer/kev-4b"}
+	h := providerHandlerForTest(schemas.SGL, []schemas.Key{{ID: "key-a"}}, models, models)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=sgl&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"clef-flash", "jaredpalmer/kev-4b"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
 // TestListModels_DecisionsAzureListsMicrosoftDecisionModels pins that decisions=true
 // lists Microsoft's decision models on Azure, by name or through a key alias whose
 // target is a deployment named otherwise, and not gpt-6-luna or chat deployments:
@@ -1823,6 +1886,39 @@ func TestListModels_DecisionsListsEveryModelOnCustomOpenAIBase(t *testing.T) {
 		}
 		if resp.Total != len(models) {
 			t.Fatalf("%s: expected every model listed, got %#v", name, resp.Models)
+		}
+	}
+}
+
+// TestListModels_DecisionsListsEveryModelOnCustomEngineBase pins that decisions=true
+// lists every model of a custom provider built on the vLLM or SGLang base once it
+// allows decisions: both engines serve /v1/systemone for whatever they load.
+func TestListModels_DecisionsListsEveryModelOnCustomEngineBase(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	for _, base := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL} {
+		models := []string{"clef-flash", "Qwen/Qwen3-0.6B"}
+		h := providerHandlerForTest("my-engine", []schemas.Key{{ID: "key-a"}}, models, models)
+		config := h.inMemoryStore.Providers["my-engine"]
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: base, IsKeyLess: true, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
+		h.inMemoryStore.Providers["my-engine"] = config
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=my-engine&decisions=true&limit=10")
+		h.listModels(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", base, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp.Total != len(models) {
+			t.Fatalf("%s: expected every model listed, got %#v", base, resp.Models)
 		}
 	}
 }
