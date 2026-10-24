@@ -8,6 +8,51 @@ import (
 	"testing"
 )
 
+func TestVertexEndpointAliasRoundTrip(t *testing.T) {
+	for _, method := range []string{"raw_predict", "chat_completions"} {
+		t.Run(method, func(t *testing.T) {
+			input := `{"vllm":{"model_id":"custom-model-version","vertex_endpoint":{"endpoint_id":"2222222222","format":"openai_chat","method":"` + method + `"}}}`
+			var aliases KeyAliases
+			if err := json.Unmarshal([]byte(input), &aliases); err != nil {
+				t.Fatal(err)
+			}
+			if err := aliases.Validate(Vertex); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(aliases)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(encoded), `"vertex_endpoint"`) || !strings.Contains(string(encoded), `"format":"openai_chat"`) {
+				t.Fatalf("custom endpoint configuration lost on round trip: %s", encoded)
+			}
+			if err := aliases.Validate(OpenAI); err == nil {
+				t.Fatal("Vertex endpoint must be rejected on an OpenAI key")
+			}
+		})
+	}
+}
+
+func TestVertexEndpointValidation(t *testing.T) {
+	for _, id := range []string{"", " a", "a ", "../a", "a/b", "a?key=x", "a#x", "a:predict", "a%2fb", "モデル"} {
+		endpoint := &VertexEndpoint{EndpointID: id, Format: VertexEndpointOpenAIChat}
+		if endpoint.Validate() == nil {
+			t.Errorf("accepted endpoint ID %q", id)
+		}
+	}
+	if err := (&VertexEndpoint{EndpointID: "2222", Format: VertexEndpointOpenAIChat}).Validate(); err != nil {
+		t.Fatalf("omitted method must default to raw_predict: %v", err)
+	}
+	if err := (&VertexEndpoint{EndpointID: "2222", Format: VertexEndpointOpenAIChat, Method: "predict"}).Validate(); err == nil {
+		t.Fatal("accepted unsupported method")
+	}
+	for _, format := range []VertexEndpointFormat{"", "openai", "gemini", "predict"} {
+		if (&VertexEndpoint{EndpointID: "2222", Format: format}).Validate() == nil {
+			t.Errorf("accepted format %q; the body shape must be explicit and implemented", format)
+		}
+	}
+}
+
 func TestAliasConfigRedactedPreservesShape(t *testing.T) {
 	for name, original := range map[string]AliasConfig{
 		"empty":  {},

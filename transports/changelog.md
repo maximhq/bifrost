@@ -1,16 +1,13 @@
-## ✨ Features
+## 🔒 Security
 
-- **Virtual Key Metadata in config.json** - `governance.virtual_keys[].metadata` accepts string key/value pairs (for example `cost_center`, `owner`) for cost attribution. Keys use letters, digits, `.`, `_` and `-`; values are up to 512 characters; up to 50 entries [@jimseiwert](https://github.com/jimseiwert)
-- **Spend by Virtual Key Metadata** - Each log entry now carries a snapshot of its virtual key's metadata, so logs and dashboard spend can be filtered with the existing metadata filters (for example `metadata_cost_center=cc-42`). On a key collision the virtual key's value overrides `x-bf-lh-*` headers, configured logging headers and `x-bf-dim-*` dimensions, so callers cannot spoof attribution [@jimseiwert](https://github.com/jimseiwert)
-- **Virtual Key Metadata API** - Create and update virtual keys with a `metadata` object (on update, omit to keep, `{}` to clear); invalid metadata returns a 400 naming the key. The virtual key list accepts `metadata_<key>=<value>` filters (AND-ed) and `search` also matches metadata [@jimseiwert](https://github.com/jimseiwert)
-- **Virtual Key Metadata in the UI** - The virtual key sheet has a Metadata editor (validated like the API, editable on access-profile-managed keys too), the details sheet lists entries with a "View spend" link to the filtered logs, and the virtual keys table has a metadata filter [@jimseiwert](https://github.com/jimseiwert)
+- **Go 1.27.3** - Security release for [CVE-2026-111943](https://groups.google.com/g/golang-announce/c/66pojueaQek) in `crypto/x509`: certificate chains through a small set of intermediates from a specific Certificate Authority are no longer accepted by `Verify`, which covers every TLS connection Bifrost makes to providers, MCP servers and other upstreams. Bifrost now builds with Go 1.27.3, and the Docker images (`Dockerfile`, `Dockerfile.local`, `Dockerfile.redhat`) move to `golang:1.27.3-alpine3.24`. Custom Go plugins must be rebuilt with Go 1.27.3 to load.
 
-## 🐞 Fixed
+## 🔧 Maintenance
 
-- **OpenAI-compatible xhigh Reasoning Effort** - `reasoning_effort: "xhigh"` is forwarded to vLLM, Ollama, SGL, and custom OpenAI-compatible providers instead of being rewritten to `high` by OpenAI model-name rules (thanks [@pranavthakur0-0](https://github.com/pranavthakur0-0)!) (#6193)
-- **Request Body Memory Retention** - Pooled keep-alive connections no longer keep their largest-ever request-body buffer. fasthttp kept one buffer per connection at its high-water mark (and handed it to the next connection), so per-pod memory ratcheted up with large LLM payloads and never came back. Buffers above `server.body_buffer_pool_limit_bytes` (default 4 MiB) are now released after each request; larger bodies are still accepted up to `max_request_body_size_mb`. Set `0` for unlimited (the previous behaviour)
-- **Async Raw Request Body** - Async jobs (`x-bf-async`) that forward the raw request body now copy it, instead of reading a buffer the next request on the same connection can overwrite
+- **Dependency Upgrades** - Bumped core to v1.13.1 and framework to v1.10.1 across all modules
 
 ## 🗄️ Database Migrations
 
-- `add_virtual_key_metadata_column` - adds the nullable `metadata` column to `governance_virtual_keys`. Existing keys keep NULL. Non-rollbackable: dropping the column would delete every key's metadata; older binaries ignore it.
+- No new database migrations in this release.
+- **MiniMax Provider** - New `minimax` provider for chat completions, Responses, image generation, async video generation, text-to-speech and speech-to-text, with `thinking` passthrough and the `base_resp` error envelope mapped to HTTP status codes
+- **BytePlus Provider** - New `byteplus` provider for BytePlus ModelArk: Seed chat completions with `reasoning_effort` mapped onto Ark's `thinking` switch, the native Responses API, embeddings through the multimodal endpoint (one call per input entry), Seedream image generation and editing, and async Seedance video generation with list support

@@ -32,6 +32,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Azure,
 	schemas.Bedrock,
 	schemas.BedrockMantle,
+	schemas.BytePlus,
 	schemas.Cerebras,
 	schemas.Cohere,
 	schemas.Databricks,
@@ -40,6 +41,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Gemini,
 	schemas.Groq,
 	schemas.HuggingFace,
+	schemas.MiniMax,
 	schemas.Mistral,
 	schemas.Nebius,
 	schemas.OpenAI,
@@ -74,10 +76,8 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 // CanProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
 // Some providers like Vertex and Bedrock have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
-// GitHub Copilot may authenticate with a GitHub App bundle in github_copilot_key_config
-// instead of a Copilot API token in value; validateKey checks that one of the two is present.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks || providerKey == schemas.GithubCopilot
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.Databricks
 }
 
 // isKeySkippingAllowed gates SkipKeySelection on the provider this attempt resolved to. The flag
@@ -180,36 +180,6 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		}
 		if key.CloudflareKeyConfig.AccountID.GetValue() == "" {
 			return fmt.Errorf("cloudflare_key_config.account_id is required")
-		}
-	case schemas.GithubCopilot:
-		// Two auth modes, either is sufficient.
-		//
-		//   1. Key.Value holds a Copilot API token, GitHub's documented "direct API token"
-		//      method. Those live about 30 minutes, so this suits testing.
-		//   2. GithubCopilotKeyConfig holds GitHub App credentials and Bifrost mints its own
-		//      tokens server-to-server. This is the mode for real deployments.
-		// Trim before every check. resolveCredentials and validateKeyConfig trim too, so an
-		// untrimmed check here would accept a key that fails at the first inference call
-		// instead of at setup, where the operator can still act on it.
-		if strings.TrimSpace(key.Value.GetValue()) != "" {
-			break
-		}
-		if key.GithubCopilotKeyConfig == nil {
-			return fmt.Errorf("github_copilot_key_config is required when value is not set")
-		}
-		// Ordered, so the reported field is deterministic when several are missing.
-		for _, field := range []struct {
-			name  string
-			value string
-		}{
-			{"app_id", key.GithubCopilotKeyConfig.AppID.GetValue()},
-			{"installation_id", key.GithubCopilotKeyConfig.InstallationID.GetValue()},
-			{"repository_id", key.GithubCopilotKeyConfig.RepositoryID.GetValue()},
-			{"private_key", key.GithubCopilotKeyConfig.PrivateKey.GetValue()},
-		} {
-			if strings.TrimSpace(field.value) == "" {
-				return fmt.Errorf("github_copilot_key_config.%s is required", field.name)
-			}
 		}
 	case schemas.Databricks:
 		// The workspace URL is not required here: an SDK caller may set it once as the
@@ -901,6 +871,7 @@ func isPromptOptionalVideoEditType(t *string) bool {
 // bytes, which integrations must not echo to a client of the original API.
 func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
 	roleSent := false
+	var identity chatStreamIdentity
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			switch targetType {
@@ -917,6 +888,7 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				if result.ResponsesStreamResponse != nil {
 					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
 						roleSent = setAssistantRoleOnce(converted, roleSent)
+						identity.apply(converted)
 						converted.ExtraFields.ConvertedRequestType = targetType
 						result = &schemas.BifrostResponse{ChatResponse: converted}
 					}
@@ -924,6 +896,35 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 			}
 		}
 		return postHookRunner(ctx, result, bifrostErr)
+	}
+}
+
+// chatStreamIdentity holds the id, model and created of a converted chat stream.
+// Only the response.created, in_progress and completed events carry the Response
+// object, so the deltas between them convert without these fields. OpenAI SDK
+// stream accumulators drop a chunk whose id differs from the stream's.
+type chatStreamIdentity struct {
+	id      string
+	model   string
+	created int
+}
+
+// apply records each field a chunk carries and fills in each one it lacks.
+func (s *chatStreamIdentity) apply(resp *schemas.BifrostChatResponse) {
+	if resp.ID == "" {
+		resp.ID = s.id
+	} else {
+		s.id = resp.ID
+	}
+	if resp.Model == "" {
+		resp.Model = s.model
+	} else {
+		s.model = resp.Model
+	}
+	if resp.Created == 0 {
+		resp.Created = s.created
+	} else {
+		s.created = resp.Created
 	}
 }
 

@@ -1312,6 +1312,29 @@ func TestResponsesMessagePreservesAdditionalTools(t *testing.T) {
 	}
 }
 
+// TestResponsesMessagePreservesConfigurationUpdate pins #8616: OpenAI's configuration_update
+// item carries its effort under `reasoning`, which the typed decode has no field for, so the
+// item must round-trip verbatim or OpenAI rejects it with "Missing required parameter:
+// 'input[0].reasoning'".
+func TestResponsesMessagePreservesConfigurationUpdate(t *testing.T) {
+	raw := `{"reasoning":{"effort":"high"},"type":"configuration_update"}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal configuration_update item: %v", err)
+	}
+	if msg.Type == nil || *msg.Type != ResponsesMessageType("configuration_update") {
+		t.Fatalf("expected configuration_update item, got %#v", msg.Type)
+	}
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal configuration_update item: %v", err)
+	}
+	if string(encoded) != raw {
+		t.Fatalf("expected item to round-trip verbatim\nwant: %s\ngot:  %s", raw, encoded)
+	}
+}
+
 func TestResponsesMessagePreservesOpenAIPhase(t *testing.T) {
 	raw := []byte(`{"id":"msg_123","type":"message","status":"in_progress","content":[],"phase":"final_answer","role":"assistant"}`)
 
@@ -2519,4 +2542,23 @@ func TestResponsesMCPItemsKeepServerLabel(t *testing.T) {
 	out, err := Marshal(msg)
 	require.NoError(t, err)
 	assert.Equal(t, "deepwiki", gjson.GetBytes(out, "server_label").String(), string(out))
+}
+
+// TestResponsesStreamEventOmitsEmptyNestedExtraFields pins that a lifecycle event's wrapped
+// response, whose ExtraFields nothing fills, serializes no extra_fields, while a filled one
+// (a unary response) still does.
+func TestResponsesStreamEventOmitsEmptyNestedExtraFields(t *testing.T) {
+	event := BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeCreated,
+		Response:    &BifrostResponsesResponse{ID: new("resp_1"), Model: "gpt-4o"},
+		ExtraFields: BifrostResponseExtraFields{RequestType: ResponsesStreamRequest, Provider: OpenAI},
+	}
+	encoded, err := MarshalSorted(event)
+	require.NoError(t, err)
+	assert.False(t, gjson.GetBytes(encoded, "response.extra_fields").Exists(), "nested extra_fields leaked: %s", encoded)
+	assert.Equal(t, "openai", gjson.GetBytes(encoded, "extra_fields.provider").String(), "top-level extra_fields must stay: %s", encoded)
+
+	unary, err := MarshalSorted(BifrostResponsesResponse{ID: new("resp_1"), ExtraFields: BifrostResponseExtraFields{RequestType: ResponsesRequest}})
+	require.NoError(t, err)
+	assert.Equal(t, "responses", gjson.GetBytes(unary, "extra_fields.request_type").String(), "a filled extra_fields must stay: %s", unary)
 }

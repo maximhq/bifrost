@@ -58,6 +58,12 @@ import {
 import { cn } from "@/lib/utils";
 import { LOG_LEVEL_BADGE_CLASSES, meetsMinLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 import { downloadAsJson } from "@/lib/utils/browser-download";
+import {
+	GUARDRAIL_MATCH_ACTION_BADGE,
+	GUARDRAIL_MATCH_ACTION_LABEL,
+	guardrailMatchAction,
+	guardrailMatchActionHint,
+} from "@/lib/utils/guardrailMatchAction";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { applyRedactionMapping, applyRedactionMappingToValue, hasRedactionMappingEntries } from "@/lib/utils/redaction";
 import { isJson } from "@/lib/utils/validation";
@@ -2301,6 +2307,66 @@ export function LogDetailView({
 								)}
 							</>
 						)}
+						{!isContainer &&
+							!isPassthrough &&
+							((log.guardrail_debug?.interventions?.length ?? 0) > 0 || (log.guardrail_debug?.detections?.length ?? 0) > 0) && (
+								<>
+									<DottedSeparator />
+									<div className="space-y-4">
+										<BlockHeader title="Guardrail Matches" />
+										<div className="space-y-4">
+											{[
+												...(log.guardrail_debug?.interventions ?? []).map((match) => ({
+													match,
+													action: guardrailMatchAction(match, true),
+												})),
+												...(log.guardrail_debug?.detections ?? []).map((match) => ({ match, action: guardrailMatchAction(match, false) })),
+											].map(({ match, action }, index) => (
+												<div
+													key={`${action}-${match.rule_id ?? match.rule_name ?? "guardrail"}-${index}`}
+													className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}
+												>
+													<LogEntryDetailsView
+														className="w-full"
+														label="Action"
+														value={
+															<Badge variant={GUARDRAIL_MATCH_ACTION_BADGE[action]} title={guardrailMatchActionHint(match, action)}>
+																{GUARDRAIL_MATCH_ACTION_LABEL[action]}
+															</Badge>
+														}
+													/>
+													{match.rule_name && <LogEntryDetailsView className="w-full" label="Rule" value={match.rule_name} />}
+													{match.phase && (
+														<LogEntryDetailsView
+															className="w-full"
+															label="Phase"
+															value={
+																<Badge variant="secondary" className="uppercase">
+																	{match.phase}
+																</Badge>
+															}
+														/>
+													)}
+													{match.guardrail_name && (
+														<LogEntryDetailsView className="w-full" label="Guardrail" value={match.guardrail_name} />
+													)}
+													{match.guardrail_provider && (
+														<LogEntryDetailsView className="w-full" label="Guardrail Provider" value={match.guardrail_provider} />
+													)}
+													{match.assessments && match.assessments.length > 0 && (
+														<LogEntryDetailsView
+															className="w-full md:col-span-3"
+															label="Assessments"
+															value={match.assessments.join("; ")}
+														/>
+													)}
+													{match.reason && <LogEntryDetailsView className="w-full md:col-span-3" label="Reason" value={match.reason} />}
+												</div>
+											))}
+										</div>
+									</div>
+								</>
+							)}
 						{!isContainer && !isPassthrough && log.guardrail_debug?.judge_calls && log.guardrail_debug.judge_calls.length > 0 && (
 							<>
 								<DottedSeparator />
@@ -2419,7 +2485,12 @@ export function LogDetailView({
 											{Object.entries(log.metadata)
 												.filter(([key]) => isShownMetadataKey(key, isRealtimeTurn))
 												.map(([key, value]) => (
-													<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
+													<LogEntryDetailsView
+														key={key}
+														className="w-full"
+														label={key}
+														value={value == null ? "-" : typeof value === "object" ? JSON.stringify(value) : String(value)}
+													/>
 												))}
 										</div>
 									</div>
@@ -2704,19 +2775,23 @@ export function LogDetailView({
 						</div>
 						{(log.ocr_input || log.ocr_output) && <OCRView ocrInput={log.ocr_input} ocrOutput={log.ocr_output} />}
 						{(log.speech_input || log.speech_output) && (
-							<SpeechView speechInput={log.speech_input} speechOutput={log.speech_output} isStreaming={log.stream} />
+							<SpeechView
+								speechInput={applyRedactionMappingToValue(log.speech_input, activeInputRevealMapping)}
+								speechOutput={log.speech_output}
+								isStreaming={log.stream}
+							/>
 						)}
 						{(log.transcription_input || log.transcription_output) && (
 							<TranscriptionView
-								transcriptionInput={log.transcription_input}
-								transcriptionOutput={log.transcription_output}
+								transcriptionInput={applyRedactionMappingToValue(log.transcription_input, activeInputRevealMapping)}
+								transcriptionOutput={applyRedactionMappingToValue(log.transcription_output, activeOutputRevealMapping)}
 								isStreaming={log.stream}
 							/>
 						)}
 						{(log.image_generation_input || log.image_edit_input || log.image_variation_input || log.image_generation_output) && (
 							<ImageView
-								imageInput={log.image_generation_input}
-								imageEditInput={log.image_edit_input}
+								imageInput={applyRedactionMappingToValue(log.image_generation_input, activeInputRevealMapping)}
+								imageEditInput={applyRedactionMappingToValue(log.image_edit_input, activeInputRevealMapping)}
 								imageVariationInput={log.image_variation_input}
 								imageOutput={log.image_generation_output}
 								requestType={log.object}
@@ -2724,7 +2799,7 @@ export function LogDetailView({
 						)}
 						{(log.video_generation_input || videoOutput || videoListOutput) && (
 							<VideoView
-								videoInput={log.video_generation_input}
+								videoInput={applyRedactionMappingToValue(log.video_generation_input, activeInputRevealMapping)}
 								videoOutput={videoOutput}
 								videoListOutput={videoListOutput}
 								requestType={log.object}

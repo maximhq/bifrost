@@ -218,6 +218,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 	if h.store.EnvLabel != "" {
 		mapConfig["env_label"] = h.store.EnvLabel
 	}
+	mapConfig["disable_onboarding"] = h.store.DisableOnboarding
 	if h.store.ServerConfig != nil && h.store.ServerConfig.A2AGRPCBaseDomain != "" && h.store.ServerConfig.A2AGRPCPort > 0 {
 		mapConfig["agent_gateway"] = map[string]any{
 			"grpc_base_domain": h.store.ServerConfig.A2AGRPCBaseDomain,
@@ -279,6 +280,18 @@ func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "patch body must contain at least one key")
 		return
 	}
+	// A missing row reads as an empty map, so any error here is a real read failure.
+	current, err := h.store.ConfigStore.GetClientMetadata(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read metadata: %v", err))
+		return
+	}
+	before := map[string]any{}
+	for k := range patch {
+		if v, ok := current[k]; ok {
+			before[k] = v
+		}
+	}
 	if err := h.store.ConfigStore.UpdateClientMetadata(ctx, patch); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("failed to update metadata: %v", err))
@@ -287,6 +300,13 @@ func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update metadata: %v", err))
 		return
 	}
+	after := map[string]any{}
+	for k, v := range patch {
+		if v != nil {
+			after[k] = v
+		}
+	}
+	lib.RecordAuditChange(ctx, "config_metadata.updated", "config_metadata", "client_metadata", "Client metadata", before, after)
 	SendJSON(ctx, map[string]any{"success": true})
 }
 
@@ -360,6 +380,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if raw, present := clientConfigFields["enforce_vk_object_ownership"]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		SendError(ctx, fasthttp.StatusBadRequest, "enforce_vk_object_ownership must be true or false")
 		return
+	}
+	// The access-profile user key settings are plain bools that default to false, so a JSON null would
+	// decode as false and silently hand user key creation or deletion back to access profiles. Refuse
+	// it; omit the field to keep the stored value.
+	for _, field := range []string{"skip_access_profile_user_virtual_key_creation", "skip_access_profile_user_virtual_key_deletion"} {
+		if raw, present := clientConfigFields[field]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			SendError(ctx, fasthttp.StatusBadRequest, field+" must be true or false")
+			return
+		}
 	}
 
 	// vk_rotation_cooldown bounds: negative is meaningless, and anything past 30
@@ -446,6 +475,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// pointer or slice fields.
 	copied := *currentConfig
 	updatedConfig := &copied
+	before := lib.AuditSnapshot(currentConfig.Redacted())
 
 	// Validate first-admin setup before any live mutation or persistence below.
 	var existingAuthConfig *configstore.AuthConfig
@@ -838,6 +868,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if _, present := clientConfigFields["enforce_vk_object_ownership"]; present {
 		updatedConfig.EnforceVKObjectOwnership = payload.ClientConfig.EnforceVKObjectOwnership
 	}
+	// Copied only when sent, so a partial save doesn't silently hand key lifecycle back to access profiles.
+	if _, present := clientConfigFields["skip_access_profile_user_virtual_key_creation"]; present {
+		updatedConfig.SkipAccessProfileUserVirtualKeyCreation = payload.ClientConfig.SkipAccessProfileUserVirtualKeyCreation
+	}
+	if _, present := clientConfigFields["skip_access_profile_user_virtual_key_deletion"]; present {
+		updatedConfig.SkipAccessProfileUserVirtualKeyDeletion = payload.ClientConfig.SkipAccessProfileUserVirtualKeyDeletion
+	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally
 	// so 0 clears a previously stored cooldown.
@@ -929,6 +966,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	h.store.Mu.Lock()
 	*h.store.ClientConfig = *updatedConfig
 	h.store.Mu.Unlock()
+	// Recorded at the commit point: the reload, framework and auth steps below
+	// can fail without undoing this write.
+	lib.RecordAuditChange(ctx, "config.updated", "config", "client_config", "client_config", before, updatedConfig.Redacted())
 	// Publish a saved allowlist change here rather than relying on the reload
 	// below: if its store read fails, a removed host would stay reachable.
 	if allowlistChanged {
@@ -1251,6 +1291,7 @@ func (h *ConfigHandler) forceSyncPricing(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to force pricing sync: %v", err))
 		return
 	}
+	lib.RecordAuditChange(ctx, "pricing.synced", "pricing", "pricing", "Pricing", nil, map[string]any{"forced": true})
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	SendJSON(ctx, map[string]any{
@@ -1372,12 +1413,20 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	existingProxyConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
+		return
+	}
+	before := auditProxyConfig(existingProxyConfig)
 	// Save proxy config
 	if err := h.store.ConfigStore.UpdateProxyConfig(ctx, &payload); err != nil {
 		logger.Warn("failed to save proxy configuration: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save proxy configuration: %v", err))
 		return
 	}
+	// Recorded once saved: the reload below can fail without undoing the write.
+	lib.RecordAuditChange(ctx, "proxy_config.updated", "proxy_config", "proxy_config", "proxy_config", before, auditProxyConfig(&payload))
 
 	// Pulling the proxy config from the config store
 	newProxyConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)

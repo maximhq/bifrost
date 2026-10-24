@@ -1,7 +1,9 @@
+import { LoadErrorView } from "@/components/loadErrorView";
 import { Button } from "@/components/ui/button";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { setSelectedPlugin, useAppDispatch, useAppSelector, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ArrowLeft, ListOrdered, PlusIcon, Puzzle } from "lucide-react";
 import { useQueryState } from "nuqs";
@@ -16,7 +18,7 @@ export default function PluginsPage() {
 	const dispatch = useAppDispatch();
 	const hasCreatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Create);
 	const hasUpdatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Update);
-	const { data: plugins, isLoading } = useGetPluginsQuery();
+	const { data: plugins, isLoading, error, refetch } = useGetPluginsQuery();
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const [selectedPluginId, setSelectedPluginId] = useQueryState("plugin");
 	const customPlugins = useMemo(() => plugins?.filter((plugin) => plugin.isCustom), [plugins]);
@@ -48,6 +50,14 @@ export default function PluginsPage() {
 		}
 		setSelectedPluginId(selectedPlugin?.name ?? "");
 	}, [customPlugins]);
+
+	if (showLoadError(error, plugins)) {
+		return (
+			<div className="mx-auto w-full max-w-7xl">
+				<LoadErrorView entity="plugins" error={error} onRetry={() => void refetch()} testId="plugins-load-error" />
+			</div>
+		);
+	}
 
 	if (customPlugins?.length === 0 && !isLoading) {
 		return (

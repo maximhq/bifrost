@@ -810,7 +810,8 @@ func TestNativeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if shared.Provider != schemas.Typesafe || shared.Model != "jev-latest" {
+	// A bare model is left for routing to resolve, not pinned to Typesafe.
+	if shared.Provider != "" || shared.Model != "jev-latest" {
 		t.Errorf("routing = %s/%s", shared.Provider, shared.Model)
 	}
 	if len(shared.Questions) != 3 {
@@ -832,7 +833,7 @@ func TestNativeRoundTrip(t *testing.T) {
 		}
 	}
 
-	// Explicit provider prefix routes the same way.
+	// An explicit provider prefix pins the provider.
 	native.Model = "typesafe/jev-1.13.0"
 	shared, err = native.ToBifrostDecisionRequest(nil)
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -722,6 +723,65 @@ func TestLogSubscribersComposeAndUnsubscribe(t *testing.T) {
 	if primary != 2 || first != 1 || second != 2 {
 		t.Fatalf("callback counts = primary:%d first:%d second:%d", primary, first, second)
 	}
+}
+
+// A delete a caller makes through the manager is announced to every
+// subscriber once the store has done it, with the ids; a delete the store
+// refused announces nothing, since nothing was deleted.
+func TestLogDeleteSubscribersAreToldWhatWasDeleted(t *testing.T) {
+	store := newTestStore(t)
+	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
+	plugin := &LoggerPlugin{ctx: context.Background(), store: store, logger: testLogger{}}
+	for _, id := range []string{"one", "two", "three"} {
+		require.NoError(t, store.Create(context.Background(), &logstore.Log{ID: id, Timestamp: time.Now(), Object: "chat.completion", Status: "success"}))
+	}
+	var first, second [][]string
+	unsubscribeFirst := plugin.SubscribeLogDeleteCallback(func(_ context.Context, ids []string) { first = append(first, ids) })
+	plugin.SubscribeLogDeleteCallback(func(_ context.Context, ids []string) { second = append(second, ids) })
+	manager := plugin.GetPluginLogManager()
+
+	require.NoError(t, manager.DeleteLogs(context.Background(), []string{"one", "two"}))
+	unsubscribeFirst()
+	unsubscribeFirst()
+	require.NoError(t, manager.DeleteLog(context.Background(), "three"))
+
+	require.Equal(t, [][]string{{"one", "two"}}, first)
+	require.Equal(t, [][]string{{"one", "two"}, {"three"}}, second)
+	_, err := store.FindByID(context.Background(), "three")
+	require.ErrorIs(t, err, logstore.ErrNotFound, "the store deleted it before anyone was told")
+
+	// Nothing to delete, nothing to announce.
+	require.NoError(t, manager.DeleteLogs(context.Background(), nil))
+	require.Len(t, second, 2)
+}
+
+// failingDeleteStore fails every log delete with err.
+type failingDeleteStore struct {
+	logstore.LogStore
+	err error
+}
+
+func (s failingDeleteStore) DeleteLog(context.Context, string) error    { return s.err }
+func (s failingDeleteStore) DeleteLogs(context.Context, []string) error { return s.err }
+
+// A partial delete removed the logs, so subscribers hear of it and the caller
+// still gets the error; a delete that failed before the logs went announces
+// nothing.
+func TestLogDeleteSubscribersAreToldOfPartialDeletes(t *testing.T) {
+	partial := fmt.Errorf("%w: cleanup failed", logstore.ErrPartialLogDelete)
+	plugin := &LoggerPlugin{ctx: context.Background(), store: failingDeleteStore{err: partial}, logger: testLogger{}}
+	var told [][]string
+	plugin.SubscribeLogDeleteCallback(func(_ context.Context, ids []string) { told = append(told, ids) })
+	manager := plugin.GetPluginLogManager()
+
+	require.ErrorIs(t, manager.DeleteLogs(context.Background(), []string{"one", "two"}), logstore.ErrPartialLogDelete)
+	require.ErrorIs(t, manager.DeleteLog(context.Background(), "three"), logstore.ErrPartialLogDelete)
+	require.Equal(t, [][]string{{"one", "two"}, {"three"}}, told)
+
+	plugin.store = failingDeleteStore{err: errors.New("log delete failed")}
+	require.Error(t, manager.DeleteLogs(context.Background(), []string{"four"}))
+	require.Error(t, manager.DeleteLog(context.Background(), "five"))
+	require.Len(t, told, 2)
 }
 
 func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
@@ -2313,6 +2373,192 @@ func TestKeyTurningContentOnOverClientFlagKeepsEarlyCapturedContent(t *testing.T
 		if logEntry.ArgumentsParsed == nil {
 			t.Fatal("expected the arguments kept for a content-on key, alongside its result")
 		}
+	})
+}
+
+// projectNamingCtx is a request with no virtual key that names a project through the request
+// header, before governance has admitted it: the caller is a dashboard session.
+func projectNamingCtx(requestID string, header string) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{header: "proj-1"})
+	ctx.SetGrant(grant.New())
+	ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialSessionToken, "session"), nil, nil, nil, nil, nil, nil))
+	return ctx
+}
+
+// admitProject leaves the context the way the documented contract describes a request once its
+// named project is admitted: the identity carries the project, and the governance content
+// decision key carries the project's decision when it has one.
+func admitProject(ctx *schemas.BifrostContext, disableContentLogging *bool) {
+	project := &schemas.EntityRef{ID: "proj-1", Name: "Project One"}
+	ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialSessionToken, "session"), nil, nil, nil, nil, nil, project))
+	if disableContentLogging != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, *disableContentLogging)
+	}
+}
+
+// TestGovernanceDecisionPending pins when the logging hooks treat the content decision on the
+// context as not final yet: while a presented virtual key or a named project is still unresolved.
+func TestGovernanceDecisionPending(t *testing.T) {
+	t.Run("nothing presented or named", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		require.False(t, governanceDecisionPending(ctx))
+	})
+	t.Run("project named by id", func(t *testing.T) {
+		require.True(t, governanceDecisionPending(projectNamingCtx("req-pending-id", schemas.HeaderGovernanceProjectID)))
+	})
+	t.Run("project named by name", func(t *testing.T) {
+		require.True(t, governanceDecisionPending(projectNamingCtx("req-pending-name", schemas.HeaderGovernanceProjectName)))
+	})
+	t.Run("an empty project header still names one", func(t *testing.T) {
+		// The governance funnel treats an empty header as having asked, and refuses the request
+		// when nothing was admitted behind it; until then its decision is not known either.
+		ctx := projectNamingCtx("req-pending-empty", schemas.HeaderGovernanceProjectID)
+		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{schemas.HeaderGovernanceProjectID: ""})
+		require.True(t, governanceDecisionPending(ctx))
+	})
+	t.Run("an admitted project is settled", func(t *testing.T) {
+		ctx := projectNamingCtx("req-pending-admitted", schemas.HeaderGovernanceProjectID)
+		admitProject(ctx, nil)
+		require.False(t, governanceDecisionPending(ctx))
+	})
+	t.Run("an admitted project still waits on an unresolved key", func(t *testing.T) {
+		ctx := projectNamingCtx("req-pending-key", schemas.HeaderGovernanceProjectID)
+		admitProject(ctx, nil)
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
+		require.True(t, governanceDecisionPending(ctx))
+	})
+	t.Run("a stamped key with no project named is settled", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-presented")
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+		require.False(t, governanceDecisionPending(ctx))
+	})
+}
+
+// TestProjectDecisionAppliesToContentCapturedBeforeAdmission pins the hook ordering hole for a
+// request that names a project and presents no virtual key: governance admits the project, and
+// stamps its content decision, only after the logging pre-hooks have captured. Content must be
+// held provisionally so the final policy in the post-hooks decides, in both directions.
+func TestProjectDecisionAppliesToContentCapturedBeforeAdmission(t *testing.T) {
+	toolName := "docs-search"
+	mcpRequest := &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{"query":"find this"}`},
+		},
+	}
+	result := `{"answer":"done"}`
+	mcpResponse := &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: &result}},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{MCPRequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "docs", ToolName: "search"},
+	}
+	passthroughRequest := func(body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.PassthroughRequest,
+			PassthroughRequest: &schemas.BifrostPassthroughRequest{
+				Provider:    schemas.OpenAI,
+				Method:      "POST",
+				Path:        "/v1/fine-tuning/jobs",
+				Body:        []byte(body),
+				SafeHeaders: map[string]string{"content-type": "application/json"},
+			},
+		}
+	}
+	passthroughResponse := &schemas.BifrostResponse{
+		PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode:  200,
+			Body:        []byte(`{"id":"ftjob-1"}`),
+			Path:        "/v1/fine-tuning/jobs",
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI},
+		},
+	}
+
+	t.Run("project turning content on over the client flag keeps llm input", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{DisableContentLogging: new(true)}, testLogger{}, store, nil, nil, nil)
+		require.NoError(t, err)
+		ctx := projectNamingCtx("req-project-on-llm", schemas.HeaderGovernanceProjectID)
+		_, _, err = plugin.PreLLMHook(ctx, passthroughRequest(`{"training_file":"file-kept"}`))
+		require.NoError(t, err)
+		admitProject(ctx, new(false))
+		_, _, err = plugin.PostLLMHook(ctx, passthroughResponse, nil)
+		require.NoError(t, err)
+		require.NoError(t, plugin.Cleanup())
+		logEntry, err := store.FindByID(context.Background(), "req-project-on-llm")
+		require.NoError(t, err)
+		require.False(t, logEntry.ContentHidden, "a project that turns content on must leave the row visible")
+		require.Equal(t, `{"training_file":"file-kept"}`, logEntry.PassthroughRequestBody, "input captured before admission belongs to a content-on project")
+	})
+
+	t.Run("project turning content off drops llm input", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+		require.NoError(t, err)
+		ctx := projectNamingCtx("req-project-off-llm", schemas.HeaderGovernanceProjectName)
+		_, _, err = plugin.PreLLMHook(ctx, passthroughRequest(`{"training_file":"file-secret"}`))
+		require.NoError(t, err)
+		admitProject(ctx, new(true))
+		_, _, err = plugin.PostLLMHook(ctx, passthroughResponse, nil)
+		require.NoError(t, err)
+		require.NoError(t, plugin.Cleanup())
+		logEntry, err := store.FindByID(context.Background(), "req-project-off-llm")
+		require.NoError(t, err)
+		require.Empty(t, logEntry.PassthroughRequestBody, "a content-off project must persist no input")
+	})
+
+	t.Run("processing notification carries no input before admission", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = plugin.Cleanup() })
+		var notified []*logstore.Log
+		plugin.SetLogCallback(func(_ context.Context, logEntry *logstore.Log) { notified = append(notified, logEntry) })
+		ctx := projectNamingCtx("req-project-notify", schemas.HeaderGovernanceProjectID)
+		_, _, err = plugin.PreLLMHook(ctx, passthroughRequest(`{"training_file":"file-secret"}`))
+		require.NoError(t, err)
+		require.NotEmpty(t, notified, "expected the processing notification")
+		require.Empty(t, notified[0].PassthroughRequestBody, "the notification went out before the project was admitted and must carry no input")
+	})
+
+	t.Run("mcp arguments are held until admission and dropped for a content-off project", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+		require.NoError(t, err)
+		ctx := projectNamingCtx("req-project-off-mcp", schemas.HeaderGovernanceProjectID)
+		ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-project-off")
+		_, _, err = plugin.PreMCPHook(ctx, mcpRequest)
+		require.NoError(t, err)
+		pending, ok := plugin.pendingMCPLogsToInject.Load("mcp-project-off")
+		require.True(t, ok, "expected pending MCP log entry")
+		require.Nil(t, pending.(*logstore.MCPToolLog).ArgumentsParsed, "arguments must be held aside while the project's decision is unknown")
+		admitProject(ctx, new(true))
+		_, _, err = plugin.PostMCPHook(ctx, mcpResponse, nil)
+		require.NoError(t, err)
+		require.NoError(t, plugin.Cleanup())
+		logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-project-off")
+		require.NoError(t, err)
+		require.Nil(t, logEntry.ArgumentsParsed, "a content-off project must persist no arguments")
+		require.Nil(t, logEntry.ResultParsed, "a content-off project must persist no result")
+	})
+
+	t.Run("mcp arguments are attached for a project turning content on over the client flag", func(t *testing.T) {
+		store := newTestStore(t)
+		plugin, err := Init(context.Background(), &Config{DisableContentLogging: new(true)}, testLogger{}, store, nil, nil, nil)
+		require.NoError(t, err)
+		ctx := projectNamingCtx("req-project-on-mcp", schemas.HeaderGovernanceProjectID)
+		ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-project-on")
+		_, _, err = plugin.PreMCPHook(ctx, mcpRequest)
+		require.NoError(t, err)
+		admitProject(ctx, new(false))
+		_, _, err = plugin.PostMCPHook(ctx, mcpResponse, nil)
+		require.NoError(t, err)
+		require.NoError(t, plugin.Cleanup())
+		logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-project-on")
+		require.NoError(t, err)
+		require.NotNil(t, logEntry.ResultParsed, "precondition: a content-on project stores the result")
+		require.NotNil(t, logEntry.ArgumentsParsed, "expected the arguments kept for a content-on project, alongside its result")
 	})
 }
 

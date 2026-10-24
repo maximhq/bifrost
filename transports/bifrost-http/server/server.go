@@ -1166,7 +1166,7 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 
 	// Refresh keyconfig from the current key list, then reconcile the live
 	// entries against it before refetching per-key.
-	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, inMemoryKeys)
+	setKeyConfig(s.Config.ModelCatalog, provider, inMemoryKeys, isKeylessProvider)
 	if hasNoKeys {
 		// Nothing left to route through, and nothing will ever refresh these
 		// entries, so no cached response is still meaningful.
@@ -1255,10 +1255,11 @@ func (s *BifrostHTTPServer) OnKeyAdded(ctx context.Context, provider schemas.Mod
 	if err != nil {
 		return fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
 	}
-	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, keys)
+	keyless := isKeylessProvider(provider, s.Config)
+	setKeyConfig(s.Config.ModelCatalog, provider, keys, keyless)
 	// Keyless providers: empty keyID sentinel.
 	keyID := key.ID
-	if isKeylessProvider(provider, s.Config) {
+	if keyless {
 		keyID = ""
 	}
 	// Skip the fetch for a disabled key — core rejects list-models calls
@@ -1282,9 +1283,10 @@ func (s *BifrostHTTPServer) OnKeyUpdated(ctx context.Context, provider schemas.M
 	if err != nil {
 		return fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
 	}
-	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, keys)
+	keyless := isKeylessProvider(provider, s.Config)
+	setKeyConfig(s.Config.ModelCatalog, provider, keys, keyless)
 	keyID := key.ID
-	if isKeylessProvider(provider, s.Config) {
+	if keyless {
 		keyID = ""
 	}
 	s.Config.ModelCatalog.InvalidateLive(provider, keyID)
@@ -1308,7 +1310,7 @@ func (s *BifrostHTTPServer) OnKeyDeleted(ctx context.Context, provider schemas.M
 	if err != nil {
 		return fmt.Errorf("failed to read provider keys for %s: %w", provider, err)
 	}
-	s.Config.ModelCatalog.SetKeyConfigForProvider(provider, keys)
+	setKeyConfig(s.Config.ModelCatalog, provider, keys, isKeylessProvider(provider, s.Config))
 	s.Config.ModelCatalog.InvalidateLive(provider, keyID)
 	return nil
 }
@@ -1335,6 +1337,18 @@ func isKeylessProvider(provider schemas.ModelProvider, cfg *lib.Config) bool {
 		return false
 	}
 	return pc.CustomProviderConfig.IsKeyLess
+}
+
+// setKeyConfig pushes the provider's keys into the catalog's keyconfig. Only a
+// keyless custom provider stays routable with zero keys; any other provider
+// left without a key must stop claiming models, or a bare model name can be
+// routed to it and fail with no_key_supports_model.
+func setKeyConfig(catalog *modelcatalog.ModelCatalog, provider schemas.ModelProvider, keys []schemas.Key, keyless bool) {
+	if keyless {
+		catalog.SetKeyConfigForKeylessProvider(provider, keys)
+		return
+	}
+	catalog.SetKeyConfigForProvider(provider, keys)
 }
 
 // GetGovernanceData returns the governance data
@@ -2917,6 +2931,20 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		UserGovernance:       s.WarpUserGovernanceReader,
 		CallerRestriction:    s.WarpCallerRestrictionResolver,
 	})
+	if loggingHandler != nil {
+		loggingHandler.SetTopicLister(s.WarpHandler.Service())
+	}
+	// Read at each sweep rather than once: the cleaner is built in Bootstrap,
+	// after this, and its retention can change at runtime.
+	s.WarpHandler.Service().SetLogRetention(func() int {
+		if s.LogsCleaner == nil {
+			return 0
+		}
+		return s.LogsCleaner.RetentionDays()
+	})
+	// config.json's warp section saves through the service, so it is validated and provisions its
+	// vector namespace exactly like a save from the settings page.
+	s.Config.ApplyWarpFileConfig(s.Ctx, s.WarpHandler.Service())
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
 	// Adding telemetry middleware
@@ -2958,6 +2986,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	oauth2ConsentHandler.RegisterRoutes(s.Router, middlewares...)
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
+	handlers.NewGithubCopilotSignInHandler().RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	if virtualMCPHandler != nil {
 		virtualMCPHandler.RegisterRoutes(s.Router, middlewares...)
@@ -3376,14 +3405,17 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	logger.Info("listing all models and adding to model catalog")
 	if s.Config.ModelCatalog != nil {
 		snapshot := make(map[schemas.ModelProvider][]schemas.Key, len(s.Config.Providers))
-		var ignoreProviderCost []schemas.ModelProvider
+		var ignoreProviderCost, keyless []schemas.ModelProvider
 		for provider, providerConfig := range s.Config.Providers {
 			snapshot[provider] = providerConfig.Keys
 			if providerConfig.IgnoreProviderCost {
 				ignoreProviderCost = append(ignoreProviderCost, provider)
 			}
+			if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
+				keyless = append(keyless, provider)
+			}
 		}
-		s.Config.ModelCatalog.ReplaceKeyConfig(snapshot)
+		s.Config.ModelCatalog.ReplaceKeyConfig(snapshot, keyless...)
 		s.Config.ModelCatalog.ReplaceIgnoreProviderCost(ignoreProviderCost)
 
 		s.RefreshAllLiveModels(ctx)
@@ -3652,12 +3684,15 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 	// Checking if config has server config and use it to set read buffer size
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
-	lib.ApplyBodyBufferPoolLimit(s.Config.ServerConfig, s.Config.ClientConfig.MaxRequestBodySizeMB*1024*1024)
+	maxRequestBodySizeMB := s.Config.ClientConfig.MaxRequestBodySizeMB
+	lib.ApplyBodyBufferPoolLimit(s.Config.ServerConfig, maxRequestBodySizeMB*1024*1024)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
 		Handler:            handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler),
-		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
+		MaxRequestBodySize: maxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
+		// Explain an oversized body (413 naming the configured limit) instead of fasthttp's generic 400.
+		ErrorHandler: lib.RequestErrorHandler(maxRequestBodySizeMB, logger.Warn),
 	}
 	startSkillsOrphanCleanupWorker(s.Ctx, s.Config, nil)
 	// Keep the live model catalog current after boot. Without this, a model an

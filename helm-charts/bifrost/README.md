@@ -4,16 +4,24 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.45
+**Latest Version:** 2.1.46
 
 ## Changelog
 
 ### Upcoming
 
 - Configurable request-body buffer pool limit via `bifrost.server.bodyBufferPoolLimitBytes`. Maps to `server.body_buffer_pool_limit_bytes` in config.json. Keep-alive connections free request-body buffers larger than this after each request instead of holding the largest body they ever read (default 4 MiB when unset; `0` means unlimited, the old behaviour).
+- Added `bifrost.disableOnboarding` (`disable_onboarding`) to hide the management UI setup checklist for every user. It is read from config.json on every start rather than the config store, so it stays in effect on stateless or provider-less deployments.
+- Added `bifrost.governance.projects[].disable_content_logging` (`governance.projects[].disable_content_logging` in config.json), a per-project content-logging setting. Omit it to inherit the virtual key's setting (or the client's when the key has none); `true` or `false` override the virtual key for requests scoped to the project.
+- Added `bifrost.client.skipAccessProfileUserVirtualKeyCreation` (`client.skip_access_profile_user_virtual_key_creation`), default `false`. Enterprise only: when `true`, a user's first access profile no longer issues them a virtual key.
+- Added `bifrost.client.skipAccessProfileUserVirtualKeyDeletion` (`client.skip_access_profile_user_virtual_key_deletion`), default `false`. Enterprise only: when `true`, removing a user's last access profile no longer deletes their virtual keys; they are kept as ordinary keys. Deleting the user still deletes them.
+- Added `syncAllUsers` to the Okta SCIM provider config (`bifrost.scim.config.syncAllUsers`, `scim_config.config.syncAllUsers`), default `true`. Chooses which Okta users directory sync keeps: every app-assigned user except suspended and deactivated ones, or (`false`) active users only. The chart's values schema and `config.schema.json` previously refused the key.
 
 ### 2.1.45
 
+- Added `bifrost.plugins.datadog.config.llmobs_gateway_mode` (`llmobs_gateway_mode`), default `false`. Follows Datadog's proxy-service pattern for LLM Observability: a `bifrost.request` workflow span per request with the LLM span nested under it, so filtering on that name lists gateway requests rather than raw model calls, plus MCP tool spans so an agentic request shows the tools it ran. Changes the exported LLM Observability span shape, so it is opt-in.
+- Added `bifrost.plugins.datadog.config.otel_llmobs_conversion` (`otel_llmobs_conversion`), one of `disabled` (default), `inherit` or `enabled`. Controls whether Datadog builds its own LLM Observability spans from Bifrost's APM trace. Datadog resolves this across the whole trace, so the default opt-out also suppresses conversion for upstream services sharing the trace; `inherit` leaves the decision to them. With `inherit` or `enabled` and LLM Observability still on, Bifrost leaves `gen_ai.*` off its own APM spans so nothing is counted twice. **Migrate before upgrading:** a config that still sets `dd_llmobs_enabled` through `custom_tags` is now refused, and the Datadog plugin will not load until that tag is replaced by this setting.
+- Added `bifrost.governance.virtualKeys[].metadata` (`metadata`), custom key/value metadata copied onto every log entry the key produces, so logs and spend can be filtered by it. Up to 50 entries; keys may use letters, digits, `.`, `_` and `-`. The field existed in Bifrost but had no Helm path, so it could not be set from a declarative install.
 - Removed `bifrost.agents[].tenant` and `bifrost.agents[].extension_uris` from registration configuration; Agent Gateway discovers supported extensions from the upstream agent card.
 - Added `bifrost.client.a2aPrivateAllowlist` (`client.a2a_private_allowlist`) for private hosts, IPs, or CIDRs used by Agent Gateway card discovery, OAuth, and runtime connections. Link-local and cloud metadata destinations remain blocked. Per-agent `bifrost.agents[].credential_origins` permits additional HTTP(S) origins for all runtime requests and their credentials; the card origin is permitted automatically.
 - Added `bifrost.client.skillsExternalClientUrl` (`client.skills_external_client_url`) for the public skills marketplace URL, including environment and vault references. When unset, marketplace serving is disabled; skill management and downloads remain available.

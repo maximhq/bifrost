@@ -116,6 +116,22 @@ make run-provider-harness-test PROVIDER=openai FEATURE="content-length truncatio
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Extra-content-only stream deltas
+
+Folder 266 pins that OpenAI-compatible chat streams forward chunks whose delta carries only
+`extra_content`. The fixture model `upstream-extra-content` streams `hello`, one
+`extra_content`-only delta before `finish_reason: "stop"`, and one after it. On the native and
+OpenAI SDK chat routes, both payloads must arrive in order and the stream must still end with
+`finish_reason` and `[DONE]`. These cases make no live provider calls and are skipped unless
+`providerErrorFixture=1`.
+
+Start the fixture and the isolated gateway as in
+[Fixed-length response truncation](#fixed-length-response-truncation), then run:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live

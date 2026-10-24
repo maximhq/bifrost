@@ -1,5 +1,139 @@
 package schemas
 
+import (
+	"fmt"
+	"net/http"
+	"path"
+	"strings"
+)
+
+// PassthroughPolicy limits the routes a provider's HTTP passthrough endpoints forward.
+// A nil policy forwards every route; an empty AllowedRoutes forwards none.
+type PassthroughPolicy struct {
+	AllowedRoutes []PassthroughRouteRule `json:"allowed_routes"`
+}
+
+// PassthroughRouteRule allows the routes that match a path pattern and, when set, one of its methods.
+type PassthroughRouteRule struct {
+	Methods []string `json:"methods,omitempty"` // empty matches any method
+	Path    string   `json:"path"`              // "*" matches within one segment; a final "/**" matches the prefix and below
+}
+
+// Validate reports the first malformed rule. It runs at config write time so a rule that
+// could never match, or that relies on unsupported glob syntax, is refused instead of
+// silently blocking routes.
+func (p *PassthroughPolicy) Validate() error {
+	if p == nil {
+		return nil
+	}
+	for i, rule := range p.AllowedRoutes {
+		if err := rule.validate(); err != nil {
+			return fmt.Errorf("allowed_routes[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (r *PassthroughRouteRule) validate() error {
+	for _, method := range r.Methods {
+		switch method {
+		case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions:
+		default:
+			return fmt.Errorf("unsupported method %q; use GET, POST, PUT, PATCH, DELETE, HEAD or OPTIONS", method)
+		}
+	}
+	if !strings.HasPrefix(r.Path, "/") {
+		return fmt.Errorf("path must start with /")
+	}
+	if strings.ContainsAny(r.Path, "?#%\\[]") {
+		return fmt.Errorf("path must not contain ?, #, %%, \\, [ or ]")
+	}
+	if r.Path == "/" {
+		return nil
+	}
+	segments := strings.Split(r.Path[1:], "/")
+	for i, segment := range segments {
+		switch {
+		case segment == "" || segment == "." || segment == "..":
+			return fmt.Errorf("path must not contain empty, . or .. segments")
+		case strings.Contains(segment, "**") && (segment != "**" || i != len(segments)-1):
+			return fmt.Errorf("** is only allowed as the last path segment")
+		}
+	}
+	return nil
+}
+
+// Matches reports whether the rule allows method and path. apiVersion is the version
+// segment a route prefix consumed (GenAI's "/v1beta"); it is matched as the path's first
+// segment so rules read like the URL the client called.
+func (r *PassthroughRouteRule) Matches(method, apiVersion, requestPath string) bool {
+	if r.Path == "" {
+		return false
+	}
+	if len(r.Methods) > 0 {
+		allowed := false
+		for _, m := range r.Methods {
+			if strings.EqualFold(m, method) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false
+		}
+	}
+	pattern := r.Path
+	if apiVersion != "" {
+		if pattern == "/**" {
+			return true
+		}
+		segment, rest := cutPassthroughSegment(pattern[1:])
+		if !matchPassthroughSegment(segment, apiVersion) {
+			return false
+		}
+		pattern = rest
+	}
+	return matchPassthroughPath(pattern, requestPath)
+}
+
+// matchPassthroughPath walks pattern and p one segment at a time without allocating.
+func matchPassthroughPath(pattern, p string) bool {
+	for {
+		if pattern == "/**" {
+			return true
+		}
+		if pattern == "" || p == "" {
+			return pattern == p
+		}
+		patternSegment, patternRest := cutPassthroughSegment(pattern[1:])
+		pathSegment, pathRest := cutPassthroughSegment(p[1:])
+		if !matchPassthroughSegment(patternSegment, pathSegment) {
+			return false
+		}
+		pattern, p = patternRest, pathRest
+	}
+}
+
+// cutPassthroughSegment splits s at its first "/", keeping the "/" on the remainder.
+func cutPassthroughSegment(s string) (string, string) {
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		return s[:i], s[i:]
+	}
+	return s, ""
+}
+
+// matchPassthroughSegment matches one segment; a wildcard never matches an empty segment.
+func matchPassthroughSegment(pattern, segment string) bool {
+	if strings.IndexByte(pattern, '*') < 0 {
+		return pattern == segment
+	}
+	if segment == "" {
+		return false
+	}
+	ok, _ := path.Match(pattern, segment)
+	return ok
+}
+
 type BifrostPassthroughRequest struct {
 	Provider    ModelProvider // provider extracted from path or body, used for key selection when non-empty
 	Model       string        // model extracted from path or body, used for key selection when non-empty

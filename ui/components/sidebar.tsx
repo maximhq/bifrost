@@ -278,8 +278,12 @@ const SidebarItemView = ({
 	const innerContent = (
 		<div className="flex w-full min-w-0 items-center justify-between">
 			<div className="flex w-full min-w-0 items-center gap-2.5">
-				<item.icon className={`h-3.5 w-3.5 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-foreground"}`} />
-				<span className="min-w-0 truncate text-[13px] font-medium group-data-[collapsible=icon]:hidden">{item.title}</span>
+				<item.icon className={`h-3.5 w-3.5 shrink-0 ${isActive || isAnySubItemActive ? "stroke-2" : "stroke-[1.5]"}`} />
+				<span
+					className={`min-w-0 truncate text-[13px] group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}
+				>
+					{item.title}
+				</span>
 				{item.new && (
 					<Badge data-new-badge="true" className={`${newBadgeClassName} ml-auto ${hasSubItems ? "mr-2" : ""}`}>
 						New
@@ -392,14 +396,8 @@ const SidebarItemView = ({
 							const subSlug = subItem.testId ?? slug(subItem.title);
 							const inner = (
 								<div className="flex min-w-0 items-center gap-2.5">
-									{SubItemIcon && (
-										<SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-foreground"}`} />
-									)}
-									<span
-										className={`min-w-0 truncate text-[13px] font-medium ${isSubItemActive ? "text-primary" : "text-slate-600 dark:text-zinc-400"}`}
-									>
-										{subItem.title}
-									</span>
+									{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "stroke-2" : "stroke-[1.5]"}`} />}
+									<span className={`min-w-0 truncate text-[13px] ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
 									{subItem.tag && (
 										<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
 											{subItem.tag}
@@ -427,7 +425,7 @@ const SidebarItemView = ({
 											to={href}
 											preload="intent"
 											data-testid={`sidebar-subitem-link-${subSlug}`}
-											className={`flex h-7 items-center rounded-sm px-2 ${isSubItemActive ? "bg-sidebar-accent" : "hover:bg-sidebar-accent"}`}
+											className={`flex h-7 items-center rounded-sm px-2 ${isSubItemActive ? "bg-sidebar-accent text-primary" : "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-600 dark:text-zinc-400"}`}
 										>
 											{inner}
 										</Link>
@@ -460,8 +458,8 @@ const SidebarItemView = ({
 						}`;
 						const subInner = (
 							<div className="flex w-full min-w-0 items-center gap-2.5">
-								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-foreground"}`} />}
-								<span className="min-w-0 truncate text-[13px] font-medium">{subItem.title}</span>
+								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "stroke-2" : "stroke-[1.5]"}`} />}
+								<span className={`min-w-0 truncate text-[13px] ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
 								{subItem.tag && (
 									<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
 										{subItem.tag}
@@ -1026,6 +1024,13 @@ export default function AppSidebar() {
 						description: "Guardrail providers configuration",
 						hasAccess: hasGuardrailsProvidersAccess,
 					},
+					{
+						title: "Incidents",
+						url: "/workspace/guardrails/incidents",
+						icon: TriangleAlert,
+						description: "Requests blocked or flagged by guardrails",
+						hasAccess: hasGuardrailsConfigAccess && hasLogsAccess,
+					},
 				],
 			},
 			{
@@ -1096,7 +1101,7 @@ export default function AppSidebar() {
 					{
 						title: "Settings",
 						url: "/workspace/cluster/settings",
-						icon: Settings2Icon,
+						icon: Settings,
 						description: "Monitoring, sample retention and memory threshold",
 						// The settings API sits under the Settings resource; saving also needs Settings update.
 						hasAccess: hasClusterConfigAccess && hasSettingsAccess,

@@ -1,5 +1,6 @@
 import ModelProviderConfig from "@/app/workspace/providers/views/modelProviderConfig";
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -23,6 +24,7 @@ import { cn } from "@/lib/utils";
 import { decisionProviderIconKey } from "@/lib/utils/decisionModelProviders";
 import { CLOUDFLARE_PROVIDER, isMigratableCloudflareProvider } from "@/lib/utils/cloudflareMigration";
 import { DATABRICKS_PROVIDER, isCustomDatabricksProvider } from "@/lib/utils/databricksMigration";
+import { showLoadError } from "@/lib/utils/loadError";
 import { findCustomProviderCollisions, normalizeProviderName } from "@/lib/utils/providerCollision";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
@@ -73,7 +75,7 @@ export default function Providers() {
 
 	const MigrationDialog = migrationSession?.target === CLOUDFLARE_PROVIDER ? CloudflareMigrationDialog : DatabricksMigrationDialog;
 
-	const { data: savedProviders, isLoading: isLoadingProviders } = useGetProvidersQuery();
+	const { data: savedProviders, isLoading: isLoadingProviders, error: providersError, refetch: refetchProviders } = useGetProvidersQuery();
 	const [getProvider, { isLoading: isLoadingProvider }] = useLazyGetProviderQuery();
 	const [createProvider] = useCreateProviderMutation();
 
@@ -180,6 +182,13 @@ export default function Providers() {
 	}
 	if (isLoadingProviders) {
 		return <FullPageLoader />;
+	}
+	if (showLoadError(providersError, savedProviders)) {
+		return (
+			<div className="mx-auto w-full max-w-7xl">
+				<LoadErrorView entity="providers" error={providersError} onRetry={() => void refetchProviders()} testId="providers-load-error" />
+			</div>
+		);
 	}
 
 	const handleSelectKnownProvider = async (name: string) => {

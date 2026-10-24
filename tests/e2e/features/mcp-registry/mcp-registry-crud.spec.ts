@@ -5,6 +5,7 @@ import {
   createSSEClientData,
   createSTDIOClientData,
 } from "./mcp-registry.data";
+import { expectListLoadError } from "../../core/utils/test-helpers";
 
 const hasSSEHeaders = Boolean(process.env.MCP_SSE_HEADERS);
 
@@ -48,6 +49,10 @@ test.describe("MCP Registry", () => {
         expect(count).toBeGreaterThan(0);
         expect(isEmptyStateVisible).toBe(false);
       }
+    });
+
+    test("should show the load error instead of the empty state when clients fail to load", async ({ page }) => {
+      await expectListLoadError(page, "/api/mcp/clients", "mcp-servers-load-error", "mcp-registry-button-read-more");
     });
   });
 

@@ -233,6 +233,19 @@ func isStreamTransportError(err error) bool {
 	return errors.As(err, &opErr) || errors.As(err, &dnsErr)
 }
 
+// newStreamTransportError reports a connection lost after the 200 as a 502 from
+// upstream. Without a status the error resolves to 400, a client fault.
+func newStreamTransportError(err error) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     schemas.Ptr(fasthttp.StatusBadGateway),
+		Error: &schemas.ErrorField{
+			Message: schemas.ErrProviderNetworkError,
+			Error:   err,
+		},
+	}
+}
+
 // retryableBedrockExceptions maps AWS Bedrock EventStream exception types (the
 // camelCase shape names AWS uses for ConverseStream / InvokeModelWithResponseStream
 // in-stream exception members) to a retryable HTTP status code. These exceptions
@@ -374,6 +387,31 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	return body, latency, providerResponseHeaders, bErr
 }
 
+// newRequestError classifies a failed net/http request the way the shared fasthttp
+// path does in makeRequestWithDoFunc.
+func newRequestError(err error, latency time.Duration) *schemas.BifrostError {
+	if errors.Is(err, context.Canceled) {
+		return providerUtils.SetErrorLatency(&schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Type:    schemas.Ptr(schemas.RequestCancelled),
+				Message: schemas.ErrRequestCancelled,
+				Error:   err,
+			},
+		}, latency)
+	}
+	var netErr net.Error
+	if (errors.As(err, &netErr) && netErr.Timeout()) || errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		return providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
+	}
+	var opErr *net.OpError
+	var dnsErr *net.DNSError
+	if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
+		return providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, err), latency)
+	}
+	return providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
+}
+
 // executeBedrockRequest sends an already-built (and authenticated) request via the
 // unary HTTP client, measures latency, and parses a Bedrock error envelope on non-200
 // responses. Used by completeRequest for the bedrock-runtime (Converse) path.
@@ -383,43 +421,7 @@ func (provider *BedrockProvider) executeBedrockRequest(req *http.Request) ([]byt
 	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
 	latency := time.Since(startTime)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}, latency)
-		}
-		// Check for timeout first using net.Error before checking net.OpError
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
-		}
-		// Check for DNS lookup and network errors after timeout checks
-		var opErr *net.OpError
-		var dnsErr *net.DNSError
-		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderNetworkError,
-					Error:   err,
-				},
-			}, latency)
-		}
-		return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderDoRequest,
-				Error:   err,
-			},
-		}, latency)
+		return nil, latency, nil, newRequestError(err, latency)
 	}
 
 	// Extract provider response headers before closing the body
@@ -488,41 +490,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
 	latency := time.Since(startTime)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}, latency)
-		}
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
-		}
-		var opErr *net.OpError
-		var dnsErr *net.DNSError
-		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderNetworkError,
-					Error:   err,
-				},
-			}, latency)
-		}
-		return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderDoRequest,
-				Error:   err,
-			},
-		}, latency)
+		return nil, latency, nil, newRequestError(err, latency)
 	}
 
 	// Extract provider response headers before closing the body
@@ -590,43 +558,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	resp, respErr := providerUtils.DoHTTPRequest(provider.streamingClient, req)
 	latency := time.Since(startTime)
 	if respErr != nil {
-		if errors.Is(respErr, context.Canceled) {
-			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   respErr,
-				},
-			}, latency)
-		}
-		// Check for timeout first using net.Error before checking net.OpError
-		var netErr net.Error
-		if errors.As(respErr, &netErr) && netErr.Timeout() {
-			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr), latency)
-		}
-		if errors.Is(respErr, http.ErrHandlerTimeout) || errors.Is(respErr, context.DeadlineExceeded) {
-			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr), latency)
-		}
-		// Check for DNS lookup and network errors after timeout checks
-		var opErr *net.OpError
-		var dnsErr *net.DNSError
-		if errors.As(respErr, &opErr) || errors.As(respErr, &dnsErr) {
-			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderNetworkError,
-					Error:   respErr,
-				},
-			}, latency)
-		}
-		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderDoRequest,
-				Error:   respErr,
-			},
-		}, latency)
+		return nil, newRequestError(respErr, latency)
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -980,43 +912,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
 	latency := time.Since(startTime)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}, latency)
-		}
-		// Check for timeout first using net.Error before checking net.OpError
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
-		}
-		// Check for DNS lookup and network errors after timeout checks
-		var opErr *net.OpError
-		var dnsErr *net.DNSError
-		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderNetworkError,
-					Error:   err,
-				},
-			}, latency)
-		}
-		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderDoRequest,
-				Error:   err,
-			},
-		}, latency)
+		return nil, newRequestError(err, latency)
 	}
 
 	// Read response body and close
@@ -1269,13 +1165,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
 				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
 				if isStreamTransportError(err) {
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: schemas.ErrProviderNetworkError,
-							Error:   err,
-						},
-					}, responseChan, provider.logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, newStreamTransportError(err), responseChan, provider.logger, postHookSpanFinalizer)
 				} else {
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
 				}
@@ -1667,13 +1557,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
 				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
 				if isStreamTransportError(err) {
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: schemas.ErrProviderNetworkError,
-							Error:   err,
-						},
-					}, responseChan, provider.logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, newStreamTransportError(err), responseChan, provider.logger, postHookSpanFinalizer)
 				} else {
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
 				}
@@ -2125,13 +2009,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
 				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
 				if isStreamTransportError(err) {
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: schemas.ErrProviderNetworkError,
-							Error:   err,
-						},
-					}, responseChan, provider.logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, newStreamTransportError(err), responseChan, provider.logger, postHookSpanFinalizer)
 				} else {
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
 				}
@@ -4635,7 +4513,7 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 		Model:                     bareModel,
 		IsStreaming:               streaming,
 		ValidateTools:             validateTools,
-		ExcludeFields:             []string{"guardrailConfig"},
+		ExcludeFields:             []string{"guardrailConfig", "additionalModelRequestFieldPaths", "additionalModelResponseFieldPaths"},
 		IncludeFields:             includeFields,
 		BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 		ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,

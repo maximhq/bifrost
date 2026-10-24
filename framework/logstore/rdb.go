@@ -355,11 +355,51 @@ func (s *RDBLogStore) applyAgentContextFilter(baseQuery *gorm.DB, agentNames []s
 	return baseQuery.Where("session_id IN (?)", contexts)
 }
 
+// applyTopicFilter narrows a logs query to the requests Warp filed under any
+// of the topics or themes, by id.
+//
+// A request's topic lives in warp_topic_assignments, not on the log row, so
+// the filter is a membership test against that table. An id names a topic,
+// the topics merged into it, or the topics of a theme. A merged topic's
+// requests were never refiled (see MaintainTopics in framework/warp), and
+// upkeep keeps every merged topic pointing at a live survivor and carrying
+// its survivor's theme, so one level of merged_into and one of parent_id is
+// the whole tree. The id list is bound three times, which at the 50 ids a
+// request may name is well inside any backend's parameter limit.
+//
+// Only topics still in use are followed through merged_into and parent_id. A
+// topic a later run retired keeps the theme and survivor it pointed at -
+// retiring changes only its status - but its requests are no longer theirs,
+// and Warp's own counts leave them out. Merged topics are followed: their
+// requests count under the survivor. A retired topic named directly still
+// matches through topic_id.
+//
+// Not scoped on its own: the assignment rows are only a key into the logs
+// table, and the caller's access scope applies to the log rows that come
+// back.
+func applyTopicFilter(baseQuery *gorm.DB, topicIDs []string) *gorm.DB {
+	return baseQuery.Where(
+		"id IN (SELECT log_id FROM warp_topic_assignments WHERE topic_id IN ? OR topic_id IN (SELECT id FROM warp_topics WHERE (merged_into IN ? OR parent_id IN ?) AND status <> ?))",
+		topicIDs, topicIDs, topicIDs, WarpTopicStatusRetired,
+	)
+}
+
 // applyFilters applies search filters to a GORM query. Callers are
 // responsible for starting from ScopedDB(ctx) when row visibility
 // should be respected; this helper only adds the per-call filter
 // predicates.
 func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
+	if filters.RealtimeInputItemID != "" {
+		switch s.db.Dialector.Name() {
+		case "postgres":
+			fragment, _ := sonic.Marshal(map[string]any{"realtime_input_items": []map[string]string{{"id": filters.RealtimeInputItemID}}})
+			baseQuery = baseQuery.Where("metadata IS JSON OBJECT AND metadata::jsonb @> ?::jsonb", string(fragment))
+		case "clickhouse":
+			baseQuery = baseQuery.Where("isValidJSON(metadata) AND arrayExists(item -> JSONExtractString(item, 'id') = ?, JSONExtractArrayRaw(ifNull(metadata, '{}'), 'realtime_input_items'))", filters.RealtimeInputItemID)
+		default:
+			baseQuery = baseQuery.Where("json_valid(metadata) AND EXISTS (SELECT 1 FROM json_each(metadata, '$.realtime_input_items') AS realtime_item WHERE json_extract(realtime_item.value, '$.id') = ?)", filters.RealtimeInputItemID)
+		}
+	}
 	if len(filters.Providers) > 0 {
 		baseQuery = baseQuery.Where("provider IN ?", filters.Providers)
 	}
@@ -434,6 +474,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	// one project, so there is no array column to OR against.
 	if len(filters.ProjectIDs) > 0 {
 		baseQuery = baseQuery.Where("project_id IN ?", filters.ProjectIDs)
+	}
+	if len(filters.TopicIDs) > 0 {
+		baseQuery = applyTopicFilter(baseQuery, filters.TopicIDs)
 	}
 	if len(filters.BusinessUnitIDs) > 0 {
 		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)
@@ -545,6 +588,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 			baseQuery = baseQuery.Where(expr+" IN ?", codes)
 		}
 	}
+	if len(filters.GuardrailOutcomes) > 0 {
+		baseQuery = s.applyGuardrailOutcomeFilter(baseQuery, filters.GuardrailOutcomes)
+	}
 	if filters.ContentSearch != "" {
 		dialect := s.db.Dialector.Name()
 		if dialect == "postgres" {
@@ -598,6 +644,44 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		}
 	}
 	return baseQuery
+}
+
+// Guardrail outcome values accepted by SearchFilters.GuardrailOutcomes.
+const (
+	GuardrailOutcomeBlocked  = "blocked"
+	GuardrailOutcomeDetected = "detected"
+)
+
+// guardrailInterventionErrorType is the error type the guardrails plugin
+// returns when it blocks a request. Matching it keeps blocks logged before
+// interventions were recorded in guardrail_debug visible to the filter.
+const guardrailInterventionErrorType = "guardrail_intervention"
+
+// applyGuardrailOutcomeFilter keeps rows a guardrail blocked or flagged. Only
+// known outcomes reach the SQL; an unsupported dialect or an all-unknown list
+// matches nothing rather than silently returning every log.
+func (s *RDBLogStore) applyGuardrailOutcomeFilter(baseQuery *gorm.DB, outcomes []string) *gorm.DB {
+	dialect := s.db.Dialector.Name()
+	clauses := make([]string, 0, 3)
+	args := make([]any, 0, 1)
+	if slices.Contains(outcomes, GuardrailOutcomeBlocked) {
+		if expr, ok := jsonObjectFieldExpr(dialect, "error_details", "error", "type"); ok {
+			clauses = append(clauses, expr+" = ?")
+			args = append(args, guardrailInterventionErrorType)
+		}
+		if expr, ok := jsonArrayNotEmptyExpr(dialect, "guardrail_debug", "interventions"); ok {
+			clauses = append(clauses, expr)
+		}
+	}
+	if slices.Contains(outcomes, GuardrailOutcomeDetected) {
+		if expr, ok := jsonArrayNotEmptyExpr(dialect, "guardrail_debug", "detections"); ok {
+			clauses = append(clauses, expr)
+		}
+	}
+	if len(clauses) == 0 {
+		return baseQuery.Where("1 = 0")
+	}
+	return baseQuery.Where("("+strings.Join(clauses, " OR ")+")", args...)
 }
 
 // applyRootsOnlyFilter hides rows that nest under another row already present in
@@ -829,6 +913,11 @@ func (s *RDBLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
 			// the input summary already on the row.
 			if err := tx.Model(&Log{}).Where("id = ?", entry.ID).Omit("content_summary").Updates(serialized).Error; err != nil {
 				return err
+			}
+			if entry.RealtimeInputCorrection != nil {
+				if err := tx.Model(&Log{}).Where("id = ?", entry.ID).UpdateColumn("content_summary", entry.RealtimeInputCorrection.Summary).Error; err != nil {
+					return err
+				}
 			}
 			// Updates skips zero values, so a final "visible" (false) decision
 			// would never clear a hidden flag saved earlier; write it explicitly.
@@ -1602,6 +1691,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
+		// Only guardrail blocks, whose errors are bounded, are listed (see below).
 		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
 		"metadata", "cache_debug",
@@ -1617,7 +1707,21 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"has_object", "content_hidden",
 		"service_tier", "speed", "inference_geo",
 		"created_at",
+		// guardrail_debug holds only sanitized rule metadata (never matched
+		// text), so it stays small; the Guardrail Incidents view reads the
+		// rule, guardrail, phase and action of each row from it.
+		"guardrail_debug",
 	}, ", ")
+
+	// A guardrail block's error_details is the short message the guardrails
+	// plugin writes, unlike a provider error, so it is safe to list. It lets a
+	// block logged before interventions were recorded still name its reason.
+	guardrailErrorExpr := "NULL AS error_details"
+	if typeExpr, ok := jsonObjectFieldExpr(s.db.Dialector.Name(), "error_details", "error", "type"); ok {
+		guardrailErrorExpr = fmt.Sprintf("CASE WHEN %s = '%s' THEN error_details ELSE NULL END AS error_details",
+			typeExpr, guardrailInterventionErrorType)
+	}
+	baseCols += ", " + guardrailErrorExpr
 
 	var inputHistoryExpr, responsesInputExpr, outputMessageExpr string
 	switch s.db.Dialector.Name() {
@@ -5140,6 +5244,12 @@ func (s *RDBLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time.Ti
 // on the indexed column. MySQL rejects LIMIT inside an IN subquery, so it uses
 // its single-table DELETE ... ORDER BY ... LIMIT form instead.
 func (s *RDBLogStore) deleteExpiredBatch(ctx context.Context, table, column string, cutoff time.Time, batchSize int) (int64, error) {
+	return s.deleteExpiredBatchByKey(ctx, table, "id", column, cutoff, batchSize)
+}
+
+// deleteExpiredBatchByKey is deleteExpiredBatch for a table whose primary key
+// is not named id. key, like table and column, is an internal constant.
+func (s *RDBLogStore) deleteExpiredBatchByKey(ctx context.Context, table, key, column string, cutoff time.Time, batchSize int) (int64, error) {
 	if batchSize <= 0 {
 		return 0, nil
 	}
@@ -5147,7 +5257,7 @@ func (s *RDBLogStore) deleteExpiredBatch(ctx context.Context, table, column stri
 	if s.db.Dialector.Name() == "mysql" {
 		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s < ? ORDER BY %s LIMIT ?", table, column, column)
 	} else {
-		stmt = fmt.Sprintf("DELETE FROM %s WHERE id IN (SELECT id FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, table, column, column)
+		stmt = fmt.Sprintf("DELETE FROM %s WHERE %s IN (SELECT %s FROM %s WHERE %s < ? ORDER BY %s LIMIT ?)", table, key, key, table, column, column)
 	}
 	result := s.db.WithContext(ctx).Exec(stmt, cutoff, batchSize)
 	if result.Error != nil {
@@ -5165,23 +5275,29 @@ func (s *RDBLogStore) Close(ctx context.Context) error {
 	return sqlDB.Close()
 }
 
-// DeleteLog deletes a log entry from the database by its ID.
+// DeleteLog deletes a log entry from the database by its ID, and with it
+// what Warp's topic tables hold about it, in one transaction.
 func (s *RDBLogStore) DeleteLog(ctx context.Context, id string) error {
-	if err := s.db.WithContext(ctx).Where("id = ?", id).Delete(&Log{}).Error; err != nil {
-		return err
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("id = ?", id).Delete(&Log{}).Error; err != nil {
+			return err
+		}
+		return deleteWarpTopicRowsForLogs(tx, []string{id})
+	})
 }
 
-// DeleteLogs deletes multiple log entries from the database by their IDs.
+// DeleteLogs deletes multiple log entries from the database by their IDs, and
+// with them what Warp's topic tables hold about them, in one transaction.
 func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
-		return err
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("id IN ?", ids).Delete(&Log{}).Error; err != nil {
+			return err
+		}
+		return deleteWarpTopicRowsForLogs(tx, ids)
+	})
 }
 
 // ============================================================================

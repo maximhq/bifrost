@@ -64,6 +64,9 @@ const (
 	// ConfigProxyHashKey stores the hash of the proxy_config config.json last applied. It is its own
 	// row because the proxy row is saved whole by the dashboard, which would wipe a hash kept inside it.
 	ConfigProxyHashKey = "proxy_config_hash"
+	// ConfigWarpHashKey stores the hash of the warp section config.json last applied, in its own row
+	// for the same reason.
+	ConfigWarpHashKey = "warp_config_hash"
 )
 
 // Keys for the ClientConfig.MetadataJSON blob.
