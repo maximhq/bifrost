@@ -1,2 +1,3 @@
+- [feat]: expose trace export failures and circuit-breaker skips as OTLP counters [@Constantine3](https://github.com/Constantine3)
 - fix: relay metrics match passthrough for headers and streams
 - chore: upgraded core to v1.15.0 and framework to v1.12.0
