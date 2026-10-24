@@ -205,3 +205,23 @@ func TestStreamTerminalDetectorObserveChunkPlainErrorStringIsNotTerminal(t *test
 		t.Fatalf("unexpected terminal detection for a non-envelope error field")
 	}
 }
+
+// TestSplitSSEPayloads pins that a buffered SSE body is framed as the relay frames a live one:
+// one payload per event, multi-line data joined, blanks skipped, a frame without a data line
+// passed through as the relay passes it (its usage gate rejects it), a trailing event without
+// its delimiter still returned.
+func TestSplitSSEPayloads(t *testing.T) {
+	body := []byte(": ping\n\nevent: delta\ndata: {\"a\":1}\n\ndata: {\"b\":\ndata: 2}\r\n\r\n\n\ndata: {\"c\":3}")
+	got := SplitSSEPayloads(body)
+	if len(got) != 4 {
+		t.Fatalf("want 4 payloads, got %d: %q", len(got), got)
+	}
+	for i, want := range []string{": ping", `{"a":1}`, "{\"b\":\n2}", `{"c":3}`} {
+		if string(got[i]) != want {
+			t.Fatalf("payload %d = %q, want %q", i, got[i], want)
+		}
+	}
+	if got := SplitSSEPayloads(nil); len(got) != 0 {
+		t.Fatalf("empty body must yield no payloads, got %q", got)
+	}
+}
