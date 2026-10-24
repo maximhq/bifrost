@@ -344,6 +344,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_matview_refresh_state_table"}, run: migrationAddMatViewRefreshStateTable},
 	{IDs: []string{"logs_add_is_passthrough_column"}, run: migrationAddIsPassthroughColumn},
 	{IDs: []string{"logs_add_warp_topic_tables"}, run: migrationAddWarpTopicTables},
+	{IDs: []string{"logs_add_warp_vector_deletes_table"}, run: migrationAddWarpVectorDeletesTable},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -5401,6 +5402,47 @@ func migrationAddWarpTopicTables(ctx context.Context, db *gorm.DB, logger schema
 		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
+}
+
+// migrationAddWarpVectorDeletesTable creates the record of deleted logs whose
+// Warp vector could not be removed, which topic upkeep retries. See
+// WarpVectorDelete.
+func migrationAddWarpVectorDeletesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_warp_vector_deletes_table"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	// No boundDDLLockWait: this only creates a table that does not exist yet.
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&WarpVectorDelete{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackWarpVectorDeletesTable(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// rollbackWarpVectorDeletesTable drops warp_vector_deletes, but only while it
+// is empty: each row is a deleted log whose vector is still in the vector
+// store, and dropping it would leave that vector there for good.
+func rollbackWarpVectorDeletesTable(tx *gorm.DB) error {
+	if tx.Migrator().HasTable(&WarpVectorDelete{}) {
+		var present []struct{ One int }
+		if err := tx.Model(&WarpVectorDelete{}).Select("1 AS one").Limit(1).Find(&present).Error; err != nil {
+			return fmt.Errorf("could not check warp vector deletes before rollback: %w", err)
+		}
+		if len(present) > 0 {
+			return fmt.Errorf("logs_add_warp_vector_deletes_table is non-rollbackable: warp_vector_deletes lists deleted logs whose vectors are still in the vector store; retry or clear them first if the rollback is genuinely intended")
+		}
+	}
+	return tx.Migrator().DropTable(&WarpVectorDelete{})
 }
 
 // rollbackWarpTopicTables drops Warp's topic tables, but only while warp_topics
