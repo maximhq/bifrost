@@ -6879,6 +6879,10 @@ func TestScenarioPinnedKeyFailuresStayOnThePin(t *testing.T) {
 					account.configs[provA].NetworkConfig.RetryBackoffInitial = pinBackoff
 					account.configs[provA].NetworkConfig.RetryBackoffMax = time.Second
 				}
+				if tc.class == schemas.FailureClassRateLimit {
+					// Allow the provider's Retry-After so this case exercises retries on the pin.
+					account.configs[provA].NetworkConfig.RetryBackoffMax = 7 * time.Second
+				}
 				router := &scenarioRouter{route: source.route}
 				client := scenarioClient(t, account, router, nil)
 				u.reply("sk-a2", tc.reply)
@@ -6898,6 +6902,12 @@ func TestScenarioPinnedKeyFailuresStayOnThePin(t *testing.T) {
 				}
 				requireClass(t, attempts[0].trail, tc.class)
 				if tc.reply.header != nil {
+					arrivals := u.arrivalsOf("sk-a2")
+					for n := 1; n < len(arrivals); n++ {
+						if gap := arrivals[n].Sub(arrivals[n-1]); gap < 7*time.Second {
+							t.Fatalf("retry %d came %s after the previous attempt, before Retry-After elapsed", n, gap)
+						}
+					}
 					if err.ExtraFields.RetryAfter != 7000 {
 						t.Fatalf("the 429 came back with retry hint %dms, want the provider's 7000ms", err.ExtraFields.RetryAfter)
 					}
