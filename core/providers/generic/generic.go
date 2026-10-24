@@ -245,6 +245,13 @@ func (provider *GenericProvider) buildRequest(ctx *schemas.BifrostContext, key s
 		if _, operator := provider.extraHeaderNames[strings.ToLower(k)]; operator {
 			continue
 		}
+		// Under SigV4 every forwarded x-amz-* header is signed with the operator's credentials, so
+		// only the operation name (X-Amz-Target) is taken from the caller: x-amz-copy-source would
+		// read objects outside the pinned bucket and x-amz-acl would publish them. The Bedrock
+		// passthrough forwards none; an operator who needs one sets it in extra_headers.
+		if provider.cfg.Auth.Type == schemas.GenericAuthAWSSigV4 && strings.HasPrefix(strings.ToLower(k), "x-amz-") && !strings.EqualFold(k, "x-amz-target") {
+			continue
+		}
 		httpReq.Header.Set(k, v)
 	}
 	// net/http negotiates gzip and decodes the reply itself only when the request carries no

@@ -25975,7 +25975,7 @@ func TestGenericKeyValueRequired(t *testing.T) {
 	for _, authType := range []schemas.GenericAuthType{schemas.GenericAuthBearer, schemas.GenericAuthHeader, schemas.GenericAuthQuery, schemas.GenericAuthBasic} {
 		assert.True(t, GenericKeyValueRequired(&schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: authType}}}), string(authType))
 	}
-	for _, authType := range []schemas.GenericAuthType{schemas.GenericAuthNone} {
+	for _, authType := range []schemas.GenericAuthType{schemas.GenericAuthNone, schemas.GenericAuthAWSSigV4} {
 		assert.False(t, GenericKeyValueRequired(&schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: authType}}}), string(authType))
 	}
 }
@@ -25991,13 +25991,13 @@ func TestIgnoresProviderCostInCatalog(t *testing.T) {
 }
 
 // TestValidateGenericKeys pins the config.json rule: an injecting auth type needs a key value,
-// an env reference counts as one, and none keys may be empty.
+// an env reference counts as one, and none/aws_sigv4 keys may be empty.
 func TestValidateGenericKeys(t *testing.T) {
 	generic := func(authType schemas.GenericAuthType, keys ...schemas.Key) configstore.ProviderConfig {
 		return configstore.ProviderConfig{
 			Keys: keys,
 			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{
-				Auth: schemas.GenericAuthConfig{Type: authType, HeaderName: "x-api-key"},
+				Auth: schemas.GenericAuthConfig{Type: authType, HeaderName: "x-api-key", AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}},
 			}},
 		}
 	}
@@ -26012,31 +26012,33 @@ func TestValidateGenericKeys(t *testing.T) {
 	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthBearer, schemas.Key{Name: "k1", Value: *schemas.NewSecretVar("env.TAVILY_KEY")})), "an env reference is a value")
 	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthBearer, schemas.Key{Name: "k1", Value: *schemas.NewSecretVar("tvly-x")})))
 	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthNone, schemas.Key{Name: "k1"})))
+	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthAWSSigV4, schemas.Key{Name: "aws"})))
 	require.NoError(t, ValidateGenericKeys(configstore.ProviderConfig{Keys: []schemas.Key{{Name: "k1"}}, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}}), "other base types are untouched")
 }
 
 // TestValidateCustomProviderUpdate_GenericAuthTypeChangeChecksKeys pins the provider update rule:
-// switching a generic provider from none (keys may carry no value) to an injecting auth type
-// is refused while its stored keys carry no value, and allowed once they do or when the new type
-// injects nothing.
+// switching a generic provider from aws_sigv4 (keys hold AWS credentials, no value) to an
+// injecting auth type is refused while its stored keys carry no value, and allowed once they do
+// or when the new type injects nothing.
 func TestValidateCustomProviderUpdate_GenericAuthTypeChangeChecksKeys(t *testing.T) {
 	withAuth := func(authType schemas.GenericAuthType, keys ...schemas.Key) configstore.ProviderConfig {
 		return configstore.ProviderConfig{
 			Keys:          keys,
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.tavily.com"},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://textract.us-east-1.amazonaws.com"},
 			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{
-				Auth: schemas.GenericAuthConfig{Type: authType, HeaderName: "x-api-key"},
+				Auth: schemas.GenericAuthConfig{Type: authType, HeaderName: "x-api-key", AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}},
 			}},
 		}
 	}
-	valueless := schemas.Key{Name: "k0"}
-	existing := withAuth(schemas.GenericAuthNone, valueless)
+	awsKey := schemas.Key{Name: "aws", BedrockKeyConfig: &schemas.BedrockKeyConfig{Region: schemas.NewSecretVar("us-east-1")}}
+	existing := withAuth(schemas.GenericAuthAWSSigV4, awsKey)
 
-	err := ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthBearer, valueless), existing, "tavily")
+	err := ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthBearer, awsKey), existing, "textract")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `key "k0" has no value`)
-	require.Error(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthHeader, valueless), existing, "tavily"))
+	assert.Contains(t, err.Error(), `key "aws" has no value`)
+	require.Error(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthHeader, awsKey), existing, "textract"))
 
-	require.NoError(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthNone, valueless), existing, "tavily"), "unchanged: none injects nothing")
-	require.NoError(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthBearer, schemas.Key{Name: "k", Value: *schemas.NewSecretVar("tvly-x")}), existing, "tavily"), "a key with a value fits bearer")
+	require.NoError(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthNone, awsKey), existing, "textract"), "none injects nothing")
+	require.NoError(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthAWSSigV4, awsKey), existing, "textract"), "unchanged")
+	require.NoError(t, ValidateCustomProviderUpdate(withAuth(schemas.GenericAuthBearer, schemas.Key{Name: "k", Value: *schemas.NewSecretVar("tvly-x")}), existing, "textract"), "a key with a value fits bearer")
 }

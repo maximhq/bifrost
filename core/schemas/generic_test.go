@@ -20,6 +20,9 @@ func TestGenericProviderConfigValidate(t *testing.T) {
 		{"header needs name", &GenericProviderConfig{Auth: GenericAuthConfig{Type: GenericAuthHeader}}, "auth.header_name"},
 		{"header name must be a token", &GenericProviderConfig{Auth: GenericAuthConfig{Type: GenericAuthHeader, HeaderName: "x api"}}, "not a valid header name"},
 		{"query needs param", &GenericProviderConfig{Auth: GenericAuthConfig{Type: GenericAuthQuery}}, "auth.query_param"},
+		{"sigv4 needs service", &GenericProviderConfig{Auth: GenericAuthConfig{Type: GenericAuthAWSSigV4}}, "auth.aws.service"},
+		{"sigv4 service charset", &GenericProviderConfig{Auth: GenericAuthConfig{Type: GenericAuthAWSSigV4, AWS: &GenericAWSAuthConfig{Service: "Text Ract"}}}, "[a-z0-9-]+"},
+		{"sigv4 ok", &GenericProviderConfig{Auth: GenericAuthConfig{Type: GenericAuthAWSSigV4, AWS: &GenericAWSAuthConfig{Service: "textract"}}}, ""},
 		{"negative fee", &GenericProviderConfig{Usage: &GenericUsageConfig{CostPerRequest: Ptr(-1.0)}}, "usage.cost_per_request"},
 		{"route method", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "FETCH", Path: "/x"}}}, "routes[0]: unsupported method"},
 		{"route path must be rooted", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "GET", Path: "x"}}}, "must start with /"},
@@ -50,7 +53,7 @@ func TestGenericProviderConfigValidate(t *testing.T) {
 func TestGenericProviderConfigClone(t *testing.T) {
 	assert.Nil(t, (*GenericProviderConfig)(nil).Clone())
 	src := &GenericProviderConfig{
-		Auth:      GenericAuthConfig{Type: GenericAuthHeader, HeaderName: "x-api-key"},
+		Auth:      GenericAuthConfig{Type: GenericAuthAWSSigV4, AWS: &GenericAWSAuthConfig{Service: "textract"}},
 		Usage:     &GenericUsageConfig{CostPerRequest: Ptr(1.0)},
 		Streaming: &GenericStreamingConfig{Paths: []string{"/a"}},
 		Routes:    []GenericRouteConfig{{Method: "GET", Path: "/x", Billable: Ptr(false), Stream: Ptr(true), Usage: &GenericUsageConfig{CostPath: "c"}}},
@@ -58,12 +61,12 @@ func TestGenericProviderConfigClone(t *testing.T) {
 	dst := src.Clone()
 	require.Equal(t, src, dst)
 
-	dst.Auth.HeaderName = "x-other"
+	dst.Auth.AWS.Service = "translate"
 	*dst.Usage.CostPerRequest = 2
 	dst.Streaming.Paths[0] = "/b"
 	*dst.Routes[0].Billable = true
 	dst.Routes[0].Usage.CostPath = "d"
-	assert.Equal(t, "x-api-key", src.Auth.HeaderName)
+	assert.Equal(t, "textract", src.Auth.AWS.Service)
 	assert.InDelta(t, 1.0, *src.Usage.CostPerRequest, 0)
 	assert.Equal(t, "/a", src.Streaming.Paths[0])
 	assert.False(t, *src.Routes[0].Billable)

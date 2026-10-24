@@ -9831,7 +9831,7 @@ func validateGenericCustomProvider(config configstore.ProviderConfig, cpc *schem
 		return fmt.Errorf("custom provider validation failed: is_key_less requires generic_config.auth.type \"none\"")
 	}
 	// The keys the provider already holds (or declares in config.json) must fit the auth type: a
-	// switch from none to an injecting type would otherwise leave valueless keys that
+	// switch from aws_sigv4 or none to an injecting type would otherwise leave valueless keys that
 	// send every request upstream with no credential at all.
 	if err := ValidateGenericKeys(config); err != nil {
 		return fmt.Errorf("custom provider validation failed: %w", err)
@@ -9876,12 +9876,13 @@ func ValidateGenericKeys(cfg configstore.ProviderConfig) error {
 }
 
 // GenericKeyValueRequired reports whether a key for a generic provider must carry a value: every
-// auth type injects the value except none.
+// auth type injects the value except none, and aws_sigv4 signs with the key's AWS credentials.
 func GenericKeyValueRequired(cpc *schemas.CustomProviderConfig) bool {
 	if cpc == nil || cpc.BaseProviderType != schemas.Generic {
 		return false
 	}
-	return genericAuthType(cpc) != schemas.GenericAuthNone
+	authType := genericAuthType(cpc)
+	return authType != schemas.GenericAuthNone && authType != schemas.GenericAuthAWSSigV4
 }
 
 // genericAuthType is the auth type a generic provider runs with: the configured one, or bearer

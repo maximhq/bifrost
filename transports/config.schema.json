@@ -13522,9 +13522,10 @@
             "header",
             "query",
             "basic",
+            "aws_sigv4",
             "none"
           ],
-          "description": "bearer: Authorization: Bearer <key>; header: <header_name>: <value_prefix><key>; query: ?<query_param>=<key>; basic: Authorization: Basic base64(<key>) with the key as user:password; none: nothing injected (default bearer)"
+          "description": "bearer: Authorization: Bearer <key>; header: <header_name>: <value_prefix><key>; query: ?<query_param>=<key>; basic: Authorization: Basic base64(<key>) with the key as user:password; aws_sigv4: SigV4 with the key's bedrock_key_config credentials; none: nothing injected (default bearer)"
         },
         "header_name": {
           "type": "string",
@@ -13537,6 +13538,25 @@
         "value_prefix": {
           "type": "string",
           "description": "Literal prefix placed before the key value (auth.type header)"
+        },
+        "aws": {
+          "type": "object",
+          "description": "SigV4 settings (auth.type aws_sigv4)",
+          "properties": {
+            "service": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+$",
+              "description": "SigV4 signing name, e.g. textract or translate"
+            },
+            "region": {
+              "type": "string",
+              "description": "AWS region; falls back to the key's bedrock_key_config.region"
+            }
+          },
+          "required": [
+            "service"
+          ],
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
