@@ -3,10 +3,13 @@ package datasheet
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -221,5 +224,61 @@ func TestLoadModelCapabilities_CarriesServerSideModel(t *testing.T) {
 	}
 	if caps == nil || caps.ServerSideModel == nil || *caps.ServerSideModel != "deepseek-flash" {
 		t.Fatalf("ServerSideModel = %+v, want deepseek-flash", caps)
+	}
+}
+
+// A URL sync must retain provider-qualified rows that exist only in the DB.
+func TestSyncModelParamsFromURL_PreservesDBOnlyRows(t *testing.T) {
+	ctx := t.Context()
+	cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+	}, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close(context.Background()) })
+
+	const model = "custom-params-model"
+	const customKey = "custom-anthropic/" + model
+	const customData = `{"provider":"custom-anthropic","max_output_tokens":32000}`
+	const emptyKey = "custom-anthropic/empty-feed-model"
+	if err := cs.UpsertModelParametersBatch(ctx, []configstoreTables.TableModelParameters{
+		{Model: customKey, Data: customData},
+		{Model: emptyKey, Data: customData},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	feedPath := filepath.Join(t.TempDir(), "params.json")
+	if err := os.WriteFile(feedPath, []byte(`{
+		"custom-params-model":{"provider":"anthropic","max_output_tokens":16000},
+		"custom-anthropic/custom-params-model":{"max_output_tokens":"invalid"},
+		"custom-anthropic/empty-feed-model":{"supported_endpoints":[]}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(cs, nil, Config{ModelParametersURL: "file://" + feedPath})
+	if _, err := s.LoadModelParamsFromDB(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SyncModelParamsFromURL(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{model, "empty-feed-model"} {
+		caps, err := s.LoadModelCapabilities(ctx, "custom-anthropic", name)
+		if err != nil || caps == nil || caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 32000 {
+			t.Fatalf("stored capabilities for %s after sync = %+v, err = %v; want max_output_tokens 32000", name, caps, err)
+		}
+	}
+	row, err := cs.GetModelParametersByModel(ctx, customKey)
+	if err != nil || row == nil || row.Data != customData {
+		t.Fatalf("DB-only row after sync = %+v, err = %v", row, err)
+	}
+	emptyRow, err := cs.GetModelParametersByModel(ctx, emptyKey)
+	if err != nil || emptyRow == nil || emptyRow.Data != customData {
+		t.Fatalf("row shadowed by empty feed data = %+v, err = %v", emptyRow, err)
 	}
 }
