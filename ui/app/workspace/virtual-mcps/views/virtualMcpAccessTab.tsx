@@ -32,9 +32,10 @@ interface VirtualMCPAccessTabProps {
 }
 
 export default function VirtualMCPAccessTab({ vmcpId, value, onChange, isCreate, active, stagedCreate = false }: VirtualMCPAccessTabProps) {
-	// A user's access-profile managed key derives its MCP access from that profile, so it cannot be
-	// assigned directly here (the API rejects it too). A key a team, business unit or customer owns can
-	// be, and so can one assigned to a user, after a confirmation that names who it belongs to.
+	// A key an access profile governs derives its MCP access from that profile, so it cannot be assigned
+	// directly here (the API rejects it too): a user's key while the user holds a profile, and a key
+	// whose team, business unit or customer holds one. Any other key a team, business unit, customer or
+	// user owns can be, after a confirmation that names who it belongs to.
 	const { data, isLoading, isError, refetch } = useGetVirtualKeysQuery(
 		{ limit: 1000, exclude_access_profile_managed_virtual: true },
 		{ skip: !active || (isCreate && !stagedCreate) },
