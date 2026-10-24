@@ -654,18 +654,26 @@ const guardedRedirectDNSTimeout = 5 * time.Second
 // maxRedirectHops. The process HTTP(S)_PROXY environment is honored the way
 // http.DefaultTransport honors it; on a proxied request the dialer sees the
 // proxy, so the destination policy runs in the proxy selector instead, against
-// the local resolver's answer, and a name only the proxy can resolve is left to
-// the proxy - see guardedProxySelector and vetGuardedDestination.
+// the local resolver's answer. A name the local resolver cannot answer is
+// refused on that path too (the request and every redirect hop), because
+// nothing an untrusted party chose may reach the proxy unvetted - see
+// guardedProxySelector and vetGuardedDestination.
 //
 // Callers that must reach a self-hosted target on the operator's own network
 // use NewPrivateNetworkHTTPClient instead; this client never does.
 func NewSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
-	return newGuardedHTTPClient(timeout, SSRFSafeDialContext(timeout), func(ip net.IP, host string) error {
+	return newSSRFSafeHTTPClientWith(timeout, DefaultProxyFunc(ClientPurposeAPI), net.DefaultResolver)
+}
+
+// newSSRFSafeHTTPClientWith is the seam behind NewSSRFSafeHTTPClient with the
+// proxy selector and resolver injectable for tests.
+func newSSRFSafeHTTPClientWith(timeout time.Duration, proxy func(*http.Request) (*url.URL, error), resolver ipLookuper) *http.Client {
+	return newGuardedHTTPClientWith(timeout, SSRFSafeDialContext(timeout), func(ip net.IP, host string) error {
 		if !IsPublicIP(ip) {
 			return fmt.Errorf("blocked redirect to non-public address %s (host %s)", ip, host)
 		}
 		return nil
-	})
+	}, false, proxy, resolver)
 }
 
 // NewPrivateNetworkHTTPClient is the PrivateNetworkDialContext counterpart of
@@ -681,28 +689,24 @@ func NewSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
 // ranges, not an authorization check: callers remain responsible for gating
 // who may configure the URL.
 func NewPrivateNetworkHTTPClient(timeout time.Duration) *http.Client {
-	return newGuardedHTTPClient(timeout, PrivateNetworkDialContext(timeout), checkPrivateNetworkPolicy)
+	return newGuardedHTTPClientWith(timeout, PrivateNetworkDialContext(timeout), checkPrivateNetworkPolicy, true, DefaultProxyFunc(ClientPurposeAPI), net.DefaultResolver)
 }
 
-// newGuardedHTTPClient assembles the client shared by NewSSRFSafeHTTPClient
+// newGuardedHTTPClientWith assembles the client shared by NewSSRFSafeHTTPClient
 // and NewPrivateNetworkHTTPClient: dial is the per-connection gate, checkIP is
 // the same policy expressed as a per-address predicate, applied to redirect
 // targets (every resolved address must pass) and, through
-// guardedProxySelector, to IP-literal destinations on the proxied path. The
-// proxy is the global proxy when it is enabled for API traffic, else the
-// environment's (DefaultProxyFunc).
-func newGuardedHTTPClient(timeout time.Duration, dial func(ctx context.Context, netw, addr string) (net.Conn, error), checkIP func(ip net.IP, host string) error) *http.Client {
-	return newGuardedHTTPClientWith(timeout, dial, checkIP, DefaultProxyFunc(ClientPurposeAPI), net.DefaultResolver)
-}
-
-// newGuardedHTTPClientWith is the seam behind newGuardedHTTPClient with the
-// proxy selector and resolver injectable for tests.
+// guardedProxySelector, to destinations on the proxied path. deferUnresolved
+// says whether a proxied hostname the local resolver cannot answer is left to
+// the proxy (the private-network client, for proxy-only DNS deployments) or
+// refused (the strict client, whose URLs an untrusted party chose). The proxy
+// selector and resolver are injectable for tests.
 //
 // A request the proxy selector sends through a proxy goes over a separate transport
 // whose dialer only ever reaches the proxy, under the private-network policy: an
 // operator's proxy on a private or loopback address is the normal self-hosted setup,
 // and the destination itself is vetted by guardedProxySelector before the proxy sees it.
-func newGuardedHTTPClientWith(timeout time.Duration, dial func(ctx context.Context, netw, addr string) (net.Conn, error), checkIP func(ip net.IP, host string) error, proxy func(*http.Request) (*url.URL, error), resolver ipLookuper) *http.Client {
+func newGuardedHTTPClientWith(timeout time.Duration, dial func(ctx context.Context, netw, addr string) (net.Conn, error), checkIP func(ip net.IP, host string) error, deferUnresolved bool, proxy func(*http.Request) (*url.URL, error), resolver ipLookuper) *http.Client {
 	newTransport := func(selector func(*http.Request) (*url.URL, error), dial func(ctx context.Context, netw, addr string) (net.Conn, error)) *http.Transport {
 		return &http.Transport{
 			Proxy:                 selector,
@@ -718,7 +722,7 @@ func newGuardedHTTPClientWith(timeout time.Duration, dial func(ctx context.Conte
 		transport = &ProxyAwareTransport{
 			Proxy:    proxy,
 			Direct:   newTransport(nil, dial),
-			ViaProxy: newTransport(guardedProxySelector(proxy, checkIP, resolver), PrivateNetworkDialContext(timeout)),
+			ViaProxy: newTransport(guardedProxySelector(proxy, checkIP, deferUnresolved, resolver), PrivateNetworkDialContext(timeout)),
 		}
 	}
 	return &http.Client{
@@ -745,7 +749,7 @@ func newGuardedHTTPClientWith(timeout time.Duration, dial func(ctx context.Conte
 			}
 			ctx, cancel := context.WithTimeout(req.Context(), guardedRedirectDNSTimeout)
 			defer cancel()
-			if err := vetGuardedDestination(ctx, host, proxied, resolver, checkIP); err != nil {
+			if err := vetGuardedDestination(ctx, host, proxied && deferUnresolved, resolver, checkIP); err != nil {
 				return fmt.Errorf("blocked redirect to %s: %w", host, err)
 			}
 			return nil
@@ -757,13 +761,14 @@ func newGuardedHTTPClientWith(timeout time.Duration, dial func(ctx context.Conte
 // destination policy still applies to a request that is routed through a
 // proxy, where the dialer only ever sees the proxy address. It runs
 // vetGuardedDestination in proxied mode: an IP-literal destination is checked
-// without DNS, a hostname is checked against what the local resolver returns,
-// and a hostname the local resolver cannot answer is handed to the proxy,
-// which resolves it on its own side (a proxy-only egress deployment). The
-// proxy itself is operator configuration (process environment) and is the
-// policy boundary for anything resolved only there; the dialer still refuses a
-// proxy that sits on a blocked address. A nil selector stays nil.
-func guardedProxySelector(next func(*http.Request) (*url.URL, error), checkIP func(ip net.IP, host string) error, resolver ipLookuper) func(*http.Request) (*url.URL, error) {
+// without DNS, and a hostname is checked against what the local resolver
+// returns. A hostname the local resolver cannot answer is handed to the proxy
+// when deferUnresolved is set, so the proxy resolves it on its own side (a
+// proxy-only egress deployment, where the proxy is operator configuration and
+// the policy boundary for anything resolved only there), and refused
+// otherwise. The dialer still refuses a proxy that sits on a blocked address.
+// A nil selector stays nil.
+func guardedProxySelector(next func(*http.Request) (*url.URL, error), checkIP func(ip net.IP, host string) error, deferUnresolved bool, resolver ipLookuper) func(*http.Request) (*url.URL, error) {
 	if next == nil {
 		return nil
 	}
@@ -774,7 +779,7 @@ func guardedProxySelector(next func(*http.Request) (*url.URL, error), checkIP fu
 		}
 		ctx, cancel := context.WithTimeout(req.Context(), guardedRedirectDNSTimeout)
 		defer cancel()
-		if err := vetGuardedDestination(ctx, req.URL.Hostname(), true, resolver, checkIP); err != nil {
+		if err := vetGuardedDestination(ctx, req.URL.Hostname(), deferUnresolved, resolver, checkIP); err != nil {
 			return nil, err
 		}
 		return proxyURL, nil
