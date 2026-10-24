@@ -7,6 +7,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/streaming"
 )
 
 // Warp calls the gateway's own Bifrost client in-process, not over HTTP.
@@ -29,6 +30,142 @@ import (
 // through. A function rather than *bifrost.Bifrost so tests can supply one
 // without standing up a gateway, the same shape as EmbeddingExecutor.
 type ResponsesExecutor func(*schemas.BifrostContext, *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError)
+
+// ResponsesStreamExecutor is the gateway client's streaming responses path.
+type ResponsesStreamExecutor func(*schemas.BifrostContext, *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError)
+
+// StreamedResponses runs Warp's calls over the streaming responses path and
+// hands back the whole response, so the agent loop, topic labelling and theme
+// naming keep deciding on a complete step exactly as before.
+//
+// Streaming is about the call, not the panel: the loop still holds a step's
+// text until it has decided whether to show it at all (see Agent.Run). What it
+// buys is the stream's own behaviour upstream - a long step is a stream of
+// events rather than one silent response, and a provider or model served only
+// over streaming can run Warp.
+//
+// A call that arrives without a trace gets one from the gateway, and that trace
+// is this call's to end: see completeOwnTrace.
+func StreamedResponses(stream ResponsesStreamExecutor) ResponsesExecutor {
+	return func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		if traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string); traceID == "" {
+			defer completeOwnTrace(ctx)
+		}
+		chunks, bifrostErr := stream(ctx, req)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return collectResponsesStream(ctx, chunks)
+	}
+}
+
+// completeOwnTrace ends the trace the gateway opened for one of Warp's streamed
+// calls, once the stream has closed.
+//
+// The gateway opens a trace for a stream that arrives without one, and the
+// logging plugin holds the call's finished row under it until the trace ends.
+// Over HTTP the transport ends it; an in-process call has no transport, so
+// without this the row waits for the stale sweep, which drops it unwritten and
+// Warp's own calls never reach the logs. It runs after the channel has closed,
+// when the provider's post-hooks have parked the row.
+func completeOwnTrace(ctx *schemas.BifrostContext) {
+	tracer, traceID, err := bifrost.GetTracerFromContext(ctx)
+	if err != nil {
+		return
+	}
+	if logs := ctx.DrainPluginLogs(); len(logs) > 0 {
+		tracer.AttachPluginLogs(traceID, logs)
+	}
+	tracer.CompleteAndFlushTrace(traceID)
+}
+
+// collectResponsesStream reads a responses stream to its end and assembles the
+// response it describes.
+//
+// The output is rebuilt from the events with the same builder the logs use, so
+// what Warp reasons over is what its log shows. A provider's terminal event is
+// not relied on for it: some carry the full output there and some only usage.
+// It is the fallback when the events rebuilt nothing.
+//
+// The channel is always read until it closes, error or not. The provider's
+// goroutine finishes its post-hooks - the log and cost of Warp's own call -
+// before closing it, and abandoning the channel would leave that work blocked.
+func collectResponsesStream(ctx *schemas.BifrostContext, stream chan *schemas.BifrostStreamChunk) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	var (
+		events    []*streaming.ResponsesStreamChunk
+		terminal  *schemas.BifrostResponsesResponse
+		usage     *schemas.ResponsesResponseUsage
+		streamErr *schemas.BifrostError
+	)
+	for chunk := range stream {
+		if chunk == nil || streamErr != nil {
+			continue
+		}
+		if chunk.BifrostError != nil {
+			streamErr = chunk.BifrostError
+			continue
+		}
+		event := chunk.BifrostResponsesStreamResponse
+		if event == nil {
+			continue
+		}
+		if event.Type == schemas.ResponsesStreamResponseTypeError {
+			streamErr = streamEventError(event.Message, event.Error)
+			continue
+		}
+		// Indexed by arrival, which is the stream's order. The builder sorts by
+		// index, and providers that leave ChunkIndex unset would otherwise tie.
+		events = append(events, &streaming.ResponsesStreamChunk{StreamResponse: event, ChunkIndex: len(events)})
+		if event.Response == nil {
+			continue
+		}
+		if event.Response.Usage != nil {
+			usage = event.Response.Usage
+		}
+		switch event.Type {
+		case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
+			terminal = event.Response
+		case schemas.ResponsesStreamResponseTypeFailed:
+			streamErr = streamEventError(nil, event.Response.Error)
+		}
+	}
+	if streamErr != nil {
+		return nil, streamErr
+	}
+	// A stream cut short by a cancelled or expired call is not a short answer.
+	// Without a terminal event it could end inside a tool call's arguments, and
+	// the loop would run that tool on half of them.
+	if terminal == nil && ctx != nil && ctx.Err() != nil {
+		return nil, streamEventError(new(ctx.Err().Error()), nil)
+	}
+	response := &schemas.BifrostResponsesResponse{}
+	if terminal != nil {
+		copied := *terminal
+		response = &copied
+	}
+	if output := streaming.BuildResponsesMessagesFromChunks(events); len(output) > 0 {
+		response.Output = output
+	}
+	if usage != nil {
+		response.Usage = usage
+	}
+	return response, nil
+}
+
+// streamEventError turns an error carried inside the stream into the error a
+// non-streaming call would have returned.
+func streamEventError(message *string, responseErr *schemas.ResponsesResponseError) *schemas.BifrostError {
+	field := &schemas.ErrorField{Message: "the model stream failed"}
+	if responseErr != nil && responseErr.Message != "" {
+		field.Message = responseErr.Message
+		if responseErr.Code != "" {
+			field.Code = new(responseErr.Code)
+		}
+	} else if message != nil && *message != "" {
+		field.Message = *message
+	}
+	return &schemas.BifrostError{Error: field, ExtraFields: schemas.BifrostErrorExtraFields{RequestType: schemas.ResponsesStreamRequest}}
+}
 
 // requestTarget returns the provider and model a turn's calls go to.
 //

@@ -200,9 +200,18 @@ warp-topics:
     description: |
       Groups the indexed requests of a time window by meaning, names each
       group with Warp's model, and stores the result for Warp's `list_topics`
-      tool. A successful run replaces the previous topics unless it finds no
-      indexed requests. Failed, cancelled, and empty-window runs leave the
-      previous topics unchanged.
+      tool.
+
+      This is the one-time seed for an embedding model. Once it has written
+      topics, they are kept up to date without another run: each newly indexed
+      request is filed under its topic, requests that match none are pooled
+      and clustered into new topics once `topic_discovery_min_requests` of
+      them are waiting, and an hourly pass retires topics that went quiet and
+      merges ones that came to mean the same thing. A second run for the same
+      model is refused with 409. Changing the embedding model starts over with
+      no topics, and so does upkeep retiring every topic. A run that finds no
+      indexed requests in the window completes without writing any, so the
+      model can still be seeded with another window.
 
       One run takes in at most 20,000 requests. A window that holds more is
       sampled across its length, and the status says so in `capped`.
@@ -237,12 +246,16 @@ warp-topics:
         description: Caller is not the local admin (OSS) and lacks `Warp` Update (enterprise)
       '409':
         description: |
-          A topic clustering run is already active. The body is that job, so a
-          client can show its progress instead of reporting a bare conflict.
+          A topic clustering run, or a discovery of new topics, is already
+          active, and the body is that job, so a client can show its progress
+          instead of reporting a bare conflict. Or the configured embedding model already has topics, which
+          keep themselves up to date, and the body is an error saying so.
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/warp.yaml#/WarpTopicsStatus'
+              oneOf:
+                - $ref: '../../schemas/management/warp.yaml#/WarpTopicsStatus'
+                - $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
       '503':
@@ -260,6 +273,9 @@ warp-topics-status:
     description: |
       Returns the job named by `id`, else the one in flight, else the latest
       of any status, so a reloaded page still shows how the last run ended.
+      A latest run under an embedding model other than the configured one is
+      not returned: its topics are not the ones Warp reads, so the status is
+      idle.
 
       Administrators only: the local admin in OSS, `Warp` Update in enterprise.
     tags: [Warp]
@@ -271,7 +287,7 @@ warp-topics-status:
         schema: { type: string }
     responses:
       '200':
-        description: Current job, or an idle status when no run has been started
+        description: Current job, or an idle status when no run has been started under the configured embedding model
         content:
           application/json:
             schema:

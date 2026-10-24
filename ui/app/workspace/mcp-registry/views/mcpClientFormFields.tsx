@@ -22,6 +22,7 @@ import {
 } from "@/lib/types/mcp";
 import { mcpOpenAPIConfigSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { Info } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
@@ -565,8 +566,10 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 	// Token exchange is backed by the deployment's identity-provider
 	// integration, so the option only renders when one is enabled. The exact
 	// exchange-client requirement is enforced server-side at create; a missing
-	// tokenExchangeClient section surfaces as the create error.
-	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE });
+	// tokenExchangeClient section surfaces as the create error. Reading the
+	// providers needs UserProvisioning:View; without it the option stays hidden.
+	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
+	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE || !hasUserProvisioningAccess });
 	const enabledScimProvider = scimProviders?.find((p) => (p as { enabled?: boolean }).enabled) as { name?: string } | undefined;
 	const idpConfigured = !!enabledScimProvider;
 	// Entra's on-behalf-of grant requires use_idp_credentials — see the

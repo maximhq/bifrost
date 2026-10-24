@@ -220,3 +220,244 @@ func TestWarpInferenceContextForBackgroundWork(t *testing.T) {
 	require.Equal(t, true, background.Value(schemas.BifrostContextKeySkipPluginPipeline))
 	require.Equal(t, "pinned-key", background.Value(schemas.BifrostContextKeyAPIKeyID))
 }
+
+// streamedEvents is a stream executor that sends events one at a time on an
+// unbuffered channel, the way a provider goroutine does, and closes done once
+// every event was taken - so a test can tell a drained stream from an
+// abandoned one.
+func streamedEvents(events ...*schemas.BifrostStreamChunk) (ResponsesStreamExecutor, chan struct{}) {
+	done := make(chan struct{})
+	return func(*schemas.BifrostContext, *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		stream := make(chan *schemas.BifrostStreamChunk)
+		go func() {
+			defer close(done)
+			defer close(stream)
+			for _, event := range events {
+				stream <- event
+			}
+		}()
+		return stream, nil
+	}, done
+}
+
+// streamEvent wraps one responses stream event as a chunk.
+func streamEvent(event schemas.BifrostResponsesStreamResponse) *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &event}
+}
+
+// completedEvent is the terminal event, carrying usage and optionally output.
+func completedEvent(output []schemas.ResponsesMessage) *schemas.BifrostStreamChunk {
+	return streamEvent(schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCompleted,
+		Response: &schemas.BifrostResponsesResponse{
+			Output: output,
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 120, OutputTokens: 30, TotalTokens: 150},
+		},
+	})
+}
+
+// requireDrained fails unless the producer delivered every event.
+func requireDrained(t *testing.T, done chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream was abandoned before the provider finished sending")
+	}
+}
+
+// The loop reads a step's text and usage from a whole response. Streamed, the
+// text arrives as deltas and the usage only on the terminal event, so both have
+// to be put back together or every step reads as empty and unpriced.
+func TestStreamedResponsesAssemblesTextAndUsage(t *testing.T) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	role := schemas.ResponsesInputMessageRoleAssistant
+	contentIndex := 0
+	stream, done := streamedEvents(
+		streamEvent(schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{ID: new("msg_1"), Type: &messageType, Role: &role}}),
+		streamEvent(schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, ItemID: new("msg_1"), ContentIndex: &contentIndex, Delta: new("Spend rose ")}),
+		streamEvent(schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, ItemID: new("msg_1"), ContentIndex: &contentIndex, Delta: new("12% this week.")}),
+		completedEvent(nil),
+	)
+
+	response, bifrostErr := StreamedResponses(stream)(schemas.NewBifrostContext(context.Background(), time.Time{}), &schemas.BifrostResponsesRequest{})
+	require.Nil(t, bifrostErr)
+	requireDrained(t, done)
+	require.Equal(t, "Spend rose 12% this week.", responsesText(response.Output))
+	require.Empty(t, responsesToolCalls(response.Output))
+	require.NotNil(t, response.Usage)
+	require.Equal(t, 150, response.Usage.TotalTokens)
+}
+
+// A tool call's arguments stream in pieces. Assembled wrong, the tool runs on a
+// fragment of its JSON - or two parallel calls share one argument string.
+func TestStreamedResponsesAssemblesParallelToolCalls(t *testing.T) {
+	callType := schemas.ResponsesMessageTypeFunctionCall
+	call := func(id, callID, name string) *schemas.ResponsesMessage {
+		return &schemas.ResponsesMessage{ID: new(id), Type: &callType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new(callID), Name: new(name)}}
+	}
+	argsDelta := func(id, delta string) *schemas.BifrostStreamChunk {
+		return streamEvent(schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, ItemID: new(id), Delta: new(delta)})
+	}
+	stream, done := streamedEvents(
+		streamEvent(schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: call("fc_1", "call_1", "query_metrics")}),
+		streamEvent(schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: call("fc_2", "call_2", "list_rankings")}),
+		argsDelta("fc_1", `{"window":`),
+		argsDelta("fc_2", `{"dimension":"model"}`),
+		argsDelta("fc_1", `"7d"}`),
+		completedEvent(nil),
+	)
+
+	response, bifrostErr := StreamedResponses(stream)(schemas.NewBifrostContext(context.Background(), time.Time{}), &schemas.BifrostResponsesRequest{})
+	require.Nil(t, bifrostErr)
+	requireDrained(t, done)
+	calls := responsesToolCalls(response.Output)
+	require.Len(t, calls, 2)
+	require.Equal(t, "query_metrics", calls[0].Name)
+	require.JSONEq(t, `{"window":"7d"}`, calls[0].Arguments)
+	require.Equal(t, "list_rankings", calls[1].Name)
+	require.JSONEq(t, `{"dimension":"model"}`, calls[1].Arguments)
+}
+
+// Some providers put the whole output on the terminal event and stream nothing
+// item by item. Their answer must not read as empty.
+func TestStreamedResponsesFallsBackToTheTerminalOutput(t *testing.T) {
+	stream, done := streamedEvents(completedEvent(TextTurn("from the terminal event").Output))
+
+	response, bifrostErr := StreamedResponses(stream)(schemas.NewBifrostContext(context.Background(), time.Time{}), &schemas.BifrostResponsesRequest{})
+	require.Nil(t, bifrostErr)
+	requireDrained(t, done)
+	require.Equal(t, "from the terminal event", responsesText(response.Output))
+}
+
+// An error inside the stream is the call's error, as it was for the
+// non-streaming call - and the rest of the stream is still read, so the
+// provider can finish logging Warp's own call.
+func TestStreamedResponsesReturnsStreamErrors(t *testing.T) {
+	contentIndex := 0
+	partial := streamEvent(schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, ContentIndex: &contentIndex, Delta: new("half an ans")})
+	cases := map[string]struct {
+		events  []*schemas.BifrostStreamChunk
+		message string
+	}{
+		"error chunk": {
+			events:  []*schemas.BifrostStreamChunk{partial, {BifrostError: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "overloaded_error"}}}, completedEvent(nil)},
+			message: "overloaded_error",
+		},
+		"error event": {
+			events:  []*schemas.BifrostStreamChunk{partial, streamEvent(schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeError, Message: new("rate limited")})},
+			message: "rate limited",
+		},
+		"failed response": {
+			events: []*schemas.BifrostStreamChunk{partial, streamEvent(schemas.BifrostResponsesStreamResponse{
+				Type:     schemas.ResponsesStreamResponseTypeFailed,
+				Response: &schemas.BifrostResponsesResponse{Error: &schemas.ResponsesResponseError{Code: "server_error", Message: "the model failed"}},
+			})},
+			message: "the model failed",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			stream, done := streamedEvents(tc.events...)
+			response, bifrostErr := StreamedResponses(stream)(schemas.NewBifrostContext(context.Background(), time.Time{}), &schemas.BifrostResponsesRequest{})
+			require.Nil(t, response)
+			require.NotNil(t, bifrostErr)
+			require.Equal(t, tc.message, errorMessage(bifrostErr))
+			requireDrained(t, done)
+		})
+	}
+}
+
+// A stream that ends without a terminal event because the call was cancelled
+// or ran out of time is cut short, not finished: it may stop inside a tool
+// call's arguments.
+func TestStreamedResponsesTreatsACutStreamAsAnError(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	cancel()
+	stream, done := streamedEvents(streamEvent(schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, Delta: new(`{"window":`)}))
+
+	response, bifrostErr := StreamedResponses(stream)(ctx, &schemas.BifrostResponsesRequest{})
+	require.Nil(t, response)
+	require.NotNil(t, bifrostErr)
+	requireDrained(t, done)
+}
+
+// A failure to open the stream is returned as is.
+func TestStreamedResponsesReturnsOpenErrors(t *testing.T) {
+	refused := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "virtual key budget exceeded"}}
+	stream := func(*schemas.BifrostContext, *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		return nil, refused
+	}
+	response, bifrostErr := StreamedResponses(stream)(schemas.NewBifrostContext(context.Background(), time.Time{}), &schemas.BifrostResponsesRequest{})
+	require.Nil(t, response)
+	require.Same(t, refused, bifrostErr)
+}
+
+// completionTracer records the traces completed through it, and whether the
+// stream had closed by then.
+type completionTracer struct {
+	schemas.NoOpTracer
+	streamDone chan struct{}
+	completed  []string
+	afterDrain []bool
+}
+
+func (c *completionTracer) CompleteAndFlushTrace(traceID string) {
+	c.completed = append(c.completed, traceID)
+	select {
+	case <-c.streamDone:
+		c.afterDrain = append(c.afterDrain, true)
+	default:
+		c.afterDrain = append(c.afterDrain, false)
+	}
+}
+
+// opensTrace stands in for the gateway: a stream that arrives without a trace
+// is given one before its hooks run.
+func opensTrace(tracer schemas.Tracer, traceID string, stream ResponsesStreamExecutor) ResponsesStreamExecutor {
+	return func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+		if _, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); !ok {
+			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+		}
+		return stream(ctx, req)
+	}
+}
+
+// The logging plugin holds a stream's finished row under its trace until the
+// trace ends. In process nothing else ends the trace the gateway opened for
+// Warp's call, so the row was dropped unwritten and Warp's calls never reached
+// the logs. The call ends it once the stream has closed, error or not.
+func TestStreamedResponsesCompletesTheTraceTheGatewayOpened(t *testing.T) {
+	t.Run("a finished stream", func(t *testing.T) {
+		stream, done := streamedEvents(completedEvent(nil))
+		tracer := &completionTracer{streamDone: done}
+		_, bifrostErr := StreamedResponses(opensTrace(tracer, "trace-1", stream))(schemas.NewBifrostContext(context.Background(), time.Time{}), &schemas.BifrostResponsesRequest{})
+		require.Nil(t, bifrostErr)
+		require.Equal(t, []string{"trace-1"}, tracer.completed)
+		require.Equal(t, []bool{true}, tracer.afterDrain, "completed before the post-hooks parked the row")
+	})
+
+	t.Run("a stream that could not open", func(t *testing.T) {
+		done := make(chan struct{})
+		close(done)
+		tracer := &completionTracer{streamDone: done}
+		refused := func(*schemas.BifrostContext, *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "virtual key budget exceeded"}}
+		}
+		_, bifrostErr := StreamedResponses(opensTrace(tracer, "trace-2", refused))(schemas.NewBifrostContext(context.Background(), time.Time{}), &schemas.BifrostResponsesRequest{})
+		require.NotNil(t, bifrostErr)
+		require.Equal(t, []string{"trace-2"}, tracer.completed)
+	})
+
+	t.Run("a trace the caller already had is left to the caller", func(t *testing.T) {
+		stream, done := streamedEvents(completedEvent(nil))
+		tracer := &completionTracer{streamDone: done}
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "transport-trace")
+		_, bifrostErr := StreamedResponses(opensTrace(tracer, "unused", stream))(ctx, &schemas.BifrostResponsesRequest{})
+		require.Nil(t, bifrostErr)
+		requireDrained(t, done)
+		require.Empty(t, tracer.completed)
+	})
+}

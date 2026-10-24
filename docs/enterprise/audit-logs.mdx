@@ -25,6 +25,7 @@ Audit log entries can be signed with an HMAC key, retained for a configurable nu
 | **Export**           | Export matching entries as JSON, JSON Lines, or Syslog when the user has download permission. |
 | **Retention**        | Configure how long audit log entries are kept.                                                |
 | **IP omission**      | Keep the audit trail without recording client IP addresses.                                   |
+| **Legacy view**     | Read audit events recorded in the config store before they moved to the log store. |
 | **Object storage archival** | Periodically archive audit events to S3/GCS in time-windowed, size-bounded JSONL objects for long-term, off-box, compliance-grade retention. |
 
 ---
@@ -557,6 +558,91 @@ Supported export formats:
 | Syslog (RFC 5424) | SIEM or log-forwarding pipelines that accept syslog records. |
 
 Exported events include the `changes` diff. With `omit_ip_addresses` on, exports contain no IP addresses in any format. The syslog `clientIP` parameter is left out.
+
+## Where audit logs are stored
+
+From v2.3.3, Bifrost writes audit events to the log store when the log store is Postgres or ClickHouse. They go to the `enterprise_audit_events` table, which keeps a growing audit trail out of the database that holds your gateway configuration.
+
+Events recorded before the upgrade stay where they were, in the config store's `enterprise_audit_logs` table. Bifrost does not copy or move them.
+
+If the log store is disabled or uses SQLite, nothing changes. Audit events stay in the config store and the dashboard shows no legacy view. Bifrost skips SQLite because each node keeps its own file, so no single node would see the whole audit trail.
+
+### Legacy view
+
+The **Legacy view** switch on the Audit Logs page reads the config store's table instead of the log store's. It is off by default.
+
+With the switch off, you see events in the log store's `enterprise_audit_events` table. With it on, you see events in the config store's `enterprise_audit_logs` table. The two never mix in one list.
+
+The split is by table, not by time. Events recorded during a rolling upgrade by nodes still on an older version land in the legacy view too. See [Upgrading a cluster](#upgrading-a-cluster).
+
+The switch appears only when audit events go to the log store and the config store's table still holds at least one event. On a fresh install, or once retention has removed the last legacy event, it is gone.
+
+The switch applies to the whole page: the list, search, filters, the event view, **Verify signature** and export. Turning it on or off returns you to the first page and closes any open event.
+
+Each viewer has their own setting, saved in their browser. Turning it on changes nothing for other users or for the gateway.
+
+| The legacy view does | The legacy view does not |
+| --- | --- |
+| Show events stored in the config store's `enterprise_audit_logs` table. | Show events stored in the log store's `enterprise_audit_events` table, or merge both tables into one list. |
+| Verify signatures with the same signing keys. Rows keep their original signatures. | Copy, move or change any event. |
+| Export legacy events in every format, for users with `AuditLogs:Download`. | Change where new events are written. They always go to the log store. |
+| Respect the same permissions and data access scopes as the default view. | Appear when the log store is disabled or SQLite. |
+
+### Retention and archival
+
+`retention_days` applies to both tables. Legacy events age out on the same schedule as new ones. With retention on, the legacy view empties by itself once the last event in the config store's table passes the retention window, and the switch disappears.
+
+Archival to object storage reads both tables, so a window that spans the upgrade is archived with events from both. That holds only when `object_storage` is configured and the window's rows are still in the database when the archiver gets to it. Retention does not wait for archival, so a short `retention_days` such as `1` can delete rows first. See [the warning on retention and archival](#database-vs-object-storage) for the safe minimum.
+
+### Migrating older audit events
+
+#### Why audit events moved
+
+The config store holds the gateway's own configuration: providers, keys, users, roles and settings. Audit events are different. They are written on every management change, never updated, and on a busy deployment the audit table grows into the largest table in that database. Backups, restores and schema migrations of the config store then take longer because of data the gateway never reads to serve a request.
+
+The log store is built for that kind of data. It already holds request logs, which are append-only and read by time range, and on ClickHouse it stores large volumes cheaply. Moving audit events there keeps the config store small.
+
+#### What changed
+
+| | Before v2.3.3 | From v2.3.3 |
+| --- | --- | --- |
+| Database | Config store | Log store (Postgres or ClickHouse) |
+| Table | `enterprise_audit_logs` | `enterprise_audit_events` |
+
+The new table has the same columns as the old one, with the same names and meanings:
+
+`id`, `type_uri`, `event_type`, `event_time`, `event_name`, `action`, `outcome`, `severity`, `initiator_id`, `initiator_type`, `initiator_name`, `initiator_host`, `target_id`, `target_type`, `target_name`, `observer_id`, `observer_name`, `reason_code`, `reason_type`, `reason_message`, `attachments`, `changes`, `tags`, `request_method`, `request_path`, `request_ip`, `user_agent`, `request_id`, `session_id`, `auth_method`, `on_behalf_of_id`, `duration`, `signature`, `created_at`.
+
+Event names, actions, outcomes, severities and the `changes` diff format are unchanged, so the [event reference](#event-reference) applies to both tables. A row moved from one table to the other keeps its signature, and **Verify signature** checks it against the same signing keys.
+
+A few details differ by database:
+
+- On Postgres, the indexes have different names from the old table's. Postgres index names are unique per schema, and the config store and log store can share one database.
+- On ClickHouse, `event_time` and `created_at` are `DateTime64(6, 'UTC')`. Signatures cover `event_time` to the microsecond, so a coarser column would fail verification. The table also has a `ver` column for ClickHouse's own deduplication, partitions by month and has no TTL. Retention stays under `retention_days`.
+
+#### Moving older events
+
+Bifrost does not move older events on its own, and nothing is lost if you never move them. They stay readable in the legacy view until retention removes them.
+
+To bring them into the default view, so you can search or export the whole trail in one place, contact the Bifrost team for the audit log migration script. Tell us which databases your config store and log store use, whether they share a database, and roughly how many audit events you have. We will help you plan the move for your deployment.
+
+### Upgrading a cluster
+
+During a rolling upgrade, nodes still on an older version keep writing to the config store. Those events show only in the legacy view. Once every node runs v2.3.3, all new events go to the log store.
+
+### API
+
+Pass `source=legacy` to read the config store's table:
+
+- `GET /api/governance/audit-logs`
+- `GET /api/governance/audit-logs/filterdata`
+- `GET /api/governance/audit-logs/export`
+- `GET /api/governance/audit-logs/{id}`
+- `GET /api/governance/audit-logs/{id}/verify`
+
+Without it, or with any other value, these endpoints read the log store's table. When there is no separate legacy table, `source=legacy` is ignored.
+
+`GET /api/governance/audit-logs/sources` returns `{"legacy": true}` when a legacy table with events can be read, and `{"legacy": false}` otherwise.
 
 ## Event type URI
 

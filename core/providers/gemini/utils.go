@@ -831,6 +831,7 @@ var (
 		FinishReasonTooManyToolCalls:        "stop",
 		FinishReasonMissingThoughtSignature: "stop",
 		FinishReasonMalformedResponse:       "stop",
+		FinishReasonContinuation:            "continuation",
 	}
 
 	// Maps Bifrost canonical finish reasons back to the most representative Gemini finish reason
@@ -839,6 +840,7 @@ var (
 		"length":         FinishReasonMaxTokens,
 		"content_filter": FinishReasonSafety,
 		"tool_calls":     FinishReasonStop,
+		"continuation":   FinishReasonContinuation,
 	}
 )
 

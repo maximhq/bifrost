@@ -194,6 +194,7 @@ const FilterSchema = `{
     "user_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "business_unit_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "project_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
+    "topic_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Warp topics, by the id list_topics returns: the requests filed under any of them. The way to list, count or break down the requests behind a topic. Never guess an id - take it from a list_topics result."},
     "apps": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Include only these apps. \"Warp\" is refused: it is this assistant, not the person's traffic."},
     "min_latency": {"type": "number", "description": "Milliseconds."},
     "max_latency": {"type": "number", "description": "Milliseconds."},
@@ -247,6 +248,12 @@ func (e *unknownFilterFieldsError) Error() string {
 // is the worst failure mode available here: the model cannot tell, and neither
 // can the reader.
 func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, error) {
+	return parseFiltersWithLookback(raw, now, DefaultLookback)
+}
+
+// parseFiltersWithLookback is parseFilters with the window a missing
+// start_time falls back to, measured back from end_time.
+func parseFiltersWithLookback(raw map[string]any, now time.Time, lookback time.Duration) (*logstore.SearchFilters, error) {
 	filters := &logstore.SearchFilters{}
 	if raw == nil {
 		raw = map[string]any{}
@@ -256,7 +263,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		"start_time": true, "end_time": true, "providers": true, "models": true,
 		"status": true, "stop_reasons": true, "objects": true, "virtual_key_ids": true,
 		"team_ids": true, "customer_ids": true, "user_ids": true, "business_unit_ids": true,
-		"project_ids": true, "apps": true, "min_latency": true, "max_latency": true,
+		"project_ids": true, "topic_ids": true, "apps": true, "min_latency": true, "max_latency": true,
 		"min_tokens": true, "max_tokens": true, "min_cost": true, "max_cost": true,
 		"cache_hit_types": true, "content_search": true, "scope": true,
 		"error_types": true, "error_codes": true, "status_codes": true, "guardrail_outcomes": true,
@@ -300,7 +307,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		end = &now
 	}
 	if start == nil {
-		defaulted := end.Add(-DefaultLookback)
+		defaulted := end.Add(-lookback)
 		start = &defaulted
 	}
 	if start.After(*end) {
@@ -321,7 +328,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		"stop_reasons": &filters.StopReasons, "objects": &filters.Objects,
 		"virtual_key_ids": &filters.VirtualKeyIDs, "team_ids": &filters.TeamIDs,
 		"customer_ids": &filters.CustomerIDs, "user_ids": &filters.UserIDs,
-		"business_unit_ids": &filters.BusinessUnitIDs, "project_ids": &filters.ProjectIDs,
+		"business_unit_ids": &filters.BusinessUnitIDs, "project_ids": &filters.ProjectIDs, "topic_ids": &filters.TopicIDs,
 		"apps": &filters.Apps, "cache_hit_types": &filters.CacheHitTypes,
 		"error_types": &filters.ErrorTypes, "error_codes": &filters.ErrorCodes, "guardrail_outcomes": &filters.GuardrailOutcomes,
 		"routing_rule_ids": &filters.RoutingRuleIDs, "routing_engine_used": &filters.RoutingEngineUsed,
@@ -1150,8 +1157,7 @@ func bucketSize(filters *logstore.SearchFilters) (int64, error) {
 	// itself (a shared helper other callers do use with a possibly-nil bound),
 	// StartTime/EndTime are never nil here.
 	bucket := logstore.DefaultBucketSize(filters.StartTime, filters.EndTime)
-	span := filters.EndTime.Sub(*filters.StartTime).Seconds()
-	if bucket > 0 && span/float64(bucket) > MaxHistogramBuckets {
+	if histogramBucketCount(*filters.StartTime, *filters.EndTime, bucket) > MaxHistogramBuckets {
 		return 0, fmt.Errorf("the requested time range produces more than %d buckets; use a shorter range", MaxHistogramBuckets)
 	}
 	return bucket, nil
@@ -1299,4 +1305,22 @@ func filtersObject(args map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("filters must be an object mapping dimension names to values, got %T", value)
 	}
 	return raw, nil
+}
+
+// histogramBucketCount is how many buckets of bucketSeconds the inclusive range
+// [start, end] touches. The stores align buckets to the epoch, so a range that
+// starts partway through a bucket reaches one more than its length divided by
+// the bucket size, and both end buckets count.
+func histogramBucketCount(start, end time.Time, bucketSeconds int64) int64 {
+	if bucketSeconds <= 0 || end.Before(start) {
+		return 0
+	}
+	floorDiv := func(value int64) int64 {
+		quotient := value / bucketSeconds
+		if value%bucketSeconds < 0 {
+			quotient--
+		}
+		return quotient
+	}
+	return floorDiv(end.Unix()) - floorDiv(start.Unix()) + 1
 }
