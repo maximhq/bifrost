@@ -6977,6 +6977,41 @@
     }
   },
   "$defs": {
+    "identity_source": {
+      "type": "object",
+      "description": "Where a federated key gets the OIDC identity token it exchanges. Shared by every provider that supports workload identity federation.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["file", "inline"],
+          "description": "file: read the token from path on every exchange, so a token the platform rotates on disk is picked up. inline: use token as given"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path of the identity token, for type file (can use env. prefix). Must be under /var/run/secrets or /run/secrets, or a directory listed in the BIFROST_OIDC_ALLOWED_CREDENTIAL_DIRS environment variable"
+        },
+        "token": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The identity token itself, for type inline (can use env. prefix)"
+        }
+      },
+      "required": ["type"],
+      "oneOf": [
+        {
+          "properties": {"type": {"const": "file"}},
+          "required": ["path"],
+          "not": {"required": ["token"]}
+        },
+        {
+          "properties": {"type": {"const": "inline"}},
+          "required": ["token"],
+          "not": {"required": ["path"]}
+        }
+      ],
+      "additionalProperties": false
+    },
     "relay": {
       "type": "object",
       "description": "A Relay: a raw HTTP relay to a non-LLM API served at /relay/{name}/{path}. Bifrost injects the relay's single credential, prices each counted call with the usage mapping (cost_per_request + cost_path + billed units x cost_per_unit, overridable per route) and charges the result to the caller's overall budgets. Virtual keys reach it through relay_grants.",
@@ -8574,6 +8609,42 @@
               }
             }
           ],
+          "additionalProperties": false
+        },
+        "anthropic_key_config": {
+          "type": "object",
+          "description": "Anthropic key configuration, for anthropic and custom providers built on the anthropic base.",
+          "properties": {
+            "workload_identity": {
+              "type": "object",
+              "description": "Workload Identity Federation. Set this and leave value empty: Bifrost exchanges an OIDC identity token for a short-lived Anthropic access token. A non-empty value always wins.",
+              "properties": {
+                "federation_rule_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Federation rule ID, fdrl_... (can use env. prefix)"
+                },
+                "organization_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Anthropic organization UUID (can use env. prefix)"
+                },
+                "service_account_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Service account the minted token acts as, svac_... (can use env. prefix)"
+                },
+                "workspace_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Workspace ID, wrkspc_...; required when the rule spans several workspaces (can use env. prefix)"
+                },
+                "identity_source": {"$ref": "#/$defs/identity_source"}
+              },
+              "required": ["federation_rule_id", "organization_id", "service_account_id", "identity_source"],
+              "additionalProperties": false
+            }
+          },
           "additionalProperties": false
         },
         "aliases": {

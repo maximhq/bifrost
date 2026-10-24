@@ -1453,6 +1453,7 @@ config_agent_registrations|require_public_target|false|name = 'migration-test-ag
 config_client|skills_external_client_url|''|id = 1
 config_client|a2a_private_allowlist_json|'[]'|id = 1
 config_keys|vertex_use_session_routing|NULL|name = 'migration-test-key-anthropic'
+config_keys|anthropic_workload_identity_json|NULL|name = 'migration-test-key-anthropic'
 config_mcp_clients|openapi_spec|''|client_id = 'mcp-migration-test-001'
 config_mcp_clients|openapi_config_json|NULL|client_id = 'mcp-migration-test-001'
 governance_virtual_keys|metadata|'{"cost_center":"migration-test","owner":"platform"}'|id = 'vk-migration-test-1'

@@ -298,6 +298,41 @@ export class ProvidersPage extends BasePage {
     await waitForNetworkIdle(this.page)
   }
 
+  /**
+   * Add a key that federates through Anthropic Workload Identity Federation, reading its identity
+   * token from a file, to the currently selected anthropic-based provider. No token exchange runs
+   * at save time, so the IDs and the path only need to be present.
+   */
+  async addAnthropicWorkloadIdentityKey(config: {
+    name: string
+    federationRuleId: string
+    organizationId: string
+    serviceAccountId: string
+    workspaceId?: string
+    identityTokenFile: string
+  }): Promise<void> {
+    await this.dismissToasts()
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByTestId('apikey-anthropic-workload-identity-tab').click()
+    await this.page.getByTestId('key-input-anthropic-wif-federation-rule-id').fill(config.federationRuleId)
+    await this.page.getByTestId('key-input-anthropic-wif-organization-id').fill(config.organizationId)
+    await this.page.getByTestId('key-input-anthropic-wif-service-account-id').fill(config.serviceAccountId)
+    if (config.workspaceId !== undefined) {
+      await this.page.getByTestId('key-input-anthropic-wif-workspace-id').fill(config.workspaceId)
+    }
+    // Token File is the default source, so its path input is already on screen.
+    await expect(this.page.getByTestId('key-select-anthropic-wif-token-source')).toContainText('Token File')
+    await this.page.getByTestId('key-input-anthropic-wif-identity-token-file').fill(config.identityTokenFile)
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
+  }
+
   private async fillOAuthScopes(scopes: string[] | undefined): Promise<void> {
     for (const scope of scopes ?? []) {
       await this.page.getByTestId('key-input-oauth-scopes').fill(scope)
