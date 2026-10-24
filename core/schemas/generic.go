@@ -3,6 +3,7 @@ package schemas
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 
 	"golang.org/x/net/http/httpguts"
@@ -12,16 +13,19 @@ import (
 type GenericAuthType string
 
 const (
-	GenericAuthBearer GenericAuthType = "bearer" // Authorization: Bearer <value>
-	GenericAuthHeader GenericAuthType = "header" // <header_name>: <value_prefix><value>
-	GenericAuthQuery  GenericAuthType = "query"  // ?<query_param>=<value>
-	GenericAuthBasic  GenericAuthType = "basic"  // Authorization: Basic base64(<value>), value is user:password
-	GenericAuthNone   GenericAuthType = "none"   // no credential injected
+	GenericAuthBearer   GenericAuthType = "bearer"    // Authorization: Bearer <value>
+	GenericAuthHeader   GenericAuthType = "header"    // <header_name>: <value_prefix><value>
+	GenericAuthQuery    GenericAuthType = "query"     // ?<query_param>=<value>
+	GenericAuthBasic    GenericAuthType = "basic"     // Authorization: Basic base64(<value>), value is user:password
+	GenericAuthAWSSigV4 GenericAuthType = "aws_sigv4" // SigV4 with the key's bedrock_key_config credentials
+	GenericAuthNone     GenericAuthType = "none"      // no credential injected
 )
 
 var genericAuthTypes = map[GenericAuthType]struct{}{
-	GenericAuthBearer: {}, GenericAuthHeader: {}, GenericAuthQuery: {}, GenericAuthBasic: {}, GenericAuthNone: {},
+	GenericAuthBearer: {}, GenericAuthHeader: {}, GenericAuthQuery: {}, GenericAuthBasic: {}, GenericAuthAWSSigV4: {}, GenericAuthNone: {},
 }
+
+var genericAWSServiceRe = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 var genericRouteMethods = map[string]struct{}{
 	"GET": {}, "POST": {}, "PUT": {}, "PATCH": {}, "DELETE": {}, "HEAD": {},
@@ -29,10 +33,17 @@ var genericRouteMethods = map[string]struct{}{
 
 // GenericAuthConfig selects the credential scheme for a generic provider.
 type GenericAuthConfig struct {
-	Type        GenericAuthType `json:"type"`                   // bearer | header | query | basic | none (default bearer)
-	HeaderName  string          `json:"header_name,omitempty"`  // header: the header that carries the key
-	QueryParam  string          `json:"query_param,omitempty"`  // query: the query parameter that carries the key
-	ValuePrefix string          `json:"value_prefix,omitempty"` // header: literal prefix before the key value
+	Type        GenericAuthType       `json:"type"`                   // bearer | header | query | basic | aws_sigv4 | none (default bearer)
+	HeaderName  string                `json:"header_name,omitempty"`  // header: the header that carries the key
+	QueryParam  string                `json:"query_param,omitempty"`  // query: the query parameter that carries the key
+	ValuePrefix string                `json:"value_prefix,omitempty"` // header: literal prefix before the key value
+	AWS         *GenericAWSAuthConfig `json:"aws,omitempty"`          // aws_sigv4 settings
+}
+
+// GenericAWSAuthConfig names the AWS service a SigV4-signed relay targets.
+type GenericAWSAuthConfig struct {
+	Service string `json:"service"`          // SigV4 signing name, e.g. textract, translate
+	Region  string `json:"region,omitempty"` // falls back to the key's bedrock_key_config.region
 }
 
 // GenericUsageConfig maps a relayed request/response onto usage and cost. Paths are gjson paths;
@@ -123,6 +134,13 @@ func (a GenericAuthConfig) validate() error {
 		if strings.TrimSpace(a.QueryParam) == "" {
 			return fmt.Errorf("auth.query_param is required for auth.type query")
 		}
+	case GenericAuthAWSSigV4:
+		if a.AWS == nil || strings.TrimSpace(a.AWS.Service) == "" {
+			return fmt.Errorf("auth.aws.service is required for auth.type aws_sigv4")
+		}
+		if !genericAWSServiceRe.MatchString(a.AWS.Service) {
+			return fmt.Errorf("auth.aws.service %q must match [a-z0-9-]+", a.AWS.Service)
+		}
 	}
 	return nil
 }
@@ -177,6 +195,10 @@ func (c *GenericProviderConfig) Clone() *GenericProviderConfig {
 		return nil
 	}
 	out := *c
+	if c.Auth.AWS != nil {
+		aws := *c.Auth.AWS
+		out.Auth.AWS = &aws
+	}
 	out.Usage = c.Usage.clone()
 	if c.Streaming != nil {
 		streaming := *c.Streaming

@@ -265,7 +265,6 @@ func TestChatCompletionStream_NetOpError_ChunkIsRetryable(t *testing.T) {
 		"net.OpError during EventStream decoding must use ErrProviderNetworkError message")
 }
 
-
 // newMidStreamResetServer returns a server that answers 200, writes a truncated
 // EventStream prelude (not a valid frame), then resets the TCP connection, which
 // produces a *net.OpError on the client's read side.
@@ -339,10 +338,10 @@ func TestStream_MidStreamDrop_IsUpstreamError(t *testing.T) {
 			require.NotNil(t, streamErr.StatusCode)
 			assert.Equal(t, http.StatusBadGateway, *streamErr.StatusCode)
 			assert.Equal(t, "api_error", anthropic.ToAnthropicChatCompletionError(streamErr).Error.Type)
-	})
+		})
 	}
 }
-       
+
 // TestRequest_ConnectionFailure_IsUpstreamError verifies that a connection the server
 // closes before responding reaches clients as a 502 upstream failure. Without a
 // status the error resolves to 400, which reads as a malformed request.
