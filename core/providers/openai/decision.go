@@ -320,13 +320,14 @@ func ToOpenAIDecisionResponse(response *schemas.BifrostDecisionResponse) *OpenAI
 // POST /v1/decisions and converts the reply. The reply is buffered and parsed
 // in-process, as for rerank: it is a short list of answers, and large-response
 // passthrough would relay upstream bytes verbatim to routes that do not speak
-// OpenAI's shape.
+// OpenAI's shape. authHeaders are the caller's own auth headers, so a provider
+// that authenticates otherwise than Bearer (Azure's api-key) can reuse it.
 func HandleOpenAIDecisionRequest(
 	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
 	url string,
 	request *schemas.BifrostDecisionRequest,
-	key schemas.Key,
+	authHeaders map[string]string,
 	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -358,7 +359,7 @@ func HandleOpenAIDecisionRequest(
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	for k, v := range BearerAuthHeader(key) {
+	for k, v := range authHeaders {
 		req.Header.Set(k, v)
 	}
 	// A nil body means large-payload passthrough staged the request as a

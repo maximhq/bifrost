@@ -736,6 +736,34 @@ func TestMigrationAddWarpConversationTables_NonRollbackable(t *testing.T) {
 	assert.EqualValues(t, 1, surviving, "the saved conversation must survive")
 }
 
+// TestMigrationAddWarpTopicTables_NonRollbackable pins that rolling the topic
+// tables back is refused while warp_topics holds anything. Topics outlive the
+// requests they were built from, and their names came from a model call, so a
+// populated table cannot be rebuilt from the logs. Empty tables still drop.
+func TestMigrationAddWarpTopicTables_NonRollbackable(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, migrationAddWarpTopicTables(ctx, db, testLogger{}))
+	require.NoError(t, rollbackWarpTopicTables(db))
+	require.False(t, db.Migrator().HasTable(&WarpTopic{}), "empty topic tables are safe to drop")
+
+	require.NoError(t, db.AutoMigrate(&WarpTopic{}, &WarpTopicAssignment{}, &WarpTopicUnmatched{}))
+	now := time.Now().UTC()
+	require.NoError(t, db.Create(&WarpTopic{
+		ID: "t-1", Kind: WarpTopicKindTopic, Label: "Refunds", Status: WarpTopicStatusActive,
+		EmbeddingSignature: "sig", CreatedAt: now, UpdatedAt: now,
+	}).Error)
+
+	err = rollbackWarpTopicTables(db)
+	require.Error(t, err, "rollback must refuse while topics exist")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	for _, model := range []any{&WarpTopic{}, &WarpTopicAssignment{}, &WarpTopicUnmatched{}} {
+		assert.True(t, db.Migrator().HasTable(model), "a refused rollback leaves every topic table intact")
+	}
+}
+
 // TestMigrationAddWarpMessageOutcomeColumns_RollbackGuardsRecordedUsage pins
 // that rolling the outcome columns back is refused once they hold anything.
 //

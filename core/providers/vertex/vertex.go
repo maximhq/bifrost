@@ -862,9 +862,16 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			req.Header.Set(VertexServiceTierHeader, v)
 		}
 	}
-	// Skip anthropic-beta from context headers — Anthropic models on Vertex use the
-	// anthropic_beta body field instead, and other model families don't use it.
+	// anthropic-beta is rebuilt from the filtered list for Anthropic models only, as in Responses;
+	// other model families don't use it.
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, []string{anthropic.AnthropicBetaHeader})
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		if betaHeaders := anthropic.FilterBetaHeadersForProvider(anthropic.MergeBetaHeaders(ctx, provider.networkConfig.ExtraHeaders), schemas.Vertex, provider.networkConfig.BetaHeaderOverrides); len(betaHeaders) > 0 {
+			req.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+		} else {
+			req.Header.Del(anthropic.AnthropicBetaHeader)
+		}
+	}
 
 	// If auth query is set, add it to the URL
 	// Otherwise, get the oauth2 token and set the Authorization header

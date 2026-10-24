@@ -148,6 +148,75 @@ func TestChatResponsePreservesAzureContentFilterAnnotations(t *testing.T) {
 	})
 }
 
+// OpenRouter returns generated images on message.images / delta.images beside a
+// string content. Decoding dropped the array: image tokens billed, no image returned.
+func TestChatResponsePreservesGeneratedImages(t *testing.T) {
+	const imageURL = "data:image/png;base64,iVBORw0KGgo="
+	const images = `"images":[{"type":"image_url","image_url":{"url":"` + imageURL + `"}}]`
+
+	type wireMessage struct {
+		Content *string `json:"content"`
+		Images  []struct {
+			Type     string `json:"type"`
+			ImageURL struct {
+				URL string `json:"url"`
+			} `json:"image_url"`
+		} `json:"images"`
+	}
+	roundTrip := func(t *testing.T, upstream string) wireMessage {
+		t.Helper()
+		var resp BifrostChatResponse
+		if err := Unmarshal([]byte(upstream), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		out, err := json.Marshal(&resp)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		var got struct {
+			Choices []struct {
+				Message wireMessage `json:"message"`
+				Delta   wireMessage `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("re-decode %s: %v", out, err)
+		}
+		if len(got.Choices) != 1 {
+			t.Fatalf("expected one choice: %s", out)
+		}
+		if strings.Contains(upstream, `"delta"`) {
+			return got.Choices[0].Delta
+		}
+		return got.Choices[0].Message
+	}
+	assertImage := func(t *testing.T, msg wireMessage) {
+		t.Helper()
+		if len(msg.Images) != 1 || msg.Images[0].Type != "image_url" || msg.Images[0].ImageURL.URL != imageURL {
+			t.Fatalf("generated image was dropped, got images %+v", msg.Images)
+		}
+	}
+
+	t.Run("message with text keeps images and string content", func(t *testing.T) {
+		msg := roundTrip(t, `{"id":"gen-1","object":"chat.completion","created":1,"model":"google/gemini-2.5-flash-image",
+			"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Here you go",`+images+`}}]}`)
+		assertImage(t, msg)
+		if msg.Content == nil || *msg.Content != "Here you go" {
+			t.Fatalf("content must stay a string, got %v", msg.Content)
+		}
+	})
+
+	t.Run("image-only message keeps images", func(t *testing.T) {
+		assertImage(t, roundTrip(t, `{"id":"gen-1","object":"chat.completion","created":1,"model":"google/gemini-2.5-flash-image",
+			"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":null,`+images+`}}]}`))
+	})
+
+	t.Run("stream delta keeps images", func(t *testing.T) {
+		assertImage(t, roundTrip(t, `{"id":"gen-1","object":"chat.completion.chunk","created":1,"model":"google/gemini-2.5-flash-image",
+			"choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"",`+images+`}}]}`))
+	})
+}
+
 // reasoning.mode ("standard" | "pro") is an OpenAI Responses-only knob that chat
 // callers send inside the reasoning object, next to effort.
 func TestChatParametersReasoningMode(t *testing.T) {

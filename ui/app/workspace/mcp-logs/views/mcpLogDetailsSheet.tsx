@@ -37,6 +37,7 @@ import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { getMCPLogPillTone, getMCPLogPresentation, getMCPLogTimeline, type MCPLogPillTone } from "@/lib/utils/mcpLogPresentation";
 import { applyRedactionMappingToValue, hasRedactionMappingEntries, mergeRedactionMappings } from "@/lib/utils/redaction";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { OsIcon } from "@enterprise/lib/constants/edgeApps";
 import { useGetDeviceQuery } from "@enterprise/lib/store/apis/edgeControlApi";
 import { Link } from "@tanstack/react-router";
@@ -160,9 +161,11 @@ export function MCPLogDetailSheet({
 		skip: !open || !log?.id,
 	});
 
-	// Device metadata (hostname, OS) comes from the Edge device registry; fall back to the raw id when absent.
+	// Device metadata (hostname, OS) comes from the Edge device registry; fall back to the raw id when absent,
+	// including for a caller without Devices:View, for whom the lookup is skipped.
+	const hasDevicesAccess = useRbac(RbacResource.Devices, RbacOperation.View);
 	const deviceId = fullLog?.device_id ?? log?.device_id ?? "";
-	const { data: deviceData } = useGetDeviceQuery(deviceId, { skip: !open || !deviceId });
+	const { data: deviceData } = useGetDeviceQuery(deviceId, { skip: !open || !deviceId || !hasDevicesAccess });
 	const device = deviceData?.device;
 
 	// Keyboard navigation: arrow up/down to navigate between logs

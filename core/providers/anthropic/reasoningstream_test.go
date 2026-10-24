@@ -125,7 +125,7 @@ func TestConvertBifrostReasoning_SignaturePresent(t *testing.T) {
 
 	t.Run("DeepSeek does not embed the id", func(t *testing.T) {
 		msg := newMsg()
-		blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), msg, schemas.DeepSeek, "deepseek-chat")
+		blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), msg, schemas.DeepSeek, "deepseek-chat", false)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 thinking block, got %d", len(blocks))
 		}
@@ -145,7 +145,7 @@ func TestConvertBifrostReasoning_SignaturePresent(t *testing.T) {
 
 	t.Run("OpenAI embeds the id", func(t *testing.T) {
 		msg := newMsg()
-		blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), msg, schemas.OpenAI, "gpt-5")
+		blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), msg, schemas.OpenAI, "gpt-5", false)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 thinking block, got %d", len(blocks))
 		}
@@ -158,6 +158,35 @@ func TestConvertBifrostReasoning_SignaturePresent(t *testing.T) {
 		}
 	})
 
+	t.Run("OpenAI chat bridge does not embed its minted id", func(t *testing.T) {
+		msg := newMsg()
+		blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), msg, schemas.OpenAI, "gpt-4o", true)
+		if len(blocks) != 1 {
+			t.Fatalf("expected 1 thinking block, got %d", len(blocks))
+		}
+		if blocks[0].Signature == nil {
+			t.Fatal("thinking block signature is nil; Agent SDK parse would fail on the missing field")
+		}
+		if *blocks[0].Signature != "" {
+			t.Errorf("chat-bridged signature = %q, want empty (Chat Completions issued no reasoning item id)", *blocks[0].Signature)
+		}
+	})
+
+	// A chat upstream that returns reasoning_details pairs its encrypted token with a
+	// real id, which the replay needs just as on the native Responses route.
+	t.Run("OpenAI chat bridge embeds an id paired with an encrypted token", func(t *testing.T) {
+		msg := newMsg()
+		msg.ResponsesReasoning = &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr("enc-token")}
+		blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), msg, schemas.OpenAI, "gpt-5", true)
+		if len(blocks) != 1 || blocks[0].Signature == nil {
+			t.Fatalf("expected 1 signed thinking block, got %+v", blocks)
+		}
+		id, _, ok := providerUtils.ExtractReasoningItemID(*blocks[0].Signature)
+		if !ok || id == nil || *id != *msg.ID {
+			t.Errorf("chat-bridged signature = %q, want an embedded id %q", *blocks[0].Signature, *msg.ID)
+		}
+	})
+
 	// A custom provider reports its own key, so the gate has to resolve it back to
 	// the base provider type Bifrost recorded on the context -- otherwise OpenAI
 	// models served through an openai-based custom provider silently lose the id.
@@ -165,7 +194,7 @@ func TestConvertBifrostReasoning_SignaturePresent(t *testing.T) {
 		msg := newMsg()
 		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
-		blocks := convertBifrostReasoningToAnthropicThinking(ctx, msg, schemas.ModelProvider("my-openai"), "my-gpt-deployment")
+		blocks := convertBifrostReasoningToAnthropicThinking(ctx, msg, schemas.ModelProvider("my-openai"), "my-gpt-deployment", false)
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 thinking block, got %d", len(blocks))
 		}
@@ -174,6 +203,122 @@ func TestConvertBifrostReasoning_SignaturePresent(t *testing.T) {
 			t.Errorf("custom-provider signature = %q, want an embedded id %q", *blocks[0].Signature, *msg.ID)
 		}
 	})
+}
+
+// chatBridgeThinkingSignatures drives OpenAI Chat Completions reasoning chunks
+// through the chat-to-responses stream converter into Anthropic SSE, stamping each
+// spread event the way the OpenAI provider's Responses-to-Chat fallback does when
+// bridged, and returns every signature the thinking block carried.
+func chatBridgeThinkingSignatures(t *testing.T, bridged bool) []string {
+	t.Helper()
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	state := schemas.AcquireChatToResponsesStreamState()
+	defer schemas.ReleaseChatToResponsesStreamState(state)
+
+	p := func(s string) *string { return &s }
+	chunks := []*schemas.BifrostChatResponse{
+		reasoningStreamChunk("chatcmpl-abc", &schemas.ChatStreamResponseChoiceDelta{Role: p("assistant"), Content: p("")}, nil),
+		reasoningStreamChunk("chatcmpl-abc", &schemas.ChatStreamResponseChoiceDelta{Reasoning: p("Let me")}, nil),
+		reasoningStreamChunk("chatcmpl-abc", &schemas.ChatStreamResponseChoiceDelta{Reasoning: p(" think")}, nil),
+		reasoningStreamChunk("chatcmpl-abc", &schemas.ChatStreamResponseChoiceDelta{Content: p("Hi")}, nil),
+		reasoningStreamChunk("chatcmpl-abc", &schemas.ChatStreamResponseChoiceDelta{}, p("stop")),
+	}
+
+	var signatures []string
+	for _, c := range chunks {
+		c.ExtraFields.RoutingInfo.Provider = schemas.OpenAI
+		c.ExtraFields.RoutingInfo.Model = "gpt-4o"
+		for _, r := range c.ToBifrostResponsesStreamResponse(state) {
+			if bridged {
+				r.ExtraFields.ConvertedRequestType = schemas.ChatCompletionRequest
+			}
+			for _, e := range ToAnthropicResponsesStreamResponse(ctx, r) {
+				switch {
+				case e.Type == AnthropicStreamEventTypeContentBlockStart && e.ContentBlock != nil &&
+					e.ContentBlock.Type == AnthropicContentBlockTypeThinking:
+					if e.ContentBlock.Signature == nil {
+						t.Fatal("thinking content_block_start has no signature field")
+					}
+					signatures = append(signatures, *e.ContentBlock.Signature)
+				case e.Type == AnthropicStreamEventTypeContentBlockDelta && e.Delta != nil &&
+					e.Delta.Type == AnthropicStreamDeltaTypeSignature && e.Delta.Signature != nil:
+					signatures = append(signatures, *e.Delta.Signature)
+				}
+			}
+		}
+	}
+	if len(signatures) == 0 {
+		t.Fatal("no thinking content_block_start emitted for reasoning content")
+	}
+	return signatures
+}
+
+// TestReasoningStream_ChatBridgeOmitsSyntheticSignature pins #8549: reasoning
+// bridged from an OpenAI Chat Completions stream has no upstream reasoning item, so
+// the thinking block must open with signature "" (Anthropic's own content_block_start
+// shape) instead of the converter-minted "brid_msg_chatcmpl-abc_reasoning:".
+func TestReasoningStream_ChatBridgeOmitsSyntheticSignature(t *testing.T) {
+	for _, sig := range chatBridgeThinkingSignatures(t, true) {
+		if sig != "" {
+			t.Errorf("chat-bridged thinking signature = %q, want empty", sig)
+		}
+	}
+
+	// The same stream without the bridge marker is still embedded, so the
+	// assertion above is driven by the marker and not by a dead gate.
+	sigs := chatBridgeThinkingSignatures(t, false)
+	if _, _, ok := providerUtils.ExtractReasoningItemID(sigs[0]); !ok {
+		t.Errorf("unbridged OpenAI thinking signature = %q, want an embedded reasoning item id", sigs[0])
+	}
+}
+
+// TestToAnthropicResponsesResponse_ChatBridgeOmitsSyntheticSignature is the
+// non-streaming half of #8549: a Chat Completions response converted to Responses
+// mints an rs_ id for its reasoning, which must not reach the client as a signature.
+func TestToAnthropicResponsesResponse_ChatBridgeOmitsSyntheticSignature(t *testing.T) {
+	reasoning := "Let me think step"
+	content := "Hi"
+	chat := &schemas.BifrostChatResponse{
+		ID:     "chatcmpl-abc",
+		Object: "chat.completion",
+		Model:  "gpt-4o",
+		Choices: []schemas.BifrostResponseChoice{{
+			Index:        0,
+			FinishReason: schemas.Ptr("stop"),
+			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+				Message: &schemas.ChatMessage{
+					Role:                 schemas.ChatMessageRoleAssistant,
+					Content:              &schemas.ChatMessageContent{ContentStr: &content},
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{Reasoning: &reasoning},
+				},
+			},
+		}},
+	}
+	resp := chat.ToBifrostResponsesResponse()
+	// Stamped as the OpenAI provider's Responses-to-Chat fallback does.
+	resp.ExtraFields.ConvertedRequestType = schemas.ChatCompletionRequest
+	resp.ExtraFields.RoutingInfo.Provider = schemas.OpenAI
+	resp.ExtraFields.RoutingInfo.Model = "gpt-4o"
+
+	out := ToAnthropicResponsesResponse(schemas.NewBifrostContext(nil, schemas.NoDeadline), resp)
+	var sawThinking bool
+	for _, b := range out.Content {
+		if b.Type != AnthropicContentBlockTypeThinking {
+			continue
+		}
+		sawThinking = true
+		if b.Signature == nil {
+			t.Fatal("thinking block signature is nil; Agent SDK parse would fail on the missing field")
+		}
+		if *b.Signature != "" {
+			t.Errorf("chat-bridged thinking signature = %q, want empty", *b.Signature)
+		}
+	}
+	if !sawThinking {
+		t.Fatalf("no thinking block in converted response: %+v", out.Content)
+	}
 }
 
 // TestReasoningStream_ResumedReasoningNotEmittedPastStop guards the
