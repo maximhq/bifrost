@@ -1134,7 +1134,9 @@ func SubjectTokenDir(path string) (string, error) {
 			continue
 		}
 		found = true
-		if d = filepath.Clean(d); strings.HasPrefix(clean, d+string(filepath.Separator)) {
+		d = filepath.Clean(d)
+		// Clean leaves a trailing separator only on the root, so "/" must not gain a second one.
+		if prefix := strings.TrimSuffix(d, string(filepath.Separator)) + string(filepath.Separator); strings.HasPrefix(clean, prefix) {
 			return d, nil
 		}
 	}

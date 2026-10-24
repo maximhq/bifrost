@@ -236,6 +236,19 @@ func TestTokenExchangeMinter(t *testing.T) {
 		assert.Equal(t, "projected-jwt", params["subject_token"])
 	})
 
+	t.Run("listing the root directory allows any absolute path", func(t *testing.T) {
+		es := newExchangeServer(t)
+		file := filepath.Join(t.TempDir(), "token")
+		writeSubjectToken(t, file, "subject-jwt")
+		t.Setenv(schemas.SubjectTokenDirsEnv, "/")
+		mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: es.URL, SubjectTokenFile: file}, authClient(t))
+
+		_, bErr := mint(context.Background(), nil)
+		require.Nil(t, bErr)
+		_, _, params := es.snapshot()
+		assert.Equal(t, "subject-jwt", params["subject_token"])
+	})
+
 	t.Run("no allowed directories means the file source is refused", func(t *testing.T) {
 		es := newExchangeServer(t)
 		file := filepath.Join(tokenDir(t), "token")
