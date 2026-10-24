@@ -246,6 +246,11 @@ type BifrostHTTPServer struct {
 	Client *bifrost.Bifrost
 	Config *lib.Config
 
+	// KeySelector and KeyPoolFilter let an embedder supply key-selection policy
+	// to core. They must be set before Bootstrap; nil keeps core's defaults.
+	KeySelector   schemas.KeySelector
+	KeyPoolFilter schemas.KeyPoolFilter
+
 	// HTTPClientFactory hands out clients for outbound traffic other than provider
 	// inference (webhooks, skills, plugin downloads, MCP, catalog sync) that honour
 	// the global proxy for their purpose and follow proxy changes live.
@@ -3391,6 +3396,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		Logger:             logger,
 		KVStore:            s.Config.KVStore,
 		ModelCatalog:       s.Config.ModelCatalog,
+		KeySelector:        s.KeySelector,
+		KeyPoolFilter:      s.KeyPoolFilter,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)

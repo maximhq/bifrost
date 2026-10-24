@@ -1,3 +1,7 @@
+## ✨ Features
+
+- **Key Selection Hooks for Embedders** - `BifrostHTTPServer` gains `KeySelector` and `KeyPoolFilter`, passed to core on `Bootstrap`, so a program embedding the HTTP server can supply its own key-selection policy. Unset, core's defaults apply [@jeremym-tanium](https://github.com/jeremym-tanium)
+
 ## 🔒 Security
 
 - **Go 1.27.3** - Security release for [CVE-2026-111943](https://groups.google.com/g/golang-announce/c/66pojueaQek) in `crypto/x509`: certificate chains through a small set of intermediates from a specific Certificate Authority are no longer accepted by `Verify`, which covers every TLS connection Bifrost makes to providers, MCP servers and other upstreams. Bifrost now builds with Go 1.27.3, and the Docker images (`Dockerfile`, `Dockerfile.local`, `Dockerfile.redhat`) move to `golang:1.27.3-alpine3.24`. Custom Go plugins must be rebuilt with Go 1.27.3 to load.
