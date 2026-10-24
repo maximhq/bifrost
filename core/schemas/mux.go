@@ -1196,8 +1196,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 // the canonical BifrostLLMUsage shape, so the logging plugin and the tracer read
 // token counts from one place and cannot disagree.
 //
-// Streaming requests do not reach here: they settle through the accumulator and
-// carry usage on the accumulated result instead.
+// Streams may reach here as a final chunk when no plugin accumulates them.
 //
 // The returned value may alias the response's own usage; callers that retain it
 // past the request should DeepCopy.
@@ -1269,6 +1268,8 @@ func (r *BifrostResponse) NormalizedUsage() *BifrostLLMUsage {
 		return out
 	case r.PassthroughResponse != nil && r.PassthroughResponse.PassthroughUsage != nil:
 		return r.PassthroughResponse.PassthroughUsage.LLMUsage
+	case r.ResponsesStreamResponse != nil && r.ResponsesStreamResponse.Response != nil:
+		return r.ResponsesStreamResponse.Response.Usage.ToBifrostLLMUsage()
 	}
 	return nil
 }
