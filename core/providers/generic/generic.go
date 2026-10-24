@@ -126,7 +126,7 @@ func NewGenericProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	usage := resolveUsage(cfg.Usage, nil)
 	usage.ignoreUpstreamCost = config.IgnoreProviderCost
 	usage.eventPaths = usage.collectEventPaths()
-	routes := compileRoutes(cfg)
+	routes := compileRoutesWithCostPolicy(cfg, config.IgnoreProviderCost)
 	for i := range routes {
 		routes[i].usage.ignoreUpstreamCost = config.IgnoreProviderCost
 		routes[i].usage.eventPaths = routes[i].usage.collectEventPaths()
@@ -159,6 +159,11 @@ func (provider *GenericProvider) GetProviderKey() schemas.ModelProvider {
 // "stream" in a path (/v1/streams/{id}) usually answers with plain JSON, and the streaming relay
 // forwards a non-SSE body unread, so the response-side usage mapping would be silently skipped.
 func (provider *GenericProvider) streams(route *compiledRoute, path, accept string, bodyStream bool) bool {
+	// A job route is always buffered: only the buffered relay reads the start reply, which carries
+	// the job id, so a caller's Accept or stream flag must not route around job billing.
+	if route != nil && route.job != nil {
+		return false
+	}
 	if route != nil && route.stream != nil {
 		return *route.stream
 	}
@@ -213,8 +218,14 @@ func (provider *GenericProvider) resolve(ctx *schemas.BifrostContext, method, pa
 // strictRouteError refuses an operation that matches no route under strict_routes. The HTTP
 // transport refuses it before dispatch; this is the same guard for the Go SDK path, which reaches
 // the provider directly.
-func (provider *GenericProvider) strictRouteError(route *compiledRoute, req *schemas.BifrostPassthroughRequest) *schemas.BifrostError {
+func (provider *GenericProvider) strictRouteError(ctx *schemas.BifrostContext, route *compiledRoute, req *schemas.BifrostPassthroughRequest) *schemas.BifrostError {
 	if !provider.cfg.StrictRoutes || route != nil {
+		return nil
+	}
+	// An internal request (a job accounting poll, which runs with the plugin pipeline skipped) is
+	// the operator's own configured request, not a caller's: an operator who allowlists the start
+	// operation must not have to list the poll too, or the job would come back 404 and never be billed.
+	if internal, _ := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); internal {
 		return nil
 	}
 	bifrostErr := providerUtils.NewBifrostOperationError(fmt.Sprintf("no route for %s %s (strict_routes)", req.Method, req.Path), nil)
@@ -268,21 +279,27 @@ func (provider *GenericProvider) buildRequest(ctx *schemas.BifrostContext, key s
 	providerUtils.SetExtraHeadersHTTP(context.Background(), httpReq, provider.networkConfig.ExtraHeaders, nil)
 	providerUtils.StripCallerAuthForInsecureURL(requestURL, req.SafeHeaders)
 	authHeader := provider.authHeader()
+	// A job poll carries the internal marker: its headers are the operator's own poll config, not a
+	// caller's, so they are applied over extra_headers and keep their x-amz-* names. The configured
+	// key stays the only credential either way.
+	internal, _ := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool)
 	for k, v := range req.SafeHeaders {
 		if strings.EqualFold(k, "authorization") || strings.EqualFold(k, "content-length") || (authHeader != "" && strings.EqualFold(k, authHeader)) {
 			continue
 		}
-		// A header the operator configured (a tenant, an API version) is the operator's to set; a
-		// caller's copy of it is dropped rather than replacing it.
-		if _, operator := provider.operatorHeaders[strings.ToLower(k)]; operator {
-			continue
-		}
-		// Under SigV4 every forwarded x-amz-* header is signed with the operator's credentials, so
-		// only the operation name (X-Amz-Target) is taken from the caller: x-amz-copy-source would
-		// read objects outside the pinned bucket and x-amz-acl would publish them. The Bedrock
-		// passthrough forwards none; an operator who needs one sets it in extra_headers.
-		if provider.cfg.Auth.Type == schemas.GenericAuthAWSSigV4 && strings.HasPrefix(strings.ToLower(k), "x-amz-") && !strings.EqualFold(k, "x-amz-target") {
-			continue
+		if !internal {
+			// A header the operator configured (a tenant, an API version) is the operator's to set; a
+			// caller's copy of it is dropped rather than replacing it.
+			if _, operator := provider.operatorHeaders[strings.ToLower(k)]; operator {
+				continue
+			}
+			// Under SigV4 every forwarded x-amz-* header is signed with the operator's credentials, so
+			// only the operation name (X-Amz-Target) is taken from the caller: x-amz-copy-source would
+			// read objects outside the pinned bucket and x-amz-acl would publish them. The Bedrock
+			// passthrough forwards none; an operator who needs one sets it in extra_headers.
+			if provider.cfg.Auth.Type == schemas.GenericAuthAWSSigV4 && strings.HasPrefix(strings.ToLower(k), "x-amz-") && !strings.EqualFold(k, "x-amz-target") {
+				continue
+			}
 		}
 		httpReq.Header.Set(k, v)
 	}
@@ -307,10 +324,13 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("header %s is set under two spellings; send it once", name))
 	}
 	usageMapping, billable, route := provider.resolve(ctx, req.Method, req.Path, req.SafeHeaders)
-	if bifrostErr := provider.strictRouteError(route, req); bifrostErr != nil {
+	if bifrostErr := provider.strictRouteError(ctx, route, req); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if billable {
+	// A job accounting poll (internal, plugin pipeline skipped) is the operator's own request and
+	// is not billed, so the caller-facing body checks do not apply to it.
+	internal, _ := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool)
+	if billable && !internal {
 		if err := usageMapping.requestBodyError(req.Body); err != nil {
 			return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 		}
@@ -360,6 +380,9 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 	var usage *schemas.BifrostPassthroughUsage
 	if billable && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		usage = extractUsage(usageMapping, resp.Header.Get("Content-Type"), body, requestUnits)
+		// A route that starts a job hands the job id and its settlement snapshot to the logging
+		// plugin, which records it for the sweeper. The start call is still counted here.
+		usage.ProviderJob = route.jobHandle(resp.Header.Get("Content-Type"), body)
 	}
 
 	response := &schemas.BifrostPassthroughResponse{
@@ -393,10 +416,18 @@ func (provider *GenericProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("header %s is set under two spellings; send it once", name))
 	}
 	usageMapping, billable, route := provider.resolve(ctx, req.Method, req.Path, req.SafeHeaders)
-	if bifrostErr := provider.strictRouteError(route, req); bifrostErr != nil {
+	if bifrostErr := provider.strictRouteError(ctx, route, req); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if billable {
+	// Only the buffered relay reads the job id from the start reply; a Go SDK caller streaming a
+	// job route directly would start a job that is never billed.
+	if route != nil && route.job != nil {
+		return nil, providerUtils.NewBifrostBadRequestError("a route that starts a job is served by the buffered relay; call Passthrough")
+	}
+	// A job accounting poll (internal, plugin pipeline skipped) is the operator's own request and
+	// is not billed, so the caller-facing body checks do not apply to it.
+	internal, _ := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool)
+	if billable && !internal {
 		if err := usageMapping.requestBodyError(req.Body); err != nil {
 			return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 		}

@@ -285757,6 +285757,133 @@
           }
         },
         {
+          "name": "280.28 POST /passthrough/generic_echo_units/post with X-Amz-Target Echo.StartJob - an async job is started, counted at the flat fee, and settled by the sweeper once its poll reports SUCCEEDED (generic passthrough) - #8784",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The route with the job block reads the job id from the echoed body (json.job_id), charges the start call the",
+                  "// provider fee alone, and records a job. The sweeper polls POST /post with a JSON body naming SUCCEEDED and 7 pages, with the key that",
+                  "// started the job, reads json.pages, and writes a settlement row nested under the start row costing 7 x 0.001.",
+                  "pm.test('generic relay: job start relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkStart(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (err || (res.code !== 200 && res.code !== 404)) { pm.test('generic relay: start log read', function () { pm.expect.fail('GET /api/logs/' + reqId + ': ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); }); return; }",
+                  "    var row = res.code === 200 ? res.json() : null;",
+                  "    if (row && row.cost !== undefined && row.cost !== null) {",
+                  "      pm.test('generic relay: the start call pays the flat fee only', function () { pm.expect(row.cost, JSON.stringify({cost: row.cost})).to.be.closeTo(0.01, 1e-6); });",
+                  "      checkSettlement(0);",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkStart(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: start log row appeared', function () { pm.expect.fail('log ' + reqId + ' has no cost after 10 reads'); });",
+                  "  });",
+                  "}",
+                  "function checkSettlement(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs?parent_request_id=' + reqId + '&limit=5', method: 'GET' }, function (err, res) {",
+                  "    if (err || res.code !== 200) { pm.test('generic relay: settlement log list read', function () { pm.expect.fail('GET /api/logs?parent_request_id=' + reqId + ': ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); }); return; }",
+                  "    var rows = (res.json() && res.json().logs) ? res.json().logs : [];",
+                  "    var settled = rows.filter(function (r) { return r.cost !== undefined && r.cost !== null; });",
+                  "    if (settled.length > 0) {",
+                  "      pm.test('generic relay: the job settled once at pages x rate', function () { pm.expect(settled.length, 'one settlement row').to.eql(1); pm.expect(settled[0].cost, JSON.stringify({cost: settled[0].cost})).to.be.closeTo(0.007, 1e-6); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 90) { setTimeout(function () { checkSettlement(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: settlement row appeared', function () { pm.expect.fail('no settlement row under ' + reqId + ' after 90s: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkStart(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "Echo.StartJob"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_id\": \"job-{{$randomUUID}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_units/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_units",
+                "post"
+              ]
+            }
+          }
+        },
+        {
+          "name": "280.29 POST /passthrough/generic_echo/post with x-bf-eh-x-trace - x-bf-eh-* context headers are not applied by the generic relay; only the caller's own headers and the operator's are sent (generic passthrough) - #8787",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The generic relay forwards the caller's own headers directly, through the route match and the credential and",
+                  "// operator filters. An x-bf-eh-* copy would skip those checks (an unapproved X-Amz-Target, a replaced operator",
+                  "// header), so it is not applied: postman-echo must not see x-trace, while the plain X-Idempotency-Key arrives.",
+                  "pm.test('generic relay: request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var h = pm.response.json().headers || {};",
+                  "pm.test('generic relay: x-bf-eh-* header not applied', function () { pm.expect(h, JSON.stringify(h)).to.not.have.property('x-trace'); });",
+                  "pm.test('generic relay: plain caller header forwarded', function () { pm.expect(h['x-idempotency-key'], JSON.stringify(h)).to.eql('idem-270-29'); });",
+                  "pm.test('generic relay: configured key injected', function () { pm.expect(h['x-api-key']).to.eql('harness-dummy'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-x-trace",
+                "value": "prefixed"
+              },
+              {
+                "key": "X-Idempotency-Key",
+                "value": "idem-270-29"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"q\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo/post",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo",
+                "post"
+              ]
+            }
+          }
+        },
+        {
           "name": "280.31 POST /passthrough/generic_echo/post - hop-by-hop headers and headers the caller's Connection names are not forwarded (generic passthrough) - #8785",
           "event": [
             {

@@ -176,6 +176,7 @@ function toConfig(values: FormValues): GenericProviderConfig {
 			method: r.method,
 			path: r.path,
 			headers: pairsToHeaders(r.headers),
+			job: r.job,
 			// Stored only when it departs from the method default, so the config stays what the operator decided.
 			billable: r.billable === undefined || r.billable === genericRouteBillableByDefault(r.method) ? undefined : r.billable,
 			stream: r.stream,
@@ -912,6 +913,11 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 								/>
 							</div>
 							<RouteHeaderMatchers control={form.control} index={index} disabled={disabled} />
+							{form.watch(`routes.${index}.job`) && (
+								<p className="text-muted-foreground text-xs" data-testid={`generic-route-job-note-${index}`}>
+									Starts an async job (settled by the job accounting sweeper); edit the job block through config.json or the API.
+								</p>
+							)}
 						</div>
 					))}
 				</section>

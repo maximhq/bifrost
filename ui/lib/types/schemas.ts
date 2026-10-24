@@ -1294,6 +1294,25 @@ export const genericRouteHeaderSchema = z
 		if (!pair.name && pair.value) ctx.addIssue({ code: "custom", message: "A header matcher needs a header name", path: ["name"] });
 	});
 
+// A route's async job block is set through config.json or the API; the form carries it through
+// untouched so a save from the Passthrough tab never drops it.
+export const genericJobConfigSchema = z.object({
+	id_path: z.string(),
+	poll: z.object({
+		method: z.string().optional(),
+		path: z.string(),
+		headers: z.record(z.string(), z.string()).optional(),
+		body: z.string().optional(),
+		content_type: z.string().optional(),
+	}),
+	status_path: z.string(),
+	succeeded: z.array(z.string()),
+	failed: z.array(z.string()).optional(),
+	interval_seconds: z.number().optional(),
+	timeout_seconds: z.number().optional(),
+	usage: genericUsageConfigBaseSchema.optional(),
+});
+
 export const genericRouteConfigSchema = z.object({
 	method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
 	path: genericRouteGlob,
@@ -1301,6 +1320,7 @@ export const genericRouteConfigSchema = z.object({
 	billable: z.boolean().optional(),
 	stream: z.boolean().optional(),
 	usage: genericUsageConfigBaseSchema.optional(),
+	job: genericJobConfigSchema.optional(),
 });
 
 // The Passthrough tab edits a route's header matchers as pairs; the config keeps the record.

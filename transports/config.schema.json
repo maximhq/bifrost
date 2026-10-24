@@ -13651,7 +13651,7 @@
         },
         "detect_from_accept_header": {
           "type": "boolean",
-          "description": "Treat Accept: text/event-stream as a streaming request"
+          "description": "Treat Accept: text/event-stream as a streaming request. The Accept header is the caller's, and the streaming relay forwards a non-SSE reply unread, so on an upstream billed from its response a caller could skip response-side billing by sending it; turn on only for upstreams that stream. Routes with a job block are always buffered"
         },
         "detect_from_body": {
           "type": "boolean",
@@ -13696,12 +13696,90 @@
         },
         "usage": {
           "$ref": "#/$defs/generic_usage_config"
+        },
+        "job": {
+          "$ref": "#/$defs/generic_job_config"
         }
       },
       "required": [
         "method",
         "path"
       ],
+      "additionalProperties": false
+    },
+    "generic_job_config": {
+      "type": "object",
+      "description": "Makes the route the start of a provider-side job billed once it completes: the job id is read from the start response, the upstream is polled with the given request by the job accounting sweeper (with the key that started the job) until the status is terminal, and the terminal response is priced with the job's usage mapping against the budgets the start call was subject to. The start call itself still counts as one request and pays the route's own fee. The route must be billable",
+      "properties": {
+        "id_path": {
+          "type": "string",
+          "description": "gjson path of the job id in the start response, e.g. JobId"
+        },
+        "poll": {
+          "type": "object",
+          "description": "The request that reports where the job stands; {{job.id}} in the path, a header value or the body is replaced with the job id",
+          "properties": {
+            "method": {
+              "type": "string",
+              "pattern": "^(|[Gg][Ee][Tt]|[Pp][Oo][Ss][Tt]|[Pp][Uu][Tt]|[Pp][Aa][Tt][Cc][Hh]|[Dd][Ee][Ll][Ee][Tt][Ee]|[Hh][Ee][Aa][Dd])$",
+              "description": "Any route method, case-insensitive; empty defaults to POST"
+            },
+            "path": {
+              "type": "string",
+              "description": "Rooted path, e.g. / or /jobs/{{job.id}}"
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Literal headers to send, e.g. X-Amz-Target: Textract.GetDocumentAnalysis"
+            },
+            "body": {
+              "type": "string",
+              "description": "Literal body, e.g. {\"JobId\":\"{{job.id}}\",\"MaxResults\":1}"
+            },
+            "content_type": {
+              "type": "string",
+              "description": "Content type of the body; default application/json"
+            }
+          },
+          "required": ["path"],
+          "additionalProperties": false
+        },
+        "status_path": {
+          "type": "string",
+          "description": "gjson path of the status in the poll response, e.g. JobStatus"
+        },
+        "succeeded": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Status values that end the job with work to bill, compared case-insensitively"
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Status values that end the job at no charge"
+        },
+        "interval_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Seconds until the first poll (default 30); later polls follow the sweeper's own schedule, backing off after 20 and 40 attempts"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Stop polling after this long and record the job as unpriced (default 3600)"
+        },
+        "usage": {
+          "$ref": "#/$defs/generic_usage_config"
+        }
+      },
+      "required": ["id_path", "poll", "status_path", "succeeded"],
       "additionalProperties": false
     },
     "circuit_breaker_config": {

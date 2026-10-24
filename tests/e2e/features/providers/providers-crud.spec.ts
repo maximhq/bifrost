@@ -755,6 +755,29 @@ test.describe("Providers", () => {
                       cost_per_unit: 0,
                     },
                   },
+                  // A route that starts an async job: the tab does not render the job block,
+                  // so a save from it must hand the block back exactly as stored.
+                  {
+                    method: "POST",
+                    path: "/jobs",
+                    usage: { cost_per_request: 0.01, cost_per_unit: 0 },
+                    job: {
+                      id_path: "JobId",
+                      poll: {
+                        method: "POST",
+                        path: "/jobs/status",
+                        headers: { "X-Trace": "poll" },
+                        body: '{"JobId":"{{job.id}}"}',
+                        content_type: "application/json",
+                      },
+                      status_path: "JobStatus",
+                      succeeded: ["SUCCEEDED"],
+                      failed: ["FAILED"],
+                      interval_seconds: 10,
+                      timeout_seconds: 600,
+                      usage: { units_path: "Pages", cost_per_unit: 0.0015 },
+                    },
+                  },
                 ],
               },
             },
@@ -762,6 +785,11 @@ test.describe("Providers", () => {
         },
       );
       expect(configured.ok(), await configured.text()).toBe(true);
+      type JobRoutes = { custom_provider_config?: { generic_config?: { routes?: { job?: unknown }[] } } };
+      const storedJob = (
+        (await (await page.request.get(`/api/providers/${providerData.name}`)).json()) as JobRoutes
+      ).custom_provider_config?.generic_config?.routes?.[1]?.job;
+      expect(storedJob, "the job block is stored").toBeTruthy();
       await page.reload();
       await providersPage.selectProvider(providerData.name);
       await providerSettingsPage.selectConfigTab("generic");
@@ -821,6 +849,10 @@ test.describe("Providers", () => {
         savedCfg.custom_provider_config?.generic_config?.streaming
           ?.detect_from_accept_header,
       ).toBe(true);
+      expect(
+        (savedCfg as JobRoutes).custom_provider_config?.generic_config?.routes?.[1]?.job,
+        "an unrelated save from the tab keeps the job block unchanged",
+      ).toEqual(storedJob);
     });
 
     test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({

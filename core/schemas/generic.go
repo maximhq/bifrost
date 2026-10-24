@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"net/url"
 	"path"
 	"regexp"
 	"strings"
@@ -124,6 +125,55 @@ func GenericExtraHeaderConflict(headers map[string]SecretVar) (string, bool) {
 	return "", false
 }
 
+// GenericJobConfig makes a route the start of a provider-side job that is billed once it
+// completes, out of band: the job id is read from the start response, the upstream is polled
+// with the given request until the status is terminal, and the terminal response is priced with
+// the job's usage mapping. The start call itself still counts as one request and carries the
+// route's own fee. Settlement runs on the job accounting sweeper, with the key that started the
+// job, and charges the budgets the start call was subject to.
+type GenericJobConfig struct {
+	IDPath          string              `json:"id_path"`                    // start response path of the job id (Textract: JobId)
+	Poll            GenericJobPoll      `json:"poll"`                       // the request that reports where the job stands
+	StatusPath      string              `json:"status_path"`                // poll response path of the status (JobStatus)
+	Succeeded       []string            `json:"succeeded"`                  // statuses that end the job with work to bill
+	Failed          []string            `json:"failed,omitempty"`           // statuses that end the job at no charge
+	IntervalSeconds int                 `json:"interval_seconds,omitempty"` // seconds between polls (default 30)
+	TimeoutSeconds  int                 `json:"timeout_seconds,omitempty"`  // give up polling after this long (default 3600)
+	Usage           *GenericUsageConfig `json:"usage,omitempty"`            // mapping applied to the terminal poll response, over the route's
+}
+
+// GenericJobPoll is the request the sweeper sends to check a job. {{job.id}} in the path, a
+// header value or the body is replaced with the job id.
+type GenericJobPoll struct {
+	Method      string            `json:"method,omitempty"`       // default POST
+	Path        string            `json:"path"`                   // rooted path, may contain {{job.id}}
+	Headers     map[string]string `json:"headers,omitempty"`      // literal headers, values may contain {{job.id}}
+	Body        string            `json:"body,omitempty"`         // literal body, may contain {{job.id}}
+	ContentType string            `json:"content_type,omitempty"` // default application/json when a body is set
+}
+
+// JobIDPlaceholder is replaced with the job id in a poll request.
+const JobIDPlaceholder = "{{job.id}}"
+
+// GenericScopedJobID ties an upstream job id to the call that started it, for the job row and its
+// settlement. Some APIs let the caller choose the id and reuse it after a delete (Azure batch
+// synthesis), so the upstream id alone would make a second job land on the first job's row and
+// never be billed. startID is the start call's log id, which can be the caller's own x-request-id,
+// so it is query-escaped: a ':' in it becomes %3A, and the first ':' is always the separator.
+func GenericScopedJobID(startID, upstreamID string) string {
+	// The separator is written even with no start id, so the split below always round-trips an
+	// upstream id that itself carries ':' (an ARN).
+	return url.QueryEscape(startID) + ":" + upstreamID
+}
+
+// GenericUpstreamJobID returns the upstream part of a scoped job id, the id the poll is sent with.
+func GenericUpstreamJobID(scoped string) string {
+	if _, upstream, ok := strings.Cut(scoped, ":"); ok {
+		return upstream
+	}
+	return scoped
+}
+
 // GenericRouteConfig overrides provider defaults for one upstream operation.
 type GenericRouteConfig struct {
 	Method   string              `json:"method"`             // GET | POST | PUT | PATCH | DELETE | HEAD
@@ -132,6 +182,7 @@ type GenericRouteConfig struct {
 	Billable *bool               `json:"billable,omitempty"` // false: the call is relayed but not counted or charged
 	Stream   *bool               `json:"stream,omitempty"`   // forces the streaming or buffered handler
 	Usage    *GenericUsageConfig `json:"usage,omitempty"`    // field-by-field override of the provider usage mapping
+	Job      *GenericJobConfig   `json:"job,omitempty"`      // the call starts a job billed once it completes
 }
 
 // GenericProviderConfig configures a custom provider whose base type is Generic: a raw HTTP relay
@@ -200,8 +251,88 @@ func (c *GenericProviderConfig) Validate() error {
 		if err := route.Usage.validate(fmt.Sprintf("routes[%d].usage", i), c.Usage); err != nil {
 			return err
 		}
+		if route.Job != nil {
+			if err := route.Job.validate(fmt.Sprintf("routes[%d].job", i), route, c.Usage); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func (j *GenericJobConfig) validate(field string, route GenericRouteConfig, base *GenericUsageConfig) error {
+	if strings.TrimSpace(j.IDPath) == "" {
+		return fmt.Errorf("%s.id_path is required", field)
+	}
+	if strings.TrimSpace(j.StatusPath) == "" {
+		return fmt.Errorf("%s.status_path is required", field)
+	}
+	if len(j.Succeeded) == 0 {
+		return fmt.Errorf("%s.succeeded must name at least one status", field)
+	}
+	if j.IntervalSeconds < 0 || j.TimeoutSeconds < 0 {
+		return fmt.Errorf("%s: interval_seconds and timeout_seconds must not be negative", field)
+	}
+	if !strings.HasPrefix(j.Poll.Path, "/") {
+		return fmt.Errorf("%s.poll.path %q must start with /", field, j.Poll.Path)
+	}
+	if j.Poll.Method != "" {
+		if _, ok := genericRouteMethods[strings.ToUpper(j.Poll.Method)]; !ok {
+			return fmt.Errorf("%s.poll.method: unsupported method %q", field, j.Poll.Method)
+		}
+	}
+	for name := range j.Poll.Headers {
+		if !httpguts.ValidHeaderFieldName(name) {
+			return fmt.Errorf("%s.poll.headers: %q is not a valid header name", field, name)
+		}
+	}
+	// The start call's reply carries the job id, which only the buffered relay reads.
+	if route.Stream != nil && *route.Stream {
+		return fmt.Errorf("%s: a route that starts a job is served buffered; stream: true does not apply", field)
+	}
+	// The start call must be counted, or the job has no grant to settle against.
+	if route.Billable != nil && !*route.Billable {
+		return fmt.Errorf("%s: a route that starts a job must be billable", field)
+	}
+	if route.Billable == nil && !strings.EqualFold(route.Method, "POST") {
+		return fmt.Errorf("%s: a %s route that starts a job must set billable: true", field, strings.ToUpper(route.Method))
+	}
+	// The job's mapping inherits route over provider, field by field, so a job that sets only a
+	// rate is valid when either of them names the units path.
+	merged := &GenericUsageConfig{}
+	for _, u := range []*GenericUsageConfig{base, route.Usage} {
+		if u == nil {
+			continue
+		}
+		if u.UnitsPath != "" {
+			merged.UnitsPath = u.UnitsPath
+		}
+		if u.UnitsMeasure != "" {
+			merged.UnitsMeasure = u.UnitsMeasure
+		}
+		if u.CostPerUnit != nil {
+			merged.CostPerUnit = u.CostPerUnit
+		}
+	}
+	// The job is priced from its terminal poll response; a request-side quantity measured at start
+	// is not carried to settlement, so a job mapping that would bill one is refused.
+	var source GenericUnitsSource
+	var rate *float64
+	for _, u := range []*GenericUsageConfig{base, route.Usage, j.Usage} {
+		if u == nil {
+			continue
+		}
+		if u.UnitsSource != "" {
+			source = u.UnitsSource
+		}
+		if u.CostPerUnit != nil {
+			rate = u.CostPerUnit
+		}
+	}
+	if source == GenericUnitsFromRequest && rate != nil && *rate > 0 {
+		return fmt.Errorf("%s.usage: a job is priced from its terminal poll response, so request-side units are not billed at settlement; set units_source: response on the job", field)
+	}
+	return j.Usage.validate(field+".usage", merged)
 }
 
 func (a GenericAuthConfig) validate() error {
@@ -363,6 +494,19 @@ func (c *GenericProviderConfig) Clone() *GenericProviderConfig {
 			}
 			if route.Stream != nil {
 				out.Routes[i].Stream = Ptr(*route.Stream)
+			}
+			if route.Job != nil {
+				job := *route.Job
+				job.Succeeded = append([]string(nil), route.Job.Succeeded...)
+				job.Failed = append([]string(nil), route.Job.Failed...)
+				if route.Job.Poll.Headers != nil {
+					job.Poll.Headers = make(map[string]string, len(route.Job.Poll.Headers))
+					for k, v := range route.Job.Poll.Headers {
+						job.Poll.Headers[k] = v
+					}
+				}
+				job.Usage = route.Job.Usage.clone()
+				out.Routes[i].Job = &job
 			}
 			out.Routes[i].Usage = route.Usage.clone()
 		}

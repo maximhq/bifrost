@@ -208,10 +208,42 @@ Detection order: the matching route's `stream` flag, then `streaming.paths`, the
 | `billable` | `false` relays the call without counting or charging it (status polls, listings); `true` counts it. Unset keeps the method default: only `POST` is billable |
 | `stream` | Forces the streaming (`true`) or buffered (`false`) relay for this route |
 | `usage` | Field-by-field override of the provider `usage` mapping |
+| `job` | Makes the route the start of a provider-side job that is billed once it completes; see below |
 
 The first matching route wins, so list the specific operation before its catch-all. A request matching no route uses the provider defaults and the method default for billing, so listing every operation of an API as routes (for example from an OpenAPI import) does not start charging its polls and listings.
 
-**One path, many operations.** AWS JSON-protocol APIs (Textract, Translate, Comprehend) send every operation to `POST /` and name it in the `X-Amz-Target` header, so a route on method and path alone cannot tell them apart. Add `headers` to the route, as the Textract example above does: `AnalyzeDocument` at its own rate, result polls (`Get*`) free, job starts (`Start*`) at a flat fee, everything else at the base rate. An async job's pages are reported on every `Get*` result page, so leave those polls non-billable and charge the start, rather than billing the pages once per poll. The OpenAPI importer turns AWS path keys of the form `/#X-Amz-Target=Service.Operation` into these routes.
+**One path, many operations.** AWS JSON-protocol APIs (Textract, Translate, Comprehend) send every operation to `POST /` and name it in the `X-Amz-Target` header, so a route on method and path alone cannot tell them apart. Add `headers` to the route, as the Textract example above does: `AnalyzeDocument` at its own rate, result polls (`Get*`) free, job starts (`Start*`) at a flat fee, everything else at the base rate. The OpenAPI importer turns AWS path keys of the form `/#X-Amz-Target=Service.Operation` into these routes.
+
+### Async jobs: `routes[].job`
+
+Some operations start a job and return only an id; the billable quantity appears later, on a result the caller polls for. A route with a `job` block hands that job to Bifrost's job accounting sweeper, which polls the upstream itself and charges the job once, when it completes, against the budgets and rate limits the start call was subject to and with the key that started it. The start call still counts as one request and pays the route's own fee. The caller's own polls stay on their non-billable route.
+
+```json
+{ "method": "POST", "path": "/", "headers": { "X-Amz-Target": "Textract.StartDocumentAnalysis" },
+  "usage": { "cost_per_unit": 0 },
+  "job": {
+    "id_path": "JobId",
+    "poll": { "path": "/", "headers": { "X-Amz-Target": "Textract.GetDocumentAnalysis" },
+              "body": "{\"JobId\":\"{{job.id}}\",\"MaxResults\":1}", "content_type": "application/x-amz-json-1.1" },
+    "status_path": "JobStatus",
+    "succeeded": ["SUCCEEDED", "PARTIAL_SUCCESS"],
+    "failed": ["FAILED"],
+    "timeout_seconds": 3600,
+    "usage": { "units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.0015 }
+  } }
+```
+
+| Field | Description |
+| --- | --- |
+| `id_path` | gjson path of the job id in the start response |
+| `poll` | The request that reports the job: `method` (default `POST`), rooted `path`, literal `headers`, literal `body`, `content_type` (default `application/json`). `{{job.id}}` is replaced with the job id wherever it appears |
+| `status_path` | gjson path of the status in the poll response |
+| `succeeded`, `failed` | Status values, compared case-insensitively, that end the job with work to bill or at no charge |
+| `interval_seconds` | Seconds until the first poll (default 30). Later polls follow the sweeper's own 30-second tick, backing off to two and five minutes after 20 and 40 attempts |
+| `timeout_seconds` | Stop polling after this long (default 3600); the job is recorded as unpriced with reason `generic_job_timeout` |
+| `usage` | Mapping applied to the terminal poll response, over the route's and the provider's |
+
+How it settles: the mapping, status words and poll request are captured on the job row when the job starts, so editing the provider later does not change how a running job is billed. A terminal `succeeded` response is priced like a buffered reply (`units × cost_per_unit + cost_per_request + extracted cost`, with rounding) and written as a cost row nested under the start call's log row, with the job id, status, units and rates in its `params.job_accounting`. A `failed` status settles at zero. A poll the upstream answers with 404 or 410 parks the job as gone, a 401 or 403 as access denied, a 4xx the upstream will never accept as rejected; a 5xx or a transport error is retried. A job the caller starts and never reads is still billed, because Bifrost does the reading. Settlement is at least once with a per-job dedupe, the same guarantee batches and video jobs have.
 
 ### `strict_routes`
 

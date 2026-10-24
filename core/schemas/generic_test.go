@@ -45,6 +45,16 @@ func TestGenericProviderConfigValidate(t *testing.T) {
 		{"block size above zero", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsBlockSize: Ptr(0.0)}}, "units_block_size must be above zero"},
 		{"minimum not negative", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsMinimum: Ptr(-1.0)}}, "units_minimum must not be negative"},
 		{"rounding ok", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsPath: "Text", UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsChars, UnitsBlockSize: Ptr(100.0), UnitsMinimum: Ptr(1.0), CostPerUnit: Ptr(0.01)}}, ""},
+		{"job ok", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{IDPath: "JobId", Poll: GenericJobPoll{Path: "/", Body: `{"JobId":"{{job.id}}"}`}, StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"}, Usage: &GenericUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: Ptr(0.0015)}}}}}, ""},
+		{"job needs id path", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{Poll: GenericJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "routes[0].job.id_path"},
+		{"job needs a succeeded status", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/"}, StatusPath: "s"}}}}, "succeeded"},
+		{"job poll path rooted", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "jobs"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "poll.path"},
+		{"job measure needing a path under an inherited rate", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsMeasure: GenericUnitsBodyBytes, CostPerUnit: Ptr(0.01)}, Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}, Usage: &GenericUsageConfig{UnitsMeasure: GenericUnitsChars}}}}}, "routes[0].job.usage.units_path is required"},
+		{"job cannot bill request units", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Usage: &GenericUsageConfig{UnitsPath: "Text", UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsChars, CostPerUnit: Ptr(0.001)}, Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "request-side units are not billed at settlement"},
+		{"job route cannot stream", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Stream: Ptr(true), Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "served buffered"},
+		{"job route must be billable", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Billable: Ptr(false), Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "must be billable"},
+		{"job on a PUT needs billable true", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "PUT", Path: "/", Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "must set billable: true"},
+		{"job usage validated", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}, Usage: &GenericUsageConfig{CostPerUnit: Ptr(1.0)}}}}}, "routes[0].job.usage.units_path"},
 		{"route fee", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "GET", Path: "/x", Usage: &GenericUsageConfig{CostPerRequest: Ptr(-0.1)}}}}, "routes[0].usage.cost_per_request"},
 		{"streaming glob", &GenericProviderConfig{Streaming: &GenericStreamingConfig{Paths: []string{"v1/*"}}}, "streaming.paths[0]"},
 		{"full valid", &GenericProviderConfig{
@@ -82,6 +92,14 @@ func TestGenericProviderConfigClone(t *testing.T) {
 	*dst.Usage.CostPerRequest = 2
 	dst.Streaming.Paths[0] = "/b"
 	*dst.Routes[0].Billable = true
+	src.Routes[0].Job = &GenericJobConfig{IDPath: "id", Poll: GenericJobPoll{Path: "/", Headers: map[string]string{"X-Amz-Target": "Svc.Get"}}, StatusPath: "s", Succeeded: []string{"DONE"}, Usage: &GenericUsageConfig{CostPerUnit: Ptr(0.5)}}
+	withJob := src.Clone()
+	withJob.Routes[0].Job.Succeeded[0] = "CHANGED"
+	withJob.Routes[0].Job.Poll.Headers["X-Amz-Target"] = "Svc.Other"
+	*withJob.Routes[0].Job.Usage.CostPerUnit = 9
+	assert.Equal(t, "DONE", src.Routes[0].Job.Succeeded[0], "a clone's job block shares nothing with the source")
+	assert.Equal(t, "Svc.Get", src.Routes[0].Job.Poll.Headers["X-Amz-Target"])
+	assert.InDelta(t, 0.5, *src.Routes[0].Job.Usage.CostPerUnit, 0, "the job usage's pointer fields are copied too")
 	dst.Routes[0].Usage.CostPath = "d"
 	assert.Equal(t, "textract", src.Auth.AWS.Service)
 	assert.InDelta(t, 1.0, *src.Usage.CostPerRequest, 0)
@@ -123,4 +141,18 @@ func TestGenericUsageConfigUnitsValidation(t *testing.T) {
 	assert.Contains(t, err.Error(), "routes[0].usage.units_path is required")
 	ok(&GenericUsageConfig{CostPerUnit: Ptr(0.0)})                                                                                 // zero is "no unit pricing" and needs no path (a route waiving the provider's)
 	ok(&GenericUsageConfig{UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsBodyChars, CostPerUnit: Ptr(0.000016)}) // body_chars reads the whole body and needs no path
+}
+
+func TestGenericScopedJobID(t *testing.T) {
+	scoped := GenericScopedJobID("6f1c0b9e-2c11-4c55-9a0e-0d6a3c1f2e44", "arn:aws:textract:job/42")
+	assert.Equal(t, "6f1c0b9e-2c11-4c55-9a0e-0d6a3c1f2e44:arn:aws:textract:job/42", scoped)
+	assert.Equal(t, "arn:aws:textract:job/42", GenericUpstreamJobID(scoped), "an upstream id may itself contain ':'")
+	assert.NotEqual(t, scoped, GenericScopedJobID("a8d2f7c4-0000-4000-8000-000000000001", "arn:aws:textract:job/42"), "two starts of one upstream id are two jobs")
+	// The start id can be a caller's x-request-id, which may itself carry ':'.
+	fromCaller := GenericScopedJobID("req:1", "arn:aws:textract:job/42")
+	assert.Equal(t, "arn:aws:textract:job/42", GenericUpstreamJobID(fromCaller), "a ':' in the start id never leaks into the upstream id")
+	assert.NotEqual(t, fromCaller, GenericScopedJobID("req", "1:arn:aws:textract:job/42"), "different starts stay different rows")
+	assert.Equal(t, ":job-1", GenericScopedJobID("", "job-1"), "an empty scope still writes the separator")
+	assert.Equal(t, "arn:aws:textract:job/42", GenericUpstreamJobID(GenericScopedJobID("", "arn:aws:textract:job/42")), "an unscoped ARN round-trips")
+	assert.Equal(t, "job-1", GenericUpstreamJobID("job-1"))
 }

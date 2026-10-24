@@ -242,6 +242,26 @@ func TestUpsertProviderJobNextCheckAtTerminalHandling(t *testing.T) {
 	}
 }
 
+// A generic passthrough job's provider status is whatever word the upstream reports, so a "failed"
+// there is not a batch state: it is a terminal status the sweeper still has to settle, and a
+// settlement that hits a transient error is retried at next_check_at.
+func TestUpsertProviderJobKeepsNextCheckAtForGenericJobs(t *testing.T) {
+	store := setupBatchJobTestStore(t)
+	ctx := context.Background()
+	next := time.Now().UTC().Add(time.Hour).UTC()
+	id := tables.ProviderJobID(tables.ProviderJobKindGenericPassthrough, "textract", "log1:job1")
+	require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+		ID:               id,
+		Kind:             tables.ProviderJobKindGenericPassthrough,
+		Provider:         "textract",
+		JobID:            "log1:job1",
+		AccountingStatus: tables.ProviderJobAccountingStatusPending,
+		NextCheckAt:      &next,
+		ProviderStatus:   "failed",
+	}))
+	assert.NotNil(t, getBatchJob(t, store, id).NextCheckAt, "a generic job reporting failed is still due for settlement")
+}
+
 func TestListDueProviderJobsFiltersByDueAndStatus(t *testing.T) {
 	store := setupBatchJobTestStore(t)
 	ctx := context.Background()

@@ -893,6 +893,55 @@ func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *sche
 	}
 }
 
+// recordGenericJobLifecycle persists the coordination row for a provider-side job a generic
+// passthrough route started. The relay attached the job id and the settlement snapshot (poll
+// request, status words, usage mapping) to the call's usage; the row keeps that snapshot and the
+// grant the start call was subject to, so the sweeper can settle the job against the same
+// budgets with the same key, minutes or hours later, without the provider config in hand.
+func (p *LoggerPlugin) recordGenericJobLifecycle(entry *logstore.Log, result *schemas.BifrostResponse) {
+	if entry == nil || result == nil || p.batchStore == nil || result.PassthroughResponse == nil || result.PassthroughResponse.PassthroughUsage == nil {
+		return
+	}
+	handle := result.PassthroughResponse.PassthroughUsage.ProviderJob
+	if handle == nil || handle.ID == "" || handle.Params == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(p.ctx, jobAccountingTimeout)
+	defer cancel()
+
+	params := handle.Params
+	job := &tables.TableProviderJob{
+		Kind:             tables.ProviderJobKindGenericPassthrough,
+		Provider:         entry.Provider,
+		JobID:            schemas.GenericScopedJobID(entry.ID, handle.ID),
+		Model:            entry.Model,
+		Params:           &params,
+		ProviderStatus:   "started",
+		AccountingStatus: tables.ProviderJobAccountingStatusPending,
+		SelectedKeyID:    entry.SelectedKeyID,
+		VirtualKeyID:     entry.VirtualKeyID,
+		UserID:           entry.UserID,
+		TeamID:           entry.TeamID,
+		CustomerID:       entry.CustomerID,
+		BudgetIDs:        stringSlicePtr(entry.BudgetIDsParsed),
+		RateLimitIDs:     stringSlicePtr(entry.RateLimitIDsParsed),
+	}
+	job.ID = tables.ProviderJobID(tables.ProviderJobKindGenericPassthrough, job.Provider, job.JobID)
+	if entry.ID != "" {
+		sourceLogID := entry.ID
+		job.SourceLogID = &sourceLogID
+	}
+	interval := handle.IntervalSeconds
+	if interval <= 0 {
+		interval = 30
+	}
+	next := time.Now().UTC().Add(time.Duration(interval) * time.Second)
+	job.NextCheckAt = &next
+	if err := p.batchStore.UpsertProviderJob(ctx, job); err != nil {
+		p.logger.Warn("failed to record generic passthrough job for provider=%s job_id=%s: %v", job.Provider, job.JobID, err)
+	}
+}
+
 // videoDimensionsFromEntryParams reads the pricing-relevant request parameters off
 // the log entry. The parameters arrive as the typed struct the request carried, but
 // a rehydrated entry can present them as a decoded map, so both shapes are handled.
@@ -1317,6 +1366,7 @@ type LoggerPlugin struct {
 	batchCancel                  context.CancelFunc             // Cancels batchCtx
 	batchSweeperCancel           context.CancelFunc             // Cancels the batch accounting sweeper, when enabled
 	videoSweeperCancel           context.CancelFunc             // Cancels the video accounting sweeper, when enabled
+	genericJobSweeperCancel      context.CancelFunc             // Cancels the generic passthrough job accounting sweeper, when enabled
 	batchWriterDone              chan struct{}                  // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
 	recoveredBatch               []*writeQueueEntry             // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
 	userAgentMappings            atomic.Value                   // []compiledUserAgentMapping, read from request hot paths
@@ -1722,6 +1772,47 @@ func (p *LoggerPlugin) StartVideoAccountingSweeper(retriever jobaccounting.Video
 		Logger:    p.logger,
 	})
 	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		sweeper.Run(ctx)
+	}()
+	return cancel
+}
+
+// StartGenericJobAccountingSweeper starts the sweeper that settles provider-side jobs generic
+// passthrough routes started. Each row carries its own poll request and pricing, so one sweeper
+// serves every generic provider.
+func (p *LoggerPlugin) StartGenericJobAccountingSweeper(poller jobaccounting.GenericJobPoller, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
+	if poller == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
+		if p.logger != nil {
+			p.logger.Warn("generic job accounting sweeper not started: missing poller, store, job store, or pricing manager")
+		}
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(p.ctx)
+	p.mu.Lock()
+	if p.closed.Load() {
+		p.mu.Unlock()
+		cancel()
+		if p.logger != nil {
+			p.logger.Warn("generic job accounting sweeper not started: logging plugin is shutting down")
+		}
+		return func() {}
+	}
+	if p.genericJobSweeperCancel != nil {
+		p.genericJobSweeperCancel()
+	}
+	p.genericJobSweeperCancel = cancel
+	usageReporter := p.batchUsageReporter
+	// Joined while the lock is held, so a Cleanup that takes the lock next always waits for it.
+	p.wg.Add(1)
+	p.mu.Unlock()
+	sweeper := jobaccounting.NewGenericJobSweeper(p.batchStore, p.store, p.pricingManager, poller, p, usageReporter, jobaccounting.SweeperConfig{
+		Interval:  interval,
+		ClaimedBy: p.batchRunnerID("generic-job-sweeper"),
+		KVStore:   kvStore,
+		Logger:    p.logger,
+	})
 	go func() {
 		defer p.wg.Done()
 		sweeper.Run(ctx)
@@ -2574,6 +2665,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if bifrostErr == nil && isVideoJobRequestType(requestType) {
 		p.recordVideoJobLifecycle(entry, result, requestType)
 	}
+	if bifrostErr == nil && (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) {
+		p.recordGenericJobLifecycle(entry, result)
+	}
 
 	// Calculate cost
 	var cacheMetadata *schemas.BifrostCacheMetadata
@@ -2708,10 +2802,14 @@ func (p *LoggerPlugin) Cleanup() error {
 			p.batchSweeperCancel()
 			p.batchSweeperCancel = nil
 		}
-		// Both sweepers hold a wg slot; leaving this one running would hang wg.Wait().
+		// Every sweeper holds a wg slot; leaving one running would hang wg.Wait().
 		if p.videoSweeperCancel != nil {
 			p.videoSweeperCancel()
 			p.videoSweeperCancel = nil
+		}
+		if p.genericJobSweeperCancel != nil {
+			p.genericJobSweeperCancel()
+			p.genericJobSweeperCancel = nil
 		}
 		p.mu.Unlock()
 		// After closed is set, so no new row can be held behind this pass, and
