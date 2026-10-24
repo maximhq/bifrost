@@ -260,7 +260,7 @@ bifrost:
 |-------|-------------|
 | `expires_at` | RFC3339 expiry. Once passed, requests with the key are rejected |
 | `delete_after_expire` | Delete the key once `expires_at` passes. Omit to follow `bifrost.client.deleteExpiredVirtualKeys` (default `false`); `true` or `false` overrides it for this key |
-| `disable_content_logging` | Per-key override of `bifrost.client.disableContentLogging`. Omit to inherit; `false` forces content into the log store even when the client setting is `true` |
+| `disable_content_logging` | Per-key override of `bifrost.client.disableContentLogging`. Omit to inherit; `false` forces content into the log store even when the client setting is `true`. A project's own `disable_content_logging` overrides it for requests scoped to that project |
 | `business_unit_id` | Owning business unit. Mutually exclusive with `team_id` and `customer_id` |
 
 To delete expired keys globally, set `bifrost.client.deleteExpiredVirtualKeys: true` (renders into `client.delete_expired_virtual_keys`). A daily job then removes every expired key except those with `delete_after_expire: false`.

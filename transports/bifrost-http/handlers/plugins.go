@@ -394,6 +394,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "plugin.created", "plugin", plugin.Name, plugin.Name, nil, h.auditPlugin(plugin))
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, map[string]any{
 		"message": "Plugin created successfully",
@@ -444,6 +445,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		}
 		missing = true
 	}
+	before := h.auditPlugin(existingPlugin)
 
 	// Unmarshalling the request body
 	var request UpdatePluginRequest
@@ -555,6 +557,10 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve plugin")
 		return
 	}
+	auditEvent := "plugin.updated"
+	if missing {
+		auditEvent = "plugin.created"
+	}
 	// We reload the plugin if its enabled, otherwise we stop it
 	if request.Enabled {
 		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Path, mergedConfig, request.Placement, request.Order); err != nil {
@@ -567,6 +573,8 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		ctx.SetUserValue(PluginDisabledKey, true)
 		if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {
 			if !errors.Is(err, plugins.ErrPluginNotFound) {
+				// The row is committed, so record the change even though the runtime stop failed.
+				lib.RecordAuditChange(ctx, auditEvent, "plugin", name, name, before, h.auditPlugin(plugin))
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to stop: %v", err))
 				return
 			}
@@ -574,6 +582,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	lib.RecordAuditChange(ctx, auditEvent, "plugin", name, name, before, h.auditPlugin(plugin))
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Plugin updated successfully",
 		"plugin":  h.buildPluginResponse(ctx, plugin),
@@ -643,6 +652,8 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 	}
 	defer h.lockPlugin(name)()
 
+	existingPlugin, _ := h.configStore.GetPlugin(ctx, name)
+	before := h.auditPlugin(existingPlugin)
 	if err := h.configStore.DeletePlugin(ctx, name); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found")
@@ -655,10 +666,13 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 
 	if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {
 		if !errors.Is(err, plugins.ErrPluginNotFound) {
+			// The row is already gone, so the change is real even though the runtime stop failed.
+			lib.RecordAuditChange(ctx, "plugin.deleted", "plugin", name, name, before, nil)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin deleted in database but failed to stop: %v", err))
 			return
 		}
 	}
+	lib.RecordAuditChange(ctx, "plugin.deleted", "plugin", name, name, before, nil)
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Plugin deleted successfully",
 	})

@@ -536,6 +536,26 @@ Project:
         When true, grants access to every provider, including ones without a
         provider_configs entry and providers added later. Listed providers keep
         their own model, key, budget, and rate-limit rules.
+    disable_content_logging:
+      type: boolean
+      nullable: true
+      description: >-
+        The project's own content-logging decision for requests scoped to it.
+        Absent or null inherits what the request's virtual key decides, or
+        client.disable_content_logging when the key has no setting or the
+        request has no key. A value overrides the virtual key's in both
+        directions. true keeps request and response content out of the log
+        store and out of observability connector export for the project's
+        traffic. false forces content into the log store even when the virtual
+        key or client setting turns it off, and lifts a virtual key's connector
+        stripping; each connector then follows its own disable_content_logging.
+        When client.allow_per_request_content_storage_override is on, the
+        x-bf-disable-content-logging request header still takes precedence over
+        this value for the log store. When content logging ends up disabled for
+        a request, the log row is still written without content; with
+        client.retain_content_in_object_storage on and an object-storage-backed
+        log store, the full payload is then kept there as hidden content that
+        the API and UI never serve.
     budgets:
       type: array
       nullable: true
@@ -614,6 +634,23 @@ CreateProjectRequest:
       type: boolean
       default: false
       description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.
+    disable_content_logging:
+      type: boolean
+      nullable: true
+      description: >-
+        The project's own content-logging decision. Omit or set null to inherit
+        what the request's virtual key decides (or the client setting). true
+        keeps content out of the log store and out of observability connector
+        export for the project's traffic; false forces content into the log
+        store and never loosens a connector's own disable_content_logging.
+        Either value overrides the virtual key's. When
+        client.allow_per_request_content_storage_override is on, the
+        x-bf-disable-content-logging request header still takes precedence over
+        this value for the log store. When content logging ends up disabled for
+        a request, the log row is still written without content; with
+        client.retain_content_in_object_storage on and an object-storage-backed
+        log store, the full payload is then kept there as hidden content that
+        the API and UI never serve.
     budgets:
       type: array
       items:
@@ -638,9 +675,10 @@ UpdateProjectRequest:
   type: object
   description: >-
     Read-then-patch. A field this body omits is left as stored. For
-    `description`, `expires_at`, `rate_limit`, `budgets`, `provider_configs`,
-    `mcp_configs` and `virtual_mcps`, an explicit `null` clears what is stored,
-    and for the four list fields that means deleting every stored child. The
+    `description`, `expires_at`, `disable_content_logging`, `rate_limit`,
+    `budgets`, `provider_configs`, `mcp_configs` and `virtual_mcps`, an explicit
+    `null` clears what is stored, and for the four list fields that means
+    deleting every stored child. The
     remaining fields cannot be cleared: `null` reads the same as omitted. Child
     lists are matched to their stored rows by `id`, so restate the ids you read;
     a stored child the body does not name is deleted. A `members` field is
@@ -670,6 +708,23 @@ UpdateProjectRequest:
     allow_all_providers:
       type: boolean
       description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules. Omit to leave unchanged.
+    disable_content_logging:
+      type: boolean
+      nullable: true
+      description: >-
+        Tri-state. Omit to leave the current decision unchanged, null to clear
+        it back to inheriting the virtual key's decision (or the client
+        setting), true to keep content out of the log store and out of
+        observability connector export, false to force content into the log
+        store (it never loosens a connector's own disable_content_logging).
+        Either value overrides the virtual key's. When
+        client.allow_per_request_content_storage_override is on, the
+        x-bf-disable-content-logging request header still takes precedence over
+        this value for the log store. When content logging ends up disabled for
+        a request, the log row is still written without content; with
+        client.retain_content_in_object_storage on and an object-storage-backed
+        log store, the full payload is then kept there as hidden content that
+        the API and UI never serve.
     budgets:
       type: array
       nullable: true

@@ -204,6 +204,11 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		return openaiReq
 	case schemas.Vertex:
 		openaiReq.filterOpenAISpecificParameters(caps)
+		// A custom container's OpenAI contract is independent of the model name.
+		// Publisher-specific Mistral/MaaS rewrites do not apply to these endpoints.
+		if schemas.GetVertexEndpoint(ctx) != nil {
+			return openaiReq
+		}
 
 		// Apply Mistral-specific transformations for Vertex Mistral models
 		if schemas.IsMistralModel(bifrostReq.Model) {

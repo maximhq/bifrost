@@ -213,9 +213,58 @@ type AzureAliasCfg struct {
 // here only so Go code that constructs VertexAliasCfg directly keeps compiling;
 // the Vertex resolver reads AliasConfig.ProjectID first and falls back to this.
 type VertexAliasCfg struct {
-	ProjectID         *SecretVar `json:"-"` // superseded by AliasConfig.ProjectID; not (de)serialized to avoid colliding with the top-level project_id
-	ProjectNumber     *SecretVar `json:"project_number,omitempty"`
-	ForceSingleRegion *bool      `json:"force_single_region,omitempty"`
+	ProjectID         *SecretVar      `json:"-"` // superseded by AliasConfig.ProjectID; not (de)serialized to avoid colliding with the top-level project_id
+	ProjectNumber     *SecretVar      `json:"project_number,omitempty"`
+	ForceSingleRegion *bool           `json:"force_single_region,omitempty"`
+	VertexEndpoint    *VertexEndpoint `json:"vertex_endpoint,omitempty"`
+}
+
+// VertexEndpoint routes an alias to a custom Vertex endpoint. Format is the body
+// the deployment accepts and Method the Vertex route that carries it, so the wire
+// shape never depends on the model name. AliasConfig.ModelID is the served model
+// name, not the endpoint ID. An omitted Method uses the format's default (raw
+// prediction for openai_chat). Project and region inherit from the key.
+type VertexEndpoint struct {
+	EndpointID string               `json:"endpoint_id"`
+	Format     VertexEndpointFormat `json:"format"`
+	Method     VertexEndpointMethod `json:"method,omitempty"`
+}
+
+type VertexEndpointFormat string
+
+const (
+	VertexEndpointOpenAIChat VertexEndpointFormat = "openai_chat"
+)
+
+type VertexEndpointMethod string
+
+const (
+	VertexEndpointRawPredict      VertexEndpointMethod = "raw_predict"
+	VertexEndpointChatCompletions VertexEndpointMethod = "chat_completions"
+)
+
+// Validate rejects unknown formats, methods the format cannot use, and endpoint
+// IDs that could alter the URL.
+func (e *VertexEndpoint) Validate() error {
+	if e == nil {
+		return nil
+	}
+	if e.EndpointID == "" || strings.IndexFunc(e.EndpointID, func(c rune) bool {
+		return !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-')
+	}) >= 0 {
+		return fmt.Errorf("vertex_endpoint.endpoint_id must contain only letters, digits, underscores or hyphens")
+	}
+	switch e.Format {
+	case VertexEndpointOpenAIChat:
+		switch e.Method {
+		case "", VertexEndpointRawPredict, VertexEndpointChatCompletions:
+			return nil
+		default:
+			return fmt.Errorf("invalid vertex_endpoint.method %q for format %q: expected raw_predict or chat_completions", e.Method, e.Format)
+		}
+	default:
+		return fmt.Errorf("invalid vertex_endpoint.format %q: expected openai_chat", e.Format)
+	}
 }
 
 // BedrockAliasCfg holds Bedrock-specific overrides that apply to a single alias.
@@ -270,6 +319,10 @@ func (ac AliasConfig) Redacted() AliasConfig {
 		// MarshalJSON promotes the deprecated ProjectID to the shared field.
 		vertex.ProjectID = vertex.ProjectID.RedactedIfSecret()
 		vertex.ProjectNumber = vertex.ProjectNumber.RedactedIfSecret()
+		if vertex.VertexEndpoint != nil {
+			endpoint := *vertex.VertexEndpoint
+			vertex.VertexEndpoint = &endpoint
+		}
 		ac.VertexAliasCfg = &vertex
 	}
 	if ac.BedrockAliasCfg != nil {
@@ -366,6 +419,11 @@ func (ka KeyAliases) Validate(providerKey ModelProvider) error {
 		if ac.VertexAliasCfg != nil && providerKey != Vertex {
 			return fmt.Errorf("alias %q: vertex sub-config is only valid on Vertex keys (got provider %q)", from, providerKey)
 		}
+		if ac.VertexAliasCfg != nil {
+			if err := ac.VertexEndpoint.Validate(); err != nil {
+				return fmt.Errorf("alias %q: %w", from, err)
+			}
+		}
 		if ac.BedrockAliasCfg != nil && providerKey != Bedrock {
 			return fmt.Errorf("alias %q: bedrock sub-config is only valid on Bedrock keys (got provider %q)", from, providerKey)
 		}
@@ -424,6 +482,15 @@ func GetResolvedAlias(ctx *BifrostContext) *ResolvedAlias {
 	}
 	ra, _ := v.(*ResolvedAlias)
 	return ra
+}
+
+// GetVertexEndpoint returns the explicit serving configuration for this
+// attempt. It describes the wire format independently of the underlying family.
+func GetVertexEndpoint(ctx *BifrostContext) *VertexEndpoint {
+	if ra := GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.VertexAliasCfg != nil {
+		return ra.Config.VertexEndpoint
+	}
+	return nil
 }
 
 // ResolveFamily returns the model family for the current attempt, walking

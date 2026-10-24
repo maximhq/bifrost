@@ -311,6 +311,92 @@ func TestChromemStore_Pagination(t *testing.T) {
 	assert.Len(t, results, 4, "an oversized limit returns the remainder, not a panic")
 }
 
+// A paging read hands back the stored vectors only when it is asked to, the
+// same opt-in the Weaviate backend honours: a listing that wants ids must not
+// carry a vector per row, and a caller that needs them must get what was
+// stored.
+func TestChromemStore_GetAllIncludesVectorsOnRequest(t *testing.T) {
+	ts := NewChromemTestSetup(t)
+	defer ts.Cleanup(t)
+
+	stored := map[string][]float32{}
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("vector-doc-%d", i)
+		embedding := make([]float32, ChromemTestDimension)
+		embedding[i] = 1
+		stored[id] = append([]float32(nil), embedding...)
+		require.NoError(t, ts.Store.Add(ts.ctx, ChromemTestNamespace, id, embedding, map[string]interface{}{"key": id}))
+	}
+
+	plain, _, err := ts.Store.GetAll(ts.ctx, ChromemTestNamespace, nil, nil, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, plain, 3)
+	for _, result := range plain {
+		assert.Nil(t, result.Vector, "vectors are opt-in")
+	}
+
+	withVectors, _, err := ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, withVectors, 3)
+	for _, result := range withVectors {
+		assert.Equal(t, stored[result.ID], result.Vector)
+	}
+
+	// A caller that writes into a returned vector must not reach the stored
+	// embedding.
+	for _, result := range withVectors {
+		for index := range result.Vector {
+			result.Vector[index] = 42
+		}
+	}
+	again, _, err := ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, again, 3)
+	for _, result := range again {
+		assert.Equal(t, stored[result.ID], result.Vector, "a returned vector aliases the stored embedding")
+	}
+
+	// Vectors are copied per page, so a page reached by cursor is copied too,
+	// and the page cannot be resliced into the uncopied rows past it.
+	first, cursor, err := ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, nil, 1)
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+	require.NotNil(t, cursor)
+	assert.Equal(t, 1, cap(first), "the page's capacity ends at the page")
+	second, _, err := ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, cursor, 1)
+	require.NoError(t, err)
+	require.Len(t, second, 1)
+	for index := range second[0].Vector {
+		second[0].Vector[index] = 42
+	}
+	again, _, err = ts.Store.GetAll(WithIncludeVectors(ts.ctx), ChromemTestNamespace, nil, nil, nil, 10)
+	require.NoError(t, err)
+	for _, result := range again {
+		assert.Equal(t, stored[result.ID], result.Vector, "a vector from a later page aliases the stored embedding")
+	}
+}
+
+// BenchmarkChromemStore_GetAllPageWithVectors pages a large namespace with
+// vectors, the shape of the topic clustering run: only the page's vectors
+// should be copied, not every matching document's.
+func BenchmarkChromemStore_GetAllPageWithVectors(b *testing.B) {
+	ctx := context.Background()
+	store, err := newChromemStore(ctx, &ChromemConfig{}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(b, err)
+	require.NoError(b, store.CreateNamespace(ctx, ChromemTestNamespace, ChromemTestDimension, nil))
+	for i := 0; i < 2000; i++ {
+		require.NoError(b, store.Add(ctx, ChromemTestNamespace, fmt.Sprintf("doc-%05d", i), generateTestEmbedding(ChromemTestDimension), map[string]interface{}{"key": i}))
+	}
+	vectorCtx := WithIncludeVectors(ctx)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, _, err := store.GetAll(vectorCtx, ChromemTestNamespace, nil, nil, nil, 100); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestChromemStore_DimensionHandling(t *testing.T) {
 	ts := NewChromemTestSetup(t)
 	defer ts.Cleanup(t)

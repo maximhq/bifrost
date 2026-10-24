@@ -80,7 +80,8 @@ export default function VirtualKeyDetailSheet({
 	hasPrev = false,
 	hasNext = false,
 }: VirtualKeyDetailSheetProps) {
-	const { assignedUsers, isManagedByProfile, managingProfile, displayBudgets, displayRateLimit } = useVirtualKeyUsage(virtualKey);
+	const { assignedUsers, isManagedByProfile, isOwnerGoverned, managingProfile, displayBudgets, displayRateLimit } =
+		useVirtualKeyUsage(virtualKey);
 	const canUpdateVirtualKeys = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const deletesAfterExpire = virtualKey.delete_after_expire ?? coreConfig?.client_config?.delete_expired_virtual_keys ?? false;
@@ -164,7 +165,11 @@ export default function VirtualKeyDetailSheet({
 				</SheetHeader>
 
 				<div className="space-y-6 px-4 py-4 md:px-8">
-					<ManagedVirtualKeyNotice isManagedByProfile={isManagedByProfile} managingProfile={managingProfile} />
+					<ManagedVirtualKeyNotice
+						isManagedByProfile={isManagedByProfile}
+						managingProfile={managingProfile}
+						ownerGoverned={isOwnerGoverned}
+					/>
 
 					{assignedUsers.length > 0 ? (
 						<div className="space-y-1">

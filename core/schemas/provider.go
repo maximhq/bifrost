@@ -653,6 +653,7 @@ type ProviderConfig struct {
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
 	PromptCache             *PromptCacheConfig    `json:"prompt_cache,omitempty"`
 	InjectedTools           []InjectedTool        `json:"injected_tools,omitempty"`
+	Passthrough             *PassthroughPolicy    `json:"passthrough,omitempty"` // Routes the HTTP passthrough endpoints may forward; nil forwards every route
 }
 
 // PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for
