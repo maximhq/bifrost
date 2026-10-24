@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"crypto/rsa"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -42,6 +43,30 @@ type jwtMCPClaims struct {
 	jwt.RegisteredClaims
 	BfMode string `json:"bf_mode"` // user | vk | session
 	Scope  string `json:"scope"`
+	// extra holds the claims beyond these, such as an extension grant's own.
+	extra map[string]any
+}
+
+// UnmarshalJSON decodes the known claims and keeps every other one in extra.
+func (c *jwtMCPClaims) UnmarshalJSON(data []byte) error {
+	type known jwtMCPClaims
+	if err := json.Unmarshal(data, (*known)(c)); err != nil {
+		return err
+	}
+	var all map[string]any
+	if err := json.Unmarshal(data, &all); err != nil {
+		return err
+	}
+	for _, name := range []string{"iss", "sub", "aud", "exp", "nbf", "iat", "jti", "bf_mode", "scope"} {
+		delete(all, name)
+	}
+	c.extra = all
+	return nil
+}
+
+// public returns the claims an MCPTokenValidator or VerifyBifrostToken caller sees.
+func (c *jwtMCPClaims) public() MCPTokenClaims {
+	return MCPTokenClaims{Mode: c.BfMode, Subject: c.Subject, Scope: c.Scope, Extra: c.extra}
 }
 
 // extractBearerJWT returns the raw JWT string from an Authorization: Bearer
@@ -65,12 +90,18 @@ func extractBearerJWT(ctx *fasthttp.RequestCtx) string {
 	return token
 }
 
-// verifyMCPJWT parses and verifies a Bifrost-issued JWT for the /mcp endpoint.
-// It validates the RS256 signature using the supplied signing key, checks the
-// audience matches the canonical /mcp resource URL (RFC 8707), and returns
-// the verified claims. The caller provides the signing key (typically from a
-// process-lifetime cache) so verification need not read it per request.
+// verifyMCPJWT parses and verifies a Bifrost-issued JWT for the /mcp endpoint:
+// its audience must be the canonical /mcp resource URL (RFC 8707).
 func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, signingKey *configtables.OAuth2SigningKey) (*jwtMCPClaims, error) {
+	return verifyBifrostJWT(ctx, rawToken, store, signingKey, oauth2MCPResourceURL(ctx, store))
+}
+
+// verifyBifrostJWT parses and verifies a Bifrost-issued JWT. It validates the
+// RS256 signature using the supplied signing key, checks the audience includes
+// resource (RFC 8707), and returns the verified claims. The caller provides the
+// signing key (typically from a process-lifetime cache) so verification need
+// not read it per request.
+func verifyBifrostJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, signingKey *configtables.OAuth2SigningKey, resource string) (*jwtMCPClaims, error) {
 	if signingKey == nil {
 		return nil, fmt.Errorf("signing key unavailable")
 	}
@@ -113,7 +144,6 @@ func verifyMCPJWT(ctx *fasthttp.RequestCtx, rawToken string, store *lib.Config, 
 	}
 
 	// RFC 8707: the token must have been issued for this specific resource.
-	resource := oauth2MCPResourceURL(ctx, store)
 	aud, err := claims.GetAudience()
 	if err != nil || !slices.Contains(aud, resource) {
 		return nil, fmt.Errorf("token audience does not match this resource")

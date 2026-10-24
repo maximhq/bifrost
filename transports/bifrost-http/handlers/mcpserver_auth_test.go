@@ -563,3 +563,59 @@ func TestAdmit(t *testing.T) {
 		assert.Nil(t, admitter.seen)
 	})
 }
+
+// TestAuthenticate_TokenValidator checks a token validator sees a verified
+// token's claims, extras included, and can refuse it; tokens it accepts are
+// admitted as before.
+func TestAuthenticate_TokenValidator(t *testing.T) {
+	SetLogger(&mockLogger{})
+	key, priv := newTestSigningKey(t)
+	token := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
+		c["bf_mode"] = string(schemas.MCPAuthModeUser)
+		c["sub"] = "user-1"
+		c["bf_test"] = "client-1"
+	})
+	store := &mockOAuth2Store{signingKey: key}
+	h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
+	var seen MCPTokenClaims
+	refuse := false
+	h.SetTokenValidator(func(_ context.Context, claims MCPTokenClaims) error {
+		seen = claims
+		if refuse {
+			return assert.AnError
+		}
+		return nil
+	})
+
+	ctx, bifrostCtx := newRequestCtx()
+	ctx.Request.Header.Set("Authorization", "Bearer "+token)
+	require.NoError(t, h.authenticate(ctx, bifrostCtx))
+	assert.Equal(t, MCPTokenClaims{Mode: "user", Subject: "user-1", Scope: "mcp", Extra: map[string]any{"bf_test": "client-1"}}, seen)
+	assert.Equal(t, "user-1", stringFromCtx(bifrostCtx, schemas.BifrostContextKeyUserID))
+
+	refuse = true
+	ctx, bifrostCtx = newRequestCtx()
+	ctx.Request.Header.Set("Authorization", "Bearer "+token)
+	require.ErrorIs(t, h.authenticate(ctx, bifrostCtx), assert.AnError)
+	assert.Empty(t, stringFromCtx(bifrostCtx, schemas.BifrostContextKeyUserID))
+}
+
+// TestVerifyBifrostToken checks the exported verifier enforces the audience it
+// is given: a /mcp-only token does not verify for the gateway audience.
+func TestVerifyBifrostToken(t *testing.T) {
+	SetLogger(&mockLogger{})
+	key, priv := newTestSigningKey(t)
+	store := &mockOAuth2Store{signingKey: key}
+	h := newTestMCPHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
+	gateway := h.GatewayAudience(bgCtx())
+	both := mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) { c["aud"] = jwt.ClaimStrings{testMCPResource, gateway} })
+	mcpOnly := mintTestToken(t, priv, key.KID, nil)
+
+	claims, err := h.VerifyBifrostToken(bgCtx(), both, gateway)
+	require.NoError(t, err)
+	assert.Equal(t, "vk-123", claims.Subject)
+	_, err = h.VerifyBifrostToken(bgCtx(), mcpOnly, gateway)
+	require.Error(t, err)
+	_, err = h.VerifyBifrostToken(bgCtx(), "not-a-jwt", gateway)
+	require.Error(t, err)
+}

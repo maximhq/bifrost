@@ -206,6 +206,7 @@ export const baseApi = createApi({
 		"ComplexityAnalyzerConfig",
 		"Skills",
 		"OAuth2Grants",
+		"IDJAGClients",
 		"UserAgentMappings",
 		"Branding",
 		"Devices",

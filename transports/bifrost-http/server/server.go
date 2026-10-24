@@ -286,6 +286,9 @@ type BifrostHTTPServer struct {
 	// is available, otherwise left nil (user-mode requests fall back to the
 	// global server).
 	OAuth2IdentityResolver handlers.OAuth2IdentityResolver
+	// OAuth2Extensions adds grant types and discovery metadata to Bifrost's OAuth2
+	// authorization server. Nil means none; set before RegisterAPIRoutes.
+	OAuth2Extensions handlers.OAuth2Extensions
 	// AgentGatewayIdentityResolver validates pre-authenticated Authorization
 	// credentials for A2A HTTP and gRPC ingress. Optional; OSS leaves it nil.
 	AgentGatewayIdentityResolver handlers.AgentGatewayIdentityResolver
@@ -2976,6 +2979,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Going ahead with API handlers
 	oauth2DiscoveryHandler := handlers.NewOAuth2DiscoveryHandler(s.Config)
 	oauth2IssuanceHandler := handlers.NewOAuth2IssuanceHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
+	if s.OAuth2Extensions != nil {
+		oauth2DiscoveryHandler.SetExtensions(s.OAuth2Extensions)
+		oauth2IssuanceHandler.SetExtensions(s.OAuth2Extensions)
+	}
 	oauth2SessionsHandler := handlers.NewOAuth2SessionsHandler(s.Config)
 	oauth2ConsentHandler := handlers.NewOAuth2ConsentHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
 
