@@ -437,6 +437,20 @@ func attemptModel(extra schemas.BifrostResponseExtraFields) string {
 	return extra.OriginalModelRequested //nolint:staticcheck // SA1019
 }
 
+// streamEmbedsReasoningItemID reports whether a streamed reasoning item's id is
+// smuggled into its signature/data (see providerUtils.ShouldEmbedReasoningItemID).
+// Every stream call site goes through here so the halves of one item agree (see
+// attemptProvider).
+//
+// A stream bridged from Chat Completions (ConvertedRequestType) is excluded: Chat
+// Completions has no reasoning item, so the chat-to-responses stream converter mints
+// the id itself and never carries an encrypted token, and embedding it would hand the
+// client a signature no upstream issued.
+func streamEmbedsReasoningItemID(ctx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) bool {
+	return extra.ConvertedRequestType != schemas.ChatCompletionRequest &&
+		providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(extra), extra.RoutingInfo.Model)
+}
+
 // markReasoningPayloadSent records that key's encrypted reasoning payload already
 // reached the client, so output_item.done does not emit it a second time.
 func (s *anthropicToResponsesStreamState) markReasoningPayloadSent(key string) {
@@ -502,7 +516,7 @@ func upgradeLateSummaryToThinkingBlock(
 	// client replaying this turn folds the thinking half back together with the
 	// redacted half (see reasoningIndexByID in the ingress converter).
 	signature := ""
-	if providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model) {
+	if streamEmbedsReasoningItemID(ctx, bifrostResp.ExtraFields) {
 		signature = providerUtils.EmbedReasoningItemID(bifrostResp.ItemID, "")
 	}
 	events = append(events, &AnthropicStreamEvent{
@@ -3293,7 +3307,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 						// embedID gates smuggling the real OpenAI reasoning item id into
 						// signature/data (see providerUtils.ShouldEmbedReasoningItemID and
 						// convertBifrostReasoningToAnthropicThinking for why).
-						embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model)
+						embedID := streamEmbedsReasoningItemID(ctx, bifrostResp.ExtraFields)
 						encrypted, hasSummary := reasoningPayloadAndSummary(bifrostResp.Item)
 						// Redacted-only reasoning (encrypted payload, nothing visible) is an
 						// atomic block: the payload rides in `data` on this very frame and no
@@ -3339,7 +3353,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 							// not dropped -- output_item.done splits it into its own
 							// redacted_thinking block, which is why isReasoningItem has to route
 							// this shape there as well.
-							embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model)
+							embedID := streamEmbedsReasoningItemID(ctx, bifrostResp.ExtraFields)
 							encrypted, hasSummary := reasoningPayloadAndSummary(bifrostResp.Item)
 							if encrypted != "" && !hasSummary {
 								contentBlock.Type = AnthropicContentBlockTypeRedactedThinking
@@ -3875,7 +3889,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			// that was closed. Emitting it again would duplicate the reasoning state.
 			if encrypted != "" && encrypted != signatureSent && openedAsThinking && !state.reasoningPayloadSent(key) {
 				data := encrypted
-				if providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model) {
+				if streamEmbedsReasoningItemID(ctx, bifrostResp.ExtraFields) {
 					data = providerUtils.EmbedReasoningItemID(bifrostResp.Item.ID, data)
 				}
 				redactedIdx := state.allocBlockIndex("")
@@ -5235,8 +5249,9 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	// Convert output messages to Anthropic content blocks using the new conversion method
 	var contentBlocks []AnthropicContentBlock
 	if bifrostResp.Output != nil {
-		anthropicMessages, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false,
-			schemas.ResolveModelCaps(attemptProvider(bifrostResp.ExtraFields), bifrostResp.Model))
+		anthropicMessages, _ := convertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false,
+			schemas.ResolveModelCaps(attemptProvider(bifrostResp.ExtraFields), bifrostResp.Model),
+			bifrostResp.ExtraFields.ConvertedRequestType == schemas.ChatCompletionRequest)
 		// Extract content blocks from the converted messages
 		for _, msg := range anthropicMessages {
 			if msg.Content.ContentBlocks != nil {
@@ -5367,6 +5382,13 @@ func convertAnthropicMessagesToBifrostMessages(ctx *schemas.BifrostContext, anth
 // This is the main conversion method from Bifrost to Anthropic - handles all message types and returns messages + system content.
 // provider and model are used to gate mid-conversation system message support (Anthropic + Opus 4.8+ only).
 func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool, caps schemas.ModelCaps) ([]AnthropicMessage, *AnthropicContent) {
+	return convertBifrostMessagesToAnthropicMessages(ctx, bifrostMessages, isRequestMessage, caps, false)
+}
+
+// convertBifrostMessagesToAnthropicMessages is ConvertBifrostMessagesToAnthropicMessages
+// for a response render: bridgedFromChat marks output converted from a Chat Completions
+// response (see convertBifrostReasoningToAnthropicThinking).
+func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool, caps schemas.ModelCaps, bridgedFromChat bool) ([]AnthropicMessage, *AnthropicContent) {
 	bifrostMessages = normalizeOpenAIToolSearchItems(ctx, bifrostMessages, isRequestMessage)
 	// If only a single system message is present, convert it user message (since openai allows it)
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
@@ -5773,7 +5795,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			flushPendingToolResults()
 
 			// Handle reasoning as thinking content
-			reasoningBlocks := convertBifrostReasoningToAnthropicThinking(ctx, &msg, caps.Provider(), caps.Model())
+			reasoningBlocks := convertBifrostReasoningToAnthropicThinking(ctx, &msg, caps.Provider(), caps.Model(), bridgedFromChat)
 			pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
 
 		case schemas.ResponsesMessageTypeFunctionCall:
@@ -7896,9 +7918,16 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 // echoes the block back on a later turn, a fresh random id gets minted and paired
 // with the original (still real) encrypted_content -- a mismatch OpenAI rejects
 // with "Encrypted content item_id did not match the target item id."
-func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage, sourceProvider schemas.ModelProvider, model string) []AnthropicContentBlock {
+//
+// bridgedFromChat marks reasoning converted from a Chat Completions response. Chat
+// Completions has no reasoning item, so its id is one the chat-to-responses converter
+// minted and is embedded only when the item also carries an encrypted token, whose id
+// came from the upstream's reasoning_details. Otherwise the client would get a
+// signature no upstream issued.
+func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage, sourceProvider schemas.ModelProvider, model string, bridgedFromChat bool) []AnthropicContentBlock {
 	var thinkingBlocks []AnthropicContentBlock
-	embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, sourceProvider, model)
+	embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, sourceProvider, model) &&
+		(!bridgedFromChat || (msg.ResponsesReasoning != nil && msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != ""))
 
 	// Track whether the content blocks actually yielded reasoning rather than
 	// branching on Content being non-nil. `ContentBlocks != nil` is true for an
