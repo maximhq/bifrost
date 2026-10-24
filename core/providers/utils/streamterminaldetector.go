@@ -100,6 +100,28 @@ func (d *StreamTerminalDetector) detectInFrame(frame []byte) bool {
 	return hasFinishReasonMarker([]byte(text))
 }
 
+// SplitSSEPayloads frames a buffered SSE body the way the streaming relay frames a live one and
+// returns each event's data payload, a trailing event without its delimiter included. It serves
+// config-time checks (the usage preview); the relay itself frames incrementally.
+func SplitSSEPayloads(body []byte) [][]byte {
+	var out [][]byte
+	rest := body
+	for {
+		idx, delimLen := findFirstSSEFrameDelimiter(rest)
+		if idx < 0 {
+			break
+		}
+		if p := extractSSEDataPayload(rest[:idx]); len(bytes.TrimSpace(p)) > 0 {
+			out = append(out, p)
+		}
+		rest = rest[idx+delimLen:]
+	}
+	if p := extractSSEDataPayload(rest); len(bytes.TrimSpace(p)) > 0 {
+		out = append(out, p)
+	}
+	return out
+}
+
 func extractSSEDataPayload(frame []byte) []byte {
 	trimmed := bytes.TrimSpace(frame)
 	if len(trimmed) == 0 {

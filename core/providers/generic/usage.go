@@ -301,19 +301,25 @@ func (u resolvedUsage) collectEventPaths() []string {
 func (u resolvedUsage) streamObserver(initial usageFields) func(event []byte) *schemas.BifrostPassthroughUsage {
 	acc := initial
 	return func(event []byte) *schemas.BifrostPassthroughUsage {
-		f := u.parse("application/json", event)
-		// A whole-body measure counts a buffered reply, never one SSE event: an event's size is not
-		// the quantity, so a response-side body_bytes or body_chars is left unread on a stream and
-		// the default usage (the fee, any request-side units) stands.
-		if u.unitsSource == schemas.GenericUnitsFromResponse && (u.unitsMeasure == schemas.GenericUnitsBodyBytes || u.unitsMeasure == schemas.GenericUnitsBodyChars) {
-			f.units, f.hasUnits = 0, false
-		}
+		f := u.eventFields(event)
 		if !f.any() {
 			return nil
 		}
 		acc.merge(f)
 		return u.build(acc)
 	}
+}
+
+// eventFields reads the usage fields one SSE event carries. A whole-body measure counts a buffered
+// reply, never one event: an event's size is not the quantity, so a response-side body_bytes or
+// body_chars is left unread on a stream and the default usage (the fee, any request-side units)
+// stands. The relay's observer and the usage preview both read events through it.
+func (u resolvedUsage) eventFields(event []byte) usageFields {
+	f := u.parse("application/json", event)
+	if u.unitsSource == schemas.GenericUnitsFromResponse && (u.unitsMeasure == schemas.GenericUnitsBodyBytes || u.unitsMeasure == schemas.GenericUnitsBodyChars) {
+		f.units, f.hasUnits = 0, false
+	}
+	return f
 }
 
 // defaultUsage is what a billable call reports when nothing could be read from the response:

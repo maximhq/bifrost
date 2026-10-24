@@ -5,24 +5,25 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
-import { useGetProviderKeysQuery, useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
+import { useGetProviderKeysQuery, usePreviewGenericUsageMutation, useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import {
 	GenericAuthTypeLabels,
 	GenericAuthTypes,
 	GenericProviderConfig,
 	GenericRouteMethods,
 	GenericUnitsMeasureLabels,
+	type GenericUsagePreview,
 	genericRouteBillableByDefault,
 	GenericUnitsSourceLabels,
 	genericUnitsMeasureReadsWholeBody,
 	ModelProvider,
 } from "@/lib/types/config";
-import { genericProviderFormSchema } from "@/lib/types/schemas";
+import { genericProviderFormSchema, genericUsagePreviewSampleSchema } from "@/lib/types/schemas";
 import { importOpenAPI, parseOpenAPIText, type OpenAPIImport } from "@/lib/utils/openapiImport";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -176,6 +177,67 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	const [importUrl, setImportUrl] = useState("");
 	const [importing, setImporting] = useState(false);
 	const [imported, setImported] = useState<OpenAPIImport | null>(null);
+	// Test this mapping: a sample call run through the mapping as it stands in the form.
+	const [previewUsage, { isLoading: previewing }] = usePreviewGenericUsageMutation();
+	const [preview, setPreview] = useState<GenericUsagePreview | null>(null);
+	// Each run is numbered so a slow earlier run cannot overwrite a later result, and the result
+	// is cleared whenever the sample or the mapping changes, so it never describes stale inputs.
+	const previewRun = useRef(0);
+	const [sampleState, setSampleState] = useState({
+		method: "POST",
+		path: "/",
+		headers: "",
+		request_content_type: "application/json",
+		request_body: "",
+		status_code: 200,
+		response_content_type: "application/json",
+		response_body: "",
+	});
+	const [sampleErrors, setSampleErrors] = useState<Record<string, string>>({});
+	const sample = sampleState;
+	const setSample = (next: typeof sampleState) => {
+		setSampleState(next);
+		setSampleErrors({});
+		setPreview(null);
+	};
+	const runPreview = async () => {
+		const checked = genericUsagePreviewSampleSchema.safeParse(sample);
+		if (!checked.success) {
+			const errors: Record<string, string> = {};
+			for (const issue of checked.error.issues) {
+				const key = String(issue.path[0] ?? "");
+				if (!errors[key]) errors[key] = issue.message;
+			}
+			setSampleErrors(errors);
+			return;
+		}
+		setSampleErrors({});
+		const run = ++previewRun.current;
+		try {
+			const { headers: headerText, ...rest } = sample;
+			const headers: Record<string, string> = {};
+			for (const line of headerText.split("\n")) {
+				const [name, ...valueParts] = line.split(":");
+				if (name?.trim() && valueParts.length > 0) headers[name.trim()] = valueParts.join(":").trim();
+			}
+			const result = await previewUsage({
+				provider: provider.name,
+				body: { generic_config: toConfig(form.getValues()), ...rest, headers: Object.keys(headers).length > 0 ? headers : undefined },
+			}).unwrap();
+			if (run === previewRun.current) setPreview(result);
+		} catch (err) {
+			if (run === previewRun.current) setPreview(null);
+			toast.error("Could not run the mapping", { description: getErrorMessage(err) });
+		}
+	};
+	// The preview inputs sit inside the mapping form, whose submit button is Save: Enter in one of
+	// them runs the preview instead of saving an unfinished mapping.
+	const runPreviewOnEnter = (e: KeyboardEvent<HTMLInputElement>) => {
+		if (e.key === "Enter") {
+			e.preventDefault();
+			void runPreview();
+		}
+	};
 
 	const form = useForm<FormValues>({
 		resolver: zodResolver(genericProviderFormSchema),
@@ -183,6 +245,10 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 		defaultValues: toFormValues(genericConfig),
 	});
 	const routes = useFieldArray({ control: form.control, name: "routes" });
+	useEffect(() => {
+		const subscription = form.watch(() => setPreview(null));
+		return () => subscription.unsubscribe();
+	}, [form]);
 	// A streaming path that is not rooted fails per item, so its error sits under streaming.paths.<n>
 	// where FormMessage finds no message; surface the first one so a refused save is never silent.
 	const streamingPathErrors = form.formState.errors.streaming?.paths as unknown as
@@ -858,6 +924,175 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 						"Strict routes",
 						"Refuse any request that matches no route above with 404, so the routes list is an allowlist",
 						"generic-strict-routes-switch",
+					)}
+				</section>
+
+				{/* Test this mapping */}
+				<section className="space-y-4" data-testid="generic-usage-preview-section">
+					<div>
+						<h3 className="text-sm font-semibold">Test this mapping</h3>
+						<p className="text-muted-foreground text-sm">
+							Paste a request and the response the API gives for it. The mapping above, as it stands in this form (saved or not), is run
+							against them and what the log row would carry is shown. Nothing is sent to the API.
+						</p>
+					</div>
+					<div className="grid gap-3 md:grid-cols-[120px_1fr_1fr]">
+						<Select value={sample.method} onValueChange={(v) => setSample({ ...sample, method: v })} disabled={disabled}>
+							<SelectTrigger data-testid="generic-preview-method-select">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{GenericRouteMethods.map((m) => (
+									<SelectItem key={m} value={m}>
+										{m}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+						<div className="space-y-1">
+							<Input
+								placeholder="/search"
+								value={sample.path}
+								onChange={(e) => setSample({ ...sample, path: e.target.value })}
+								onKeyDown={runPreviewOnEnter}
+								disabled={disabled}
+								aria-invalid={Boolean(sampleErrors.path)}
+								data-testid="generic-preview-path-input"
+							/>
+							{sampleErrors.path && (
+								<p className="text-destructive text-sm" data-testid="generic-preview-path-error">
+									{sampleErrors.path}
+								</p>
+							)}
+						</div>
+						<div className="space-y-1">
+							<Input
+								type="number"
+								min={100}
+								max={599}
+								value={sample.status_code}
+								onChange={(e) => setSample({ ...sample, status_code: Number(e.target.value) || 0 })}
+								onKeyDown={runPreviewOnEnter}
+								disabled={disabled}
+								aria-invalid={Boolean(sampleErrors.status_code)}
+								data-testid="generic-preview-status-input"
+								aria-label="Response status code"
+							/>
+							{sampleErrors.status_code && (
+								<p className="text-destructive text-sm" data-testid="generic-preview-status-error">
+									{sampleErrors.status_code}
+								</p>
+							)}
+						</div>
+					</div>
+					<Textarea
+						placeholder={"Request headers, one per line, e.g.\nX-Amz-Target: Textract.AnalyzeDocument"}
+						value={sample.headers}
+						onChange={(e) => setSample({ ...sample, headers: e.target.value })}
+						disabled={disabled}
+						rows={2}
+						data-testid="generic-preview-headers-textarea"
+					/>
+					<div className="grid gap-3 md:grid-cols-2">
+						<div className="space-y-2">
+							<Input
+								placeholder="Request Content-Type, e.g. application/json"
+								value={sample.request_content_type}
+								onChange={(e) => setSample({ ...sample, request_content_type: e.target.value })}
+								onKeyDown={runPreviewOnEnter}
+								disabled={disabled}
+								data-testid="generic-preview-request-content-type-input"
+							/>
+							<Textarea
+								placeholder={'Request body, e.g. {"Text": "hello"}'}
+								value={sample.request_body}
+								onChange={(e) => setSample({ ...sample, request_body: e.target.value })}
+								disabled={disabled}
+								rows={5}
+								data-testid="generic-preview-request-body-textarea"
+							/>
+						</div>
+						<div className="space-y-2">
+							<Input
+								placeholder="Response Content-Type, e.g. application/json"
+								value={sample.response_content_type}
+								onChange={(e) => setSample({ ...sample, response_content_type: e.target.value })}
+								onKeyDown={runPreviewOnEnter}
+								disabled={disabled}
+								data-testid="generic-preview-response-content-type-input"
+							/>
+							<Textarea
+								placeholder={'Response body, e.g. {"DocumentMetadata": {"Pages": 7}}'}
+								value={sample.response_body}
+								onChange={(e) => setSample({ ...sample, response_body: e.target.value })}
+								disabled={disabled}
+								rows={5}
+								data-testid="generic-preview-response-body-textarea"
+							/>
+						</div>
+					</div>
+					<div className="flex items-center gap-3">
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							onClick={runPreview}
+							isLoading={previewing}
+							disabled={disabled || previewing}
+							data-testid="generic-preview-run-btn"
+						>
+							Run
+						</Button>
+					</div>
+					{preview && (
+						<div className="space-y-2 rounded-sm border p-3 text-sm" data-testid="generic-preview-result">
+							<div className="grid gap-x-6 gap-y-1 md:grid-cols-2">
+								<span className="text-muted-foreground">Route</span>
+								<span data-testid="generic-preview-route">
+									{preview.route_index === null ? "none (provider defaults)" : `routes[${preview.route_index}]`}
+									{!preview.route_allowed ? " - refused by strict routes" : ""}
+								</span>
+								<span className="text-muted-foreground">Served as</span>
+								<span>{preview.streams ? "stream" : "buffered"}</span>
+								<span className="text-muted-foreground">Counted</span>
+								<span data-testid="generic-preview-counted">
+									{preview.counted ? "yes, one request" : preview.billable ? "no (status not 2xx)" : "no (route not billable)"}
+								</span>
+								<span className="text-muted-foreground">Model</span>
+								<span>{preview.model || (preview.model_path ? `none at ${preview.model_path}` : "not read")}</span>
+								<span className="text-muted-foreground">Units</span>
+								<span data-testid="generic-preview-units">
+									{preview.units === null
+										? "none"
+										: `${preview.units} (${preview.units_measure}, ${preview.units_source}${preview.units_path ? `, ${preview.units_path}` : ""})${
+												preview.units_billed !== null && preview.units_billed !== preview.units
+													? ` billed as ${preview.units_billed}${preview.units_block_size > 0 ? ` in blocks of ${preview.units_block_size}` : ""}${preview.units_minimum > 0 ? `, minimum ${preview.units_minimum}` : ""}`
+													: ""
+											} × ${preview.cost_per_unit}`}
+								</span>
+								<span className="text-muted-foreground">Tokens</span>
+								<span>
+									{preview.tokens
+										? `${preview.tokens.prompt_tokens ?? 0} in / ${preview.tokens.completion_tokens ?? 0} out / ${preview.tokens.total_tokens ?? 0} total`
+										: "none"}
+								</span>
+								<span className="text-muted-foreground">Extracted cost</span>
+								<span>{preview.extracted_cost === null ? "none" : preview.extracted_cost}</span>
+								<span className="text-muted-foreground">Flat fee</span>
+								<span>{preview.cost_per_request}</span>
+								<span className="font-medium">Cost on the log row</span>
+								<span className="font-medium" data-testid="generic-preview-cost">
+									{preview.cost} USD
+								</span>
+							</div>
+							{preview.notes.length > 0 && (
+								<ul className="text-muted-foreground list-disc pl-5" data-testid="generic-preview-notes">
+									{preview.notes.map((n) => (
+										<li key={n}>{n}</li>
+									))}
+								</ul>
+							)}
+						</div>
 					)}
 				</section>
 
