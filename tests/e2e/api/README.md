@@ -179,7 +179,7 @@ The same gateway config also registers an Azure key; the fixture answers model `
 which is how the dropped-annotation defect was measured. Model `azure-prompt-blocked` answers the way
 Azure does when its content filter blocks a prompt: HTTP 400 with code `content_filter`, the
 classification under `innererror.content_filter_result` on `/openai/v1/chat/completions` and
-`/openai/v1/completions`, and under `content_filters` on `/openai/v1/responses`. Folder 267 runs against
+`/openai/v1/completions`, and under `content_filters` on `/openai/v1/responses`. Folder 270 runs against
 it (`FEATURE="azure content filter errors"`).
 The cases are skipped unless `providerErrorFixture=1`.
 
