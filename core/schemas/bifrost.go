@@ -82,6 +82,7 @@ const (
 	Typesafe      ModelProvider = "typesafe"
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
+	Generic       ModelProvider = "generic" // base type only: a raw HTTP relay for non-LLM APIs, never a standalone provider
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -94,6 +95,7 @@ var SupportedBaseProviders = []ModelProvider{
 	HuggingFace,
 	Replicate,
 	Typesafe,
+	Generic,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.

@@ -599,6 +599,38 @@ func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
 	}
 }
 
+// TestCreateBaseProvider_CustomGenericBase pins that generic is a supported base type for custom
+// providers, that it answers to the custom name, and that it refuses to build without a base URL.
+func TestCreateBaseProvider_CustomGenericBase(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	if !IsSupportedBaseProvider(schemas.Generic) {
+		t.Fatal("generic must be a supported base provider")
+	}
+	if IsStandardProvider(schemas.Generic) {
+		t.Fatal("generic is a base type only, never a standard provider")
+	}
+	provider, err := bifrost.createBaseProvider("tavily", &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "https://api.tavily.com", DefaultRequestTimeoutInSeconds: 1},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.Generic,
+			GenericConfig:    &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "x-api-key"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("generic must build from a custom provider config: %v", err)
+	}
+	if provider.GetProviderKey() != schemas.ModelProvider("tavily") {
+		t.Fatalf("expected custom provider key tavily, got %q", provider.GetProviderKey())
+	}
+
+	_, err = bifrost.createBaseProvider("no-url", &schemas.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic},
+	})
+	if err == nil || !strings.Contains(err.Error(), "base_url") {
+		t.Fatalf("a generic provider needs network_config.base_url, got err=%v", err)
+	}
+}
+
 func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	providerConfig := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
