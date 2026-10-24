@@ -7191,6 +7191,67 @@
           ],
           "additionalProperties": false
         },
+        "anthropic_key_config": {
+          "type": "object",
+          "description": "Anthropic key configuration, for anthropic and custom providers built on the anthropic base.",
+          "properties": {
+            "workload_identity": {
+              "type": "object",
+              "description": "Workload Identity Federation. Set this and leave value empty: Bifrost exchanges an OIDC identity token for a short-lived Anthropic access token. A non-empty value always wins.",
+              "properties": {
+                "federation_rule_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Federation rule ID, fdrl_... (can use env. prefix)"
+                },
+                "organization_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Anthropic organization UUID (can use env. prefix)"
+                },
+                "service_account_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Service account the minted token acts as, svac_... (can use env. prefix)"
+                },
+                "workspace_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Workspace ID, wrkspc_...; required when the rule spans several workspaces (can use env. prefix)"
+                },
+                "identity_token_file": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Path of the OIDC identity token, re-read on every exchange (can use env. prefix)"
+                },
+                "identity_token": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The OIDC identity token itself (can use env. prefix)"
+                }
+              },
+              "required": [
+                "federation_rule_id",
+                "organization_id",
+                "service_account_id"
+              ],
+              "oneOf": [
+                {
+                  "required": [
+                    "identity_token_file"
+                  ]
+                },
+                {
+                  "required": [
+                    "identity_token"
+                  ]
+                }
+              ],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
         "models": {
           "type": "array",
           "items": {

@@ -23979,6 +23979,79 @@ func TestGetAllKeys_PreservesEnabled(t *testing.T) {
 	}
 }
 
+// TestGetAllKeys_RedactsAnthropicWorkloadIdentity pins that /api/keys carries a federated key's
+// workload identity block with the identity token masked and the identifiers readable.
+func TestGetAllKeys_RedactsAnthropicWorkloadIdentity(t *testing.T) {
+	initTestLogger()
+	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"
+	cfg := &Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Anthropic: {Keys: []schemas.Key{{ID: "wif-key", Name: "wif", AnthropicKeyConfig: &schemas.AnthropicKeyConfig{
+				WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+					FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+					OrganizationID:   *schemas.NewSecretVar("org-uuid"),
+					ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
+					IdentityToken:    schemas.NewSecretVar(jwt),
+				},
+			}}}},
+		},
+	}
+
+	keys, err := cfg.GetAllKeys()
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	require.True(t, keys[0].AnthropicKeyConfig.HasWorkloadIdentity())
+	wif := keys[0].AnthropicKeyConfig.WorkloadIdentity
+	assert.Equal(t, "svac_01def", wif.ServiceAccountID.GetValue())
+	assert.True(t, wif.IdentityToken.IsMaskedPlaceholder())
+	body, err := json.Marshal(keys[0])
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), jwt)
+	assert.Contains(t, string(body), `"anthropic_key_config"`)
+	assert.Equal(t, jwt, cfg.Providers[schemas.Anthropic].Keys[0].AnthropicKeyConfig.WorkloadIdentity.IdentityToken.GetValue(), "the live config is untouched")
+}
+
+// TestReconcileProviderKeys_AnthropicWorkloadIdentity pins that an unchanged config.json key keeps
+// its dashboard edits when the env-backed identity token behind it rotates, on both the stored-hash
+// and the legacy no-hash paths, while an edit to the block still replaces the stored key.
+func TestReconcileProviderKeys_AnthropicWorkloadIdentity(t *testing.T) {
+	SetLogger(&testLogger{})
+	t.Setenv("RECONCILE_TEST_ANTHROPIC_TOKEN", "jwt-v1")
+	fileKey := func(workspace string) schemas.Key {
+		wif := &schemas.AnthropicWorkloadIdentityConfig{
+			FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+			OrganizationID:   *schemas.NewSecretVar("org-uuid"),
+			ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
+			IdentityToken:    schemas.NewSecretVar("env.RECONCILE_TEST_ANTHROPIC_TOKEN"),
+		}
+		if workspace != "" {
+			wif.WorkspaceID = schemas.NewSecretVar(workspace)
+		}
+		return schemas.Key{Name: "wif", Weight: 1, AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: wif}}
+	}
+	syncedHash, err := configstore.GenerateKeyHash(fileKey(""))
+	require.NoError(t, err)
+	dbKey := fileKey("")
+	dbKey.ID = "key-1"
+	dbKey.ConfigHash = syncedHash
+	t.Setenv("RECONCILE_TEST_ANTHROPIC_TOKEN", "jwt-v2")
+
+	merged := reconcileProviderKeys(schemas.Anthropic, []schemas.Key{fileKey("")}, []schemas.Key{dbKey})
+	require.Len(t, merged, 1)
+	require.Equal(t, syncedHash, merged[0].ConfigHash, "a rotated identity token must not read as a config.json edit")
+
+	legacy := dbKey
+	legacy.ConfigHash = ""
+	merged = reconcileProviderKeys(schemas.Anthropic, []schemas.Key{fileKey("")}, []schemas.Key{legacy})
+	require.Len(t, merged, 1)
+	require.Empty(t, merged[0].ConfigHash, "a legacy key matching the file keeps the stored version")
+
+	merged = reconcileProviderKeys(schemas.Anthropic, []schemas.Key{fileKey("wrkspc_01ghi")}, []schemas.Key{dbKey})
+	require.Len(t, merged, 1)
+	require.NotNil(t, merged[0].AnthropicKeyConfig.WorkloadIdentity.WorkspaceID, "an edited block must replace the stored key")
+	require.NotEqual(t, syncedHash, merged[0].ConfigHash)
+}
+
 // Warp ships behind a feature flag that is on for OSS and off for enterprise,
 // where an operator turns it on per deployment. Either build can flip it.
 // registerFeatureFlags runs on every LoadConfig, and tests call LoadConfig many

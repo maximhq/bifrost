@@ -724,6 +724,84 @@ test.describe("Providers", () => {
       expect(after?.value?.value).not.toBe("sk-e2e-static-key");
     });
 
+    test("should add a workload identity key to a custom Anthropic-compatible provider and restore it on edit", async ({
+      providersPage,
+      page,
+      request,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-anthropic-wif-${Date.now()}`,
+        baseProviderType: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+      });
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+      await providersPage.selectProvider(providerData.name);
+
+      const keyName = `anthropic-wif-key-${Date.now()}`;
+      const federationRuleId = "fdrl_e2e01";
+      const organizationId = "00000000-0000-4000-8000-0000000000e2";
+      const serviceAccountId = "svac_e2e01";
+      const identityTokenFile = "/var/run/secrets/anthropic/token";
+      await providersPage.addAnthropicWorkloadIdentityKey({
+        name: keyName,
+        federationRuleId,
+        organizationId,
+        serviceAccountId,
+        identityTokenFile,
+      });
+      await expect(providersPage.getKeyRow(keyName)).toBeVisible();
+
+      // The API stores the federation block with only the token-file source and no static value.
+      const response = await request.get(`/api/providers/${encodeURIComponent(providerData.name)}/keys`);
+      expect(response.ok(), await response.text()).toBe(true);
+      const body = (await response.json()) as {
+        keys: {
+          name: string;
+          value?: { value?: string; ref?: string };
+          anthropic_key_config?: {
+            workload_identity?: {
+              federation_rule_id?: { value?: string };
+              organization_id?: { value?: string };
+              service_account_id?: { value?: string };
+              workspace_id?: { value?: string } | null;
+              identity_token_file?: { value?: string };
+              identity_token?: { value?: string } | null;
+            };
+          };
+        }[];
+      };
+      const saved = body.keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.value?.value ?? "").toBe("");
+      expect(saved?.value?.ref ?? "").toBe("");
+      const wif = saved?.anthropic_key_config?.workload_identity;
+      expect(wif?.federation_rule_id?.value).toBe(federationRuleId);
+      expect(wif?.organization_id?.value).toBe(organizationId);
+      expect(wif?.service_account_id?.value).toBe(serviceAccountId);
+      expect(wif?.identity_token_file?.value).toBe(identityTokenFile);
+      expect(wif?.identity_token ?? null).toBeNull();
+      expect(wif?.workspace_id ?? null).toBeNull();
+      // The UI-only discriminators never reach the API.
+      expect(JSON.stringify(saved)).not.toContain("_auth_type");
+      expect(JSON.stringify(saved)).not.toContain("_token_source");
+
+      // Reopen: the editor re-detects workload identity and the token-file source from the stored block.
+      await providersPage.openKeyEditor(keyName);
+      await expect(page.getByTestId("apikey-anthropic-workload-identity-tab")).toHaveAttribute("data-state", "active");
+      await expect(page.getByTestId("key-input-anthropic-api-key")).toHaveCount(0);
+      await expect(page.getByTestId("key-select-anthropic-wif-token-source")).toContainText("Token File");
+      await expect(page.getByTestId("key-input-anthropic-wif-federation-rule-id")).toHaveValue(federationRuleId);
+      await expect(page.getByTestId("key-input-anthropic-wif-organization-id")).toHaveValue(organizationId);
+      await expect(page.getByTestId("key-input-anthropic-wif-service-account-id")).toHaveValue(serviceAccountId);
+      await expect(page.getByTestId("key-input-anthropic-wif-identity-token-file")).toHaveValue(identityTokenFile);
+      await expect(page.getByTestId("key-input-anthropic-wif-identity-token")).toHaveCount(0);
+      await providersPage.keyCancelBtn.click();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+    });
+
     test("should cancel custom provider creation", async ({
       providersPage,
     }) => {

@@ -479,6 +479,79 @@ export const oauthKeyConfigSchema = z
 		}
 	});
 
+// Anthropic Workload Identity Federation block. Values are not shape-checked: each one may be a
+// reference, and the server is the authority on ID formats.
+export const anthropicWorkloadIdentitySchema = z.object({
+	federation_rule_id: secretVarSchema.optional(),
+	organization_id: secretVarSchema.optional(),
+	service_account_id: secretVarSchema.optional(),
+	workspace_id: secretVarSchema.optional(),
+	identity_token_file: secretVarSchema.optional(),
+	identity_token: secretVarSchema.optional(),
+	// UI-only discriminator: which of the two token inputs is shown and sent.
+	_token_source: z.enum(["file", "token"]).optional(),
+});
+
+// anthropicWorkloadIdentityComplete reports whether the block can federate on its own: the three
+// IDs plus exactly one identity token source. The outer key schema uses it to decide whether an
+// empty key value is fine when the UI discriminator is absent.
+export const anthropicWorkloadIdentityComplete = (data: Record<string, unknown> | null | undefined): boolean => {
+	if (!data) return false;
+	const d = data as z.input<typeof anthropicWorkloadIdentitySchema>;
+	if (!isSecretVarSet(d.federation_rule_id) || !isSecretVarSet(d.organization_id) || !isSecretVarSet(d.service_account_id)) {
+		return false;
+	}
+	const hasFile = isSecretVarSet(d.identity_token_file);
+	const hasToken = isSecretVarSet(d.identity_token);
+	if (d._token_source === "file") return hasFile;
+	if (d._token_source === "token") return hasToken;
+	return hasFile !== hasToken;
+};
+
+// Anthropic key config schema. On the workload identity method the key value is empty, so the
+// block must be whole: the server rejects a missing ID or anything but exactly one token source.
+export const anthropicKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["api_key", "workload_identity"]).optional(),
+		workload_identity: anthropicWorkloadIdentitySchema.optional(),
+	})
+	.superRefine((data, ctx) => {
+		// The API-key tab leaves the block inert; it is dropped on save.
+		if (data._auth_type === "api_key") return;
+		if (data._auth_type !== "workload_identity" && !data.workload_identity) return;
+		const wif = data.workload_identity;
+		const required = [
+			["federation_rule_id", "Federation rule ID is required"],
+			["organization_id", "Organization ID is required"],
+			["service_account_id", "Service account ID is required"],
+		] as const;
+		for (const [field, message] of required) {
+			if (!isSecretVarSet(wif?.[field])) {
+				ctx.addIssue({ code: "custom", path: ["workload_identity", field], message });
+			}
+		}
+		const hasFile = isSecretVarSet(wif?.identity_token_file);
+		const hasToken = isSecretVarSet(wif?.identity_token);
+		if (wif?._token_source === "file") {
+			if (!hasFile) {
+				ctx.addIssue({ code: "custom", path: ["workload_identity", "identity_token_file"], message: "Token file path is required" });
+			}
+			return;
+		}
+		if (wif?._token_source === "token") {
+			if (!hasToken) {
+				ctx.addIssue({ code: "custom", path: ["workload_identity", "identity_token"], message: "Identity token is required" });
+			}
+			return;
+		}
+		// No discriminator (a reset cleared it): apply the server's exactly-one rule directly.
+		if (!hasFile && !hasToken) {
+			ctx.addIssue({ code: "custom", path: ["workload_identity", "identity_token_file"], message: "Set a token file or a token" });
+		} else if (hasFile && hasToken) {
+			ctx.addIssue({ code: "custom", path: ["workload_identity", "identity_token"], message: "Set a token file or a token, not both" });
+		}
+	});
+
 // Ollama key config schema
 export const ollamaKeyConfigSchema = z
 	.object({
@@ -630,6 +703,7 @@ export const modelProviderKeySchema = z
 		databricks_key_config: databricksKeyConfigSchema.optional(),
 		cloudflare_key_config: cloudflareKeyConfigSchema.optional(),
 		oauth_key_config: oauthKeyConfigSchema.optional(),
+		anthropic_key_config: anthropicKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		use_openai_endpoints: z.boolean().optional(),
@@ -647,6 +721,19 @@ export const modelProviderKeySchema = z
 					return true;
 				}
 				if (data.oauth_key_config._auth_type === undefined && oauthKeyConfigComplete(data.oauth_key_config)) {
+					return true;
+				}
+			}
+			// A workload identity key federates its credential and carries no value; same
+			// discriminator-absent inference as OAuth above.
+			if (data.anthropic_key_config) {
+				if (data.anthropic_key_config._auth_type === "workload_identity") {
+					return true;
+				}
+				if (
+					data.anthropic_key_config._auth_type === undefined &&
+					anthropicWorkloadIdentityComplete(data.anthropic_key_config.workload_identity)
+				) {
 					return true;
 				}
 			}

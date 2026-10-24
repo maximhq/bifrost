@@ -152,6 +152,7 @@ type Key struct {
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
 	CloudflareKeyConfig    *CloudflareKeyConfig    `json:"cloudflare_key_config,omitempty"`     // Cloudflare Workers AI-specific key configuration
+	AnthropicKeyConfig     *AnthropicKeyConfig     `json:"anthropic_key_config,omitempty"`      // Anthropic-specific key configuration
 	OAuthKeyConfig         *OAuthKeyConfig         `json:"oauth_key_config,omitempty"`          // OAuth-minted bearer for OpenAI-compatible providers; used when Value is empty
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
@@ -873,6 +874,73 @@ func (c *VertexAWSWorkloadIdentityConfig) Redacted() *VertexAWSWorkloadIdentityC
 
 // NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string and leave
 // AWSWorkloadIdentity nil.
+
+// AnthropicKeyConfig represents the Anthropic-specific key configuration.
+type AnthropicKeyConfig struct {
+	WorkloadIdentity *AnthropicWorkloadIdentityConfig `json:"workload_identity,omitempty"` // Workload Identity Federation; used when Value is empty
+}
+
+// AnthropicWorkloadIdentityConfig configures Anthropic Workload Identity Federation. Bifrost
+// exchanges an OIDC identity token issued to the workload (a Kubernetes projected service
+// account token, a CI OIDC token, ...) at the Anthropic token endpoint for a short-lived
+// access token that acts as ServiceAccountID, and sends that token as an OAuth bearer.
+//
+// The identity token is read from IdentityTokenFile on every exchange, so a token the platform
+// rotates on disk is picked up, or taken from IdentityToken; exactly one of the two is set.
+type AnthropicWorkloadIdentityConfig struct {
+	FederationRuleID  SecretVar  `json:"federation_rule_id"`            // fdrl_... rule the exchange is evaluated against
+	OrganizationID    SecretVar  `json:"organization_id"`               // Anthropic organization UUID
+	ServiceAccountID  SecretVar  `json:"service_account_id"`            // svac_... service account the minted token acts as
+	WorkspaceID       *SecretVar `json:"workspace_id,omitempty"`        // wrkspc_...; required when the rule spans several workspaces
+	IdentityTokenFile *SecretVar `json:"identity_token_file,omitempty"` // path of the identity token, re-read on every exchange
+	IdentityToken     *SecretVar `json:"identity_token,omitempty"`      // the identity token itself, usually env.ANTHROPIC_IDENTITY_TOKEN
+}
+
+// HasWorkloadIdentity reports whether the key federates its credential instead of carrying one.
+func (c *AnthropicKeyConfig) HasWorkloadIdentity() bool {
+	return c != nil && c.WorkloadIdentity != nil
+}
+
+// Redacted returns a copy safe to send to clients: the identifiers and the token file path stay
+// readable unless they come from a secret reference, while the identity token is always masked.
+func (c *AnthropicKeyConfig) Redacted() *AnthropicKeyConfig {
+	if c == nil {
+		return nil
+	}
+	out := &AnthropicKeyConfig{}
+	if wif := c.WorkloadIdentity; wif != nil {
+		out.WorkloadIdentity = &AnthropicWorkloadIdentityConfig{
+			FederationRuleID:  *wif.FederationRuleID.RedactedIfSecret(),
+			OrganizationID:    *wif.OrganizationID.RedactedIfSecret(),
+			ServiceAccountID:  *wif.ServiceAccountID.RedactedIfSecret(),
+			WorkspaceID:       wif.WorkspaceID.RedactedIfSecret(),
+			IdentityTokenFile: wif.IdentityTokenFile.RedactedIfSecret(),
+			IdentityToken:     wif.IdentityToken.Redacted(),
+		}
+	}
+	return out
+}
+
+// Validate checks the config at setup time, so a half-configured key is refused where the
+// operator can act on it rather than failing at the first inference call.
+func (c *AnthropicWorkloadIdentityConfig) Validate() error {
+	has := func(v *SecretVar) bool {
+		return v != nil && (v.IsFromSecret() || strings.TrimSpace(v.GetValue()) != "")
+	}
+	if !has(&c.FederationRuleID) {
+		return fmt.Errorf("anthropic_key_config.workload_identity.federation_rule_id is required")
+	}
+	if !has(&c.OrganizationID) {
+		return fmt.Errorf("anthropic_key_config.workload_identity.organization_id is required")
+	}
+	if !has(&c.ServiceAccountID) {
+		return fmt.Errorf("anthropic_key_config.workload_identity.service_account_id is required")
+	}
+	if has(c.IdentityTokenFile) == has(c.IdentityToken) {
+		return fmt.Errorf("anthropic_key_config.workload_identity needs exactly one of identity_token_file or identity_token")
+	}
+	return nil
+}
 
 // S3BucketConfig represents a single S3 bucket configuration for batch operations.
 type S3BucketConfig struct {

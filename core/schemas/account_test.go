@@ -102,6 +102,42 @@ func TestBedrockEndpointsRedactedPreservesUnsetFields(t *testing.T) {
 	}
 }
 
+func TestAnthropicKeyConfigRedacted(t *testing.T) {
+	var unset *AnthropicKeyConfig
+	if unset.Redacted() != nil || unset.HasWorkloadIdentity() {
+		t.Fatal("a nil config must stay nil and carry no workload identity")
+	}
+	if (&AnthropicKeyConfig{}).HasWorkloadIdentity() {
+		t.Fatal("an empty config carries no workload identity")
+	}
+	original := &AnthropicKeyConfig{WorkloadIdentity: &AnthropicWorkloadIdentityConfig{
+		FederationRuleID:  *NewSecretVar("fdrl_rule"),
+		OrganizationID:    *NewSecretVar("00000000-0000-0000-0000-000000000000"),
+		ServiceAccountID:  *NewSecretVar("svac_account"),
+		WorkspaceID:       NewSecretVar("wrkspc_workspace"),
+		IdentityTokenFile: NewSecretVar("/var/run/secrets/anthropic.com/token"),
+		IdentityToken:     NewSecretVar("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.signature"),
+	}}
+	redacted := original.Redacted().WorkloadIdentity
+	if redacted.FederationRuleID.GetValue() != "fdrl_rule" || redacted.ServiceAccountID.GetValue() != "svac_account" ||
+		redacted.WorkspaceID.GetValue() != "wrkspc_workspace" || redacted.IdentityTokenFile.GetValue() != "/var/run/secrets/anthropic.com/token" {
+		t.Fatalf("literal identifiers must stay readable: %+v", redacted)
+	}
+	if !redacted.IdentityToken.IsRedacted() || strings.Contains(redacted.IdentityToken.GetValue(), "eyJzdWIiOiJ4In0") {
+		t.Fatalf("the identity token is a credential and must be masked: %q", redacted.IdentityToken.GetValue())
+	}
+	redacted.WorkspaceID.Val = "changed"
+	if original.WorkloadIdentity.WorkspaceID.GetValue() != "wrkspc_workspace" {
+		t.Fatal("redacted config shares pointers with live config")
+	}
+
+	t.Setenv("ANTHROPIC_FEDERATION_RULE_ID_REDACT_TEST", "fdrl_from_env")
+	fromEnv := &AnthropicKeyConfig{WorkloadIdentity: &AnthropicWorkloadIdentityConfig{FederationRuleID: *NewSecretVar("env.ANTHROPIC_FEDERATION_RULE_ID_REDACT_TEST")}}
+	if got := fromEnv.Redacted().WorkloadIdentity.FederationRuleID.GetValue(); got == "fdrl_from_env" {
+		t.Fatal("an env-backed identifier must be masked")
+	}
+}
+
 func TestKeyAliasesUnmarshalLegacyStringShape(t *testing.T) {
 	in := []byte(`{"best-model": "gpt-4o-deployment"}`)
 	var ka KeyAliases

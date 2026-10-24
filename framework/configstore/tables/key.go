@@ -89,6 +89,9 @@ type TableKey struct {
 	// Cloudflare config fields (embedded)
 	CloudflareAccountID *schemas.SecretVar `gorm:"type:text" json:"cloudflare_account_id,omitempty"`
 
+	// Anthropic config fields (embedded)
+	AnthropicWorkloadIdentityJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.AnthropicWorkloadIdentityConfig
+
 	// Databricks config fields (embedded)
 	DatabricksWorkspaceURL       *schemas.SecretVar `gorm:"type:text" json:"databricks_workspace_url,omitempty"`
 	DatabricksClientID           *schemas.SecretVar `gorm:"type:text" json:"databricks_client_id,omitempty"`
@@ -137,6 +140,7 @@ type TableKey struct {
 	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
 	DatabricksKeyConfig    *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
 	CloudflareKeyConfig    *schemas.CloudflareKeyConfig    `gorm:"-" json:"cloudflare_key_config,omitempty"`
+	AnthropicKeyConfig     *schemas.AnthropicKeyConfig     `gorm:"-" json:"anthropic_key_config,omitempty"`
 	OAuthKeyConfig         *schemas.OAuthKeyConfig         `gorm:"-" json:"oauth_key_config,omitempty"`
 }
 
@@ -499,6 +503,16 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.CloudflareAccountID = nil
 	}
 
+	if k.AnthropicKeyConfig.HasWorkloadIdentity() {
+		wif, err := marshalAnthropicWorkloadIdentityJSON(k.AnthropicKeyConfig.WorkloadIdentity)
+		if err != nil {
+			return err
+		}
+		k.AnthropicWorkloadIdentityJSON = wif
+	} else {
+		k.AnthropicWorkloadIdentityJSON = nil
+	}
+
 	if k.DatabricksKeyConfig != nil {
 		if k.DatabricksKeyConfig.WorkspaceURL.IsSet() {
 			u := k.DatabricksKeyConfig.WorkspaceURL // Value-copy to prevent shared pointer mutation
@@ -700,6 +714,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.CloudflareAccountID); err != nil {
 			return fmt.Errorf("failed to encrypt cloudflare account id: %w", err)
 		}
+		// Anthropic. identity_token may be a literal JWT.
+		if err := encryptString(k.AnthropicWorkloadIdentityJSON); err != nil {
+			return fmt.Errorf("failed to encrypt anthropic workload identity: %w", err)
+		}
 		// Databricks
 		if err := encryptSecretVarPtr(&k.DatabricksWorkspaceURL); err != nil {
 			return fmt.Errorf("failed to encrypt databricks workspace url: %w", err)
@@ -853,6 +871,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		// Cloudflare
 		if err := decryptSecretVarPtr(&k.CloudflareAccountID); err != nil {
 			return fmt.Errorf("failed to decrypt cloudflare account id: %w", err)
+		}
+		// Anthropic
+		if err := decryptString(k.AnthropicWorkloadIdentityJSON); err != nil {
+			return fmt.Errorf("failed to decrypt anthropic workload identity: %w", err)
 		}
 
 		// Databricks
@@ -1083,6 +1105,16 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	} else {
 		k.CloudflareKeyConfig = nil
 	}
+	// Reconstruct Anthropic config if the workload identity block is present
+	if k.AnthropicWorkloadIdentityJSON != nil && *k.AnthropicWorkloadIdentityJSON != "" {
+		var wif schemas.AnthropicWorkloadIdentityConfig
+		if err := json.Unmarshal([]byte(*k.AnthropicWorkloadIdentityJSON), &wif); err != nil {
+			return fmt.Errorf("failed to parse anthropic workload identity: %w", err)
+		}
+		k.AnthropicKeyConfig = &schemas.AnthropicKeyConfig{WorkloadIdentity: &wif}
+	} else {
+		k.AnthropicKeyConfig = nil
+	}
 
 	// Reconstruct Databricks config if fields are present
 	if k.DatabricksWorkspaceURL != nil || k.DatabricksClientID != nil || k.DatabricksClientSecret != nil ||
@@ -1185,6 +1217,39 @@ func MarshalVertexAWSWorkloadIdentityJSON(cfg *schemas.VertexAWSWorkloadIdentity
 		TokenLifetimeSeconds: cfg.TokenLifetimeSeconds,
 		AWSRegion:            secretVarStorageString(cfg.AWSRegion),
 		AWSRoleARN:           secretVarStorageString(cfg.AWSRoleARN),
+	}
+	data, err := sonic.Marshal(record)
+	if err != nil {
+		return nil, err
+	}
+	s := string(data)
+	return &s, nil
+}
+
+// anthropicWorkloadIdentityRecord is the storage form of anthropic_key_config.workload_identity,
+// reduced to reference-preserving strings the same way as vertexAWSWorkloadIdentityRecord.
+type anthropicWorkloadIdentityRecord struct {
+	FederationRuleID  string `json:"federation_rule_id,omitempty"`
+	OrganizationID    string `json:"organization_id,omitempty"`
+	ServiceAccountID  string `json:"service_account_id,omitempty"`
+	WorkspaceID       string `json:"workspace_id,omitempty"`
+	IdentityTokenFile string `json:"identity_token_file,omitempty"`
+	IdentityToken     string `json:"identity_token,omitempty"`
+}
+
+// marshalAnthropicWorkloadIdentityJSON serializes the workload identity block for the
+// anthropic_workload_identity_json column, returning nil when the block is absent.
+func marshalAnthropicWorkloadIdentityJSON(cfg *schemas.AnthropicWorkloadIdentityConfig) (*string, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	record := anthropicWorkloadIdentityRecord{
+		FederationRuleID:  secretVarStorageString(&cfg.FederationRuleID),
+		OrganizationID:    secretVarStorageString(&cfg.OrganizationID),
+		ServiceAccountID:  secretVarStorageString(&cfg.ServiceAccountID),
+		WorkspaceID:       secretVarStorageString(cfg.WorkspaceID),
+		IdentityTokenFile: secretVarStorageString(cfg.IdentityTokenFile),
+		IdentityToken:     secretVarStorageString(cfg.IdentityToken),
 	}
 	data, err := sonic.Marshal(record)
 	if err != nil {

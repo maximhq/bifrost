@@ -283,6 +283,110 @@ func TestTableKey_NoOAuthConfig_LeavesNil(t *testing.T) {
 	assert.Nil(t, found.OAuthKeyConfig, "a static key must not gain an empty oauth config on read")
 }
 
+// TestTableKey_AnthropicWorkloadIdentityEncryptDecrypt pins the anthropic_workload_identity_json
+// column: every field survives save and find, the identity token is never readable at rest, and an
+// env reference is stored as the reference rather than the value it resolves to.
+func TestTableKey_AnthropicWorkloadIdentityEncryptDecrypt(t *testing.T) {
+	db := setupTestDB(t)
+	t.Setenv("TEST_ANTHROPIC_WIF_ORG_ID", "8c1d0f5e-0000-4000-8000-000000000001")
+
+	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJzeXN0ZW06c2VydmljZWFjY291bnQ6Ymlmcm9zdCJ9.c2lnbmF0dXJl"
+	key := &TableKey{
+		Name:       "anthropic-wif-key",
+		ProviderID: 1,
+		Provider:   "anthropic",
+		KeyID:      "anthropic-wif-uuid-1",
+		AnthropicKeyConfig: &schemas.AnthropicKeyConfig{
+			WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+				FederationRuleID:  *schemas.NewSecretVar("fdrl_01abc"),
+				OrganizationID:    *schemas.NewSecretVar("env.TEST_ANTHROPIC_WIF_ORG_ID"),
+				ServiceAccountID:  *schemas.NewSecretVar("svac_01def"),
+				WorkspaceID:       schemas.NewSecretVar("wrkspc_01ghi"),
+				IdentityTokenFile: schemas.NewSecretVar("/var/run/secrets/anthropic/token"),
+				IdentityToken:     schemas.NewSecretVar(jwt),
+			},
+		},
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	stored, _ := raw["anthropic_workload_identity_json"].(string)
+	require.NotEmpty(t, stored)
+	assert.NotContains(t, stored, jwt, "the identity token must be encrypted at rest")
+	assert.NotContains(t, stored, "fdrl_01abc", "the whole block is encrypted, not only the token")
+	plain, err := encrypt.Decrypt(stored)
+	require.NoError(t, err)
+	assert.Contains(t, plain, `"organization_id":"env.TEST_ANTHROPIC_WIF_ORG_ID"`)
+	assert.NotContains(t, plain, "8c1d0f5e", "the resolved env value must not be persisted")
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.True(t, found.AnthropicKeyConfig.HasWorkloadIdentity())
+	got := found.AnthropicKeyConfig.WorkloadIdentity
+	assert.Equal(t, "fdrl_01abc", got.FederationRuleID.GetValue())
+	assert.True(t, got.OrganizationID.IsFromEnv(), "the env reference must survive persistence")
+	assert.Equal(t, "env.TEST_ANTHROPIC_WIF_ORG_ID", got.OrganizationID.GetRawRef())
+	assert.Equal(t, "8c1d0f5e-0000-4000-8000-000000000001", got.OrganizationID.GetValue())
+	assert.Equal(t, "svac_01def", got.ServiceAccountID.GetValue())
+	assert.Equal(t, "wrkspc_01ghi", secretVarPtrValue(got.WorkspaceID))
+	assert.Equal(t, "/var/run/secrets/anthropic/token", secretVarPtrValue(got.IdentityTokenFile))
+	assert.Equal(t, jwt, secretVarPtrValue(got.IdentityToken))
+
+	// Clearing the block clears the column.
+	found.AnthropicKeyConfig = nil
+	require.NoError(t, db.Save(&found).Error)
+	assert.Nil(t, rawRow(t, db, "config_keys", key.ID)["anthropic_workload_identity_json"])
+	var cleared TableKey
+	require.NoError(t, db.First(&cleared, key.ID).Error)
+	assert.Nil(t, cleared.AnthropicKeyConfig)
+}
+
+func TestTableKey_AnthropicWorkloadIdentityOmitsUnsetFields(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "anthropic-wif-file",
+		ProviderID: 1,
+		Provider:   "anthropic",
+		KeyID:      "anthropic-wif-uuid-2",
+		AnthropicKeyConfig: &schemas.AnthropicKeyConfig{
+			WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+				FederationRuleID:  *schemas.NewSecretVar("fdrl_01abc"),
+				OrganizationID:    *schemas.NewSecretVar("org-uuid"),
+				ServiceAccountID:  *schemas.NewSecretVar("svac_01def"),
+				IdentityTokenFile: schemas.NewSecretVar("/var/run/secrets/anthropic/token"),
+			},
+		},
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.True(t, found.AnthropicKeyConfig.HasWorkloadIdentity())
+	assert.Nil(t, found.AnthropicKeyConfig.WorkloadIdentity.IdentityToken, "an unset identity token must round-trip as nil")
+	assert.Nil(t, found.AnthropicKeyConfig.WorkloadIdentity.WorkspaceID)
+	assert.NoError(t, found.AnthropicKeyConfig.WorkloadIdentity.Validate(), "the reloaded block must still validate")
+}
+
+func TestTableKey_NoAnthropicConfig_LeavesNil(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "anthropic-static",
+		ProviderID: 1,
+		Provider:   "anthropic",
+		KeyID:      "anthropic-static-uuid-1",
+		Value:      *schemas.NewSecretVar("sk-ant-test"),
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	assert.Nil(t, rawRow(t, db, "config_keys", key.ID)["anthropic_workload_identity_json"])
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	assert.Nil(t, found.AnthropicKeyConfig, "a static key must not gain an empty anthropic config on read")
+}
+
 func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 	db := setupTestDB(t)
 

@@ -195,6 +195,48 @@ func TestProviderConfig_Redacted_OAuthExtraParamsMaskTheLiteralString(t *testing
 	assert.Equal(t, "env."+strings.Repeat("*", 24)+"tion", got["resource"], "the literal string is masked, not the variable it names")
 }
 
+// TestProviderConfig_Redacted_AnthropicKeyConfig pins the workload identity redaction: literal
+// identifiers and the token file path stay readable, an env-backed identifier is masked, and the
+// identity token is always masked, without touching or aliasing the live config.
+func TestProviderConfig_Redacted_AnthropicKeyConfig(t *testing.T) {
+	t.Setenv("REDACTION_TEST_ANTHROPIC_SVAC", "svac_from_environment_0123")
+	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"
+	cfg := &ProviderConfig{
+		Keys: []schemas.Key{{
+			ID:   "k1",
+			Name: "anthropic-wif",
+			AnthropicKeyConfig: &schemas.AnthropicKeyConfig{
+				WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+					FederationRuleID:  *schemas.NewSecretVar("fdrl_01abc"),
+					OrganizationID:    *schemas.NewSecretVar("8c1d0f5e-0000-4000-8000-000000000001"),
+					ServiceAccountID:  *schemas.NewSecretVar("env.REDACTION_TEST_ANTHROPIC_SVAC"),
+					WorkspaceID:       schemas.NewSecretVar("wrkspc_01ghi"),
+					IdentityTokenFile: schemas.NewSecretVar("/var/run/secrets/anthropic/token"),
+					IdentityToken:     schemas.NewSecretVar(jwt),
+				},
+			},
+		}},
+	}
+
+	redacted := cfg.Redacted()
+	require.Len(t, redacted.Keys, 1)
+	require.True(t, redacted.Keys[0].AnthropicKeyConfig.HasWorkloadIdentity())
+	got := redacted.Keys[0].AnthropicKeyConfig.WorkloadIdentity
+	assert.Equal(t, "fdrl_01abc", got.FederationRuleID.GetValue())
+	assert.Equal(t, "8c1d0f5e-0000-4000-8000-000000000001", got.OrganizationID.GetValue())
+	assert.Equal(t, "wrkspc_01ghi", got.WorkspaceID.GetValue())
+	assert.Equal(t, "/var/run/secrets/anthropic/token", got.IdentityTokenFile.GetValue())
+	assert.NotContains(t, got.ServiceAccountID.GetValue(), "from_environment", "an env-backed identifier must be masked")
+	assert.Equal(t, "env.REDACTION_TEST_ANTHROPIC_SVAC", got.ServiceAccountID.GetRawRef(), "the reference stays visible")
+	assert.NotEqual(t, jwt, got.IdentityToken.GetValue())
+	assert.True(t, got.IdentityToken.IsMaskedPlaceholder(), "the token mask must be recognised so an update restores the stored token")
+
+	live := cfg.Keys[0].AnthropicKeyConfig.WorkloadIdentity
+	assert.Equal(t, jwt, live.IdentityToken.GetValue(), "the original is untouched")
+	assert.NotSame(t, live, got)
+	assert.NotSame(t, live.WorkspaceID, got.WorkspaceID)
+}
+
 func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	t.Setenv("MY_AZURE_ENDPOINT_SECRET", "https://secret-resource.openai.azure.com")
 

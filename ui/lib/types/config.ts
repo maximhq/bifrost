@@ -360,6 +360,40 @@ export const DefaultOAuthKeyConfig: OAuthKeyConfig = {
 	_auth_type: "api_key",
 } as const satisfies Required<OAuthKeyConfig>;
 
+// AnthropicWorkloadIdentityConfig matching Go's schemas.AnthropicWorkloadIdentityConfig. Bifrost
+// exchanges the workload's OIDC identity token for a short-lived Anthropic access token; the key
+// value stays empty. Exactly one of identity_token_file and identity_token is sent.
+export type AnthropicIdentityTokenSource = "file" | "token";
+export interface AnthropicWorkloadIdentityConfig {
+	federation_rule_id: SecretVar;
+	organization_id: SecretVar;
+	service_account_id: SecretVar;
+	workspace_id?: SecretVar;
+	identity_token_file?: SecretVar;
+	identity_token?: SecretVar;
+	// UI-only discriminator; not sent to the API.
+	_token_source?: AnthropicIdentityTokenSource;
+}
+
+// AnthropicKeyConfig matching Go's schemas.AnthropicKeyConfig. Honoured by anthropic and by
+// custom providers whose base_provider_type is anthropic.
+export interface AnthropicKeyConfig {
+	workload_identity?: AnthropicWorkloadIdentityConfig;
+	// UI-only discriminator; not sent to the API.
+	_auth_type?: "api_key" | "workload_identity";
+}
+
+// Seed for the "Workload Identity" tab, so its inputs are controlled from the first keystroke.
+export const DefaultAnthropicWorkloadIdentityConfig: AnthropicWorkloadIdentityConfig = {
+	federation_rule_id: { value: "", ref: "" },
+	organization_id: { value: "", ref: "" },
+	service_account_id: { value: "", ref: "" },
+	workspace_id: { value: "", ref: "" },
+	identity_token_file: { value: "", ref: "" },
+	identity_token: { value: "", ref: "" },
+	_token_source: "file",
+} as const satisfies Required<AnthropicWorkloadIdentityConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -384,6 +418,7 @@ export interface ModelProviderKey {
 	databricks_key_config?: DatabricksKeyConfig;
 	cloudflare_key_config?: CloudflareKeyConfig;
 	oauth_key_config?: OAuthKeyConfig;
+	anthropic_key_config?: AnthropicKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;

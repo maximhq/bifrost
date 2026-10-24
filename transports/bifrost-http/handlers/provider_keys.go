@@ -124,6 +124,10 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	if err := rejectUnknownAnthropicKeyConfigFields(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 
 	providerConfig, err := h.inMemoryStore.GetProviderConfigRaw(provider)
 	if err != nil {
@@ -149,7 +153,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && key.Value.GetValue() == "" && key.OAuthKeyConfig == nil {
+	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && key.Value.GetValue() == "" && key.OAuthKeyConfig == nil && !key.AnthropicKeyConfig.HasWorkloadIdentity() {
 		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
 		return
 	}
@@ -272,6 +276,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	if err := rejectUnknownAnthropicKeyConfigFields(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 	updateKey, err := decodeKeyUpdate(ctx.PostBody(), *oldRawKey)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
@@ -293,7 +301,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && mergedKey.Value.GetValue() == "" && mergedKey.OAuthKeyConfig == nil {
+	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && mergedKey.Value.GetValue() == "" && mergedKey.OAuthKeyConfig == nil && !mergedKey.AnthropicKeyConfig.HasWorkloadIdentity() {
 		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
 		return
 	}
@@ -526,6 +534,7 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"sgl_key_config":            func() { updateKey.SGLKeyConfig = oldRawKey.SGLKeyConfig },
 		"databricks_key_config":     func() { updateKey.DatabricksKeyConfig = oldRawKey.DatabricksKeyConfig },
 		"cloudflare_key_config":     func() { updateKey.CloudflareKeyConfig = oldRawKey.CloudflareKeyConfig },
+		"anthropic_key_config":      func() { updateKey.AnthropicKeyConfig = oldRawKey.AnthropicKeyConfig },
 		"oauth_key_config":          func() { updateKey.OAuthKeyConfig = oldRawKey.OAuthKeyConfig },
 		"enabled":                   func() { updateKey.Enabled = oldRawKey.Enabled },
 		"use_for_batch_api":         func() { updateKey.UseForBatchAPI = oldRawKey.UseForBatchAPI },
@@ -724,6 +733,36 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 		}
 		if err := preserve(&mergedKey.CloudflareKeyConfig.AccountID, stored, "cloudflare_key_config.account_id"); err != nil {
 			return schemas.Key{}, err
+		}
+	}
+
+	if mergedKey.AnthropicKeyConfig.HasWorkloadIdentity() {
+		wif := mergedKey.AnthropicKeyConfig.WorkloadIdentity
+		var ruleID, orgID, serviceAccountID, workspaceID, tokenFile, token *schemas.SecretVar
+		if oldRawKey.AnthropicKeyConfig.HasWorkloadIdentity() {
+			old := oldRawKey.AnthropicKeyConfig.WorkloadIdentity
+			ruleID = &old.FederationRuleID
+			orgID = &old.OrganizationID
+			serviceAccountID = &old.ServiceAccountID
+			workspaceID = old.WorkspaceID
+			tokenFile = old.IdentityTokenFile
+			token = old.IdentityToken
+		}
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{&wif.FederationRuleID, ruleID, "anthropic_key_config.workload_identity.federation_rule_id"},
+			{&wif.OrganizationID, orgID, "anthropic_key_config.workload_identity.organization_id"},
+			{&wif.ServiceAccountID, serviceAccountID, "anthropic_key_config.workload_identity.service_account_id"},
+			{wif.WorkspaceID, workspaceID, "anthropic_key_config.workload_identity.workspace_id"},
+			{wif.IdentityTokenFile, tokenFile, "anthropic_key_config.workload_identity.identity_token_file"},
+			{wif.IdentityToken, token, "anthropic_key_config.workload_identity.identity_token"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
 		}
 	}
 
@@ -989,6 +1028,18 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 			}
 		}
 	}
+	// anthropic_key_config.workload_identity follows core's validateKey: anthropic-based providers
+	// only, and the block must be whole when the key has no static value to fall back on.
+	if key.AnthropicKeyConfig.HasWorkloadIdentity() {
+		if !bifrost.ProviderSupportsAnthropicWorkloadIdentity(provider) {
+			return fmt.Errorf("anthropic_key_config.workload_identity is only supported on anthropic and on custom providers whose base_provider_type is anthropic")
+		}
+		if strings.TrimSpace(key.Value.GetValue()) == "" {
+			if err := key.AnthropicKeyConfig.WorkloadIdentity.Validate(); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -1085,6 +1136,10 @@ func keyMatchesSigningAlgorithm(key crypto.PrivateKey, alg string) error {
 // open, and every accepted credential type carries a destination, so the field is compared
 // whole rather than parsed for URLs. The aws_workload_identity block is not listed: its
 // exchange goes to Google's fixed STS endpoint and it holds no URL.
+//
+// An Anthropic workload identity_token_file is listed for the same reason as a Vertex
+// credential_source file: Bifrost reads that local file and posts it to the token endpoint, so
+// choosing the path chooses which local secret leaves the machine.
 func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
 	targets := make(map[string]*schemas.SecretVar)
 	add := func(name string, v *schemas.SecretVar) {
@@ -1122,6 +1177,9 @@ func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
 	}
 	if c := key.VertexKeyConfig; c != nil {
 		add("vertex_key_config.auth_credentials", &c.AuthCredentials)
+	}
+	if c := key.AnthropicKeyConfig; c.HasWorkloadIdentity() {
+		add("anthropic_key_config.workload_identity.identity_token_file", c.WorkloadIdentity.IdentityTokenFile)
 	}
 	if c := key.BedrockKeyConfig; c != nil {
 		addBedrockEndpoints("bedrock_key_config.endpoints", c.Endpoints)
@@ -1223,6 +1281,23 @@ func rejectUnknownOAuthKeyConfigFields(body []byte) error {
 	var cfg schemas.OAuthKeyConfig
 	if err := decoder.Decode(&cfg); err != nil {
 		return fmt.Errorf("oauth_key_config: %s", strings.TrimPrefix(err.Error(), "json: "))
+	}
+	return nil
+}
+
+// rejectUnknownAnthropicKeyConfigFields is rejectUnknownOAuthKeyConfigFields for
+// anthropic_key_config, which config.schema.json also closes: a misspelled workspace_id would
+// otherwise save a block that silently mints for the rule's default workspace.
+func rejectUnknownAnthropicKeyConfigFields(body []byte) error {
+	raw := gjson.GetBytes(body, "anthropic_key_config")
+	if !raw.Exists() || raw.Type == gjson.Null {
+		return nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw.Raw))
+	decoder.DisallowUnknownFields()
+	var cfg schemas.AnthropicKeyConfig
+	if err := decoder.Decode(&cfg); err != nil {
+		return fmt.Errorf("anthropic_key_config: %s", strings.TrimPrefix(err.Error(), "json: "))
 	}
 	return nil
 }
