@@ -3,7 +3,10 @@ package otel
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +14,10 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
+	metricscollector "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // blackholeListener accepts TCP connections and then never speaks. This is the shape of a
@@ -133,6 +140,182 @@ func (c *failingClient) Emit(_ context.Context, _ []*ResourceSpan) error {
 	return errors.New("collector unreachable")
 }
 func (c *failingClient) Close() error { return nil }
+
+// TestTraceExportMetrics verifies registration, per-profile totals and recovery
+// through Init -> Inject -> OTLP, including collection without new requests.
+func TestTraceExportMetrics(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", "cumulative")
+	var recovered atomic.Bool
+	var traceCalls atomic.Int64
+	var mu sync.Mutex
+	var received []*metricspb.Metric
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/failing-traces":
+			traceCalls.Add(1)
+			if !recovered.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+		case "/healthy-traces":
+		case "/v1/metrics":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read metrics: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			var req metricscollector.ExportMetricsServiceRequest
+			if err := proto.Unmarshal(body, &req); err != nil {
+				t.Errorf("decode OTLP metrics: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			for _, rm := range req.ResourceMetrics {
+				for _, sm := range rm.ScopeMetrics {
+					received = append(received, sm.Metrics...)
+				}
+			}
+			mu.Unlock()
+		default:
+			t.Errorf("unexpected collector path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-protobuf")
+	}))
+	t.Cleanup(collector.Close)
+
+	// Profiles sharing a service and destination must still have distinct series.
+	profiles := []*Profile{{Enabled: false}}
+	for _, path := range []string{"/failing-traces", "/healthy-traces"} {
+		profiles = append(profiles, &Profile{
+			Enabled: true, TracesEnabled: true, MetricsEnabled: true,
+			ServiceName: "same-service", Protocol: ProtocolHTTP, Insecure: true,
+			CollectorURL:        schemas.NewSecretVar(collector.URL + path),
+			MetricsEndpoint:     schemas.NewSecretVar(collector.URL + "/v1/metrics"),
+			MetricsPushInterval: 300,
+		})
+	}
+	metricsOnly, tracesOnly := *profiles[2], *profiles[2]
+	metricsOnly.TracesEnabled, metricsOnly.CollectorURL = false, nil
+	tracesOnly.MetricsEnabled, tracesOnly.MetricsEndpoint = false, nil
+	profiles = append(profiles, &metricsOnly, &tracesOnly)
+	plugin, err := Init(context.Background(), &Config{Profiles: profiles}, testLogger{}, nil, "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	check := func(wantFailed, wantSuppressed int64) {
+		t.Helper()
+		mu.Lock()
+		received = nil
+		mu.Unlock()
+		for _, target := range plugin.targets {
+			if target.metricsExporter != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err := target.metricsExporter.provider.ForceFlush(ctx)
+				cancel()
+				require.NoError(t, err)
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		want := map[string]map[int64]int64{
+			"bifrost_otel_trace_exports_failed_total":     {1: wantFailed, 2: 0},
+			"bifrost_otel_trace_exports_suppressed_total": {1: wantSuppressed, 2: 0},
+		}
+		seen := make(map[string]map[int64]int64)
+		for _, m := range received {
+			if _, ok := want[m.Name]; !ok {
+				continue
+			}
+			sum := m.GetSum()
+			require.NotNil(t, sum, m.Name)
+			require.True(t, sum.IsMonotonic, m.Name)
+			require.Equal(t, metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE, sum.AggregationTemporality)
+			require.Len(t, sum.DataPoints, 1)
+			dp := sum.DataPoints[0]
+			index, instance := int64(-1), ""
+			for _, attr := range dp.Attributes {
+				switch attr.Key {
+				case "otel_profile_index":
+					index = attr.Value.GetIntValue()
+				case "bifrost_instance_id":
+					instance = attr.Value.GetStringValue()
+				}
+			}
+			require.Len(t, dp.Attributes, 2)
+			require.Equal(t, serviceInstanceID, instance)
+			if seen[m.Name] == nil {
+				seen[m.Name] = make(map[int64]int64)
+			}
+			require.NotContains(t, seen[m.Name], index, "duplicate series for %s", m.Name)
+			seen[m.Name][index] = dp.GetAsInt()
+		}
+		require.Equal(t, want, seen)
+	}
+
+	check(0, 0)
+	trace := &schemas.Trace{TraceID: "export-health"}
+	for range breakerFailureThreshold + 3 {
+		require.NoError(t, plugin.Inject(context.Background(), trace))
+	}
+	require.EqualValues(t, breakerFailureThreshold, traceCalls.Load())
+	check(breakerFailureThreshold, 3)
+	check(breakerFailureThreshold, 3) // Idle collection must not reset or re-add totals.
+
+	recovered.Store(true)
+	plugin.targets[0].breakerOpenUntil.Store(time.Now().Add(-time.Second).UnixNano())
+	require.NoError(t, plugin.Inject(context.Background(), trace))
+	require.Zero(t, plugin.targets[0].breakerOpenUntil.Load())
+	check(breakerFailureThreshold, 3) // Recovery keeps the lifetime totals.
+}
+
+// Initialization and final metrics export are outside the timed loop. Trace export
+// is stubbed to isolate Inject from network I/O, with an empty trace in each case.
+func BenchmarkInjectExportHealth(b *testing.B) {
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-protobuf")
+	}))
+	b.Cleanup(collector.Close)
+	for _, tc := range []struct {
+		name           string
+		metricsEnabled bool
+		breakerOpen    bool
+	}{
+		{"metrics_disabled/healthy", false, false},
+		{"metrics_disabled/breaker_open", false, true},
+		{"metrics_enabled/healthy", true, false},
+		{"metrics_enabled/breaker_open", true, true},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			plugin, err := Init(context.Background(), &Config{Profiles: []*Profile{{
+				Enabled: true, TracesEnabled: true, MetricsEnabled: tc.metricsEnabled,
+				Protocol: ProtocolHTTP, Insecure: true,
+				CollectorURL:        schemas.NewSecretVar(collector.URL + "/v1/traces"),
+				MetricsEndpoint:     schemas.NewSecretVar(collector.URL + "/v1/metrics"),
+				MetricsPushInterval: 300,
+			}}}, testLogger{}, nil, "")
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.Cleanup(func() { _ = plugin.Cleanup() })
+			target := plugin.targets[0]
+			_ = target.client.Close()
+			target.client = stubOtelClient{}
+			if tc.breakerOpen {
+				target.breakerOpenUntil.Store(time.Now().Add(time.Hour).UnixNano())
+			}
+			trace := &schemas.Trace{TraceID: "bench"}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				_ = plugin.Inject(context.Background(), trace)
+			}
+		})
+	}
+}
 
 // TestInject_CircuitBreakerStopsDialling verifies that a permanently bad endpoint stops
 // costing an export attempt per request. Without the breaker, every request pays the full
