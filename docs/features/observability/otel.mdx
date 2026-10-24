@@ -1204,6 +1204,21 @@ Before Bifrost 2.2.2, a failure Bifrost raised itself — a request-conversion e
 
 > **Note:** Size metrics are only recorded when the `Content-Length` header is present. Requests or responses without it (e.g., chunked transfer encoding, streaming responses) do not produce data points in these histograms.
 
+### Trace export health
+
+Profiles with both `traces_enabled` and `metrics_enabled` publish two additional OTLP counters through their `metrics_endpoint`:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `bifrost_otel_trace_exports_failed_total` | Counter | Trace export attempts that returned an error, including timeouts |
+| `bifrost_otel_trace_exports_suppressed_total` | Counter | Traces skipped because the profile's export circuit breaker was open |
+
+Totals start at zero, survive collector recovery, and reset when the plugin is recreated. Labels are `bifrost_instance_id` and `otel_profile_index` (the zero-based position in `profiles`, including disabled entries). These count export errors and breaker skips, not all lost traces.
+
+<Note>
+These are OTLP metrics, not telemetry `/metrics` entries. If both signals share an unavailable collector, delivery resumes after recovery with the current totals (default cumulative temporality). Use a separately available `metrics_endpoint` on the same profile for visibility during a trace-collector outage.
+</Note>
+
 ### Overhead breakdown
 
 `bifrost_overhead_component_microseconds` decomposes the same overhead measured by `bifrost_overhead_latency_microseconds` into per-component histograms, sharing its bucket boundaries. It carries the same base attributes plus an `overhead_component` attribute naming the internal component, so summing every component for a given attribute set reconstructs the scalar total.

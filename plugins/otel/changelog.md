@@ -1,0 +1,1 @@
+- [feat]: expose trace export failures and circuit-breaker skips as OTLP counters [@Constantine3](https://github.com/Constantine3)

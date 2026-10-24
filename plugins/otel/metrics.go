@@ -281,6 +281,38 @@ func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExp
 	return m, nil
 }
 
+// registerTraceExportMetrics observes the existing per-target totals without adding
+// work to Inject. Each target retains two instruments, one callback and a fixed label
+// set for its MeterProvider's lifetime; Cleanup shuts down its collection reader.
+func (m *MetricsExporter) registerTraceExportMetrics(target *otelTarget, profileIndex int) error {
+	failed, err := m.meter.Int64ObservableCounter("bifrost_otel_trace_exports_failed_total",
+		metric.WithDescription("Trace export attempts that returned an error"),
+		metric.WithUnit("{trace}"),
+	)
+	if err != nil {
+		return err
+	}
+	suppressed, err := m.meter.Int64ObservableCounter("bifrost_otel_trace_exports_suppressed_total",
+		metric.WithDescription("Traces skipped while the export circuit breaker was open"),
+		metric.WithUnit("{trace}"),
+	)
+	if err != nil {
+		return err
+	}
+	// Profiles can share both service.name and a metrics endpoint. Use the config
+	// index to distinguish them without exposing collector URLs or credentials.
+	opts := []metric.ObserveOption{metric.WithAttributeSet(attribute.NewSet(
+		attribute.Int("otel_profile_index", profileIndex),
+		attribute.String("bifrost_instance_id", serviceInstanceID),
+	))}
+	_, err = m.meter.RegisterCallback(func(_ context.Context, observer metric.Observer) error {
+		observer.ObserveInt64(failed, target.failedExports.Load(), opts...)
+		observer.ObserveInt64(suppressed, target.suppressedExports.Load(), opts...)
+		return nil
+	}, failed, suppressed)
+	return err
+}
+
 func createHTTPExporter(ctx context.Context, config *MetricsConfig) (sdkmetric.Exporter, error) {
 	opts := []otlpmetrichttp.Option{
 		otlpmetrichttp.WithEndpointURL(config.Endpoint),
