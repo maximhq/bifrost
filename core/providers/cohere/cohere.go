@@ -202,7 +202,9 @@ func (provider *CohereProvider) completeRequest(ctx *schemas.BifrostContext, jso
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(readErr, latency)
+		}
 		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseCohereError(resp), latency)
 	}
 

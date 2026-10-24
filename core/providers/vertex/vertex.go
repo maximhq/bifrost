@@ -909,10 +909,12 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		// Remove client from pool for authentication/authorization errors
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			provider.removeVertexClient(key)
+		}
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -1361,10 +1363,12 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 		if resp.StatusCode() != fasthttp.StatusOK {
-			providerUtils.MaterializeStreamErrorBody(ctx, resp)
 			// Remove client from pool for authentication/authorization errors
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 				provider.removeVertexClient(key)
+			}
+			if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+				return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 			}
 			return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -1524,10 +1528,12 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 		if resp.StatusCode() != fasthttp.StatusOK {
-			providerUtils.MaterializeStreamErrorBody(ctx, resp)
 			// Remove client from pool for authentication/authorization errors
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 				provider.removeVertexClient(key)
+			}
+			if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+				return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 			}
 			return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
@@ -1882,10 +1888,12 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		// Remove client from pool for authentication/authorization errors
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			provider.removeVertexClient(key)
+		}
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -2050,9 +2058,11 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			provider.removeVertexClient(key)
+		}
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
 		errorMessage := parseDiscoveryEngineErrorMessage(resp.Body())
@@ -2288,10 +2298,12 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		// Remove client from pool for authentication/authorization errors
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			provider.removeVertexClient(key)
+		}
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -2500,9 +2512,11 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			provider.removeVertexClient(key)
+		}
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -4560,9 +4574,11 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			provider.removeVertexClient(key)
+		}
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
