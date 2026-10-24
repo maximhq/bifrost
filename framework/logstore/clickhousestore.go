@@ -1435,6 +1435,13 @@ func (s *ClickHouseLogStore) DeleteWarpTopicAssignments(ctx context.Context, log
 	return nil
 }
 
+// DeleteWarpTopicAssignmentsUnmatchedSince removes the rows filed under no
+// topic at or after since, with one lightweight delete.
+func (s *ClickHouseLogStore) DeleteWarpTopicAssignmentsUnmatchedSince(ctx context.Context, since time.Time) error {
+	placeholder, arg := warpTopicTimeArg(s.db, since)
+	return s.chLightweightDelete(ctx, "warp_topic_assignments", "topic_id = ? AND assigned_at >= "+placeholder, "", arg)
+}
+
 // DeleteWarpTopicAssignmentsBatch deletes every assignment whose log was
 // created before cutoff with one lightweight delete; see DeleteLogsBatch for
 // why batchSize is ignored.
