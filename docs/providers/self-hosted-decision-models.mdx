@@ -190,12 +190,12 @@ curl http://localhost:8080/v1/decisions \
 
 ## Decision Models (hosted)
 
-[Decision Models](https://decisionmodels.io) is a hosted, Jev-compatible API that serves the same System One shape on `POST https://api.decisionmodels.io/v1/systemone` with a bearer API key. Nothing to run yourself: add it as a custom provider on the **Typesafe** base format, like Laya and Nimble above.
+[Decision Models](https://decisionmodels.io) is a hosted API that serves the same System One shape on `POST https://api.decisionmodels.io/v1/systemone` with a bearer API key. Nothing to run yourself: add it as a custom provider on the **Typesafe** base format, like Laya and Nimble above.
 
 | | Decision Models |
 |---|---|
-| **Models** | `s1-fast`, `s1-pro`, `quyet-1-large` |
-| **Questions per request** | `s1-fast` and `quyet-1-large`: 1. `s1-pro`: up to 3 |
+| **Models** | `s1-fast`, `s1-pro`, `reax-1` (aliases that always point to the current version) |
+| **Questions per request** | `s1-fast`: 1. `s1-pro` and `reax-1`: up to 3 |
 | **Input** | Text, up to 8,192 tokens per question |
 | **Auth** | Bearer API key (`DECISIONMODELS_API_KEY`) |
 
@@ -206,7 +206,7 @@ curl http://localhost:8080/v1/decisions \
 2. In **Add Custom Provider**, set **Name** (for example `decisionmodels`) and **Base Format** to **Typesafe**.
 3. Set **Base URL** to `https://api.decisionmodels.io`.
 4. Under **Allowed Request Types**, turn on **Decisions** and turn **List Models** off.
-5. Add a key with your Decision Models API key, and in **Allowed Models** type `s1-fast`, `s1-pro`, `quyet-1-large`.
+5. Add a key with your Decision Models API key, and in **Allowed Models** type `s1-fast`, `s1-pro`, `reax-1`.
 6. Save.
 
 </Tab>
@@ -220,7 +220,7 @@ curl http://localhost:8080/v1/decisions \
         {
           "name": "decisionmodels-key",
           "value": "env.DECISIONMODELS_API_KEY",
-          "models": ["s1-fast", "s1-pro", "quyet-1-large"],
+          "models": ["s1-fast", "s1-pro", "reax-1"],
           "weight": 1
         }
       ],
@@ -256,7 +256,7 @@ curl http://localhost:8080/v1/decisions \
   }'
 ```
 
-Input prices are in USD per 1 million input tokens on the Peer-to-Peer tier, with output tokens free: `s1-fast` 0.019, `s1-pro` 0.08, `quyet-1-large` 0.035 (current list at `https://api.decisionmodels.io/v1/models`). Add a [pricing override](#pricing) to see them in Bifrost's cost tracking. Images go through a separate `/v1/multimodal` endpoint that this provider does not use.
+Input prices are in USD per 1 million input tokens on the Peer-to-Peer tier, with output tokens free: `s1-fast` 0.019, `s1-pro` 0.08, `reax-1` 0.08 (current list at `https://api.decisionmodels.io/v1/models`). Add a [pricing override](#pricing) to see them in Bifrost's cost tracking. Images go through a separate `/v1/multimodal` endpoint that this provider does not use.
 
 ---
 
