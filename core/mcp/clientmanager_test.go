@@ -21,6 +21,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/maximhq/bifrost/core/mcp/credstore"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -1763,6 +1764,105 @@ func TestAwaitsAdminVerification_OpenAPINeverWaits(t *testing.T) {
 	httpCfg := *cfg
 	httpCfg.ConnectionType = schemas.MCPConnectionTypeHTTP
 	assert.True(t, awaitsAdminVerification(&httpCfg), "control: the same auth type over HTTP still awaits verification")
+}
+
+// TestAwaitsAdminVerification_OpenAPIOAuthWaitsForAuthorization: tools of an
+// openapi client come from its spec, but an oauth or per_user_oauth one
+// declared with a pending oauth_config has no token yet, so it waits for the
+// admin's authorization like any other OAuth client.
+func TestAwaitsAdminVerification_OpenAPIOAuthWaitsForAuthorization(t *testing.T) {
+	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth} {
+		cfg := newOpenAPITestConfig("oauth", "listPets")
+		cfg.AuthType = authType
+		assert.False(t, awaitsAdminVerification(cfg), "%s: already authorized (no pending oauth_config)", authType)
+		cfg.PendingOAuthConfig = &schemas.OAuth2Config{}
+		assert.True(t, awaitsAdminVerification(cfg), "%s: pending authorization", authType)
+	}
+}
+
+// openAPIOAuthCredStore resolves per_user_oauth like the real resolver does
+// for a caller with or without a stored token: a bearer when token is set,
+// else the typed authorization-required error.
+type openAPIOAuthCredStore struct {
+	*credstore.CredStore
+	token string
+}
+
+func (s *openAPIOAuthCredStore) ConnectionHeaders(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) (http.Header, error) {
+	if config.AuthType != schemas.MCPAuthTypePerUserOauth {
+		return s.CredStore.ConnectionHeaders(ctx, config)
+	}
+	if s.token == "" {
+		return nil, &schemas.MCPAuthRequiredError{
+			Kind:          schemas.MCPAuthRequiredKindOAuth,
+			MCPClientID:   config.ID,
+			MCPClientName: config.Name,
+			AuthorizeURL:  "https://auth.example.com/authorize?state=s",
+			Message:       "Authentication required",
+		}
+	}
+	return http.Header{"Authorization": {"Bearer " + s.token}}, nil
+}
+
+// TestAcquireClientConn_OpenAPIPerUserOAuth: a per_user_oauth openapi client
+// connects without any token (its tools come from the spec), surfaces the typed
+// authorization-required error from AcquireClientConn before CallTool for a
+// caller with no token, and sends the caller's bearer with static headers once
+// one exists.
+func TestAcquireClientConn_OpenAPIPerUserOAuth(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	store := &openAPIOAuthCredStore{CredStore: credstore.NewCredStore(nil, nil, &MockLogger{})}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, store, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("peruseroauth", "listPets")
+	config.AuthType = schemas.MCPAuthTypePerUserOauth
+	config.OauthConfigID = schemas.Ptr("oauth-cfg")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	m.mu.RLock()
+	state := m.clientMap[config.ID]
+	m.mu.RUnlock()
+	require.Equal(t, schemas.MCPConnectionStateHealthy, state.State)
+	require.NotNil(t, state.Conn)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	conn, release, err := m.AcquireClientConn(ctx, state)
+	var authErr *schemas.MCPAuthRequiredError
+	require.ErrorAs(t, err, &authErr, "the typed error drives the inline authorize-URL flow")
+	assert.Equal(t, "https://auth.example.com/authorize?state=s", authErr.AuthorizeURL)
+	assert.Nil(t, conn)
+	assert.Nil(t, release)
+
+	store.token = "user-token"
+	conn, release, err = m.AcquireClientConn(ctx, state)
+	require.NoError(t, err)
+	defer release()
+	res, err := conn.CallTool(ctx, mcpgo.CallToolRequest{Params: mcpgo.CallToolParams{Name: "listPets"}})
+	require.NoError(t, err)
+	require.Len(t, res.Content, 1)
+	text := res.Content[0].(mcpgo.TextContent).Text
+	assert.Contains(t, text, "Authorization=Bearer user-token;", "the caller's OAuth bearer replaces the static Authorization header")
+	assert.Contains(t, text, "X-Static=static-value;", "static headers still apply alongside OAuth")
+}
+
+// TestAddClient_OpenAPIOAuthPendingParks: an openapi oauth client declared with
+// a pending oauth_config is parked in pending_verification instead of
+// connecting with no token.
+func TestAddClient_OpenAPIOAuthPendingParks(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("pendingoauth", "listPets")
+	config.AuthType = schemas.MCPAuthTypeOauth
+	config.PendingOAuthConfig = &schemas.OAuth2Config{}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	m.mu.RLock()
+	state := m.clientMap[config.ID].State
+	m.mu.RUnlock()
+	assert.Equal(t, schemas.MCPConnectionStatePendingVerification, state)
+	_, err := m.RefreshClientTools(context.Background(), config.ID)
+	assert.ErrorIs(t, err, schemas.ErrMCPRefreshNotApplicable, "refresh is refused until the admin authorizes")
 }
 
 func TestOpenAPIConfigChanged(t *testing.T) {

@@ -459,9 +459,10 @@ func TestCheckToolExecutionPermitted_PluginCannotCopyInjectedMarker(t *testing.T
 
 // TestValidateMCPClientConfig_OpenAPI pins the config rules for the openapi
 // connection type: a spec source is mandatory, connection_string is not the way
-// to name the upstream, base_url must be absolute http(s), and the auth types
-// that drive an MCP handshake against a remote server are refused because the
-// synthesized server has no such remote.
+// to name the upstream, base_url must be absolute http(s), oauth and
+// per_user_oauth are accepted (they only need the provider's endpoints), and
+// token exchange, whose verification is a handshake against a remote MCP
+// server, is refused because the synthesized server has no such remote.
 func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
 	str := func(s string) *string { return &s }
 	base := func(mutate func(c *schemas.MCPClientConfig)) *schemas.MCPClientConfig {
@@ -502,8 +503,8 @@ func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
 		{name: "relative base url", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig.BaseURL = str("/v1") }), wantErr: "base_url must be an absolute http(s) URL"},
 		{name: "non-http base url", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig.BaseURL = str("ftp://api.example.com") }), wantErr: "base_url must be an absolute http(s) URL"},
 		{name: "negative response cap", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig.MaxResponseBytes = -1 }), wantErr: "max_response_bytes must not be negative"},
-		{name: "oauth refused", cfg: base(func(c *schemas.MCPClientConfig) { c.AuthType = schemas.MCPAuthTypeOauth }), wantErr: `auth_type "oauth" is not supported for openapi`},
-		{name: "per-user oauth refused", cfg: base(func(c *schemas.MCPClientConfig) { c.AuthType = schemas.MCPAuthTypePerUserOauth }), wantErr: "not supported for openapi"},
+		{name: "oauth", cfg: base(func(c *schemas.MCPClientConfig) { c.AuthType = schemas.MCPAuthTypeOauth })},
+		{name: "per-user oauth", cfg: base(func(c *schemas.MCPClientConfig) { c.AuthType = schemas.MCPAuthTypePerUserOauth })},
 		{name: "token exchange refused", cfg: base(func(c *schemas.MCPClientConfig) {
 			c.AuthType = schemas.MCPAuthTypeTokenExchange
 			c.TokenExchange = &schemas.MCPTokenExchangeConfig{Audience: "aud", UseIdPCredentials: true}
