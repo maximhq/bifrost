@@ -2492,6 +2492,12 @@ func (h *HybridLogStore) UpsertWarpTopicAssignments(ctx context.Context, assignm
 	return h.inner.UpsertWarpTopicAssignments(ctx, assignments)
 }
 
+// DeleteWarpTopicAssignmentsUnmatchedSince removes the rows filed under no
+// topic at or after since.
+func (h *HybridLogStore) DeleteWarpTopicAssignmentsUnmatchedSince(ctx context.Context, since time.Time) error {
+	return h.inner.DeleteWarpTopicAssignmentsUnmatchedSince(ctx, since)
+}
+
 // DeleteWarpTopicAssignments removes the given requests' assignments.
 func (h *HybridLogStore) DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error {
 	return h.inner.DeleteWarpTopicAssignments(ctx, logIDs)
