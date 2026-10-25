@@ -52,3 +52,6 @@ type ErrUnresolvedKeys struct {
 func (e *ErrUnresolvedKeys) Error() string {
 	return fmt.Sprintf("could not resolve keys: %s", strings.Join(e.Identifiers, ", "))
 }
+
+// ErrOAuthConfigChanged is returned when an oauth config was rebound by another caller first.
+var ErrOAuthConfigChanged = errors.New("oauth config was changed concurrently")

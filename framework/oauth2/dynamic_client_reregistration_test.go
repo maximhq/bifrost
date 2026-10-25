@@ -79,13 +79,23 @@ func (s *dcrConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.T
 }
 
 // RotateMCPOAuthConfig mirrors RDBConfigStore's: write every field when any of
-// them differs, cascading every bound token to needs_reauth.
+// them differs, cascading every bound token to needs_reauth, and only while the
+// stored client_id is still ExpectedClientID when that is set.
 func (s *dcrConfigStore) RotateMCPOAuthConfig(ctx context.Context, existing *tables.TableOauthConfig, fields configstore.MCPOAuthConfigFields) (bool, error) {
 	if existing == nil {
 		return false, errors.New("oauth config is nil")
 	}
 	if !fields.DiffersFrom(existing) {
 		return false, nil
+	}
+	if fields.ExpectedClientID != nil {
+		var matched int64
+		if err := s.db.WithContext(ctx).Model(&tables.TableOauthConfig{}).Where("id = ? AND client_id = ?", existing.ID, *fields.ExpectedClientID).Count(&matched).Error; err != nil {
+			return false, err
+		}
+		if matched == 0 {
+			return false, configstore.ErrOAuthConfigChanged
+		}
 	}
 	existing.ClientID = fields.ClientID.Clone()
 	existing.ClientSecret = fields.ClientSecret.Clone()
@@ -97,6 +107,9 @@ func (s *dcrConfigStore) RotateMCPOAuthConfig(ctx context.Context, existing *tab
 		existing.RegistrationURL = bifrost.Ptr(fields.RegistrationURL)
 	}
 	existing.Resource = fields.Resource
+	if fields.RedirectURI != "" {
+		existing.RedirectURI = fields.RedirectURI
+	}
 	if len(fields.Scopes) == 0 {
 		existing.Scopes = ""
 	} else {
@@ -828,5 +841,308 @@ func TestInitiateOAuthFlowResourceFromDiscovery(t *testing.T) {
 			require.NotNil(t, stored)
 			require.Equal(t, tc.wantResource, stored.Resource)
 		})
+	}
+}
+
+// discoverableAuthServer is a discoverable MCP server + authorization server that counts DCR calls.
+type discoverableAuthServer struct {
+	server        *httptest.Server
+	registrations int
+	mu            sync.Mutex
+}
+
+func newDiscoverableAuthServer(t *testing.T, supportsCIMD bool) *discoverableAuthServer {
+	t.Helper()
+	as := &discoverableAuthServer{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+as.server.URL+`/.well-known/oauth-protected-resource"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": as.server.URL + "/mcp", "authorization_servers": []string{as.server.URL}})
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                as.server.URL,
+			"authorization_endpoint":                as.server.URL + "/authorize",
+			"token_endpoint":                        as.server.URL + "/token",
+			"registration_endpoint":                 as.server.URL + "/register",
+			"code_challenge_methods_supported":      []string{"S256"},
+			"client_id_metadata_document_supported": supportsCIMD,
+		})
+	})
+	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		as.mu.Lock()
+		as.registrations++
+		n := as.registrations
+		as.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": fmt.Sprintf("dyn-%d", n)})
+	})
+	as.server = httptest.NewServer(mux)
+	t.Cleanup(as.server.Close)
+	return as
+}
+
+// Client ID selection: configured client_id, else CIMD when supported and usable, else DCR.
+func TestInitiateOAuthFlow_ChoosesClientIDMetadataDocument(t *testing.T) {
+	const documentURL = "https://bifrost.example.com/api/oauth/client-metadata.json"
+	cases := []struct {
+		name         string
+		supportsCIMD bool
+		documentURL  string
+		clientID     *schemas.SecretVar
+		endpoints    string // "" = discovered, "own" = entered by hand, "other" = another server's, entered by hand, "other-token" = only another server's token endpoint entered
+		wantClientID string // "" = a dynamically registered one
+	}{
+		{"supported", true, documentURL, nil, "", documentURL},
+		{"not advertised", false, documentURL, nil, "", ""},
+		{"document not served over https", true, "http://bifrost.example.com/api/oauth/client-metadata.json", nil, "", ""},
+		{"document on a loopback host", true, "https://localhost:8080/api/oauth/client-metadata.json", nil, "", ""},
+		{"no document", true, "", nil, "", ""},
+		{"configured client_id", true, documentURL, schemas.NewSecretVar("preset"), "", "preset"},
+		{"endpoints entered by hand, supported", true, documentURL, nil, "own", documentURL},
+		{"endpoints entered by hand, not advertised", false, documentURL, nil, "own", ""},
+		{"endpoints entered by hand for another authorization server", true, documentURL, nil, "other", ""},
+		{"token endpoint entered by hand for another authorization server", true, documentURL, nil, "other-token", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			as := newDiscoverableAuthServer(t, tc.supportsCIMD)
+			provider, _ := newDCRProvider(t)
+			config := &schemas.OAuth2Config{
+				ClientID:          tc.clientID,
+				ServerURL:         as.server.URL + "/mcp",
+				RedirectURI:       "https://bifrost.example.com/api/oauth/callback",
+				ClientMetadataURL: tc.documentURL,
+			}
+			switch tc.endpoints {
+			case "own":
+				config.AuthorizeURL, config.TokenURL = as.server.URL+"/authorize", as.server.URL+"/token"
+			case "other":
+				config.AuthorizeURL, config.TokenURL = "https://other.example.com/authorize", "https://other.example.com/token"
+			case "other-token":
+				config.TokenURL = "https://other.example.com/token" // authorize_url is discovered
+			}
+			if tc.endpoints != "" && tc.endpoints != "other-token" {
+				registrationURL := as.server.URL + "/register"
+				config.RegistrationURL = &registrationURL
+			}
+			initiation, err := provider.InitiateOAuthFlow(context.Background(), config)
+			require.NoError(t, err)
+			authorize, err := url.Parse(initiation.AuthorizeURL)
+			require.NoError(t, err)
+			got := authorize.Query().Get("client_id")
+			if tc.wantClientID == "" {
+				assert.Equal(t, "dyn-1", got, "falls back to dynamic client registration")
+				assert.Equal(t, 1, as.registrations)
+				return
+			}
+			assert.Equal(t, tc.wantClientID, got)
+			assert.Zero(t, as.registrations, "no dynamic registration")
+		})
+	}
+}
+
+// use_client_metadata_document registers with Bifrost's document whether or not the authorization
+// server advertises support, including when its endpoints were entered by hand because discovery
+// failed; it refuses a client_id alongside it and a document no authorization server could fetch.
+func TestInitiateOAuthFlow_UseClientMetadataDocument(t *testing.T) {
+	const documentURL = "https://bifrost.example.com/api/oauth/client-metadata.json"
+	cases := []struct {
+		name        string
+		documentURL string
+		clientID    *schemas.SecretVar
+		byHand      bool // endpoints entered by hand for a server that cannot be discovered
+		wantErr     error
+	}{
+		{"not advertised", documentURL, nil, false, nil},
+		{"undiscoverable server, endpoints by hand", documentURL, nil, true, nil},
+		{"with a client_id", documentURL, schemas.NewSecretVar("preset"), false, ErrClientMetadataDocumentWithClientID},
+		{"document not served over https", "http://bifrost.example.com/api/oauth/client-metadata.json", nil, false, ErrClientMetadataDocumentUnavailable},
+		{"document on a loopback host", "https://localhost:8080/api/oauth/client-metadata.json", nil, false, ErrClientMetadataDocumentUnavailable},
+		{"no document", "", nil, false, ErrClientMetadataDocumentUnavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			as := newDiscoverableAuthServer(t, false)
+			provider, store := newDCRProvider(t)
+			config := &schemas.OAuth2Config{
+				ClientID:                  tc.clientID,
+				ClientSecret:              schemas.NewSecretVar("entered-secret"),
+				ServerURL:                 as.server.URL + "/mcp",
+				RedirectURI:               "https://bifrost.example.com/api/oauth/callback",
+				ClientMetadataURL:         tc.documentURL,
+				UseClientMetadataDocument: true,
+			}
+			if tc.byHand {
+				config.ServerURL = "https://undiscoverable.example.com/mcp"
+				config.AuthorizeURL, config.TokenURL = "https://undiscoverable.example.com/authorize", "https://undiscoverable.example.com/token"
+			}
+			initiation, err := provider.InitiateOAuthFlow(context.Background(), config)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				assert.Zero(t, as.registrations, "no dynamic registration")
+				return
+			}
+			require.NoError(t, err)
+			authorize, err := url.Parse(initiation.AuthorizeURL)
+			require.NoError(t, err)
+			assert.Equal(t, documentURL, authorize.Query().Get("client_id"))
+			assert.Zero(t, as.registrations, "no dynamic registration")
+			stored, err := store.GetOauthConfigByID(context.Background(), initiation.OauthConfigID)
+			require.NoError(t, err)
+			assert.False(t, stored.ClientSecret.IsSet(), "no secret belongs to a metadata document client")
+		})
+	}
+}
+
+// A Client ID Metadata Document client is public (its document declares no token endpoint auth), so a
+// client_secret entered without a client_id is not kept for it.
+func TestInitiateOAuthFlow_ClientIDMetadataDocumentDropsSuppliedSecret(t *testing.T) {
+	const documentURL = "https://bifrost.example.com/api/oauth/client-metadata.json"
+	as := newDiscoverableAuthServer(t, true)
+	provider, store := newDCRProvider(t)
+	initiation, err := provider.InitiateOAuthFlow(context.Background(), &schemas.OAuth2Config{
+		ClientSecret:      schemas.NewSecretVar("entered-secret"),
+		ServerURL:         as.server.URL + "/mcp",
+		RedirectURI:       "https://bifrost.example.com/api/oauth/callback",
+		ClientMetadataURL: documentURL,
+	})
+	require.NoError(t, err)
+	stored, err := store.GetOauthConfigByID(context.Background(), initiation.OauthConfigID)
+	require.NoError(t, err)
+	assert.Equal(t, documentURL, stored.GetResolvedClientID())
+	assert.False(t, stored.ClientSecret.IsSet(), "no secret belongs to a metadata document client")
+}
+
+// A metadata-document client_id is the URL of Bifrost's document, so it follows Bifrost's address: a
+// sign-in under another base (the external URL changed, or none is set and another host is used)
+// moves the stored client_id to that base's document, and tokens issued to the old one must sign in
+// again. Under the same base nothing changes.
+func TestSignIn_ClientIDMetadataDocumentFollowsBaseURL(t *testing.T) {
+	const (
+		oldBase = "https://bifrost.example.com"
+		newBase = "https://gateway.example.com"
+	)
+	const central = "https://central.example.com/api/oauth/client-metadata.json"
+	for _, tc := range []struct {
+		name, configured, signInBase, wantClientID, wantStatus string
+	}{
+		{"base changed", "", newBase, newBase + "/api/oauth/client-metadata.json", "needs_reauth"},
+		{"same base", "", oldBase, oldBase + "/api/oauth/client-metadata.json", "active"},
+		// The authorization server cannot fetch a loopback or plain-http document, so the config stays.
+		{"unusable base", "", "http://localhost:8080", oldBase + "/api/oauth/client-metadata.json", "active"},
+		// Another host's document at the same path was configured by hand; it is not Bifrost's to move.
+		{"configured document on another host", central, newBase, central, "active"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			as := newDiscoverableAuthServer(t, true)
+			provider, store := newDCRProvider(t)
+			provider.SetClientMetadataDocumentPaths("/api/oauth/callback", "/api/oauth/client-metadata.json")
+			var rotated []string
+			provider.SetCredentialsRotatedHook(func(_ context.Context, mcpClientID string) { rotated = append(rotated, mcpClientID) })
+			ctx := context.Background()
+			config := &schemas.OAuth2Config{
+				ServerURL:         as.server.URL + "/mcp",
+				RedirectURI:       oldBase + "/api/oauth/callback",
+				ClientMetadataURL: oldBase + "/api/oauth/client-metadata.json",
+			}
+			if tc.configured != "" {
+				config.ClientID = schemas.NewSecretVar(tc.configured)
+			}
+			initiation, err := provider.InitiateOAuthFlow(ctx, config)
+			require.NoError(t, err)
+			require.NoError(t, store.db.Create(&tables.TableMCPClient{ClientID: dcrMCPClientID, Name: "grafana", OauthConfigID: bifrost.Ptr(initiation.OauthConfigID)}).Error)
+			require.NoError(t, store.db.Create(&tables.TableMCPOauthToken{
+				ID: "cimd-token", AuthMode: "shared", MCPClientID: dcrMCPClientID, OauthConfigID: initiation.OauthConfigID,
+				Status: "active", AccessToken: "at", TokenType: "Bearer",
+			}).Error)
+
+			_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, tc.signInBase+"/api/oauth/callback", schemas.MCPAuthModeAdmin)
+			require.NoError(t, err)
+			authorizeURL, err := provider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.wantClientID, authorizeURLClientID(t, authorizeURL))
+			stored, err := store.GetOauthConfigByID(ctx, initiation.OauthConfigID)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantClientID, stored.GetResolvedClientID())
+			token, err := store.GetOauthTokenByID(ctx, "cimd-token")
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantStatus, token.Status, "tokens issued to the old client_id cannot be refreshed under the new one")
+			if tc.wantStatus == "needs_reauth" {
+				assert.Equal(t, []string{dcrMCPClientID}, rotated, "the client's cached tokens and connection are dropped once")
+			} else {
+				assert.Empty(t, rotated, "nothing rotated, nothing dropped")
+			}
+		})
+	}
+}
+
+// Two sign-ins that loaded the config before its client_id followed Bifrost's new address move it once:
+// the one that lost the race neither moves it again nor signs out the token the winner's sign-in got.
+func TestSignIn_StaleClientIDMetadataDocumentMoveIsNotRepeated(t *testing.T) {
+	const (
+		oldBase = "https://bifrost.example.com"
+		newBase = "https://gateway.example.com"
+	)
+	as := newDiscoverableAuthServer(t, true)
+	provider, store := newDCRProvider(t)
+	provider.SetClientMetadataDocumentPaths("/api/oauth/callback", "/api/oauth/client-metadata.json")
+	var rotated []string
+	provider.SetCredentialsRotatedHook(func(_ context.Context, mcpClientID string) { rotated = append(rotated, mcpClientID) })
+	ctx := context.Background()
+	initiation, err := provider.InitiateOAuthFlow(ctx, &schemas.OAuth2Config{
+		ServerURL:         as.server.URL + "/mcp",
+		RedirectURI:       oldBase + "/api/oauth/callback",
+		ClientMetadataURL: oldBase + "/api/oauth/client-metadata.json",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.db.Create(&tables.TableMCPClient{ClientID: dcrMCPClientID, Name: "grafana", OauthConfigID: bifrost.Ptr(initiation.OauthConfigID)}).Error)
+	staleA, err := store.GetOauthConfigByID(ctx, initiation.OauthConfigID)
+	require.NoError(t, err)
+	staleB, err := store.GetOauthConfigByID(ctx, initiation.OauthConfigID)
+	require.NoError(t, err)
+
+	moved, err := provider.followClientMetadataDocument(ctx, staleA, dcrMCPClientID, newBase+"/api/oauth/callback")
+	require.NoError(t, err)
+	require.Equal(t, newBase+"/api/oauth/client-metadata.json", moved.GetResolvedClientID())
+	// The winner's sign-in completes under the new client_id.
+	require.NoError(t, store.db.Create(&tables.TableMCPOauthToken{
+		ID: "fresh-token", AuthMode: "shared", MCPClientID: dcrMCPClientID, OauthConfigID: initiation.OauthConfigID,
+		Status: "active", AccessToken: "at", TokenType: "Bearer",
+	}).Error)
+
+	again, err := provider.followClientMetadataDocument(ctx, staleB, dcrMCPClientID, newBase+"/api/oauth/callback")
+	require.NoError(t, err)
+	assert.Equal(t, newBase+"/api/oauth/client-metadata.json", again.GetResolvedClientID())
+	token, err := store.GetOauthTokenByID(ctx, "fresh-token")
+	require.NoError(t, err)
+	assert.Equal(t, "active", token.Status, "the stale sign-in must not sign out the token issued after the move")
+	assert.Equal(t, []string{dcrMCPClientID}, rotated, "the client's tokens and connection are dropped once")
+}
+
+// The client_id keeps following Bifrost's address across moves, not only the first one.
+func TestSignIn_ClientIDMetadataDocumentFollowsEveryMove(t *testing.T) {
+	as := newDiscoverableAuthServer(t, true)
+	provider, store := newDCRProvider(t)
+	provider.SetClientMetadataDocumentPaths("/api/oauth/callback", "/api/oauth/client-metadata.json")
+	ctx := context.Background()
+	initiation, err := provider.InitiateOAuthFlow(ctx, &schemas.OAuth2Config{
+		ServerURL:         as.server.URL + "/mcp",
+		RedirectURI:       "https://bifrost.example.com/api/oauth/callback",
+		ClientMetadataURL: "https://bifrost.example.com/api/oauth/client-metadata.json",
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.db.Create(&tables.TableMCPClient{ClientID: dcrMCPClientID, Name: "grafana", OauthConfigID: bifrost.Ptr(initiation.OauthConfigID)}).Error)
+	for _, base := range []string{"https://gateway.example.com", "https://edge.example.com"} {
+		_, flowID, err := provider.InitiateUserOAuthFlow(ctx, initiation.OauthConfigID, dcrMCPClientID, base+"/api/oauth/callback", schemas.MCPAuthModeAdmin)
+		require.NoError(t, err)
+		authorizeURL, err := provider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
+		require.NoError(t, err)
+		assert.Equal(t, base+"/api/oauth/client-metadata.json", authorizeURLClientID(t, authorizeURL))
 	}
 }

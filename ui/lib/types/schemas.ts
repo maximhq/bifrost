@@ -1904,6 +1904,7 @@ export const mcpClientUpdateSchema = z
 					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Registration URL must start with http:// or https://" }),
 				scopes: z.array(z.string()).optional(),
 				resource: z.string().optional(),
+				use_client_metadata_document: z.boolean().optional(),
 			})
 			.optional(),
 		token_exchange: z

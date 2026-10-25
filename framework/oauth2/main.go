@@ -76,6 +76,9 @@ type OAuth2Provider struct {
 	// reads behind unrelated revoke traffic.
 	tempTokens atomic.Pointer[temptoken.Service]
 
+	clientMetadataPaths atomic.Pointer[clientMetadataPaths]                           // set once at startup; see SetClientMetadataDocumentPaths
+	credentialsRotated  atomic.Pointer[func(ctx context.Context, mcpClientID string)] // see SetCredentialsRotatedHook
+
 	// userTokens caches per-user access-token lookups keyed by
 	// (auth mode, identity, mcp client). It owns its own locking and must
 	// never be guarded by p.mu, for the same reason tempTokens is not:
@@ -677,6 +680,18 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	// 2. Provide some URLs manually (partial discovery for missing ones)
 	// 3. Provide no URLs (full discovery from server_url)
 	needsDiscovery := (authorizeURL == "" || tokenURL == "")
+	supportsClientMetadataDocument := false
+
+	// Opted in: the admin vouches for support, so the advertised flag is not needed.
+	if config.UseClientMetadataDocument {
+		if config.ClientID.IsSet() {
+			return nil, ErrClientMetadataDocumentWithClientID
+		}
+		if clientMetadataDocumentID(config.ClientMetadataURL, true) == "" {
+			return nil, ErrClientMetadataDocumentUnavailable
+		}
+		supportsClientMetadataDocument = true
+	}
 
 	if needsDiscovery {
 		if config.ServerURL == "" {
@@ -713,6 +728,8 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 			resource = metadata.Resource
 			logger.Debug("Discovered OAuth resource", "resource", resource)
 		}
+		// A hand-entered token endpoint may belong to another authorization server.
+		supportsClientMetadataDocument = config.UseClientMetadataDocument || cimdSupportedAt(metadata, tokenURL)
 		// Merge scopes: use discovered scopes if user didn't provide any
 		if len(scopes) == 0 && len(metadata.ScopesSupported) > 0 {
 			scopes = metadata.ScopesSupported
@@ -734,6 +751,18 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	// If client_id is NOT provided, attempt dynamic registration
 	clientID := config.ClientID // carries env./vault. reference metadata; resolved at use time
 	clientSecret := config.ClientSecret
+
+	// Hand-entered endpoints skip discovery; fetch the CIMD flag separately.
+	if !needsDiscovery && !config.UseClientMetadataDocument && !clientID.IsSet() && config.ServerURL != "" && clientMetadataDocumentID(config.ClientMetadataURL, true) != "" {
+		supportsClientMetadataDocument = advertisesClientMetadataDocument(ctx, config.ServerURL, tokenURL)
+	}
+
+	// Prefer CIMD over DCR (deprecated in 2026-07-28).
+	if documentID := clientMetadataDocumentID(config.ClientMetadataURL, supportsClientMetadataDocument); !clientID.IsSet() && documentID != "" {
+		clientID = &schemas.SecretVar{Val: documentID, SecretType: schemas.SecretTypePlainText}
+		clientSecret = nil // a public client: its document declares token_endpoint_auth_method none
+		logger.Debug("Using Bifrost's Client ID Metadata Document as client_id: %s", documentID)
+	}
 
 	if !clientID.IsSet() {
 		// Check if registration URL is available
@@ -1084,6 +1113,13 @@ func (p *OAuth2Provider) buildUpstreamAuthorizeURLForFlow(ctx context.Context, f
 	if templateConfig == nil {
 		return "", schemas.ErrOAuth2ConfigNotFound
 	}
+	redirectURI := flow.RedirectURI
+	if redirectURI == "" {
+		redirectURI = templateConfig.RedirectURI
+	}
+	if templateConfig, err = p.followClientMetadataDocument(ctx, templateConfig, flow.MCPClientID, redirectURI); err != nil {
+		return "", err
+	}
 	// Recompute the PKCE challenge from the stored verifier (deterministic).
 	hash := sha256.Sum256([]byte(flow.CodeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
@@ -1093,10 +1129,6 @@ func (p *OAuth2Provider) buildUpstreamAuthorizeURLForFlow(ctx context.Context, f
 		if err := json.Unmarshal([]byte(templateConfig.Scopes), &scopes); err != nil {
 			return "", fmt.Errorf("failed to parse oauth scopes for flow %s: %w", flow.ID, err)
 		}
-	}
-	redirectURI := flow.RedirectURI
-	if redirectURI == "" {
-		redirectURI = templateConfig.RedirectURI
 	}
 	return p.buildAuthorizeURLWithPKCE(
 		templateConfig.AuthorizeURL,
@@ -1672,6 +1704,14 @@ var (
 	// accept). A 5xx is deliberately not this: the provider failing is not the
 	// provider saying no.
 	ErrDynamicRegistrationRejected = errors.New("the oauth provider rejected the registration request")
+
+	// ErrClientMetadataDocumentWithClientID means use_client_metadata_document was set with a client_id:
+	// the document's URL is the client_id, so the two cannot both apply.
+	ErrClientMetadataDocumentWithClientID = errors.New("use_client_metadata_document cannot be combined with a client_id")
+
+	// ErrClientMetadataDocumentUnavailable means use_client_metadata_document was set but Bifrost's
+	// document is not at an address an authorization server can fetch (public HTTPS, not loopback).
+	ErrClientMetadataDocumentUnavailable = errors.New("the client metadata document needs Bifrost on a public HTTPS address: set the MCP external URL")
 )
 
 // ReregisterDynamicClient obtains a fresh client_id (and secret, if the
@@ -1984,6 +2024,87 @@ func (p *OAuth2Provider) EvictUserTokenByID(tokenID string) {
 		return
 	}
 	p.userTokens.EvictByTokenID(tokenID)
+}
+
+// SetClientMetadataDocumentPaths tells the provider where, under Bifrost's base URL, the OAuth
+// callback and its Client ID Metadata Document are served, so a metadata-document client_id can follow
+// the base a sign-in uses (followClientMetadataDocument).
+func (p *OAuth2Provider) SetClientMetadataDocumentPaths(callbackPath, documentPath string) {
+	if p == nil {
+		return
+	}
+	p.clientMetadataPaths.Store(&clientMetadataPaths{callback: callbackPath, document: documentPath})
+}
+
+type clientMetadataPaths struct{ callback, document string }
+
+// SetCredentialsRotatedHook installs hook, run after the provider itself rotates an MCP client's OAuth
+// credentials (a metadata-document client_id following Bifrost's address), so the caller can drop that
+// client's cached tokens and connection as it does for its own rotations. nil removes it.
+func (p *OAuth2Provider) SetCredentialsRotatedHook(hook func(ctx context.Context, mcpClientID string)) {
+	if p == nil {
+		return
+	}
+	if hook == nil {
+		p.credentialsRotated.Store(nil)
+		return
+	}
+	p.credentialsRotated.Store(&hook)
+}
+
+// followClientMetadataDocument moves a metadata-document client_id to the document served under the base
+// the sign-in presents its callback on, so the authorization server fetches a document that lists that
+// callback. Tokens issued to the old client_id are marked to sign in again: they cannot be refreshed
+// under the new one.
+func (p *OAuth2Provider) followClientMetadataDocument(ctx context.Context, config *tables.TableOauthConfig, mcpClientID, redirectURI string) (*tables.TableOauthConfig, error) {
+	paths := p.clientMetadataPaths.Load()
+	clientID := config.GetResolvedClientID()
+	if paths == nil || !strings.HasSuffix(clientID, paths.document) || !strings.HasSuffix(redirectURI, paths.callback) {
+		return config, nil
+	}
+	// Only Bifrost's own document moves: it sits under the base of the callback stored with the config,
+	// so a document on another host, configured by hand, is left alone.
+	if strings.TrimSuffix(clientID, paths.document) != strings.TrimSuffix(config.RedirectURI, paths.callback) {
+		return config, nil
+	}
+	current := strings.TrimSuffix(redirectURI, paths.callback) + paths.document
+	// A base the authorization server cannot fetch (http, loopback) keeps the stored document.
+	if current == clientID || clientMetadataDocumentID(current, true) == "" {
+		return config, nil
+	}
+	var scopes []string
+	if config.Scopes != "" {
+		if err := json.Unmarshal([]byte(config.Scopes), &scopes); err != nil {
+			return nil, fmt.Errorf("failed to parse oauth scopes for config %s: %w", config.ID, err)
+		}
+	}
+	fields := configstore.MCPOAuthConfigFields{
+		ClientID:     &schemas.SecretVar{Val: current, SecretType: schemas.SecretTypePlainText},
+		AuthorizeURL: config.AuthorizeURL,
+		TokenURL:     config.TokenURL,
+		Resource:     config.Resource,
+		Scopes:       scopes,
+		RedirectURI:  redirectURI, // the stored callback moves with the document, so the next move is ours too
+
+		ExpectedClientID: &clientID, // a sign-in that loaded the config before another moved it must not move it again
+	}
+	if config.RegistrationURL != nil {
+		fields.RegistrationURL = *config.RegistrationURL
+	}
+	if _, err := p.configStore.RotateMCPOAuthConfig(ctx, config, fields); err != nil {
+		// Another sign-in moved it first and already dropped the old client's tokens and connection.
+		if errors.Is(err, configstore.ErrOAuthConfigChanged) {
+			return p.configStore.GetOauthConfigByID(ctx, config.ID)
+		}
+		return nil, fmt.Errorf("failed to move oauth config %s to the current Client ID Metadata Document: %w", config.ID, err)
+	}
+	logger.Info("[OAuth] oauth config %s now uses Client ID Metadata Document %s (was %s); tokens issued to the old client_id must sign in again", config.ID, current, clientID)
+	// Cached tokens and a shared connection still carry the old client's credentials.
+	if hook := p.credentialsRotated.Load(); hook != nil && mcpClientID != "" {
+		(*hook)(ctx, mcpClientID)
+	}
+	// Reloaded: saving leaves the struct's secret encrypted.
+	return p.configStore.GetOauthConfigByID(ctx, config.ID)
 }
 
 // SetOnTokenWritten registers a callback invoked after this provider writes a

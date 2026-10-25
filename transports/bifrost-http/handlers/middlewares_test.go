@@ -1441,6 +1441,8 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 		// into a redirect loop in the dashboard.
 		"/api/session/logout",
 		"/api/oauth/callback",
+		// Client ID Metadata Document
+		"/api/oauth/client-metadata.json",
 		"/health",
 	}
 

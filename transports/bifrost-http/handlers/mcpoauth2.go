@@ -28,6 +28,8 @@ type OAuthHandler struct {
 
 // NewOAuthHandler creates a new OAuth handler instance
 func NewOAuthHandler(oauthProvider *oauth2.OAuth2Provider, client *bifrost.Bifrost, store *lib.Config) *OAuthHandler {
+	// A metadata-document client_id follows the base these paths are served under.
+	oauthProvider.SetClientMetadataDocumentPaths(oauthCallbackPath, oauthClientMetadataPath)
 	return &OAuthHandler{
 		client:        client,
 		store:         store,
@@ -37,9 +39,33 @@ func NewOAuthHandler(oauthProvider *oauth2.OAuth2Provider, client *bifrost.Bifro
 
 // RegisterRoutes registers all OAuth-related routes
 func (h *OAuthHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	r.GET("/api/oauth/callback", lib.ChainMiddlewares(h.handleOAuthCallback, middlewares...))
+	r.GET(oauthCallbackPath, lib.ChainMiddlewares(h.handleOAuthCallback, middlewares...))
+	r.GET(oauthClientMetadataPath, lib.ChainMiddlewares(h.handleClientMetadataDocument, middlewares...))
 	r.GET("/api/oauth/config/{id}/status", lib.ChainMiddlewares(h.getOAuthConfigStatus, middlewares...))
 	r.DELETE("/api/oauth/config/{id}", lib.ChainMiddlewares(h.revokeOAuthConfig, middlewares...))
+}
+
+// Bifrost's OAuth client paths for upstream MCP servers.
+const (
+	oauthCallbackPath       = "/api/oauth/callback"
+	oauthClientMetadataPath = "/api/oauth/client-metadata.json"
+)
+
+// handleClientMetadataDocument serves Bifrost's Client ID Metadata Document (unauthenticated).
+func (h *OAuthHandler) handleClientMetadataDocument(ctx *fasthttp.RequestCtx) {
+	base := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
+	redirectURI := base + oauthCallbackPath
+	ctx.Response.Header.Set("Cache-Control", "public, max-age=3600")
+	SendJSON(ctx, map[string]any{
+		"client_id":                  base + oauthClientMetadataPath,
+		"client_name":                oauth2.ClientName,
+		"client_uri":                 base,
+		"redirect_uris":              []string{redirectURI},
+		"grant_types":                []string{"authorization_code", "refresh_token"},
+		"response_types":             []string{"code"},
+		"token_endpoint_auth_method": "none",
+		"application_type":           oauth2.ApplicationTypeFor(redirectURI),
+	})
 }
 
 // handleOAuthCallback handles the upstream OAuth provider callback. Performs
@@ -324,7 +350,9 @@ type OAuthInitiationRequest struct {
 	ServerURL       string             `json:"server_url"` // For OAuth discovery
 	Resource        string             `json:"resource"`   // OAuth resource indicator (RFC 8707)
 
-	RequirePublicTarget bool `json:"-"` // Server-set from the MCP client: OAuth requests may reach only public addresses
+	RequirePublicTarget       bool   `json:"-"` // Server-set from the MCP client: OAuth requests may reach only public addresses
+	ClientMetadataURL         string `json:"-"` // Server-set: Bifrost's Client ID Metadata Document URL
+	UseClientMetadataDocument bool   `json:"-"` // From the request's oauth_config: register with that document
 }
 
 // InitiateOAuthFlow initiates an OAuth flow and returns the authorization URL
@@ -346,7 +374,9 @@ func (h *OAuthHandler) InitiateOAuthFlow(ctx context.Context, req OAuthInitiatio
 		ServerURL:       req.ServerURL,
 		Resource:        req.Resource,
 
-		RequirePublicTarget: req.RequirePublicTarget,
+		RequirePublicTarget:       req.RequirePublicTarget,
+		ClientMetadataURL:         req.ClientMetadataURL,
+		UseClientMetadataDocument: req.UseClientMetadataDocument,
 	}
 
 	return h.oauthProvider.InitiateOAuthFlow(ctx, config)

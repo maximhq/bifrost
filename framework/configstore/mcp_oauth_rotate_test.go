@@ -105,6 +105,32 @@ func TestRotateMCPOAuthConfig_ChangedCredentialsCascadesAllAuthModes(t *testing.
 	assert.Equal(t, "needs_reauth", tokenStatus(t, s, "tok-user"), "user-mode token must be cascaded too, since rotation has no auth_mode filter")
 }
 
+// TestRotateMCPOAuthConfig_ExpectedClientIDClaimsTheRow: with ExpectedClientID set, a rotation from a
+// copy loaded before another caller rotated the row is refused with ErrOAuthConfigChanged and writes
+// nothing, so it cannot sign out the token issued after the first rotation.
+func TestRotateMCPOAuthConfig_ExpectedClientIDClaimsTheRow(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	first := seedRotateOauthConfig(t, s, "cfg-claim", "old-client-id", "secret")
+	stale, err := s.GetOauthConfigByID(ctx, first.ID)
+	require.NoError(t, err)
+
+	fields := baseRotateFields("new-client-id", "secret")
+	fields.ExpectedClientID = schemas.Ptr("old-client-id")
+	rotated, err := s.RotateMCPOAuthConfig(ctx, first, fields)
+	require.NoError(t, err)
+	require.True(t, rotated)
+	seedRotateToken(t, s, "tok-fresh", first.ID, "shared", "active")
+
+	rotated, err = s.RotateMCPOAuthConfig(ctx, stale, fields)
+	require.ErrorIs(t, err, ErrOAuthConfigChanged)
+	assert.False(t, rotated)
+	assert.Equal(t, "active", tokenStatus(t, s, "tok-fresh"), "the refused rotation must not cascade")
+	stored, err := s.GetOauthConfigByID(ctx, first.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "new-client-id", stored.GetResolvedClientID())
+}
+
 // TestRotateMCPOAuthConfig_ChangedSecondaryFieldsCascadesToo proves the
 // widened scope: authorize_url/token_url/registration_url/resource/scopes
 // drift is treated exactly like client_id/client_secret drift — any of them
