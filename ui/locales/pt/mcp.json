@@ -874,6 +874,8 @@
 			"invalidLinkBody": "A ligação pode ter expirado, já ter sido usada, ser inválida ou ter tido o token de curta duração removido. Acione novamente a ação original para criar uma ligação de autenticação nova.",
 			"successTitle": "Autenticação bem-sucedida",
 			"successBody": "A sua credencial foi armazenada. Pode fechar este separador e voltar ao seu cliente MCP — os pedidos futuros usarão esta credencial automaticamente.",
+			"toolsPendingTitle": "A descoberta ainda não foi concluída",
+			"toolsPendingBody": "A sua credencial foi guardada, mas o Bifrost não conseguiu descobrir as ferramentas, os prompts e os recursos de {{name}} por si. Peça ao seu cliente MCP para se ligar novamente a {{name}} para tentar de novo.",
 			"failedTitle": "A autenticação falhou",
 			"failedFallback": "Não foi possível concluir o fluxo de autenticação.",
 			"failedHint": "Pode fechar este separador e tentar novamente o pedido original a partir do seu cliente MCP para gerar uma ligação de autenticação nova.",

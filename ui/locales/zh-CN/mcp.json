@@ -874,6 +874,8 @@
 			"invalidLinkBody": "链接可能已过期、已被使用、无效，或其短期令牌被剥离。请再次触发原始操作以生成新的鉴权链接。",
 			"successTitle": "鉴权成功",
 			"successBody": "你的凭证已存储。可以关闭此标签页并返回 MCP 客户端 — 之后的请求会自动使用此凭证。",
+			"toolsPendingTitle": "发现尚未完成",
+			"toolsPendingBody": "您的凭证已保存，但 Bifrost 未能为您发现 {{name}} 的工具、提示词和资源。请让您的 MCP 客户端重新连接 {{name}} 以重试。",
 			"failedTitle": "鉴权失败",
 			"failedFallback": "我们无法完成鉴权流程。",
 			"failedHint": "你可以关闭此标签页，并从 MCP 客户端重试原始请求以生成新的鉴权链接。",

@@ -874,6 +874,8 @@
 			"invalidLinkBody": "Der Link ist möglicherweise abgelaufen, wurde bereits verwendet, ist ungültig oder sein kurzlebiges Token wurde entfernt. Führe die ursprüngliche Aktion erneut aus, um einen neuen Authentifizierungslink zu erstellen.",
 			"successTitle": "Authentifizierung erfolgreich",
 			"successBody": "Deine Anmeldedaten wurden gespeichert. Du kannst diesen Tab schließen und zu deinem MCP-Client zurückkehren – zukünftige Anfragen verwenden diese Anmeldedaten automatisch.",
+			"toolsPendingTitle": "Erkennung noch nicht abgeschlossen",
+			"toolsPendingBody": "Deine Anmeldedaten sind gespeichert, aber Bifrost konnte die Tools, Prompts und Ressourcen von {{name}} für dich nicht erkennen. Bitte deinen MCP-Client, sich erneut mit {{name}} zu verbinden, um es noch einmal zu versuchen.",
 			"failedTitle": "Authentifizierung fehlgeschlagen",
 			"failedFallback": "Wir konnten den Authentifizierungsablauf nicht abschließen.",
 			"failedHint": "Du kannst diesen Tab schließen und die ursprüngliche Anfrage von deinem MCP-Client aus wiederholen, um einen neuen Authentifizierungslink zu generieren.",

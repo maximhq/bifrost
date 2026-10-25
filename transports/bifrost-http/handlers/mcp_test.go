@@ -456,7 +456,7 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 			store := newRealOAuth2Store(t)
 			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
-			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
 
 			var req fasthttp.Request
 			req.Header.SetMethod(fasthttp.MethodPost)
@@ -507,7 +507,7 @@ func TestAddMCPClient_OAuthUsesClientIDMetadataDocument(t *testing.T) {
 			cfg := &lib.Config{ConfigStore: store, OAuthProvider: provider, ClientConfig: &configstore.ClientConfig{
 				MCPExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com"),
 			}}
-			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg, nil)}
 
 			var req fasthttp.Request
 			req.Header.SetMethod(fasthttp.MethodPost)
@@ -745,7 +745,7 @@ func TestSanitizeMCPLibraryServerName(t *testing.T) {
 // The use_client_metadata_document toggle reaches the provider on every bootstrap path: the create
 // request (through InitiateOAuthFlow) and a config.json client's stored pending config.
 func TestUseClientMetadataDocument_ReachesTheProvider(t *testing.T) {
-	handler := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, nil)
+	handler := NewOAuthHandler(oauth2.NewOAuth2Provider(nil, bifrost.NewDefaultLogger(schemas.LogLevelError)), nil, nil, nil)
 	_, err := handler.InitiateOAuthFlow(context.Background(), OAuthInitiationRequest{
 		ClientID:                  schemas.NewSecretVar("preset"),
 		ClientMetadataURL:         "https://bifrost.example.com/api/oauth/client-metadata.json",

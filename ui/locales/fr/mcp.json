@@ -874,6 +874,8 @@
 			"invalidLinkBody": "Le lien a peut-être expiré, été déjà utilisé, est invalide, ou son jeton de courte durée a été retiré. Déclenchez à nouveau l’action d’origine pour créer un nouveau lien d’authentification.",
 			"successTitle": "Authentification réussie",
 			"successBody": "Votre identifiant a été stocké. Vous pouvez fermer cet onglet et revenir à votre client MCP — les requêtes futures utiliseront automatiquement cet identifiant.",
+			"toolsPendingTitle": "La découverte n'est pas encore terminée",
+			"toolsPendingBody": "Vos identifiants sont enregistrés, mais Bifrost n'a pas pu découvrir les outils, prompts et ressources de {{name}} pour vous. Demandez à votre client MCP de se reconnecter à {{name}} pour réessayer.",
 			"failedTitle": "Échec de l’authentification",
 			"failedFallback": "Nous n’avons pas pu terminer le flux d’authentification.",
 			"failedHint": "Vous pouvez fermer cet onglet et réessayer la requête d’origine depuis votre client MCP pour générer un nouveau lien d’authentification.",

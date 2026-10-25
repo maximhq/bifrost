@@ -135502,6 +135502,10 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "discovery_error": {
+            "type": "string",
+            "description": "Present when the credential was stored but the MCP client's tools could not be loaded with it. Connecting to the client again retries."
           }
         }
       },
