@@ -759,6 +759,16 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				rm.ResponsesToolMessage.Output = &ResponsesToolMessageOutputStruct{
 					ResponsesFunctionToolCallOutputBlocks: respBlocks,
 				}
+				// A breakpoint on a tool result's content has to travel on the item: providers
+				// read a function_call_output's cache point from rm.CacheControl and place it
+				// after the tool result (Bedrock rejects or ignores one nested inside it), so a
+				// block-level marker left only on respBlocks is lost. The last marker wins.
+				for i := len(cm.Content.ContentBlocks) - 1; i >= 0; i-- {
+					if cm.Content.ContentBlocks[i].CacheControl != nil {
+						rm.CacheControl = cm.Content.ContentBlocks[i].CacheControl
+						break
+					}
+				}
 			}
 		}
 	}
