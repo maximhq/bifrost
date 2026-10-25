@@ -4871,3 +4871,56 @@ func TestToOpenAIResponsesRequest_StripsTextEditorMaxCharacters(t *testing.T) {
 		t.Errorf("max_characters leaked onto the OpenAI wire: %s", data)
 	}
 }
+
+// The web_search_call branch runs for every input item, so the benchmark covers a history
+// without web searches (the common case) and the same history with one search per turn.
+func BenchmarkToOpenAIResponsesRequestInput(b *testing.B) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	webSearchCallType := schemas.ResponsesMessageTypeWebSearchCall
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	user := schemas.ResponsesInputMessageRoleUser
+	history := func(withSearch bool) []schemas.ResponsesMessage {
+		var input []schemas.ResponsesMessage
+		for i := 0; i < 8; i++ {
+			input = append(input, schemas.ResponsesMessage{
+				Type: &messageType,
+				Role: &user,
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("what is new in the news today?"),
+				},
+			})
+			if withSearch {
+				input = append(input, schemas.ResponsesMessage{
+					Type:   &webSearchCallType,
+					ID:     schemas.Ptr("ws_bench"),
+					Status: schemas.Ptr("completed"),
+				})
+			}
+			input = append(input, schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				ID:     schemas.Ptr("msg_bench"),
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("here is a summary")},
+					},
+				},
+			})
+		}
+		return input
+	}
+	for name, withSearch := range map[string]bool{"plain-history": false, "web-search-history": true} {
+		b.Run(name, func(b *testing.B) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o",
+				Input:    history(withSearch),
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ToOpenAIResponsesRequest(nil, req)
+			}
+		})
+	}
+}
