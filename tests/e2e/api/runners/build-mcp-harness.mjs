@@ -3407,6 +3407,314 @@ const LOG43 = folder("LOG-43 Prometheus metric on success", `Setup: ${ALPHA_TOOL
   vkDelete("LOG-43", "teardown: delete the VK", "log43_vk"), deleteClient("LOG-43", "log-43-a"),
 ]);
 
+// ================================================================ tests on the mock's instructions, annotations, replies and scoped faults
+
+// serveTools re-adds a fleet server and gives it full tool definitions (annotations, replies, faults).
+const serveTools = (id, name, tools, title) => [
+  request(id, `setup: fresh mcpchaos server ${name}`, "POST", "/control", { base: CHAOS, noAuth: true, body: { add: name }, asserts: [A.status(200)] }),
+  request(id, `setup: ${name} serves ${title}`, "POST", `/control/${name}/tools/set`, { base: CHAOS, noAuth: true, body: { tools }, asserts: [A.status(200)] }),
+];
+const setInstructions = (id, server, text, label) => mockPost(id, server, "instructions", `setup: ${server} sends ${label} as its instructions`, { text });
+// digits is n bytes of 0-9 repeated, so a cut point is visible in the text itself.
+const digits = (n) => Array.from({ length: n }, (_, i) => String(i % 10)).join("");
+// block is one server's tagged section of the aggregated instructions.
+const block = (name, body) => `<mcp_server name="${name}">\n${body}\n</mcp_server>`;
+const instructionsEqual = (v, label) => A.custom(`instructions are ${label || lit(v)}`, [
+  `pm.expect(pm.response.json().result.instructions, 'body: ' + pm.response.text()).to.equal(${lit(v)});`,
+]);
+// fleetInstructions is the two-server fleet with instructions on alpha and/or beta, set before the clients are created
+// (a per-call client reads them when it is created). betaFirst registers beta first, so name order is not creation order.
+const fleetInstructions = (id, { alpha, beta, alphaClient = {}, betaFirst = false } = {}) => {
+  const p = id.toLowerCase();
+  const alphaReq = createClient(id, httpClient(`${p}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], allow_by_default: false, ...alphaClient }), "setup: register client alpha");
+  const betaReq = createClient(id, httpClient(`${p}-beta`, "beta", "beta", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client beta");
+  return [
+    ...freshServer(id, "alpha", ["echo", "add"]),
+    ...freshServer(id, "beta", ["echo"]),
+    ...(alpha ? [setInstructions(id, "alpha", alpha[0], alpha[1])] : []),
+    ...(beta ? [setInstructions(id, "beta", beta[0], beta[1])] : []),
+    ...(betaFirst ? [betaReq, alphaReq] : [alphaReq, betaReq]),
+  ];
+};
+const initialize = (id, title, asserts, opts = {}) => rpc(id, title, init("2025-03-26"), { ...opts, asserts: [A.status(200), ...asserts] });
+
+const EP03 = folder("EP-03 Instructions aggregate across clients", `Setup: ${FLEET}; alpha sends instructions "A1" and beta "B1"; beta is registered before alpha.`, [
+  ...fleetInstructions("EP-03", { alpha: ["A1", "\"A1\""], beta: ["B1", "\"B1\""], betaFirst: true }),
+  initialize("EP-03", "initialize", [instructionsEqual(block("alpha", "A1") + "\n\n" + block("beta", "B1"))]),
+  ...fleetTeardown("EP-03"),
+]);
+
+const EP05 = folder("EP-05 Instructions follow caller visibility", `Setup: ${FLEET}; alpha sends instructions "A1" and beta "B1"; the echo-only VK (${VKS.echo.text}) and the full-access VK (${VKS.full.text}); finally client alpha's tools_to_execute is set to [].`, [
+  ...fleetInstructions("EP-05", { alpha: ["A1", "\"A1\""], beta: ["B1", "\"B1\""] }),
+  createVK("EP-05", "echo"), createVK("EP-05", "full"),
+  initialize("EP-05", "control: an anonymous initialize shows both", [instructionsEqual(block("alpha", "A1") + "\n\n" + block("beta", "B1"))]),
+  initialize("EP-05", "initialize with the echo-only VK", [instructionsEqual(block("alpha", "A1"), "alpha's block only")], { headers: [MCP_ACCEPT, vkHeader("EP-05", "echo")] }),
+  initialize("EP-05", "initialize with include-clients beta", [instructionsEqual(block("beta", "B1"), "beta's block only")], { headers: [MCP_ACCEPT, inc("clients", "beta")] }),
+  initialize("EP-05", "initialize on /mcp/beta with the full-access VK", [instructionsEqual(block("beta", "B1"), "beta's block only")], { path: "/mcp/beta", headers: [MCP_ACCEPT, vkHeader("EP-05", "full")] }),
+  request("EP-05", "setup: set client alpha's tools_to_execute to []", "PUT", "/api/mcp/client/ep-05-alpha", { body: { tools_to_execute: [] }, asserts: [A.status(200)] }),
+  initialize("EP-05", "initialize after alpha's tools_to_execute is []", [instructionsEqual(block("beta", "B1"), "beta's block only, alpha absent")]),
+  deleteVK("EP-05", "echo"), deleteVK("EP-05", "full"),
+  ...fleetTeardown("EP-05"),
+]);
+
+const EP06 = folder("EP-06 Per-client instruction cap", `Setup: ${FLEET}; mcp_max_instructions_per_client 100; alpha sends 300 bytes of instructions (the digits 0-9 repeated), beta sends none.`, [
+  readConfig("EP-06"),
+  putConfig("EP-06", "setup: mcp_max_instructions_per_client 100", ["cc.mcp_max_instructions_per_client = 100;"], [A.status(200)]),
+  ...fleetInstructions("EP-06", { alpha: [digits(300), "300 bytes"] }),
+  initialize("EP-06", "initialize", [instructionsEqual(block("alpha", digits(100) + "\n[truncated: 200 bytes omitted]"),
+    "alpha's block holding its first 100 bytes plus \"\\n[truncated: 200 bytes omitted]\"")]),
+  ...fleetTeardown("EP-06"),
+  restoreConfig("EP-06"),
+]);
+
+const EP07 = folder("EP-07 Total instruction cap", `Setup: ${FLEET}; mcp_max_instructions_total 200; alpha and beta each send 150 bytes of instructions (the digits 0-9 repeated).`, [
+  readConfig("EP-07"),
+  putConfig("EP-07", "setup: mcp_max_instructions_total 200", ["cc.mcp_max_instructions_total = 200;"], [A.status(200)]),
+  ...fleetInstructions("EP-07", { alpha: [digits(150), "150 bytes"], beta: [digits(150), "150 bytes"] }),
+  initialize("EP-07", "initialize", [A.custom("alpha's block contains \"[truncated: \"; the output ends \"[1 more server(s) omitted: instruction size limit reached]\"; there is no beta tag", [
+    "var s = pm.response.json().result.instructions;",
+    "var start = s.indexOf('<mcp_server name=\"alpha\">');",
+    "var end = s.indexOf('</mcp_server>', start);",
+    "pm.expect(start, 'instructions: ' + s).to.equal(0);",
+    "pm.expect(s.slice(start, end), 'instructions: ' + s).to.include('[truncated: ');",
+    "var tail = '[1 more server(s) omitted: instruction size limit reached]';",
+    "pm.expect(s.slice(-tail.length), 'instructions: ' + s).to.equal(tail);",
+    "pm.expect(s, 'instructions: ' + s).to.not.include('<mcp_server name=\"beta\">');",
+  ])]),
+  ...fleetTeardown("EP-07"),
+  restoreConfig("EP-07"),
+]);
+
+const EP08 = folder("EP-08 Per-client max_instructions_length", `Setup: ${FLEET}, except client alpha has max_instructions_length 50; mcp_max_instructions_per_client 100; alpha and beta each send 300 bytes of instructions (the digits 0-9 repeated).`, [
+  readConfig("EP-08"),
+  putConfig("EP-08", "setup: mcp_max_instructions_per_client 100", ["cc.mcp_max_instructions_per_client = 100;"], [A.status(200)]),
+  ...fleetInstructions("EP-08", { alpha: [digits(300), "300 bytes"], beta: [digits(300), "300 bytes"], alphaClient: { max_instructions_length: 50 } }),
+  initialize("EP-08", "initialize", [instructionsEqual(
+    block("alpha", digits(50) + "\n[truncated: 250 bytes omitted]") + "\n\n" + block("beta", digits(100) + "\n[truncated: 200 bytes omitted]"),
+    "alpha's block ending \"[truncated: 250 bytes omitted]\" and beta's cut at the global 100, \"[truncated: 200 bytes omitted]\"")]),
+  ...fleetTeardown("EP-08"),
+  restoreConfig("EP-08"),
+]);
+
+const EP11 = folder("EP-11 tools/list, anonymous", `Setup: ${FLEET}, alpha's echo annotated readOnlyHint true; mcp_server_auth_mode headers, enforce_auth_on_inference off; tools/list with no credential.`, [
+  readConfig("EP-11"), authMode("EP-11", "H", false),
+  ...serveTools("EP-11", "alpha", [{ name: "echo", annotations: { readOnlyHint: true } }, { name: "add" }], "echo (readOnlyHint true) and add"),
+  ...freshServer("EP-11", "beta", ["echo"]),
+  createClient("EP-11", httpClient("ep-11-alpha", "alpha", "alpha", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client alpha"),
+  createClient("EP-11", httpClient("ep-11-beta", "beta", "beta", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client beta"),
+  mockGet("EP-11", "alpha", "setup: record alpha's tool descriptions", [], ["var d = {}; pm.response.json().tools.forEach(function (t) { d['alpha-' + t.name] = t.description; }); pm.collectionVariables.set('ep11_alpha_desc', JSON.stringify(d));"]),
+  mockGet("EP-11", "beta", "setup: record beta's tool descriptions", [], ["var d = {}; pm.response.json().tools.forEach(function (t) { d['beta-' + t.name] = t.description; }); pm.collectionVariables.set('ep11_beta_desc', JSON.stringify(d));"]),
+  list("EP-11", "tools/list with no credential", "/mcp", [], [A.status(200), toolNamesInList(ALL_TOOLS),
+    A.custom("every inputSchema has type \"object\"", ["pm.response.json().result.tools.forEach(function (t) { pm.expect(t.inputSchema && t.inputSchema.type, t.name).to.equal('object'); });"]),
+    A.custom("descriptions match the mock's", [
+      "var d = Object.assign({}, JSON.parse(pm.collectionVariables.get('ep11_alpha_desc')), JSON.parse(pm.collectionVariables.get('ep11_beta_desc')));",
+      "pm.response.json().result.tools.forEach(function (t) { pm.expect(t.description, t.name).to.equal(d[t.name]); });",
+    ]),
+    A.custom("alpha-echo keeps readOnlyHint true", [
+      "var echo = pm.response.json().result.tools.filter(function (t) { return t.name === 'alpha-echo'; })[0];",
+      "pm.expect(echo.annotations && echo.annotations.readOnlyHint, 'body: ' + pm.response.text()).to.equal(true);",
+    ]),
+    A.custom("there is no nextCursor", ["pm.expect(pm.response.json().result, 'body: ' + pm.response.text()).to.not.have.property('nextCursor');"]),
+  ]),
+  ...fleetTeardown("EP-11"),
+  restoreConfig("EP-11"),
+]);
+
+const EP37 = folder("EP-37 /mcp/{virtual MCP slug}", `Setup: ${FLEET}, plus gamma (echo) registered the same way; alpha, beta and gamma send instructions "A1", "B1" and "G1"; a VK granting every tool of alpha, beta and gamma; ${TEAM_TEXT}.`, [
+  ...fleetInstructions("EP-37", { alpha: ["A1", "\"A1\""], beta: ["B1", "\"B1\""] }),
+  ...freshServer("EP-37", "gamma", ["echo"]),
+  setInstructions("EP-37", "gamma", "G1", "\"G1\""),
+  createClient("EP-37", httpClient("ep-37-gamma", "gamma", "gamma", { tools_to_execute: ["*"], allow_by_default: false }), "setup: register client gamma"),
+  vkCreate("EP-37", "setup: create the VK granting every tool of alpha, beta and gamma", { name: "EP-37 three-client key", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["*"] }, { mcp_client_name: "beta", tools_to_execute: ["*"] }, { mcp_client_name: "gamma", tools_to_execute: ["*"] }] }, "ep-37_full"), ...teamSetup("EP-37"),
+  initialize("EP-37", "control: initialize on /mcp with the VK shows all three", [instructionsEqual(block("alpha", "A1") + "\n\n" + block("beta", "B1") + "\n\n" + block("gamma", "G1"))], { headers: [MCP_ACCEPT, vkHeader("EP-37", "full")] }),
+  initialize("EP-37", "control: an anonymous initialize on /mcp shows all three", [instructionsEqual(block("alpha", "A1") + "\n\n" + block("beta", "B1") + "\n\n" + block("gamma", "G1"))]),
+  list("EP-37", "tools/list on /mcp/team with the VK", "/mcp/team", [vkHeader("EP-37", "full")], [A.status(200), toolNamesInList(["alpha-echo", "beta-echo"])]),
+  rpc("EP-37", "tools/call alpha-add on /mcp/team with the VK", call("alpha-add", { a: 1, b: 2 }), { path: "/mcp/team", headers: [MCP_ACCEPT, vkHeader("EP-37", "full")], asserts: [A.status(200), toolResultError(null, "filtered by request context")] }),
+  mockCalls("EP-37", "alpha", "add", 0),
+  initialize("EP-37", "initialize on /mcp/team with the VK", [instructionsEqual(block("alpha", "A1") + "\n\n" + block("beta", "B1"), "alpha's and beta's blocks only")], { path: "/mcp/team", headers: [MCP_ACCEPT, vkHeader("EP-37", "full")] }),
+  teamTeardown("EP-37"), deleteVK("EP-37", "full"),
+  ...fleetTeardown("EP-37"), deleteClient("EP-37", "ep-37-gamma"),
+]);
+
+// HI_REPLY is a tool result whose only content is the text "hi".
+const HI_REPLY = { content: [{ type: "text", text: "hi" }] };
+const READ_ONLY_TOOL = { name: "echo_ro", annotations: { readOnlyHint: true } };
+
+const CONN06 = folder("CONN-06 Responses-format round trip", "Setup: alpha (echo_tool replying \"hi\", add_tool); an HTTP client on alpha named conn06, auth none, needs_session_stickiness true, tools_to_execute [\"*\"]; execute in the Responses format with call_id c1.", [
+  ...serveTools("CONN-06", "alpha", [{ name: "echo_tool", reply: HI_REPLY }, { name: "add_tool" }], "echo_tool (replying \"hi\") and add_tool"),
+  createClient("CONN-06", httpClient("conn06-c", "conn06", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] })),
+  execBody("CONN-06", "execute conn06-echo_tool in the Responses format", { call_id: "c1", name: "conn06-echo_tool", arguments: "{}" }, [A.status(200), A.custom("the body is {type \"function_call_output\", call_id \"c1\", output \"hi\"}", [
+    "pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.eql({ type: 'function_call_output', call_id: 'c1', output: 'hi' });",
+  ])], { query: "?format=responses" }),
+  deleteClient("CONN-06", "conn06-c"),
+]);
+
+const CONN09 = folder("CONN-09 Protocol errors and 5xx", "Setup: alpha (echo_tool, add_tool); an HTTP client on alpha named conn09, auth none, per call, tools_to_execute [\"*\"]. Each case resets alpha's counters and scopes its fault to tools/call: err_rate 1 with err_kind protocol; status 500 always; status 503 once.", [
+  ...freshServer("CONN-09", "alpha", ["echo_tool", "add_tool"]),
+  createClient("CONN-09", httpClient("conn09-c", "conn09", "alpha", { tools_to_execute: ["*"] })),
+  mockPost("CONN-09", "alpha", "faults", "setup: alpha's tools/call fails with a JSON-RPC error", { faults: { err_rate: 1, err_kind: "protocol", methods: ["tools/call"] } }),
+  mockPost("CONN-09", "alpha", "counters/reset", "setup: reset alpha's counters"),
+  execTool("CONN-09", "execute under err_kind protocol", "conn09-echo_tool", [A.status(400), A.msgContains("MCP tool call failed for conn09-echo_tool")]),
+  mockGet("CONN-09", "alpha", "the tool was called once", [callsIs("echo_tool", 1)]),
+  mockPost("CONN-09", "alpha", "faults", "setup: alpha answers tools/call with 500 always", { faults: { status: 500, methods: ["tools/call"] } }),
+  mockPost("CONN-09", "alpha", "counters/reset", "setup: reset alpha's counters"),
+  execTool("CONN-09", "execute under a 500 always", "conn09-echo_tool", [A.status(400)]),
+  mockGet("CONN-09", "alpha", "three requests were faulted (1 plus 2 retries)", [counterIs("faulted", 3)]),
+  mockPost("CONN-09", "alpha", "faults", "setup: alpha answers tools/call with 503 once", { faults: { status: 503, status_once: true, methods: ["tools/call"] } }),
+  mockPost("CONN-09", "alpha", "counters/reset", "setup: reset alpha's counters"),
+  execTool("CONN-09", "execute under a 503 once", "conn09-echo_tool", [A.status(200)]),
+  mockGet("CONN-09", "alpha", "one request was faulted", [counterIs("faulted", 1)]),
+  mockPost("CONN-09", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("CONN-09", "conn09-c"),
+]);
+
+const CONN10 = folder("CONN-10 Tool execution timeout", "Setup: alpha (echo_tool, add_tool); HTTP clients on alpha, auth none, per call, tools_to_execute [\"*\"]: conn10o with tool_execution_timeout 2s, then conn10d with the default timeout. alpha's faults are scoped to tools/call: latency 5s for the override, hang 35s for the default.", [
+  ...freshServer("CONN-10", "alpha", ["echo_tool", "add_tool"]),
+  createClient("CONN-10", httpClient("conn10-o", "conn10o", "alpha", { tool_execution_timeout: 2, tools_to_execute: ["*"] }), "setup: create conn10o with a 2s tool timeout"),
+  mockPost("CONN-10", "alpha", "faults", "setup: alpha answers tools/call after 5s", { faults: { latency: "5s", methods: ["tools/call"] } }),
+  execTool("CONN-10", "execute with the 2s override", "conn10o-echo_tool", [A.status(400), A.msgContains("MCP tool call timed out after 2s: conn10o-echo_tool"), responseTime(1500, 4500)]),
+  createClient("CONN-10", httpClient("conn10-d", "conn10d", "alpha", { tools_to_execute: ["*"] }), "setup: create conn10d with the default tool timeout"),
+  mockPost("CONN-10", "alpha", "faults", "setup: alpha hangs 35s on tools/call", { faults: { hang: "35s", methods: ["tools/call"] } }),
+  execTool("CONN-10", "execute with the default timeout", "conn10d-echo_tool", [A.status(400), A.msgContains("timed out after 30s")]),
+  mockPost("CONN-10", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("CONN-10", "conn10-o"), deleteClient("CONN-10", "conn10-d"),
+]);
+
+// waitForMock polls a fleet server's state, 250ms apart for up to about 10s, until cond (ES5 on the state s) holds.
+const waitForMock = (server, cond) => [
+  "var left = 40;",
+  "function poll() {",
+  `  pm.sendRequest({ url: pm.variables.get('chaos_url') + '/control/${server}', method: 'GET' }, function (err, res) {`,
+  "    var s = !err && res.code === 200 ? res.json() : null;",
+  `    if ((s && (${cond})) || --left <= 0) { return; }`,
+  "    setTimeout(poll, 250);",
+  "  });",
+  "}",
+  "poll();",
+];
+
+// execToolAfter is execTool with a pre-request script, for a call that must wait for something first.
+const execToolAfter = (id, title, tool, asserts, pre) => request(id, title, "POST", "/v1/mcp/tool/execute", {
+  noAuth: true, noCookies: true, asserts, pre,
+  body: { id: "c1", type: "function", function: { name: tool, arguments: lit({ text: "hi" }) } },
+});
+
+const CONN12 = folder("CONN-12 Dead session (sticky)", "Setup: alpha (echo_ro annotated readOnlyHint true, echo_tool unannotated); an HTTP client on alpha named conn12, auth none, needs_session_stickiness true, tools_to_execute [\"*\"]. alpha's sessions are killed before the read-only call and again before the two unannotated calls; the second unannotated call waits up to 10s for Bifrost's background reconnect to open a new session.", [
+  ...serveTools("CONN-12", "alpha", [READ_ONLY_TOOL, { name: "echo_tool" }], "echo_ro (readOnlyHint true) and echo_tool"),
+  createClient("CONN-12", httpClient("conn12-c", "conn12", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] })),
+  saveSessions("CONN-12", "alpha", "conn12_s1"),
+  mockPost("CONN-12", "alpha", "sessions/kill", "setup: kill alpha's sessions"),
+  execTool("CONN-12", "execute the read-only tool", "conn12-echo_ro", [A.status(200)]),
+  mockGet("CONN-12", "alpha", "the read-only call opened one new session", [sessionsPlus("conn12_s1", 1)]),
+  mockPost("CONN-12", "alpha", "sessions/kill", "setup: kill alpha's sessions again"),
+  saveSessions("CONN-12", "alpha", "conn12_s2"),
+  execTool("CONN-12", "first execute call of the unannotated tool", "conn12-echo_tool", [A.status(400), A.msgContains("session terminated")]),
+  execToolAfter("CONN-12", "second execute call of the unannotated tool, once the background reconnect has opened a session", "conn12-echo_tool", [A.status(200)],
+    waitForMock("alpha", "s.counters.sessions > Number(pm.collectionVariables.get('conn12_s2'))")),
+  deleteClient("CONN-12", "conn12-c"),
+]);
+
+const CONN20 = folder("CONN-20 STDIO spawn, args and env", "Setup: a fleet server delta serving env_tool, which answers with CHAOS_TAG from the environment its STDIO bridge registers; a STDIO client named delta whose command is the mcpchaos bridge for delta (-stdio -fleet <fleet URL> -server delta), envs [\"CHAOS_TAG=t1\"], auth none, tools_to_execute [\"*\"].", [
+  ...serveTools("CONN-20", "delta", [{ name: "env_tool", reply_env: "CHAOS_TAG" }], "env_tool (answering with CHAOS_TAG)"),
+  createClient("CONN-20", stdioClient("conn20-d", "delta", "delta", { tools_to_execute: ["*"], stdio_config: { command: "{{chaos_bin}}", args: ["-stdio", "-fleet", CHAOS, "-server", "delta"], envs: ["CHAOS_TAG=t1"] } }), "setup: create the STDIO client delta"),
+  getClient("CONN-20", "conn20-d", "the client list shows healthy", [clientState("healthy")]),
+  mockGet("CONN-20", "delta", "delta has a registered pid", [A.custom("stdio_pid is above 0", ["pm.expect(pm.response.json().stdio_pid, 'body: ' + pm.response.text()).to.be.above(0);"])]),
+  execTool("CONN-20", "execute delta-env_tool", "delta-env_tool", [A.status(200), contentEquals("t1")]),
+  deleteClient("CONN-20", "conn20-d"),
+  request("CONN-20", "teardown: remove delta", "POST", "/control", { base: CHAOS, noAuth: true, body: { remove: "delta" }, asserts: [A.status(200)] }),
+]);
+
+// Per-method request counts, read just before a step; methodsPlus checks the change since.
+const initializeMethods = "((pm.response.json().counters.methods || {}).initialize || 0)";
+const saveMethods = (id, server, prefix) => mockGet(id, server, `setup: record ${server}'s initialize and tools/call counts`, [], [
+  `pm.collectionVariables.set(${lit(prefix + "_init")}, ${initializeMethods});`,
+  `pm.collectionVariables.set(${lit(prefix + "_call")}, ${toolsCallMethods});`,
+]);
+const methodsPlus = (prefix, init, toolsCall) => A.custom(`initialize +${init}${toolsCall !== undefined ? `, tools/call +${toolsCall}` : ""} since the recorded counts`, [
+  `pm.expect(${initializeMethods}, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get(${lit(prefix + "_init")})) + ${init});`,
+  ...(toolsCall !== undefined ? [`pm.expect(${toolsCallMethods}, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get(${lit(prefix + "_call")})) + ${toolsCall});`] : []),
+]);
+
+const FAIL04 = folder("FAIL-04 503 on the per-call connect", "Setup: alpha (echo_tool, add_tool) as client alpha, per call, tools_to_execute [\"*\"]; alpha answers with 503 once, then always. Counts are alpha's per-method request counts, read just before each step.", [
+  ...setClient("FAIL-04", {}),
+  saveMethods("FAIL-04", "alpha", "fail04_a"),
+  mockPost("FAIL-04", "alpha", "faults", "setup: alpha answers the next request with 503", { faults: { status: 503, status_once: true } }),
+  setExec("FAIL-04", "execute echo_tool after a 503 once", "echo_tool", [A.status(200)]),
+  mockGet("FAIL-04", "alpha", "initialize +2", [methodsPlus("fail04_a", 2)]),
+  saveMethods("FAIL-04", "alpha", "fail04_b"),
+  mockPost("FAIL-04", "alpha", "faults", "setup: alpha answers every request with 503", { faults: { status: 503 } }),
+  setExec("FAIL-04", "execute echo_tool under a 503 always", "echo_tool", [A.status(400), A.msgContains("failed to establish ephemeral MCP connection"), A.msgContains("503")]),
+  mockGet("FAIL-04", "alpha", "initialize +4, tools/call +0", [methodsPlus("fail04_b", 4, 0)]),
+  mockPost("FAIL-04", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("FAIL-04", "fail-04-a"),
+]);
+
+// fail05Watch polls the client list and alpha for the whole 5s after the call, recording every state the client list
+// showed and how long it took until the client was unstable with one more initialize at alpha.
+const fail05Watch = [
+  "var t0 = Date.now(); var seen = []; var first = null;",
+  "var before = Number(pm.collectionVariables.get('fail05_init'));",
+  "function poll() {",
+  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp/clients?server=fail-05-a', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {",
+  "    var c = !err && res.code === 200 ? res.json().clients[0] : null;",
+  "    if (c) { seen.push(c.state); }",
+  "    pm.sendRequest({ url: pm.variables.get('chaos_url') + '/control/alpha', method: 'GET' }, function (e2, r2) {",
+  "      var init = !e2 && r2.code === 200 ? ((r2.json().counters.methods || {}).initialize || 0) : 0;",
+  "      if (first === null && c && c.state === 'unstable' && init >= before + 1) { first = Date.now() - t0; }",
+  "      if (Date.now() - t0 >= 5000) { pm.variables.set('fail05_seen', JSON.stringify(seen)); pm.variables.set('fail05_first', first === null ? '' : String(first)); return; }",
+  "      setTimeout(poll, 250);",
+  "    });",
+  "  });",
+  "}",
+  "poll();",
+];
+
+const FAIL05 = folder("FAIL-05 401 with WWW-Authenticate on an unannotated tool", "Setup: alpha (echo_tool, add_tool) as client alpha, sticky, tools_to_execute [\"*\"]; alpha answers every request with 401 and WWW-Authenticate: Bearer realm=\"chaosmock\". After the call, up to 5s is watched for Bifrost's reconnect.", [
+  ...setClient("FAIL-05", { needs_session_stickiness: true }),
+  saveMethods("FAIL-05", "alpha", "fail05"),
+  mockPost("FAIL-05", "alpha", "faults", "setup: alpha answers 401 with WWW-Authenticate", { faults: { status: 401, www_auth: "Bearer realm=\"chaosmock\"" } }),
+  setExec("FAIL-05", "execute echo_tool", "echo_tool", [A.status(400), A.msgContains("status 401")]),
+  getClient("FAIL-05", "fail-05-a", "within 5s the client is unstable at stage connect, and never needs_reauth", [
+    clientState("unstable"),
+    A.custom("last_failure.stage is \"connect\"", ["pm.expect((pm.response.json().clients[0].last_failure || {}).stage, 'body: ' + pm.response.text()).to.equal('connect');"]),
+    A.custom("unstable with one more initialize within 5000ms", ["var first = pm.variables.get('fail05_first');", "pm.expect(first, 'states seen: ' + pm.variables.get('fail05_seen')).to.not.equal('');", "pm.expect(Number(first)).to.be.at.most(5000);"]),
+    A.custom("no state seen in the 5s was \"needs_reauth\"", ["pm.expect(JSON.parse(pm.variables.get('fail05_seen') || '[]'), 'states seen').to.not.include('needs_reauth');"]),
+  ], { pre: fail05Watch }),
+  mockGet("FAIL-05", "alpha", "tools/call +1 and initialize +1", [methodsPlus("fail05", 1, 1)]),
+  mockPost("FAIL-05", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("FAIL-05", "fail-05-a"),
+]);
+
+const FAIL06 = folder("FAIL-06 401 once on a read-only tool", "Setup: alpha (echo_tool, add_tool, and echo_ro annotated readOnlyHint true) as client alpha, sticky, tools_to_execute [\"*\"]; alpha answers the next request with 401 once.", [
+  ...serveTools("FAIL-06", "alpha", [{ name: "echo_tool" }, { name: "add_tool" }, READ_ONLY_TOOL], "echo_tool, add_tool and echo_ro (readOnlyHint true)"),
+  createClient("FAIL-06", httpClient("fail-06-a", "alpha", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }), "setup: create client alpha"),
+  mockGet("FAIL-06", "alpha", "setup: record alpha's echo_ro calls, tools/call count and sessions", [], [
+    "var c = pm.response.json().counters;",
+    "pm.collectionVariables.set('fail06_ro', (c.calls || {}).echo_ro || 0);",
+    `pm.collectionVariables.set('fail06_call', ${toolsCallMethods});`,
+    "pm.collectionVariables.set('fail06_s', c.sessions);",
+  ]),
+  mockPost("FAIL-06", "alpha", "faults", "setup: alpha answers the next request with 401", { faults: { status: 401, status_once: true } }),
+  setExec("FAIL-06", "execute echo_ro", "echo_ro", [A.status(200)]),
+  mockGet("FAIL-06", "alpha", "calls[echo_ro] +1, tools/call +2, sessions +1", [A.custom("calls[echo_ro] +1, tools/call +2, sessions +1 since the recorded counts", [
+    "var c = pm.response.json().counters;",
+    "pm.expect((c.calls || {}).echo_ro || 0, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('fail06_ro')) + 1);",
+    `pm.expect(${toolsCallMethods}, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('fail06_call')) + 2);`,
+    "pm.expect(c.sessions, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('fail06_s')) + 1);",
+  ])]),
+  mockPost("FAIL-06", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+  deleteClient("FAIL-06", "fail-06-a"),
+]);
+
+const FAIL07 = folder("FAIL-07 401 at create is not retried", "Setup: alpha (echo_tool, add_tool) answering every request with 401; create client alpha, sticky, tools_to_execute [\"*\"].", [
+  ...freshServer("FAIL-07", "alpha", ["echo_tool", "add_tool"]),
+  saveMethods("FAIL-07", "alpha", "fail07"),
+  mockPost("FAIL-07", "alpha", "faults", "setup: alpha answers every request with 401", { faults: { status: 401 } }),
+  createExpect("FAIL-07", "create the sticky client", httpClient("fail-07-a", "alpha", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }), [A.status(500), A.msgContains("401"), responseTime(null, 5000)]),
+  mockGet("FAIL-07", "alpha", "initialize +1", [methodsPlus("fail07", 1)]),
+  mockPost("FAIL-07", "alpha", "faults/clear", "teardown: clear alpha's faults"),
+]);
+
 // ================================================================ MCP tools inside model requests, on the mock LLM
 
 const alphaClient = (id, over = {}) => createClient(id, httpClient(`${id.toLowerCase()}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], ...over }), "setup: register client alpha");
@@ -3433,15 +3741,15 @@ const collection = {
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM22, ADM42, ADM44, ADM46, ADM47, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM81, ADM82, ADM83]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
-    section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN17, CONN18, CONN22]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP04, EP09, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
+    section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN06, CONN09, CONN10, CONN12, CONN17, CONN18, CONN20, CONN22]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV06, GOV11, GOV16, GOV17, GOV29, GOV31, GOV32]),
     section("INF Inference", "Inference tests.", [INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB06, LIB08, LIB09, LIB10, LIB11, LIB13, LIB16, LIB18, LIB19, LIB20, LIB32, LIB33, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG27, LOG28, LOG29, LOG31, LOG33, LOG37, LOG38, LOG40, LOG41, LOG43]),
-    section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL14, FAIL16, FAIL18]),
+    section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18]),
   ],
 };
 
