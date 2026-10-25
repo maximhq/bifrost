@@ -24,6 +24,7 @@ import (
 //	/s/<name>/mcp        streamable HTTP
 //	/s/<name>/as/...     that server's OAuth authorization server, when on
 //	/s/<name>/rest/...   that server's REST surface (see rest.go)
+//	/s/<name>/llm/...    that server's LLM surface (see llm.go)
 //	/control/<name>/...  that server's control API
 //	/control             fleet-wide control API
 //
@@ -76,6 +77,9 @@ type Seed struct {
 	Views        map[string][]Tool `json:"views,omitempty"`
 	Instructions string            `json:"instructions,omitempty"`
 	Routes       []Route           `json:"routes,omitempty"`
+	// LLMModels is what the LLM surface's model listings answer; empty keeps
+	// the default.
+	LLMModels []string `json:"llm_models,omitempty"`
 }
 
 // Validate applies the control API's checks to a seed, so a seed file with a
@@ -118,6 +122,9 @@ func (f *Fleet) AddSeeded(name string, seed Seed) *Server {
 	}
 	s.SetInstructions(seed.Instructions)
 	s.rest.set(seed.Routes)
+	if len(seed.LLMModels) > 0 {
+		s.llm.setModels(seed.LLMModels)
+	}
 	f.mu.Lock()
 	f.seeds[name] = seed
 	f.mu.Unlock()
@@ -287,6 +294,8 @@ func (f *Fleet) routeServer(w http.ResponseWriter, r *http.Request) {
 		s.ServeOAuth(w, r, strings.TrimPrefix(rest, "as/"))
 	case rest == "rest" || strings.HasPrefix(rest, "rest/"):
 		s.ServeREST(w, r, "/"+strings.TrimPrefix(strings.TrimPrefix(rest, "rest"), "/"))
+	case rest == "llm" || strings.HasPrefix(rest, "llm/"):
+		s.ServeLLM(w, r, "/"+strings.TrimPrefix(strings.TrimPrefix(rest, "llm"), "/"))
 	default:
 		http.NotFound(w, r)
 	}

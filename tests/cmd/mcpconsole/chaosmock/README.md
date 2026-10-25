@@ -41,8 +41,8 @@ asking the fleet: `/s/<name>/mcp` for streamable HTTP, `/s/<name>/sse` for the
 legacy transport, `/control/<name>/...` to mutate.
 
 `-seed <file.json>` builds a fleet with per-identity tool views, auth,
-instructions, REST routes and starting faults in one step, for scenarios that
-need more than names:
+instructions, REST routes, LLM model listings (`llm_models`) and starting faults
+in one step, for scenarios that need more than names:
 
 ```json
 {"servers": {"alpha": {"tools": [{"name": "echo_tool"}], "routes": [{"path": "/catalog.json", "json": {"servers": []}}]}}}
@@ -140,6 +140,11 @@ exactly like the system under test behaving correctly.
 | `POST /control/<s>/oauth/expire` | `{"identity":"..."}` / `{}` | that identity's live access tokens (everyone's when empty) now fail at the server |
 | `POST /control/<s>/oauth/revoke` | `{"identity":"..."}` / `{"token":"..."}` / `{}` | end whole grants: access tokens fail, refresh tokens get `invalid_grant` |
 | `POST /control/<s>/oauth/fail` | `{"fail":{"endpoint","grant_type","status","error","count"}}` | the next `count` matching authorization server requests fail |
+| `POST /control/<s>/llm/script` | `{"scenario":"k","turns":[...],"then":{...}}` | replace a scenario's turns and repeat turn, clearing its logged requests |
+| `POST /control/<s>/llm/append` | `{"scenario":"k","turns":[...]}` | add turns, keeping the log |
+| `POST /control/<s>/llm/clear` | `{"scenario":"k"}` / `{}` | drop one scenario with its log, or every scenario and the whole log |
+| `POST /control/<s>/llm/models` | `{"models":["..."]}` | what the model listings answer |
+| `GET /control/<s>/llm/requests` | `?scenario=k&since=N` | the logged LLM requests, oldest first |
 
 Clients read instructions during the handshake, so changing them reaches only
 clients that initialize afterwards.
@@ -185,6 +190,58 @@ when refused) and the route that answered. The log keeps the last 1000 calls
 and `counters/reset` clears it. Unscoped server faults apply here too
 (`refuse`, `status` with its companions, `hang`, `latency`, `jitter`); a fault
 scoped with `methods` does not, since REST carries no JSON-RPC method.
+
+## LLM
+
+Every server also answers as a model provider under `/s/<s>/llm`, for a client
+that sends model requests next to its MCP traffic: what it adds to a model
+request (tools, instructions) is only provable on the wire, and what it does
+with a reply (call a tool, loop, stop) is only testable when the reply is
+scripted. Four wire formats are served, streaming and not, at their public API
+paths below a per-format prefix, plus each format's model listing:
+
+| Format | Path below `/llm` | Point a client's base URL at | Stream when |
+|---|---|---|---|
+| `openai.chat` | `POST /openai/v1/chat/completions` | `/s/<s>/llm/openai` | `"stream":true` |
+| `openai.responses` | `POST /openai/v1/responses` | `/s/<s>/llm/openai` | `"stream":true` |
+| `anthropic.messages` | `POST /anthropic/v1/messages` | `/s/<s>/llm/anthropic` | `"stream":true` |
+| `genai` | `POST /genai/v1beta/models/<m>:generateContent`, `:streamGenerateContent` | `/s/<s>/llm/genai/v1beta` | the path |
+
+A request finds its script by a `[scenario:<key>]` marker anywhere in its body,
+usually the first user message, which a client copies into every later turn of
+the same conversation. The first marker wins. Each scenario has a queue of
+turns and an optional `then` turn served once the queue is empty, again and
+again. A request with no marker, or whose scenario has no turn left, gets a 400
+of type `chaosmock_unscripted` in the format's error shape, so an
+under-scripted test fails at once.
+
+| Turn field | Effect |
+|---|---|
+| `text` | the assistant's text |
+| `tool_calls` | `[{"id","name","arguments"}]`; arguments as an object, or a JSON string sent verbatim (formats other than OpenAI's need it to be an object); an omitted id is numbered |
+| `finish` | `stop`, `tool_calls` or `length`; default `tool_calls` with calls, else `stop` |
+| `usage` | `{"input","output"}`, default 10 and 5 |
+| `error` | `{"status","message","type","code","retry_after"}`: an HTTP error in the format's shape instead of a reply |
+| `delay`, `chunk_delay` | hold the answer back, space a stream's events; both end when the client hangs up |
+| `raw` | `{"status","content_type","body"}` sent verbatim, for a reply no renderer would produce |
+
+Streams split the text and each arguments string into two deltas, so a client
+that does not join them shows it. OpenAI chat streams end with a usage frame
+when `stream_options.include_usage` is set, then `[DONE]`; Responses events
+carry an increasing `sequence_number`; Anthropic events all carry their
+`event:` line and end with `message_stop`; a Gemini stream puts the finish
+reason and usage on its last chunk.
+
+Every request is logged with its scenario, format, stream mode, method, path,
+raw query, headers, raw body, the body parsed (`json`), the model, the declared
+tool names in order (`tools`; a tool with no name, such as a provider's native
+one, appears as `type:<type>`), the turn served (`-1` for `then`) and the status
+answered (0 when refused or abandoned). `llm/requests` reads it; the state
+carries only a summary (models, each scenario's pending and served counts,
+unmarked requests). `llm/script` clears that scenario's entries, `counters/reset`
+clears the whole log and keeps the scripts. The model listings answer
+`mock-model` until `llm/models` or a seed's `llm_models` says otherwise.
+Unscoped server faults apply here as on REST.
 
 ## OAuth
 
