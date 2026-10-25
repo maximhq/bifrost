@@ -17,46 +17,56 @@ const sseKeepAlive = 15 * time.Second
 // transport: POST carries JSON-RPC, GET opens the standalone listening stream,
 // DELETE ends a session.
 //
-// The ordering here is the whole design. Transport faults are checked before
-// anything is read, because a connection that is going to be refused or reset
-// must not first look like it worked. HTTP faults come next, because a bare
-// status is not a JSON-RPC exchange and must not be mistaken for one. Session
-// validity comes after that, since a 404 is the client's signal to
-// re-initialize and has to beat any protocol handling. Only then does a
-// well-formed exchange reach the protocol layer.
+// The ordering here is the whole design. A POST's body is read first, so the
+// request is counted and a fault scoped to its method is resolved before
+// anything can answer it; nothing is written yet, so a connection that is
+// going to be refused or reset still never looks like it worked. Transport
+// faults come next, then HTTP faults, because a bare status is not a JSON-RPC
+// exchange and must not be mistaken for one. Credentials and session validity
+// come after that, since a 404 is the client's signal to re-initialize and has
+// to beat any protocol handling. A tool's own fault applies only once the call
+// is known to reach that tool. Only then does a well-formed exchange reach the
+// protocol layer.
 func (s *Server) ServeStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 	s.counters.request()
 
-	f := s.faults.peek()
+	switch r.Method {
+	case http.MethodPost:
+		s.servePost(w, r)
+	case http.MethodGet, http.MethodDelete:
+		// Neither carries a JSON-RPC method, so only an unscoped fault set
+		// reaches them.
+		if s.failRequest(w, s.faults.forRequest("")) {
+			return
+		}
+		if r.Method == http.MethodGet {
+			s.serveListeningStream(w, r)
+		} else {
+			s.serveDelete(w, r)
+		}
+	default:
+		w.Header().Set("Allow", "GET, POST, DELETE")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
 
-	if f.Refuse {
+// failRequest answers with the transport or HTTP fault in f, if any, and
+// reports whether it did, in which case the caller must stop.
+func (s *Server) failRequest(w http.ResponseWriter, f Faults) bool {
+	switch {
+	case f.Refuse:
 		// Close without writing anything. A client sees the connection go away
 		// mid-request, which is what a dial against a dead listener looks like
 		// once something is accepting on the port but nothing is serving.
 		s.counters.faulted()
 		hijackClose(w)
-		return
-	}
-
-	if f.Status != 0 {
-		// Consume one-shot state now that the fault is definitely firing.
-		f = s.faults.snapshot()
+		return true
+	case f.Status != 0:
 		s.counters.faulted()
 		s.writeStatusFault(w, f)
-		return
+		return true
 	}
-
-	switch r.Method {
-	case http.MethodGet:
-		s.serveListeningStream(w, r)
-	case http.MethodPost:
-		s.servePost(w, r)
-	case http.MethodDelete:
-		s.serveDelete(w, r)
-	default:
-		w.Header().Set("Allow", "GET, POST, DELETE")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
+	return false
 }
 
 // writeStatusFault renders an injected HTTP status with the headers that make
@@ -72,12 +82,40 @@ func (s *Server) writeStatusFault(w http.ResponseWriter, f Faults) {
 	if f.RetryAfter != "" {
 		w.Header().Set("Retry-After", f.RetryAfter)
 	}
+	if f.Message != "" {
+		// Plain text, because a client that receives a JSON object with an
+		// error status may read it as a JSON-RPC response and never see the
+		// status at all.
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(f.Status)
+		_, _ = io.WriteString(w, f.Message)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(f.Status)
 	fmt.Fprintf(w, `{"error":"injected status %d"}`, f.Status)
 }
 
+// servePost handles one JSON-RPC message in the order ServeStreamableHTTP
+// describes.
 func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	sessionID := r.Header.Get(HeaderSessionID)
+
+	var req request
+	parsed := json.Unmarshal(body, &req) == nil
+	if parsed {
+		s.countMethod(req.Method, sessionID)
+	}
+	f := s.faults.forRequest(req.Method)
+	if s.failRequest(w, f) {
+		return
+	}
+
 	authResult := s.auth.check(r.Header)
 	if !authResult.OK {
 		// A genuine credential rejection, distinct from an injected 401. Both
@@ -89,26 +127,18 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
-		return
-	}
-
-	var req request
-	if err := json.Unmarshal(body, &req); err != nil {
+	if !parsed {
 		writeJSON(w, http.StatusOK, newError(nil, CodeParseError, "invalid JSON"))
 		return
 	}
 
-	sessionID := r.Header.Get(HeaderSessionID)
 	identity := authResult.Identity
 
 	// Session validity is only meaningful once one has been issued. An
 	// initialize request legitimately arrives without a session id, and must
 	// not be 404'd for it.
 	if req.Method != MethodInitialize {
-		if s.faults.peek().KillSession {
+		if f.KillSession {
 			s.counters.faulted()
 			http.Error(w, "session terminated", http.StatusNotFound)
 			return
@@ -127,7 +157,12 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	res := s.Handle(&req, sessionID, identity)
+	f = s.callFaults(&req, identity, f)
+	if s.failRequest(w, f) {
+		return
+	}
+
+	res := s.Handle(&req, sessionID, identity, f)
 
 	if res.NewSession != nil {
 		w.Header().Set(HeaderSessionID, res.NewSession.ID)
@@ -136,7 +171,7 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case res.HTTPStatus != 0:
-		http.Error(w, "injected failure", res.HTTPStatus)
+		http.Error(w, res.Message, res.HTTPStatus)
 		return
 	case res.Malformed:
 		// Valid HTTP, valid content type, and a body no JSON-RPC decoder can
@@ -153,7 +188,7 @@ func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.faults.peek().Reset {
+	if f.Reset {
 		// Commit to a response, write part of it, then sever the connection.
 		// A client that reads eagerly sees a truncated body rather than a
 		// clean error, which is the case most likely to be mishandled.

@@ -100,6 +100,25 @@ func TestSSEClientCallsToolAndCounterRecordsDispatch(t *testing.T) {
 	}
 }
 
+func TestSSEScopedStatusIsCountedAndSparesTheStream(t *testing.T) {
+	fleet, srv := sseFleet(t, chaosmock.Tool{Name: "echo_tool"})
+	srv.SetFaults(chaosmock.Faults{Status: 503, Methods: []string{"tools/call"}})
+
+	// The stream and the handshake are out of scope, so the client connects.
+	c, ctx := connectSSE(t, fleet.SSEURL("alpha"))
+
+	var req mcp.CallToolRequest
+	req.Params.Name = "echo_tool"
+	if _, err := c.CallTool(ctx, req); err == nil {
+		t.Fatalf("expected the call to fail while a 503 is injected on tools/call")
+	}
+	counters := srv.Counters().Snapshot()
+	if counters.Methods["tools/call"] != 1 || counters.Calls["echo_tool"] != 0 {
+		t.Errorf("expected one counted tools/call that never reached the tool, got methods %v calls %v",
+			counters.Methods, counters.Calls)
+	}
+}
+
 func TestSSEToolMutationIsVisibleToTheNextList(t *testing.T) {
 	fleet, srv := sseFleet(t, chaosmock.Tool{Name: "before_tool"})
 	c, ctx := connectSSE(t, fleet.SSEURL("alpha"))

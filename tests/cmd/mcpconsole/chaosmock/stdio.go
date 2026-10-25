@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -31,7 +32,15 @@ import (
 //
 // The child registers its process id with the fleet on startup so a scenario
 // can kill it, which is the fault that matters most on this transport and
-// cannot be injected any other way.
+// cannot be injected any other way. It registers the part of its environment
+// named with stdioEnvPrefix too, so a scenario can check what the system under
+// test spawned it with.
+
+// stdioEnvPrefix marks the variables the bridge shares with the fleet. The
+// child inherits the whole environment of the process that spawned it,
+// credentials included, and the control API has no authentication, so
+// nothing without the prefix leaves the process.
+const stdioEnvPrefix = "CHAOS_"
 
 // StdioBridgeConfig configures a child process serving one virtual server.
 type StdioBridgeConfig struct {
@@ -72,7 +81,7 @@ func RunStdioBridge(ctx context.Context, cfg StdioBridgeConfig) error {
 	// injectable. A failure to register is not fatal: the bridge is still
 	// useful, only that one fault becomes unavailable, and saying so on stderr
 	// is better than refusing to start.
-	if err := registerStdioPID(client, cfg.FleetURL, cfg.ServerName, os.Getpid()); err != nil {
+	if err := registerStdio(client, cfg.FleetURL, cfg.ServerName, os.Getpid(), bridgeEnv()); err != nil {
 		fmt.Fprintf(os.Stderr, "chaosmock: could not register pid: %v\n", err)
 	}
 
@@ -170,8 +179,21 @@ func marshalTransportError(payload []byte, msg string) []byte {
 	return out
 }
 
-func registerStdioPID(client *http.Client, fleetURL, serverName string, pid int) error {
-	body, err := json.Marshal(map[string]int{"pid": pid})
+// bridgeEnv returns the variables named with stdioEnvPrefix.
+func bridgeEnv() map[string]string {
+	env := map[string]string{}
+	for _, kv := range os.Environ() {
+		if name, value, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(name, stdioEnvPrefix) {
+			env[name] = value
+		}
+	}
+	return env
+}
+
+// registerStdio tells the fleet which process bridges serverName and what
+// environment it shares.
+func registerStdio(client *http.Client, fleetURL, serverName string, pid int, env map[string]string) error {
+	body, err := json.Marshal(map[string]any{"pid": pid, "env": env})
 	if err != nil {
 		return err
 	}

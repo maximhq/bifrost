@@ -29,23 +29,29 @@ type State struct {
 	Counters CountersSnapshot `json:"counters"`
 	Sessions int              `json:"sessions"`
 	Streams  int              `json:"streams"`
+	// Instructions is what the initialize result carries, empty for none.
+	Instructions string `json:"instructions,omitempty"`
 	// StdioPID is the child process bridging this server over stdin and
 	// stdout, or 0 when none has registered.
 	StdioPID int `json:"stdio_pid"`
+	// StdioEnv is the environment that child registered.
+	StdioEnv map[string]string `json:"stdio_env,omitempty"`
 }
 
 // State captures a server's current state.
 func (s *Server) State() State {
 	return State{
-		Name:     s.name,
-		Tools:    s.tools.List(""),
-		Revision: s.tools.Revision(),
-		Faults:   s.faults.peek(),
-		Auth:     s.auth.get(),
-		Counters: s.counters.Snapshot(),
-		Sessions: s.sessions.count(),
-		Streams:  s.streams.count(),
-		StdioPID: s.StdioPID(),
+		Name:         s.name,
+		Tools:        s.tools.List(""),
+		Revision:     s.tools.Revision(),
+		Faults:       s.faults.peek(),
+		Auth:         s.auth.get(),
+		Counters:     s.counters.Snapshot(),
+		Sessions:     s.sessions.count(),
+		Streams:      s.streams.count(),
+		Instructions: s.Instructions(),
+		StdioPID:     s.StdioPID(),
+		StdioEnv:     s.StdioEnv(),
 	}
 }
 
@@ -130,10 +136,13 @@ type controlBody struct {
 	PID      int             `json:"pid,omitempty"`
 	Faults   *Faults         `json:"faults,omitempty"`
 	Auth     *Auth           `json:"auth,omitempty"`
-	// Clear distinguishes an overlay being removed from one being set to an
-	// empty tool list. Both are legitimate and they mean different things: the
-	// first returns an identity to the base set, the second shows it nothing.
+	// Clear distinguishes removing something from setting it empty. Both are
+	// legitimate and they mean different things: an overlay cleared returns
+	// an identity to the base set while an empty one shows it nothing, and
+	// instructions are removed only by clear, since empty text is refused.
 	Clear bool `json:"clear,omitempty"`
+	// Env is the environment a stdio bridge shares when it registers.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 func (s *Server) applyControl(verb string, r *http.Request) error {
@@ -144,10 +153,16 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 
 	switch strings.TrimSuffix(verb, "/") {
 	case "tools/add":
+		if err := body.Tool.Validate(); err != nil {
+			return errBadRequest(err.Error())
+		}
 		s.tools.Add(body.Tool)
 	case "tools/remove":
 		s.tools.Remove(body.Name)
 	case "tools/set":
+		if err := validateTools(body.Tools); err != nil {
+			return err
+		}
 		s.tools.Set(body.Tools)
 	case "tools/rename":
 		if _, err := s.tools.Rename(body.From, body.To); err != nil {
@@ -171,7 +186,22 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 			if tools == nil {
 				tools = []Tool{}
 			}
+			if err := validateTools(tools); err != nil {
+				return err
+			}
 			s.tools.SetOverlay(body.Identity, tools)
+		}
+	case "instructions":
+		// An empty body is refused rather than read as "clear", since a
+		// scenario that misspelled the text field would otherwise silently
+		// serve no instructions.
+		switch {
+		case body.Clear:
+			s.SetInstructions("")
+		case body.Text != "":
+			s.SetInstructions(body.Text)
+		default:
+			return errBadRequest("instructions takes text, or clear to remove them")
 		}
 	case "faults":
 		if body.Faults == nil {
@@ -201,7 +231,7 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		if body.PID <= 0 {
 			return errBadRequest("pid is required")
 		}
-		s.RegisterStdioPID(body.PID)
+		s.RegisterStdio(body.PID, body.Env)
 	case "stdio/kill":
 		if err := s.KillStdio(); err != nil {
 			return errBadRequest(err.Error())
@@ -210,6 +240,16 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		s.counters.Reset()
 	default:
 		return errBadRequest("unknown control verb: " + verb)
+	}
+	return nil
+}
+
+// validateTools validates every tool in a list.
+func validateTools(tools []Tool) error {
+	for _, t := range tools {
+		if err := t.Validate(); err != nil {
+			return errBadRequest(err.Error())
+		}
 	}
 	return nil
 }
