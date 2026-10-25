@@ -884,3 +884,73 @@ func TestBuildRequest_OptionalQuerystringRequiresItsFieldsWhenSent(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, "x", req.URL.Query().Get("q"))
 }
+
+// TestBuildRequest_OAuthBearerMeetsOAuth2Requirement: an operation secured by
+// an oauth2 scheme together with an app-level API key gets the OAuth bearer
+// from the header resolver (the credential store's token for an oauth or
+// per_user_oauth client) and the stored API key on the same call.
+func TestBuildRequest_OAuthBearerMeetsOAuth2Requirement(t *testing.T) {
+	ts, _ := newCaptureServer(t, nil)
+	spec := `{"openapi":"3.0.3","info":{"title":"t","version":"1"},
+"components":{"securitySchemes":{
+ "OAuth":{"type":"oauth2","flows":{"authorizationCode":{"authorizationUrl":"https://auth.example.com/authorize","tokenUrl":"https://auth.example.com/token","scopes":{"read":""}}}},
+ "App":{"type":"apiKey","in":"header","name":"X-App-Key"}}},
+"security":[{"OAuth":["read"],"App":[]}],
+"paths":{"/me":{"get":{"operationId":"me","responses":{"200":{"description":"ok"}}}}}}`
+	syn := synthesizeSpec(t, spec)
+	require.Empty(t, findTool(t, syn, "me").Warnings, "an oauth2 requirement is no longer flagged as unsupported")
+
+	exec, _ := inlineExecutor(t, ts, spec, func(o *ServerOptions) {
+		o.Credentials = map[string]schemas.MCPOpenAPICredential{"App": {Value: schemas.NewSecretVar("app-secret")}}
+		o.Headers = func(context.Context) (http.Header, error) {
+			return http.Header{"Authorization": {"Bearer user-token"}}, nil
+		}
+	})
+	req, err := exec.BuildRequest(context.Background(), findTool(t, syn, "me"), map[string]any{})
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer user-token", req.Header.Get("Authorization"))
+	assert.Equal(t, "app-secret", req.Header.Get("X-App-Key"), "the app key of the same requirement is sent with the bearer")
+}
+
+// BenchmarkBuildRequest measures building one upstream request: the common
+// case (a stored API key) and an operation secured by oauth2 next to an API
+// key, met by the bearer the header resolver supplies.
+func BenchmarkBuildRequest(b *testing.B) {
+	spec := `{"openapi":"3.0.3","info":{"title":"t","version":"1"},
+"components":{"securitySchemes":{
+ "OAuth":{"type":"oauth2","flows":{"authorizationCode":{"authorizationUrl":"https://auth.example.com/authorize","tokenUrl":"https://auth.example.com/token","scopes":{"read":""}}}},
+ "App":{"type":"apiKey","in":"header","name":"X-App-Key"}}},
+"paths":{
+ "/key/{id}":{"get":{"operationId":"key","security":[{"App":[]}],"parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"ok"}}}},
+ "/oauth/{id}":{"get":{"operationId":"oauth","security":[{"OAuth":["read"],"App":[]}],"parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"ok"}}}}}}`
+	doc, err := Parse([]byte(spec), ParseOptions{})
+	require.NoError(b, err)
+	syn, err := Synthesize(doc, SynthesizeOptions{ClientName: "t"})
+	require.NoError(b, err)
+	exec, err := NewExecutor(ServerOptions{
+		ClientName: "t", Synthesis: syn, BaseURL: "https://api.example.com", BaseURLExplicit: true, HTTPClient: http.DefaultClient,
+		Credentials: map[string]schemas.MCPOpenAPICredential{"App": {Value: schemas.NewSecretVar("app-secret")}},
+		Headers: func(context.Context) (http.Header, error) {
+			return http.Header{"Authorization": {"Bearer user-token"}}, nil
+		},
+	})
+	require.NoError(b, err)
+	args := map[string]any{"id": "42"}
+	for _, name := range []string{"key", "oauth"} {
+		var tool *Tool
+		for i := range syn.Tools {
+			if syn.Tools[i].Name == name {
+				tool = &syn.Tools[i]
+			}
+		}
+		require.NotNil(b, tool)
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := exec.BuildRequest(context.Background(), tool, args); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
