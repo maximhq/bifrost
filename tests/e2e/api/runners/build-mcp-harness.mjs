@@ -5646,6 +5646,244 @@ const pick = (tests) => (ONLY ? tests.filter((t) => ONLY.has(t.name.split(" ")[0
 
 const section = (name, description, tests) => folder(name, description, pick(tests));
 
+// ================================================================ virtual key grants on model requests, on the mock LLM
+
+// Each test's virtual key may use the openai provider with any model and key, so its chats reach the mock LLM; what
+// its MCP grant allows is then read from the tools the model was sent, from execute, and from /mcp.
+const OPENAI_GRANT = [{ provider: "openai", allowed_models: ["*"], key_ids: ["*"], weight: 1 }];
+const govVK = (id, mcpConfigs, over = {}) => vkCreate(id, `setup: create the virtual key "${id} key"${mcpConfigs ? `, mcp_configs ${lit(mcpConfigs)}` : ", no mcp_configs"}`, { name: `${id} key`, provider_configs: OPENAI_GRANT, ...(mcpConfigs ? { mcp_configs: mcpConfigs } : {}), ...over }, `${id.toLowerCase().replace("-", "")}_vk`);
+const vkVarOf = (id) => `${id.toLowerCase().replace("-", "")}_vk`;
+const withVK = (id) => [{ key: "x-bf-vk", value: `{{${vkVarOf(id)}}}` }];
+const govTeardownVK = (id) => vkDelete(id, "teardown: delete the virtual key", vkVarOf(id));
+const GOV_TEXT = (grant) => `${LLM_TEXT}; alpha (echo, add, greet) registered as client alpha, per call, tools_to_execute ["*"]; a virtual key allowed openai with any model and key, ${grant}`;
+const govChat = (id, key, asserts, headers = []) => infPost(id, `chat with the virtual key${headers.length ? " and " + headers.map((h) => `${h.key} ${h.value}`).join(", ") : ""}`, "/v1/chat/completions", chatBody(key), asserts, { headers: [...withVK(id), ...headers] });
+const govExec = (id, tool, asserts) => execTool(id, `execute ${tool} with the virtual key`, tool, asserts, { headers: withVK(id) });
+const blocked = (id, tool) => [A.status(403), A.custom("type mcp_tool_blocked", [`pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('mcp_tool_blocked');`]), A.msgEquals(`MCP tool '${tool}' is not allowed for virtual key '${id} key'`)];
+const govList = (id, title, names) => rpc(id, title, listMsg, { headers: [MCP_ACCEPT, ...withVK(id)], asserts: [A.status(200), toolNamesInList(names)] });
+
+const GOV01 = folder("GOV-01 VK limited to one tool", `Setup: ${GOV_TEXT("mcp_configs alpha [\"echo\"]")}.`, [
+  ...freshServer("GOV-01", "alpha", ["echo", "add", "greet"]),
+  alphaClient("GOV-01"),
+  govVK("GOV-01", [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }]),
+  llmScript("GOV-01", "gov01", TEXT_OK),
+  govChat("GOV-01", "gov01", [A.status(200)]),
+  llmCaptured("GOV-01", "only alpha-echo is injected", "gov01", [reqCount(1), toolsAre(0, ["alpha-echo"])]),
+  govExec("GOV-01", "alpha-echo", [A.status(200)]),
+  execTool("GOV-01", "execute alpha-add with the virtual key and x-request-id gov01-add", "alpha-add", blocked("GOV-01", "alpha-add"), { headers: [...withVK("GOV-01"), { key: "x-request-id", value: "gov01-add" }] }),
+  request("GOV-01", "the blocked call's log entry", "GET", "/api/mcp-logs/gov01-add", {
+    pre: ["var left = 30;", "function poll() { pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/gov01-add', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) { if ((!err && res.code === 200 && res.json().status !== 'processing') || --left <= 0) { return; } setTimeout(poll, 500); }); }", "poll();"],
+    asserts: [A.status(200), A.custom("status \"error\", tool add", ["var b = pm.response.json();", "pm.expect(b.status, 'body: ' + pm.response.text()).to.equal('error');", "pm.expect(b.tool_name).to.equal('add');"])],
+  }),
+  request("GOV-01", "teardown: delete the log entry", "DELETE", "/api/mcp-logs", { body: { ids: ["gov01-add"] }, asserts: [A.status(200)] }),
+  govTeardownVK("GOV-01"),
+  deleteClient("GOV-01", "gov-01-alpha"),
+]);
+
+const GOV02 = folder("GOV-02 VK allow-all for one client", `Setup: ${GOV_TEXT("mcp_configs alpha [\"*\"]")}; beta (zz, aa) as client beta, not allow-by-default.`, [
+  ...freshServer("GOV-02", "alpha", ["echo", "add", "greet"]),
+  alphaClient("GOV-02"),
+  ...freshServer("GOV-02", "beta", ["zz", "aa"]),
+  createClient("GOV-02", httpClient("gov-02-beta", "beta", "beta", { tools_to_execute: ["*"] }), "setup: register client beta"),
+  getClient("GOV-02", "gov-02-beta", "control: beta's tools aa and zz were discovered", [toolNamesAre(["aa", "zz"])]),
+  govVK("GOV-02", [{ mcp_client_name: "alpha", tools_to_execute: ["*"] }]),
+  llmScript("GOV-02", "gov02", TEXT_OK),
+  govChat("GOV-02", "gov02", [A.status(200)]),
+  llmCaptured("GOV-02", "all alpha tools are injected and beta's are not", "gov02", [reqCount(1), toolsAre(0, ALPHA3)]),
+  ...["alpha-add", "alpha-echo", "alpha-greet"].map((t) => govExec("GOV-02", t, [A.status(200)])),
+  govExec("GOV-02", "beta-aa", blocked("GOV-02", "beta-aa")),
+  govTeardownVK("GOV-02"),
+  deleteClient("GOV-02", "gov-02-beta"),
+  deleteClient("GOV-02", "gov-02-alpha"),
+]);
+
+const GOV03 = folder("GOV-03 VK with no MCP grant", `Setup: ${GOV_TEXT("no mcp_configs")}; alpha has instructions.`, [
+  ...freshServer("GOV-03", "alpha", ["echo", "add", "greet"]),
+  setInstructions("GOV-03", "alpha", "Alpha instructions", lit("Alpha instructions")),
+  alphaClient("GOV-03"),
+  govVK("GOV-03", null),
+  llmScript("GOV-03", "gov03", TEXT_OK),
+  govChat("GOV-03", "gov03", [A.status(200)]),
+  llmCaptured("GOV-03", "no MCP tool and no instructions", "gov03", [reqCount(1), toolsAre(0, []), noInstructions(0)]),
+  llmScript("GOV-03", "gov03-open", TEXT_OK),
+  infPost("GOV-03", "control: chat with no virtual key", "/v1/chat/completions", chatBody("gov03-open"), [A.status(200)]),
+  llmCaptured("GOV-03", "control: without a VK, alpha's tools and instructions reach the model", "gov03-open", [reqCount(1), toolsAre(0, ALPHA3), systemBlock(0, "alpha", "Alpha instructions")]),
+  govExec("GOV-03", "alpha-echo", blocked("GOV-03", "alpha-echo")),
+  govTeardownVK("GOV-03"),
+  deleteClient("GOV-03", "gov-03-alpha"),
+]);
+
+const GOV04 = folder("GOV-04 An explicit empty grant denies", `Setup: ${GOV_TEXT("mcp_configs alpha []")}; client alpha has allow_by_default true.`, [
+  ...freshServer("GOV-04", "alpha", ["echo", "add", "greet"]),
+  alphaClient("GOV-04", { allow_by_default: true }),
+  govVK("GOV-04", [{ mcp_client_name: "alpha", tools_to_execute: [] }]),
+  llmScript("GOV-04", "gov04", TEXT_OK),
+  govChat("GOV-04", "gov04", [A.status(200)]),
+  llmCaptured("GOV-04", "alpha is absent", "gov04", [reqCount(1), toolsAre(0, [])]),
+  govExec("GOV-04", "alpha-echo", blocked("GOV-04", "alpha-echo")),
+  vkCreate("GOV-04", "control: create a second virtual key with no mcp_configs", { name: "GOV-04 open key", provider_configs: OPENAI_GRANT }, "gov04_open_vk"),
+  execTool("GOV-04", "control: execute alpha-echo with the second virtual key", "alpha-echo", [A.status(200)], { headers: [{ key: "x-bf-vk", value: "{{gov04_open_vk}}" }] }),
+  vkDelete("GOV-04", "teardown: delete the second virtual key", "gov04_open_vk"),
+  govTeardownVK("GOV-04"),
+  deleteClient("GOV-04", "gov-04-alpha"),
+]);
+
+const GOV05 = folder("GOV-05 allow_by_default toggles live", `Setup: ${GOV_TEXT("no mcp_configs")}; client alpha has allow_by_default true, then false, with no edit to the virtual key in between.`, [
+  ...freshServer("GOV-05", "alpha", ["echo", "add", "greet"]),
+  alphaClient("GOV-05", { allow_by_default: true }),
+  govVK("GOV-05", null),
+  llmScript("GOV-05", "gov05", TEXT_OK),
+  govChat("GOV-05", "gov05", [A.status(200)]),
+  govList("GOV-05", "/mcp tools/list with the virtual key, allow_by_default true", ALPHA3),
+  govExec("GOV-05", "alpha-echo", [A.status(200)]),
+  request("GOV-05", "setup: set allow_by_default false on client alpha", "PUT", "/api/mcp/client/gov-05-alpha", { body: { allow_by_default: false }, asserts: [A.status(200)] }),
+  govChat("GOV-05", "gov05", [A.status(200)]),
+  llmCaptured("GOV-05", "injected while true, absent once false", "gov05", [reqCount(2), toolsAre(0, ALPHA3), toolsAre(1, [])]),
+  govList("GOV-05", "/mcp tools/list with the virtual key, allow_by_default false", []),
+  govExec("GOV-05", "alpha-echo", blocked("GOV-05", "alpha-echo")),
+  govTeardownVK("GOV-05"),
+  deleteClient("GOV-05", "gov-05-alpha"),
+]);
+
+const GOV07 = folder("GOV-07 No VK means no restriction", `Setup: ${ALPHA_GREET_LLM}; enforce_auth_on_inference off; the caller sends no virtual key.`, [
+  readConfig("GOV-07"),
+  putConfig("GOV-07", "setup: enforce_auth_on_inference off", ["cc.enforce_auth_on_inference = false;"], [A.status(200)]),
+  ...alphaGreetSetup("GOV-07"),
+  llmScript("GOV-07", "gov07", TEXT_OK),
+  infPost("GOV-07", "chat with no virtual key", "/v1/chat/completions", chatBody("gov07"), [A.status(200)]),
+  llmCaptured("GOV-07", "all alpha tools are injected", "gov07", [reqCount(1), toolsAre(0, ALPHA3)]),
+  execTool("GOV-07", "execute alpha-add with no virtual key", "alpha-add", [A.status(200)]),
+  alphaGreetTeardown("GOV-07"),
+  restoreConfig("GOV-07"),
+]);
+
+const GOV08 = folder("GOV-08 Headers only narrow a VK grant", `Setup: ${GOV_TEXT("mcp_configs alpha [\"echo\"]")}; beta (zz, aa) as client beta.`, [
+  ...freshServer("GOV-08", "alpha", ["echo", "add", "greet"]),
+  alphaClient("GOV-08"),
+  ...freshServer("GOV-08", "beta", ["zz", "aa"]),
+  createClient("GOV-08", httpClient("gov-08-beta", "beta", "beta", { tools_to_execute: ["*"] }), "setup: register client beta"),
+  getClient("GOV-08", "gov-08-beta", "control: beta's tools aa and zz were discovered", [toolNamesAre(["aa", "zz"])]),
+  govVK("GOV-08", [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }]),
+  llmScript("GOV-08", "gov08", TEXT_OK),
+  govChat("GOV-08", "gov08", [A.status(200)], [inc("tools", "alpha-*")]),
+  govChat("GOV-08", "gov08", [A.status(200)], [inc("tools", "alpha-add")]),
+  govChat("GOV-08", "gov08", [A.status(200)], [inc("clients", "alpha,beta")]),
+  llmCaptured("GOV-08", "alpha-echo only; nothing; alpha-echo only", "gov08", [reqCount(3), toolsAre(0, ["alpha-echo"]), toolsAre(1, []), toolsAre(2, ["alpha-echo"])]),
+  govTeardownVK("GOV-08"),
+  deleteClient("GOV-08", "gov-08-beta"),
+  deleteClient("GOV-08", "gov-08-alpha"),
+]);
+
+const GOV12 = folder("GOV-12 Rename carries grants", `Setup: ${GOV_TEXT("mcp_configs alpha [\"echo\"]")}; client alpha is then renamed alpha2.`, [
+  ...freshServer("GOV-12", "alpha", ["echo", "add", "greet"]),
+  alphaClient("GOV-12"),
+  govVK("GOV-12", [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }]),
+  request("GOV-12", "setup: rename client alpha to alpha2", "PUT", "/api/mcp/client/gov-12-alpha", { body: { name: "alpha2" }, asserts: [A.status(200)] }),
+  llmScript("GOV-12", "gov12", TEXT_OK),
+  govChat("GOV-12", "gov12", [A.status(200)]),
+  llmCaptured("GOV-12", "alpha2-echo is injected", "gov12", [reqCount(1), toolsAre(0, ["alpha2-echo"])]),
+  govExec("GOV-12", "alpha2-echo", [A.status(200)]),
+  govExec("GOV-12", "alpha-echo", [A.status(403)]),
+  govTeardownVK("GOV-12"),
+  deleteClient("GOV-12", "gov-12-alpha"),
+]);
+
+const GOV15 = folder("GOV-15 Expired VK", `Setup: ${LLM_TEXT}; alpha (echo, add, greet) registered as client alpha, per call, tools_to_execute ["*"]; a virtual key allowed openai with any model and key and mcp_configs alpha ["*"], expiring 5s after it is created; it is later also deactivated.`, [
+  ...freshServer("GOV-15", "alpha", ["echo", "add", "greet"]),
+  alphaClient("GOV-15"),
+  request("GOV-15", "setup: create the virtual key, expiring in 5s", "POST", "/api/governance/virtual-keys", {
+    raw: "{{gov15_body}}", asserts: [A.status(200)],
+    pre: [`pm.variables.set('gov15_body', JSON.stringify({ name: 'GOV-15 key', provider_configs: ${lit(OPENAI_GRANT)}, mcp_configs: [{ mcp_client_name: 'alpha', tools_to_execute: ['*'] }], expires_at: new Date(Date.now() + 5000).toISOString() }));`],
+    extraTests: ["pm.collectionVariables.set('gov15_vk_id', pm.response.json().virtual_key.id);", "pm.collectionVariables.set('gov15_vk', pm.response.json().virtual_key.value);"],
+  }),
+  llmScript("GOV-15", "gov15", TEXT_OK),
+  infPost("GOV-15", "chat with the expired key, 6s later", "/v1/chat/completions", chatBody("gov15"), [A.status(403), A.msgEquals("virtual key has expired")], { headers: withVK("GOV-15"), pre: ["setTimeout(function () {}, 6000);"] }),
+  govExec("GOV-15", "alpha-echo", [A.status(403), A.msgEquals("virtual key has expired")]),
+  rpc("GOV-15", "/mcp initialize with the expired key", init("2025-03-26"), { headers: [MCP_ACCEPT, ...withVK("GOV-15")], asserts: [A.status(403), A.msgEquals("virtual key has expired")] }),
+  request("GOV-15", "setup: deactivate the expired key", "PUT", "/api/governance/virtual-keys/{{gov15_vk_id}}", { body: { is_active: false }, asserts: [A.status(200)] }),
+  infPost("GOV-15", "chat with the inactive, expired key", "/v1/chat/completions", chatBody("gov15"), [A.status(403), A.msgEquals("virtual key is inactive")], { headers: withVK("GOV-15") }),
+  govExec("GOV-15", "alpha-echo", [A.status(403), A.msgEquals("virtual key is inactive")]),
+  rpc("GOV-15", "/mcp initialize with the inactive, expired key", init("2025-03-26"), { headers: [MCP_ACCEPT, ...withVK("GOV-15")], asserts: [A.status(403), A.msgEquals("virtual key is inactive")] }),
+  llmCaptured("GOV-15", "control: neither chat reached the model", "gov15", [reqCount(0)]),
+  govTeardownVK("GOV-15"),
+  deleteClient("GOV-15", "gov-15-alpha"),
+]);
+
+const GOV20 = folder("GOV-20 Agent mode respects the VK", `Setup: ${LLM_TEXT}; alpha (echo, add, greet) registered as client alpha, per call, tools_to_execute ["*"], tools_to_auto_execute ["*"]; a virtual key allowed openai with any model and key, mcp_configs alpha ["echo"]; turn 1 calls alpha-add, turn 2 answers "done".`, [
+  ...agentSetup("GOV-20", ["*"]),
+  govVK("GOV-20", [{ mcp_client_name: "alpha", tools_to_execute: ["echo"] }]),
+  llmScript("GOV-20", "gov20", { turns: [{ tool_calls: [llmCall("g1", "alpha-add", { a: 1 })] }, { text: "done" }] }),
+  govChat("GOV-20", "gov20", [A.status(200), chatContent("done")]),
+  llmCaptured("GOV-20", "turn 2's tool content reports the grant", "gov20", [reqCount(2), A.custom("the tool content names the virtual key", [REQS, TOOL_MSGS(1), `pm.expect(tm.g1, JSON.stringify(reqs[1].json.messages)).to.equal(${lit("Error executing tool alpha-add: tool execution failed: MCP tool 'alpha-add' is not allowed for virtual key 'GOV-20 key'")});`])]),
+  mockGet("GOV-20", "alpha", "alpha never ran add", [callsIs("add", 0)]),
+  govTeardownVK("GOV-20"),
+  agentTeardown("GOV-20"),
+]);
+
+const GOV21 = folder("GOV-21 Provider-injected tools ignore VK grants", `Setup: as INF-60 (${INJ_TEXT}); a virtual key allowed openai with any model and key and no mcp_configs; turn 1 calls web_search, turn 2 answers "answer".`, [
+  ...injectedSetup("GOV-21"),
+  govVK("GOV-21", null),
+  llmScript("GOV-21", "gov21", { turns: [SEARCH_CALL, { text: "answer" }] }),
+  govChat("GOV-21", "gov21", [A.status(200), chatContent("answer")]),
+  mockGet("GOV-21", "alpha", "the chat ran search", [callsIs("search", 1)]),
+  govExec("GOV-21", "alpha-search", [A.status(403)]),
+  govTeardownVK("GOV-21"),
+  ...injectedTeardown("GOV-21"),
+]);
+
+const GOV33 = folder("GOV-33 A virtual MCP grants on every surface", `Setup: ${GOV_TEXT("no mcp_configs")}; a virtual MCP "Tools A" over alpha's echo, with the virtual key attached.`, [
+  ...freshServer("GOV-33", "alpha", ["echo", "add", "greet"]),
+  alphaClient("GOV-33"),
+  govVK("GOV-33", null),
+  request("GOV-33", "setup: create the virtual MCP Tools A over alpha's echo", "POST", "/api/mcp/virtual-mcps", { body: { name: "Tools A", tools: [{ mcp_client_id: "gov-33-alpha", tool_names: ["echo"] }] }, asserts: [A.status(201)], extraTests: ["pm.collectionVariables.set('gov33_vmcp', pm.response.json().virtual_mcp.id);"] }),
+  request("GOV-33", "setup: attach the virtual key", "POST", "/api/mcp/virtual-mcps/{{gov33_vmcp}}/virtual-keys/{{gov33_vk_id}}", { asserts: [A.status(200)] }),
+  llmScript("GOV-33", "gov33", TEXT_OK),
+  govChat("GOV-33", "gov33", [A.status(200)]),
+  llmCaptured("GOV-33", "only alpha-echo is injected", "gov33", [reqCount(1), toolsAre(0, ["alpha-echo"])]),
+  govExec("GOV-33", "alpha-echo", [A.status(200)]),
+  govExec("GOV-33", "alpha-add", [A.status(403)]),
+  govList("GOV-33", "/mcp tools/list with the virtual key", ["alpha-echo"]),
+  request("GOV-33", "teardown: delete the virtual MCP", "DELETE", "/api/mcp/virtual-mcps/{{gov33_vmcp}}", { asserts: [A.status(200)] }),
+  govTeardownVK("GOV-33"),
+  deleteClient("GOV-33", "gov-33-alpha"),
+]);
+
+// ================================================================ a per-user OAuth caller with no token, on the mock LLM
+
+const AUTH39_SA = { key: "x-bf-mcp-session-id", value: "auth39-sess1" };
+const AUTH39_MSG = "Authentication required for auth39. Open this URL to connect your account:";
+const AUTH39 = folder("AUTH-39 No-token caller on every surface", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("auth39")} and tools_to_auto_execute ["*"], verified as admin; ${LLM_TEXT}; openai's injected_tools expose auth39's echo_tool as web_search. Every call sends x-bf-mcp-session-id auth39-sess1, which has no token.`, [
+  ...puConfig("AUTH-39", false),
+  ...puConnect("AUTH-39", "auth39", {}, { tools_to_auto_execute: ["*"] }),
+  readProvider("AUTH-39"),
+  putInjected("AUTH-39", "setup: openai injects auth39's echo_tool as web_search", [{ name: "web_search", mcp_client_name: "auth39", tool_name: "echo_tool" }]),
+  gwCall("AUTH-39", "/mcp tools/call as auth39-sess1", "auth39-echo_tool", [toolResultError(null, AUTH39_MSG)], [AUTH39_SA]),
+  llmScript("AUTH-39", "auth39-agent", { turns: [{ tool_calls: [llmCall("a1", "auth39-echo_tool")] }, { text: "done" }] }),
+  infPost("AUTH-39", "agent chat as auth39-sess1; the model calls auth39-echo_tool", "/v1/chat/completions", chatBody("auth39-agent"), [A.status(401), A.custom("error.type is \"mcp_auth_required\"", ["var b = pm.response.json();", "pm.expect(b.error && b.error.type, 'body: ' + pm.response.text()).to.equal('mcp_auth_required');"])], { headers: [AUTH39_SA] }),
+  llmScript("AUTH-39", "auth39-inj", { turns: [{ tool_calls: [llmCall("w1", "web_search")] }, { text: "answer" }] }),
+  infPost("AUTH-39", "chat as auth39-sess1; the model calls web_search", "/v1/chat/completions", chatBody("auth39-inj"), [A.status(200), chatContent("answer")], { headers: [AUTH39_SA] }),
+  llmCaptured("AUTH-39", "the model's web_search result starts \"Authentication required for\"", "auth39-inj", [reqCount(2), A.custom("w1's tool content starts \"Authentication required for\"", [REQS, TOOL_MSGS(1), "pm.expect((tm.w1 || '').indexOf('Authentication required for'), JSON.stringify(reqs[1].json.messages)).to.equal(0);"])]),
+  putInjected("AUTH-39", "teardown: clear openai's injected_tools", []),
+  deleteClient("AUTH-39", "auth39-u"),
+  restoreConfig("AUTH-39"),
+]);
+
+// ================================================================ tool failures inside agent mode, on the mock LLM
+
+const FAIL19_TEXT = "echo is broken upstream";
+const FAIL19_TIMEOUT = "Error executing tool alpha-slow_tool: tool execution failed: MCP tool call timed out after 2s";
+const FAIL19 = folder("FAIL-19 Agent mode with a tool-level error and a timeout", `Setup: ${LLM_TEXT}; alpha (echo, slow_tool), with echo answering every call with an isError result (err_kind tool) whose text is ${lit(FAIL19_TEXT)} and slow_tool hanging for 10s, registered as client alpha, per call, tools_to_execute ["*"], tools_to_auto_execute ["*"], tool_execution_timeout 2; each chat's turn 1 calls one tool and turn 2 answers "final".`, [
+  request("FAIL-19", "setup: fresh mcpchaos server alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "alpha" }, asserts: [A.status(200)] }),
+  mockPost("FAIL-19", "alpha", "tools/set", "setup: alpha serves echo (an isError result every call) and slow_tool (hanging 10s)", { tools: [{ name: "echo", fault: { err_rate: 1, err_kind: "tool", message: FAIL19_TEXT } }, { name: "slow_tool", fault: { hang: "10s" } }] }),
+  alphaClient("FAIL-19", { tools_to_auto_execute: ["*"], tool_execution_timeout: 2 }),
+  llmScript("FAIL-19", "fail19-err", { turns: [{ tool_calls: [llmCall("e1", "alpha-echo")] }, { text: "final" }] }),
+  infPost("FAIL-19", "chat; the model calls alpha-echo", "/v1/chat/completions", chatBody("fail19-err"), [A.status(200), chatContent("final")]),
+  llmCaptured("FAIL-19", "turn 2's tool content is the mock's text", "fail19-err", [reqCount(2), A.custom(`the tool content is ${lit(FAIL19_TEXT)}`, [REQS, TOOL_MSGS(1), `pm.expect(tm.e1, JSON.stringify(reqs[1].json.messages)).to.equal(${lit(FAIL19_TEXT)});`])]),
+  llmScript("FAIL-19", "fail19-hang", { turns: [{ tool_calls: [llmCall("h1", "alpha-slow_tool")] }, { text: "final" }] }),
+  infPost("FAIL-19", "chat; the model calls alpha-slow_tool", "/v1/chat/completions", chatBody("fail19-hang"), [A.status(200), chatContent("final")]),
+  llmCaptured("FAIL-19", "turn 2's tool content reports the timeout", "fail19-hang", [reqCount(2), A.custom(`the tool content starts ${lit(FAIL19_TIMEOUT)}`, [REQS, TOOL_MSGS(1), `pm.expect((tm.h1 || '').indexOf(${lit(FAIL19_TIMEOUT)}), JSON.stringify(reqs[1].json.messages)).to.equal(0);`])]),
+  agentTeardown("FAIL-19"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -5660,16 +5898,16 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM31, ADM32, ADM33, ADM34, ADM38, ADM39, ADM40, ADM42, ADM44, ADM46, ADM47, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
     section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN06, CONN09, CONN10, CONN12, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
-    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV06, GOV11, GOV16, GOV17, GOV29, GOV31, GOV32]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV15, GOV16, GOV17, GOV20, GOV21, GOV29, GOV31, GOV32, GOV33]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG27, LOG28, LOG29, LOG31, LOG33, LOG37, LOG38, LOG40, LOG41, LOG43]),
-    section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18]),
+    section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19]),
   ],
 };
 
