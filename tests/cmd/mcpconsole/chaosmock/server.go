@@ -27,6 +27,7 @@ type Server struct {
 	counters *Counters
 	streams  *streamRegistry
 	oauth    *oauthState
+	rest     *restSurface
 
 	// version is reported in serverInfo. Scenarios that restart a server with
 	// changed behaviour bump it so a client's own logs distinguish the two.
@@ -62,6 +63,7 @@ func NewServer(name string) *Server {
 		counters: newCounters(),
 		streams:  newStreamRegistry(),
 		oauth:    newOAuthState(),
+		rest:     &restSurface{},
 		version:  "1.0.0",
 	}
 }
