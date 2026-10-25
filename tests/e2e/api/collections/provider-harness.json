@@ -263843,27 +263843,33 @@
           }
         },
         {
-          "name": "[EXPECT-400] openai mcp-openapi-spec create with auth_type oauth is refused",
+          "name": "openai mcp-openapi-spec create with auth_type oauth starts OAuth from the spec oauth2 endpoints",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// A probe the server should refuse but accepted would persist and block later runs with a name conflict: remove it (the assertion below still fails).",
-                  "if (pm.response.code === 200) {",
-                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=harness_openapi_oauth_probe&limit=10', method: 'GET' }, function (err, res) {",
-                  "    if (err || res.code !== 200) { return; }",
-                  "    (res.json().clients || []).forEach(function (c) {",
-                  "      if (c.config && c.config.name === 'harness_openapi_oauth_probe') {",
-                  "        pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function () {});",
-                  "      }",
-                  "    });",
+                  "// The client row is only written once OAuth completes, but a server that wrongly created it would block later runs with a name conflict: remove it (the assertions below still fail).",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=harness_openapi_oauth_probe&limit=10', method: 'GET' }, function (err, res) {",
+                  "  if (err || res.code !== 200) { return; }",
+                  "  (res.json().clients || []).forEach(function (c) {",
+                  "    if (c.config && c.config.name === 'harness_openapi_oauth_probe') {",
+                  "      pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function () {});",
+                  "    }",
                   "  });",
-                  "}",
-                  "pm.test('oauth on an openapi client is a 400', function () {",
-                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
-                  "  pm.expect(pm.response.text()).to.include(\"not supported for connection_type 'openapi'\");",
+                  "});",
+                  "pm.test('oauth on an openapi client starts the OAuth flow (no MCP server needed)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.status, pm.response.text()).to.eql('pending_oauth');",
+                  "  pm.expect(body.oauth_config_id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('the authorize URL and scopes come from the spec authorization code flow', function () {",
+                  "  var url = pm.response.json().authorize_url || '';",
+                  "  pm.expect(url.indexOf('https://auth.harness.example.com/authorize?'), url).to.eql(0);",
+                  "  pm.expect(url, 'scopes the operations require, not every declared scope').to.include('scope=read%3Apets+write%3Apets');",
+                  "  pm.expect(url).to.include('client_id=harness-openapi-client');",
                   "});"
                 ]
               }
@@ -263879,7 +263885,57 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"harness_openapi_oauth_probe\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"oauth\",\n  \"tools_to_execute\": [\n    \"*\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"Harness Petstore\\\", \\\"version\\\": \\\"1.0.0\\\", \\\"x-harness-marker\\\": \\\"spec-body-must-not-be-returned\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://petstore3.swagger.io/api/v3\\\"}], \\\"components\\\": {\\\"securitySchemes\\\": {\\\"ApiKeyAuth\\\": {\\\"type\\\": \\\"apiKey\\\", \\\"in\\\": \\\"header\\\", \\\"name\\\": \\\"api_key\\\"}}}, \\\"paths\\\": {\\\"/pet/findByStatus\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"listPets\\\", \\\"summary\\\": \\\"Find pets by status\\\", \\\"parameters\\\": [{\\\"name\\\": \\\"status\\\", \\\"in\\\": \\\"query\\\", \\\"schema\\\": {\\\"type\\\": \\\"string\\\", \\\"enum\\\": [\\\"available\\\", \\\"pending\\\", \\\"sold\\\"]}}], \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}, \\\"/pet\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"createPet\\\", \\\"requestBody\\\": {\\\"required\\\": true, \\\"content\\\": {\\\"application/json\\\": {\\\"schema\\\": {\\\"type\\\": \\\"object\\\", \\\"required\\\": [\\\"name\\\"], \\\"properties\\\": {\\\"name\\\": {\\\"type\\\": \\\"string\\\"}, \\\"status\\\": {\\\"type\\\": \\\"string\\\"}}}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}, \\\"/pet/{petId}\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getPetById\\\", \\\"parameters\\\": [{\\\"name\\\": \\\"petId\\\", \\\"in\\\": \\\"path\\\", \\\"required\\\": true, \\\"schema\\\": {\\\"type\\\": \\\"integer\\\"}}], \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}, \\\"/pet/{petId}/uploadImage\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"uploadPetPhoto\\\", \\\"parameters\\\": [{\\\"name\\\": \\\"petId\\\", \\\"in\\\": \\\"path\\\", \\\"required\\\": true, \\\"schema\\\": {\\\"type\\\": \\\"integer\\\"}}], \\\"requestBody\\\": {\\\"content\\\": {\\\"multipart/form-data\\\": {\\\"schema\\\": {\\\"type\\\": \\\"object\\\"}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\",\n    \"base_url\": \"https://petstore3.swagger.io/api/v3\"\n  }\n}"
+              "raw": "{\n  \"name\": \"harness_openapi_oauth_probe\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"oauth\",\n  \"tools_to_execute\": [\n    \"*\"\n  ],\n  \"headers\": {\n    \"X-Harness-App\": \"static-alongside-oauth\"\n  },\n  \"openapi_config\": {\n    \"spec\": \"{\\\"openapi\\\":\\\"3.0.3\\\",\\\"info\\\":{\\\"title\\\":\\\"Harness OAuth Petstore\\\",\\\"version\\\":\\\"1.0.0\\\"},\\\"servers\\\":[{\\\"url\\\":\\\"https://petstore3.swagger.io/api/v3\\\"}],\\\"components\\\":{\\\"securitySchemes\\\":{\\\"PetAuth\\\":{\\\"type\\\":\\\"oauth2\\\",\\\"flows\\\":{\\\"authorizationCode\\\":{\\\"authorizationUrl\\\":\\\"https://auth.harness.example.com/authorize\\\",\\\"tokenUrl\\\":\\\"https://auth.harness.example.com/token\\\",\\\"scopes\\\":{\\\"read:pets\\\":\\\"\\\",\\\"write:pets\\\":\\\"\\\",\\\"admin\\\":\\\"\\\"}}}}}},\\\"security\\\":[{\\\"PetAuth\\\":[\\\"read:pets\\\"]}],\\\"paths\\\":{\\\"/pet/findByStatus\\\":{\\\"get\\\":{\\\"operationId\\\":\\\"listPets\\\",\\\"responses\\\":{\\\"200\\\":{\\\"description\\\":\\\"ok\\\"}}}},\\\"/pet\\\":{\\\"post\\\":{\\\"operationId\\\":\\\"createPet\\\",\\\"security\\\":[{\\\"PetAuth\\\":[\\\"write:pets\\\"]}],\\\"responses\\\":{\\\"200\\\":{\\\"description\\\":\\\"ok\\\"}}}}}}\",\n    \"base_url\": \"https://petstore3.swagger.io/api/v3\"\n  },\n  \"oauth_config\": {\n    \"client_id\": \"harness-openapi-client\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai mcp-openapi-spec create with auth_type per_user_oauth and no oauth2 flow to default endpoints from is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The client row is only written once OAuth completes, but a server that wrongly created it would block later runs with a name conflict: remove it (the assertions below still fail).",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=harness_openapi_oauth_noflow_probe&limit=10', method: 'GET' }, function (err, res) {",
+                  "  if (err || res.code !== 200) { return; }",
+                  "  (res.json().clients || []).forEach(function (c) {",
+                  "    if (c.config && c.config.name === 'harness_openapi_oauth_noflow_probe') {",
+                  "      pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function () {});",
+                  "    }",
+                  "  });",
+                  "});",
+                  "pm.test('missing OAuth endpoints on an openapi client are a 400 that says where they come from', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('oauth_config.authorize_url and oauth_config.token_url are required');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_openapi_oauth_noflow_probe\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"per_user_oauth\",\n  \"tools_to_execute\": [\n    \"*\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\\"openapi\\\":\\\"3.0.3\\\",\\\"info\\\":{\\\"title\\\":\\\"Harness Petstore\\\",\\\"version\\\":\\\"1.0.0\\\"},\\\"servers\\\":[{\\\"url\\\":\\\"https://petstore3.swagger.io/api/v3\\\"}],\\\"components\\\":{\\\"securitySchemes\\\":{\\\"ApiKeyAuth\\\":{\\\"type\\\":\\\"apiKey\\\",\\\"in\\\":\\\"header\\\",\\\"name\\\":\\\"api_key\\\"}}},\\\"paths\\\":{\\\"/pet/findByStatus\\\":{\\\"get\\\":{\\\"operationId\\\":\\\"listPets\\\",\\\"responses\\\":{\\\"200\\\":{\\\"description\\\":\\\"ok\\\"}}}}}}\",\n    \"base_url\": \"https://petstore3.swagger.io/api/v3\"\n  },\n  \"oauth_config\": {\n    \"client_id\": \"harness-openapi-client\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/mcp/client",

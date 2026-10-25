@@ -432,13 +432,23 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has no pending OAuth bootstrap config to initiate from")
 		return
 	}
-	if clientConfig.ConnectionString == nil || clientConfig.ConnectionString.GetValue() == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "MCP client connection_string is required to initiate OAuth discovery")
-		return
-	}
-
 	oauthCfg := pendingOAuthConfigToRequest(clientConfig.PendingOAuthConfig)
-	flowInitiation, err := h.runOAuthBootstrap(ctx, oauthCfg, clientConfig.ConnectionString.GetValue(), clientConfig.RequirePublicTarget)
+	serverURL := ""
+	if clientConfig.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
+		// No MCP server to discover from: the stored spec fills the endpoints
+		// config.json left out.
+		if msg := applyOpenAPIOAuthDefaults(oauthCfg, storedSpecOAuthEndpoints(clientConfig.OpenAPIConfig)); msg != "" {
+			SendError(ctx, fasthttp.StatusBadRequest, msg)
+			return
+		}
+	} else {
+		if clientConfig.ConnectionString == nil || clientConfig.ConnectionString.GetValue() == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "MCP client connection_string is required to initiate OAuth discovery")
+			return
+		}
+		serverURL = clientConfig.ConnectionString.GetValue()
+	}
+	flowInitiation, err := h.runOAuthBootstrap(ctx, oauthCfg, serverURL, clientConfig.RequirePublicTarget)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
 		return
@@ -2243,17 +2253,19 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// openapi: the synthesized server has no remote MCP handshake, so only the
-	// header-shaped auth types apply; the spec is validated, inlined and
-	// synthesized now so a bad document or an unknown tool name fails here with
-	// a 400 rather than after the row is written. The upstream base URL is
-	// subject to the same public-target rule as a connection_string.
+	// openapi: the synthesized server has no remote MCP handshake, so token
+	// exchange (verified through one) does not apply; OAuth only needs the
+	// provider's endpoints, which the spec can supply. The spec is validated,
+	// inlined and synthesized now so a bad document or an unknown tool name
+	// fails here with a 400 rather than after the row is written. The upstream
+	// base URL is subject to the same public-target rule as a connection_string.
 	var preparedOpenAPI *preparedOpenAPIClient
 	if isOpenAPIClient {
 		switch req.AuthType {
-		case "", string(schemas.MCPAuthTypeNone), string(schemas.MCPAuthTypeHeaders), string(schemas.MCPAuthTypePerUserHeaders):
+		case "", string(schemas.MCPAuthTypeNone), string(schemas.MCPAuthTypeHeaders), string(schemas.MCPAuthTypePerUserHeaders),
+			string(schemas.MCPAuthTypeOauth), string(schemas.MCPAuthTypePerUserOauth):
 		default:
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth_type %q is not supported for connection_type 'openapi' (use none, headers or per_user_headers)", req.AuthType))
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth_type %q is not supported for connection_type 'openapi' (use none, headers, per_user_headers, oauth or per_user_oauth)", req.AuthType))
 			return
 		}
 		if req.ConnectionString != nil && strings.TrimSpace(req.ConnectionString.GetValue()) != "" {
@@ -2279,6 +2291,16 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		preparedOpenAPI = prepared
+		if req.AuthType == string(schemas.MCPAuthTypeOauth) || req.AuthType == string(schemas.MCPAuthTypePerUserOauth) {
+			if req.OauthConfig == nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("OAuth configuration is required when auth_type is '%s'", req.AuthType))
+				return
+			}
+			if msg := applyOpenAPIOAuthDefaults(req.OauthConfig, prepared.oauth); msg != "" {
+				SendError(ctx, fasthttp.StatusBadRequest, msg)
+				return
+			}
+		}
 		if req.AuthType == string(schemas.MCPAuthTypePerUserHeaders) {
 			// Same schema checks the per-user-headers branch below applies;
 			// there is no upstream MCP server to verify against, so the
@@ -2618,7 +2640,9 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		if !req.OauthConfig.ClientID.IsSet() && req.ConnectionString.GetValue() == "" {
+		// An openapi client was checked against its own rule above: no server
+		// URL exists, a registration_url stands in for it.
+		if !isOpenAPIClient && !req.OauthConfig.ClientID.IsSet() && req.ConnectionString.GetValue() == "" {
 			SendError(ctx, fasthttp.StatusBadRequest, "Either client_id must be provided, or server URL must be set for OAuth discovery and dynamic client registration")
 			return
 		}
@@ -2676,6 +2700,9 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
 			AllowByDefault:         req.AllowByDefault,
 		}
+		if preparedOpenAPI != nil {
+			pendingConfig.OpenAPIConfig = preparedOpenAPI.config
+		}
 
 		if err := h.oauthHandler.StorePendingMCPClient(flowInitiation.OauthConfigID, pendingConfig); err != nil {
 			logger.Error(fmt.Sprintf("[Add MCP Client] Failed to store pending MCP client: %v", err))
@@ -2687,9 +2714,13 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		// users can complete the flow without consulting docs.
 		completeURL := fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID)
 		statusURL := fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID)
+		message := "Test OAuth configuration: please authorize to verify the setup. This login is only used to verify connectivity and discover available tools — it will not be saved."
+		if isOpenAPIClient {
+			message = "Test OAuth configuration: please authorize to verify the setup. This login only checks the OAuth configuration (tools come from the OpenAPI document) — it will not be saved."
+		}
 		SendJSON(ctx, map[string]any{
 			"status":          "pending_oauth",
-			"message":         "Test OAuth configuration: please authorize to verify the setup. This login is only used to verify connectivity and discover available tools — it will not be saved.",
+			"message":         message,
 			"oauth_config_id": flowInitiation.OauthConfigID,
 			"authorize_url":   flowInitiation.AuthorizeURL,
 			"expires_at":      flowInitiation.ExpiresAt,
@@ -2714,7 +2745,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 		// Validate: Either client_id must be provided, OR we need a server URL for discovery + dynamic registration
 		// Client ID can be empty if the OAuth provider supports dynamic client registration (RFC 7591)
-		if !req.OauthConfig.ClientID.IsSet() {
+		if !req.OauthConfig.ClientID.IsSet() && !isOpenAPIClient {
 			// If no client_id, we need server URL for discovery
 			if req.ConnectionString.GetValue() == "" {
 				SendError(ctx, fasthttp.StatusBadRequest, "Either client_id must be provided, or server URL must be set for OAuth discovery and dynamic client registration")
@@ -2763,6 +2794,9 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
 			ToolPricing:            req.ToolPricing,
 			AllowByDefault:         req.AllowByDefault,
+		}
+		if preparedOpenAPI != nil {
+			pendingConfig.OpenAPIConfig = preparedOpenAPI.config
 		}
 
 		// Store pending config in database (associated with oauth_config_id for multi-instance support)
@@ -4308,32 +4342,48 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	// Handle per-user OAuth completion: verify connection with admin's temp token,
 	// discover tools, create client (without persistent connection), discard token.
 	if mcpClientConfig.AuthType == schemas.MCPAuthTypePerUserOauth {
-		// Get admin's temporary access token for verification
-		accessToken, err := h.oauthHandler.GetAccessToken(ctx, oauthConfigID)
-		if err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get admin access token for verification: %v", err))
-			return
-		}
-		// Always clean up admin's pending config, even on failure
-		defer h.oauthHandler.RemovePendingMCPClient(oauthConfigID)
-
-		// Verify connection and discover tools using admin's temp token
-		tools, toolNameMapping, serverInstructions, err := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, mcpClientConfig, accessToken)
-		if err != nil {
-			// Nothing worth retaining on a failed verification: revoke the
-			// admin's temp token immediately so it isn't left behind (it
-			// used to get this for free from an unconditional defer, before
-			// retention on success made cleanup conditional).
-			if revokeErr := h.oauthHandler.RevokeToken(ctx, oauthConfigID); revokeErr != nil {
-				logger.Warn(fmt.Sprintf("failed to revoke admin bootstrap token after verification failure for MCP client %s: %v", mcpClientConfig.ID, revokeErr))
+		// An openapi client has no MCP server to verify against: its tools
+		// come from the spec, and the admin's completed authorization is
+		// already the proof that the OAuth configuration works.
+		isOpenAPI := mcpClientConfig.ConnectionType == schemas.MCPConnectionTypeOpenAPI
+		var tools map[string]schemas.ChatTool
+		var toolNameMapping map[string]string
+		var serverInstructions string
+		toolsCount := 0
+		if isOpenAPI {
+			defer h.oauthHandler.RemovePendingMCPClient(oauthConfigID)
+			if mcpClientConfig.OpenAPIConfig != nil {
+				toolsCount = mcpClientConfig.OpenAPIConfig.OperationCount
 			}
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth configuration test failed: %v", err))
-			return
-		}
+		} else {
+			// Get admin's temporary access token for verification
+			accessToken, err := h.oauthHandler.GetAccessToken(ctx, oauthConfigID)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get admin access token for verification: %v", err))
+				return
+			}
+			// Always clean up admin's pending config, even on failure
+			defer h.oauthHandler.RemovePendingMCPClient(oauthConfigID)
 
-		// Attach discovered tools before persisting so the DB row includes them from the start.
-		mcpClientConfig.DiscoveredTools = tools
-		mcpClientConfig.DiscoveredToolNameMapping = toolNameMapping
+			// Verify connection and discover tools using admin's temp token
+			tools, toolNameMapping, serverInstructions, err = h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, mcpClientConfig, accessToken)
+			if err != nil {
+				// Nothing worth retaining on a failed verification: revoke the
+				// admin's temp token immediately so it isn't left behind (it
+				// used to get this for free from an unconditional defer, before
+				// retention on success made cleanup conditional).
+				if revokeErr := h.oauthHandler.RevokeToken(ctx, oauthConfigID); revokeErr != nil {
+					logger.Warn(fmt.Sprintf("failed to revoke admin bootstrap token after verification failure for MCP client %s: %v", mcpClientConfig.ID, revokeErr))
+				}
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth configuration test failed: %v", err))
+				return
+			}
+
+			// Attach discovered tools before persisting so the DB row includes them from the start.
+			mcpClientConfig.DiscoveredTools = tools
+			mcpClientConfig.DiscoveredToolNameMapping = toolNameMapping
+			toolsCount = len(tools)
+		}
 
 		if isUpdateFlow {
 			oldDBConfig := *existingDBConfig
@@ -4410,8 +4460,11 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			}
 		}
 
-		// Set discovered tools on the client
-		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping, serverInstructions)
+		// Set discovered tools on the client. An openapi client listed its
+		// own when the runtime synthesized its server.
+		if !isOpenAPI {
+			h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping, serverInstructions)
+		}
 
 		// Retain the admin's bootstrap-verification token instead of
 		// discarding it via RevokeToken: promote the row CompleteOAuthFlow
@@ -4428,7 +4481,16 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		// fail the request, since the client is otherwise fully verified and
 		// working; it just means the tool list can't be refreshed later
 		// until the admin repairs the discovery credential.
-		if promoteErr := h.store.ConfigStore.PromoteSharedOauthTokenToAdmin(ctx, oauthConfigID, mcpClientConfig.ID); promoteErr != nil {
+		//
+		// An openapi client never refreshes its tools from upstream, so the
+		// token has no use; retained, its refresh failing would project the
+		// whole client as needs_reauth while every user's own token works.
+		// It is discarded instead.
+		if isOpenAPI {
+			if revokeErr := h.oauthHandler.RevokeToken(ctx, oauthConfigID); revokeErr != nil {
+				logger.Warn(fmt.Sprintf("failed to discard admin bootstrap token for openapi MCP client %s: %v", mcpClientConfig.ID, revokeErr))
+			}
+		} else if promoteErr := h.store.ConfigStore.PromoteSharedOauthTokenToAdmin(ctx, oauthConfigID, mcpClientConfig.ID); promoteErr != nil {
 			logger.Warn(fmt.Sprintf("failed to retain admin bootstrap token for MCP client %s: %v", mcpClientConfig.ID, promoteErr))
 		}
 
@@ -4454,13 +4516,13 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			}
 		}
 
-		logger.Debug(fmt.Sprintf("[OAuth Complete] Per-user OAuth MCP client verified and created: %s (%d tools)", mcpClientConfig.ID, len(tools)))
-		message := fmt.Sprintf("OAuth configuration verified successfully. %d tools discovered. Each user will authenticate individually when using this MCP server.", len(tools))
+		logger.Debug(fmt.Sprintf("[OAuth Complete] Per-user OAuth MCP client verified and created: %s (%d tools)", mcpClientConfig.ID, toolsCount))
+		message := fmt.Sprintf("OAuth configuration verified successfully. %d tools discovered. Each user will authenticate individually when using this MCP server.", toolsCount)
 		if isUpdateFlow {
-			message = fmt.Sprintf("OAuth credentials updated and verified successfully. %d tools discovered.", len(tools))
+			message = fmt.Sprintf("OAuth credentials updated and verified successfully. %d tools discovered.", toolsCount)
 		}
-		h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(tools))
-		SendJSON(ctx, map[string]any{"status": "success", "message": message, "tools_count": len(tools)})
+		h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, toolsCount)
+		SendJSON(ctx, map[string]any{"status": "success", "message": message, "tools_count": toolsCount})
 		return
 	}
 

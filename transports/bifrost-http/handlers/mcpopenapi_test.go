@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/mcp_headers"
+	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,6 +44,25 @@ const petstoreSpecJSON = `{
 }`
 
 const petstoreSpecYAML = "openapi: 3.0.3\ninfo:\n  title: Petstore YAML\n  version: 2.0.0\nservers:\n  - url: https://petstore.example.com/v2\npaths:\n  /pets:\n    get:\n      operationId: listPets\n      responses:\n        '200':\n          description: ok\n"
+
+// oauthPetstoreSpecJSON secures its operations with an oauth2 authorization
+// code flow next to an app-level API key.
+const oauthPetstoreSpecJSON = `{
+  "openapi": "3.0.3",
+  "info": {"title": "Petstore", "version": "1.0.0"},
+  "servers": [{"url": "https://petstore.example.com/v1"}],
+  "components": {"securitySchemes": {
+    "PetAuth": {"type": "oauth2", "flows": {"authorizationCode": {"authorizationUrl": "https://auth.example.com/authorize", "tokenUrl": "https://auth.example.com/token", "scopes": {"pets:read": "", "pets:write": "", "admin": ""}}}},
+    "AppKey": {"type": "apiKey", "in": "header", "name": "X-App-Key"}
+  }},
+  "security": [{"PetAuth": ["pets:read"], "AppKey": []}],
+  "paths": {
+    "/pets": {
+      "get": {"operationId": "listPets", "responses": {"200": {"description": "ok"}}},
+      "post": {"operationId": "createPet", "security": [{"PetAuth": ["pets:write"], "AppKey": []}], "responses": {"201": {"description": "created"}}}
+    }
+  }
+}`
 
 // openAPIRecordingManager stands in for the runtime: it accepts every add/update
 // and keeps the configs the handler handed over, so tests can assert on what
@@ -80,6 +100,26 @@ func (m *openAPIRecordingManager) VerifyHeadersConnection(_ context.Context, c *
 		return nil, nil, "", errors.New("connection URL is required for per-user headers verification")
 	}
 	return map[string]schemas.ChatTool{}, map[string]string{}, "", nil
+}
+
+// VerifyPerUserOAuthConnection mirrors core: verification dials a remote MCP
+// server, so a config without a connection URL cannot be verified.
+func (m *openAPIRecordingManager) VerifyPerUserOAuthConnection(_ context.Context, c *schemas.MCPClientConfig, _ string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+	if c.ConnectionString == nil || c.ConnectionString.GetValue() == "" {
+		return nil, nil, "", errors.New("connection URL is required for per-user OAuth verification")
+	}
+	return map[string]schemas.ChatTool{}, map[string]string{}, "", nil
+}
+
+// newOpenAPIOAuthTestHandler is newOpenAPITestHandler with a real OAuth
+// provider behind the OAuth create, initiate-verification and complete routes.
+func newOpenAPIOAuthTestHandler(t *testing.T) (*MCPHandler, *openAPIRecordingManager) {
+	t.Helper()
+	h, mgr := newOpenAPITestHandler(t)
+	provider := oauth2.NewOAuth2Provider(h.store.ConfigStore, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	h.store.OAuthProvider = provider
+	h.oauthHandler = NewOAuthHandler(provider, nil, h.store)
+	return h, mgr
 }
 
 func newOpenAPITestHandler(t *testing.T) (*MCPHandler, *openAPIRecordingManager) {
@@ -374,7 +414,16 @@ func TestAddMCPClient_OpenAPI_Rejections(t *testing.T) {
 		status  int
 		want    string
 	}{
-		{"oauth auth refused", base(func(m map[string]any) { m["auth_type"] = "oauth" }), false, fasthttp.StatusBadRequest, "not supported for connection_type 'openapi'"},
+		{"oauth without oauth_config", base(func(m map[string]any) { m["auth_type"] = "oauth" }), false, fasthttp.StatusBadRequest, "OAuth configuration is required"},
+		{"oauth with no endpoints to default from", base(func(m map[string]any) {
+			m["auth_type"] = "per_user_oauth"
+			m["oauth_config"] = map[string]any{"client_id": "cid"}
+		}), false, fasthttp.StatusBadRequest, "oauth_config.authorize_url and oauth_config.token_url are required"},
+		{"oauth without client_id or registration_url", base(func(m map[string]any) {
+			m["auth_type"] = "oauth"
+			m["openapi_config"] = map[string]any{"spec": oauthPetstoreSpecJSON}
+			m["oauth_config"] = map[string]any{}
+		}), false, fasthttp.StatusBadRequest, "oauth_config.client_id is required"},
 		{"token exchange refused", base(func(m map[string]any) { m["auth_type"] = "token_exchange" }), false, fasthttp.StatusBadRequest, "not supported for connection_type 'openapi'"},
 		{"missing openapi_config", base(func(m map[string]any) { delete(m, "openapi_config") }), false, fasthttp.StatusBadRequest, "openapi_config is required"},
 		{"connection_string set", base(func(m map[string]any) { m["connection_string"] = "https://mcp.example.com" }), false, fasthttp.StatusBadRequest, "connection_string must not be set"},
@@ -978,4 +1027,167 @@ func TestMergeOpenAPIConfigUpdate_MaskedBaseURLKeepsStored(t *testing.T) {
 	other := "https://other.example.com"
 	merged = mergeOpenAPIConfigUpdate(existing, &schemas.MCPOpenAPIConfig{BaseURL: &other}, openAPIOptionFields{})
 	assert.Equal(t, other, *merged.BaseURL)
+}
+
+// TestAddMCPClient_OpenAPI_OAuthDefaultsEndpointsFromSpec: an oauth openapi
+// client needs no MCP server for OAuth: the authorize and token endpoints come
+// from the spec's oauth2 authorization code flow, the scopes from what its
+// operations require, and the pending client keeps the document for the
+// complete step.
+func TestAddMCPClient_OpenAPI_OAuthDefaultsEndpointsFromSpec(t *testing.T) {
+	h, mgr := newOpenAPIOAuthTestHandler(t)
+	body, _ := json.Marshal(map[string]any{
+		"name": "petstore_oauth", "connection_type": "openapi", "auth_type": "oauth",
+		"tools_to_execute": []string{"*"},
+		"headers":          map[string]string{"X-App-Key": "app-secret"},
+		"openapi_config":   map[string]any{"spec": oauthPetstoreSpecJSON},
+		"oauth_config":     map[string]any{"client_id": "cid"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+	assert.Equal(t, "pending_oauth", resp["status"])
+	authorizeURL, _ := resp["authorize_url"].(string)
+	assert.True(t, strings.HasPrefix(authorizeURL, "https://auth.example.com/authorize?"), authorizeURL)
+	assert.Contains(t, authorizeURL, "scope=pets%3Aread+pets%3Awrite", "the scopes the operations require, not every declared scope")
+	assert.Contains(t, authorizeURL, "client_id=cid")
+	assert.Empty(t, mgr.added, "the client is created only once OAuth completes")
+
+	oauthConfigID, _ := resp["oauth_config_id"].(string)
+	stored, err := h.store.ConfigStore.GetOauthConfigByID(context.Background(), oauthConfigID)
+	require.NoError(t, err)
+	assert.Equal(t, "https://auth.example.com/token", stored.TokenURL)
+
+	pending, err := h.oauthHandler.GetPendingMCPClient(oauthConfigID)
+	require.NoError(t, err)
+	require.NotNil(t, pending)
+	assert.Equal(t, schemas.MCPConnectionTypeOpenAPI, pending.ConnectionType)
+	require.NotNil(t, pending.OpenAPIConfig, "the document survives until the complete step creates the client")
+	assert.Equal(t, oauthPetstoreSpecJSON, pending.OpenAPIConfig.Spec)
+	assert.Contains(t, pending.Headers, "X-App-Key", "static headers apply alongside OAuth")
+
+	// Endpoints the admin sets win over the spec's.
+	body, _ = json.Marshal(map[string]any{
+		"name": "petstore_oauth2", "connection_type": "openapi", "auth_type": "oauth",
+		"tools_to_execute": []string{"*"},
+		"openapi_config":   map[string]any{"spec": oauthPetstoreSpecJSON},
+		"oauth_config":     map[string]any{"client_id": "cid", "authorize_url": "https://idp.example.com/auth", "scopes": []string{"custom"}},
+	})
+	status, respBody = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+	authorizeURL, _ = resp["authorize_url"].(string)
+	assert.True(t, strings.HasPrefix(authorizeURL, "https://idp.example.com/auth?"), authorizeURL)
+	assert.Contains(t, authorizeURL, "scope=custom")
+}
+
+// markOAuthConfigAuthorized stands in for the browser callback completing.
+func markOAuthConfigAuthorized(t *testing.T, store configstore.ConfigStore, oauthConfigID string) {
+	t.Helper()
+	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	cfg.Status = "authorized"
+	require.NoError(t, store.UpdateOauthConfig(context.Background(), cfg))
+}
+
+// TestCompleteMCPClientOAuth_OpenAPIPerUserOAuthSkipsUpstreamVerification: the
+// admin's test login for a per_user_oauth openapi client only proves the OAuth
+// configuration; there is no MCP server to verify against or list tools from
+// (they come from the spec), so completion creates the client directly.
+func TestCompleteMCPClientOAuth_OpenAPIPerUserOAuthSkipsUpstreamVerification(t *testing.T) {
+	h, mgr := newOpenAPIOAuthTestHandler(t)
+	body, _ := json.Marshal(map[string]any{
+		"name": "petstore_pu_oauth", "connection_type": "openapi", "auth_type": "per_user_oauth",
+		"tools_to_execute": []string{"*"},
+		"openapi_config":   map[string]any{"spec": oauthPetstoreSpecJSON},
+		"oauth_config":     map[string]any{"client_id": "cid"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+	oauthConfigID, _ := resp["oauth_config_id"].(string)
+	require.NotEmpty(t, oauthConfigID)
+
+	markOAuthConfigAuthorized(t, h.store.ConfigStore, oauthConfigID)
+	status, respBody = doMCPRequest(t, h.completeMCPClientOAuth, fasthttp.MethodPost, "", oauthConfigID, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	assert.Contains(t, respBody, "2 tools", "the tool count comes from the spec")
+	require.Len(t, mgr.added, 1)
+	added := mgr.added[0]
+	assert.Equal(t, schemas.MCPConnectionTypeOpenAPI, added.ConnectionType)
+	assert.Equal(t, schemas.MCPAuthTypePerUserOauth, added.AuthType)
+	require.NotNil(t, added.OauthConfigID)
+	assert.Equal(t, oauthConfigID, *added.OauthConfigID)
+	require.NotNil(t, added.OpenAPIConfig)
+	assert.Equal(t, oauthPetstoreSpecJSON, added.OpenAPIConfig.Spec)
+
+	row, err := h.store.ConfigStore.GetMCPClientConfigByID(context.Background(), added.ID)
+	require.NoError(t, err)
+	require.NotNil(t, row.OpenAPIConfig, "the client row keeps its document")
+	assert.Equal(t, oauthPetstoreSpecJSON, row.OpenAPIConfig.Spec)
+}
+
+// TestCompleteMCPClientOAuth_OpenAPISharedOAuthCreatesClientFromPending: the
+// shared-OAuth completion creates the openapi client from the pending config,
+// document included.
+func TestCompleteMCPClientOAuth_OpenAPISharedOAuthCreatesClientFromPending(t *testing.T) {
+	h, mgr := newOpenAPIOAuthTestHandler(t)
+	body, _ := json.Marshal(map[string]any{
+		"name": "petstore_shared_oauth", "connection_type": "openapi", "auth_type": "oauth",
+		"tools_to_execute": []string{"listPets"},
+		"openapi_config":   map[string]any{"spec": oauthPetstoreSpecJSON},
+		"oauth_config":     map[string]any{"client_id": "cid"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+	oauthConfigID, _ := resp["oauth_config_id"].(string)
+
+	markOAuthConfigAuthorized(t, h.store.ConfigStore, oauthConfigID)
+	status, respBody = doMCPRequest(t, h.completeMCPClientOAuth, fasthttp.MethodPost, "", oauthConfigID, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	added := mgr.added[0]
+	assert.Equal(t, schemas.MCPAuthTypeOauth, added.AuthType)
+	require.NotNil(t, added.OpenAPIConfig)
+	assert.Equal(t, oauthPetstoreSpecJSON, added.OpenAPIConfig.Spec)
+	assert.Equal(t, schemas.WhiteList{"listPets"}, added.ToolsToExecute)
+}
+
+// TestInitiateMCPClientVerification_OpenAPIOAuthNeedsNoConnectionString: an
+// oauth openapi client declared in config.json has no connection_string to
+// discover OAuth endpoints from; the spec supplies them instead.
+func TestInitiateMCPClientVerification_OpenAPIOAuthNeedsNoConnectionString(t *testing.T) {
+	h, _ := newOpenAPIOAuthTestHandler(t)
+	require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(context.Background(), &schemas.MCPClientConfig{
+		ID:                 "oa-oauth",
+		Name:               "petstore_cfg",
+		ConnectionType:     schemas.MCPConnectionTypeOpenAPI,
+		AuthType:           schemas.MCPAuthTypeOauth,
+		ToolsToExecute:     schemas.WhiteList{"*"},
+		OpenAPIConfig:      &schemas.MCPOpenAPIConfig{Spec: oauthPetstoreSpecJSON},
+		PendingOAuthConfig: &schemas.OAuth2Config{ClientID: schemas.NewSecretVar("cid")},
+	}))
+	status, respBody := doMCPRequest(t, h.initiateMCPClientVerification, fasthttp.MethodPost, "", "oa-oauth", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal([]byte(respBody), &resp))
+	authorizeURL, _ := resp["authorize_url"].(string)
+	assert.True(t, strings.HasPrefix(authorizeURL, "https://auth.example.com/authorize?"), authorizeURL)
+}
+
+// TestOpenAPIRetargetCarriesStoredSecrets_OAuth: the OAuth bearer of an oauth
+// or per_user_oauth client follows every call, so retargeting one would hand
+// stored tokens to the new upstream.
+func TestOpenAPIRetargetCarriesStoredSecrets_OAuth(t *testing.T) {
+	merged := &schemas.MCPOpenAPIConfig{Spec: "x"}
+	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth} {
+		existing := &schemas.MCPClientConfig{AuthType: authType, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}}
+		assert.True(t, openAPIRetargetCarriesStoredSecrets(existing, merged, nil), authType)
+	}
+	assert.False(t, openAPIRetargetCarriesStoredSecrets(&schemas.MCPClientConfig{AuthType: schemas.MCPAuthTypeNone}, merged, nil))
 }
