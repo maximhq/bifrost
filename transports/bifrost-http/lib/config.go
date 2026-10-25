@@ -41,6 +41,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcp_headers"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
+	"github.com/maximhq/bifrost/framework/mcpdiscovery"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/objectstore"
@@ -794,6 +795,12 @@ type Config struct {
 	// scoped by (auth_mode, identity, mcp_client).
 	MCPHeadersProvider    *mcp_headers.Provider
 	MCPHeadersSweepWorker *mcp_headers.CredentialSweepWorker
+
+	// MCPSharedDiscoveryStore and MCPPerUserDiscoveryStore keep the
+	// discoveries of MCP clients without and with per_user_discovery, and are
+	// passed into the Bifrost core init beside MCPHeadersProvider.
+	MCPSharedDiscoveryStore  *mcpdiscovery.SharedStore
+	MCPPerUserDiscoveryStore *mcpdiscovery.PerUserStore
 
 	// Async job executor (initialized during setup if LogsStore + governance are available)
 	AsyncJobExecutor *logstore.AsyncJobExecutor
@@ -6882,6 +6889,11 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	// Initialize per-user-headers credential provider. Storage parallel of
 	// OAuthProvider for MCPAuthTypePerUserHeaders clients.
 	config.MCPHeadersProvider = mcp_headers.NewProvider(config.ConfigStore, logger)
+	// Discovery stores: shared clients' tools, written to their rows in the
+	// background, and per_user_discovery clients' tools, one set per caller
+	// read through a bounded cache.
+	config.MCPSharedDiscoveryStore = mcpdiscovery.NewSharedStore(config.ConfigStore, logger)
+	config.MCPPerUserDiscoveryStore = mcpdiscovery.NewPerUserStore(config.ConfigStore, logger)
 
 	// Construct the OAuth token refresh worker, but don't start it here: Start
 	// runs an immediate refresh sweep synchronously with launching its

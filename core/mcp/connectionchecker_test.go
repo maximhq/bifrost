@@ -42,7 +42,7 @@ func newSyncTestClientState(clientID, clientName string, authType schemas.MCPAut
 func installSyncTestClient(manager *MCPManager, state *schemas.MCPClientState, config *schemas.MCPClientConfig, tools map[string]schemas.ChatTool) {
 	manager.clientMap[config.ID] = state
 	if tools != nil {
-		manager.discoveryStore.SetDiscovery(context.Background(), config.ID, &schemas.MCPDiscovery{
+		manager.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{
 			Tools:           tools,
 			ToolNameMapping: map[string]string{},
 		})
@@ -51,7 +51,7 @@ func installSyncTestClient(manager *MCPManager, state *schemas.MCPClientState, c
 
 // storedTools reads a client's tool map back from the manager's store.
 func storedTools(manager *MCPManager, clientID string) map[string]schemas.ChatTool {
-	return manager.discoveryStore.GetDiscovery(context.Background(), clientID).GetTools()
+	return manager.discoveryStore.GetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: clientID}).GetTools()
 }
 
 // TestPerformCheck_NilConn_PerUserOAuth_AttemptsAdminDiscovery confirms a
@@ -62,7 +62,7 @@ func storedTools(manager *MCPManager, clientID string) map[string]schemas.ChatTo
 func TestPerformCheck_NilConn_PerUserOAuth_AttemptsAdminDiscovery(t *testing.T) {
 	cred := &fakeAdminCredStore{err: errors.New("admin credential unavailable")}
 	manager := &MCPManager{
-		discoveryStore: NewDiscoveryStore(),
+		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      cred,
 		logger:         &MockLogger{},
 		clientMap:      map[string]*schemas.MCPClientState{},
@@ -91,7 +91,7 @@ func TestPerformCheck_NilConn_PerUserOAuth_AttemptsAdminDiscovery(t *testing.T) 
 func TestPerformCheck_NilConn_PerUserHeaders_AttemptsAdminDiscovery(t *testing.T) {
 	cred := &fakeAdminCredStore{err: errors.New("admin credential unavailable")}
 	manager := &MCPManager{
-		discoveryStore: NewDiscoveryStore(),
+		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      cred,
 		logger:         &MockLogger{},
 		clientMap:      map[string]*schemas.MCPClientState{},
@@ -163,7 +163,7 @@ func TestPerformCheck_NilConn_SharedAuthType_PerCall_SuccessUpdatesToolMap(t *te
 
 			cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-token"}}}
 			manager := &MCPManager{
-				discoveryStore: NewDiscoveryStore(),
+				discoveryStore: NewDiscoveryStore(nil, nil),
 				credStore:      cred,
 				logger:         &MockLogger{},
 				clientMap:      map[string]*schemas.MCPClientState{},
@@ -236,7 +236,7 @@ func TestPerformCheck_NilConn_PerUserOAuth_SuccessUpdatesToolMap(t *testing.T) {
 
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer admin-token"}}}
 	manager := &MCPManager{
-		discoveryStore: NewDiscoveryStore(),
+		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      cred,
 		logger:         &MockLogger{},
 		clientMap:      map[string]*schemas.MCPClientState{},
@@ -268,7 +268,7 @@ func TestPerformCheck_NilConn_PerUserOAuth_SuccessUpdatesToolMap(t *testing.T) {
 // client's current one, mirroring writeBackTools' own guard exactly.
 func TestSetState_StaleGeneration_DoesNotOverwriteState(t *testing.T) {
 	manager := &MCPManager{
-		discoveryStore: NewDiscoveryStore(),
+		discoveryStore: NewDiscoveryStore(nil, nil),
 		logger:         &MockLogger{},
 		clientMap:      map[string]*schemas.MCPClientState{},
 	}

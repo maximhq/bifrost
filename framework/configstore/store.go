@@ -923,6 +923,10 @@ type ConfigStore interface {
 	// sweep: rows are refreshed only by the caller's manual refresh and die
 	// with their credential or their client.
 	GetMCPPerUserDiscoveryByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error)
+	// GetMCPPerUserDiscoveryBindings lists who holds a discovery on one
+	// client: the user and virtual-key rows with only their identity columns
+	// and discovery hash filled.
+	GetMCPPerUserDiscoveryBindings(ctx context.Context, mcpClientID string) ([]tables.TableMCPPerUserDiscovery, error)
 	UpsertMCPPerUserDiscovery(ctx context.Context, discovery *tables.TableMCPPerUserDiscovery) error
 	DeleteMCPPerUserDiscovery(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
 	DeleteMCPPerUserDiscoveriesByClient(ctx context.Context, mcpClientID string) error

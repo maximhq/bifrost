@@ -96,8 +96,9 @@ type MCPManagerInterface interface {
 	// NeedsReauth. Pass nil to clear a previously registered callback.
 	SetStateChangeCallback(cb func(clientID, name string, oldState, newState schemas.MCPConnectionState))
 
-	// SetDiscoveryChangeCallback registers cb to run whenever a client's discovery changes; the
-	// transport layer persists through it. nil clears it.
+	// SetDiscoveryChangeCallback registers cb to run whenever a client's discovery changes.
+	// Persisting the discovery is the discovery store's job; the callback is for reacting to the
+	// change, such as re-syncing a hosted MCP server. nil clears it.
 	SetDiscoveryChangeCallback(cb func(clientID, name string, discovery *schemas.MCPDiscovery))
 
 	// SetInProcessServerFactory replaces the factory that synthesizes

@@ -59,13 +59,13 @@ func TestDiscoveryChanged_LateCallbackDeliversTheCurrentDiscovery(t *testing.T) 
 	m.SetDiscoveryChangeCallback(func(_, _ string, discovery *schemas.MCPDiscovery) {
 		delivered = append(delivered, discovery.Instructions)
 	})
-	state := &schemas.MCPClientState{Name: "docs"}
+	state := &schemas.MCPClientState{Name: "docs", ExecutionConfig: &schemas.MCPClientConfig{ID: "docs-id", Name: "docs"}}
 	m.clientMap["docs-id"] = state
 
 	m.mu.Lock()
-	m.discoveryStore.SetDiscovery(m.ctx, "docs-id", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, Instructions: "first"})
+	m.discoveryStore.SetDiscovery(m.ctx, state.ExecutionConfig, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, Instructions: "first"})
 	older := m.discoveryChanged(state, "docs-id")
-	m.discoveryStore.SetDiscovery(m.ctx, "docs-id", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, Instructions: "second"})
+	m.discoveryStore.SetDiscovery(m.ctx, state.ExecutionConfig, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, Instructions: "second"})
 	newer := m.discoveryChanged(state, "docs-id")
 	m.mu.Unlock()
 	require.NotNil(t, older)
@@ -125,7 +125,7 @@ func TestPerformCheck_PerCall_SuccessfulDiscovery_FiresToolsChangeCallback(t *te
 
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-token"}}}
 	manager := &MCPManager{
-		discoveryStore: NewDiscoveryStore(),
+		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      cred,
 		logger:         &MockLogger{},
 		clientMap:      map[string]*schemas.MCPClientState{},

@@ -341,12 +341,16 @@ func runMCPStreamCompleter(completerSlot *atomic.Value) []schemas.PluginLogEntry
 // SyncMCPServer replaces the server's tools with those currently available. Called whenever the set
 // of MCP clients or their tools changes; the server tells listening clients the list changed. Every
 // caller is served from this one server; what each of them sees is decided per request.
-func (h *MCPServerHandler) SyncMCPServer(ctx context.Context) error {
-	availableTools := h.toolManager.GetAvailableMCPTools(ctx)
+//
+// The lists are read without the trigger's identity: some syncs run on an admin's request,
+// and a client with per_user_discovery on would otherwise publish that admin's own discovery to
+// every caller.
+func (h *MCPServerHandler) SyncMCPServer(_ context.Context) error {
+	availableTools := h.toolManager.GetAvailableMCPTools(context.Background())
 	h.mcpServer.SetTools(h.serverTools(availableTools)...)
 	logger.Debug("Synced MCP server with %d tools", len(availableTools))
 	if h.served != nil {
-		h.syncResourcesAndPrompts(ctx)
+		h.syncResourcesAndPrompts(context.Background())
 	}
 	return nil
 }
