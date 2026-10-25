@@ -86,6 +86,18 @@ const (
 	MCPAuthRequiredKindExchange = "exchange"
 )
 
+// MCPToolCallKind says why core vouches for an MCP tool call it runs, when it
+// does. A plugin that gates MCP tools reads it (bifrost.MCPToolCallKindOf) to
+// authorize such a call differently from a tool the caller picked out of their
+// own grants. Only core can record it, so no plugin or caller can claim it.
+type MCPToolCallKind uint8
+
+const (
+	MCPToolCallKindNone     MCPToolCallKind = iota // a call core does not vouch for
+	MCPToolCallKindInjected                        // a provider-injected tool the operator configured: no tool permit names it, and none applies
+	MCPToolCallKindConnect                         // the connect tool of a client with per_user_discovery on: allowed by access to the client
+)
+
 // MCPAuthRequiredError is returned when a per-user MCP credential is missing
 // and the caller must complete an inline auth flow (OAuth dance or headers
 // submission) before tool execution can proceed.

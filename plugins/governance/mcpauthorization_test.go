@@ -52,37 +52,29 @@ func TestMCPExecutionAuthorizationRequiresHeaders(t *testing.T) {
 	require.Equal(t, "missing_required_headers", *short.Error.Type)
 }
 
-// TestMCPExecutionAuthorizationForInjectedTool lets a provider-injected tool past the
-// virtual key's tool permits. The operator chose the tool in the provider config, so
-// the key's MCP grants never listed it; identity and limits still apply.
-func TestMCPExecutionAuthorizationForInjectedTool(t *testing.T) {
+// mcpToolCallRequest is a chat tool call of toolName on clientName, as PreMCPHook sees it.
+func mcpToolCallRequest(clientName, toolName string) *schemas.BifrostMCPRequest {
+	return &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: clientName, ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: "{}"}}}
+}
+
+// TestMCPToolCallWithoutCoresMarkIsHeldToThePermits: a call core has not marked as
+// provider-injected or as a connect call is held to the virtual key's tool permits,
+// and identity still applies: evaluation refuses an unknown key before any tool is
+// considered. The mark itself can only be set by core, so no plugin can forge it, and
+// the injected and connect rules it unlocks are pinned by core's tests
+// (TestConnect_IsMarkedForPolicyPlugins and the injected-tool tests in core/mcp).
+func TestMCPToolCallWithoutCoresMarkIsHeldToThePermits(t *testing.T) {
 	p := newPluginForMCPStamping(t, buildVKForMCPStamping(nil), false)
-	for _, tc := range []struct {
-		name, injectedClient, injected, tool, key string
-		allowed                                   bool
-	}{
-		{"injected tool", "local", "local-write", "local-write", mcpTestVKValue, true},
-		{"sibling of the injected tool", "local", "local-write", "local-delete", mcpTestVKValue, false},
-		{"another client's tool of the same name", "other", "local-write", "local-write", mcpTestVKValue, false},
-		{"invalid identity", "local", "local-write", "local-write", "invalid", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			restore := isInjectedToolExecution
-			t.Cleanup(func() { isInjectedToolExecution = restore })
-			isInjectedToolExecution = func(_ *schemas.BifrostContext, clientName, toolName string) bool {
-				return clientName == tc.injectedClient && toolName == tc.injected
-			}
-			ctx := presentCtx(tc.key)
-			req := &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "local", ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tc.tool, Arguments: "{}"}}}
-			_, short, err := p.PreMCPHook(ctx, req)
-			require.NoError(t, err)
-			if tc.allowed {
-				require.Nil(t, short)
-			} else {
-				require.NotNil(t, short)
-			}
-		})
-	}
+	access, err := p.ResolveAccess(newPreRequestCtx(nil, nil))
+	require.NoError(t, err)
+	require.NotNil(t, access)
+	ctx := presentCtx(mcpTestVKValue)
+
+	require.False(t, mcpToolCallAllowed(ctx, mcpToolCallRequest("local", "local-delete"), access), "a tool without the mark is held to the key's permits")
+
+	_, short, err := p.PreMCPHook(presentCtx("invalid"), mcpToolCallRequest("local", "local-write"))
+	require.NoError(t, err)
+	require.NotNil(t, short, "an unknown key is refused before any tool is considered")
 }
 
 // TestMCPExecutionAuthorizationRejectsForgedInjectedMarker keeps the injected-tool
@@ -122,4 +114,54 @@ func BenchmarkPreMCPHook(b *testing.B) {
 			}
 		})
 	}
+}
+
+// TestMCPToolCallAllowedForAnUnmarkedConnectName: a connect tool's name that core has
+// not marked is an ordinary tool, held to the key's permits even when the key grants
+// another tool of the client, and an approval for exactly this call still runs it.
+func TestMCPToolCallAllowedForAnUnmarkedConnectName(t *testing.T) {
+	plugin := newAccessTestPlugin(t, buildVKForMCPStamping([]string{"read_file"}), nil)
+	access, err := plugin.ResolveAccess(newPreRequestCtx(nil, nil))
+	require.NoError(t, err)
+	require.NotNil(t, access)
+	for _, tc := range []struct {
+		name, client, tool string
+		approved, allowed  bool
+	}{
+		{"the connect name without core's mark", "sentry", "sentry-connect", false, false},
+		{"an approval for exactly this call", "github", "github-connect", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := newPreRequestCtx(nil, nil)
+			if tc.approved {
+				SetMCPExecutionAuthorization(ctx, tc.client, tc.tool)
+			}
+			require.Equal(t, tc.allowed, mcpToolCallAllowed(ctx, mcpToolCallRequest(tc.client, tc.tool), access))
+		})
+	}
+}
+
+// TestPreMCPHookKeepsAGrantedToolUnderAnotherApproval: an approval adds a way in for one
+// exact call. It never takes away a tool the key grants, such as a nested call made
+// under the approved one with the same context.
+func TestPreMCPHookKeepsAGrantedToolUnderAnotherApproval(t *testing.T) {
+	plugin := newAccessTestPlugin(t, buildVKForMCPStamping([]string{"read_file"}), nil)
+	ctx := newPreRequestCtx(nil, nil)
+	SetMCPExecutionAuthorization(ctx, "sentry", "sentry-delete_project")
+
+	_, short, err := plugin.PreMCPHook(ctx, mcpToolCallRequest("sentry", "sentry-read_file"))
+	require.NoError(t, err)
+	require.Nil(t, short)
+}
+
+// TestPreMCPHookRefusesAConnectNameWithoutCoresMark keeps the connect exemption
+// core-only: a request that merely names "<client>-connect" is checked against the
+// tool permits like any other tool.
+func TestPreMCPHookRefusesAConnectNameWithoutCoresMark(t *testing.T) {
+	plugin := newAccessTestPlugin(t, buildVKForMCPStamping([]string{"read_file"}), nil)
+	tool := "sentry-connect"
+	req := &schemas.BifrostMCPRequest{RequestType: schemas.MCPRequestTypeChatToolCall, ClientName: "sentry", ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &tool, Arguments: "{}"}}}
+	_, short, err := plugin.PreMCPHook(newPreRequestCtx(nil, nil), req)
+	require.NoError(t, err)
+	require.NotNil(t, short, "a tool name alone is no connect call")
 }

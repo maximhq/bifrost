@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/maximhq/bifrost/core/internal/injectedauth"
+	"github.com/maximhq/bifrost/core/internal/mcpvouch"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -441,19 +441,19 @@ func TestCheckToolExecutionPermitted_InjectedToolBypassesFilters(t *testing.T) {
 		"without the injected marker the client's allow-list still applies")
 
 	injected := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	injectedauth.Set(injected, "tavily", "tavily-search")
+	mcpvouch.Set(injected, schemas.MCPToolCallKindInjected, "tavily", "tavily-search")
 	injected.SetValue(schemas.MCPContextKeyIncludeClients, []string{"other"})
 	injected.SetValue(schemas.MCPContextKeyIncludeTools, []string{"other-tool"})
 	assert.NoError(t, checkToolExecutionPermitted(injected, state, "tavily-search", m.logger),
 		"the injected tool runs whatever the caller's include lists say")
 
 	other := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	injectedauth.Set(other, "tavily", "tavily-crawl")
+	mcpvouch.Set(other, schemas.MCPToolCallKindInjected, "tavily", "tavily-crawl")
 	assert.Error(t, checkToolExecutionPermitted(other, state, "tavily-search", m.logger),
 		"the marker authorizes exactly one tool, never its siblings")
 
 	wrongClient := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	injectedauth.Set(wrongClient, "exa", "tavily-search")
+	mcpvouch.Set(wrongClient, schemas.MCPToolCallKindInjected, "exa", "tavily-search")
 	assert.Error(t, checkToolExecutionPermitted(wrongClient, state, "tavily-search", m.logger),
 		"the marker authorizes one client's tool; the executing client must be that client")
 
@@ -484,7 +484,7 @@ func TestCheckToolExecutionPermitted_PluginCannotRetargetInjectedMarker(t *testi
 	state := m.clientMap["id-tavily"]
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	injectedauth.Set(ctx, "tavily", "tavily-crawl")
+	mcpvouch.Set(ctx, schemas.MCPToolCallKindInjected, "tavily", "tavily-crawl")
 	for key := range ctx.GetUserValues() {
 		if _, isBifrostKey := key.(schemas.BifrostContextKey); !isBifrostKey {
 			ctx.SetValue(key, struct{ clientName, toolName string }{"tavily", "tavily-search"})
@@ -501,7 +501,7 @@ func TestCheckToolExecutionPermitted_PluginCannotCopyInjectedMarker(t *testing.T
 	state := m.clientMap["id-tavily"]
 
 	genuine := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	injectedauth.Set(genuine, "tavily", "tavily-search")
+	mcpvouch.Set(genuine, schemas.MCPToolCallKindInjected, "tavily", "tavily-search")
 	other := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	for key, value := range genuine.GetUserValues() {
 		other.SetValue(key, value)

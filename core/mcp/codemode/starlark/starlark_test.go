@@ -65,6 +65,14 @@ func (m *testClientManager) GetToolPerClient(ctx context.Context) map[string][]s
 	return m.tools
 }
 
+func (m *testClientManager) GetConnectTools(context.Context) []schemas.ChatTool {
+	return nil
+}
+
+func (m *testClientManager) ConnectToolClient(context.Context, string) *schemas.MCPClientState {
+	return nil
+}
+
 func (m *testClientManager) InstructionCaps() codemcp.InstructionCaps {
 	return codemcp.InstructionCaps{PerClient: m.perClientCap}
 }

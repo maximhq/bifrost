@@ -37,6 +37,12 @@ type ClientManager interface {
 	// from; "" when it has none.
 	GetInstructionsForClient(ctx context.Context, clientID string) string
 	GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool
+	// GetConnectTools returns the connect tools the caller on ctx is offered in
+	// place of the clients with per_user_discovery on they have not connected to.
+	GetConnectTools(ctx context.Context) []schemas.ChatTool
+	// ConnectToolClient returns the client whose connect tool toolName is for
+	// the caller on ctx, or nil.
+	ConnectToolClient(ctx context.Context, toolName string) *schemas.MCPClientState
 	// InstructionCaps returns the configured instruction byte caps, zero meaning unset.
 	InstructionCaps() InstructionCaps
 
@@ -264,6 +270,13 @@ func precomputeToolSerialization(tools map[string]schemas.ChatTool) {
 }
 
 func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
+	tools, _ := m.availableTools(ctx)
+	return tools
+}
+
+// availableTools is GetAvailableTools that also names which of the tools are
+// connect tools; nil when none is.
+func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext) ([]schemas.ChatTool, map[string]struct{}) {
 	availableToolsPerClient := m.clientManager.GetToolPerClient(ctx)
 	// Flatten tools from all clients into a single slice, avoiding duplicates
 	var availableTools []schemas.ChatTool
@@ -300,6 +313,25 @@ func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.
 		}
 	}
 
+	// Connect tools are direct tools on every client, code mode included: they
+	// are answered by Bifrost, and a code-mode binding would send them upstream.
+	// They stay off BifrostContextKeyMCPAddedTools: that list is checked tool by
+	// tool against the caller's grant, and connect is not one of the client's
+	// tools. Its call is checked against the client when it runs.
+	var connectNames map[string]struct{}
+	for _, tool := range m.clientManager.GetConnectTools(ctx) {
+		name := tool.Function.Name
+		if seenToolNames[name] {
+			continue
+		}
+		seenToolNames[name] = true
+		if connectNames == nil {
+			connectNames = make(map[string]struct{})
+		}
+		connectNames[name] = struct{}{}
+		availableTools = append(availableTools, tool)
+	}
+
 	// Add code mode tools if any client is configured for code mode and we have a CodeMode implementation
 	if includeCodeModeTools && m.codeMode != nil {
 		codeModeTools := m.codeMode.GetTools()
@@ -314,7 +346,7 @@ func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.
 		}
 	}
 
-	return availableTools
+	return availableTools, connectNames
 }
 
 // buildIntegrationDuplicateCheckMap builds a map of tool names to check for duplicates
@@ -508,7 +540,15 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 		}
 	}
 
-	availableTools := m.GetAvailableTools(ctx)
+	availableTools, connectNames := m.availableTools(ctx)
+	dropStaleConnectTools(ctx, req, connectNames)
+	// A connect tool counts as added only once it is in the request, so a
+	// caller's own tool of the same name is never taken back.
+	recordAdded := func(toolName string) {
+		if _, ok := connectNames[toolName]; ok {
+			schemas.AppendToContextList(ctx, addedConnectToolsKey, toolName)
+		}
+	}
 
 	if len(availableTools) == 0 {
 		return req
@@ -548,6 +588,7 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 				isDuplicate := integrationDuplicateCheck(duplicateCheckMap, toolName, integrationUserAgentStr)
 				if !isDuplicate {
 					tools = append(tools, mcpTool)
+					recordAdded(toolName)
 					// Update the duplicate check map to prevent duplicates within MCP tools as well
 					markToolSeenInDuplicateCheckMap(duplicateCheckMap, toolName, integrationUserAgentStr)
 				}
@@ -593,6 +634,7 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 						continue
 					}
 					tools = append(tools, *responsesTool)
+					recordAdded(toolName)
 					markToolSeenInDuplicateCheckMap(duplicateCheckMap, toolName, integrationUserAgentStr)
 				}
 			}
@@ -602,6 +644,47 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 
 	m.addServerInstructionsToRequest(ctx, req)
 	return req
+}
+
+// dropStaleConnectTools takes out of req the connect tools Bifrost added on an
+// earlier agent turn that it no longer offers as connect tools (offered names the
+// ones it does): their caller has connected, and the client's own tools take their
+// place, including an upstream tool of the same name, whose definition then goes
+// in where Bifrost's was. The agent loop reuses the first turn's tools and
+// injection only adds, so without this a connect tool would stay for the rest of
+// the loop. Only tools Bifrost itself added are taken out, and a name taken out
+// stops counting as one, so a same-named upstream tool is left alone afterwards.
+func dropStaleConnectTools(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, offered map[string]struct{}) {
+	added, _ := ctx.Value(addedConnectToolsKey).([]string)
+	if len(added) == 0 {
+		return
+	}
+	var kept []string
+	for _, name := range added {
+		if _, ok := offered[name]; ok {
+			kept = append(kept, name)
+		}
+	}
+	if len(kept) == len(added) {
+		return
+	}
+	ctx.SetValue(addedConnectToolsKey, kept)
+	stale := func(name string) bool {
+		if _, ok := offered[name]; ok {
+			return false
+		}
+		return slices.Contains(added, name)
+	}
+	switch {
+	case req.ChatRequest != nil && req.ChatRequest.Params != nil:
+		req.ChatRequest.Params.Tools = slices.DeleteFunc(req.ChatRequest.Params.Tools, func(tool schemas.ChatTool) bool {
+			return tool.Function != nil && stale(tool.Function.Name)
+		})
+	case req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil:
+		req.ResponsesRequest.Params.Tools = slices.DeleteFunc(req.ResponsesRequest.Params.Tools, func(tool schemas.ResponsesTool) bool {
+			return tool.Name != nil && stale(*tool.Name)
+		})
+	}
 }
 
 // addServerInstructionsToRequest carries the upstream servers' own usage guidance into the
