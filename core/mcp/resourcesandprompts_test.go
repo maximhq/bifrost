@@ -83,7 +83,7 @@ func installedOf(t *testing.T, m *MCPManager, id string) *schemas.MCPDiscovery {
 	t.Helper()
 	_, ok := snapshotClientState(m, id)
 	require.True(t, ok)
-	return m.installedDiscovery(id)
+	return m.installedDiscoveryByID(id)
 }
 
 func requireResourcesAndPrompts(t *testing.T, listed *schemas.MCPDiscovery, promptPrefix string) {
@@ -866,14 +866,14 @@ func TestResourcesAndPrompts_ReadRecheckedAfterPreHooksNarrowAccess(t *testing.T
 		Name:            "allowed",
 		ExecutionConfig: &schemas.MCPClientConfig{ID: "allowed-id", Name: "allowed"},
 	}
-	m.discoveryStore.SetDiscovery(context.Background(), "allowed-id", &schemas.MCPDiscovery{
+	m.discoveryStore.SetDiscovery(context.Background(), m.clientMap["allowed-id"].ExecutionConfig, &schemas.MCPDiscovery{
 		Tools: map[string]schemas.ChatTool{"allowed-search": {}},
 	})
 	m.clientMap["denied-id"] = &schemas.MCPClientState{
 		Name:            "denied",
 		ExecutionConfig: &schemas.MCPClientConfig{ID: "denied-id", Name: "denied"},
 	}
-	m.discoveryStore.SetDiscovery(context.Background(), "denied-id", &schemas.MCPDiscovery{
+	m.discoveryStore.SetDiscovery(context.Background(), m.clientMap["denied-id"].ExecutionConfig, &schemas.MCPDiscovery{
 		Tools:     map[string]schemas.ChatTool{"denied-search": {}},
 		Prompts:   []mcpgo.Prompt{mcpgo.NewPrompt("denied-review")},
 		Resources: []mcpgo.Resource{mcpgo.NewResource("file:///secret.md", "secret")},
@@ -916,7 +916,7 @@ func TestResourcesAndPrompts_SharedURIReadGoesToTheReachableServer(t *testing.T)
 		Name:            "a",
 		ExecutionConfig: &schemas.MCPClientConfig{ID: "a-id", Name: "a"},
 	}
-	m.discoveryStore.SetDiscovery(context.Background(), "a-id", &schemas.MCPDiscovery{
+	m.discoveryStore.SetDiscovery(context.Background(), m.clientMap["a-id"].ExecutionConfig, &schemas.MCPDiscovery{
 		Tools:     map[string]schemas.ChatTool{},
 		Resources: []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
 	})
