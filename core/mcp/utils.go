@@ -290,6 +290,9 @@ func isTransientError(err error) bool {
 	}
 
 	errStr := err.Error()
+	if errors.Is(err, ErrMCPProtocolVersionAboveMax) {
+		return false
+	}
 
 	// Context errors are NEVER retryable - they indicate the operation exceeded its deadline
 	// If context is cancelled or deadline exceeded, the issue is permanent (not transient)
@@ -662,7 +665,7 @@ func isTransientProbeError(err error) bool {
 		return false
 	}
 	errStr := strings.ToLower(err.Error())
-	if isDeadSessionErrorText(errStr) {
+	if isDeadSessionErrorText(errStr) || errors.Is(err, ErrMCPProtocolVersionAboveMax) {
 		return false
 	}
 	// Checked before the timeout rule, not after: an error carrying any
@@ -1569,19 +1572,44 @@ func FixArraySchemas(properties map[string]interface{}, logger schemas.Logger) {
 	}
 }
 
-// initializeClient runs the MCP handshake for any protocol revision. mcp-go gives up when
-// server/discover is refused with only pre-2026-07-28 versions supported, so those are retried
-// through the initialize handshake at the newest version both sides support.
-func initializeClient(ctx context.Context, c *client.Client, request mcp.InitializeRequest) (*mcp.InitializeResult, error) {
+// initializeClient runs the MCP handshake for any protocol revision, offering at most maxVersion
+// ("" = uncapped). mcp-go gives up when server/discover is refused with only pre-2026-07-28
+// versions supported, so those are retried through the initialize handshake at the newest
+// version both sides support within the cap.
+func initializeClient(ctx context.Context, c *client.Client, request mcp.InitializeRequest, maxVersion string) (*mcp.InitializeResult, error) {
+	if maxVersion != "" && (request.Params.ProtocolVersion == "" || request.Params.ProtocolVersion > maxVersion) {
+		request.Params.ProtocolVersion = maxVersion
+	}
 	result, err := c.Initialize(ctx, request)
 	var unsupported mcp.UnsupportedProtocolVersionError
-	if err == nil || !errors.As(err, &unsupported) {
-		return result, err
+	if err != nil && errors.As(err, &unsupported) {
+		legacy := newestLegacyVersion(unsupported.Supported, maxVersion)
+		if legacy == "" {
+			return nil, err
+		}
+		request.Params.ProtocolVersion = legacy
+		result, err = c.Initialize(ctx, request)
 	}
-	legacy := mcp.NegotiateMutuallySupportedVersion(unsupported.Supported)
-	if legacy == "" || mcp.IsModernProtocol(legacy) {
+	if err != nil {
 		return nil, err
 	}
-	request.Params.ProtocolVersion = legacy
-	return c.Initialize(ctx, request)
+	if negotiated := c.ProtocolVersion(); maxVersion != "" && negotiated > maxVersion {
+		return nil, fmt.Errorf("%w: upstream negotiated %s, newer than this client's max protocol version %s", ErrMCPProtocolVersionAboveMax, negotiated, maxVersion)
+	}
+	return result, nil
+}
+
+// ErrMCPProtocolVersionAboveMax is an upstream that negotiated past the client's max protocol
+// version. Retrying cannot change it.
+var ErrMCPProtocolVersionAboveMax = errors.New("mcp protocol version above the configured maximum")
+
+// newestLegacyVersion is the newest pre-2026-07-28 version in supported that Bifrost also
+// supports, at most maxVersion ("" = uncapped).
+func newestLegacyVersion(supported []string, maxVersion string) string {
+	for _, version := range mcp.LegacyProtocolVersions() {
+		if (maxVersion == "" || version <= maxVersion) && slices.Contains(supported, version) {
+			return version
+		}
+	}
+	return ""
 }

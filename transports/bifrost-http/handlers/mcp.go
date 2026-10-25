@@ -699,6 +699,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
+		MaxProtocolVersion:        clientConfig.MaxProtocolVersion,
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
 		MaxInstructionsLength:     clientConfig.MaxInstructionsLength,
 		AllowByDefault:            clientConfig.AllowByDefault,
@@ -884,6 +885,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
+		MaxProtocolVersion:        clientConfig.MaxProtocolVersion,
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
 		MaxInstructionsLength:     clientConfig.MaxInstructionsLength,
 		AllowByDefault:            clientConfig.AllowByDefault,
@@ -1728,6 +1730,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
 			RequirePublicTarget:    dbClient.RequirePublicTarget,
 			ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
+			MaxProtocolVersion:     dbClient.MaxProtocolVersion,
 			ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 			ToolPricing:            dbClient.ToolPricing,
 			AllowByDefault:         dbClient.AllowByDefault,
@@ -1989,6 +1992,7 @@ type MCPClientUpdateRequest struct {
 	IsPingAvailable        *bool                           `json:"is_ping_available,omitempty"`
 	NeedsSessionStickiness *bool                           `json:"needs_session_stickiness,omitempty"`
 	ToolSyncInterval       *int                            `json:"tool_sync_interval,omitempty"`
+	MaxProtocolVersion     *string                         `json:"max_protocol_version,omitempty"` // "" = use the global setting
 	ToolExecutionTimeout   *int                            `json:"tool_execution_timeout,omitempty"`
 	MaxInstructionsLength  *int                            `json:"max_instructions_length,omitempty"`
 	Headers                map[string]schemas.SecretVar    `json:"headers,omitempty"`
@@ -2357,6 +2361,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "tool_execution_timeout must not be negative")
 		return
 	}
+	if err := schemas.ValidateMCPMaxProtocolVersion("max_protocol_version", req.MaxProtocolVersion); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 	if req.ToolSyncInterval < 0 {
 		SendError(ctx, fasthttp.StatusBadRequest, errToolSyncIntervalNegative)
 		return
@@ -2433,6 +2441,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncInterval,
+			MaxProtocolVersion:     req.MaxProtocolVersion,
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			MaxInstructionsLength:  resolvedMaxInstructionsLength,
 			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
@@ -2559,6 +2568,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncInterval,
+			MaxProtocolVersion:     req.MaxProtocolVersion,
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			MaxInstructionsLength:  resolvedMaxInstructionsLength,
 			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
@@ -2696,6 +2706,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsPingAvailable:        &isPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncInterval,
+			MaxProtocolVersion:     req.MaxProtocolVersion,
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			MaxInstructionsLength:  resolvedMaxInstructionsLength,
 			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
@@ -2784,6 +2795,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsPingAvailable:        req.IsPingAvailable,
 			NeedsSessionStickiness: req.NeedsSessionStickiness,
 			ToolSyncInterval:       toolSyncInterval,
+			MaxProtocolVersion:     req.MaxProtocolVersion,
 			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 			MaxInstructionsLength:  resolvedMaxInstructionsLength,
 			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
@@ -2855,6 +2867,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		IsPingAvailable:        req.IsPingAvailable,
 		NeedsSessionStickiness: req.NeedsSessionStickiness,
 		ToolSyncInterval:       toolSyncInterval,
+		MaxProtocolVersion:     req.MaxProtocolVersion,
 		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 		MaxInstructionsLength:  resolvedMaxInstructionsLength,
 		ToolPricing:            req.ToolPricing,
@@ -3029,6 +3042,14 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			}
 		}
 		tlsConfig = &tlsCopy
+	}
+	resolvedMaxProtocolVersion := existingConfig.MaxProtocolVersion
+	if req.MaxProtocolVersion != nil {
+		if err := schemas.ValidateMCPMaxProtocolVersion("max_protocol_version", *req.MaxProtocolVersion); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		resolvedMaxProtocolVersion = *req.MaxProtocolVersion
 	}
 	// ToolSyncInterval: keep the existing duration when not provided, otherwise
 	// take the request value (minutes, matching the create paths). Both the DB
@@ -3372,6 +3393,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		verifyConfig := *existingConfig
 		verifyConfig.Headers = headers
 		verifyConfig.TLSConfig = tlsConfig
+		verifyConfig.MaxProtocolVersion = resolvedMaxProtocolVersion
 		// Only Authorization goes in this map. VerifyHeadersConnection layers
 		// StaticConfigHeaders(verifyConfig) in itself, which already carries
 		// every other header on the config; Authorization is the one entry
@@ -3442,6 +3464,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		NeedsSessionStickiness: needsSessionStickiness,
 		ToolPricing:            toolPricing,
 		ToolSyncInterval:       int(resolvedToolSyncInterval / time.Second),
+		MaxProtocolVersion:     resolvedMaxProtocolVersion,
 		ToolExecutionTimeout:   int(resolvedToolExecutionTimeout / time.Second),
 		MaxInstructionsLength:  resolvedMaxInstructionsLength,
 		AuthType:               string(existingConfig.AuthType),
@@ -3507,6 +3530,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		IsPingAvailable:        isPingAvailable,
 		NeedsSessionStickiness: needsSessionStickiness,
 		ToolSyncInterval:       toolSyncInterval,
+		MaxProtocolVersion:     resolvedMaxProtocolVersion,
 		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 		MaxInstructionsLength:  resolvedMaxInstructionsLength,
 		ToolPricing:            toolPricing,
@@ -4138,6 +4162,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
+		MaxProtocolVersion:        clientConfig.MaxProtocolVersion,
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
 		MaxInstructionsLength:     clientConfig.MaxInstructionsLength,
 		AllowByDefault:            clientConfig.AllowByDefault,
@@ -4408,6 +4433,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				NeedsSessionStickiness:    mcpClientConfig.NeedsSessionStickiness,
 				ToolPricing:               mcpClientConfig.ToolPricing,
 				ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
+				MaxProtocolVersion:        mcpClientConfig.MaxProtocolVersion,
 				ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
 				MaxInstructionsLength:     mcpClientConfig.MaxInstructionsLength,
 				AllowByDefault:            mcpClientConfig.AllowByDefault,
@@ -4540,6 +4566,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			NeedsSessionStickiness:    mcpClientConfig.NeedsSessionStickiness,
 			ToolPricing:               mcpClientConfig.ToolPricing,
 			ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
+			MaxProtocolVersion:        mcpClientConfig.MaxProtocolVersion,
 			ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
 			MaxInstructionsLength:     mcpClientConfig.MaxInstructionsLength,
 			TLSConfig:                 mcpClientConfig.TLSConfig,

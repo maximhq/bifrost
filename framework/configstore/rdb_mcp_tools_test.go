@@ -163,3 +163,37 @@ func TestMCPClientConfig_OpenAPIConfigRoundTripsThroughStore(t *testing.T) {
 	assert.Equal(t, "k-2", afterReplace.OpenAPIConfig.SecurityCredentials["ApiKeyAuth"].Value.GetValue())
 	assert.Equal(t, 4, afterReplace.OpenAPIConfig.OperationCount)
 }
+
+// The global and per-client max protocol versions round-trip through the store, and GetMCPConfig
+// hands both to core.
+func TestMaxProtocolVersion_RoundTripsThroughStore(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.UpdateClientConfig(ctx, &ClientConfig{MCPMaxProtocolVersion: schemas.MCPProtocolVersion20250618}))
+	cc, err := s.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, schemas.MCPProtocolVersion20250618, cc.MCPMaxProtocolVersion)
+
+	require.NoError(t, s.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:                 "capped",
+		Name:               "capped",
+		ConnectionType:     schemas.MCPConnectionTypeHTTP,
+		ConnectionString:   schemas.NewSecretVar("https://example.invalid/mcp"),
+		MaxProtocolVersion: schemas.MCPProtocolVersion20251125,
+	}))
+	byID, err := s.GetMCPClientByID(ctx, "capped")
+	require.NoError(t, err)
+	assert.Equal(t, schemas.MCPProtocolVersion20251125, byID.MaxProtocolVersion)
+
+	row, err := s.GetMCPClientByName(ctx, "capped")
+	require.NoError(t, err)
+	row.MaxProtocolVersion = schemas.MCPMaxProtocolVersionAuto
+	require.NoError(t, s.UpdateMCPClientConfig(ctx, "capped", row))
+
+	mcpConfig, err := s.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, schemas.MCPProtocolVersion20250618, mcpConfig.MaxProtocolVersion)
+	require.Len(t, mcpConfig.ClientConfigs, 1)
+	assert.Equal(t, schemas.MCPMaxProtocolVersionAuto, mcpConfig.ClientConfigs[0].MaxProtocolVersion)
+}

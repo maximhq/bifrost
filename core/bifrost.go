@@ -4973,6 +4973,25 @@ func (bifrost *Bifrost) UpdateMCPToolSyncInterval(interval time.Duration) error 
 	return nil
 }
 
+// UpdateMCPMaxProtocolVersion hot-reloads the global max MCP protocol version ("" or "auto" =
+// newest supported) and renegotiates the clients that follow it. The initial value comes from
+// MCPConfig.MaxProtocolVersion, as for the other global MCP settings.
+func (bifrost *Bifrost) UpdateMCPMaxProtocolVersion(version string) error {
+	if err := schemas.ValidateMCPMaxProtocolVersion("max protocol version", version); err != nil {
+		return err
+	}
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	// An optional interface keeps MCPManagerInterface implementations source compatible.
+	updater, ok := bifrost.MCPManager.(interface{ UpdateMaxProtocolVersion(string) })
+	if !ok {
+		return fmt.Errorf("mcp manager does not support a max protocol version")
+	}
+	updater.UpdateMaxProtocolVersion(version)
+	return nil
+}
+
 // PROVIDER MANAGEMENT
 
 // createBaseProvider creates a provider based on the base provider type

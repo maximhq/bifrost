@@ -1,4 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
+import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import { isRedacted } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -1873,6 +1874,7 @@ export const mcpClientUpdateSchema = z
 			),
 		tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
 		tool_sync_interval: z.number().min(0, "Tool sync interval must be 0 or a positive number of minutes").optional(), // 0 = use global, >0 = custom interval in minutes
+		max_protocol_version: z.union([z.literal(""), z.enum(MCP_MAX_PROTOCOL_VERSIONS)]).optional(), // "" = use global
 		tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
 		max_instructions_length: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server instruction byte cap
 		allowed_extra_headers: z

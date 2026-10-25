@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -297,6 +298,21 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 
 	switch {
 	case conn != nil:
+		// A connection above the cap (its renegotiation failed) keeps serving but is not healthy, and is
+		// retried until a connection within the cap replaces it.
+		if maxVersion := c.manager.maxProtocolVersionFor(config); maxVersion != "" && conn.ProtocolVersion() > maxVersion {
+			c.recordFailure(clientName, schemas.MCPConnectionFailureStageConnect,
+				fmt.Errorf("negotiated protocol version %s, newer than this client's max protocol version %s", conn.ProtocolVersion(), maxVersion), connGeneration)
+			c.reconnectAfterFailedCheck(clientName, connGeneration)
+			return UnstableConnectionCheckInterval, false
+		}
+		// A protocol version change whose reconnect failed: the old connection serves meanwhile.
+		if _, pending := c.manager.pendingRenegotiation.Load(c.clientID); pending {
+			c.recordFailure(clientName, schemas.MCPConnectionFailureStageConnect,
+				fmt.Errorf("negotiated protocol version %s; reconnecting for the changed max protocol version", conn.ProtocolVersion()), connGeneration)
+			c.reconnectAfterFailedCheck(clientName, connGeneration)
+			return UnstableConnectionCheckInterval, false
+		}
 		if c.checkLiveConnection(conn, clientName, connGeneration) {
 			return steady, true
 		}

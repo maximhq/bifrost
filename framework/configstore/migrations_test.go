@@ -5032,6 +5032,93 @@ func TestMigrationAddOAuthKeyConfigColumns_BoundsTheLockWait(t *testing.T) {
 	}
 }
 
+// TestMigrationAddMCPMaxProtocolVersionColumns: a deployment that already has MCP clients keeps
+// them on 2025-06-18, the version they used before the setting existed, through the global cap;
+// one with no MCP clients starts uncapped. Re-running is a no-op.
+func TestMigrationAddMCPMaxProtocolVersionColumns(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mcpClients int
+		want       string
+	}{
+		{"existing MCP clients", 1, "2025-06-18"},
+		{"no MCP clients", 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+			require.NoError(t, err)
+			require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+			require.NoError(t, db.Exec("INSERT INTO config_client (id) VALUES (1)").Error)
+			require.NoError(t, db.Exec("CREATE TABLE config_mcp_clients (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id VARCHAR(255) NOT NULL UNIQUE)").Error)
+			for i := range tc.mcpClients {
+				require.NoError(t, db.Exec("INSERT INTO config_mcp_clients (client_id) VALUES (?)", fmt.Sprintf("client-%d", i)).Error)
+			}
+			for range 2 {
+				require.NoError(t, migrationAddMCPMaxProtocolVersionColumns(context.Background(), db, testMigrationLogger))
+			}
+			require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "mcp_max_protocol_version"))
+			require.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, "max_protocol_version"))
+			var global string
+			require.NoError(t, db.Table("config_client").Select("mcp_max_protocol_version").Where("id = 1").Scan(&global).Error)
+			assert.Equal(t, tc.want, global)
+			var perClient []string
+			require.NoError(t, db.Table("config_mcp_clients").Pluck("max_protocol_version", &perClient).Error)
+			for _, v := range perClient {
+				assert.Empty(t, v, "existing MCP clients follow the global setting")
+			}
+		})
+	}
+}
+
+// TestMigrationAddMCPMaxProtocolVersionColumns_RollbackRefuses: dropping the columns would delete every
+// configured global and per-server protocol cap, so the rollback refuses and keeps them.
+func TestMigrationAddMCPMaxProtocolVersionColumns_RollbackRefuses(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY, mcp_max_protocol_version VARCHAR(32))").Error)
+	require.NoError(t, db.Exec("CREATE TABLE config_mcp_clients (id INTEGER PRIMARY KEY, client_id VARCHAR(255), max_protocol_version VARCHAR(32))").Error)
+	migration := mcpMaxProtocolVersionColumnsMigration(context.Background(), "add_mcp_max_protocol_version_columns", testMigrationLogger)
+	require.Error(t, migration.Rollback(db), "the rollback must refuse")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "mcp_max_protocol_version"), "the global cap column is kept")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, "max_protocol_version"), "the per-server cap column is kept")
+}
+
+// TestMigrationAddMCPMaxProtocolVersionColumnsBoundsLockWait pins that on postgres the migration gives
+// up on a held config_mcp_clients lock (lock_not_available, which the startup retry handles) instead
+// of queueing every later query on the table behind it.
+func TestMigrationAddMCPMaxProtocolVersionColumnsBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id SERIAL PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE config_mcp_clients (id SERIAL PRIMARY KEY, client_id VARCHAR(255) NOT NULL UNIQUE)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	// A long reader's ACCESS SHARE lock conflicts with the ACCESS EXCLUSIVE lock ALTER TABLE needs.
+	_, err = reader.ExecContext(ctx, "SELECT * FROM config_mcp_clients")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddMCPMaxProtocolVersionColumns(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
 // TestA2ARawCaptureSettingMigration defaults existing deployments to capture disabled.
 func TestA2ARawCaptureSettingMigration(t *testing.T) {
 	db := setupTestDB(t)

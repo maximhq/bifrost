@@ -2340,6 +2340,10 @@
         "tool_manager_config": {
           "$ref": "#/$defs/mcp_tool_manager_config"
         },
+        "max_protocol_version": {
+          "$ref": "#/$defs/mcp_max_protocol_version",
+          "description": "Newest MCP protocol version Bifrost offers to upstream MCP servers. 'auto' uses the newest version Bifrost supports. MCP servers can override it with their own max_protocol_version. Omitted keeps the stored value: deployments upgraded with existing MCP servers start at '2025-06-18', the version they used before."
+        },
         "tool_sync_interval": {
           "description": "Global default interval for syncing tools from MCP servers (Go duration string in whole minutes, e.g. '10m', '1h', '1h30m'; '0s' uses the runtime default of 10 minutes). Legacy integer nanoseconds are also accepted and must be a whole number of minutes.",
           "oneOf": [
@@ -5472,6 +5476,11 @@
         { "required": ["connection_string"], "not": { "required": ["endpoint"] } }
       ],
       "additionalProperties": false
+    },
+    "mcp_max_protocol_version": {
+      "type": "string",
+      "enum": ["auto", "2026-07-28", "2025-11-25", "2025-06-18"],
+      "description": "An MCP protocol version cap: 'auto' (newest supported) or a revision."
     },
     "warp_config": {
       "type": "object",
@@ -9352,6 +9361,10 @@
             "type": "string"
           },
           "description": "Auto-execute list of tools. ['*'] means all, [] means none."
+        },
+        "max_protocol_version": {
+          "$ref": "#/$defs/mcp_max_protocol_version",
+          "description": "Per-client cap on the MCP protocol version Bifrost offers this server. Omit to use the global mcp.max_protocol_version; 'auto' uses the newest version Bifrost supports."
         },
         "tool_sync_interval": {
           "description": "Per-client override for tool sync interval as a Go duration string in whole seconds (e.g. '10m', '90s'; '0s' or omitted = use global). Legacy integer nanoseconds are also accepted and must be a whole number of seconds.",

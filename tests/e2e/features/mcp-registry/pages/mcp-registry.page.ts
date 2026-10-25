@@ -1,4 +1,4 @@
-import { Page, Locator, expect } from '@playwright/test'
+import { APIRequestContext, Page, Locator, expect } from '@playwright/test'
 import { BasePage } from '../../../core/pages/base.page'
 import { waitForNetworkIdle } from '../../../core/utils/test-helpers'
 
@@ -37,6 +37,8 @@ export interface MCPClientConfig {
   headers?: Record<string, EnvVarLike | string>
   isCodeMode?: boolean
   isPingAvailable?: boolean
+  /** Max protocol version option: 'global', 'auto' or a version */
+  maxProtocolVersion?: string
   // STDIO specific
   command?: string
   args?: string
@@ -281,12 +283,31 @@ export class MCPRegistryPage extends BasePage {
     throw new Error('OAuth authorizer action was not shown')
   }
 
+  /** The stored max_protocol_version of the named client over the API ("" = follows the global setting). */
+  async storedMaxProtocolVersion(request: APIRequestContext, name: string): Promise<string> {
+    const res = await request.get(`/api/mcp/clients?search=${encodeURIComponent(name)}`)
+    expect(res.ok(), await res.text()).toBe(true)
+    const client = (await res.json()).clients.find((c: { config: { name: string } }) => c.config.name === name)
+    expect(client, `client ${name} is listed`).toBeTruthy()
+    return client.config.max_protocol_version ?? ''
+  }
+
+  /** Picks a max protocol version option in the open add form or detail sheet. */
+  async selectMaxProtocolVersion(scope: Locator, value: string): Promise<void> {
+    await scope.getByTestId('mcp-client-max-protocol-version-select').click()
+    await this.page.getByTestId(`mcp-client-max-protocol-version-${value}`).click()
+  }
+
   /**
    * Fill the MCP client form with configuration (doesn't submit)
    */
   async fillClientForm(config: MCPClientConfig): Promise<void> {
     // Fill name
     await this.nameInput.fill(config.name)
+
+    if (config.maxProtocolVersion) {
+      await this.selectMaxProtocolVersion(this.sheet, config.maxProtocolVersion)
+    }
 
     // Select connection type if specified
     if (config.connectionType) {
@@ -807,6 +828,10 @@ export class MCPRegistryPage extends BasePage {
           await codeModeSwitch.click()
         }
       }
+    }
+
+    if (updates.maxProtocolVersion) {
+      await this.selectMaxProtocolVersion(this.detailSheet, updates.maxProtocolVersion)
     }
 
     // Save changes

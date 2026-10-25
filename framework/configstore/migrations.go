@@ -577,6 +577,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_sagemaker_key_columns"}, run: migrationAddSageMakerKeyColumns},
 	{IDs: []string{"widen_oauth2_client_id_columns"}, run: migrationWidenOAuth2ClientIDColumns},
 	{IDs: []string{"add_oauth2_refresh_token_client_display_name_column"}, run: migrationAddOAuth2RefreshTokenClientDisplayNameColumn},
+	{IDs: []string{"add_mcp_max_protocol_version_columns"}, run: migrationAddMCPMaxProtocolVersionColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16604,4 +16605,52 @@ func widenOAuth2ClientIDColumn(tx *gorm.DB, table string) error {
 		return err
 	}
 	return ExecWithBoundedLock(tx, "index "+index, fmt.Sprintf("ALTER INDEX %s RENAME TO %s", qualified, index))
+}
+
+// migrationAddMCPMaxProtocolVersionColumns adds the global and per-client MCP max protocol version.
+// A deployment that already has MCP clients gets a global cap of 2025-06-18, the version every
+// client negotiated before the setting existed, so upgrading changes nothing until an admin lifts
+// it. A deployment with none starts uncapped.
+func migrationAddMCPMaxProtocolVersionColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_max_protocol_version_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{mcpMaxProtocolVersionColumnsMigration(ctx, migrationName, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// mcpMaxProtocolVersionColumnsMigration builds the migration applied by
+// migrationAddMCPMaxProtocolVersionColumns, so tests exercise the same callbacks the upgrade runs.
+func mcpMaxProtocolVersionColumnsMigration(ctx context.Context, migrationName string, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "mcp_max_protocol_version"); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "max_protocol_version"); err != nil {
+				return err
+			}
+			var existing int64
+			if err := tx.Table("config_mcp_clients").Count(&existing).Error; err != nil {
+				return fmt.Errorf("failed to count MCP clients: %w", err)
+			}
+			if existing == 0 {
+				return nil
+			}
+			return tx.Table("config_client").Where("mcp_max_protocol_version IS NULL OR mcp_max_protocol_version = ''").
+				UpdateColumn("mcp_max_protocol_version", schemas.MCPProtocolVersion20250618).Error
+		},
+		// Dropping the columns would delete every protocol cap an admin configured.
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the columns would delete every configured global and per-server MCP protocol cap; they are additive and older binaries ignore them", migrationName)
+		},
+	}
 }

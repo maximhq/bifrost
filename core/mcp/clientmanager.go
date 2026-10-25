@@ -193,7 +193,7 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 			// Initialize in connectToMCPClient. Fresh per try.
 			initCtx, initCancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
 			defer initCancel()
-			initResult, err = initializeClient(initCtx, tempClient, request)
+			initResult, err = initializeClient(initCtx, tempClient, request, m.maxProtocolVersionFor(config))
 			if err != nil {
 				return err
 			}
@@ -564,7 +564,7 @@ func (m *MCPManager) ReconnectClient(id string) (retErr error) {
 	// Acquire per-client reconnect/update guard before reading config snapshot.
 	finish, ok := m.beginExclusiveClientOp(id)
 	if !ok {
-		return fmt.Errorf("reconnect already in progress for this client")
+		return errReconnectInProgress
 	}
 	defer func() { finish(retErr) }()
 
@@ -1239,7 +1239,7 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 				},
 			},
 		}
-		initResult, initErr := initializeClient(verifyCtx, tempClient, initRequest)
+		initResult, initErr := initializeClient(verifyCtx, tempClient, initRequest, m.maxProtocolVersionFor(config))
 		if initErr != nil {
 			return nil, fmt.Errorf("failed to initialize MCP connection for verification: %w", initErr)
 		}
@@ -1417,7 +1417,7 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 				},
 			},
 		}
-		initResult, initErr := initializeClient(verifyCtx, tempClient, initRequest)
+		initResult, initErr := initializeClient(verifyCtx, tempClient, initRequest, m.maxProtocolVersionFor(config))
 		if initErr != nil {
 			return nil, fmt.Errorf("failed to initialize MCP connection for verification: %w", initErr)
 		}
@@ -1584,6 +1584,7 @@ func (m *MCPManager) SetClientTools(clientID string, tools map[string]schemas.Ch
 func (m *MCPManager) RemoveClient(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.pendingRenegotiation.Delete(id)
 
 	return m.removeClientUnsafe(id)
 }
@@ -1788,7 +1789,7 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 	// immediately.
 	finish, ok := m.beginExclusiveClientOp(id)
 	if !ok {
-		return fmt.Errorf("reconnect already in progress for this client")
+		return errReconnectInProgress
 	}
 	defer func() { finish(retErr) }()
 
@@ -2029,7 +2030,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 	// released; connectToMCPClient acquires m.mu itself, so calling it while
 	// still holding the lock here would deadlock.
 	var newConfig *schemas.MCPClientConfig
-	var becamePerCall, becameSticky, rebuildOpenAPI, wasDisabled bool
+	var becamePerCall, becameSticky, rebuildOpenAPI, wasDisabled, renegotiate bool
 	var clientName string
 	startPerCallChecker := false
 
@@ -2157,6 +2158,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			IsPingAvailable:        updatedConfig.IsPingAvailable,
 			NeedsSessionStickiness: updatedConfig.NeedsSessionStickiness,
 			ToolSyncInterval:       updatedConfig.ToolSyncInterval,
+			MaxProtocolVersion:     updatedConfig.MaxProtocolVersion,
 			ToolExecutionTimeout:   updatedConfig.ToolExecutionTimeout,
 			MaxInstructionsLength:  updatedConfig.MaxInstructionsLength,
 			AllowByDefault:         updatedConfig.AllowByDefault,
@@ -2175,6 +2177,13 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			rebuildOpenAPI = true
 		}
 		wasDisabled = client.State == schemas.MCPConnectionStateDisabled
+
+		// A changed protocol cap renegotiates: per-call clients forget their cached version, a
+		// shared connection the change affects is redialed below.
+		if oldMax, newMax := m.maxProtocolVersionFor(client.ExecutionConfig), m.maxProtocolVersionFor(newConfig); oldMax != newMax {
+			m.dropPerCallConn(id)
+			renegotiate = client.Conn != nil && !wasDisabled && needsRenegotiation(client.Conn.ProtocolVersion(), oldMax, newMax)
+		}
 
 		// Atomically replace the config pointer
 		client.ExecutionConfig = newConfig
@@ -2295,6 +2304,14 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		if len(unmatched) > 0 {
 			m.logger.Warn("%s MCP client '%s': tools_to_execute names tools the rebuilt OpenAPI server no longer exposes (%s); update the selection to the current tool names", MCPLogPrefix, clientName, strings.Join(unmatched, ", "))
 		}
+	}
+	if renegotiate && !rebuildOpenAPI && !becameSticky && !becamePerCall {
+		m.pendingRenegotiation.Store(id, struct{}{})
+		if connErr := m.connectToMCPClient(m.ctx, newConfig); connErr != nil {
+			m.markUnstableAfterFailedUpdateDial(id, newConfig, connErr)
+			return fmt.Errorf("client updated, but reconnecting at the new max protocol version failed: %w: %w", ErrMCPSharedConnectFailedAfterUpdate, connErr)
+		}
+		m.logger.Info("%s MCP client '%s' reconnected after its max protocol version changed", MCPLogPrefix, clientName)
 	}
 	if becameSticky {
 		// connectToMCPClient starts the connection checker itself on
@@ -2473,7 +2490,7 @@ func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPCl
 	// restores the pre-attempt snapshot.
 	finish, ok := m.beginExclusiveClientOp(id)
 	if !ok {
-		return fmt.Errorf("reconnect already in progress for this client")
+		return errReconnectInProgress
 	}
 	defer func() { finish(retErr) }()
 
@@ -2919,6 +2936,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 
 	// To capture InitializeResult for the response, the op closure populates these.
 	var initResult *mcp.InitializeResult
+	var offeredMax string // the cap initialize offered, to compare with the cap once installed
 	start := time.Now()
 
 	_, gateErr := m.runConnectWithPluginPipeline(gateCtx, connectReq, func(preReq *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectResponse, error) {
@@ -3034,7 +3052,8 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 					initCtx = ctx
 				}
 				var initErr error
-				initResult, initErr = initializeClient(initCtx, externalClient, extInitRequest)
+				offeredMax = m.maxProtocolVersionFor(config)
+				initResult, initErr = initializeClient(initCtx, externalClient, extInitRequest, offeredMax)
 				return initErr
 			},
 			initRetryConfig,
@@ -3201,10 +3220,20 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	m.logger.Debug("%s [%s] Registering %d tools. Client config - ID: %s, Name: %s, IsCodeModeClient: %v", MCPLogPrefix, config.Name, len(tools), config.ID, config.Name, config.IsCodeModeClient)
 	m.logger.Info("%s Connected to MCP server '%s'", MCPLogPrefix, config.Name)
 
+	// A cap changed after initialize ran, lowered or raised (UpdateMaxProtocolVersion skips connections
+	// not yet installed).
+	capChanged := externalClient != nil &&
+		needsRenegotiation(externalClient.ProtocolVersion(), offeredMax, m.maxProtocolVersionFor(client.ExecutionConfig))
+
 	// Release lock BEFORE starting monitors to prevent deadlock
 	// (StartMonitoring -> Start() tries to acquire RLock on the same mutex)
 	fire := m.toolsChangedCallback(client, config.ID, tools, toolNameMapping, client.ServerInstructions)
 	m.mu.Unlock()
+
+	m.pendingRenegotiation.Delete(config.ID) // the installed connection was negotiated under the current cap
+	if capChanged {
+		m.renegotiate(config.ID)
+	}
 
 	// Fired outside the lock — see toolsChangeCallback's field doc. Covers
 	// both the initial dial and every reconnect (make-before-break swap):
@@ -4001,7 +4030,7 @@ func (m *MCPManager) startLocalMCPServer() error {
 		},
 	}
 
-	_, err = initializeClient(ctx, inProcessClient, initRequest)
+	_, err = initializeClient(ctx, inProcessClient, initRequest, "")
 	if err != nil {
 		return fmt.Errorf("failed to initialize MCP client: %w", err)
 	}

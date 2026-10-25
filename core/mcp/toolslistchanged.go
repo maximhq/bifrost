@@ -64,7 +64,7 @@ func (m *MCPManager) dialLegacyListening(ctx context.Context, config *schemas.MC
 		return nil, nil, fmt.Errorf("failed to start listening transport: %w", err)
 	}
 	request.Params.ProtocolVersion = version
-	result, err := initializeClient(ctx, listening, request)
+	result, err := initializeClient(ctx, listening, request, m.maxProtocolVersionFor(config))
 	if err != nil {
 		m.closeConnHandles(nil, listening, config.Name)
 		return nil, nil, fmt.Errorf("failed to initialize listening connection: %w", err)

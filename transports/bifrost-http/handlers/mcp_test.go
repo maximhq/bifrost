@@ -761,3 +761,120 @@ func TestOAuthBootstrapErrorStatus(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, oauthBootstrapErrorStatus(fmt.Errorf("x: %w", oauth2.ErrClientMetadataDocumentUnavailable)))
 	assert.Equal(t, fasthttp.StatusInternalServerError, oauthBootstrapErrorStatus(errors.New("discovery failed")))
 }
+
+// capturingAddMCPManager records the config the add handler hands the manager, then stops the add.
+type capturingAddMCPManager struct {
+	failingMCPManager
+	got *schemas.MCPClientConfig
+}
+
+func (m *capturingAddMCPManager) AddMCPClient(_ context.Context, config *schemas.MCPClientConfig) error {
+	m.got = config
+	return errors.New("stop after capture")
+}
+
+func (m *capturingAddMCPManager) VerifyHeadersConnection(_ context.Context, config *schemas.MCPClientConfig, _ map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+	m.got = config
+	return nil, nil, "", errors.New("stop after capture")
+}
+
+// A new MCP client follows the global max protocol version unless the caller sets one; an
+// unsupported value is rejected before anything is dialed.
+func TestAddMCPClient_MaxProtocolVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, want string
+		wantStatus        int
+	}{
+		{"omitted follows the global setting", ``, "", fasthttp.StatusInternalServerError},
+		{"explicit cap is kept", `,"max_protocol_version":"2025-11-25"`, schemas.MCPProtocolVersion20251125, fasthttp.StatusInternalServerError},
+		{"unsupported value rejected", `,"max_protocol_version":"2024-11-05"`, "", fasthttp.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := newRealOAuth2Store(t)
+			manager := &capturingAddMCPManager{}
+			h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: manager}
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.SetBodyString(`{"name":"capped","connection_type":"http","connection_string":"https://mcp.example.com/mcp","auth_type":"headers","headers":{"Authorization":"Bearer x"}` + tc.field + `}`)
+			ctx := initCtx(&req)
+			h.addMCPClient(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantStatus == fasthttp.StatusBadRequest {
+				assert.Nil(t, manager.got, "rejected before dialing")
+				assert.Contains(t, string(ctx.Response.Body()), "max_protocol_version")
+				return
+			}
+			require.NotNil(t, manager.got)
+			assert.Equal(t, tc.want, manager.got.MaxProtocolVersion)
+		})
+	}
+}
+
+// capturingUpdateMCPManager records the config a live update hands the manager.
+type capturingUpdateMCPManager struct {
+	fakeMCPManagerVerifyOnly
+	got *schemas.MCPClientConfig
+}
+
+func (m *capturingUpdateMCPManager) UpdateMCPClient(_ context.Context, _ string, config *schemas.MCPClientConfig) error {
+	m.got = config
+	return nil
+}
+
+// capturingUpdateConfigStore records the row the update handler writes.
+type capturingUpdateConfigStore struct {
+	mockUpdateConfigStore
+	row *configtables.TableMCPClient
+}
+
+func (s *capturingUpdateConfigStore) UpdateMCPClientConfig(_ context.Context, _ string, row *configtables.TableMCPClient) error {
+	s.row = row
+	return nil
+}
+
+// An update sets, keeps or rejects the per-client max protocol version, and both the stored row and
+// the live config get the result.
+func TestUpdateMCPClient_MaxProtocolVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       string
+		want       string
+		wantStatus int
+	}{
+		{"set", `{"max_protocol_version":"2025-06-18"}`, schemas.MCPProtocolVersion20250618, fasthttp.StatusOK},
+		{"back to the global setting", `{"max_protocol_version":""}`, "", fasthttp.StatusOK},
+		{"omitted keeps the current value", `{"is_code_mode_client":false}`, schemas.MCPProtocolVersion20251125, fasthttp.StatusOK},
+		{"unsupported value rejected", `{"max_protocol_version":"latest"}`, "", fasthttp.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			existing := &schemas.MCPClientConfig{
+				ID: "client-1", Name: "capped", ConnectionType: schemas.MCPConnectionTypeHTTP, AuthType: schemas.MCPAuthTypeNone,
+				MaxProtocolVersion: schemas.MCPProtocolVersion20251125,
+			}
+			cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}, ClientConfig: &configstore.ClientConfig{}}
+			store := &capturingUpdateConfigStore{}
+			cfg.ConfigStore = store
+			manager := &capturingUpdateMCPManager{}
+			h := &MCPHandler{store: cfg, mcpManager: manager}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("id", existing.ID)
+			ctx.Request.SetBodyString(tc.body)
+			h.updateMCPClient(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			if tc.wantStatus != fasthttp.StatusOK {
+				assert.Nil(t, store.row, "nothing stored")
+				assert.Nil(t, manager.got, "nothing applied")
+				return
+			}
+			require.NotNil(t, store.row)
+			require.NotNil(t, manager.got)
+			assert.Equal(t, tc.want, store.row.MaxProtocolVersion, "stored")
+			assert.Equal(t, tc.want, manager.got.MaxProtocolVersion, "applied live")
+		})
+	}
+}

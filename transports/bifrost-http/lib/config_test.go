@@ -466,6 +466,25 @@ func TestLoadClientConfig_OAuth2ServerConfigPolicyFieldsSyncFromFile(t *testing.
 	assert.True(t, cfg.ClientConfig.OAuth2ServerConfig.DisableVKIdentity, "file disable_vk_identity must be synced over the DB row")
 }
 
+// A changed client section in config.json replaces the stored client config, but the max protocol
+// version is declared under mcp, so the stored cap survives the sync.
+func TestLoadClientConfig_FileSyncKeepsMaxProtocolVersion(t *testing.T) {
+	SetLogger(&testLogger{})
+	store := &MockConfigStore{}
+	cfg := &Config{ConfigStore: store}
+	var first ConfigData
+	require.NoError(t, json.Unmarshal([]byte(`{"client":{"drop_excess_requests":false}}`), &first))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &first))
+	cfg.ClientConfig.MCPMaxProtocolVersion = schemas.MCPProtocolVersion20250618
+	require.NoError(t, store.UpdateClientConfig(context.Background(), cfg.ClientConfig))
+
+	var changed ConfigData
+	require.NoError(t, json.Unmarshal([]byte(`{"client":{"drop_excess_requests":true}}`), &changed))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &changed))
+	require.True(t, cfg.ClientConfig.DropExcessRequests, "the file change was synced")
+	assert.Equal(t, schemas.MCPProtocolVersion20250618, cfg.ClientConfig.MCPMaxProtocolVersion)
+}
+
 // A partial wildcard in config.json must stop the file sync before it reaches the
 // store, so the previously stored allowlist stays in effect and fixing the file
 // is enough to recover.
@@ -19849,6 +19868,8 @@ var excludedGoFields = map[string]map[string]bool{
 		// deliberately without a deprecated client-level twin in the schema.
 		"mcp_max_instructions_per_client": true,
 		"mcp_max_instructions_total":      true,
+		// Configured only as mcp.max_protocol_version.
+		"mcp_max_protocol_version": true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
 	// GovernanceConfig - some fields are internal/enterprise
@@ -23381,6 +23402,40 @@ func TestApplyMCPGlobalSettingsToClientConfig_ToolSyncInterval(t *testing.T) {
 	}
 }
 
+// TestApplyMCPGlobalSettingsToClientConfig_MaxProtocolVersion: a declared mcp.max_protocol_version
+// is stored and handed to bifrost.Init; an absent or invalid one keeps the stored value, even when
+// the file is the source of truth, so an upgrade never lifts the migration's cap.
+func TestApplyMCPGlobalSettingsToClientConfig_MaxProtocolVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name, stored, file string
+		fileIsTruth        bool
+		want               string
+	}{
+		{"declared value is stored", "2025-06-18", "auto", false, "auto"},
+		{"declared value wins with file as source of truth", "2025-06-18", "2025-11-25", true, "2025-11-25"},
+		{"absent keeps the stored cap", "2025-06-18", "", false, "2025-06-18"},
+		{"absent keeps the stored cap with file as source of truth", "2025-06-18", "", true, "2025-06-18"},
+		{"invalid is ignored", "2025-06-18", "latest", true, "2025-06-18"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			initTestLogger()
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			ctx := context.Background()
+			clientConfig := &configstore.ClientConfig{MCPMaxProtocolVersion: tc.stored}
+			require.NoError(t, store.UpdateClientConfig(ctx, clientConfig))
+			cfg := &Config{ConfigStore: store, ClientConfig: clientConfig}
+			mcpCfg := &schemas.MCPConfig{MaxProtocolVersion: tc.file}
+
+			applyMCPGlobalSettingsToClientConfig(ctx, cfg, mcpCfg, tc.fileIsTruth)
+
+			assert.Equal(t, tc.want, mcpCfg.MaxProtocolVersion, "value handed to bifrost.Init")
+			persisted, err := store.GetClientConfig(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, persisted.MCPMaxProtocolVersion, "stored value")
+		})
+	}
+}
+
 // TestCodeModeLimitsFromConfigFile pins how code mode limits flow from config.json:
 // mcp.tool_manager_config.code_mode_limits wins when set, client_config.mcp_code_mode_limits
 // survives a tool_manager_config that omits them, and bifrost.Init receives the result.
@@ -23767,6 +23822,67 @@ func TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug(t *testing.T) {
 			_, name, ok := second.GetMCPClientBySlug("my-web-client")
 			require.True(t, ok, "reload dropped the stored endpoint_slug from the in-memory client")
 			require.Equal(t, "my_web_client", name)
+		})
+	}
+}
+
+// TestPinMCPClientImmutableFields_MaxProtocolVersion: a file entry that omits the cap keeps the stored one;
+// a declared cap wins.
+func TestPinMCPClientImmutableFields_MaxProtocolVersion(t *testing.T) {
+	for _, tc := range []struct{ name, stored, file, want string }{
+		{"omitted keeps the stored cap", "2025-06-18", "", "2025-06-18"},
+		{"declared wins", "2025-06-18", "2025-11-25", "2025-11-25"},
+		{"nothing stored", "", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := &schemas.MCPClientConfig{Name: "docs", MaxProtocolVersion: tc.file}
+			pinMCPClientImmutableFields(file, &schemas.MCPClientConfig{Name: "docs", MaxProtocolVersion: tc.stored})
+			assert.Equal(t, tc.want, file.MaxProtocolVersion)
+		})
+	}
+}
+
+// TestLoadMCPConfig_FileReloadKeepsSavedMaxProtocolVersion: a cap saved through the UI or API survives a
+// re-sync of a file entry that omits it, in the stored row and the running config.
+func TestLoadMCPConfig_FileReloadKeepsSavedMaxProtocolVersion(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func(tools schemas.WhiteList) *schemas.MCPConfig {
+		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name:             "legacy_server",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
+			ToolsToExecute:   tools,
+		}}}
+	}
+	for _, tc := range []struct {
+		name        string
+		sot         string
+		secondTools schemas.WhiteList
+	}{
+		{name: "default mode, edited file", secondTools: schemas.WhiteList{"web_search"}},
+		{name: "config.json source of truth, unchanged file", sot: SourceOfTruthConfigJSON, secondTools: schemas.WhiteList{"*"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, createTempDir(t))
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(schemas.WhiteList{"*"})})
+			require.Len(t, first.MCPConfig.ClientConfigs, 1)
+
+			// The cap an admin sets for this server in the UI.
+			id := first.MCPConfig.ClientConfigs[0].ID
+			row, err := store.GetMCPClientByID(ctx, id)
+			require.NoError(t, err)
+			row.MaxProtocolVersion = "2025-06-18"
+			require.NoError(t, store.UpdateMCPClientConfig(ctx, id, row))
+
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(tc.secondTools)})
+			require.Len(t, second.MCPConfig.ClientConfigs, 1)
+			assert.Equal(t, "2025-06-18", second.MCPConfig.ClientConfigs[0].MaxProtocolVersion, "running config keeps the saved cap")
+			stored, err := store.GetMCPClientByID(ctx, id)
+			require.NoError(t, err)
+			assert.Equal(t, "2025-06-18", stored.MaxProtocolVersion, "stored row keeps the saved cap")
 		})
 	}
 }
