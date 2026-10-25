@@ -282114,6 +282114,139 @@
           }
         }
       ]
+    },
+    {
+      "name": "274. Gemini chat replays extra_content.google.thought_signature (#8149 / PR #8775) (extra content signature)",
+      "description": "convertBifrostMessagesToGemini recovered a replayed tool call's thought signature only from the \"<id>_ts_<sig>\" id suffix and from reasoning_details, and wrote skip_thought_signature_validator otherwise. A client that sends the signature back as extra_content.google.thought_signature, the field Google's OpenAI-compatible endpoint uses, got its real signature replaced by the sentinel. The signature is captured from a live turn (Gemini validates what it is given, so a made-up blob would fail for an unrelated reason), moved by the replay row into extra_content on a bare id with no reasoning_details, and the case reads the request Bifrost sent upstream (x-bf-send-back-raw-request) to pin that the same signature, not the sentinel, is on the wire. The capture row fails when no signature came back, and the replay row fails when the capture stored nothing, so a run cannot pass having tested nothing.",
+      "item": [
+        {
+          "name": "gemini/gemini-3.6-flash /v1/chat/completions tool call signature captures replay input - extra-content-signature",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Gemini returned a tool call whose id carries a thought signature', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var calls = (pm.response.json().choices[0].message.tool_calls) || [];",
+                  "  pm.expect(calls, 'no tool_calls came back').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(calls[0].id, 'returned tool call id carries no _ts_ signature, so the replay row would test nothing').to.include('_ts_');",
+                  "});",
+                  "pm.collectionVariables.unset('extraContentSig8149');",
+                  "pm.collectionVariables.unset('extraContentBaseId8149');",
+                  "try {",
+                  "  var call = pm.response.json().choices[0].message.tool_calls[0];",
+                  "  var parts = call.id.split('_ts_');",
+                  "  if (parts.length === 2 && parts[1]) {",
+                  "    var std = parts[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "    while (std.length % 4) { std += '='; }",
+                  "    pm.collectionVariables.set('extraContentBaseId8149', parts[0]);",
+                  "    pm.collectionVariables.set('extraContentSig8149', std);",
+                  "    pm.collectionVariables.set('extraContentArgs8149', call.function.arguments || '{}');",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-3.6-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"What time is it in Tokyo? Use the get_time tool, thinking it through first.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current time\",\"parameters\":{\"type\":\"object\",\"properties\":{\"timezone\":{\"type\":\"string\"}},\"required\":[]}}}],\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"get_time\"}},\"max_tokens\":2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /v1/chat/completions extra_content signature reaches Gemini instead of the sentinel - extra-content-signature",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The capture row stored nothing when the model returned a bare id: leave the placeholders",
+                  "// unresolved so the row fails loudly instead of replaying an empty signature.",
+                  "var a = pm.collectionVariables.get('extraContentArgs8149');",
+                  "if (a) { pm.collectionVariables.set('extraContentArgsJson8149', JSON.stringify(a)); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('extra_content signature replay: accepted', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('extra_content signature replay: the captured signature, not the sentinel, is on the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var sig = pm.collectionVariables.get('extraContentSig8149') || '';",
+                  "  var sigs = [];",
+                  "  (rr.contents || []).forEach(function (c) { (c.parts || []).forEach(function (p) { if (p.functionCall && p.thoughtSignature) { sigs.push(p.thoughtSignature); } }); });",
+                  "  pm.expect(sigs.length, 'no function call part with a thoughtSignature on the wire: ' + wire.slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(sigs, 'sentinel sent instead of the extra_content signature: ' + wire.slice(0, 800)).to.not.include('skip_thought_signature_validator');",
+                  "  pm.expect(sigs, 'extra_content signature not forwarded: ' + wire.slice(0, 800)).to.include(sig);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/gemini-3.6-flash\", \"messages\": [{\"role\": \"user\", \"content\": \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\"}, {\"role\": \"assistant\", \"content\": null, \"tool_calls\": [{\"id\": \"{{extraContentBaseId8149}}\", \"type\": \"function\", \"function\": {\"name\": \"get_time\", \"arguments\": {{extraContentArgsJson8149}}}, \"extra_content\": {\"google\": {\"thought_signature\": \"{{extraContentSig8149}}\"}}}]}, {\"role\": \"tool\", \"tool_call_id\": \"{{extraContentBaseId8149}}\", \"content\": \"{\\\"time\\\": \\\"21:00 JST\\\"}\"}, {\"role\": \"user\", \"content\": \"Reply with the time only.\"}], \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current time\",\"parameters\":{\"type\":\"object\",\"properties\":{\"timezone\":{\"type\":\"string\"}},\"required\":[]}}}], \"max_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
