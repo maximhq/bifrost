@@ -250,12 +250,17 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 	// Verification dials the client's remote MCP server with these values. An
 	// openapi client has none (its server is synthesized in-process), so the
 	// required-key check above is the whole validation; the upstream API sees
-	// the values on the first tool call.
+	// the values on the first tool call. What verification discovered becomes
+	// the caller's discovery below, for a client that keeps one per caller.
+	var discovery *schemas.MCPDiscovery
 	if config.ConnectionType != schemas.MCPConnectionTypeOpenAPI {
-		if _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, config, filtered); verifyErr != nil {
+		verified, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, config, filtered)
+		if verifyErr != nil {
 			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 			return
 		}
+		discovery = verified
+		discovery.DiscoveredAt = time.Now()
 	}
 
 	mode := schemas.MCPAuthMode(flow.FlowMode)
@@ -285,6 +290,10 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to store credential: %v", upsertErr))
 		return
 	}
+	var discoveryErr error
+	if discovery != nil {
+		discoveryErr = h.storeSubmittedDiscovery(ctx, config, flow, discovery)
+	}
 
 	// Best-effort: delete the consumed flow row and the temp token bound to
 	// its ID. Failure to clean up is not fatal — the sweep worker will
@@ -303,11 +312,45 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		clientName = config.Name
 	}
 	lib.RecordAuditChange(ctx, "mcp_header_credential.submitted", "mcp_header_credential", cred.ID, clientName, nil, auditMCPHeaderCredential(cred.MCPClientID, string(cred.AuthMode), cred.UserID, cred.VirtualKeyID, cred.Headers))
-	SendJSON(ctx, map[string]any{
+	response := map[string]any{
 		"status":        "success",
 		"credential_id": cred.ID,
 		"updated_at":    cred.UpdatedAt,
-	})
+	}
+	if discoveryErr != nil {
+		response["discovery_error"] = discoveryErr.Error()
+	}
+	SendJSON(ctx, response)
+}
+
+// storeSubmittedDiscovery keeps what verifying a caller's submitted headers
+// discovered as their discovery of config, under the flow's identity. The
+// credential is already stored, so submit still succeeds when this fails: the
+// discovery an earlier submit left is dropped, the error is returned for the
+// response to report, and connecting to the client again discovers with the
+// stored credential. A credential revoked meanwhile gets no discovery and no
+// error, since connecting again would not help.
+func (h *MCPPerUserHeadersHandler) storeSubmittedDiscovery(ctx context.Context, config *schemas.MCPClientConfig, flow *configstoreTables.TableMCPPerUserHeaderFlow, discovery *schemas.MCPDiscovery) error {
+	mode, identity, ok := headersFlowIdentity(flow)
+	if !ok || !keepsSignInDiscovery(config, mode, identity) {
+		return nil
+	}
+	store := perUserDiscoveryStore(h.store)
+	cred, err := h.store.MCPHeadersProvider.GetCredentialByMode(ctx, mode, identity, config.ID)
+	if err != nil {
+		logger.Warn("[mcp/per-user-headers] failed to re-read the submitted credential of MCP client %s to store its discovery: %v", config.Name, err)
+		dropSignInDiscovery(ctx, store, config, mode, identity)
+		return fmt.Errorf("failed to read the stored credential: %w", err)
+	}
+	if cred == nil || cred.Status != schemas.MCPHeadersUserCredentialStatusActive {
+		return nil
+	}
+	if err := storeSignInDiscovery(ctx, store, config, mode, identity, discovery); err != nil {
+		logger.Warn("[mcp/per-user-headers] failed to store the discovery of MCP client %s for a submitted credential: %v", config.Name, err)
+		dropSignInDiscovery(ctx, store, config, mode, identity)
+		return err
+	}
+	return nil
 }
 
 // revoke deletes a credential row by its primary key. Authorization is
