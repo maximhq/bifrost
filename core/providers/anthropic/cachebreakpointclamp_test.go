@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -213,6 +214,80 @@ func TestToolResultFromMarkedChatToolMessageCarriesOneMarker(t *testing.T) {
 	}
 	if markers != 1 || block.CacheControl == nil {
 		t.Fatalf("tool_result carries %d cache markers (outer set: %v), want exactly 1 on the tool_result", markers, block.CacheControl != nil)
+	}
+}
+
+// Five chat tool messages each marked with cache_control: the API counts markers nested inside a
+// tool_result too, but the clamp only sees top-level blocks. The markers have to end up where the
+// clamp can trim them, or the request goes out with five and is rejected.
+func TestMarkedChatToolMessagesStayWithinTheCacheLimit(t *testing.T) {
+	toolName := "read_file"
+	question := "read the files"
+	chat := []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &question}}}
+	var calls []schemas.ChatAssistantMessageToolCall
+	var results []schemas.ChatMessage
+	for i := 0; i < 5; i++ {
+		callID := fmt.Sprintf("call_%d", i)
+		output := fmt.Sprintf("file %d contents", i)
+		calls = append(calls, schemas.ChatAssistantMessageToolCall{
+			ID:       &callID,
+			Type:     schemas.Ptr("function"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: "{}"},
+		})
+		results = append(results, schemas.ChatMessage{
+			Role:            schemas.ChatMessageRoleTool,
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &callID},
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: &output, CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}},
+			}},
+		})
+	}
+	chat = append(chat, schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: calls}})
+	chat = append(chat, results...)
+	var input []schemas.ResponsesMessage
+	for i := range chat {
+		input = append(input, chat[i].ToResponsesMessages()...)
+	}
+
+	req, err := ToAnthropicResponsesRequest(&schemas.BifrostContext{}, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-haiku-4-5",
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(16)},
+	})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	total, toolResults := 0, 0
+	var marked []string
+	for _, msg := range req.Messages {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Type != AnthropicContentBlockTypeToolResult {
+				continue
+			}
+			toolResults++
+			if block.CacheControl != nil {
+				total++
+				marked = append(marked, *block.ToolUseID)
+			}
+			if block.Content != nil {
+				for _, inner := range block.Content.ContentBlocks {
+					if inner.CacheControl != nil {
+						total++
+					}
+				}
+			}
+		}
+	}
+	if toolResults != 5 {
+		t.Fatalf("request carries %d tool_result blocks, want 5", toolResults)
+	}
+	if total != AnthropicMaxCacheBreakpoints {
+		t.Fatalf("request carries %d cache markers, want %d", total, AnthropicMaxCacheBreakpoints)
+	}
+	// The clamp drops the earliest, so the four latest results keep theirs.
+	if want := []string{"call_1", "call_2", "call_3", "call_4"}; !eq(marked, want) {
+		t.Fatalf("tool_results with a marker = %v, want %v", marked, want)
 	}
 }
 
