@@ -84,6 +84,20 @@ type RDBLogStore struct {
 	// Lazily built shared probe behind MigrationInProgress (see maintenancegate.go).
 	migrationProbeOnce sync.Once
 	migrationProbeInst *migrationLockProbe
+	// matViewLimits are the session bounds every matview create/refresh applies.
+	matViewLimits matViewSessionLimits
+	// matViewTempLimitWarned backs matViewLimits.deniedWarned.
+	matViewTempLimitWarned atomic.Bool
+	// matViewClientCheckWarned backs matViewLimits.clientCheckWarned.
+	matViewClientCheckWarned atomic.Bool
+	// Matview maintenance lifecycle (see goMaintenance). Close cancels
+	// maintenanceCtx so an in-flight REFRESH is cancelled on the server instead
+	// of outliving this process. Nil on stores built without newPostgresLogStore.
+	maintenanceMu     sync.Mutex
+	maintenanceCtx    context.Context
+	maintenanceCancel context.CancelFunc
+	maintenanceClosed bool
+	maintenanceWG     sync.WaitGroup
 }
 
 // generateBucketTimestamps generates all bucket timestamps for a time range.
@@ -5266,8 +5280,67 @@ func (s *RDBLogStore) deleteExpiredBatchByKey(ctx context.Context, table, key, c
 	return result.RowsAffected, nil
 }
 
-// Close closes the log store.
+// matViewShutdownWait bounds how long Close waits for cancelled matview
+// maintenance to wind down (cancel request, advisory unlock, session restore)
+// before it closes the pool anyway.
+const matViewShutdownWait = 15 * time.Second
+
+// maintenanceContext returns the context matview maintenance runs on: the
+// store's own, cancelled by Close, or Background for a store built without one.
+func (s *RDBLogStore) maintenanceContext() context.Context {
+	if s.maintenanceCtx == nil {
+		return context.Background()
+	}
+	return s.maintenanceCtx
+}
+
+// goMaintenance runs fn in a goroutine that Close waits for. It returns false
+// without running fn once Close has started, so no maintenance starts on a
+// store that is shutting down.
+func (s *RDBLogStore) goMaintenance(fn func()) bool {
+	s.maintenanceMu.Lock()
+	if s.maintenanceClosed {
+		s.maintenanceMu.Unlock()
+		return false
+	}
+	s.maintenanceWG.Add(1)
+	s.maintenanceMu.Unlock()
+	go func() {
+		defer s.maintenanceWG.Done()
+		fn()
+	}()
+	return true
+}
+
+// stopMaintenance cancels matview maintenance and waits up to
+// matViewShutdownWait for it to exit. Cancelling makes the driver send the
+// server a cancel request for a running REFRESH, so the statement and its
+// advisory lock end with this process rather than running on for hours.
+func (s *RDBLogStore) stopMaintenance() {
+	s.maintenanceMu.Lock()
+	s.maintenanceClosed = true
+	if s.maintenanceCancel != nil {
+		s.maintenanceCancel()
+	}
+	s.maintenanceMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.maintenanceWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(matViewShutdownWait):
+		if s.logger != nil {
+			s.logger.Warn(fmt.Sprintf("logstore: matview maintenance did not stop within %s; closing the pool anyway", matViewShutdownWait))
+		}
+	}
+}
+
+// Close stops matview maintenance and closes the log store.
 func (s *RDBLogStore) Close(ctx context.Context) error {
+	s.stopMaintenance()
 	sqlDB, err := s.db.WithContext(ctx).DB()
 	if err != nil {
 		return err

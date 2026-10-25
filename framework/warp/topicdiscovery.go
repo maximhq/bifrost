@@ -936,6 +936,13 @@ func (s *Service) topicUpkeepTick(ctx context.Context) {
 	if s.topicStore() == nil {
 		return
 	}
+	// Before the check for a topics job: a retried vector delete touches no
+	// topic row, so a long run is no reason to leave deleted logs' vectors.
+	if retried, err := s.retryVectorDeletes(ctx); err != nil {
+		s.warnf("failed to remove the vectors of deleted logs on retry (%d removed this pass): %v", retried, err)
+	} else if retried > 0 {
+		s.infof("warp: removed %d vector(s) of deleted logs on retry", retried)
+	}
 	busy, err := s.topicsJobInFlight(ctx)
 	if err != nil {
 		s.warnf("failed to check for a running Warp topics job; skipping topic upkeep: %v", err)

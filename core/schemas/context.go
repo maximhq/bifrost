@@ -40,6 +40,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyAttemptTrail:            {},
 	BifrostContextKeyStreamGated:             {},
 	BifrostContextKeyStreamAttemptAbort:      {},
+	BifrostContextKeyStreamCommitWatch:       {},
 	BifrostContextKeyMCPHealthCheckRequest:   {},
 	BifrostContextKeyMCPUnattendedExecution:  {},
 	BifrostContextKeyInjectedToolsExecuted:   {},
@@ -604,6 +605,36 @@ func (bc *BifrostContext) setReservedValue(key, value any) {
 		bc.userValues = make(map[any]any, 16)
 	}
 	bc.userValues[key] = value
+}
+
+// ReadyStreamCommitWatch records that a held stream attempt produced the chunk its first-chunk
+// check would commit on, so the pause/resume gate holding that chunk signals the check with
+// StreamCommitMarker instead. Startup events the check withholds must not call it: a commit
+// signal sent for them would end the check, and any first-token deadline, before output exists.
+// Bifrost-internal (set by core - DO NOT CALL THIS MANUALLY).
+func (bc *BifrostContext) ReadyStreamCommitWatch() {
+	bc.setReservedValue(BifrostContextKeyStreamCommitWatch, true)
+}
+
+// ConsumeStreamCommitWatch reports whether the watch is ready and clears it in the same step, so
+// at most one commit signal is sent per attempt. The gate calls it for every chunk it sees, which
+// also keeps a signal from outliving the chunk it was set for. Like setReservedValue it bypasses
+// blockRestrictedWrites: the gate runs right after post-hooks, which hold that guard.
+func (bc *BifrostContext) ConsumeStreamCommitWatch() bool {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.ConsumeStreamCommitWatch()
+	}
+	bc.valuesMu.RLock()
+	ready, _ := bc.userValues[BifrostContextKeyStreamCommitWatch].(bool)
+	bc.valuesMu.RUnlock()
+	if !ready {
+		return false
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	ready, _ = bc.userValues[BifrostContextKeyStreamCommitWatch].(bool)
+	bc.userValues[BifrostContextKeyStreamCommitWatch] = nil
+	return ready
 }
 
 // SetRoutingInfoSnapshot writes the routed-identity RoutingInfo snapshot,

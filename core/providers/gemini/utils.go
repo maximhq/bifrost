@@ -2217,7 +2217,9 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 			// This ensures the number of functionResponse parts equals functionCall parts
 			pendingToolResponseParts = append(pendingToolResponseParts, &Part{
 				FunctionResponse: &FunctionResponse{
-					ID:       callID,
+					// Stripped to match the FunctionCall.ID sent for this call, so the two
+					// still pair up. The lookup above still uses the full id as its key.
+					ID:       providerUtils.StripThoughtSignature(callID),
 					Name:     functionName,
 					Response: responseData,
 				},
@@ -2391,12 +2393,17 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 
 					part := &Part{
 						FunctionCall: &FunctionCall{
-							ID:   callID,
+							// Send Gemini the id it issued. The signature extracted above
+							// travels in the dedicated thoughtSignature field, so leaving it
+							// joined to the id as well would ship a ~500-char id whose base64
+							// tail the model can read and echo into its own output.
+							ID:   providerUtils.StripThoughtSignature(callID),
 							Name: *toolCall.Function.Name,
 							Args: argsRaw,
 						},
 					}
-					// Store the mapping for later use in FunctionResponse
+					// Store the mapping for later use in FunctionResponse. Keyed on the full
+					// id, which is what the client echoes back on the tool result message.
 					callIDToFunctionName[callID] = *toolCall.Function.Name
 
 					// Decode thought signature if extracted from ID

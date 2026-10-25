@@ -104633,7 +104633,7 @@
       "post": {
         "operationId": "startWarpTopicClustering",
         "summary": "Compute Warp topic clusters",
-        "description": "Groups the indexed requests of a time window by meaning, names each\ngroup with Warp's model, and stores the result for Warp's `list_topics`\ntool.\n\nThis is the one-time seed for an embedding model. Once it has written\ntopics, they are kept up to date without another run: each newly indexed\nrequest is filed under its topic, requests that match none are pooled\nand clustered into new topics once `topic_discovery_min_requests` of\nthem are waiting, and an hourly pass retires topics that went quiet and\nmerges ones that came to mean the same thing. A second run for the same\nmodel is refused with 409. Changing the embedding model starts over with\nno topics, and so does upkeep retiring every topic. A run that finds no\nindexed requests in the window completes without writing any, so the\nmodel can still be seeded with another window.\n\nOne run takes in at most 20,000 requests. A window that holds more is\nsampled across its length, and the status says so in `capped`.\n\nAdministrators only: the local admin in OSS, `Warp` Update in enterprise.\n",
+        "description": "Groups the indexed requests of a time window by meaning, names each\ngroup with Warp's model, and stores the result for Warp's `list_topics`\ntool.\n\nThis is the one-time seed for an embedding model. Once it has written\ntopics, they are kept up to date without another run: each newly indexed\nrequest is filed under its topic, requests that match none are pooled\nand clustered into new topics once `topic_discovery_min_requests` of\nthem are waiting, and an hourly pass retires topics that went quiet and\nmerges ones that came to mean the same thing. A second run for the same\nmodel is refused with 409. Changing the embedding model starts over with\nno topics, and so does upkeep retiring every topic. A run that finds no\nindexed requests in the window completes without writing any, so the\nmodel can still be seeded with another window.\n\nOne run reads every indexed request in the window. Up to 20,000 of\nthem, drawn from across the window, are clustered into topics, and the\nrest are filed under their nearest topic as they are read (`assigned`\nin the status).\n\nAdministrators only: the local admin in OSS, `Warp` Update in enterprise.\n",
         "tags": [
           "Warp"
         ],
@@ -139271,7 +139271,7 @@
           },
           "capped": {
             "type": "boolean",
-            "description": "Set when the window held more requests than one run takes in. The\nrequests that were read are drawn from across the window.\n"
+            "description": "Set when a run stopped at a read limit before the end of the window.\nRuns read the whole window, so this is not set.\n"
           },
           "merged": {
             "type": "integer",

@@ -3160,6 +3160,42 @@ func deriveBedrockBetaHeadersForToolType(toolType string) []string {
 	return nil
 }
 
+// bedrockStrictGate decides whether a tool's strict flag reaches Converse
+// toolSpec.strict for one request.
+type bedrockStrictGate struct {
+	ctx      *schemas.BifrostContext
+	model    string
+	resolved bool
+	allowed  bool
+}
+
+// forward returns the client's tool strict flag for Converse toolSpec.strict
+// ("Flag to enable structured output enforcement on a tool usage response",
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolSpecification.html).
+// It is forwarded for Claude only: AWS documents strict tool use for Claude on
+// Converse, while support for other families varies per model and is unverified,
+// so they keep the prior behaviour of dropping it. Only true is forwarded: false
+// is the default, and omitting it keeps clients that never asked for enforcement
+// (Codex sends strict:false on every tool) on the pre-strict bytes even for
+// profiles without structured outputs, such as in.anthropic Claude Haiku 4.5
+// (https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html).
+// An explicit true is left for Bedrock to accept or reject rather than silently
+// dropping the enforcement the client asked for. The family is resolved on the
+// first true flag and reused, so requests without one pay nothing.
+func (g *bedrockStrictGate) forward(strict *bool) *bool {
+	if strict == nil || !*strict {
+		return nil
+	}
+	if !g.resolved {
+		g.allowed = schemas.IsAnthropicModelFamily(g.ctx, g.model)
+		g.resolved = true
+	}
+	if !g.allowed {
+		return nil
+	}
+	return strict
+}
+
 // convertToolConfig converts Bifrost tools to Bedrock tool config.
 //
 // Responsibilities (split from collectBedrockServerTools):
@@ -3218,6 +3254,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 	}
 
 	isNova2 := schemas.IsNova2Model(model)
+	strictGate := bedrockStrictGate{ctx: ctx, model: model}
 	var bedrockTools []BedrockTool
 	var droppedForModel []string
 	for _, tool := range filtered {
@@ -3256,6 +3293,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 					InputSchema: BedrockToolInputSchema{
 						JSON: json.RawMessage(schemaObjectBytes),
 					},
+					Strict: strictGate.forward(tool.Function.Strict),
 				},
 			}
 			bedrockTools = append(bedrockTools, bedrockTool)

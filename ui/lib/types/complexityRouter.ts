@@ -255,8 +255,8 @@ export const PERPLEXITY_DECISION_MODEL = "pplx-decider-latest";
 // name a key alias maps to the user's deployment. The picker lists Microsoft's decision models.
 export const AZURE_DECISION_MODEL = "Microsoft-Decision-1";
 
-// DATABRICKS_DECISION_MODEL is the model a Databricks provider runs: the ai_decide AI
-// Function, the only decision model a Databricks workspace serves.
+// DATABRICKS_DECISION_MODEL is the model a newly selected Databricks provider starts on:
+// the ai_decide AI Function. The picker also lists the System One models.
 export const DATABRICKS_DECISION_MODEL = "ai_decide";
 
 // CLOUDFLARE_DECISION_MODEL is the model a newly selected Cloudflare provider starts on.
