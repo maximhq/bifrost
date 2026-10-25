@@ -5884,6 +5884,30 @@ const FAIL19 = folder("FAIL-19 Agent mode with a tool-level error and a timeout"
   agentTeardown("FAIL-19"),
 ]);
 
+// ================================================================ the Bedrock route, on the mock LLM's TLS listener
+
+const CONVERSE_BODY = (key) => ({ messages: [{ role: "user", content: [{ text: `${marker(key)} hi` }] }] });
+const INF05 = folder("INF-05 Bedrock route", `Setup: ${ALPHA_GREET_LLM}; the bedrock provider points at the same mock through the fleet's TLS listener; converse and converse-stream on /bedrock with the bare model mock-model; the mock LLM answers with a toolUse for alpha-echo.`, [
+  ...alphaGreetSetup("INF-05"),
+  llmScript("INF-05", "inf05", { then: { tool_calls: [{ id: "tu1", name: "alpha-echo", arguments: { text: "hi" } }] } }),
+  request("INF-05", "converse", "POST", "/bedrock/model/mock-model/converse", { noAuth: true, noCookies: true, body: CONVERSE_BODY("inf05"), asserts: [A.status(200), A.custom("the client gets a toolUse named alpha-echo", [
+    "var content = (((pm.response.json().output || {}).message) || {}).content || [];",
+    "var uses = content.filter(function (b) { return b.toolUse; });",
+    "pm.expect(uses.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(uses[0].toolUse.name).to.equal('alpha-echo');",
+    "pm.expect(uses[0].toolUse.toolUseId).to.equal('tu1');",
+  ])] }),
+  request("INF-05", "converse-stream", "POST", "/bedrock/model/mock-model/converse-stream", { noAuth: true, noCookies: true, body: CONVERSE_BODY("inf05"), asserts: [A.status(200), A.custom("the event stream opens one toolUse named alpha-echo", [
+    "pm.expect(pm.response.headers.get('Content-Type')).to.equal('application/vnd.amazon.eventstream');",
+    // Each frame's JSON payload is plain text between binary prelude and checksum bytes.
+    "var names = [], re = /\"toolUse\":\\{[^{}]*\"name\":\"([^\"]+)\"/g, m;",
+    "while ((m = re.exec(pm.response.text())) !== null) { names.push(m[1]); }",
+    "pm.expect(names, 'stream: ' + pm.response.text()).to.eql(['alpha-echo']);",
+  ])] }),
+  llmCaptured("INF-05", "both requests declare alpha-echo as a toolSpec", "inf05", [reqCount(2), toolsInclude(0, "alpha-echo"), toolsInclude(1, "alpha-echo"), A.custom("one plain and one streamed Converse request", [REQS, "pm.expect(reqs.map(function (r) { return r.format + ':' + r.stream; })).to.eql(['bedrock.converse:false', 'bedrock.converse:true']);"])]),
+  alphaGreetTeardown("INF-05"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -5904,7 +5928,7 @@ const collection = {
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV15, GOV16, GOV17, GOV20, GOV21, GOV29, GOV31, GOV32, GOV33]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF05, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG27, LOG28, LOG29, LOG31, LOG33, LOG37, LOG38, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19]),

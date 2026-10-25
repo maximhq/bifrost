@@ -20,10 +20,13 @@
 # while the run goes on. A test that changes it resets the library server, which
 # restores this catalog.
 #
-# The openai, anthropic and gemini providers point at the fleet's LLM surface
-# (server llm), which answers model requests with replies each test scripts and
-# records what it was sent, and the pricing and model-parameter datasheets come
-# from routes on that server, so a run calls nothing outside this machine.
+# The openai, anthropic, gemini and bedrock providers point at the fleet's LLM
+# surface (server llm), which answers model requests with replies each test
+# scripts and records what it was sent, and the pricing and model-parameter
+# datasheets come from routes on that server, so a run calls nothing outside
+# this machine. Bedrock reaches it through the fleet's TLS listener on its own
+# port, since Bedrock clients only speak https to a bare host; the provider
+# skips verification of its self-signed certificate.
 #
 # The upstream MCP servers are an mcpchaos fleet (tests/cmd/mcpconsole), built
 # and started here. Tests reach it through two collection variables: chaos_url,
@@ -53,6 +56,7 @@ NC='\033[0m'
 BIFROST_BINARY=""
 PORT="8093"
 CHAOS_PORT="8494"
+CHAOS_TLS_PORT=""
 FOLDER=""
 REPORTERS="cli"
 VERBOSE=""
@@ -67,6 +71,7 @@ while [[ $# -gt 0 ]]; do
         --binary) BIFROST_BINARY="$2"; shift 2 ;;
         --port) PORT="$2"; shift 2 ;;
         --chaos-port) CHAOS_PORT="$2"; shift 2 ;;
+        --chaos-tls-port) CHAOS_TLS_PORT="$2"; shift 2 ;;
         --folder) FOLDER="$2"; shift 2 ;;
         --html) REPORTERS="${REPORTERS},html"; shift ;;
         --json) REPORTERS="${REPORTERS},json"; shift ;;
@@ -79,6 +84,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --binary <path>   Path to a built bifrost-http binary (required)"
             echo "  --port <port>     Port to boot the server on (default: 8093)"
             echo "  --chaos-port <p>  Port for the mcpchaos fleet (default: 8494)"
+            echo "  --chaos-tls-port <p>  Port for the fleet's TLS listener (default: the fleet's port + 1)"
             echo "  --folder <name>   Run only this collection folder (e.g. \"ADM\" or \"ADM-05 ...\")"
             echo "  --html            Generate HTML report"
             echo "  --json            Generate JSON report"
@@ -145,6 +151,11 @@ if port_in_use "$CHAOS_PORT"; then
     echo -e "${RED}Error: port $CHAOS_PORT is already in use; pass --chaos-port to use another${NC}"
     exit 1
 fi
+CHAOS_TLS_PORT="${CHAOS_TLS_PORT:-$((CHAOS_PORT + 1))}"
+if port_in_use "$CHAOS_TLS_PORT"; then
+    echo -e "${RED}Error: port $CHAOS_TLS_PORT is already in use; pass --chaos-tls-port to use another${NC}"
+    exit 1
+fi
 
 # write_chaos_seed writes the fleet mcpchaos boots with: alpha and beta, which
 # are only placeholders, since every test re-adds the servers it uses (resetting
@@ -170,14 +181,16 @@ write_chaos_seed() {
     {"method": "GET", "path": "/pricing.json", "json": {
       "openai/mock-model": {"provider": "openai", "mode": "chat", "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
       "anthropic/mock-model": {"provider": "anthropic", "mode": "chat", "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
-      "gemini/mock-model": {"provider": "gemini", "mode": "chat", "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002}}},
+      "gemini/mock-model": {"provider": "gemini", "mode": "chat", "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
+      "bedrock/mock-model": {"provider": "bedrock", "mode": "chat", "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002}}},
     {"method": "GET", "path": "/model-parameters.json", "json": {}}
   ]}
 }}
 EOF
 }
 
-# start_chaos builds mcpchaos and starts its fleet from the seed above.
+# start_chaos builds mcpchaos and starts its fleet from the seed above, with the
+# TLS listener that serves llm's Bedrock surface.
 start_chaos() {
     echo -e "${YELLOW}Building mcpchaos...${NC}"
     CHAOS_DIR="$(mktemp -d)"
@@ -186,20 +199,21 @@ start_chaos() {
         echo -e "${RED}Error: failed to build mcpchaos${NC}"; exit 1; }
     local log="$API_DIR/$REPORT_DIR/mcpchaos.log"
     write_chaos_seed "$CHAOS_DIR/seed.json"
-    "$CHAOS_DIR/mcpchaos" -addr "127.0.0.1:$CHAOS_PORT" -seed "$CHAOS_DIR/seed.json" > "$log" 2>&1 &
+    "$CHAOS_DIR/mcpchaos" -addr "127.0.0.1:$CHAOS_PORT" -seed "$CHAOS_DIR/seed.json" \
+        -tls-addr "127.0.0.1:$CHAOS_TLS_PORT" -tls-server llm > "$log" 2>&1 &
     CHAOS_PID=$!
     local waited=0
     while [ $waited -lt 40 ]; do
-        port_in_use "$CHAOS_PORT" && break
+        port_in_use "$CHAOS_PORT" && port_in_use "$CHAOS_TLS_PORT" && break
         if ! kill -0 "$CHAOS_PID" 2>/dev/null; then
             echo -e "${RED}mcpchaos exited during startup${NC}"; cat "$log"; exit 1
         fi
         sleep 0.5; waited=$((waited + 1))
     done
-    if ! port_in_use "$CHAOS_PORT"; then
+    if ! port_in_use "$CHAOS_PORT" || ! port_in_use "$CHAOS_TLS_PORT"; then
         echo -e "${RED}mcpchaos did not become ready${NC}"; cat "$log"; exit 1
     fi
-    echo -e "${GREEN}mcpchaos ready on :$CHAOS_PORT${NC}"
+    echo -e "${GREEN}mcpchaos ready on :$CHAOS_PORT (TLS :$CHAOS_TLS_PORT)${NC}"
 }
 
 write_config() {
@@ -223,7 +237,11 @@ write_config() {
     "anthropic": { "keys": [{ "name": "anthropic-mock", "value": "sk-ant-mock", "models": ["*"], "weight": 1 }],
       "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/anthropic", "max_retries": 0, "default_request_timeout_in_seconds": 30 } },
     "gemini": { "keys": [{ "name": "gemini-mock", "value": "mock-gemini-key", "models": ["*"], "weight": 1 }],
-      "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/genai/v1beta", "max_retries": 0, "default_request_timeout_in_seconds": 30 } }
+      "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/genai/v1beta", "max_retries": 0, "default_request_timeout_in_seconds": 30 } },
+    "bedrock": { "keys": [{ "name": "bedrock-mock", "value": "mock-bedrock-token", "models": ["*"], "weight": 1,
+        "bedrock_key_config": { "region": "us-east-1", "endpoints": { "runtime": "127.0.0.1:$CHAOS_TLS_PORT",
+          "control_plane": "127.0.0.1:$CHAOS_TLS_PORT", "mantle": "127.0.0.1:$CHAOS_TLS_PORT" } } }],
+      "network_config": { "insecure_skip_verify": true, "max_retries": 0, "default_request_timeout_in_seconds": 30 } }
   },
   "framework": { "pricing": {
     "mcp_library_url": "http://127.0.0.1:$CHAOS_PORT/s/library/rest/catalog.json",
