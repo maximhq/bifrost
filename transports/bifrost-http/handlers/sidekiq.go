@@ -153,5 +153,8 @@ func (h *SidekiqHandler) cancelJob(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to cancel the job")
 		return
 	}
+	if cancelled {
+		lib.RecordAuditChange(ctx, "sidekiq_job.cancelled", "sidekiq_job", id, id, nil, map[string]any{"job_id": id})
+	}
 	SendJSON(ctx, map[string]bool{"cancelled": cancelled})
 }

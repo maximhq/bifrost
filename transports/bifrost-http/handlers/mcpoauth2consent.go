@@ -251,6 +251,12 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	consent := map[string]any{"client_id": req.ClientID, "scope": req.Scope, "mode": body.Mode, "bf_mode": req.BfMode}
+	// A session-mode subject is the server-minted session token, so it is never recorded.
+	if bfMode != schemas.MCPAuthModeSession {
+		consent["bf_sub"] = req.BfSub
+	}
+	lib.RecordAuditChange(ctx, "oauth2_consent.granted", "oauth2_consent", flowID, req.ClientID, nil, consent)
 	SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: redirectURL})
 }
 

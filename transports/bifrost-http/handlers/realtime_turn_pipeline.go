@@ -11,6 +11,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 )
 
@@ -47,6 +48,7 @@ func newRealtimeTurnContext(
 		}
 	}
 
+	ctx.SetValue(schemas.BifrostContextKeyRealtimeConnectionID, sessionID)
 	ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
 	if requestID == "" {
 		requestID = uuid.NewString()
@@ -83,6 +85,55 @@ func newRealtimeTurnContext(
 		}
 	}
 	return ctx
+}
+
+// recordRealtimeProviderInput introduces items on creation and treats completions as updates only.
+// A transcript without a pending item is handed to persisted lookup, never to the next turn.
+func recordRealtimeProviderInput(config *lib.Config, session *bfws.Session, event *schemas.BifrostRealtimeEvent, raw string) {
+	if session == nil || event == nil || event.Type == schemas.RTEventConversationItemRetrieved {
+		return
+	}
+	if event.Type != schemas.RTEventInputAudioTransCompleted && !schemas.IsRealtimeUserInputEvent(event) && !schemas.IsRealtimeToolOutputEvent(event) {
+		return
+	}
+	itemID := realtimeEventItemID(event)
+	input := bfws.RealtimeTurnInput{ItemID: itemID, Role: string(schemas.ChatMessageRoleUser), Summary: finalizedRealtimeInputSummary(event), Raw: raw}
+	if input.Summary == "" && schemas.IsRealtimeUserInputEvent(event) && realtimeItemHasMissingAudioTranscript(event.Item) {
+		input.Summary = realtimeMissingTranscriptText
+	}
+	if event.Type != schemas.RTEventInputAudioTransCompleted {
+		if schemas.IsRealtimeToolOutputEvent(event) {
+			input.Role = string(schemas.ChatMessageRoleTool)
+			input.Summary = finalizedRealtimeToolOutputSummary(event)
+			// Tool results originate from the client; provider events are acknowledgments.
+			session.UpdateRealtimeTurnInput(input)
+		} else if schemas.IsRealtimeUserInputEvent(event) {
+			if event.Type == schemas.RTEventConversationItemDone {
+				session.UpdateRealtimeTurnInput(input)
+			} else {
+				session.RecordRealtimeInput(itemID, input.Summary, raw)
+			}
+		}
+		return
+	}
+	if itemID == "" {
+		// Providers with transcript-only, unkeyed inputs have no item lifecycle to match.
+		session.RecordRealtimeInput("", input.Summary, raw)
+		return
+	}
+	transcript := extractRealtimeExtraParamString(event, "transcript")
+	input.TranscriptComplete = transcript != ""
+	updated, closed := session.UpdateRealtimeTurnInput(input)
+	if updated || closed || config == nil {
+		return
+	}
+	for _, plugin := range config.GetLoadedLLMPlugins() {
+		if sink, ok := plugin.(interface {
+			EnqueueRealtimeTranscript(string, time.Time, string, string, string)
+		}); ok {
+			sink.EnqueueRealtimeTranscript(session.ID(), session.StartedAt(), itemID, transcript, raw)
+		}
+	}
 }
 
 func applyRealtimeRawStorageContext(ctx *schemas.BifrostContext, storeRaw bool) {
@@ -603,38 +654,6 @@ func mapRealtimeWireErrorFields(bifrostErr *schemas.BifrostError) (string, strin
 	return errorType, errorCode, errorMessage, errorParam
 }
 
-func shouldGracefullyDisconnectRealtime(bifrostErr *schemas.BifrostError) bool {
-	if bifrostErr == nil {
-		return false
-	}
-
-	var values []string
-	if bifrostErr.Type != nil {
-		values = append(values, strings.TrimSpace(*bifrostErr.Type))
-	}
-	if bifrostErr.Error != nil {
-		if bifrostErr.Error.Type != nil {
-			values = append(values, strings.TrimSpace(*bifrostErr.Error.Type))
-		}
-		if bifrostErr.Error.Code != nil {
-			values = append(values, strings.TrimSpace(*bifrostErr.Error.Code))
-		}
-		values = append(values, strings.TrimSpace(bifrostErr.Error.Message))
-	}
-
-	for _, value := range values {
-		lower := strings.ToLower(value)
-		if lower == "" {
-			continue
-		}
-		if isBudgetOrBillingError(lower) || bifrost.IsRateLimitErrorMessage(lower) {
-			return true
-		}
-	}
-
-	return false
-}
-
 func startRealtimeTurnHooks(
 	client *bifrost.Bifrost,
 	baseCtx *schemas.BifrostContext,
@@ -807,6 +826,11 @@ func finalizeRealtimeTurnHooksWithError(
 	if session == nil || bifrostErr == nil {
 		return nil
 	}
+	// A rejected cancel did not fail a response. In particular, response.create
+	// may already have installed hooks while this earlier command's error arrives.
+	if bifrostErr.Error != nil && bifrostErr.Error.Code != nil && *bifrostErr.Error.Code == "response_cancel_not_active" {
+		return nil
+	}
 
 	turnInputs := session.ConsumeRealtimeTurnInputs()
 	rawRequest := combineRealtimeInputRaw(turnInputs)
@@ -832,6 +856,11 @@ func finalizeRealtimeTurnHooksWithError(
 		setRealtimeTurnStreamContext(postCtx, activeHooks.StartedAt, true)
 		_, hookErr := activeHooks.PostHookRunner(postCtx, nil, postErr)
 		completeRealtimeTurnTrace(postCtx)
+		// Propagating the supplied provider failure is not a new hook rejection.
+		// A distinct error still preserves the post-hook policy contract.
+		if hookErr == postErr {
+			return nil
+		}
 		return hookErr
 	}
 
@@ -874,6 +903,9 @@ func finalizeRealtimeTurnHooksWithError(
 	setRealtimeTurnStreamContext(postCtx, startedAt, true)
 	_, hookErr := hooks.PostHookRunner(postCtx, nil, postErr)
 	completeRealtimeTurnTrace(postCtx)
+	if hookErr == postErr {
+		return nil
+	}
 	return hookErr
 }
 

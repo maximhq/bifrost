@@ -3,8 +3,10 @@ package warp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -39,6 +41,9 @@ type logIndexItem struct {
 	id       string
 	text     string
 	metadata map[string]interface{}
+	// assignment is the request as it is filed under a topic once it has
+	// been embedded: the log's columns, with the topic left to fill in.
+	assignment logstore.WarpTopicAssignment
 }
 
 // LogIndexer owns all stream-sized and queued indexing state outside request
@@ -79,6 +84,17 @@ type LogIndexer struct {
 	// it. A field rather than a constant so a test can pick a short one without
 	// waiting out the production value.
 	drainBudget time.Duration
+	// centres and assigner are live topic assignment: the topics a request
+	// is measured against, and the batches its row is written in. See
+	// topicassign.go.
+	centres  *topicCentres
+	assigner *topicAssigner
+	// topicMu keeps a request's topic lookup and its filing on one store:
+	// assignTopic holds it shared, SetTopicStore exclusively.
+	topicMu sync.RWMutex
+	// beforeFile runs between a request's topic lookup and its filing, for a
+	// test to act in that gap. Nil outside tests.
+	beforeFile func()
 }
 
 // warpIndexItemTimeout bounds one background index. Long enough for a slow
@@ -87,16 +103,30 @@ type LogIndexer struct {
 const warpIndexItemTimeout = 2 * time.Minute
 
 func NewLogIndexer(store configstore.WarpStore, vectors vectorstore.VectorStore, embed EmbeddingExecutor, logger schemas.Logger) *LogIndexer {
+	return newLogIndexer(store, vectors, embed, logger, topicsAssignFlushInterval)
+}
+
+// newLogIndexer is NewLogIndexer with the assignment flush interval chosen,
+// for tests that cannot wait out the production one.
+func newLogIndexer(store configstore.WarpStore, vectors vectorstore.VectorStore, embed EmbeddingExecutor, logger schemas.Logger, assignFlushInterval time.Duration) *LogIndexer {
 	ctx, cancel := context.WithCancel(context.Background())
 	indexer := &LogIndexer{
 		store: store, vectors: vectors, embed: embed, logger: logger,
 		queue: make(chan logIndexItem, warpIndexQueueSize), done: make(chan struct{}),
 		ctx: ctx, cancel: cancel, drainBudget: warpIndexDrainBudget,
+		centres: &topicCentres{ttl: topicCentresTTL}, assigner: newTopicAssigner(logger),
 	}
 	for range warpIndexWorkers {
 		indexer.wg.Add(1)
 		go indexer.worker()
 	}
+	// Started with the workers; it is the workers' writes it flushes, and it
+	// flushes them once more after the workers are done.
+	indexer.wg.Add(1)
+	go func() {
+		defer indexer.wg.Done()
+		indexer.assigner.run(ctx, indexer.done, assignFlushInterval)
+	}()
 	return indexer
 }
 
@@ -148,6 +178,7 @@ func (i *LogIndexer) Index(ctx context.Context, entry *logstore.Log) (IndexOutco
 func (i *LogIndexer) IndexWithConfig(ctx context.Context, config *schemas.WarpConfig, entry *logstore.Log) (IndexOutcome, *schemas.BifrostLLMUsage, error) {
 	item, ok := buildLogIndexItem(entry)
 	if !ok {
+		i.forget(ctx, config, entry)
 		return IndexOutcomeSkipped, nil, nil
 	}
 	indexed, usage, err := i.indexItemWithConfig(ctx, config, item)
@@ -161,6 +192,19 @@ func (i *LogIndexer) IndexWithConfig(ctx context.Context, config *schemas.WarpCo
 		return IndexOutcomeSkipped, usage, nil
 	}
 	return IndexOutcomeIndexed, usage, nil
+}
+
+// forget removes whatever vector an entry left behind when it was indexed
+// under rules it no longer passes: its content has since been hidden, or it
+// is recognised as Warp's own. Best effort - the entry is skipped either way,
+// and a store that cannot delete must not fail the page it is part of.
+func (i *LogIndexer) forget(ctx context.Context, config *schemas.WarpConfig, entry *logstore.Log) {
+	if entry == nil || entry.ID == "" || config == nil || !config.IsConfigured() {
+		return
+	}
+	if err := i.vectors.Delete(ctx, config.EffectiveLogVectorStoreNamespace(), entry.ID); err != nil && !errors.Is(err, vectorstore.ErrNotFound) {
+		i.warnf("failed to remove the stale vector of Warp log %s: %v", entry.ID, err)
+	}
 }
 
 func (i *LogIndexer) worker() {
@@ -235,6 +279,7 @@ func (i *LogIndexer) indexItemWithConfig(ctx context.Context, config *schemas.Wa
 		i.ensureMu.Unlock()
 		return false, usage, err
 	}
+	i.assignTopic(ctx, config, item, embedding)
 	return true, usage, nil
 }
 
@@ -291,6 +336,12 @@ func (i *LogIndexer) Close() {
 		}
 		<-drained
 	}
+	// The workers drain the queue after done closes, so a request they file
+	// then can land after the assigner's last flush. One more, on a context
+	// of its own because the indexer's is about to go.
+	flushCtx, cancel := context.WithTimeout(context.Background(), topicsAssignFlushTimeout)
+	i.assigner.flush(flushCtx)
+	cancel()
 	if i.cancel != nil {
 		i.cancel()
 	}
@@ -338,6 +389,7 @@ func ensureWarpNamespace(ctx context.Context, store vectorstore.VectorStore, nam
 		"completion_tokens": {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Output token count"},
 		"total_tokens":      {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Total token count"},
 		"parent_request_id": {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Fallback or session parent"},
+		"session_id":        {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Bifrost session the request belongs to"},
 		"app":               {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Detected client app"},
 		"virtual_key_id":    {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Virtual key ID"},
 		"user_id":           {DataType: vectorstore.VectorStorePropertyTypeString, Description: "User ID"},
@@ -441,12 +493,19 @@ func buildLogIndexItem(entry *logstore.Log) (logIndexItem, bool) {
 	if entry.UserAgent != nil && strings.Contains(strings.ToLower(*entry.UserAgent), "bifrost-warp") {
 		return logIndexItem{}, false
 	}
-	user := strings.Join(strings.Fields(entry.BuildInputContentSummary()), " ")
-	if user == "" {
-		user = strings.Join(strings.Fields(entry.ContentSummary), " ")
+	// App and user agent come from headers, so a caller that reaches the model
+	// without them is not labelled as Warp. What it sent still is.
+	if strings.HasPrefix(strings.TrimSpace(logInstructions(entry)), warpPromptSignature) {
+		return logIndexItem{}, false
+	}
+	opening, user := conversationUserTexts(entry)
+	// Nothing the person wrote means nothing to file the request under: a
+	// reply alone would place it by what the model said, not what was asked.
+	if opening == "" && user == "" {
+		return logIndexItem{}, false
 	}
 	assistant := strings.Join(strings.Fields(logAssistantText(entry)), " ")
-	text := boundedConversationText(user, assistant, warpMaxEmbeddingBytes)
+	text := boundedConversationText(opening, user, assistant, warpMaxEmbeddingBytes)
 	if text == "" {
 		return logIndexItem{}, false
 	}
@@ -454,17 +513,19 @@ func buildLogIndexItem(entry *logstore.Log) (logIndexItem, bool) {
 	// prefilter compares exactly while the post-filter compares with EqualFold
 	// - appendScalarQuery lowers the filter values to meet these. Hydration
 	// reads the full row from the logstore, so nothing rendered loses casing.
+	// session_id is kept exactly: it is an opaque id, matched exactly by the
+	// log store and by the post-filter.
 	metadata := map[string]interface{}{
 		"log_id": entry.ID, "timestamp": entry.Timestamp.Unix(), "object": entry.Object,
 		"provider": strings.ToLower(entry.Provider), "model": strings.ToLower(entry.Model), "status": strings.ToLower(entry.Status), "warp_log": true,
 		"latency_ms": roundedMetric(entry.Latency, 1), "cost_micro_usd": roundedMetric(entry.Cost, 1_000_000),
 		"prompt_tokens": entry.PromptTokens, "completion_tokens": entry.CompletionTokens, "total_tokens": entry.TotalTokens,
-		"parent_request_id": stringValue(entry.ParentRequestID), "app": strings.ToLower(stringValue(entry.App)),
+		"parent_request_id": stringValue(entry.ParentRequestID), "session_id": stringValue(entry.SessionID), "app": strings.ToLower(stringValue(entry.App)),
 		"virtual_key_id": strings.ToLower(stringValue(entry.VirtualKeyID)), "user_id": strings.ToLower(stringValue(entry.UserID)),
 		"team_ids": mergedIDs(entry.TeamID, entry.TeamIDs), "customer_ids": mergedIDs(entry.CustomerID, entry.CustomerIDs),
 		"business_unit_ids": mergedIDs(entry.BusinessUnitID, entry.BusinessUnitIDs),
 	}
-	return logIndexItem{id: entry.ID, text: text, metadata: metadata}, true
+	return logIndexItem{id: entry.ID, text: text, metadata: metadata, assignment: logstore.WarpTopicAssignmentFromLog(entry)}, true
 }
 
 func roundedMetric(value *float64, multiplier float64) int64 {
@@ -490,6 +551,100 @@ func conversationalWarpObject(object string) bool {
 	default:
 		return object == "chat.completion" || object == "chat.completion.chunk" || object == "response"
 	}
+}
+
+// warpPromptSignature is how Warp's own instructions begin.
+var warpPromptSignature = SystemPrompt[:strings.Index(SystemPrompt, ".")+1]
+
+// logInstructions is the system instruction a request was sent with: the
+// Responses instructions, else the first system message. Parameters are typed
+// on a live entry and a decoded map on one read back from the log store.
+func logInstructions(entry *logstore.Log) string {
+	switch params := entry.ParamsParsed.(type) {
+	case *schemas.ResponsesParameters:
+		if params != nil && params.Instructions != nil {
+			return *params.Instructions
+		}
+	case schemas.ResponsesParameters:
+		if params.Instructions != nil {
+			return *params.Instructions
+		}
+	case map[string]interface{}:
+		if instructions, ok := params["instructions"].(string); ok && instructions != "" {
+			return instructions
+		}
+	}
+	for index := range entry.InputHistoryParsed {
+		if entry.InputHistoryParsed[index].Role == schemas.ChatMessageRoleSystem {
+			return chatContentText(entry.InputHistoryParsed[index].Content)
+		}
+	}
+	for index := range entry.ResponsesInputHistoryParsed {
+		message := entry.ResponsesInputHistoryParsed[index]
+		if message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleSystem {
+			return responsesContentText(message.Content)
+		}
+	}
+	return ""
+}
+
+// agentReminder matches the envelope a coding agent wraps around the context
+// it adds to a user turn: the project's instructions file, the git status,
+// attribution rules. Claude Code sends several such turns before the first
+// thing the person typed, and the same ones in every request.
+var agentReminder = regexp.MustCompile(`(?is)<system-reminder>.*?</system-reminder>`)
+
+// userTurnText is one user turn as it is read for embedding and naming: what
+// the person wrote, on one line, with the agent's envelopes taken out.
+//
+// Without this, every Claude Code request opened with the same contents of
+// AGENTS.md, so they embedded alike whatever was asked and clustered into one
+// topic about the project's instructions.
+func userTurnText(text string) string {
+	return strings.Join(strings.Fields(agentReminder.ReplaceAllString(text, " ")), " ")
+}
+
+// conversationUserTexts returns what a conversation opened with and the
+// user's last message, each on one line.
+//
+// The last message alone is what the request answers, but it is often a reply
+// to a question - "all", "yes", "-7d" - and says nothing about the subject.
+// The opening is empty when the conversation has one user turn, or when the
+// history was not kept and only the last message is known. A turn that was
+// nothing but an agent's envelope is not a turn.
+func conversationUserTexts(entry *logstore.Log) (opening, last string) {
+	var turns []string
+	for index := range entry.InputHistoryParsed {
+		if entry.InputHistoryParsed[index].Role != schemas.ChatMessageRoleUser {
+			continue
+		}
+		if text := userTurnText(chatContentText(entry.InputHistoryParsed[index].Content)); text != "" {
+			turns = append(turns, text)
+		}
+	}
+	for index := range entry.ResponsesInputHistoryParsed {
+		message := entry.ResponsesInputHistoryParsed[index]
+		if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleUser {
+			continue
+		}
+		if text := userTurnText(responsesContentText(message.Content)); text != "" {
+			turns = append(turns, text)
+		}
+	}
+	if len(turns) == 0 {
+		// The history was not kept, or held nothing of the person's: the
+		// stored preview is all there is.
+		last = userTurnText(entry.BuildInputContentSummary())
+		if last == "" {
+			last = userTurnText(entry.ContentSummary)
+		}
+		return "", last
+	}
+	last = turns[len(turns)-1]
+	if len(turns) > 1 && turns[0] != last {
+		opening = turns[0]
+	}
+	return opening, last
 }
 
 func logAssistantText(entry *logstore.Log) string {
@@ -539,9 +694,13 @@ func responsesContentText(content *schemas.ResponsesMessageContent) string {
 	return strings.Join(parts, " ")
 }
 
-func boundedConversationText(user, assistant string, limit int) string {
+// boundedConversationText lays a conversation out for embedding: what it
+// opened with, the user's last message, and the answer, within limit bytes.
+// The opening gets at most half, so a pasted file cannot push out the
+// exchange the request is about.
+func boundedConversationText(opening, user, assistant string, limit int) string {
 	var builder strings.Builder
-	appendBounded := func(label, value string) {
+	appendBounded := func(label, value string, limit int) {
 		if value == "" || builder.Len() >= limit {
 			return
 		}
@@ -564,8 +723,9 @@ func boundedConversationText(user, assistant string, limit int) string {
 			remaining -= size
 		}
 	}
-	appendBounded("user", user)
-	appendBounded("assistant", assistant)
+	appendBounded("user", opening, limit/2)
+	appendBounded("user", user, limit)
+	appendBounded("assistant", assistant, limit)
 	return strings.TrimSpace(builder.String())
 }
 

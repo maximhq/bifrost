@@ -37,6 +37,8 @@ ModelProvider:
     - databricks
     - cloudflare
     - typesafe
+    - minimax
+    - byteplus
 
 Fallback:
   type: object
@@ -220,6 +222,12 @@ BifrostErrorExtraFields:
           type: string
         session_id:
           type: string
+        subject_token_missing:
+          type: boolean
+          description: token_exchange only. True when there was nothing to exchange, including when the caller's Bifrost sign-in has expired; message says which
+        exchange_error:
+          type: string
+          description: token_exchange only. The identity provider's error code and description when it refused the exchange
     billed_usage:
       $ref: './usage.yaml#/BifrostLLMUsage'
       description: Usage the provider reported and billed even though the request failed

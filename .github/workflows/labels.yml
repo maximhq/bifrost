@@ -1,0 +1,38 @@
+name: Labels
+
+# Makes the repository's area labels match .github/labels.yml. skip-delete keeps
+# every label not in that file, so hand-applied labels survive.
+on:
+  push:
+    branches: [dev]
+    paths:
+      - .github/labels.yml
+      - .github/workflows/labels.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    permissions:
+      contents: read
+      issues: write # to create and edit labels
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.repository_owner == 'maximhq'
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: crazy-max/ghaction-github-labeler@548a7c3603594ec17c819e1239f281a3b801ab4d # v6.0.0
+        with:
+          yaml-file: .github/labels.yml
+          skip-delete: true
