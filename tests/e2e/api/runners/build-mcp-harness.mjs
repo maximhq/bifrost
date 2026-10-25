@@ -3715,6 +3715,464 @@ const FAIL07 = folder("FAIL-07 401 at create is not retried", "Setup: alpha (ech
   mockPost("FAIL-07", "alpha", "faults/clear", "teardown: clear alpha's faults"),
 ]);
 
+// ================================================================ shared upstream OAuth against the mock's authorization server
+
+// Every test here runs with mcp_oauth_private_allowlist ["127.0.0.1"] (Bifrost dials the mock's authorization server on
+// loopback) and restores the config at the end. Each test has its own fleet server, so its authorization server starts empty.
+const ALLOWLIST_TEXT = "mcp_oauth_private_allowlist [\"127.0.0.1\"]";
+const allowlistOn = (id) => [readConfig(id), putConfig(id, `setup: ${ALLOWLIST_TEXT}`, ["cc.mcp_oauth_private_allowlist = ['127.0.0.1'];"], [A.status(200)])];
+// asServer re-adds a fleet server (echo_tool and add_tool unless tools are given) and makes it an OAuth protected
+// resource with its own authorization server configured by cfg.
+const asServer = (id, name, cfg = {}, tools) => [
+  ...(tools ? serveTools(id, name, tools.list, tools.title) : freshServer(id, name, ["echo_tool", "add_tool"])),
+  mockAuth(id, name, `setup: ${name} is an OAuth protected resource with its own authorization server${Object.keys(cfg).length ? " (" + lit(cfg) + ")" : ""}`, { oauth: cfg }),
+];
+const oauthBody = (clientId, name, server, over = {}) => ({ client_id: clientId, name, connection_type: "http", connection_string: `${CHAOS}/s/${server}/mcp`, auth_type: "oauth", oauth_config: {}, tools_to_execute: ["*"], ...over });
+// createOAuth creates an OAuth client and keeps its oauth_config_id and authorize_url in <p>_oc and <p>_au.
+const createOAuth = (id, title, body, p, asserts = []) => request(id, title, "POST", "/api/mcp/client", {
+  body, asserts: [A.status(200), ...asserts],
+  extraTests: [`pm.collectionVariables.set('${p}_oc', pm.response.json().oauth_config_id);`, `pm.collectionVariables.set('${p}_au', pm.response.json().authorize_url);`],
+});
+// consentAs follows <p>_au on the mock without following the redirect, approving as identity (login_hint), and keeps
+// the Location, Bifrost's callback, in <p>_cb.
+const consentAs = (id, title, p, identity, asserts = [A.status(302)]) => request(id, title, "GET", identity ? `&login_hint=${identity}` : "", {
+  base: `{{${p}_au}}`, noAuth: true, noRedirect: true, noCookies: true, asserts,
+  extraTests: [`pm.collectionVariables.set('${p}_cb', pm.response.headers.get('Location'));`],
+});
+const followCallback = (id, title, p, asserts) => request(id, title, "GET", "", { base: `{{${p}_cb}}`, noAuth: true, noRedirect: true, noCookies: true, asserts });
+const completeOAuth = (id, title, p, asserts) => request(id, title, "POST", `/api/mcp/client/{{${p}_oc}}/complete-oauth`, { asserts });
+const oauthStatus = (id, title, p, query, asserts, extraTests = []) => request(id, title, "GET", `/api/oauth/config/{{${p}_oc}}/status${query}`, { asserts: [A.status(200), ...asserts], extraTests });
+const locationEnds = (s) => A.custom(`Location ends ${lit(s)}`, [
+  "var loc = pm.response.headers.get('Location') || '';",
+  `pm.expect(loc.slice(-${s.length}), 'Location: ' + loc).to.equal(${lit(s)});`,
+]);
+const SUCCESS_CB = "/workspace/mcp-registry/oauth-callback?status=success";
+const callbackSuccess = () => [A.status(302), locationEnds(SUCCESS_CB)];
+// connectOAuth creates an OAuth client and takes it through consent, callback and complete.
+const connectOAuth = (id, body, p, identity, label) => [
+  createOAuth(id, `setup: create ${label}`, body, p),
+  consentAs(id, `setup: consent for ${label}${identity ? " as " + identity : ""}`, p, identity),
+  followCallback(id, `setup: follow the callback for ${label}`, p, callbackSuccess()),
+  completeOAuth(id, `setup: complete ${label}`, p, [A.status(200)]),
+];
+// QS_FN parses a URL's query string into an object (ES5, for test scripts).
+const QS_FN = "function qs(u) { var o = {}; (String(u).split('?')[1] || '').split('#')[0].split('&').forEach(function (kv) { var i = kv.indexOf('='); if (i > 0) { o[decodeURIComponent(kv.slice(0, i))] = decodeURIComponent(kv.slice(i + 1).replace(/\\+/g, ' ')); } }); return o; }";
+const statusIs = (v) => A.custom(`status is ${lit(v)}`, [`pm.expect(pm.response.json().status, 'body: ' + pm.response.text()).to.equal(${lit(v)});`]);
+const credStatus = (v) => A.custom(`credential status is ${lit(v)}`, [`pm.expect((pm.response.json().clients[0].credential || {}).status, 'body: ' + pm.response.text()).to.equal(${lit(v)});`]);
+const notListed = (id, clientId) => request(id, `${clientId} is not listed`, "GET", `/api/mcp/clients?server=${clientId}`, { asserts: [A.status(200), A.custom("no client is returned", ["pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);"])] });
+const oauthCounters = (id, server, title, expected) => mockGet(id, server, title, [A.custom(`oauth counters include ${lit(expected)}`, [
+  "var c = pm.response.json().oauth.counters;",
+  ...Object.entries(expected).map(([k, v]) => `pm.expect(c[${lit(k)}], 'counters: ' + JSON.stringify(c)).to.equal(${v});`),
+])]);
+const execAfterWait = (id, title, tool, asserts, ms) => execToolAfter(id, title, tool, asserts, [`setTimeout(function () {}, ${ms});`]);
+// mockGetAfter and mockPostAfter are mockGet and mockPost with a pre-request script, for a step that must wait first.
+const mockGetAfter = (id, name, title, asserts, pre) => request(id, title, "GET", `/control/${name}`, { base: CHAOS, noAuth: true, asserts: [A.status(200), ...asserts], pre });
+const mockPostAfter = (id, name, verb, title, body, pre) => request(id, title, "POST", `/control/${name}/${verb}`, { base: CHAOS, noAuth: true, body, asserts: [A.status(200)], pre });
+// saveOAuthCounts keeps a server's refresh count and session count in <p>_rf and <p>_ss.
+const saveOAuthCounts = (id, server, p) => mockGet(id, server, `setup: record ${server}'s refresh and session counts`, [], [
+  `pm.collectionVariables.set('${p}_rf', pm.response.json().oauth.counters.token_refresh);`,
+  `pm.collectionVariables.set('${p}_ss', pm.response.json().counters.sessions);`,
+]);
+const refreshPlus = (p, n) => `pm.expect(pm.response.json().oauth.counters.token_refresh, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('${p}_rf')) + ${n});`;
+const sessionsPlusP = (p, n) => `pm.expect(pm.response.json().counters.sessions, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('${p}_ss')) + ${n});`;
+
+const AUTH11 = folder("AUTH-11 OAuth create with discovery and DCR", `Setup: ${ALLOWLIST_TEXT}; a fleet server auth11 (echo_tool, add_tool) as an OAuth protected resource whose 401 names its resource metadata and scope "mcp.read", with an authorization server that supports dynamic registration; an OAuth client created on it with oauth_config {}.`, [
+  ...allowlistOn("AUTH-11"),
+  ...asServer("AUTH-11", "auth11", { challenge_scope: "mcp.read" }),
+  request("AUTH-11", "control: an anonymous GET on auth11 is a 401 naming resource_metadata and scope", "GET", "/s/auth11/mcp", { base: CHAOS, noAuth: true, asserts: [A.status(401), A.custom("WWW-Authenticate names resource_metadata and scope=\"mcp.read\"", [
+    "var w = pm.response.headers.get('WWW-Authenticate') || '';",
+    "pm.expect(w, 'WWW-Authenticate').to.include('resource_metadata=');",
+    "pm.expect(w, 'WWW-Authenticate').to.include('scope=\"mcp.read\"');",
+  ])] }),
+  createOAuth("AUTH-11", "create the OAuth client", oauthBody("auth11-c", "auth11", "auth11"), "auth11", [
+    statusIs("pending_oauth"),
+    A.custom("oauth_config_id, complete_url, status_url and expires_at are set", ["var b = pm.response.json();", "['oauth_config_id', 'complete_url', 'status_url', 'expires_at'].forEach(function (k) { pm.expect(b[k], k + ' in ' + pm.response.text()).to.be.a('string').and.not.empty; });"]),
+    A.custom("authorize_url has response_type code, the callback redirect, S256, scope mcp.read and a state", [QS_FN,
+      "var q = qs(pm.response.json().authorize_url);",
+      "pm.expect(q.response_type, 'query').to.equal('code');",
+      "pm.expect(/\\/api\\/oauth\\/callback$/.test(q.redirect_uri || ''), 'redirect_uri ' + q.redirect_uri).to.equal(true);",
+      "pm.expect(q.code_challenge_method, 'query').to.equal('S256');",
+      "pm.expect(q.code_challenge, 'query').to.be.a('string').and.not.empty;",
+      "pm.expect(q.scope, 'query').to.equal('mcp.read');",
+      "pm.expect(q.state, 'query').to.be.a('string').and.not.empty;",
+    ]),
+  ]),
+  mockGet("AUTH-11", "auth11", "one registration, auth method \"none\", whose client_id is the authorize_url's", [A.custom("one registered client with token_endpoint_auth_method none, matching authorize_url's client_id", [QS_FN,
+    "var o = pm.response.json().oauth;",
+    "pm.expect(o.counters.register, 'oauth: ' + JSON.stringify(o)).to.equal(1);",
+    "pm.expect(o.clients.length).to.equal(1);",
+    "pm.expect(o.clients[0].token_endpoint_auth_method).to.equal('none');",
+    "pm.expect(qs(pm.collectionVariables.get('auth11_au')).client_id).to.equal(o.clients[0].client_id);",
+  ])]),
+  restoreConfig("AUTH-11"),
+]);
+
+const R1 = "https://r1.mcp-harness.example/mcp";
+const AUTH12 = folder("AUTH-12 Discovery fallbacks", `Setup: ${ALLOWLIST_TEXT}; a fleet server auth12 (echo_tool, add_tool) as an OAuth protected resource whose 401 is a bare Bearer challenge, with its metadata only at the path-inserted URL, publishing resource ${R1}; an OAuth client created on it with oauth_config {}.`, [
+  ...allowlistOn("AUTH-12"),
+  ...asServer("AUTH-12", "auth12", { challenge: "bare", resource: R1 }),
+  request("AUTH-12", "control: the 401 challenge is bare", "GET", "/s/auth12/mcp", { base: CHAOS, noAuth: true, asserts: [A.status(401), A.custom("WWW-Authenticate is Bearer realm=\"chaosmock\"", ["pm.expect(pm.response.headers.get('WWW-Authenticate')).to.equal('Bearer realm=\"chaosmock\"');"])] }),
+  request("AUTH-12", "control: there is no root resource metadata", "GET", "/.well-known/oauth-protected-resource", { base: CHAOS, noAuth: true, asserts: [A.status(404)] }),
+  request("AUTH-12", `control: the path-inserted resource metadata publishes ${R1}`, "GET", "/.well-known/oauth-protected-resource/s/auth12/mcp", { base: CHAOS, noAuth: true, asserts: [A.status(200), A.custom(`resource is ${R1}`, [`pm.expect(pm.response.json().resource).to.equal(${lit(R1)});`])] }),
+  createOAuth("AUTH-12", "create the OAuth client", oauthBody("auth12-c", "auth12", "auth12"), "auth12", [statusIs("pending_oauth"),
+    A.custom(`authorize_url includes resource=${R1}`, [QS_FN, `pm.expect(qs(pm.response.json().authorize_url).resource, 'body: ' + pm.response.text()).to.equal(${lit(R1)});`])]),
+  restoreConfig("AUTH-12"),
+]);
+
+const R2 = "https://r2.mcp-harness.example/mcp";
+const AUTH14 = folder("AUTH-14 Pre-registered client skips discovery", `Setup: ${ALLOWLIST_TEXT}; a fleet server auth14 (echo_tool, add_tool) as an OAuth protected resource whose authorization server knows client C1 with secret S1; an OAuth client on it with oauth_config client_id C1, client_secret S1, the authorization server's authorize and token URLs, scopes ["a","b"] and resource ${R2}; consent and callback run so the token request is made.`, [
+  ...allowlistOn("AUTH-14"),
+  ...asServer("AUTH-14", "auth14", { clients: [{ client_id: "C1", client_secret: "S1" }] }),
+  createOAuth("AUTH-14", "create the OAuth client", oauthBody("auth14-c", "auth14", "auth14", { oauth_config: { client_id: "C1", client_secret: "S1", authorize_url: `${CHAOS}/s/auth14/as/authorize`, token_url: `${CHAOS}/s/auth14/as/token`, scopes: ["a", "b"], resource: R2 } }), "auth14", [
+    A.custom(`authorize_url has client_id C1, scope "a b" and resource ${R2}`, [QS_FN, "var q = qs(pm.response.json().authorize_url);", "pm.expect(q.client_id, 'query').to.equal('C1');", "pm.expect(q.scope, 'query').to.equal('a b');", `pm.expect(q.resource, 'query').to.equal(${lit(R2)});`]),
+  ]),
+  oauthCounters("AUTH-14", "auth14", "no registration and no metadata fetch", { register: 0, metadata: 0, prm: 0 }),
+  consentAs("AUTH-14", "consent", "auth14", null),
+  followCallback("AUTH-14", "follow the callback", "auth14", callbackSuccess()),
+  mockGet("AUTH-14", "auth14", `the token request carried client_secret S1, resource ${R2} and a code_verifier`, [A.custom(`one authorization_code request with client_secret S1, resource ${R2} and a verified code_verifier`, [
+    "var t = pm.response.json().oauth.log.filter(function (e) { return e.endpoint === 'token'; });",
+    "pm.expect(t.length, 'token log: ' + JSON.stringify(t)).to.equal(1);",
+    "pm.expect(t[0].grant_type).to.equal('authorization_code');",
+    "pm.expect(t[0].client_secret).to.equal('S1');",
+    `pm.expect(t[0].resource).to.equal(${lit(R2)});`,
+    "pm.expect(t[0].pkce).to.equal('ok');",
+  ])]),
+  oauthCounters("AUTH-14", "auth14", "still no registration and no metadata fetch after the exchange", { register: 0, metadata: 0, prm: 0 }),
+  restoreConfig("AUTH-14"),
+]);
+
+const AUTH15 = folder("AUTH-15 OAuth create failures", `Setup: ${ALLOWLIST_TEXT}. Fleet server auth15a's authorization server has no registration endpoint; auth15b's answers the next registration with 400 invalid_client_metadata. Both creates use oauth_config {}; the last two creates have no oauth_config, and no client_id with no URL.`, [
+  ...allowlistOn("AUTH-15"),
+  ...asServer("AUTH-15", "auth15a", { registration: false }),
+  request("AUTH-15", "create against an authorization server with no registration endpoint", "POST", "/api/mcp/client", { body: oauthBody("auth15-a", "auth15a", "auth15a"), asserts: [A.msgContains("client_id is required when the OAuth provider does not support dynamic client registration")] }),
+  ...asServer("AUTH-15", "auth15b"),
+  mockPost("AUTH-15", "auth15b", "oauth/fail", "setup: auth15b answers the next registration with 400", { fail: { endpoint: "register", status: 400, error: "invalid_client_metadata" } }),
+  request("AUTH-15", "create when registration answers 400", "POST", "/api/mcp/client", { body: oauthBody("auth15-b", "auth15b", "auth15b"), asserts: [A.msgContains("dynamic client registration failed")] }),
+  request("AUTH-15", "create with no oauth_config", "POST", "/api/mcp/client", { body: (({ oauth_config, ...rest }) => rest)(oauthBody("auth15-c", "auth15c", "auth15a")), asserts: [A.status(400)] }),
+  request("AUTH-15", "create with no client_id and no URL", "POST", "/api/mcp/client", { body: { client_id: "auth15-d", name: "auth15d", connection_type: "http", auth_type: "oauth", oauth_config: {} }, asserts: [A.status(400)] }),
+  restoreConfig("AUTH-15"),
+]);
+
+const AUTH16 = folder("AUTH-16 Pending to connected", `Setup: ${ALLOWLIST_TEXT}; the AUTH-11 setup on fleet server auth16 (scope "mcp.read", dynamic registration); its authorization server verifies S256; consent approves as id1.`, [
+  ...allowlistOn("AUTH-16"),
+  ...asServer("AUTH-16", "auth16", { challenge_scope: "mcp.read" }),
+  createOAuth("AUTH-16", "setup: create the OAuth client", oauthBody("auth16-c", "auth16", "auth16"), "auth16"),
+  oauthStatus("AUTH-16", "status before consent", "auth16", "", [statusIs("pending")]),
+  completeOAuth("AUTH-16", "complete before consent", "auth16", [A.status(400), A.msgContains("OAuth not authorized yet")]),
+  notListed("AUTH-16", "auth16-c"),
+  consentAs("AUTH-16", "consent as id1", "auth16", "id1"),
+  followCallback("AUTH-16", "follow the callback", "auth16", callbackSuccess()),
+  oauthStatus("AUTH-16", "status after the callback", "auth16", "", [statusIs("authorized")]),
+  completeOAuth("AUTH-16", "complete", "auth16", [A.status(200), A.jsonMessage("MCP client connected successfully with OAuth")]),
+  mockGet("AUTH-16", "auth16", "the code exchange passed S256", [A.custom("the authorization_code request's pkce is ok", ["var t = pm.response.json().oauth.log.filter(function (e) { return e.grant_type === 'authorization_code'; });", "pm.expect(t.length).to.equal(1);", "pm.expect(t[0].pkce).to.equal('ok');"])]),
+  execTool("AUTH-16", "execute auth16-echo_tool", "auth16-echo_tool", [A.status(200)]),
+  mockGet("AUTH-16", "auth16", "the call is counted under id1", [identityCallsAre({ id1: 1 })]),
+  deleteClient("AUTH-16", "auth16-c"),
+  restoreConfig("AUTH-16"),
+]);
+
+const AUTH17 = folder("AUTH-17 Callback errors", `Setup: ${ALLOWLIST_TEXT}; the callback with no code, then with an unknown state; fleet server auth17 whose authorization server denies, then (deny off) answers the next code exchange with 400 invalid_grant.`, [
+  ...allowlistOn("AUTH-17"),
+  request("AUTH-17", "callback with no code", "GET", "/api/oauth/callback", { noAuth: true, noRedirect: true, noCookies: true, asserts: [A.status(400), A.msgEquals("Missing required parameters: state and code")] }),
+  request("AUTH-17", "callback with an unknown state", "GET", "/api/oauth/callback?state=auth17-unknown&code=x", { noAuth: true, noRedirect: true, noCookies: true, asserts: [A.status(302), A.custom("Location carries status=failed", ["pm.expect(pm.response.headers.get('Location'), 'Location').to.include('status=failed');"])] }),
+  ...asServer("AUTH-17", "auth17", { deny: true }),
+  createOAuth("AUTH-17", "setup: create the first OAuth client", oauthBody("auth17-a", "auth17a", "auth17"), "auth17a"),
+  consentAs("AUTH-17", "the authorization server denies", "auth17a", null, [A.status(302), A.custom("Location carries error=access_denied", ["pm.expect(pm.response.headers.get('Location'), 'Location').to.include('error=access_denied');"])]),
+  followCallback("AUTH-17", "callback with access_denied", "auth17a", [A.status(302), A.custom("Location carries status=failed", ["pm.expect(pm.response.headers.get('Location'), 'Location').to.include('status=failed');"])]),
+  mockAuth("AUTH-17", "auth17", "setup: auth17 stops denying", { oauth: {} }),
+  createOAuth("AUTH-17", "setup: create the second OAuth client", oauthBody("auth17-b", "auth17b", "auth17"), "auth17b"),
+  mockPost("AUTH-17", "auth17", "oauth/fail", "setup: auth17 rejects the next code exchange", { fail: { endpoint: "token", grant_type: "authorization_code", status: 400, error: "invalid_grant" } }),
+  consentAs("AUTH-17", "consent", "auth17b", null),
+  followCallback("AUTH-17", "callback whose exchange is rejected", "auth17b", [A.status(302), A.custom("Location carries status=failed", ["pm.expect(pm.response.headers.get('Location'), 'Location').to.include('status=failed');"])]),
+  mockGet("AUTH-17", "auth17", "the code exchange reached auth17 and was rejected with invalid_grant", [A.custom("one authorization_code token request, answered 400 invalid_grant", ["var t = pm.response.json().oauth.log.filter(function (e) { return e.endpoint === 'token' && e.grant_type === 'authorization_code'; });", "pm.expect(t.length, 'token log: ' + JSON.stringify(t)).to.equal(1);", "pm.expect(t[0].status).to.equal(400);", "pm.expect(t[0].error).to.equal('invalid_grant');"])]),
+  oauthStatus("AUTH-17", "the status is failed", "auth17b", "", [statusIs("failed")]),
+  completeOAuth("AUTH-17", "complete after the rejected exchange", "auth17b", [A.status(400), A.msgContains("Current status: failed")]),
+  restoreConfig("AUTH-17"),
+]);
+
+const AUTH18 = folder("AUTH-18 Shared OAuth, per call: refresh with rotation", `Setup: ${ALLOWLIST_TEXT}; fleet server auth18 whose authorization server issues 5s access tokens and rotates refresh tokens; an OAuth client on it, per call, connected as id1. Each execute call waits 6s first, so each finds an expired token.`, [
+  ...allowlistOn("AUTH-18"),
+  ...asServer("AUTH-18", "auth18", { access_ttl: "5s", rotate_refresh: true }),
+  ...connectOAuth("AUTH-18", oauthBody("auth18-c", "auth18", "auth18"), "auth18", "id1", "the OAuth client"),
+  execAfterWait("AUTH-18", "first execute call, 6s later", "auth18-echo_tool", [A.status(200)], 6000),
+  execAfterWait("AUTH-18", "second execute call, 6s after the first", "auth18-echo_tool", [A.status(200)], 6000),
+  mockGet("AUTH-18", "auth18", "two refresh grants, the second presenting the first's new token", [A.custom("2 refresh_token requests, both 200, the second's refresh_token the first's issued one", [
+    "var r = pm.response.json().oauth.log.filter(function (e) { return e.grant_type === 'refresh_token'; });",
+    "pm.expect(r.length, 'refreshes: ' + JSON.stringify(r)).to.equal(2);",
+    "pm.expect(r[0].status).to.equal(200);", "pm.expect(r[1].status).to.equal(200);",
+    "pm.expect(r[1].refresh_token).to.equal(r[0].issued_refresh_token);",
+  ])]),
+  getClient("AUTH-18", "auth18-c", "the credential is active with last_refreshed_at set", [credStatus("active"), A.custom("last_refreshed_at is set", ["pm.expect(pm.response.json().clients[0].credential.last_refreshed_at, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])]),
+  deleteClient("AUTH-18", "auth18-c"),
+  restoreConfig("AUTH-18"),
+]);
+
+const AUTH19 = folder("AUTH-19 Sticky: upstream rejects an unexpired token", `Setup: ${ALLOWLIST_TEXT}; fleet server auth19 (echo_ro annotated readOnlyHint true, echo_tool unannotated) as an OAuth protected resource; an OAuth client on it, needs_session_stickiness true, connected as id1. Before each case the authorization server expires id1's access token, which Bifrost still believes is good.`, [
+  ...allowlistOn("AUTH-19"),
+  ...asServer("AUTH-19", "auth19", {}, { list: [READ_ONLY_TOOL, { name: "echo_tool" }], title: "echo_ro (readOnlyHint true) and echo_tool" }),
+  ...connectOAuth("AUTH-19", oauthBody("auth19-c", "auth19", "auth19", { needs_session_stickiness: true }), "auth19", "id1", "the sticky OAuth client"),
+  saveOAuthCounts("AUTH-19", "auth19", "auth19a"),
+  mockPost("AUTH-19", "auth19", "oauth/expire", "setup: expire id1's access token", { identity: "id1" }),
+  execTool("AUTH-19", "execute the read-only tool", "auth19-echo_ro", [A.status(200)]),
+  mockGet("AUTH-19", "auth19", "one refresh and one new session", [A.custom("refresh +1, sessions +1", [refreshPlus("auth19a", 1), sessionsPlusP("auth19a", 1)])]),
+  saveOAuthCounts("AUTH-19", "auth19", "auth19b"),
+  mockPost("AUTH-19", "auth19", "oauth/expire", "setup: expire id1's access token again", { identity: "id1" }),
+  execTool("AUTH-19", "first execute call of the unannotated tool", "auth19-echo_tool", [A.status(400), A.msgContains("401")]),
+  mockGetAfter("AUTH-19", "auth19", "one refresh after the first unannotated call, once the detached refresh has run", [A.custom("refresh +1", [refreshPlus("auth19b", 1)])],
+    waitForMock("auth19", "s.oauth.counters.token_refresh > Number(pm.collectionVariables.get('auth19b_rf'))")),
+  execToolAfter("AUTH-19", "second execute call of the unannotated tool, once the background reconnect has opened a session", "auth19-echo_tool", [A.status(200)],
+    waitForMock("auth19", "s.counters.sessions > Number(pm.collectionVariables.get('auth19b_ss'))")),
+  deleteClient("AUTH-19", "auth19-c"),
+  restoreConfig("AUTH-19"),
+]);
+
+const AUTH20 = folder("AUTH-20 Refresh token revoked", `Setup: ${ALLOWLIST_TEXT}; fleet server auth20 (echo_tool, add_tool) as an OAuth protected resource; an OAuth client on it, needs_session_stickiness true, connected as id1; then the authorization server revokes the grant, so the next refresh gets invalid_grant.`, [
+  ...allowlistOn("AUTH-20"),
+  ...asServer("AUTH-20", "auth20"),
+  ...connectOAuth("AUTH-20", oauthBody("auth20-c", "auth20", "auth20", { needs_session_stickiness: true }), "auth20", "id1", "the sticky OAuth client"),
+  mockPost("AUTH-20", "auth20", "oauth/revoke", "setup: revoke the grant", {}),
+  execTool("AUTH-20", "execute", "auth20-echo_tool", [A.status(400)]),
+  getClient("AUTH-20", "auth20-c", "the client list shows needs_reauth from the rejected refresh, at stage credential", [
+    clientState("needs_reauth"),
+    A.custom("status_reason starts \"provider rejected the refresh (HTTP 400, invalid_grant\"", ["var r = (pm.response.json().clients[0].credential || {}).status_reason || '';", "pm.expect(r.indexOf('provider rejected the refresh (HTTP 400, invalid_grant'), 'status_reason: ' + r).to.equal(0);"]),
+    A.custom("last_failure.stage is \"credential\"", ["pm.expect((pm.response.json().clients[0].last_failure || {}).stage, 'body: ' + pm.response.text()).to.equal('credential');"]),
+  ], { pre: waitForClient("auth20-c", "c.state === 'needs_reauth'") }),
+  execTool("AUTH-20", "next execute call", "auth20-echo_tool", [A.status(400), A.msgContains("needs re-authorization")]),
+  rpc("AUTH-20", "/mcp tools/call", call("auth20-echo_tool", { text: "hi" }), { headers: [MCP_ACCEPT], asserts: [A.status(200), toolResultError(null, "needs re-authorization")] }),
+  deleteClient("AUTH-20", "auth20-c"),
+  restoreConfig("AUTH-20"),
+]);
+
+const refreshStatuses = (v) => A.custom(`refresh_token requests answered ${lit(v)}`, [`pm.expect(pm.response.json().oauth.log.filter(function (e) { return e.grant_type === 'refresh_token'; }).map(function (e) { return e.status; }), 'body: ' + pm.response.text()).to.eql(${lit(v)});`]);
+const AUTH21 = folder("AUTH-21 Transient refresh failure", `Setup: ${ALLOWLIST_TEXT}; fleet server auth21 whose authorization server issues 5s access tokens; an OAuth client on it, per call, connected as id1. Each case waits 6s so the token has expired, resets the server's OAuth log, and queues 503s for refresh: one, then three.`, [
+  ...allowlistOn("AUTH-21"),
+  ...asServer("AUTH-21", "auth21", { access_ttl: "5s" }),
+  ...connectOAuth("AUTH-21", oauthBody("auth21-c", "auth21", "auth21"), "auth21", "id1", "the OAuth client"),
+  mockPost("AUTH-21", "auth21", "counters/reset", "setup: reset auth21's counters and OAuth log"),
+  mockPost("AUTH-21", "auth21", "oauth/fail", "setup: fail the next refresh with 503", { fail: { endpoint: "token", grant_type: "refresh_token", status: 503 } }),
+  execAfterWait("AUTH-21", "execute 6s later, with one refresh failure", "auth21-echo_tool", [A.status(200)], 6000),
+  mockGet("AUTH-21", "auth21", "two refresh attempts, 503 then 200", [refreshStatuses([503, 200])]),
+  getClient("AUTH-21", "auth21-c", "the credential is still active", [credStatus("active")]),
+  mockPost("AUTH-21", "auth21", "counters/reset", "setup: reset auth21's counters and OAuth log"),
+  mockPostAfter("AUTH-21", "auth21", "oauth/fail", "setup: 6s later, fail the next three refreshes with 503", { fail: { endpoint: "token", grant_type: "refresh_token", status: 503, count: 3 } }, ["setTimeout(function () {}, 6000);"]),
+  execTool("AUTH-21", "execute with three refresh failures", "auth21-echo_tool", [A.status(400), A.msgContains("token expired and refresh failed")]),
+  getClient("AUTH-21", "auth21-c", "the credential is still active", [credStatus("active")]),
+  deleteClient("AUTH-21", "auth21-c"),
+  restoreConfig("AUTH-21"),
+]);
+
+const AUTH23 = folder("AUTH-23 Reauthorize a shared OAuth client", `Setup: ${ALLOWLIST_TEXT}; fleet servers auth23s and auth23p as OAuth protected resources; an OAuth client on each, needs_session_stickiness true on auth23s and per call on auth23p, connected as id1. Each is reauthorized, and the authorization server approves as id2.`, [
+  ...allowlistOn("AUTH-23"),
+  ...[["s", "sticky", { needs_session_stickiness: true }, "re-authorized and reconnected"], ["p", "per call", {}, "tools refreshed"]].flatMap(([k, mode, over, msg]) => [
+    ...asServer("AUTH-23", `auth23${k}`),
+    ...connectOAuth("AUTH-23", oauthBody(`auth23-${k}`, `auth23${k}`, `auth23${k}`, over), `auth23${k}`, "id1", `the ${mode} OAuth client`),
+    request("AUTH-23", `reauthorize the ${mode} client`, "POST", `/api/mcp/client/auth23-${k}/reauthorize`, { asserts: [A.status(200), statusIs("pending_oauth"), A.custom("flow_id is set", ["pm.expect(pm.response.json().flow_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])],
+      extraTests: [`pm.collectionVariables.set('auth23${k}_au', pm.response.json().authorize_url);`] }),
+    completeOAuth("AUTH-23", `early complete for the ${mode} client`, `auth23${k}`, [A.status(409), A.msgContains("Authorization has not completed yet")]),
+    consentAs("AUTH-23", `consent as id2 for the ${mode} client`, `auth23${k}`, "id2"),
+    followCallback("AUTH-23", `follow the callback for the ${mode} client`, `auth23${k}`, callbackSuccess()),
+    completeOAuth("AUTH-23", `complete for the ${mode} client`, `auth23${k}`, [A.status(200), A.custom(`message contains ${lit(msg)}`, [`pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include(${lit(msg)});`])]),
+    execTool("AUTH-23", `execute on the ${mode} client`, `auth23${k}-echo_tool`, [A.status(200)]),
+    mockGet("AUTH-23", `auth23${k}`, `the ${mode} client's call ran under id2`, [identityCallsAre({ id2: 1 })]),
+    deleteClient("AUTH-23", `auth23-${k}`),
+  ]),
+  restoreConfig("AUTH-23"),
+]);
+
+const AUTH24 = folder("AUTH-24 Reauthorize, reregister and initiate guards", `Setup: ${ALLOWLIST_TEXT}; a headers client on fleet server alpha; an unknown client id; fleet server auth24 whose authorization server has no registration endpoint and knows client C1 (secret S1), with two OAuth clients on it using C1 and its authorize and token URLs: one connected, one left pending. The connected client is reauthorized, and its flow id is then asked of the pending client's OAuth config.`, [
+  ...allowlistOn("AUTH-24"),
+  ...freshServer("AUTH-24", "alpha", ["echo_tool", "add_tool"]),
+  createClient("AUTH-24", httpClient("auth24-h", "auth24h", "alpha", { auth_type: "headers", headers: { "X-Key": "k1" } }), "setup: create the headers client"),
+  request("AUTH-24", "reauthorize the headers client", "POST", "/api/mcp/client/auth24-h/reauthorize", { asserts: [A.status(400), A.msgContains("reauthorize only applies to OAuth-based clients")] }),
+  request("AUTH-24", "reauthorize an unknown id", "POST", "/api/mcp/client/auth24-nope/reauthorize", { asserts: [A.status(404), A.msgEquals("MCP client 'auth24-nope' not found")] }),
+  ...asServer("AUTH-24", "auth24", { registration: false, clients: [{ client_id: "C1", client_secret: "S1" }] }),
+  ...connectOAuth("AUTH-24", oauthBody("auth24-c", "auth24c", "auth24", { oauth_config: { client_id: "C1", client_secret: "S1", authorize_url: `${CHAOS}/s/auth24/as/authorize`, token_url: `${CHAOS}/s/auth24/as/token` } }), "auth24c", null, "the pre-registered client"),
+  request("AUTH-24", "reregister without a registration endpoint", "POST", "/api/mcp/client/auth24-c/reregister", { asserts: [A.status(400), A.msgContains("has no registration endpoint")] }),
+  request("AUTH-24", "initiate-verification on the headers client", "POST", "/api/mcp/client/auth24-h/initiate-verification", { asserts: [A.status(400)] }),
+  request("AUTH-24", "initiate-verification on the connected OAuth client", "POST", "/api/mcp/client/auth24-c/initiate-verification", { asserts: [A.status(400)] }),
+  createOAuth("AUTH-24", "setup: create the pending OAuth client", oauthBody("auth24-p", "auth24p", "auth24", { oauth_config: { client_id: "C1", client_secret: "S1", authorize_url: `${CHAOS}/s/auth24/as/authorize`, token_url: `${CHAOS}/s/auth24/as/token` } }), "auth24p"),
+  request("AUTH-24", "setup: reauthorize the connected client", "POST", "/api/mcp/client/auth24-c/reauthorize", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('auth24_flow', pm.response.json().flow_id);"] }),
+  request("AUTH-24", "the connected client's flow id on the pending client's OAuth config", "GET", "/api/oauth/config/{{auth24p_oc}}/status?flow_id={{auth24_flow}}", { asserts: [A.status(404)] }),
+  deleteClient("AUTH-24", "auth24-h"), deleteClient("AUTH-24", "auth24-c"),
+  restoreConfig("AUTH-24"),
+]);
+
+const AUTH25 = folder("AUTH-25 Reregister through DCR", `Setup: ${ALLOWLIST_TEXT}; fleet server auth25 as an OAuth protected resource with dynamic registration; an OAuth client on it, needs_session_stickiness true, connected as id1; then reregistered.`, [
+  ...allowlistOn("AUTH-25"),
+  ...asServer("AUTH-25", "auth25"),
+  ...connectOAuth("AUTH-25", oauthBody("auth25-c", "auth25", "auth25", { needs_session_stickiness: true }), "auth25", "id1", "the sticky OAuth client"),
+  mockGet("AUTH-25", "auth25", "setup: record auth25's registrations", [A.custom("one registered client", ["pm.expect(pm.response.json().oauth.clients.length, 'body: ' + pm.response.text()).to.equal(1);"])], ["pm.collectionVariables.set('auth25_reg', pm.response.json().oauth.counters.register);", "pm.collectionVariables.set('auth25_dcr1', pm.response.json().oauth.clients[0].client_id);"]),
+  request("AUTH-25", "reregister", "POST", "/api/mcp/client/auth25-c/reregister", { asserts: [A.status(200), A.custom("previous_client_id is the first registration and registered_client_id is new", ["var b = pm.response.json();", "pm.expect(b.previous_client_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('auth25_dcr1'));", "pm.expect(b.registered_client_id).to.be.a('string').and.not.empty;", "pm.expect(b.registered_client_id).to.not.equal(b.previous_client_id);"])],
+    extraTests: ["pm.collectionVariables.set('auth25_au', pm.response.json().authorize_url);"] }),
+  mockGet("AUTH-25", "auth25", "one more registration", [A.custom("register +1", ["pm.expect(pm.response.json().oauth.counters.register, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('auth25_reg')) + 1);"])]),
+  getClient("AUTH-25", "auth25-c", "the client list shows needs_reauth because the credential was rotated", [clientState("needs_reauth"), A.custom("last_failure.message is \"credential was rotated and must be reauthorized\"", ["pm.expect((pm.response.json().clients[0].last_failure || {}).message, 'body: ' + pm.response.text()).to.equal('credential was rotated and must be reauthorized');"])]),
+  execTool("AUTH-25", "execute", "auth25-echo_tool", [A.status(400), A.msgContains("needs re-authorization")]),
+  consentAs("AUTH-25", "consent as id1 on the new registration", "auth25", "id1"),
+  followCallback("AUTH-25", "follow the callback", "auth25", callbackSuccess()),
+  completeOAuth("AUTH-25", "complete", "auth25", [A.status(200)]),
+  getClient("AUTH-25", "auth25-c", "the client list shows healthy", [clientState("healthy")]),
+  deleteClient("AUTH-25", "auth25-c"),
+  restoreConfig("AUTH-25"),
+]);
+
+const ADM21 = folder("ADM-21 OAuth on a loopback authorization server follows the private allowlist", "Setup: dashboard auth on, admin credentials; fleet server adm21 as an OAuth protected resource on 127.0.0.1 with dynamic registration. Creates use oauth_config {}: with no mcp_oauth_private_allowlist, with it set to [\"127.0.0.1\"], and with /api/mcp/client whitelisted and no credential. With no allowlist the create returns 500 where 400 is intended, a known issue, so that status check is skipped.", [
+  readConfig("ADM-21"),
+  putConfig("ADM-21", "setup: no mcp_oauth_private_allowlist", ["cc.mcp_oauth_private_allowlist = [];"], [A.status(200)]),
+  ...asServer("ADM-21", "adm21"),
+  request("ADM-21", "create with no allowlist", "POST", "/api/mcp/client", { body: oauthBody("adm21-a", "adm21a", "adm21"), asserts: [A.skip(A.status(400)), A.msgContains("blocked connection to non-public address")] }),
+  putConfig("ADM-21", "setup: mcp_oauth_private_allowlist [\"127.0.0.1\"]", ["cc.mcp_oauth_private_allowlist = ['127.0.0.1'];"], [A.status(200)]),
+  createOAuth("ADM-21", "create with the allowlist set", oauthBody("adm21-b", "adm21b", "adm21"), "adm21b", [statusIs("pending_oauth")]),
+  putConfig("ADM-21", "setup: whitelist /api/mcp/client", ["cc.mcp_oauth_private_allowlist = ['127.0.0.1'];", "cc.whitelisted_routes = ['/api/mcp/client'];"], [A.status(200)]),
+  request("ADM-21", "create with no credential on the whitelisted route", "POST", "/api/mcp/client", { noAuth: true, noCookies: true, body: oauthBody("adm21-c", "adm21c", "adm21"), asserts: [A.status(403)] }),
+  restoreConfig("ADM-21"),
+]);
+
+const OAUTH_SERVER_TEXT = `${ALLOWLIST_TEXT}; a fleet server as an OAuth protected resource with dynamic registration`;
+const ADM23 = folder("ADM-23 Shared OAuth create returns a pending flow", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm23); an OAuth client created on it with oauth_config {}.`, [
+  ...allowlistOn("ADM-23"),
+  ...asServer("ADM-23", "adm23"),
+  createOAuth("ADM-23", "create the OAuth client", oauthBody("adm23-c", "adm23", "adm23"), "adm23", [statusIs("pending_oauth"),
+    A.custom("authorize_url has code_challenge_method S256, a state and a redirect_uri ending /api/oauth/callback", [QS_FN, "var q = qs(pm.response.json().authorize_url);", "pm.expect(q.code_challenge_method).to.equal('S256');", "pm.expect(q.state).to.be.a('string').and.not.empty;", "pm.expect(/\\/api\\/oauth\\/callback$/.test(q.redirect_uri || ''), 'redirect_uri ' + q.redirect_uri).to.equal(true);"]),
+    A.custom("complete_url is /api/mcp/client/{oauth_config_id}/complete-oauth", ["var b = pm.response.json();", "pm.expect(b.complete_url).to.equal('/api/mcp/client/' + b.oauth_config_id + '/complete-oauth');"]),
+    A.custom("3 next_steps", ["pm.expect(pm.response.json().next_steps, 'body: ' + pm.response.text()).to.have.lengthOf(3);"]),
+  ]),
+  notListed("ADM-23", "adm23-c"),
+  oauthStatus("ADM-23", "status is pending", "adm23", "", [statusIs("pending")]),
+  restoreConfig("ADM-23"),
+]);
+
+const ADM24 = folder("ADM-24 complete-oauth too early or unknown", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm24); an OAuth client created on it and left pending; a random oauth_config_id.`, [
+  ...allowlistOn("ADM-24"),
+  ...asServer("ADM-24", "adm24"),
+  createOAuth("ADM-24", "setup: create the OAuth client", oauthBody("adm24-c", "adm24", "adm24"), "adm24"),
+  completeOAuth("ADM-24", "complete while pending", "adm24", [A.status(400), A.msgEquals("OAuth not authorized yet. Current status: pending")]),
+  request("ADM-24", "complete a random id", "POST", "/api/mcp/client/7f3e2a10-0000-4000-8000-000000000024/complete-oauth", { asserts: [A.status(404), A.msgEquals("OAuth config not found")] }),
+  restoreConfig("ADM-24"),
+]);
+
+const ADM25 = folder("ADM-25 Callback plus complete activates a shared OAuth client", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm25); the ADM-23 create, then its authorize_url followed (consent).`, [
+  ...allowlistOn("ADM-25"),
+  ...asServer("ADM-25", "adm25"),
+  createOAuth("ADM-25", "setup: create the OAuth client", oauthBody("adm25-c", "adm25", "adm25"), "adm25"),
+  consentAs("ADM-25", "follow authorize_url", "adm25", null),
+  followCallback("ADM-25", "the callback", "adm25", callbackSuccess()),
+  oauthStatus("ADM-25", "status is authorized with a token_id", "adm25", "", [statusIs("authorized"), A.custom("token_id is set", ["pm.expect(pm.response.json().token_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])]),
+  completeOAuth("ADM-25", "complete", "adm25", [A.status(200), A.jsonMessage("MCP client connected successfully with OAuth")]),
+  getClient("ADM-25", "adm25-c", "GET shows healthy with an active OAuth credential that has a refresh token", [clientState("healthy"), A.custom("credential kind \"oauth\", status \"active\", has_refresh_token true", [
+    "var c = pm.response.json().clients[0].credential || {};",
+    "pm.expect(c.kind, 'body: ' + pm.response.text()).to.equal('oauth');", "pm.expect(c.status).to.equal('active');", "pm.expect(c.has_refresh_token).to.equal(true);",
+  ])]),
+  deleteClient("ADM-25", "adm25-c"),
+  restoreConfig("ADM-25"),
+]);
+
+const ADM29 = folder("ADM-29 OAuth name conflict appears at completion", `Setup: dashboard auth on, admin credentials; a client named taken_name (HTTP, auth none, on fleet server alpha); ${OAUTH_SERVER_TEXT} (adm29); an OAuth client named taken_name created on it, then consent and callback.`, [
+  ...allowlistOn("ADM-29"),
+  ...freshServer("ADM-29", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-29", httpClient("adm29-t", "taken_name", "alpha"), "setup: create the client taken_name"),
+  ...asServer("ADM-29", "adm29"),
+  createOAuth("ADM-29", "create the OAuth client named taken_name", oauthBody("adm29-o", "taken_name", "adm29"), "adm29", [statusIs("pending_oauth")]),
+  consentAs("ADM-29", "consent", "adm29", null),
+  followCallback("ADM-29", "the callback", "adm29", callbackSuccess()),
+  completeOAuth("ADM-29", "complete", "adm29", [A.status(409), A.msgEquals("An MCP endpoint with this slug already exists")]),
+  request("ADM-29", "there is one taken_name", "GET", "/api/mcp/clients?search=taken_name", { asserts: [A.status(200), A.custom("exactly one client is named taken_name", ["pm.expect(pm.response.json().clients.filter(function (c) { return c.config.name === 'taken_name'; }).length, 'body: ' + pm.response.text()).to.equal(1);"])] }),
+  deleteClient("ADM-29", "adm29-t"),
+  restoreConfig("ADM-29"),
+]);
+
+// connectedO is the shared OAuth client the ADM tests call O: created per call on its own fleet server, connected.
+const connectedO = (id, p) => [...asServer(id, p), ...connectOAuth(id, oauthBody(`${p}-o`, p, p), p, null, "the shared OAuth client")];
+
+const ADM31 = folder("ADM-31 Shared reauthorize is flow-scoped", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm31); the ADM-25 client on it, connected; then reauthorized.`, [
+  ...allowlistOn("ADM-31"),
+  ...connectedO("ADM-31", "adm31"),
+  oauthStatus("ADM-31", "setup: record the token_id", "adm31", "", [A.custom("token_id is set", ["pm.expect(pm.response.json().token_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])], ["pm.collectionVariables.set('adm31_tok', pm.response.json().token_id);"]),
+  request("ADM-31", "reauthorize", "POST", "/api/mcp/client/adm31-o/reauthorize", { asserts: [A.status(200), A.custom("flow_id is set and status_url ends ?flow_id=<flow_id>", [
+    "var b = pm.response.json();", "pm.expect(b.flow_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+    "var tail = '?flow_id=' + b.flow_id;", "pm.expect(b.status_url.slice(-tail.length)).to.equal(tail);",
+  ])], extraTests: ["pm.collectionVariables.set('adm31_au', pm.response.json().authorize_url);", "pm.collectionVariables.set('adm31_flow', pm.response.json().flow_id);"] }),
+  oauthStatus("ADM-31", "the flow's status is pending", "adm31", "?flow_id={{adm31_flow}}", [A.custom("flow_status is \"pending\"", ["pm.expect(pm.response.json().flow_status, 'body: ' + pm.response.text()).to.equal('pending');"])]),
+  oauthStatus("ADM-31", "the bare status stays authorized", "adm31", "", [statusIs("authorized")]),
+  completeOAuth("ADM-31", "early complete", "adm31", [A.status(409), A.msgContains("Authorization has not completed yet")]),
+  consentAs("ADM-31", "consent", "adm31", null),
+  followCallback("ADM-31", "the callback", "adm31", callbackSuccess()),
+  completeOAuth("ADM-31", "complete", "adm31", [A.status(200), A.custom("message contains \"re-authorized\"", ["pm.expect(pm.response.json().message, 'body: ' + pm.response.text()).to.include('re-authorized');"])]),
+  oauthStatus("ADM-31", "a new token_id", "adm31", "", [A.custom("token_id is set", ["pm.expect(pm.response.json().token_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"]), A.custom("token_id differs from the recorded one", ["pm.expect(pm.response.json().token_id, 'body: ' + pm.response.text()).to.not.equal(pm.collectionVariables.get('adm31_tok'));"])]),
+  deleteClient("ADM-31", "adm31-o"),
+  restoreConfig("ADM-31"),
+]);
+
+const DENIED_CB = "/workspace/mcp-registry/oauth-callback?status=failed&error=Authentication+was+denied+or+failed.+Please+try+again.";
+const ADM32 = folder("ADM-32 Upstream denial during reauthorize", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm32); the ADM-31 client on it, reauthorized and pending; then the authorization server denies.`, [
+  ...allowlistOn("ADM-32"),
+  ...connectedO("ADM-32", "adm32"),
+  request("ADM-32", "setup: reauthorize", "POST", "/api/mcp/client/adm32-o/reauthorize", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('adm32_au', pm.response.json().authorize_url);", "pm.collectionVariables.set('adm32_flow', pm.response.json().flow_id);"] }),
+  mockAuth("ADM-32", "adm32", "setup: adm32's authorization server denies", { oauth: { deny: true } }),
+  consentAs("ADM-32", "the authorization server redirects with error=access_denied", "adm32", null, [A.status(302), A.custom("Location carries error=access_denied", ["pm.expect(pm.response.headers.get('Location'), 'Location').to.include('error=access_denied');"])]),
+  followCallback("ADM-32", "callback with error=access_denied", "adm32", [A.status(302), locationEnds(DENIED_CB)]),
+  oauthStatus("ADM-32", "status and flow_status are failed", "adm32", "?flow_id={{adm32_flow}}", [statusIs("failed"), A.custom("flow_status is \"failed\"", ["pm.expect(pm.response.json().flow_status, 'body: ' + pm.response.text()).to.equal('failed');"])]),
+  deleteClient("ADM-32", "adm32-o"),
+  restoreConfig("ADM-32"),
+]);
+
+const ADM33 = folder("ADM-33 reregister rotates a DCR client", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm33); the ADM-25 client on it, connected; then reregistered. Last, fleet server adm33b whose authorization server has no registration endpoint and knows client C1 (secret S1), with an OAuth client on it using C1, connected.`, [
+  ...allowlistOn("ADM-33"),
+  ...connectedO("ADM-33", "adm33"),
+  request("ADM-33", "reregister", "POST", "/api/mcp/client/adm33-o/reregister", { asserts: [A.status(200), A.custom("registered_client_id differs from previous_client_id", ["var b = pm.response.json();", "pm.expect(b.registered_client_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;", "pm.expect(b.previous_client_id).to.be.a('string').and.not.empty;", "pm.expect(b.registered_client_id).to.not.equal(b.previous_client_id);"])],
+    extraTests: ["pm.collectionVariables.set('adm33_au', pm.response.json().authorize_url);"] }),
+  getClient("ADM-33", "adm33-o", "credential and state are needs_reauth", [clientState("needs_reauth"), credStatus("needs_reauth")]),
+  consentAs("ADM-33", "consent on the new registration", "adm33", null),
+  followCallback("ADM-33", "the callback", "adm33", callbackSuccess()),
+  completeOAuth("ADM-33", "complete", "adm33", [A.status(200)]),
+  getClient("ADM-33", "adm33-o", "credential active, state healthy", [clientState("healthy"), credStatus("active")]),
+  ...asServer("ADM-33", "adm33b", { registration: false, clients: [{ client_id: "C1", client_secret: "S1" }] }),
+  ...connectOAuth("ADM-33", oauthBody("adm33-p", "adm33p", "adm33b", { oauth_config: { client_id: "C1", client_secret: "S1", authorize_url: `${CHAOS}/s/adm33b/as/authorize`, token_url: `${CHAOS}/s/adm33b/as/token` } }), "adm33p", null, "the pre-registered client"),
+  request("ADM-33", "reregister without a registration endpoint", "POST", "/api/mcp/client/adm33-p/reregister", { asserts: [A.status(400), A.msgContains("has no registration endpoint")] }),
+  deleteClient("ADM-33", "adm33-o"), deleteClient("ADM-33", "adm33-p"),
+  restoreConfig("ADM-33"),
+]);
+
+const ADM38 = folder("ADM-38 Rotation only on a real change", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm38); a shared OAuth client on it, per call, connected. PUT sends back GET's masked OAuth fields, then the same with client_id "new-id".`, [
+  ...allowlistOn("ADM-38"),
+  ...connectedO("ADM-38", "adm38"),
+  getClient("ADM-38", "adm38-o", "setup: read the masked OAuth fields", [], { extraTests: [
+    "var c = pm.response.json().clients[0].config;",
+    "pm.collectionVariables.set('adm38_oauth', JSON.stringify({ client_id: c.oauth_client_id, client_secret: c.oauth_client_secret, authorize_url: c.oauth_authorize_url, token_url: c.oauth_token_url, registration_url: c.oauth_registration_url, resource: c.oauth_resource }));",
+  ] }),
+  request("ADM-38", "PUT the masked OAuth fields back", "PUT", "/api/mcp/client/adm38-o", { raw: "{{adm38_body}}", pre: ["pm.variables.set('adm38_body', JSON.stringify({ oauth_config: JSON.parse(pm.collectionVariables.get('adm38_oauth')) }));"], asserts: [A.status(200)] }),
+  getClient("ADM-38", "adm38-o", "the credential stays active", [credStatus("active")]),
+  request("ADM-38", "PUT them with client_id \"new-id\"", "PUT", "/api/mcp/client/adm38-o", { raw: "{{adm38_body}}", pre: ["var o = JSON.parse(pm.collectionVariables.get('adm38_oauth')); o.client_id = 'new-id';", "pm.variables.set('adm38_body', JSON.stringify({ oauth_config: o }));"], asserts: [A.status(200)] }),
+  getClient("ADM-38", "adm38-o", "credential and state are needs_reauth", [credStatus("needs_reauth"), clientState("needs_reauth")]),
+  deleteClient("ADM-38", "adm38-o"),
+  restoreConfig("ADM-38"),
+]);
+
+const ADM39 = folder("ADM-39 OAuth config status endpoint", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm39); a shared OAuth client on it, connected and authorized; a second shared OAuth client on fleet server adm39b, connected and then reauthorized, so its config has a pending flow.`, [
+  ...allowlistOn("ADM-39"),
+  ...connectedO("ADM-39", "adm39"),
+  ...connectedO("ADM-39", "adm39b"),
+  request("ADM-39", "setup: reauthorize the second client", "POST", "/api/mcp/client/adm39b-o/reauthorize", { asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('adm39b_flow', pm.response.json().flow_id);"] }),
+  request("ADM-39", "status of an unknown id", "GET", "/api/oauth/config/7f3e2a10-0000-4000-8000-000000000039/status", { asserts: [A.status(404), A.msgEquals("OAuth config not found")] }),
+  request("ADM-39", "the first client's status with the second config's flow_id", "GET", "/api/oauth/config/{{adm39_oc}}/status?flow_id={{adm39b_flow}}", { asserts: [A.status(404), A.msgEquals("OAuth flow not found for this OAuth config")] }),
+  oauthStatus("ADM-39", "the first client's status with an unknown flow_id", "adm39", "?flow_id=adm39-no-such-flow", [statusIs("authorized"), A.custom("flow_id is echoed", ["pm.expect(pm.response.json().flow_id, 'body: ' + pm.response.text()).to.equal('adm39-no-such-flow');"])]),
+  deleteClient("ADM-39", "adm39-o"), deleteClient("ADM-39", "adm39b-o"),
+  restoreConfig("ADM-39"),
+]);
+
+const ADM40 = folder("ADM-40 Deleting an OAuth config revokes the shared token", `Setup: dashboard auth on, admin credentials; ${OAUTH_SERVER_TEXT} (adm40); a shared OAuth client on it, connected; and another OAuth client created on it and left pending, as in ADM-23.`, [
+  ...allowlistOn("ADM-40"),
+  ...connectedO("ADM-40", "adm40"),
+  createOAuth("ADM-40", "setup: create the pending OAuth client", oauthBody("adm40-p", "adm40p", "adm40"), "adm40p"),
+  oauthStatus("ADM-40", "control: the connected client's status has a token_id", "adm40", "", [A.custom("token_id is set", ["pm.expect(pm.response.json().token_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])]),
+  getClient("ADM-40", "adm40-o", "control: the connected client's credential is active", [credStatus("active")]),
+  request("ADM-40", "delete the connected client's OAuth config", "DELETE", "/api/oauth/config/{{adm40_oc}}", { asserts: [A.status(200), A.jsonMessage("OAuth token revoked successfully")] }),
+  oauthStatus("ADM-40", "the connected client's status has no token_id", "adm40", "", [A.custom("there is no token_id", ["pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.not.have.property('token_id');"])]),
+  getClient("ADM-40", "adm40-o", "GET the connected client: no credential", [A.custom("there is no credential", ["pm.expect(pm.response.json().clients[0].credential == null, 'body: ' + pm.response.text()).to.equal(true);"])]),
+  request("ADM-40", "delete the pending OAuth config", "DELETE", "/api/oauth/config/{{adm40p_oc}}", { asserts: [A.status(500), A.msgContains("no token linked to oauth config")] }),
+  deleteClient("ADM-40", "adm40-o"),
+  restoreConfig("ADM-40"),
+]);
+
 // ================================================================ MCP tools inside model requests, on the mock LLM
 
 const alphaClient = (id, over = {}) => createClient(id, httpClient(`${id.toLowerCase()}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], ...over }), "setup: register client alpha");
@@ -3739,8 +4197,8 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM22, ADM42, ADM44, ADM46, ADM47, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM81, ADM82, ADM83]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM29, ADM31, ADM32, ADM33, ADM38, ADM39, ADM40, ADM42, ADM44, ADM46, ADM47, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM81, ADM82, ADM83]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
     section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN06, CONN09, CONN10, CONN12, CONN17, CONN18, CONN20, CONN22]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
