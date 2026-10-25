@@ -3,6 +3,8 @@ package configstore
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/postgresconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
@@ -4145,6 +4148,57 @@ func forEachOAuth2PreWidenDB(t *testing.T) []namedDB {
 	return append(dbs, namedDB{"postgres", pgDB})
 }
 
+// The client_display_name column is added to an existing refresh token table, twice without error, and an
+// existing grant keeps NULL (it lists by its client row).
+func TestMigrationAddOAuth2RefreshTokenClientDisplayNameColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE oauth2_refresh_tokens (id VARCHAR(255) PRIMARY KEY, client_id TEXT)").Error)
+	require.NoError(t, db.Exec("INSERT INTO oauth2_refresh_tokens (id, client_id) VALUES ('existing', 'client-1')").Error)
+	for range 2 {
+		require.NoError(t, migrationAddOAuth2RefreshTokenClientDisplayNameColumn(context.Background(), db, testMigrationLogger))
+	}
+	require.True(t, db.Migrator().HasColumn(&tables.TableOAuth2RefreshToken{}, "client_display_name"))
+	var name *string
+	require.NoError(t, db.Raw("SELECT client_display_name FROM oauth2_refresh_tokens WHERE id = 'existing'").Scan(&name).Error)
+	assert.Nil(t, name)
+}
+
+// TestMigrationAddOAuth2RefreshTokenClientDisplayNameColumnBoundsLockWait pins that on postgres the
+// migration gives up on a held oauth2_refresh_tokens lock (lock_not_available, which the startup retry
+// handles) instead of queueing every later token read behind it.
+func TestMigrationAddOAuth2RefreshTokenClientDisplayNameColumnBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE oauth2_refresh_tokens (id VARCHAR(255) PRIMARY KEY)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	// A long reader's ACCESS SHARE lock conflicts with the ACCESS EXCLUSIVE lock ALTER TABLE needs.
+	_, err = reader.ExecContext(ctx, "SELECT * FROM oauth2_refresh_tokens")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddOAuth2RefreshTokenClientDisplayNameColumn(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
 // TestMigrationWidenOAuth2ClientControlledColumns verifies the upgrade path: an
 // existing deployment whose client-controlled OAuth2 columns are still varchar
 // accepts arbitrarily long values in each once the migration has run. On
@@ -4211,6 +4265,119 @@ func TestMigrationWidenOAuth2ClientControlledColumns(t *testing.T) {
 			require.NoError(t, migrationWidenOAuth2ClientControlledColumns(ctx, db, logr))
 		})
 	}
+}
+
+// TestMigrationWidenOAuth2ClientIDColumns verifies that the client_id columns holding a downstream
+// client's id accept a Client ID Metadata Document URL of any length once migrated. On Postgres
+// both the varchar(255) bound and the btree index size limit must reject it first.
+func TestMigrationWidenOAuth2ClientIDColumns(t *testing.T) {
+	ctx := context.Background()
+	logr := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	// Incompressible, so Postgres cannot squeeze it under the btree entry limit.
+	random := make([]byte, 4096)
+	_, err := rand.Read(random)
+	require.NoError(t, err)
+	clientID := "https://client.example/" + hex.EncodeToString(random) + "/client.json"
+
+	insertRequest := func(db *gorm.DB, id string) error {
+		now := time.Now()
+		return db.Exec(`
+			INSERT INTO oauth2_authorize_requests (id, client_id, redirect_uri, state, scope, resource, code_challenge, code_challenge_method, status, expires_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, clientID, "https://client.example/cb", "state", "mcp", "https://bifrost.test/mcp",
+			"challenge", "S256", "pending", now.Add(time.Minute), now, now).Error
+	}
+	insertRefreshToken := func(db *gorm.DB, id string) error {
+		return db.Exec(`
+			INSERT INTO oauth2_refresh_tokens (id, token_hash, family_id, client_id, bf_mode, bf_sub, scope, resource, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, "hash-"+id, "req-1", clientID, "vk", "vk-1", "mcp", "https://bifrost.test/mcp", time.Now()).Error
+	}
+
+	for _, backend := range forEachOAuth2PreWidenDB(t) {
+		t.Run(backend.name, func(t *testing.T) {
+			db := backend.db
+			for _, c := range oauth2ClientIDColumns {
+				require.NoError(t, db.Exec(fmt.Sprintf("CREATE INDEX idx_%s_client_id ON %s (client_id)", c.table, c.table)).Error)
+			}
+			if backend.name == "postgres" {
+				require.NoError(t, db.Exec("ALTER TABLE oauth2_authorize_requests ALTER COLUMN client_id TYPE TEXT").Error)
+				require.Error(t, insertRequest(db, "btree"), "the btree index must reject the long client_id")
+				require.NoError(t, db.Exec("ALTER TABLE oauth2_authorize_requests ALTER COLUMN client_id TYPE VARCHAR(255)").Error)
+				require.Error(t, insertRequest(db, "pre-widen"), "varchar(255) must reject the long client_id before migration")
+				require.Error(t, insertRefreshToken(db, "pre-widen"), "varchar(255) must reject the long client_id before migration")
+			}
+
+			require.NoError(t, migrationWidenOAuth2ClientIDColumns(ctx, db, logr))
+
+			require.NoError(t, insertRequest(db, "post-widen"))
+			require.NoError(t, insertRefreshToken(db, "post-widen"))
+			for _, c := range oauth2ClientIDColumns {
+				var got string
+				require.NoError(t, db.Raw(fmt.Sprintf("SELECT client_id FROM %s WHERE client_id = ?", c.table), clientID).Scan(&got).Error)
+				assert.Equal(t, clientID, got, c.table)
+			}
+
+			if backend.name == "postgres" {
+				for _, c := range oauth2ClientIDColumns {
+					var dataType, indexDef string
+					require.NoError(t, db.Raw(`SELECT data_type FROM information_schema.columns
+						WHERE table_schema = ? AND table_name = ? AND column_name = 'client_id'`, pgTestSchema, c.table).Scan(&dataType).Error)
+					assert.Equalf(t, "text", dataType, "%s.client_id", c.table)
+					require.NoError(t, db.Raw(`SELECT indexdef FROM pg_indexes WHERE schemaname = ? AND indexname = ?`,
+						pgTestSchema, "idx_"+c.table+"_client_id").Scan(&indexDef).Error)
+					assert.Containsf(t, indexDef, "USING hash", "%s.client_id stays indexed, without a size limit", c.table)
+				}
+			}
+
+			// Re-running is a no-op: the migrator has recorded the ID.
+			require.NoError(t, migrationWidenOAuth2ClientIDColumns(ctx, db, logr))
+		})
+	}
+}
+
+// The widen migration builds its hash indexes concurrently beside the old btree and swaps them in,
+// so an attempt interrupted after the build is finished by the next run: the hash index takes the
+// name the model declares and no duplicate is left behind.
+func TestMigrationWidenOAuth2ClientIDColumns_RollbackRefuses(t *testing.T) {
+	m := widenOAuth2ClientIDColumnsMigration(context.Background(), "widen_oauth2_client_id_columns")
+	err := m.Rollback(nil)
+	require.Error(t, err, "an irreversible migration must refuse to roll back")
+	require.Contains(t, err.Error(), "non-rollbackable")
+}
+
+func TestMigrationWidenOAuth2ClientIDColumns_ResumesInterruptedBuild(t *testing.T) {
+	forceConcurrentIndexBuilds(t)
+	ctx := context.Background()
+	for _, backend := range forEachOAuth2PreWidenDB(t) {
+		if backend.name != "postgres" {
+			continue
+		}
+		db := backend.db
+		for _, c := range oauth2ClientIDColumns {
+			require.NoError(t, db.Exec(fmt.Sprintf("CREATE INDEX idx_%s_client_id ON %s (client_id)", c.table, c.table)).Error)
+		}
+		// The interrupted attempt built the authorize-request hash index and stopped.
+		require.NoError(t, db.Exec("CREATE INDEX idx_oauth2_authorize_requests_client_id_hash ON oauth2_authorize_requests USING hash (client_id)").Error)
+
+		require.NoError(t, migrationWidenOAuth2ClientIDColumns(ctx, db, testMigrationLogger))
+
+		for _, c := range oauth2ClientIDColumns {
+			var defs []string
+			require.NoError(t, db.Raw(`SELECT indexdef FROM pg_indexes WHERE schemaname = ? AND tablename = ? AND indexdef LIKE '%client_id)%'`, pgTestSchema, c.table).Scan(&defs).Error)
+			require.Lenf(t, defs, 1, "%s keeps exactly one client_id index: %v", c.table, defs)
+			assert.Containsf(t, defs[0], "idx_"+c.table+"_client_id ", "%s: the hash index has the declared name", c.table)
+			assert.Containsf(t, defs[0], "USING hash", "%s", c.table)
+		}
+		return
+	}
+	t.Skip("postgres is not available")
+}
+
+// oauth2ClientIDColumns lists the tables whose client_id the client_id widen migration targets.
+var oauth2ClientIDColumns = []struct{ table string }{
+	{"oauth2_authorize_requests"},
+	{"oauth2_refresh_tokens"},
 }
 
 // TestMigrationAddVirtualKeyBusinessUnitColumn covers the upgrade path for business-unit key

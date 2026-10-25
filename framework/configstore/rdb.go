@@ -10357,7 +10357,7 @@ func (s *RDBConfigStore) ListOAuth2Sessions(ctx context.Context, params OAuth2Se
 		// Match the columns the UI renders: client name/id, the bound identity
 		// (bf_sub), and the joined VK name shown as the display name for vk mode.
 		base = base.Where(
-			"LOWER(COALESCE(c.client_name, '')) LIKE ? OR LOWER(rt.client_id) LIKE ? OR LOWER(rt.bf_sub) LIKE ? OR LOWER(COALESCE(vk.name, '')) LIKE ?",
+			"LOWER(COALESCE(c.client_name, rt.client_display_name, '')) LIKE ? OR LOWER(rt.client_id) LIKE ? OR LOWER(rt.bf_sub) LIKE ? OR LOWER(COALESCE(vk.name, '')) LIKE ?",
 			like, like, like, like,
 		)
 	}
@@ -10393,7 +10393,8 @@ func (s *RDBConfigStore) ListOAuth2Sessions(ctx context.Context, params OAuth2Se
 		VKName     string `gorm:"column:vk_name"`
 	}{}
 	query := base.Session(&gorm.Session{}).
-		Select("rt.*, c.client_name, vk.name as vk_name").
+		// A metadata-document client has no client row; its grant carries the name it was consented under.
+		Select("rt.*, COALESCE(c.client_name, rt.client_display_name) AS client_name, vk.name as vk_name").
 		// id is the unique tiebreaker: created_at alone is not unique, and offset
 		// paging over a non-unique sort lets same-timestamp rows shuffle between
 		// pages (duplicated or skipped). id pins a deterministic order.
