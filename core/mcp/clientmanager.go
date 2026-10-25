@@ -57,13 +57,14 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 		if state.Conn == nil {
 			return nil, nil, fmt.Errorf("MCP client %s has no active connection", config.Name)
 		}
-		// An openapi client with per-user headers is sticky (its server is
-		// in-process) but still needs the caller's credential on every call.
-		// Resolving it here, before CallTool, keeps the typed
-		// *MCPAuthRequiredError that drives the inline-401 submit-URL flow;
-		// inside the synthesized handler it would be flattened into a
-		// JSON-RPC error string. The handler resolves again at send time.
-		if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI && config.AuthType == schemas.MCPAuthTypePerUserHeaders {
+		// An openapi client with per-user headers or per-user OAuth is sticky
+		// (its server is in-process) but still needs the caller's credential
+		// on every call. Resolving it here, before CallTool, keeps the typed
+		// *MCPAuthRequiredError that drives the inline-401 submit-URL and
+		// authorize-URL flows; inside the synthesized handler it would be
+		// flattened into a JSON-RPC error string. The handler resolves again
+		// at send time.
+		if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI && (config.AuthType == schemas.MCPAuthTypePerUserHeaders || config.AuthType == schemas.MCPAuthTypePerUserOauth) {
 			if _, credErr := m.credStore.ConnectionHeaders(ctx, config); credErr != nil {
 				return nil, nil, credErr
 			}
@@ -1585,14 +1586,16 @@ func awaitsAdminVerification(config *schemas.MCPClientConfig) bool {
 	if config == nil {
 		return false
 	}
-	// Synthesized servers have no upstream MCP handshake to verify.
-	if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
-		return false
-	}
 	switch config.AuthType {
 	case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth:
+		// Applies to openapi clients too: their tools come from the spec, but
+		// the admin still has to authorize before a token exists to send.
 		return config.PendingOAuthConfig != nil
 	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeTokenExchange:
+		// Synthesized servers have no upstream MCP handshake to verify.
+		if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
+			return false
+		}
 		// Nil, not merely empty. The store is what makes nil-ness the
 		// discriminator: BeforeSave marshals DiscoveredTools only when it is
 		// non-nil, so a verified server that legitimately exposes zero tools

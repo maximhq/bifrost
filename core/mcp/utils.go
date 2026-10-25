@@ -1160,9 +1160,10 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 // validateOpenAPIClientConfig checks the fields an openapi client needs beyond the
 // common ones: a spec source, a well-formed base URL when one is given, no
 // connection string (the upstream is openapi_config.base_url), and an auth type the
-// synthesized server can honor. OAuth-flavored and token-exchange auth drive an MCP
-// handshake against a remote MCP server; there is no such server here, so they are
-// refused rather than silently ignored.
+// synthesized server can honor. oauth and per_user_oauth only need the provider's
+// authorize and token endpoints, and their bearer is sent on every upstream call.
+// Token exchange is refused: its admin verification is a handshake against a
+// remote MCP server, and there is no such server here.
 func validateOpenAPIClientConfig(config *schemas.MCPClientConfig) error {
 	if config.OpenAPIConfig == nil {
 		return fmt.Errorf("openapi_config is required for openapi connection type in client '%s'", config.Name)
@@ -1183,9 +1184,10 @@ func validateOpenAPIClientConfig(config *schemas.MCPClientConfig) error {
 		return fmt.Errorf("openapi_config.max_response_bytes must not be negative in client '%s'", config.Name)
 	}
 	switch config.AuthType {
-	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypePerUserHeaders:
+	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypePerUserHeaders,
+		schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth:
 	default:
-		return fmt.Errorf("auth_type %q is not supported for openapi connection type in client '%s' (use none, headers or per_user_headers)", config.AuthType, config.Name)
+		return fmt.Errorf("auth_type %q is not supported for openapi connection type in client '%s' (use none, headers, per_user_headers, oauth or per_user_oauth)", config.AuthType, config.Name)
 	}
 	return nil
 }
