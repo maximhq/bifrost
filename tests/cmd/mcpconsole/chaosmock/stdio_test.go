@@ -147,6 +147,49 @@ func TestStdioInjectedStatusBecomesAProtocolError(t *testing.T) {
 	}
 }
 
+func TestStdioBridgeSharesOnlyPrefixedEnvironment(t *testing.T) {
+	// The bridge in bridgeToClient runs in this process, so this process's
+	// environment is the one it registers.
+	t.Setenv("CHAOS_TAG", "t1")
+	t.Setenv("MCPCHAOS_SECRET", "must-not-leave")
+
+	fleet := chaosmock.NewFleet()
+	srv := fleet.Add("alpha")
+	srv.Tools().Set([]chaosmock.Tool{
+		{Name: "env_tool", ReplyEnv: "CHAOS_TAG"},
+		{Name: "unset_tool", ReplyEnv: "CHAOS_ABSENT"},
+	})
+	fleet.Start()
+	t.Cleanup(fleet.Stop)
+
+	c, ctx := bridgeToClient(t, fleet, "alpha")
+
+	env := srv.StdioEnv()
+	if env["CHAOS_TAG"] != "t1" {
+		t.Errorf("expected CHAOS_TAG to be registered, got %v", env)
+	}
+	if _, leaked := env["MCPCHAOS_SECRET"]; leaked {
+		t.Errorf("a variable without the prefix must not leave the process, got %v", env)
+	}
+
+	call := func(name string) *mcp.CallToolResult {
+		t.Helper()
+		var req mcp.CallToolRequest
+		req.Params.Name = name
+		res, err := c.CallTool(ctx, req)
+		if err != nil {
+			t.Fatalf("tools/call %s failed: %v", name, err)
+		}
+		return res
+	}
+	if text, ok := mcp.AsTextContent(call("env_tool").Content[0]); !ok || text.Text != "t1" {
+		t.Errorf("expected env_tool to answer t1, got %+v", text)
+	}
+	if res := call("unset_tool"); !res.IsError {
+		t.Errorf("expected an unset variable to answer as a tool error")
+	}
+}
+
 // TestStdioSubprocessRegistersAndCanBeKilled uses a real process, because the
 // fault it covers is the process dying and there is no way to simulate that
 // honestly. It is skipped when the binary cannot be built, so a machine

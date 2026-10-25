@@ -27,16 +27,9 @@ import (
 func (s *Server) ServeSSE(w http.ResponseWriter, r *http.Request) {
 	s.counters.request()
 
-	f := s.faults.peek()
-	if f.Refuse {
-		s.counters.faulted()
-		hijackClose(w)
-		return
-	}
-	if f.Status != 0 {
-		f = s.faults.snapshot()
-		s.counters.faulted()
-		s.writeStatusFault(w, f)
+	// The stream carries no JSON-RPC method, so only an unscoped fault set
+	// reaches it.
+	if s.failRequest(w, s.faults.forRequest("")) {
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -114,35 +107,14 @@ func (s *Server) ServeSSE(w http.ResponseWriter, r *http.Request) {
 // ServeSSEMessage handles the POST half of the legacy transport. It answers
 // 202 and writes the response to the caller's stream, so a test can tell
 // "the request was accepted" apart from "the response arrived", which on this
-// transport are genuinely different events.
+// transport are genuinely different events. The body is read and counted
+// before any fault or session check answers it, as on streamable HTTP.
 func (s *Server) ServeSSEMessage(w http.ResponseWriter, r *http.Request) {
 	s.counters.request()
 
-	f := s.faults.peek()
-	if f.Refuse {
-		s.counters.faulted()
-		hijackClose(w)
-		return
-	}
-	if f.Status != 0 {
-		f = s.faults.snapshot()
-		s.counters.faulted()
-		s.writeStatusFault(w, f)
-		return
-	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	sessionID := r.URL.Query().Get("session")
-	sess, known := s.sessions.get(sessionID)
-	if !known || s.faults.peek().KillSession {
-		// The stream may still be open while the session is gone, which is
-		// exactly the state a session-expiry fault produces.
-		s.counters.faulted()
-		http.Error(w, "unknown session", http.StatusNotFound)
 		return
 	}
 
@@ -151,20 +123,45 @@ func (s *Server) ServeSSEMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
+	sessionID := r.URL.Query().Get("session")
+
 	var req request
-	if err := json.Unmarshal(body, &req); err != nil {
+	parsed := json.Unmarshal(body, &req) == nil
+	if parsed {
+		s.countMethod(req.Method, sessionID)
+	}
+	f := s.faults.forRequest(req.Method)
+	if s.failRequest(w, f) {
+		return
+	}
+
+	sess, known := s.sessions.get(sessionID)
+	if !known || f.KillSession {
+		// The stream may still be open while the session is gone, which is
+		// exactly the state a session-expiry fault produces.
+		s.counters.faulted()
+		http.Error(w, "unknown session", http.StatusNotFound)
+		return
+	}
+
+	if !parsed {
 		s.deliver(sessionID, newError(nil, CodeParseError, "invalid JSON"))
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 
-	res := s.Handle(&req, sessionID, sess.Identity)
+	f = s.callFaults(&req, sess.Identity, f)
+	if s.failRequest(w, f) {
+		return
+	}
+
+	res := s.Handle(&req, sessionID, sess.Identity, f)
 
 	switch {
 	case res.HTTPStatus != 0:
 		// An injected HTTP failure is the one case that answers on the POST
 		// rather than the stream, since there is no JSON-RPC message to carry.
-		http.Error(w, "injected failure", res.HTTPStatus)
+		http.Error(w, res.Message, res.HTTPStatus)
 		return
 	case res.Malformed:
 		s.deliverRaw(sessionID, []byte(`{"jsonrpc":"2.0","result":{"tools":[{"name":`))

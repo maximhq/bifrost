@@ -1,7 +1,11 @@
 package chaosmock
 
 import (
+	"fmt"
 	"math/rand"
+	"slices"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -46,6 +50,58 @@ type Faults struct {
 	ErrRate   float64 `json:"err_rate,omitempty"`  // probability in [0,1] that a call fails
 	ErrKind   ErrKind `json:"err_kind,omitempty"`  // how it fails when it does
 	Malformed bool    `json:"malformed,omitempty"` // answer with a body that is not valid JSON-RPC
+
+	// Methods limits the whole set to JSON-RPC requests for the listed
+	// methods. Every other request, and every stream opened with GET, sees a
+	// healthy server, so a scenario can fail a call without also failing the
+	// handshake in front of it. Empty means every request.
+	Methods []string `json:"methods,omitempty"`
+
+	// Message is the text an injected failure carries: the body of an
+	// injected status or err_kind http, the JSON-RPC error message of
+	// err_kind protocol, init_fail, ping_fail and list_fail, and the text of
+	// an err_kind tool result. Empty keeps the mock's own wording.
+	Message string `json:"message,omitempty"`
+}
+
+// appliesTo reports whether the set covers a request for method. A GET stream
+// has no method, so only an unscoped set reaches it.
+func (f Faults) appliesTo(method string) bool {
+	return len(f.Methods) == 0 || slices.Contains(f.Methods, method)
+}
+
+// text returns Message, or def when none is set.
+func (f Faults) text(def string) string {
+	if f.Message != "" {
+		return f.Message
+	}
+	return def
+}
+
+// validateForTool rejects the fields a per-tool fault cannot honour. Each acts
+// on the handshake, the listing, the session or the stream, none of which
+// belongs to one tool, so accepting them would mean ignoring them.
+func (f Faults) validateForTool() error {
+	var bad []string
+	for name, set := range map[string]bool{
+		"methods":      len(f.Methods) > 0,
+		"init_fail":    f.InitFail,
+		"bad_version":  f.BadVersion != "",
+		"no_ping":      f.NoPing,
+		"ping_fail":    f.PingFail,
+		"list_fail":    f.ListFail,
+		"kill_session": f.KillSession,
+		"drop_sse":     f.DropSSE,
+	} {
+		if set {
+			bad = append(bad, name)
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	sort.Strings(bad)
+	return fmt.Errorf("a tool's fault cannot set %s", strings.Join(bad, ", "))
 }
 
 // ErrKind selects the shape of an injected tool-call failure. These are not
@@ -105,11 +161,16 @@ func newFaultState() *faultState {
 	return &faultState{rng: rand.New(rand.NewSource(time.Now().UnixNano()))}
 }
 
-// snapshot returns a copy of the current faults, and clears any one-shot
-// status so the next request sees a healthy server again.
-func (fs *faultState) snapshot() Faults {
+// forRequest returns a copy of the faults that apply to one request for
+// method, the empty set when the request is out of scope. One-shot status is
+// consumed only by a request it applies to, which is the request it fires on,
+// so the next one sees a healthy server again.
+func (fs *faultState) forRequest(method string) Faults {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+	if !fs.f.appliesTo(method) {
+		return Faults{}
+	}
 	f := fs.f
 	if fs.f.StatusOnce && fs.f.Status != 0 {
 		fs.f.Status = 0
