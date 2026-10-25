@@ -2121,29 +2121,23 @@ func (gs *LocalGovernanceStore) deleteVirtualKeyAlias(value string, vkID string)
 func (gs *LocalGovernanceStore) CheckRateLimit(ctx context.Context, entityWiseRateLimits EntityWiseRateLimits, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
 	// A live session's continuation was already counted as one request when the session was admitted.
 	sessionContinuation := isLiveSessionContinuation(ctx)
+	now := time.Now()
 	for entity, rateLimits := range entityWiseRateLimits {
 		for _, rateLimit := range rateLimits {
 			var violations []string
-			// Check if rate limit needs reset (in-memory check)
-			// Track which limits are expired so we can skip only those specific checks
-			tokenLimitExpired := false
-			if rateLimit.TokenResetDuration != nil {
-				if duration, err := configstoreTables.ParseDuration(*rateLimit.TokenResetDuration); err == nil {
-					if time.Since(rateLimit.TokenLastReset) >= duration {
-						// Token rate limit expired but hasn't been reset yet - skip token check only
-						tokenLimitExpired = true
-					}
-				}
-			}
-			requestLimitExpired := false
-			if rateLimit.RequestResetDuration != nil {
-				if duration, err := configstoreTables.ParseDuration(*rateLimit.RequestResetDuration); err == nil {
-					if time.Since(rateLimit.RequestLastReset) >= duration {
-						// Request rate limit expired but hasn't been reset yet - skip request check only
-						requestLimitExpired = true
-					}
-				}
-			}
+			// Whether a window has closed must be decided by exactly the same
+			// predicate the reset path uses, as CheckBudget does. Open-coding it
+			// here as time.Since(LastReset) >= ParseDuration(...) disagreed with
+			// rateLimitResetTarget in two ways: it judged a calendar-aligned
+			// 1M/1Q/1Y window as 30/90/365 days, so on the last day of a longer
+			// period it skipped enforcement while no reset was due; and a
+			// non-positive duration skipped enforcement forever.
+			//
+			// An expired-but-unswept counter is skipped rather than denied, as
+			// before: the reset lands on the next sweep or in the post-request
+			// usage bump.
+			_, tokenLimitExpired := gs.rateLimitResetDue(rateLimit.TokenResetDuration, rateLimit.IsCalendarAligned, rateLimit.CreatedAt, rateLimit.TokenLastReset, now)
+			_, requestLimitExpired := gs.rateLimitResetDue(rateLimit.RequestResetDuration, rateLimit.IsCalendarAligned, rateLimit.CreatedAt, rateLimit.RequestLastReset, now)
 
 			tokensBaseline, exists := tokensBaselines[rateLimit.ID]
 			if !exists {
@@ -2671,35 +2665,46 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context,
 // matters; the two must stay in step because a rate limit and a budget on the
 // same owner are expected to roll over together.
 func (gs *LocalGovernanceStore) rateLimitResetTarget(resetDuration *string, calendarAligned bool, anchor, lastReset time.Time, now time.Time) *time.Time {
-	if resetDuration == nil {
+	target, due := gs.rateLimitResetDue(resetDuration, calendarAligned, anchor, lastReset, now)
+	if !due {
 		return nil
+	}
+	return &target
+}
+
+// rateLimitResetDue is rateLimitResetTarget returning the target by value, so
+// CheckRateLimit can ask whether a window has closed on every request without
+// a heap allocation for the pointer.
+func (gs *LocalGovernanceStore) rateLimitResetDue(resetDuration *string, calendarAligned bool, anchor, lastReset time.Time, now time.Time) (time.Time, bool) {
+	if resetDuration == nil {
+		return time.Time{}, false
 	}
 	if calendarAligned && configstoreTables.IsCalendarAlignableDuration(*resetDuration) {
 		period := configstoreTables.GetCalendarPeriodStart(*resetDuration, now, configstoreTables.QuarterStartNotApplicable)
 		if period.After(lastReset) {
-			return &period
+			return period, true
 		}
-		return nil
+		return time.Time{}, false
 	}
 	duration, err := configstoreTables.ParseDuration(*resetDuration)
 	if err != nil {
 		gs.logger.Error("invalid rate limit reset duration %s: %v", *resetDuration, err)
-		return nil
+		return time.Time{}, false
 	}
 	// A non-positive duration would be perpetually due, spinning BumpRateLimitUsage
 	// forever (issue #4851 class); treat it as invalid, same as unparseable.
 	if duration <= 0 {
 		gs.logger.Error("non-positive rate limit reset duration %s: counter will not auto-reset", *resetDuration)
-		return nil
+		return time.Time{}, false
 	}
 	if anchor.IsZero() {
 		anchor = lastReset
 	}
 	target := configstoreTables.RollingWindowStart(anchor, duration, now)
 	if target.After(lastReset) {
-		return &target
+		return target, true
 	}
-	return nil
+	return time.Time{}, false
 }
 
 // rateLimitResetTargets returns reset targets for the token and request counters.
