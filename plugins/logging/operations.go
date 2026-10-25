@@ -531,6 +531,11 @@ func applyServedTierToEntry(entry *logstore.Log, result *schemas.BifrostResponse
 			serviceTier, speed, inferenceGeo = result.ChatResponse.ServiceTier, result.ChatResponse.Speed, result.ChatResponse.InferenceGeo
 		case result.ResponsesResponse != nil:
 			serviceTier, speed, inferenceGeo = result.ResponsesResponse.ServiceTier, result.ResponsesResponse.Speed, result.ResponsesResponse.InferenceGeo
+		case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil:
+			// A passthrough reports the served tier on its usage (native OpenAI, or a generic relay's
+			// service_tier), so the row keeps it for a later cost recalculation like any other.
+			su := result.PassthroughResponse.PassthroughUsage
+			serviceTier, speed, inferenceGeo = su.ServiceTier, su.Speed, su.InferenceGeo
 		case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil:
 			r := result.ResponsesStreamResponse.Response
 			serviceTier, speed, inferenceGeo = r.ServiceTier, r.Speed, r.InferenceGeo

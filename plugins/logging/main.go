@@ -2599,6 +2599,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
 				params.StatusCode = result.PassthroughResponse.StatusCode
 			}
+			applyServedTierToEntry(entry, result, nil)
 			if contentLoggingEnabled && len(result.PassthroughResponse.Body) > 0 {
 				entry.PassthroughResponseBody = string(result.PassthroughResponse.Body)
 			}

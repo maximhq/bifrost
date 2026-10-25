@@ -323,6 +323,17 @@ func TestApplyServedTierToEntryRecordsResponseAndUsageSources(t *testing.T) {
 		}
 	})
 
+	t.Run("from a passthrough's usage", func(t *testing.T) {
+		entry := &logstore.Log{}
+		priority := schemas.BifrostServiceTierPriority
+		applyServedTierToEntry(entry, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: &schemas.BifrostPassthroughUsage{ServiceTier: &priority}},
+		}, nil)
+		if entry.ServiceTier == nil || *entry.ServiceTier != "priority" {
+			t.Fatalf("expected service_tier priority, got %v", entry.ServiceTier)
+		}
+	})
+
 	t.Run("from usage on the streaming path", func(t *testing.T) {
 		entry := &logstore.Log{}
 		applyServedTierToEntry(entry, nil, &schemas.BifrostLLMUsage{
