@@ -41,8 +41,15 @@ asking the fleet: `/s/<name>/mcp` for streamable HTTP, `/s/<name>/sse` for the
 legacy transport, `/control/<name>/...` to mutate.
 
 `-seed <file.json>` builds a fleet with per-identity tool views, auth,
-instructions and starting faults in one step, for scenarios that need more
-than names.
+instructions, REST routes and starting faults in one step, for scenarios that
+need more than names:
+
+```json
+{"servers": {"alpha": {"tools": [{"name": "echo_tool"}], "routes": [{"path": "/catalog.json", "json": {"servers": []}}]}}}
+```
+
+Each server's seed is kept, so `POST /control {"reset":"<name>"}` puts it back
+exactly as booted (servers from `-servers` are seeded with the `-tools` list).
 
 ## Transports
 
@@ -105,7 +112,8 @@ exactly like the system under test behaving correctly.
 | Verb | Body | Effect |
 |---|---|---|
 | `GET /control` | | every server's state, plus fleet connection stats |
-| `POST /control` | `{"add":"name"}` / `{"remove":"name"}` | add or remove a server |
+| `POST /control` | `{"add":"name"}` / `{"remove":"name"}` | add (empty) or remove a server |
+| `POST /control` | `{"reset":"name"}` | rebuild a seeded server from its seed; 404 for an unseeded one |
 | `GET /control/<s>` | | that server's state |
 | `POST /control/<s>/tools/add` | `{"tool":{...}}` | add or replace a tool |
 | `POST /control/<s>/tools/remove` | `{"name":"..."}` | remove a tool |
@@ -126,6 +134,9 @@ exactly like the system under test behaving correctly.
 | `POST /control/<s>/stdio/register` | `{"pid":N,"env":{...}}` | record the bridging child process and its shared environment (the child does this itself) |
 | `POST /control/<s>/stdio/kill` | | kill the bridging child process |
 | `POST /control/<s>/counters/reset` | | zero the tallies, keeping live facts (OAuth counters and log too) |
+| `POST /control/<s>/routes/set` | `{"routes":[...]}` | replace the REST routes |
+| `POST /control/<s>/routes/add` | `{"route":{...}}` | add a route, or replace the one with the same method and path |
+| `POST /control/<s>/routes/remove` | `{"path":"/x","method":"GET"}` | remove routes for a path (every method when none is given) |
 | `POST /control/<s>/oauth/expire` | `{"identity":"..."}` / `{}` | that identity's live access tokens (everyone's when empty) now fail at the server |
 | `POST /control/<s>/oauth/revoke` | `{"identity":"..."}` / `{"token":"..."}` / `{}` | end whole grants: access tokens fail, refresh tokens get `invalid_grant` |
 | `POST /control/<s>/oauth/fail` | `{"fail":{"endpoint","grant_type","status","error","count"}}` | the next `count` matching authorization server requests fail |
@@ -150,6 +161,30 @@ Without `reply` or `reply_env`, a call echoes `"<tool>:<arguments>"`. A
 definition that would misbehave quietly is rejected with 400: annotations or a
 reply that is not an object, both `reply` and `reply_env`, or a tool fault
 field that cannot apply to one tool.
+
+## REST
+
+Every server also answers plain HTTP under `/s/<s>/rest/...`, for clients that
+reach an upstream over REST rather than MCP: an OpenAPI-backed tool (point its
+`base_url` at `/s/<s>/rest`), or a catalog download. The mock never interprets
+what it serves; an OpenAPI document or a catalog is just a route's body.
+
+| Route field | Effect |
+|---|---|
+| `method` | matched case-insensitively; empty matches any |
+| `path` | relative to `/rest`; a `{x}` segment matches any one segment; the query is not matched |
+| `status` | default 200 |
+| `json` / `body` / `body_base64` | at most one: JSON byte for byte, text verbatim (so it can be malformed), or binary |
+| `content_type`, `headers` | override the default content type, add response headers |
+
+Routes are tried in order and the first match answers. Anything unrouted gets
+`{"body","method","path","query"}` back, which is deterministic. Every request
+is logged in the state's `rest.calls` with method, path, raw query, headers
+(credentials included, under canonical names), body, the status answered (0
+when refused) and the route that answered. The log keeps the last 1000 calls
+and `counters/reset` clears it. Unscoped server faults apply here too
+(`refuse`, `status` with its companions, `hang`, `latency`, `jitter`); a fault
+scoped with `methods` does not, since REST carries no JSON-RPC method.
 
 ## OAuth
 

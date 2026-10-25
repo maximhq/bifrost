@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,5 +245,54 @@ func TestControlRejectsToolsThatWouldMisbehaveQuietly(t *testing.T) {
 	}
 	if got == nil || got.Fault == nil || got.Fault.Message != "busy" || len(got.Reply) == 0 || len(got.Annotations) == 0 {
 		t.Fatalf("expected echo_ro to read back with its annotations, reply and fault, got %+v", got)
+	}
+}
+
+func TestFleetResetRestoresASeededServer(t *testing.T) {
+	fleet := chaosmock.NewFleet()
+	catalog := chaosmock.Route{Method: "GET", Path: "/catalog.json", JSON: json.RawMessage(`{"servers":[]}`)}
+	fleet.AddSeeded("library", chaosmock.Seed{
+		Tools:        []chaosmock.Tool{{Name: "seed_tool"}},
+		Routes:       []chaosmock.Route{catalog},
+		Instructions: "seeded",
+	})
+	fleet.Add("plain")
+	fleet.Start()
+	t.Cleanup(fleet.Stop)
+	base := fleet.URL() + "/control/library"
+
+	// Change everything a scenario might, then put it back.
+	post(t, base+"/routes/set", map[string]any{"routes": []any{map[string]any{"path": "/catalog.json", "body": "{"}}})
+	post(t, base+"/tools/add", map[string]any{"tool": map[string]any{"name": "extra_tool"}})
+	post(t, base+"/faults", map[string]any{"faults": map[string]any{"status": 500}})
+	post(t, base+"/instructions", map[string]any{"clear": true})
+	if res, err := http.Get(fleet.URL() + "/s/library/rest/catalog.json"); err == nil {
+		res.Body.Close()
+	}
+
+	resp, err := http.Post(fleet.URL()+"/control", "application/json", strings.NewReader(`{"reset":"library"}`))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("reset failed: %v %v", err, resp)
+	}
+	resp.Body.Close()
+	srv, _ := fleet.Get("library")
+	state := srv.State()
+	if len(state.Tools) != 1 || state.Tools[0].Name != "seed_tool" || state.Faults.Status != 0 || state.Instructions != "seeded" {
+		t.Errorf("expected the seeded tools, faults and instructions back, got %+v", state)
+	}
+	if state.REST == nil || len(state.REST.Routes) != 1 || string(state.REST.Routes[0].JSON) != `{"servers":[]}` || len(state.REST.Calls) != 0 {
+		t.Errorf("expected the seeded route and an empty log, got %+v", state.REST)
+	}
+
+	// A server added without a seed, or never added, cannot be reset.
+	for _, name := range []string{"plain", "nobody"} {
+		resp, err := http.Post(fleet.URL()+"/control", "application/json", strings.NewReader(`{"reset":"`+name+`"}`))
+		if err != nil {
+			t.Fatalf("reset request failed: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s: expected 404, got %d", name, resp.StatusCode)
+		}
 	}
 }

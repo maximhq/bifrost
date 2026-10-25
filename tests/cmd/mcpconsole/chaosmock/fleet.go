@@ -23,6 +23,7 @@ import (
 //
 //	/s/<name>/mcp        streamable HTTP
 //	/s/<name>/as/...     that server's OAuth authorization server, when on
+//	/s/<name>/rest/...   that server's REST surface (see rest.go)
 //	/control/<name>/...  that server's control API
 //	/control             fleet-wide control API
 //
@@ -30,6 +31,9 @@ import (
 type Fleet struct {
 	mu      sync.RWMutex
 	servers map[string]*Server
+	// seeds holds each seeded server's starting state, so a scenario can put
+	// a server back exactly as the fleet booted it.
+	seeds map[string]Seed
 
 	ts *httptest.Server
 	// baseURL is set when Serve binds its own listener, since there is no
@@ -41,7 +45,7 @@ type Fleet struct {
 
 // NewFleet creates an empty fleet with no listener. Call Start to bind one.
 func NewFleet() *Fleet {
-	return &Fleet{servers: map[string]*Server{}, conns: newConnTracker()}
+	return &Fleet{servers: map[string]*Server{}, seeds: map[string]Seed{}, conns: newConnTracker()}
 }
 
 // Connections reports the fleet's TCP-level accounting, which is the leak and
@@ -61,6 +65,80 @@ func (f *Fleet) Add(name string) *Server {
 	f.servers[name] = s
 	f.mu.Unlock()
 	return s
+}
+
+// Seed is the starting state of a server: what a seed file declares for it,
+// and what a reset restores.
+type Seed struct {
+	Tools        []Tool            `json:"tools"`
+	Auth         *Auth             `json:"auth,omitempty"`
+	Faults       *Faults           `json:"faults,omitempty"`
+	Views        map[string][]Tool `json:"views,omitempty"`
+	Instructions string            `json:"instructions,omitempty"`
+	Routes       []Route           `json:"routes,omitempty"`
+}
+
+// Validate applies the control API's checks to a seed, so a seed file with a
+// mistake fails at startup rather than serving something else.
+func (sd Seed) Validate() error {
+	lists := [][]Tool{sd.Tools}
+	for _, view := range sd.Views {
+		lists = append(lists, view)
+	}
+	for _, list := range lists {
+		for _, t := range list {
+			if err := t.Validate(); err != nil {
+				return err
+			}
+		}
+	}
+	for _, rt := range sd.Routes {
+		if err := rt.Validate(); err != nil {
+			return err
+		}
+	}
+	if sd.Auth != nil && sd.Auth.OAuth != nil {
+		return sd.Auth.OAuth.validate()
+	}
+	return nil
+}
+
+// AddSeeded creates a server from seed and remembers the seed for Reset.
+func (f *Fleet) AddSeeded(name string, seed Seed) *Server {
+	s := f.Add(name)
+	s.Tools().Set(seed.Tools)
+	for identity, view := range seed.Views {
+		s.Tools().SetOverlay(identity, view)
+	}
+	if seed.Auth != nil {
+		s.SetAuth(*seed.Auth)
+	}
+	if seed.Faults != nil {
+		s.SetFaults(*seed.Faults)
+	}
+	s.SetInstructions(seed.Instructions)
+	s.rest.set(seed.Routes)
+	f.mu.Lock()
+	f.seeds[name] = seed
+	f.mu.Unlock()
+	return s
+}
+
+// Reset rebuilds a seeded server from its seed: tools, routes, auth, faults
+// and instructions as booted, counters and logs empty. It reports false when
+// the server was never seeded.
+func (f *Fleet) Reset(name string) (*Server, bool) {
+	f.mu.RLock()
+	seed, ok := f.seeds[name]
+	old := f.servers[name]
+	f.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	if old != nil {
+		old.DropStreams()
+	}
+	return f.AddSeeded(name, seed), true
 }
 
 // Get returns a registered server.
@@ -207,6 +285,8 @@ func (f *Fleet) routeServer(w http.ResponseWriter, r *http.Request) {
 		s.ServeSSEMessage(w, r)
 	case strings.HasPrefix(rest, "as/"):
 		s.ServeOAuth(w, r, strings.TrimPrefix(rest, "as/"))
+	case rest == "rest" || strings.HasPrefix(rest, "rest/"):
+		s.ServeREST(w, r, "/"+strings.TrimPrefix(strings.TrimPrefix(rest, "rest"), "/"))
 	default:
 		http.NotFound(w, r)
 	}

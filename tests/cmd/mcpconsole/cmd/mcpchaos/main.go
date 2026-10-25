@@ -64,8 +64,7 @@ func main() {
 	} else {
 		toolNames := splitList(*tools)
 		for _, name := range splitList(*servers) {
-			srv := fleet.Add(name)
-			srv.Tools().Set(toolsFromNames(toolNames))
+			fleet.AddSeeded(name, chaosmock.Seed{Tools: toolsFromNames(toolNames)})
 		}
 	}
 
@@ -96,15 +95,10 @@ func main() {
 
 // seedSpec is the file form of an initial fleet, so a scenario that needs more
 // than names and tool lists does not have to be built through a sequence of
-// control calls before it can start.
+// control calls before it can start. Each server's seed is also what
+// POST /control {"reset":"<name>"} restores.
 type seedSpec struct {
-	Servers map[string]struct {
-		Tools        []chaosmock.Tool            `json:"tools"`
-		Auth         *chaosmock.Auth             `json:"auth,omitempty"`
-		Faults       *chaosmock.Faults           `json:"faults,omitempty"`
-		Views        map[string][]chaosmock.Tool `json:"views,omitempty"`
-		Instructions string                      `json:"instructions,omitempty"`
-	} `json:"servers"`
+	Servers map[string]chaosmock.Seed `json:"servers"`
 }
 
 func seedFromFile(fleet *chaosmock.Fleet, path string) error {
@@ -121,30 +115,11 @@ func seedFromFile(fleet *chaosmock.Fleet, path string) error {
 	if len(spec.Servers) == 0 {
 		return fmt.Errorf("seed file declares no servers")
 	}
-	for name, cfg := range spec.Servers {
-		lists := [][]chaosmock.Tool{cfg.Tools}
-		for _, view := range cfg.Views {
-			lists = append(lists, view)
+	for name, seed := range spec.Servers {
+		if err := seed.Validate(); err != nil {
+			return fmt.Errorf("server %q: %w", name, err)
 		}
-		for _, list := range lists {
-			for _, t := range list {
-				if err := t.Validate(); err != nil {
-					return fmt.Errorf("server %q: %w", name, err)
-				}
-			}
-		}
-		srv := fleet.Add(name)
-		srv.Tools().Set(cfg.Tools)
-		srv.SetInstructions(cfg.Instructions)
-		if cfg.Auth != nil {
-			srv.SetAuth(*cfg.Auth)
-		}
-		if cfg.Faults != nil {
-			srv.SetFaults(*cfg.Faults)
-		}
-		for identity, view := range cfg.Views {
-			srv.Tools().SetOverlay(identity, view)
-		}
+		fleet.AddSeeded(name, seed)
 	}
 	return nil
 }
