@@ -966,6 +966,7 @@ const createVK = (id, label) => request(id, `setup: create ${VKS[label].label}`,
 });
 const deleteVK = (id, label) => request(id, `teardown: delete ${VKS[label].label}`, "DELETE", `/api/governance/virtual-keys/{{${id.toLowerCase()}_${label.toLowerCase()}_id}}`, { asserts: [A.status(200)] });
 const vkHeader = (id, label) => ({ key: "x-bf-vk", value: `{{${id.toLowerCase()}_${label.toLowerCase()}}}` });
+const setEnforce = (id, on) => putConfig(id, `${on ? "setup" : "teardown"}: set enforce_auth_on_inference ${on}`, [`cc.enforce_auth_on_inference = ${on};`], [A.status(200)]);
 
 const toolNamesInList = (names) => A.custom(`tools/list names are exactly ${lit(names)}`, [
   "var names = pm.response.json().result.tools.map(function (t) { return t.name; });",
@@ -2816,6 +2817,102 @@ const INF66 = folder("INF-66 Injected tools validation", "Setup: PUT /api/provid
     asserts: [A.status(400), A.msgStartsWith(INJECTED_PREFIX), A.msgContains(reason)],
   })));
 
+// ================================================================ GOV client grants, VK refusals and virtual MCP admin
+
+const GOV06 = folder("GOV-06 Legacy name allow_on_all_virtual_keys", `Setup: ${ALPHA_GREET_TEXT}; the client is updated with the legacy field name, and two more clients on alpha are created with it.`, [
+  ...alphaGreetSetup("GOV-06"),
+  request("GOV-06", "PUT allow_on_all_virtual_keys true", "PUT", "/api/mcp/client/gov-06-alpha", { body: { allow_on_all_virtual_keys: true }, asserts: [A.status(200)] }),
+  getClient("GOV-06", "gov-06-alpha", "true sets both fields", [clientField("config.allow_by_default", true), clientField("config.allow_on_all_virtual_keys", true)]),
+  request("GOV-06", "PUT allow_by_default false with allow_on_all_virtual_keys true", "PUT", "/api/mcp/client/gov-06-alpha", { body: { allow_by_default: false, allow_on_all_virtual_keys: true }, asserts: [A.status(200)] }),
+  getClient("GOV-06", "gov-06-alpha", "false wins", [clientField("config.allow_by_default", false), clientField("config.allow_on_all_virtual_keys", false)]),
+  createClient("GOV-06", httpClient("gov-06-c2", "gov06_c2", "alpha", { allow_on_all_virtual_keys: true }), "create with allow_on_all_virtual_keys true"),
+  getClient("GOV-06", "gov-06-c2", "on create, true sets both fields", [clientField("config.allow_by_default", true), clientField("config.allow_on_all_virtual_keys", true)]),
+  createClient("GOV-06", httpClient("gov-06-c3", "gov06_c3", "alpha", { allow_by_default: false, allow_on_all_virtual_keys: true }), "create with allow_by_default false and allow_on_all_virtual_keys true"),
+  getClient("GOV-06", "gov-06-c3", "on create, false wins", [clientField("config.allow_by_default", false), clientField("config.allow_on_all_virtual_keys", false)]),
+  deleteClient("GOV-06", "gov-06-c2"), deleteClient("GOV-06", "gov-06-c3"),
+  alphaGreetTeardown("GOV-06"),
+]);
+
+const GOV11_VK = [{ key: "x-bf-vk", value: "{{gov11_vk}}" }];
+const GOV11 = folder("GOV-11 Grants edited from the client side", `Setup: ${ALPHA_GREET_TEXT}; a VK with no MCP configs; grants set through the client's vk_configs.`, [
+  ...alphaGreetSetup("GOV-11"),
+  vkCreate("GOV-11", "setup: create a VK with no MCP configs", { name: "GOV-11 client-side VK" }, "gov11_vk"),
+  execBody("GOV-11", "control: before the edit the VK cannot run alpha-add", toolCall("alpha-add", "{}"), [A.status(403)], { headers: GOV11_VK }),
+  request("GOV-11", "PUT vk_configs granting the VK [\"add\"]", "PUT", "/api/mcp/client/gov-11-alpha", { body: { vk_configs: [{ virtual_key_id: "{{gov11_vk_id}}", tools_to_execute: ["add"] }] }, asserts: [A.status(200)] }),
+  execBody("GOV-11", "the VK runs alpha-add", toolCall("alpha-add", "{}"), [A.status(200)], { headers: GOV11_VK }),
+  execBody("GOV-11", "the VK runs alpha-echo", { id: "c2", type: "function", function: { name: "alpha-echo", arguments: "{}" } }, [A.status(403)], { headers: GOV11_VK }),
+  request("GOV-11", "PUT vk_configs with an empty virtual_key_id", "PUT", "/api/mcp/client/gov-11-alpha", { body: { vk_configs: [{ virtual_key_id: "", tools_to_execute: ["add"] }] }, asserts: [A.status(400)] }),
+  request("GOV-11", "PUT vk_configs with a repeated virtual_key_id", "PUT", "/api/mcp/client/gov-11-alpha", { body: { vk_configs: [{ virtual_key_id: "{{gov11_vk_id}}", tools_to_execute: ["add"] }, { virtual_key_id: "{{gov11_vk_id}}", tools_to_execute: ["echo"] }] }, asserts: [A.status(400)] }),
+  vkDelete("GOV-11", "teardown: delete the VK", "gov11_vk"),
+  alphaGreetTeardown("GOV-11"),
+]);
+
+const UNKNOWN_VK = "sk-bf-doesnotexist";
+const GOV16 = folder("GOV-16 Unknown VK value", `Setup: ${ALPHA_GREET_TEXT}; the caller sends x-bf-vk ${UNKNOWN_VK}.`, [
+  ...alphaGreetSetup("GOV-16"),
+  execBody("GOV-16", "execute alpha-echo with the unknown VK", ECHO_CALL, [A.status(401), A.jsonEquals("type", "access_not_found"),
+    A.msgEquals("access not found. The provided credential does not exist or has been revoked.")], { headers: [{ key: "x-bf-vk", value: UNKNOWN_VK }] }),
+  rpc("GOV-16", "/mcp initialize with the unknown VK", init("2025-03-26"), { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: UNKNOWN_VK }], asserts: [A.status(401)] }),
+  alphaGreetTeardown("GOV-16"),
+]);
+
+const GOV17 = folder("GOV-17 VK required", `Setup: ${ALPHA_GREET_TEXT}; enforce_auth_on_inference true; the caller sends no credential.`, [
+  ...alphaGreetSetup("GOV-17"), readConfig("GOV-17"), setEnforce("GOV-17", true),
+  execBody("GOV-17", "execute alpha-echo with no credential", ECHO_CALL, [A.status(401), A.jsonEquals("type", "virtual_key_required"), A.msgEquals("virtual key is required. Provide a virtual key via the x-bf-vk header.")]),
+  restoreConfig("GOV-17"),
+  alphaGreetTeardown("GOV-17"),
+]);
+
+// V is the virtual MCP "Tools A" (slug tools-a) over alpha's echo, keyed by the client's client_id.
+const V_BODY = (id) => ({ name: "Tools A", tools: [{ mcp_client_id: `${id.toLowerCase()}-alpha`, tool_names: ["echo"] }] });
+const vmcpPath = (varName, rest = "") => `/api/mcp/virtual-mcps/{{${varName}}}${rest}`;
+const createV = (id, varName) => request(id, "setup: create the virtual MCP Tools A over alpha's echo", "POST", "/api/mcp/virtual-mcps", {
+  body: V_BODY(id), asserts: [A.status(201)], extraTests: [`pm.collectionVariables.set(${lit(varName)}, pm.response.json().virtual_mcp.id);`],
+});
+const deleteV = (id, varName) => request(id, "teardown: delete the virtual MCP", "DELETE", vmcpPath(varName), { asserts: [A.status(200)] });
+const vmcpField = (path, v) => A.custom(`virtual_mcp.${path} is ${lit(v)}`, [`pm.expect(pm.response.json().virtual_mcp.${path}, 'body: ' + pm.response.text()).to.eql(${lit(v)});`]);
+const V_TEXT = "the virtual MCP Tools A (slug tools-a) over alpha's echo";
+
+const GOV29 = folder("GOV-29 Virtual MCP create", `Setup: ${ALPHA_GREET_TEXT}.`, [
+  ...alphaGreetSetup("GOV-29"),
+  request("GOV-29", "create Tools A over alpha's echo", "POST", "/api/mcp/virtual-mcps", { body: V_BODY("GOV-29"),
+    asserts: [A.status(201), vmcpField("endpoint_slug", "tools-a"), vmcpField("enabled", true), vmcpField("virtual_key_ids", [])],
+    extraTests: ["pm.collectionVariables.set('gov29_vmcp_id', pm.response.json().virtual_mcp.id);"] }),
+  request("GOV-29", "no name", "POST", "/api/mcp/virtual-mcps", { body: { tools: [{ mcp_client_id: "gov-29-alpha", tool_names: ["echo"] }] }, asserts: [A.status(400), A.msgEquals("name is required")] }),
+  request("GOV-29", "bad JSON", "POST", "/api/mcp/virtual-mcps", { raw: "{", asserts: [A.status(400)] }),
+  request("GOV-29", "client id x", "POST", "/api/mcp/virtual-mcps", { body: { name: "GOV-29 bad client", tools: [{ mcp_client_id: "x", tool_names: ["echo"] }] }, asserts: [A.status(400), A.msgEquals("invalid MCP client IDs: x")] }),
+  deleteV("GOV-29", "gov29_vmcp_id"),
+  alphaGreetTeardown("GOV-29"),
+]);
+
+const GOV31 = folder("GOV-31 Virtual MCP update and lookup", `Setup: ${ALPHA_GREET_TEXT}; ${V_TEXT}.`, [
+  ...alphaGreetSetup("GOV-31"), createV("GOV-31", "gov31_vmcp_id"),
+  request("GOV-31", "PUT a new slug", "PUT", vmcpPath("gov31_vmcp_id"), { body: { endpoint_slug: "tools-b" }, asserts: [A.status(200), vmcpField("endpoint_slug", "tools-a")] }),
+  request("GOV-31", "PUT without tools", "PUT", vmcpPath("gov31_vmcp_id"), { body: { description: "GOV-31" }, asserts: [A.status(200), vmcpField("tools", V_BODY("GOV-31").tools)] }),
+  request("GOV-31", "PUT enabled false", "PUT", vmcpPath("gov31_vmcp_id"), { body: { enabled: false }, asserts: [A.status(200)] }),
+  request("GOV-31", "enabled false persists", "GET", vmcpPath("gov31_vmcp_id"), { asserts: [A.status(200), vmcpField("enabled", false), vmcpField("endpoint_slug", "tools-a"), vmcpField("tools", V_BODY("GOV-31").tools)] }),
+  request("GOV-31", "GET /abc", "GET", "/api/mcp/virtual-mcps/abc", { asserts: [A.status(400), A.msgEquals("invalid virtual MCP id")] }),
+  request("GOV-31", "GET /999999", "GET", "/api/mcp/virtual-mcps/999999", { asserts: [A.status(404), A.msgEquals("virtual MCP not found")] }),
+  deleteV("GOV-31", "gov31_vmcp_id"),
+  alphaGreetTeardown("GOV-31"),
+]);
+
+const GOV32 = folder("GOV-32 Attach and detach VKs", `Setup: ${ALPHA_GREET_TEXT}; ${V_TEXT}; a VK with no MCP configs.`, [
+  ...alphaGreetSetup("GOV-32"), createV("GOV-32", "gov32_vmcp_id"),
+  vkCreate("GOV-32", "setup: create a VK", { name: "GOV-32 VK" }, "gov32_vk"),
+  request("GOV-32", "attach an unknown VK", "POST", vmcpPath("gov32_vmcp_id", "/virtual-keys/gov32-no-such-vk"), { asserts: [A.status(404), A.msgEquals("virtual key not found")] }),
+  request("GOV-32", "detach the VK, which was never attached", "DELETE", vmcpPath("gov32_vmcp_id", "/virtual-keys/{{gov32_vk_id}}"), { asserts: [A.status(200)] }),
+  request("GOV-32", "attach the VK", "POST", vmcpPath("gov32_vmcp_id", "/virtual-keys/{{gov32_vk_id}}"), { asserts: [A.status(200)] }),
+  request("GOV-32", "attach the VK again", "POST", vmcpPath("gov32_vmcp_id", "/virtual-keys/{{gov32_vk_id}}"), { asserts: [A.status(200)] }),
+  request("GOV-32", "the VK is listed once", "GET", vmcpPath("gov32_vmcp_id"), { asserts: [A.status(200), A.custom("virtual_mcp.virtual_key_ids is [the VK's id]", [
+    "pm.expect(pm.response.json().virtual_mcp.virtual_key_ids, 'body: ' + pm.response.text()).to.eql([pm.collectionVariables.get('gov32_vk_id')]);",
+  ])] }),
+  request("GOV-32", "attach to an unknown virtual MCP", "POST", "/api/mcp/virtual-mcps/999999/virtual-keys/{{gov32_vk_id}}", { asserts: [A.status(404)] }),
+  deleteV("GOV-32", "gov32_vmcp_id"),
+  vkDelete("GOV-32", "teardown: delete the VK", "gov32_vk"),
+  alphaGreetTeardown("GOV-32"),
+]);
+
 // ================================================================ MCP tools inside model requests, on the mock LLM
 
 const alphaClient = (id, over = {}) => createClient(id, httpClient(`${id.toLowerCase()}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], ...over }), "setup: register client alpha");
@@ -2846,6 +2943,7 @@ const collection = {
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP04, EP09, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV06, GOV11, GOV16, GOV17, GOV29, GOV31, GOV32]),
     section("INF Inference", "Inference tests.", [INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB06, LIB08, LIB09, LIB10, LIB13, LIB16]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG27, LOG28, LOG29, LOG37, LOG40, LOG41]),
