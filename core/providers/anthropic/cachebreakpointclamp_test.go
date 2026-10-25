@@ -180,3 +180,60 @@ func TestClampAnthropicCacheBreakpoints_NilSafe(t *testing.T) {
 		t.Errorf("empty request: dropped = %d, want 0", dropped)
 	}
 }
+
+// A chat tool message marked for caching reaches the Responses converters as a function_call_output that
+// carries the marker on the item (where Bedrock reads it) and on its output block. Anthropic counts every
+// cache_control, nested ones included, and the clamp only sees top-level blocks, so the tool_result has to
+// carry the marker exactly once.
+func TestToolResultFromMarkedChatToolMessageCarriesOneMarker(t *testing.T) {
+	text := "file contents"
+	callID := "call_1"
+	cm := schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleTool,
+		Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: &text, CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}},
+		}},
+		ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &callID},
+	}
+	rms := cm.ToResponsesMessages()
+	block := convertBifrostFunctionCallOutputToAnthropicToolResultBlock(&rms[0])
+	if block == nil {
+		t.Fatal("no tool_result block")
+	}
+	markers := 0
+	if block.CacheControl != nil {
+		markers++
+	}
+	if block.Content != nil {
+		for _, inner := range block.Content.ContentBlocks {
+			if inner.CacheControl != nil {
+				markers++
+			}
+		}
+	}
+	if markers != 1 || block.CacheControl == nil {
+		t.Fatalf("tool_result carries %d cache markers (outer set: %v), want exactly 1 on the tool_result", markers, block.CacheControl != nil)
+	}
+}
+
+func BenchmarkConvertFunctionCallOutputToAnthropicToolResultBlock(b *testing.B) {
+	text := "file contents"
+	callID := "call_1"
+	for _, c := range []struct {
+		name string
+		cc   *schemas.CacheControl
+	}{{"marked", &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}}, {"unmarked", nil}} {
+		cm := schemas.ChatMessage{
+			Role:            schemas.ChatMessageRoleTool,
+			Content:         &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeText, Text: &text, CacheControl: c.cc}}},
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: &callID},
+		}
+		msg := cm.ToResponsesMessages()[0]
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = convertBifrostFunctionCallOutputToAnthropicToolResultBlock(&msg)
+			}
+		})
+	}
+}
