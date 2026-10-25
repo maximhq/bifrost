@@ -586,9 +586,11 @@ func TestCheckRateLimitEnforcesCalendarAlignedPeriodToItsLastDay(t *testing.T) {
 				if tok, req := store.rateLimitResetTargets(rl, time.Now()); tok != nil || req != nil {
 					t.Fatalf("precondition: %s window must still be open at %s", tc.duration, time.Now().UTC())
 				}
+				// Both caps are exceeded, so both must be enforced: a decision
+				// for only one of them would hide the other staying broken.
 				decision, _ := store.CheckRateLimit(ctx, EntityWiseRateLimits{"virtual_key": {store.LoadRateLimit(ctx, rl.ID)}}, nil, nil)
-				if decision == DecisionAllow {
-					t.Fatalf("%s rate limit over its cap was not enforced at %s, the last day of its calendar period", tc.duration, time.Now().UTC())
+				if decision != DecisionRateLimited {
+					t.Fatalf("%s rate limit over both caps was not fully enforced at %s, the last day of its calendar period: got %s, want %s", tc.duration, time.Now().UTC(), decision, DecisionRateLimited)
 				}
 
 				// Past the boundary the window is closed but unswept: the check
@@ -619,8 +621,13 @@ func TestCheckRateLimitEnforcesNonPositiveResetDuration(t *testing.T) {
 	store.rateLimits.Store(rl.ID, rl)
 
 	decision, _ := store.CheckRateLimit(ctx, EntityWiseRateLimits{"virtual_key": {store.LoadRateLimit(ctx, rl.ID)}}, nil, nil)
-	if decision == DecisionAllow {
-		t.Fatal("rate limit over its cap with a non-positive reset duration was not enforced")
+	if decision != DecisionRateLimited {
+		t.Fatalf("rate limit over both caps with a non-positive reset duration was not fully enforced: got %s, want %s", decision, DecisionRateLimited)
+	}
+	// CheckRateLimit runs on every request; the misconfiguration is reported
+	// by the reset path, not once per check.
+	if logger := store.logger.(*MockLogger); len(logger.errors) != 0 {
+		t.Fatalf("CheckRateLimit logged %d errors for a non-positive reset duration, want 0: %v", len(logger.errors), logger.errors)
 	}
 }
 

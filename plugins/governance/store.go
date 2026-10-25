@@ -2136,8 +2136,8 @@ func (gs *LocalGovernanceStore) CheckRateLimit(ctx context.Context, entityWiseRa
 			// An expired-but-unswept counter is skipped rather than denied, as
 			// before: the reset lands on the next sweep or in the post-request
 			// usage bump.
-			_, tokenLimitExpired := gs.rateLimitResetDue(rateLimit.TokenResetDuration, rateLimit.IsCalendarAligned, rateLimit.CreatedAt, rateLimit.TokenLastReset, now)
-			_, requestLimitExpired := gs.rateLimitResetDue(rateLimit.RequestResetDuration, rateLimit.IsCalendarAligned, rateLimit.CreatedAt, rateLimit.RequestLastReset, now)
+			_, tokenLimitExpired := gs.rateLimitResetDue(rateLimit.TokenResetDuration, rateLimit.IsCalendarAligned, rateLimit.CreatedAt, rateLimit.TokenLastReset, now, false)
+			_, requestLimitExpired := gs.rateLimitResetDue(rateLimit.RequestResetDuration, rateLimit.IsCalendarAligned, rateLimit.CreatedAt, rateLimit.RequestLastReset, now, false)
 
 			tokensBaseline, exists := tokensBaselines[rateLimit.ID]
 			if !exists {
@@ -2665,7 +2665,7 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context,
 // matters; the two must stay in step because a rate limit and a budget on the
 // same owner are expected to roll over together.
 func (gs *LocalGovernanceStore) rateLimitResetTarget(resetDuration *string, calendarAligned bool, anchor, lastReset time.Time, now time.Time) *time.Time {
-	target, due := gs.rateLimitResetDue(resetDuration, calendarAligned, anchor, lastReset, now)
+	target, due := gs.rateLimitResetDue(resetDuration, calendarAligned, anchor, lastReset, now, true)
 	if !due {
 		return nil
 	}
@@ -2674,8 +2674,10 @@ func (gs *LocalGovernanceStore) rateLimitResetTarget(resetDuration *string, cale
 
 // rateLimitResetDue is rateLimitResetTarget returning the target by value, so
 // CheckRateLimit can ask whether a window has closed on every request without
-// a heap allocation for the pointer.
-func (gs *LocalGovernanceStore) rateLimitResetDue(resetDuration *string, calendarAligned bool, anchor, lastReset time.Time, now time.Time) (time.Time, bool) {
+// a heap allocation for the pointer. logInvalid reports an invalid or
+// non-positive duration; CheckRateLimit passes false so a misconfigured limit
+// is not logged on every request it checks.
+func (gs *LocalGovernanceStore) rateLimitResetDue(resetDuration *string, calendarAligned bool, anchor, lastReset time.Time, now time.Time, logInvalid bool) (time.Time, bool) {
 	if resetDuration == nil {
 		return time.Time{}, false
 	}
@@ -2688,13 +2690,17 @@ func (gs *LocalGovernanceStore) rateLimitResetDue(resetDuration *string, calenda
 	}
 	duration, err := configstoreTables.ParseDuration(*resetDuration)
 	if err != nil {
-		gs.logger.Error("invalid rate limit reset duration %s: %v", *resetDuration, err)
+		if logInvalid {
+			gs.logger.Error("invalid rate limit reset duration %s: %v", *resetDuration, err)
+		}
 		return time.Time{}, false
 	}
 	// A non-positive duration would be perpetually due, spinning BumpRateLimitUsage
 	// forever (issue #4851 class); treat it as invalid, same as unparseable.
 	if duration <= 0 {
-		gs.logger.Error("non-positive rate limit reset duration %s: counter will not auto-reset", *resetDuration)
+		if logInvalid {
+			gs.logger.Error("non-positive rate limit reset duration %s: counter will not auto-reset", *resetDuration)
+		}
 		return time.Time{}, false
 	}
 	if anchor.IsZero() {
