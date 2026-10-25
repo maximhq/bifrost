@@ -2583,15 +2583,238 @@ const SET22 = folder("SET-22 Code-mode flag swaps the listed tools", "Setup: alp
 
 // ================================================================ INF direct execute and code mode
 
+// The execute tests' setup: alpha (echo, add, greet) as client alpha, nothing auto-executed. These calls never reach a
+// provider, so the mock LLM is not needed.
+const ALPHA_GREET_TEXT = "alpha (echo, add, greet) registered as client alpha, auth none, per call, tools_to_execute [\"*\"], nothing auto-executed";
+const alphaGreetSetup = (id) => [
+  ...freshServer(id, "alpha", ["echo", "add", "greet"]),
+  createClient(id, httpClient(`${id.toLowerCase()}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"] }), "setup: register client alpha"),
+];
+const alphaGreetTeardown = (id) => deleteClient(id, `${id.toLowerCase()}-alpha`);
 // execBody posts a JSON body (or raw text) to /v1/mcp/tool/execute with no admin credentials; query is appended as is.
 const execBody = (id, title, body, asserts, { query = "", raw, headers = [], extraTests = [] } = {}) => request(id, title, "POST", `/v1/mcp/tool/execute${query}`, {
   noAuth: true, noCookies: true, asserts, headers, extraTests, ...(raw !== undefined ? { raw } : { body }),
 });
 // toolCall is a chat-format tool call with id c1; args is an object or a literal arguments string.
 const toolCall = (name, args) => ({ id: "c1", type: "function", function: { name, arguments: typeof args === "string" ? args : lit(args) } });
+const contentEquals = (s) => A.custom(`content is ${lit(s)}`, [`pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.equal(${lit(s)});`]);
+const contentHas = (s) => A.custom(`content contains ${lit(s)}`, [`pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.include(${lit(s)});`]);
+const isError = () => A.custom("is_error is true", ["pm.expect(pm.response.json().is_error, 'body: ' + pm.response.text()).to.equal(true);"]);
+const noIsError = () => A.custom("there is no is_error", ["pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.not.have.property('is_error');"]);
+const callsEmpty = (id, server) => mockGet(id, server, `${server} received no tool call`, [A.custom("calls is empty", ["pm.expect(pm.response.json().counters.calls, 'body: ' + pm.response.text()).to.eql({});"])]);
+const ECHO_CALL = toolCall("alpha-echo", { text: "hi" });
 
+const INF24 = folder("INF-24 Execute, chat format", `Setup: ${ALPHA_GREET_TEXT}; execute alpha-echo with id c1.`, [
+  ...alphaGreetSetup("INF-24"),
+  execBody("INF-24", "execute alpha-echo with id c1", ECHO_CALL, [A.status(200), A.custom("role \"tool\", tool_call_id \"c1\", content the echo", [
+    "var b = pm.response.json();",
+    "pm.expect(b.role, 'body: ' + pm.response.text()).to.equal('tool');",
+    "pm.expect(b.tool_call_id).to.equal('c1');",
+    "pm.expect(b.content).to.equal('echo:{\"text\":\"hi\"}');",
+  ]), noIsError()]),
+  mockCalls("INF-24", "alpha", "echo", 1),
+  alphaGreetTeardown("INF-24"),
+]);
+
+const INF25 = folder("INF-25 Execute, Responses format", `Setup: ${ALPHA_GREET_TEXT}; execute alpha-echo in the Responses format with call_id r1.`, [
+  ...alphaGreetSetup("INF-25"),
+  execBody("INF-25", "execute alpha-echo with format=responses and call_id r1", { call_id: "r1", name: "alpha-echo", arguments: lit({ text: "hi" }) }, [A.status(200), A.custom("type \"function_call_output\", call_id \"r1\", output a string", [
+    "var b = pm.response.json();",
+    "pm.expect(b.type, 'body: ' + pm.response.text()).to.equal('function_call_output');",
+    "pm.expect(b.call_id).to.equal('r1');",
+    "pm.expect(b.output).to.be.a('string');",
+  ])], { query: "?format=responses" }),
+  alphaGreetTeardown("INF-25"),
+]);
+
+const INF26 = folder("INF-26 Execute validation", `Setup: ${ALPHA_GREET_TEXT}.`, [
+  ...alphaGreetSetup("INF-26"),
+  execBody("INF-26", "format=bogus", ECHO_CALL, [A.status(400)], { query: "?format=bogus" }),
+  execBody("INF-26", "a non-JSON body", undefined, [A.status(400), A.msgEquals("Invalid request payload")], { raw: "x" }),
+  execBody("INF-26", "chat format without a tool name", { id: "m1", type: "function", function: { arguments: "{}" } }, [A.status(400), A.msgEquals("Tool function name is required")]),
+  execBody("INF-26", "Responses format without a tool name", { call_id: "m2", arguments: "{}" }, [A.status(400), A.msgEquals("Tool function name is required")], { query: "?format=responses" }),
+  alphaGreetTeardown("INF-26"),
+]);
+
+const INF27 = folder("INF-27 Unknown tool and bad arguments", `Setup: ${ALPHA_GREET_TEXT}.`, [
+  ...alphaGreetSetup("INF-27"),
+  execBody("INF-27", "execute nosuch-x", toolCall("nosuch-x", "{}"), [A.status(400), A.msgContains("is not available or not permitted")]),
+  execBody("INF-27", "execute alpha-echo with arguments \"{bad\"", toolCall("alpha-echo", "{bad"), [A.status(400), A.msgContains("failed to parse tool arguments for 'alpha-echo'")]),
+  callsEmpty("INF-27", "alpha"),
+  alphaGreetTeardown("INF-27"),
+]);
+
+// upstreamFault fails every tools/call on alpha and checks the execute error and how many calls reached alpha.
+const upstreamFault = (name, label, faults, calls) => {
+  const id = name.split(" ")[0];
+  return folder(name, `Setup: ${ALPHA_GREET_TEXT}; alpha then fails every tools/call with ${label}.`, [
+    ...alphaGreetSetup(id),
+    mockPost(id, "alpha", "faults", `setup: alpha fails every tools/call with ${label}`, { faults }),
+    execBody(id, "execute alpha-echo", ECHO_CALL, [A.status(400), A.msgContains("MCP tool call failed for alpha-echo")]),
+    mockCalls(id, "alpha", "echo", calls),
+    mockPost(id, "alpha", "faults/clear", "teardown: clear alpha's faults"),
+    alphaGreetTeardown(id),
+  ]);
+};
+const INF29 = upstreamFault("INF-29 Upstream HTTP 500", "HTTP 500 (err_kind http)", { err_rate: 1, err_kind: "http" }, 3);
+const INF30 = upstreamFault("INF-30 Upstream JSON-RPC error", "a JSON-RPC error (err_kind protocol)", { err_rate: 1, err_kind: "protocol" }, 1);
+
+// cm is the code-mode client on the cm mock server; meta tools are called by their bare names.
+const CM_TEXT = "cm (echo, add) registered as a code-mode client, auth none, per call, tools_to_execute [\"*\"]";
+const cmSetup = (id, tools = ["echo", "add"], over = {}) => [
+  ...freshServer(id, "cm", tools),
+  createClient(id, httpClient(`${id.toLowerCase()}-cm`, "cm", "cm", { tools_to_execute: ["*"], is_code_mode_client: true, ...over }), "setup: register cm as a code-mode client"),
+];
+const cmTeardown = (id) => deleteClient(id, `${id.toLowerCase()}-cm`);
 const meta = (id, title, tool, args, asserts) => execBody(id, title, toolCall(tool, args), asserts);
 const code = (id, title, src, asserts) => meta(id, title, "executeToolCode", { code: src }, asserts);
+
+const INF49 = folder("INF-49 Tool binding", `Setup: ${CM_TEXT}; mcp_code_mode_binding_level "tool".`, [
+  ...cmSetup("INF-49"), readConfig("INF-49"),
+  putConfig("INF-49", "setup: set mcp_code_mode_binding_level \"tool\"", ["cc.mcp_code_mode_binding_level = 'tool';"], [A.status(200)]),
+  meta("INF-49", "listToolFiles", "listToolFiles", "{}", [A.status(200), A.custom("lists servers/cm/add.pyi and servers/cm/echo.pyi, and no other file", [
+    "var c = pm.response.json().content;",
+    "pm.expect(c, 'body: ' + pm.response.text()).to.include('servers/\\n  cm/\\n    add.pyi\\n    echo.pyi');",
+    "pm.expect(c.split('\\n').filter(function (l) { return /\\.pyi$/.test(l); })).to.eql(['    add.pyi', '    echo.pyi']);",
+  ])]),
+  meta("INF-49", "readToolFile servers/cm/echo.pyi", "readToolFile", { fileName: "servers/cm/echo.pyi" }, [A.status(200), contentHas("# cm.echo tool")]),
+  putConfig("INF-49", "set mcp_code_mode_binding_level \"bogus\"", ["cc.mcp_code_mode_binding_level = 'bogus';"], [A.status(400), A.msgContains("must be 'server' or 'tool'")]),
+  restoreConfig("INF-49"), cmTeardown("INF-49"),
+]);
+
+const INF50 = folder("INF-50 readToolFile errors", `Setup: ${CM_TEXT}.`, [
+  ...cmSetup("INF-50"),
+  meta("INF-50", "readToolFile with no fileName", "readToolFile", "{}", [A.status(400)]),
+  meta("INF-50", "readToolFile servers/nope.pyi", "readToolFile", { fileName: "servers/nope.pyi" }, [A.status(200), isError(), contentHas("No server found matching 'nope'")]),
+  meta("INF-50", "readToolFile servers/../cm.pyi", "readToolFile", { fileName: "servers/../cm.pyi" }, [A.status(200), isError(), contentHas("No server found")]),
+  meta("INF-50", "readToolFile servers/cm/zzz.pyi", "readToolFile", { fileName: "servers/cm/zzz.pyi" }, [A.status(200), isError(), contentHas("Tool 'zzz' not found in server 'cm'")]),
+  cmTeardown("INF-50"),
+]);
+
+const INF51 = folder("INF-51 readToolFile success and slicing", `Setup: ${CM_TEXT}.`, [
+  ...cmSetup("INF-51"),
+  execBody("INF-51", "readToolFile servers/cm.pyi", toolCall("readToolFile", { fileName: "servers/cm.pyi" }), [A.status(200), noIsError(), A.custom("line 1 is \"# Total lines: N (this is the complete file, no need to paginate)\"", [
+    "var first = pm.response.json().content.split('\\n')[0];",
+    "pm.expect(first, 'body: ' + pm.response.text()).to.match(/^# Total lines: \\d+ \\(this is the complete file, no need to paginate\\)$/);",
+  ]), contentHas("# cm server tools")], { extraTests: ["pm.collectionVariables.set('inf51_line2', pm.response.json().content.split('\\n')[1]);"] }),
+  meta("INF-51", "readToolFile servers/cm.pyi lines 2 to 2", "readToolFile", { fileName: "servers/cm.pyi", startLine: 2, endLine: 2 }, [A.status(200), A.custom("content is exactly line 2 of the full read", [
+    "var c = pm.response.json().content;",
+    "pm.expect(c, 'body: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+    "pm.expect(c).to.equal(pm.collectionVariables.get('inf51_line2'));",
+  ])]),
+  cmTeardown("INF-51"),
+]);
+
+const INF52 = folder("INF-52 getToolDocs", `Setup: ${CM_TEXT}.`, [
+  ...cmSetup("INF-52"),
+  meta("INF-52", "getToolDocs cm/echo", "getToolDocs", { server: "cm", tool: "echo" }, [A.status(200), contentHas("# Documentation for cm.echo tool")]),
+  meta("INF-52", "getToolDocs with no server", "getToolDocs", { tool: "echo" }, [A.status(400)]),
+  meta("INF-52", "getToolDocs server x", "getToolDocs", { server: "x", tool: "echo" }, [A.status(200), isError(), contentHas("Server 'x' not found")]),
+  meta("INF-52", "getToolDocs cm/x", "getToolDocs", { server: "cm", tool: "x" }, [A.status(200), isError(), contentHas("Tool 'x' not found in server 'cm'")]),
+  cmTeardown("INF-52"),
+]);
+
+const INF53 = folder("INF-53 executeToolCode reply shapes", `Setup: ${CM_TEXT}.`, [
+  ...cmSetup("INF-53"),
+  code("INF-53", "result = 6*7", "result = 6*7", [A.status(200), contentEquals("Execution completed successfully.\nReturn value: 42"), noIsError()]),
+  code("INF-53", "print('a')", "print('a')", [A.status(200), contentEquals("Print output:\na\n\nExecution completed successfully.")]),
+  code("INF-53", "x = 1", "x = 1", [A.status(200), isError(), contentHas("Execution completed but produced no data")]),
+  cmTeardown("INF-53"),
+]);
+
+const INF54 = folder("INF-54 executeToolCode errors", "Setup: cm (echo, add, greet) registered as a code-mode client, auth none, per call, tools_to_execute [\"echo\", \"add\"].", [
+  ...cmSetup("INF-54", ["echo", "add", "greet"], { tools_to_execute: ["echo", "add"] }),
+  code("INF-54", "empty code", "", [A.status(400)]),
+  code("INF-54", "a syntax error", "x = = 1", [A.status(200), isError(), contentHas("Execution runtime error"), contentHas("code.star:1")]),
+  mockGet("INF-54", "cm", "control: cm serves greet upstream", [A.custom("cm's tools include greet", [
+    "var names = pm.response.json().tools.map(function (t) { return t.name; });",
+    "pm.expect(names, 'body: ' + pm.response.text()).to.include('greet');",
+  ])]),
+  code("INF-54", "control: cm.echo runs", "result = cm.echo()", [A.status(200), noIsError()]),
+  code("INF-54", "call cm.greet", "r = cm.greet()", [A.status(200), isError(), contentHas("has no .greet attribute")]),
+  mockCalls("INF-54", "cm", "greet", 0),
+  cmTeardown("INF-54"),
+]);
+
+const limits = (id, title, value) => putConfig(id, title, [`cc.mcp_code_mode_limits = ${lit(value)};`], [A.status(200)]);
+const INF55 = folder("INF-55 Limits apply live", `Setup: ${CM_TEXT}; mcp_code_mode_limits changed between calls.`, [
+  ...cmSetup("INF-55"), readConfig("INF-55"),
+  limits("INF-55", "setup: max_tool_calls 2", { max_tool_calls: 2 }),
+  code("INF-55", "three cm.echo calls", "cm.echo()\ncm.echo()\ncm.echo()\nresult = 1", [A.status(200), contentHas("code mode tool call limit exceeded")]),
+  mockCalls("INF-55", "cm", "echo", 2),
+  limits("INF-55", "setup: max_source_bytes 16", { max_source_bytes: 16 }),
+  code("INF-55", "22 bytes of code", "result = 1 + 2 + 3 + 4", [A.status(200), contentHas("code exceeds source limit")]),
+  limits("INF-55", "setup: max_log_bytes 64", { max_log_bytes: 64 }),
+  code("INF-55", "print 100 characters", `print("${"a".repeat(100)}")`, [A.status(200), contentHas("log limit exceeded")]),
+  putConfig("INF-55", "teardown: restore the config and reset mcp_code_mode_limits", ["cc.mcp_code_mode_limits = {};"], [A.status(200)]),
+  cmTeardown("INF-55"),
+]);
+
+const INF57 = folder("INF-57 Nested call transport failure", `Setup: ${CM_TEXT}; cm then fails every tools/call with HTTP 500 (err_kind http).`, [
+  ...cmSetup("INF-57"),
+  mockPost("INF-57", "cm", "faults", "setup: cm fails every tools/call with HTTP 500", { faults: { err_rate: 1, err_kind: "http" } }),
+  code("INF-57", "call cm.echo", "r = cm.echo(text='hi')\nresult = r", [A.status(200), isError(), contentHas("Execution runtime error"), contentHas("Print output:\n[TOOL] cm.echo call failed")]),
+  mockPost("INF-57", "cm", "faults/clear", "teardown: clear cm's faults"),
+  cmTeardown("INF-57"),
+]);
+
+// INF-58 counts log entries before and after. MCP log entries are written in 5s batches, so the baseline waits 7s
+// for earlier folders' log entries to land, and the after-count polls until the two nested log entries arrive.
+const logCountReq = (id, title, query, varName, pre = [], asserts = []) => request(id, title, "GET", `/api/mcp-logs?${query}`, {
+  pre, asserts: [A.status(200), ...asserts], extraTests: varName ? [`pm.collectionVariables.set(${lit(varName)}, pm.response.json().pagination.total_count);`] : [],
+});
+const inf58Poll = (n) => [
+  `var want = Number(pm.collectionVariables.get('inf58_echo_before')) + ${n}, left = 30;`,
+  "function poll() {",
+  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs?server_labels=cm&tool_names=echo&limit=1', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {",
+  "    if ((!err && res.code === 200 && res.json().pagination.total_count >= want) || --left <= 0) { return; }",
+  "    setTimeout(poll, 500);",
+  "  });",
+  "}",
+  "poll();",
+];
+const INF58 = folder("INF-58 Nested calls are logged", `Setup: ${CM_TEXT}; executeToolCode calls cm.echo twice.`, [
+  ...cmSetup("INF-58"),
+  logCountReq("INF-58", "setup: count cm echo log entries", "server_labels=cm&tool_names=echo&limit=1", "inf58_echo_before", ["setTimeout(function () {}, 7000);"]),
+  logCountReq("INF-58", "setup: count executeToolCode log entries", "tool_names=executeToolCode&limit=1", "inf58_etc_before"),
+  code("INF-58", "executeToolCode calls cm.echo twice", "cm.echo(text='one')\ncm.echo(text='two')\nresult = 1", [A.status(200)]),
+  logCountReq("INF-58", "two more cm echo log entries", "server_labels=cm&tool_names=echo&limit=1", null, inf58Poll(2), [A.custom("total_count is two more than before", [
+    "pm.expect(pm.response.json().pagination.total_count, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('inf58_echo_before')) + 2);",
+  ])]),
+  logCountReq("INF-58", "the two newest cm log entries are echo", "server_labels=cm&limit=2", null, [], [A.custom("both log entries have tool_name \"echo\" and server_label \"cm\"", [
+    "var logs = pm.response.json().logs;",
+    "pm.expect(logs.length, 'body: ' + pm.response.text()).to.equal(2);",
+    "logs.forEach(function (l) { pm.expect(l.tool_name).to.equal('echo'); pm.expect(l.server_label).to.equal('cm'); });",
+  ])]),
+  // A later call whose log entry lands after any log entry the first executeToolCode could have queued, so a flush boundary
+  // between the nested log entries and an executeToolCode log entry cannot hide the latter.
+  code("INF-58", "control: a later executeToolCode call", "cm.echo(text='three')\nresult = 1", [A.status(200)]),
+  logCountReq("INF-58", "control: the later call's log entry landed", "server_labels=cm&tool_names=echo&limit=1", null, inf58Poll(3), [A.custom("total_count is three more than before", [
+    "pm.expect(pm.response.json().pagination.total_count, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('inf58_echo_before')) + 3);",
+  ])]),
+  logCountReq("INF-58", "no executeToolCode log entry", "tool_names=executeToolCode&limit=1", null, [], [A.custom("total_count is unchanged", [
+    "pm.expect(pm.response.json().pagination.total_count, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('inf58_etc_before')));",
+  ])]),
+  cmTeardown("INF-58"),
+]);
+
+const INJECTED_PREFIX = "Invalid injected tools config: injected tools validation failed:";
+// INF66_CASES pairs each bad value with the part of the message that names its defect, so a case cannot
+// pass by failing for another case's reason.
+const INF66_CASES = [
+  ["a bad name", [{ name: "web search", mcp_client_name: "alpha", tool_name: "search" }], "injected_tools[0].name \"web search\" must be 1-64 letters, digits, _ or -"],
+  ["a missing tool_name", [{ name: "web_search", mcp_client_name: "alpha" }], "tool_name is required"],
+  ["a duplicate name", [{ name: "web_search", mcp_client_name: "alpha", tool_name: "search" }, { name: "web_search", mcp_client_name: "alpha", tool_name: "other" }], "name \"web_search\" is used more than once"],
+  ["the same tool twice", [{ name: "web_search", mcp_client_name: "alpha", tool_name: "search" }, { name: "search2", mcp_client_name: "alpha", tool_name: "search" }], "MCP tool alpha/search is injected more than once"],
+  ["an unknown client", [{ name: "web_search", mcp_client_name: "inf66_no_such_client", tool_name: "search" }], "references unknown MCP client \"inf66_no_such_client\""],
+  ["an unknown field", [{ name: "web_search", mcp_client_name: "alpha", tool_name: "search", extra: 1 }], "has unknown field \"extra\""],
+  ["a non-array", { name: "web_search", mcp_client_name: "alpha", tool_name: "search" }, "injected_tools must be an array"],
+];
+const INF66 = folder("INF-66 Injected tools validation", "Setup: PUT /api/providers/openai with concurrency_and_buffer_size set and one bad injected_tools value per request.", INF66_CASES.map(([label, tools, reason]) =>
+  request("INF-66", `injected_tools with ${label}`, "PUT", "/api/providers/openai", {
+    body: { concurrency_and_buffer_size: { concurrency: 1, buffer_size: 10 }, injected_tools: tools },
+    asserts: [A.status(400), A.msgStartsWith(INJECTED_PREFIX), A.msgContains(reason)],
+  })));
 
 // ================================================================ MCP tools inside model requests, on the mock LLM
 
@@ -2623,7 +2846,7 @@ const collection = {
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP04, EP09, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
-    section("INF Inference", "Inference tests.", [INF23, INF56]),
+    section("INF Inference", "Inference tests.", [INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB06, LIB08, LIB09, LIB10, LIB13, LIB16]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG27, LOG28, LOG29, LOG37, LOG40, LOG41]),
   ],
