@@ -760,7 +760,9 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
 		filters.ProjectIDs = parseCommaSeparated(projectIDs)
 	}
-	parseTopicIDsFilter(ctx, filters)
+	if !parseTopicIDsFilter(ctx, filters) {
+		return
+	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
@@ -1052,7 +1054,9 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
 		filters.ProjectIDs = parseCommaSeparated(projectIDs)
 	}
-	parseTopicIDsFilter(ctx, filters)
+	if !parseTopicIDsFilter(ctx, filters) {
+		return
+	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
@@ -1217,6 +1221,9 @@ func previousPeriodFilters(filters *logstore.SearchFilters) *logstore.SearchFilt
 // getLogsHistogram handles GET /api/logs/histogram - Get time-bucketed request counts
 func (h *LoggingHandler) getLogsHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetHistogram(ctx, filters, bucketSizeSeconds)
@@ -1302,14 +1309,23 @@ func parseGuardrailOutcomesFilter(ctx *fasthttp.RequestCtx, filters *logstore.Se
 	}
 }
 
-// parseTopicIDsFilter reads the Warp topics a query narrows to.
-func parseTopicIDsFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
-	if topicIDs := string(ctx.QueryArgs().Peek("topic_ids")); topicIDs != "" {
-		filters.TopicIDs = parseCommaSeparated(topicIDs)
+// parseTopicIDsFilter reads the Warp topics a query narrows to. A topic_ids
+// that names no id ("," or blanks) writes a 400 and returns false: read as
+// absent it would widen the query to every topic.
+func parseTopicIDsFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) bool {
+	if !ctx.QueryArgs().Has("topic_ids") {
+		return true
 	}
+	filters.TopicIDs = parseCommaSeparated(string(ctx.QueryArgs().Peek("topic_ids")))
+	if len(filters.TopicIDs) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "topic_ids must name at least one topic id")
+		return false
+	}
+	return true
 }
 
-// parseHistogramFilters extracts common filter parameters from query args
+// parseHistogramFilters extracts common filter parameters from query args. It
+// returns nil after writing a 400 when a parameter is unusable.
 func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	filters := &logstore.SearchFilters{}
 
@@ -1355,7 +1371,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if projectIDs := string(ctx.QueryArgs().Peek("project_ids")); projectIDs != "" {
 		filters.ProjectIDs = parseCommaSeparated(projectIDs)
 	}
-	parseTopicIDsFilter(ctx, filters)
+	if !parseTopicIDsFilter(ctx, filters) {
+		return nil
+	}
 	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
 		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
@@ -1444,6 +1462,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 // getLogsTokenHistogram handles GET /api/logs/histogram/tokens - Get time-bucketed token usage
 func (h *LoggingHandler) getLogsTokenHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetTokenHistogram(ctx, filters, bucketSizeSeconds)
@@ -1459,6 +1480,9 @@ func (h *LoggingHandler) getLogsTokenHistogram(ctx *fasthttp.RequestCtx) {
 // getLogsCostHistogram handles GET /api/logs/histogram/cost - Get time-bucketed cost data with model breakdown
 func (h *LoggingHandler) getLogsCostHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 	if ctx.QueryArgs().Has("bucket_size") {
 		size, err := parseBucketSizeOverride(string(ctx.QueryArgs().Peek("bucket_size")), filters.StartTime, filters.EndTime)
@@ -1482,6 +1506,9 @@ func (h *LoggingHandler) getLogsCostHistogram(ctx *fasthttp.RequestCtx) {
 // getLogsModelHistogram handles GET /api/logs/histogram/models - Get time-bucketed model usage with success/error breakdown
 func (h *LoggingHandler) getLogsModelHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetModelHistogram(ctx, filters, bucketSizeSeconds)
@@ -1497,6 +1524,9 @@ func (h *LoggingHandler) getLogsModelHistogram(ctx *fasthttp.RequestCtx) {
 // getLogsLatencyHistogram handles GET /api/logs/histogram/latency - Get time-bucketed latency percentiles
 func (h *LoggingHandler) getLogsLatencyHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetLatencyHistogram(ctx, filters, bucketSizeSeconds)
@@ -1512,6 +1542,9 @@ func (h *LoggingHandler) getLogsLatencyHistogram(ctx *fasthttp.RequestCtx) {
 // getLogsProviderCostHistogram handles GET /api/logs/histogram/cost/by-provider - Get time-bucketed cost data with provider breakdown
 func (h *LoggingHandler) getLogsProviderCostHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetProviderCostHistogram(ctx, filters, bucketSizeSeconds)
@@ -1527,6 +1560,9 @@ func (h *LoggingHandler) getLogsProviderCostHistogram(ctx *fasthttp.RequestCtx) 
 // getLogsProviderTokenHistogram handles GET /api/logs/histogram/tokens/by-provider - Get time-bucketed token usage with provider breakdown
 func (h *LoggingHandler) getLogsProviderTokenHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetProviderTokenHistogram(ctx, filters, bucketSizeSeconds)
@@ -1542,6 +1578,9 @@ func (h *LoggingHandler) getLogsProviderTokenHistogram(ctx *fasthttp.RequestCtx)
 // getLogsProviderLatencyHistogram handles GET /api/logs/histogram/latency/by-provider - Get time-bucketed latency percentiles with provider breakdown
 func (h *LoggingHandler) getLogsProviderLatencyHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetProviderLatencyHistogram(ctx, filters, bucketSizeSeconds)
@@ -1557,6 +1596,9 @@ func (h *LoggingHandler) getLogsProviderLatencyHistogram(ctx *fasthttp.RequestCt
 // getLogsThroughputHistogram handles GET /api/logs/histogram/throughput - Get time-bucketed token-generation throughput (tokens/sec)
 func (h *LoggingHandler) getLogsThroughputHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetThroughputHistogram(ctx, filters, bucketSizeSeconds)
@@ -1572,6 +1614,9 @@ func (h *LoggingHandler) getLogsThroughputHistogram(ctx *fasthttp.RequestCtx) {
 // getLogsProviderThroughputHistogram handles GET /api/logs/histogram/throughput/by-provider - Get time-bucketed tokens/sec with provider breakdown
 func (h *LoggingHandler) getLogsProviderThroughputHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetProviderThroughputHistogram(ctx, filters, bucketSizeSeconds)
@@ -1607,6 +1652,9 @@ func (h *LoggingHandler) getLogsDimensionCostHistogram(ctx *fasthttp.RequestCtx)
 		return
 	}
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetDimensionCostHistogram(ctx, filters, bucketSizeSeconds, dimension)
@@ -1626,6 +1674,9 @@ func (h *LoggingHandler) getLogsDimensionTokenHistogram(ctx *fasthttp.RequestCtx
 		return
 	}
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetDimensionTokenHistogram(ctx, filters, bucketSizeSeconds, dimension)
@@ -1645,6 +1696,9 @@ func (h *LoggingHandler) getLogsDimensionLatencyHistogram(ctx *fasthttp.RequestC
 		return
 	}
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetDimensionLatencyHistogram(ctx, filters, bucketSizeSeconds, dimension)
@@ -1714,6 +1768,9 @@ func ParseRankingLimit(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters
 // getModelRankings handles GET /api/logs/rankings - Get models ranked by usage with trends
 func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	if !ParseRankingLimit(ctx, filters) {
 		return
 	}
@@ -1741,6 +1798,9 @@ func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 	}
 
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	if !ParseRankingLimit(ctx, filters) {
 		return
 	}
@@ -1960,6 +2020,9 @@ const dashboardMCPTopToolsLimit = 10
 // complete payload or a clear error, never partial data.
 func (h *LoggingHandler) getDashboard(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if filters == nil {
+		return
+	}
 	if !ParseRankingLimit(ctx, filters) {
 		return
 	}
