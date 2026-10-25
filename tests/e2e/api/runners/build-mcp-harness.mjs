@@ -5537,6 +5537,110 @@ const LOG08 = folder("LOG-08 Agent mode over two turns", `Setup: ${AGENT_TEXT(["
 
 // ================================================================ provider-injected tools on the mock LLM
 
+// A provider's injected_tools expose one MCP tool to the model under a name of the provider's choosing, and Bifrost
+// runs the model's calls to it itself. Each test sets openai's injected_tools by reading the provider and writing it
+// back with them, and clears them the same way at the end.
+const WEB_SEARCH = [{ name: "web_search", mcp_client_name: "alpha", tool_name: "search" }];
+const INJ_TEXT = `${LLM_TEXT}; alpha (search, echo) registered as client alpha, per call, tools_to_execute ["*"]; openai's injected_tools expose alpha's search as web_search`;
+const readProvider = (id) => request(id, "setup: read the openai provider", "GET", "/api/providers/openai", { asserts: [A.status(200)], extraTests: ["var p = pm.response.json(); pm.collectionVariables.set('openai_provider', JSON.stringify({ network_config: p.network_config, concurrency_and_buffer_size: p.concurrency_and_buffer_size }));"] });
+// putInjected writes the provider back with injected_tools set to tools.
+const putInjected = (id, title, tools) => request(id, title, "PUT", "/api/providers/openai", {
+  raw: "{{provider_body}}", asserts: [A.status(200)],
+  pre: ["var p = JSON.parse(pm.collectionVariables.get('openai_provider'));", `p.injected_tools = ${lit(tools)};`, "pm.variables.set('provider_body', JSON.stringify(p));"],
+});
+const injectedSetup = (id, tools = ["search", "echo"], over = {}) => [
+  readProvider(id),
+  ...freshServer(id, "alpha", tools),
+  alphaClient(id, over),
+  putInjected(id, "setup: openai injects alpha's search as web_search", WEB_SEARCH),
+];
+const injectedTeardown = (id) => [putInjected(id, "teardown: clear openai's injected_tools", []), agentTeardown(id)];
+const SEARCH_CALL = { tool_calls: [llmCall("w1", "web_search", { text: "q" })] };
+const SEARCH_RESULT = `search:${JSON.stringify({ text: "q" })}`;
+
+const INF60 = folder("INF-60 Provider-injected tool, chat loop", `Setup: ${INJ_TEXT}; turn 1 calls web_search, turn 2 answers "answer".`, [
+  ...injectedSetup("INF-60"),
+  llmScript("INF-60", "inf60", { turns: [SEARCH_CALL, { text: "answer" }] }),
+  infPost("INF-60", "chat", "/v1/chat/completions", chatBody("inf60", {}), [A.status(200), chatContent("answer"), toolCallNames([]), A.custom("the client never sees web_search", ["pm.expect(pm.response.text()).to.not.include('web_search');"])]),
+  llmCaptured("INF-60", "turn 1 has function web_search and not alpha-search; turn 2 has the result", "inf60", [reqCount(2),
+    A.custom("turn 1 declares function web_search and no alpha-search", [REQS,
+      "var t = reqs[0].json.tools.filter(function (x) { return x.function && x.function.name === 'web_search'; });",
+      "pm.expect(t.length, JSON.stringify(reqs[0].json.tools)).to.equal(1);",
+      "pm.expect(t[0].type).to.equal('function');",
+      "pm.expect(reqs[0].tools).to.not.include('alpha-search');",
+    ]),
+    A.custom("turn 2 has the search result for w1", [REQS, TOOL_MSGS(1), `pm.expect(tm.w1, JSON.stringify(reqs[1].json.messages)).to.equal(${lit(SEARCH_RESULT)});`]),
+  ]),
+  mockGet("INF-60", "alpha", "alpha ran search once", [callsIs("search", 1)]),
+  ...injectedTeardown("INF-60"),
+]);
+
+const INF61 = folder("INF-61 Injected loop depth cap", `Setup: ${INJ_TEXT}; mcp_agent_depth 2; the model always calls web_search.`, [
+  readConfig("INF-61"),
+  ...injectedSetup("INF-61"),
+  putConfig("INF-61", "setup: mcp_agent_depth 2", ["cc.mcp_agent_depth = 2;"], [A.status(200)]),
+  llmScript("INF-61", "inf61", { then: SEARCH_CALL }),
+  infPost("INF-61", "chat", "/v1/chat/completions", chatBody("inf61"), [A.status(200), finishIs("stop"), toolCallNames([])]),
+  llmCaptured("INF-61", "two model requests", "inf61", [reqCount(2)]),
+  mockGet("INF-61", "alpha", "alpha ran search once", [callsIs("search", 1)]),
+  ...injectedTeardown("INF-61"),
+  restoreConfig("INF-61"),
+]);
+
+const INF62 = folder("INF-62 Injected tool failure goes to the model", `Setup: ${INJ_TEXT}; alpha's search fails every call with a JSON-RPC error (err_kind protocol); turn 1 calls web_search, turn 2 answers "answer".`, [
+  readProvider("INF-62"),
+  request("INF-62", "setup: fresh mcpchaos server alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "alpha" }, asserts: [A.status(200)] }),
+  mockPost("INF-62", "alpha", "tools/set", "setup: alpha serves search (failing with a JSON-RPC error) and echo", { tools: [{ name: "search", fault: { err_rate: 1, err_kind: "protocol" } }, { name: "echo" }] }),
+  alphaClient("INF-62"),
+  putInjected("INF-62", "setup: openai injects alpha's search as web_search", WEB_SEARCH),
+  llmScript("INF-62", "inf62", { turns: [SEARCH_CALL, { text: "answer" }] }),
+  infPost("INF-62", "chat", "/v1/chat/completions", chatBody("inf62"), [A.status(200), chatContent("answer")]),
+  llmCaptured("INF-62", "turn 2's tool content reports the failure", "inf62", [reqCount(2), A.custom("the tool content contains \"MCP tool call failed\"", [REQS, TOOL_MSGS(1), "pm.expect(tm.w1 || '', JSON.stringify(reqs[1].json.messages)).to.include('MCP tool call failed');"])]),
+  ...injectedTeardown("INF-62"),
+]);
+
+const INF63 = folder("INF-63 Injected tool fails open", `Setup: ${INJ_TEXT}; alpha is then disabled; a Responses request declares the native web_search tool.`, [
+  ...injectedSetup("INF-63"),
+  llmScript("INF-63", "inf63-on", TEXT_OK),
+  infResponses("INF-63", "control: with alpha enabled, a Responses request with native web_search", "inf63-on", [A.status(200)], { body: { tools: [{ type: "web_search" }] } }),
+  llmCaptured("INF-63", "control: the injected function replaces the native tool", "inf63-on", [reqCount(1), toolsInclude(0, "web_search")]),
+  request("INF-63", "setup: disable alpha", "PUT", "/api/mcp/client/inf-63-alpha", { body: { disabled: true }, asserts: [A.status(200)] }),
+  llmScript("INF-63", "inf63", TEXT_OK),
+  infResponses("INF-63", "Responses request with native web_search", "inf63", [A.status(200)], { body: { tools: [{ type: "web_search" }] } }),
+  llmCaptured("INF-63", "no function web_search; the native web_search is kept", "inf63", [reqCount(1), toolsAre(0, ["type:web_search"])]),
+  ...injectedTeardown("INF-63"),
+]);
+
+const INF64 = folder("INF-64 Injected tools on streams", `Setup: ${INJ_TEXT}; a streamed chat with stream_options.include_usage; turn 1 calls web_search (10 and 5 tokens), turn 2 answers "answer" (20 and 7 tokens).`, [
+  ...injectedSetup("INF-64"),
+  llmScript("INF-64", "inf64", { turns: [{ ...SEARCH_CALL, usage: { input: 10, output: 5 } }, { text: "answer", usage: { input: 20, output: 7 } }] }),
+  infPost("INF-64", "streamed chat", "/v1/chat/completions", chatBody("inf64", { stream: true, stream_options: { include_usage: true }, ...{} }), [A.status(200), A.custom("one stream: no web_search delta, one terminal chunk, usage for both turns", [
+    "var text = pm.response.text();",
+    "pm.expect(text, 'stream').to.not.include('web_search');",
+    "var finals = 0, usages = [];",
+    "text.split('\\n').forEach(function (l) { if (l.indexOf('data: {') !== 0) { return; } var d = JSON.parse(l.slice(6)); if (d.choices && d.choices[0] && d.choices[0].finish_reason) { finals++; } if (d.usage) { usages.push(d.usage); } });",
+    "pm.expect(finals, text).to.equal(1);",
+    "pm.expect(usages.length, text).to.equal(1);",
+    "pm.expect(usages[0].prompt_tokens).to.equal(30);",
+    "pm.expect(usages[0].completion_tokens).to.equal(12);",
+    "pm.expect(usages[0].total_tokens).to.equal(42);",
+  ])]),
+  mockGet("INF-64", "alpha", "alpha ran search once", [callsIs("search", 1)]),
+  ...injectedTeardown("INF-64"),
+]);
+
+const INF65 = folder("INF-65 Injected tool and client allow-lists", `Setup: ${LLM_TEXT}; alpha (search, echo) registered as client alpha, per call, tools_to_execute []; beta (zz) as client beta; openai's injected_tools expose alpha's search as web_search; the chat sends x-bf-mcp-include-clients beta; turn 1 calls web_search, turn 2 answers "answer".`, [
+  ...injectedSetup("INF-65", ["search", "echo"], { tools_to_execute: [] }),
+  ...freshServer("INF-65", "beta", ["zz"]),
+  createClient("INF-65", httpClient("inf-65-beta", "beta", "beta", { tools_to_execute: ["*"] }), "setup: register client beta"),
+  llmScript("INF-65", "inf65", { turns: [SEARCH_CALL, { text: "answer" }] }),
+  infPost("INF-65", "chat with include-clients beta", "/v1/chat/completions", chatBody("inf65"), [A.status(200), chatContent("answer")], { headers: [inc("clients", "beta")] }),
+  mockGet("INF-65", "alpha", "the chat still ran search", [callsIs("search", 1)]),
+  execTool("INF-65", "execute alpha-search directly", "alpha-search", [A.status(400), A.msgContains("not in client's ToolsToExecute allow-list")]),
+  deleteClient("INF-65", "inf-65-beta"),
+  ...injectedTeardown("INF-65"),
+]);
+
 const ONLY = process.env.TESTS ? new Set(process.env.TESTS.split(",").map((r) => r.trim())) : null;
 const pick = (tests) => (ONLY ? tests.filter((t) => ONLY.has(t.name.split(" ")[0])) : tests);
 
@@ -5562,7 +5666,7 @@ const collection = {
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV06, GOV11, GOV16, GOV17, GOV29, GOV31, GOV32]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF66]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG27, LOG28, LOG29, LOG31, LOG33, LOG37, LOG38, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18]),
