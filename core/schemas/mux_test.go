@@ -2414,3 +2414,27 @@ func TestToolMessageWithoutMarkerStaysUnmarked(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkToResponsesMessagesToolMessage(b *testing.B) {
+	text := strings.Repeat("x", 512)
+	callID := "call_1"
+	block := func(cc *CacheControl) *ChatMessageContent {
+		return &ChatMessageContent{ContentBlocks: []ChatContentBlock{{Type: ChatContentBlockTypeText, Text: &text, CacheControl: cc}}}
+	}
+	cases := []struct {
+		name string
+		msg  ChatMessage
+	}{
+		{"marked_block", ChatMessage{Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: &callID}, Content: block(&CacheControl{Type: CacheControlTypeEphemeral})}},
+		{"unmarked_block", ChatMessage{Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: &callID}, Content: block(nil)}},
+		{"string", ChatMessage{Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: &callID}, Content: &ChatMessageContent{ContentStr: &text}}},
+	}
+	for _, c := range cases {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = c.msg.ToResponsesMessages()
+			}
+		})
+	}
+}
