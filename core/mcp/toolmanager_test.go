@@ -63,6 +63,14 @@ func (m *mockToolClientManager) GetToolPerClient(ctx context.Context) map[string
 	}
 }
 
+func (m *mockToolClientManager) GetConnectTools(context.Context) []schemas.ChatTool {
+	return nil
+}
+
+func (m *mockToolClientManager) ConnectToolClient(context.Context, string) *schemas.MCPClientState {
+	return nil
+}
+
 func (m *mockToolClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
 
 func (m *mockToolClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
@@ -1460,4 +1468,17 @@ func TestExecuteTool_CallsTheUpstreamToolByItsExactName(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, map[string]int{"a_b": 1, "a-b": 1, "web-search": 1}, calls, "each call runs the tool it named, once")
+}
+
+// The tools injected into a request when every client is shared: the path every
+// request without per_user_discovery takes, which connect tools must not slow.
+func BenchmarkParseAndAddToolsToRequest(b *testing.B) {
+	m, _ := benchmarkSharedManager(10, 20)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
+		_ = m.toolsManager.ParseAndAddToolsToRequest(ctx, req)
+	}
 }

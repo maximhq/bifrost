@@ -56,14 +56,15 @@ const mcpDialTimeout = 10 * time.Second
 // tool. A refresh that fails leaves the credential needing reauthorization,
 // which the second resolution reports as such.
 func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
-	conn, release, err := m.acquireClientConn(ctx, state)
+	conn, release, _, err := m.acquireClientConn(ctx, state)
 	if err == nil || !isAuthRequiredError(err) || !refreshesOnConnectRejection(m.credStore, state.ExecutionConfig) {
 		return conn, release, err
 	}
 	if refreshErr := m.credStore.ForceRefresh(ctx, state.ExecutionConfig); refreshErr != nil {
 		m.logger.Debug("%s Refreshing the credential of MCP client %s after its connection was rejected failed: %v", MCPLogPrefix, state.ExecutionConfig.Name, refreshErr)
 	}
-	return m.acquireClientConn(ctx, state)
+	conn, release, _, err = m.acquireClientConn(ctx, state)
+	return conn, release, err
 }
 
 // refreshesOnConnectRejection reports whether a per-call connection rejected with
@@ -81,16 +82,18 @@ func refreshesOnConnectRejection(credStore schemas.MCPCredentialStore, config *s
 }
 
 // acquireClientConn is AcquireClientConn without the refresh-and-redial on a
-// rejected per-call connection.
-func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
+// rejected per-call connection, and also returns the instructions the upstream's
+// initialize answered with on a per-call connection, which a caller's discovery
+// keeps; "" on a shared connection.
+func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), string, error) {
 	if state == nil || state.ExecutionConfig == nil {
-		return nil, nil, fmt.Errorf("client state is required")
+		return nil, nil, "", fmt.Errorf("client state is required")
 	}
 	config := state.ExecutionConfig
 
 	if !m.credStore.RequiresPerCallConnection(config) {
 		if state.Conn == nil {
-			return nil, nil, fmt.Errorf("MCP client %s has no active connection", config.Name)
+			return nil, nil, "", fmt.Errorf("MCP client %s has no active connection", config.Name)
 		}
 		// An openapi client with per-user headers is sticky (its server is
 		// in-process) but still needs the caller's credential on every call.
@@ -100,16 +103,16 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 		// JSON-RPC error string. The handler resolves again at send time.
 		if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI && config.AuthType == schemas.MCPAuthTypePerUserHeaders {
 			if _, credErr := m.credStore.ConnectionHeaders(ctx, config); credErr != nil {
-				return nil, nil, credErr
+				return nil, nil, "", credErr
 			}
 		}
-		return state.Conn, func() {}, nil
+		return state.Conn, func() {}, "", nil
 	}
 
 	// Per-user: open an ephemeral transport per call, wrapped in the
 	// connect-plugin gate for parity with shared-connection setup.
 	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
-		return nil, nil, fmt.Errorf("connection URL is required for ephemeral MCP execution")
+		return nil, nil, "", fmt.Errorf("connection URL is required for ephemeral MCP execution")
 	}
 	url := config.ConnectionString.GetValue()
 
@@ -130,6 +133,7 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 	// covers both per-user-OAuth (Kind=oauth) and per-user-headers
 	// (Kind=headers) surfaces.
 	var authRequiredErr *schemas.MCPAuthRequiredError
+	var instructions string
 	start := time.Now()
 
 	_, gateErr := m.runConnectWithPluginPipeline(ctx, connectReq, func(preReq *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectResponse, error) {
@@ -272,6 +276,7 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 			},
 		}
 		if initResult != nil {
+			instructions = initResult.Instructions
 			resp.ProtocolVersion = initResult.ProtocolVersion
 			resp.Instructions = initResult.Instructions
 			resp.ServerInfo = &schemas.MCPServerInfo{
@@ -293,23 +298,23 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 			_ = tempClient.Close()
 		}
 		if authRequiredErr != nil {
-			return nil, nil, authRequiredErr
+			return nil, nil, "", authRequiredErr
 		}
 		if gateErr.Error != nil {
 			// The dial's own error when no plugin rewrote it, so its type survives: an
 			// upstream 401 is what AcquireClientConn refreshes the credential for.
 			if gateErr.Error.Error != nil && gateErr.Error.Message == gateErr.Error.Error.Error() {
-				return nil, nil, gateErr.Error.Error
+				return nil, nil, "", gateErr.Error.Error
 			}
-			return nil, nil, fmt.Errorf("%s", gateErr.Error.Message)
+			return nil, nil, "", fmt.Errorf("%s", gateErr.Error.Message)
 		}
-		return nil, nil, fmt.Errorf("ephemeral connection setup failed for %s", config.Name)
+		return nil, nil, "", fmt.Errorf("ephemeral connection setup failed for %s", config.Name)
 	}
 
 	if tempClient == nil {
 		// Plugin short-circuited connect with a synthetic success response and
 		// no live transport — we have nothing to execute against.
-		return nil, nil, fmt.Errorf("ephemeral MCP connection was short-circuited by plugin for %s", config.Name)
+		return nil, nil, "", fmt.Errorf("ephemeral MCP connection was short-circuited by plugin for %s", config.Name)
 	}
 
 	release := func() {
@@ -317,7 +322,7 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 			m.logger.Warn("%s Failed to close ephemeral client for %s: %v", MCPLogPrefix, config.Name, err)
 		}
 	}
-	return tempClient, release, nil
+	return tempClient, release, instructions, nil
 }
 
 // perCallConn is what one client's per-call connections share: an HTTP client, so calls reuse
