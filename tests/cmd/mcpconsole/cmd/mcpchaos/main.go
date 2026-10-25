@@ -12,11 +12,18 @@
 //	curl localhost:8400/control
 //	curl -XPOST localhost:8400/control/alpha/tools/add -d '{"tool":{"name":"new_tool"}}'
 //	curl -XPOST localhost:8400/control/alpha/faults -d '{"faults":{"status":429}}'
+//
+// With -tls-addr it also listens for HTTPS, answering every path there as one
+// server's Bedrock surface, since Bedrock clients only speak https to a bare
+// host:
+//
+//	mcpchaos -servers llm -tls-addr 127.0.0.1:8401 -tls-server llm
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -36,7 +43,13 @@ func main() {
 	stdio := flag.Bool("stdio", false, "serve one virtual server over stdin and stdout, bridging to a running fleet")
 	fleetURL := flag.String("fleet", "", "fleet base URL to bridge to (with -stdio)")
 	serverName := flag.String("server", "", "virtual server to bridge (with -stdio)")
+	tlsAddr := flag.String("tls-addr", "", "also listen for HTTPS on this address, serving one server's Bedrock surface")
+	tlsServer := flag.String("tls-server", "", "virtual server whose Bedrock surface the -tls-addr listener serves")
 	flag.Parse()
+	if (*tlsAddr == "") != (*tlsServer == "") {
+		fmt.Fprintln(os.Stderr, "mcpchaos: -tls-addr and -tls-server go together")
+		os.Exit(2)
+	}
 
 	// In stdio mode this process is spawned by whatever is under test, so it
 	// serves one virtual server over pipes and holds no state of its own; the
@@ -79,6 +92,16 @@ func main() {
 	for _, name := range fleet.Names() {
 		fmt.Printf("  %-12s mcp %s   control %s/control/%s\n", name, fleet.ServerURL(name), url, name)
 	}
+	shutdownTLS := func(context.Context) error { return nil }
+	if *tlsAddr != "" {
+		tlsURL, stop, err := fleet.ServeTLS(*tlsAddr, *tlsServer)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mcpchaos: failed to listen on %s: %v\n", *tlsAddr, err)
+			os.Exit(1)
+		}
+		shutdownTLS = stop
+		fmt.Printf("  bedrock (tls)  %s serves %s's Bedrock surface\n", tlsURL, *tlsServer)
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
@@ -87,7 +110,7 @@ func main() {
 	fmt.Println("\nmcpchaos shutting down")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := shutdown(ctx); err != nil {
+	if err := errors.Join(shutdownTLS(ctx), shutdown(ctx)); err != nil {
 		fmt.Fprintf(os.Stderr, "mcpchaos: shutdown: %v\n", err)
 		os.Exit(1)
 	}

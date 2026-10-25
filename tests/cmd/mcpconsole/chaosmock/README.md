@@ -197,7 +197,7 @@ Every server also answers as a model provider under `/s/<s>/llm`, for a client
 that sends model requests next to its MCP traffic: what it adds to a model
 request (tools, instructions) is only provable on the wire, and what it does
 with a reply (call a tool, loop, stop) is only testable when the reply is
-scripted. Four wire formats are served, streaming and not, at their public API
+scripted. Five wire formats are served, streaming and not, at their public API
 paths below a per-format prefix, plus each format's model listing:
 
 | Format | Path below `/llm` | Point a client's base URL at | Stream when |
@@ -206,6 +206,7 @@ paths below a per-format prefix, plus each format's model listing:
 | `openai.responses` | `POST /openai/v1/responses` | `/s/<s>/llm/openai` | `"stream":true` |
 | `anthropic.messages` | `POST /anthropic/v1/messages` | `/s/<s>/llm/anthropic` | `"stream":true` |
 | `genai` | `POST /genai/v1beta/models/<m>:generateContent`, `:streamGenerateContent` | `/s/<s>/llm/genai/v1beta` | the path |
+| `bedrock.converse` | `POST /bedrock/model/<m>/converse`, `/converse-stream` | the TLS listener (below) | the path |
 
 A request finds its script by a `[scenario:<key>]` marker anywhere in its body,
 usually the first user message, which a client copies into every later turn of
@@ -230,18 +231,38 @@ that does not join them shows it. OpenAI chat streams end with a usage frame
 when `stream_options.include_usage` is set, then `[DONE]`; Responses events
 carry an increasing `sequence_number`; Anthropic events all carry their
 `event:` line and end with `message_stop`; a Gemini stream puts the finish
-reason and usage on its last chunk.
+reason and usage on its last chunk. A Bedrock stream is the AWS event stream,
+binary frames each carrying two CRC32s: `messageStart`, the text's deltas, each
+tool call opened by `contentBlockStart`, `messageStop`, then `metadata` with
+usage.
 
 Every request is logged with its scenario, format, stream mode, method, path,
 raw query, headers, raw body, the body parsed (`json`), the model, the declared
 tool names in order (`tools`; a tool with no name, such as a provider's native
-one, appears as `type:<type>`), the turn served (`-1` for `then`) and the status
+one, appears as `type:<type>`, or `type:<key>` for a Gemini or Bedrock tool
+that is not a function declaration or tool spec), the turn served (`-1` for `then`) and the status
 answered (0 when refused or abandoned). `llm/requests` reads it; the state
 carries only a summary (models, each scenario's pending and served counts,
 unmarked requests). `llm/script` clears that scenario's entries, `counters/reset`
 clears the whole log and keeps the scripts. The model listings answer
-`mock-model` until `llm/models` or a seed's `llm_models` says otherwise.
-Unscoped server faults apply here as on REST.
+`mock-model` until `llm/models` or a seed's `llm_models` says otherwise;
+Bedrock's are `GET /bedrock/foundation-models` and its OpenAI-compatible
+`GET /bedrock/v1/models`. Unscoped server faults apply here as on REST.
+
+### Bedrock over TLS
+
+Bedrock clients take a bare host for each endpoint and always use https, so no
+base URL reaches `/s/<s>/llm/bedrock`. `-tls-addr <addr> -tls-server <s>` opens
+a second listener with a self-signed certificate made at startup and answers
+every path there as `<s>`'s Bedrock surface: `/model/<m>/converse` on it is
+`/s/<s>/llm/bedrock/model/<m>/converse`, and is logged under that path. Point
+every Bedrock endpoint the client uses (runtime, control plane and the
+OpenAI-compatible one) at that address and skip certificate verification.
+Errors carry their type in `x-amzn-ErrorType` and only a `message` in the body.
+
+```sh
+./tmp/mcpchaos -servers llm -tls-addr 127.0.0.1:8401 -tls-server llm
+```
 
 ## OAuth
 

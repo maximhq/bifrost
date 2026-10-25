@@ -16,7 +16,7 @@ import (
 // for a client under test that sends model requests as well as MCP traffic:
 // what it adds to a model request (tools, instructions) is only provable on
 // the wire, and what it does with a model's reply (call a tool, loop, give up)
-// only testable when the reply is scripted. Four wire formats are served, each
+// only testable when the reply is scripted. Five wire formats are served, each
 // streaming or not, at the paths their public APIs define below a per-format
 // prefix:
 //
@@ -24,6 +24,7 @@ import (
 //	/openai/v1/responses                         OpenAI Responses
 //	/anthropic/v1/messages                       Anthropic Messages
 //	/genai/v1beta/models/<m>:generateContent     Gemini, and :streamGenerateContent
+//	/bedrock/model/<m>/converse                  Bedrock Converse, and /converse-stream
 //
 // plus each format's model listing. A test scripts replies per scenario: a
 // "[scenario:<key>]" marker anywhere in the request body selects that
@@ -168,8 +169,8 @@ func (c LLMToolCall) argsObject() (json.RawMessage, error) {
 type LLMCall struct {
 	Seq      int    `json:"seq"`
 	Scenario string `json:"scenario"`
-	// Format is openai.chat, openai.responses, anthropic.messages or genai,
-	// or "" for a path no format serves.
+	// Format is openai.chat, openai.responses, anthropic.messages, genai or
+	// bedrock.converse, or "" for a path no format serves.
 	Format string `json:"format"`
 	Stream bool   `json:"stream"`
 	Method string `json:"method"`
@@ -391,6 +392,7 @@ const (
 	formatResponses = "openai.responses"
 	formatMessages  = "anthropic.messages"
 	formatGenAI     = "genai"
+	formatConverse  = "bedrock.converse"
 )
 
 // llmRoute is what a path asks of the surface.
@@ -398,7 +400,7 @@ type llmRoute struct {
 	format string
 	list   bool // a model listing rather than a model request
 	model  string
-	stream bool // fixed by the path (Gemini); otherwise read from the body
+	stream bool // fixed by the path (Gemini, Bedrock); otherwise read from the body
 }
 
 // routeLLM resolves a method and path relative to /s/<name>/llm. The format
@@ -423,8 +425,18 @@ func routeLLM(method, path string) (llmRoute, bool) {
 		if ok && model != "" && (action == "generateContent" || action == "streamGenerateContent") {
 			return llmRoute{format: formatGenAI, model: model, stream: action == "streamGenerateContent"}, true
 		}
+	case path == "/bedrock/foundation-models" && method == http.MethodGet:
+		return llmRoute{format: formatConverse, list: true}, true
+	case path == "/bedrock/v1/models" && method == http.MethodGet:
+		// Bedrock's OpenAI-compatible endpoint, which its clients also list.
+		return llmRoute{format: formatChat, list: true}, true
+	case strings.HasPrefix(path, "/bedrock/model/") && method == http.MethodPost:
+		rest := strings.TrimPrefix(path, "/bedrock/model/")
+		if i := strings.LastIndex(rest, "/"); i > 0 && (rest[i+1:] == "converse" || rest[i+1:] == "converse-stream") {
+			return llmRoute{format: formatConverse, model: rest[:i], stream: rest[i+1:] == "converse-stream"}, true
+		}
 	}
-	for prefix, format := range map[string]string{"/openai/": formatChat, "/anthropic/": formatMessages, "/genai/": formatGenAI} {
+	for prefix, format := range map[string]string{"/openai/": formatChat, "/anthropic/": formatMessages, "/genai/": formatGenAI, "/bedrock/": formatConverse} {
 		if strings.HasPrefix(path, prefix) {
 			return llmRoute{format: format}, false
 		}
@@ -577,9 +589,14 @@ func includeUsage(body map[string]any) bool {
 
 // declaredTools lists the tool names a model request declares, in order. A
 // tool without a name is listed as type:<type>, or type:<key> for a Gemini
-// tool that is not a function declaration.
+// tool that is not a function declaration or a Bedrock one that is not a tool
+// spec.
 func declaredTools(format string, body map[string]any) []string {
 	tools, _ := body["tools"].([]any)
+	if format == formatConverse {
+		cfg, _ := body["toolConfig"].(map[string]any)
+		tools, _ = cfg["tools"].([]any)
+	}
 	out := []string{}
 	for _, t := range tools {
 		tool, _ := t.(map[string]any)
@@ -598,6 +615,16 @@ func declaredTools(format string, body map[string]any) []string {
 					name, _ := decl["name"].(string)
 					out = append(out, name)
 				}
+				continue
+			}
+			for key := range tool {
+				out = append(out, "type:"+key)
+			}
+			continue
+		case formatConverse:
+			if spec, ok := tool["toolSpec"].(map[string]any); ok {
+				name, _ := spec["name"].(string)
+				out = append(out, name)
 				continue
 			}
 			for key := range tool {
@@ -635,6 +662,13 @@ func writeModelList(w http.ResponseWriter, format string, models []string) {
 			list = append(list, map[string]any{"name": "models/" + m, "displayName": m, "supportedGenerationMethods": []string{"generateContent", "streamGenerateContent"}})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"models": list})
+	case formatConverse:
+		list := []map[string]any{}
+		for _, m := range models {
+			list = append(list, map[string]any{"modelId": m, "modelName": m, "modelArn": "arn:aws:bedrock:us-east-1::foundation-model/" + m,
+				"providerName": "chaosmock", "inputModalities": []string{"TEXT"}, "outputModalities": []string{"TEXT"}, "responseStreamingSupported": true})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"modelSummaries": list})
 	default:
 		data := []map[string]any{}
 		for _, m := range models {
@@ -662,6 +696,9 @@ func writeLLMError(w http.ResponseWriter, format string, e LLMError) {
 			status = strings.ToUpper(strings.ReplaceAll(http.StatusText(e.Status), " ", "_"))
 		}
 		writeJSON(w, e.Status, map[string]any{"error": map[string]any{"code": e.Status, "message": e.Message, "status": status}})
+	case formatConverse:
+		w.Header().Set("x-amzn-ErrorType", typ)
+		writeJSON(w, e.Status, map[string]any{"message": e.Message})
 	default:
 		var code any
 		if e.Code != "" {
@@ -698,6 +735,8 @@ func (rp llmReply) body(format string) any {
 		return rp.messagesBody()
 	case formatGenAI:
 		return rp.genaiChunk(rp.turn.Text, true, true)
+	case formatConverse:
+		return rp.converseBody()
 	default:
 		return rp.chatBody()
 	}
@@ -762,7 +801,8 @@ func (rp llmReply) responsesBody(status string) map[string]any {
 	return resp
 }
 
-// anthropicStop maps a finish reason to Anthropic's stop_reason.
+// anthropicStop maps a finish reason to Anthropic's stop_reason, whose values
+// Bedrock's stopReason shares.
 func anthropicStop(finish string) string {
 	switch finish {
 	case "tool_calls":
@@ -877,6 +917,10 @@ func (sw *sseWriter) send(event string, data any) {
 // arguments string go out as two deltas, so the stream tests that the client
 // joins them.
 func (rp llmReply) stream(w http.ResponseWriter, r *http.Request, format string) {
+	if format == formatConverse {
+		rp.streamConverse(newEventStream(w, r, time.Duration(rp.turn.ChunkDelay)))
+		return
+	}
 	sw := newSSE(w, r, time.Duration(rp.turn.ChunkDelay))
 	switch format {
 	case formatResponses:

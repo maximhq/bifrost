@@ -2,9 +2,13 @@ module github.com/maximhq/bifrost/tests/cmd/mcpconsole
 
 go 1.27.0
 
-require github.com/mark3labs/mcp-go v0.43.2
+require (
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
+	github.com/mark3labs/mcp-go v0.43.2
+)
 
 require (
+	github.com/aws/smithy-go v1.25.1 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.2.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
