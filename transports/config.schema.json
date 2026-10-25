@@ -3360,6 +3360,11 @@
                     "description": "Maximum time for a single materialized view refresh pass. Go duration string, min 30s, max 30m. Unset derives a budget from matview_refresh_interval (5x the interval, at least 5m). A refresh holds a pooled connection and a session advisory lock across every view, so without a bound one stuck refresh leaves the views permanently stale across all replicas.",
                     "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$"
                   },
+                  "matview_refresh_temp_file_limit": {
+                    "type": "string",
+                    "description": "Caps the temp files each Postgres process running a materialized view statement may write (Postgres temp_file_limit, e.g. '10GB'; parallel workers each get the cap). A refresh over a very large logs table can spill tens of GB, and a full disk fails every query on the server. A statement that hits the cap fails and the view keeps its previous contents. Unset leaves the server setting alone. The database role needs superuser or GRANT SET ON PARAMETER temp_file_limit; without it the cap is skipped with a warning.",
+                    "pattern": "^(-1|[0-9]+ ?(kB|MB|GB|TB)?)$"
+                  },
                   "migration_matview_cancel_after": {
                     "type": "string",
                     "description": "How long schema migrations wait for an in-flight materialized view refresh pass (from any replica, including older releases during a rolling upgrade) before cancelling its REFRESH statements. Migrations pause refreshes for their whole run, because a long refresh on a large logs table blocks their CREATE INDEX CONCURRENTLY and ALTER TABLE logs statements. A cancelled concurrent refresh rolls back and the view keeps its previous contents. Go duration string; unset uses 60s; \"off\" never cancels and only waits.",

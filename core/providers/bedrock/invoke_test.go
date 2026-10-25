@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -3241,4 +3242,43 @@ func TestInvokeBuildConfig_ExcludesInternalConverseFields(t *testing.T) {
 	assert.True(t, excluded["guardrailConfig"], "guardrailConfig must be excluded")
 	assert.True(t, excluded["additionalModelRequestFieldPaths"], "additionalModelRequestFieldPaths must be excluded")
 	assert.True(t, excluded["additionalModelResponseFieldPaths"], "additionalModelResponseFieldPaths must be excluded")
+}
+
+// TestInvokeIngressCarriesToolStrict covers /bedrock/model/{modelId}/invoke with
+// AWS's strict tool example: convertAnthropicTools must keep tools[].strict on
+// its way through Converse, or the Converse egress sends the tool unenforced.
+// strict:false survives ingress but, being the default, stays off the egress wire.
+func TestInvokeIngressCarriesToolStrict(t *testing.T) {
+	for _, strict := range []bool{true, false} {
+		t.Run("strict="+strconv.FormatBool(strict), func(t *testing.T) {
+			tool := anthropicToolMap("get_weather", nil)
+			tool["strict"] = strict
+			req := &BedrockInvokeRequest{
+				ModelID: "us.anthropic.claude-sonnet-4-6-v1:0",
+				Messages: []BedrockMessage{
+					{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("What's the weather like in San Francisco?")}}},
+				},
+				Tools: []interface{}{tool},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.Len(t, bifrostReq.Params.Tools, 1)
+			require.NotNil(t, bifrostReq.Params.Tools[0].ResponsesToolFunction)
+			assert.Equal(t, schemas.Ptr(strict), bifrostReq.Params.Tools[0].ResponsesToolFunction.Strict)
+
+			bifrostReq.Provider = schemas.Bedrock
+			egress, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			raw, err := sonic.Marshal(egress.ToolConfig)
+			require.NoError(t, err)
+			got := gjson.GetBytes(raw, "tools.0.toolSpec.strict")
+			if !strict {
+				assert.False(t, got.Exists(), "toolSpec.strict:false must stay off the Converse egress: %s", raw)
+				return
+			}
+			assert.True(t, got.Exists(), "toolSpec.strict dropped on the Converse egress: %s", raw)
+			assert.True(t, got.Bool())
+		})
+	}
 }
