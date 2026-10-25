@@ -421,6 +421,38 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "minimax": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "MiniMax API Key",
+          "value": "env.MINIMAX_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "byteplus": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "BytePlus API Key",
+          "value": "env.BYTEPLUS_API_KEY",
+          "weight": 1,
+          "models": ["deepseek-v4-flash-260425", "skylark-embedding-vision-251215", "dola-seedream-5-0-pro-260628", "seedream-4-5-251128", "dreamina-seedance-2-5-260628"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "openrouter": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -623,6 +655,23 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "github-copilot": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "keys": [
+        {
+          "name": "GitHub Copilot",
+          "value": "env.GITHUB_COPILOT_API_KEY",
+          "weight": 1,
+          "models": [
+            "*"
+          ]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "deepseek": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -700,6 +749,29 @@
           "tool_name": "web_search"
         }
       ]
+    },
+    "openai_passthrough_routes": {
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "passthrough": {
+        "allowed_routes": [
+          { "methods": ["POST"], "path": "/v1/chat/completions" },
+          { "methods": ["GET"], "path": "/v1/models" }
+        ]
+      }
     },
     "openai_injectedtools": {
       "send_back_raw_request": true,
@@ -1495,6 +1567,18 @@
           },
           {
             "provider": "cerebras",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "minimax",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "byteplus",
             "allowed_models": ["*"],
             "key_ids": ["*"],
             "weight": 1.0

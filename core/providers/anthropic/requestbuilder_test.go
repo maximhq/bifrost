@@ -1553,3 +1553,51 @@ func TestDefaultEagerInputStreaming(t *testing.T) {
 		}
 	}
 }
+
+// thinking.display:"updates" reaches a provider only together with its beta. Where the surface
+// carries it (Anthropic, Vertex) the value is kept and the beta is derived from the body, which
+// is what lets a Chat Completions client (no way to set anthropic-beta) use it; elsewhere it is
+// downgraded to "omitted" so the request still succeeds. The Responses neutral shape has no
+// "updates" value, so only its raw-body form is built here.
+func TestThinkingDisplayUpdatesRequestBuilders(t *testing.T) {
+	const model = "claude-opus-5-5"
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle, schemas.Azure} {
+		for _, keeps := range []bool{true, false} {
+			for _, raw := range []bool{false, true} {
+				for _, chat := range []bool{false, true} {
+					if !chat && !raw {
+						continue
+					}
+					t.Run(fmt.Sprintf("%s/supported=%v/raw=%v/chat=%v", provider, keeps, raw, chat), func(t *testing.T) {
+						setThinkingDisplayUpdates(t, provider, keeps)
+						ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+						ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, raw)
+						body := []byte(`{"model":"` + model + `","max_tokens":64,"thinking":{"type":"adaptive","display":"updates"},"messages":[{"role":"user","content":"hi"}]}`)
+						cfg := AnthropicRequestBuildConfig{Provider: provider, Model: model}
+						var out []byte
+						var err *schemas.BifrostError
+						if chat {
+							out, err = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: provider, Model: model, RawRequestBody: body, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}, Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: new("high"), Display: new("updates")}}}, cfg)
+						} else {
+							out, err = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: provider, Model: model, RawRequestBody: body, Input: makeSimpleInput("hi")}, cfg)
+						}
+						if err != nil {
+							t.Fatalf("build: %v", err)
+						}
+						want := "omitted"
+						if keeps {
+							want = AnthropicThinkingDisplayUpdates
+						}
+						if got := providerUtils.GetJSONField(out, "thinking.display").String(); got != want {
+							t.Errorf("thinking.display = %q, want %q; body=%s", got, want, out)
+						}
+						betas := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), provider)
+						if got := slices.Contains(betas, AnthropicThinkingDisplayUpdatesBetaHeader); got != keeps {
+							t.Errorf("beta %s present = %v, want %v (betas: %v)", AnthropicThinkingDisplayUpdatesBetaHeader, got, keeps, betas)
+						}
+					})
+				}
+			}
+		}
+	}
+}

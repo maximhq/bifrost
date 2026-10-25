@@ -538,3 +538,28 @@ func TestProviderConfig_InjectedToolsSurvivesRedactionAndHash(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, without, empty, "an empty list is the same config as none")
 }
+
+// TestProviderConfig_PassthroughSurvivesRedactionAndHash covers Redacted and the config
+// hash. A nil policy writes nothing to the hash, so existing providers keep their hash;
+// an empty allowlist hashes differently because it forwards nothing.
+func TestProviderConfig_PassthroughSurvivesRedactionAndHash(t *testing.T) {
+	cfg := ProviderConfig{Passthrough: &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+		{Methods: []string{"POST"}, Path: "/v1/chat/completions"},
+	}}}
+	assert.Equal(t, cfg.Passthrough, cfg.Redacted().Passthrough)
+
+	withPolicy, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	without, err := (&ProviderConfig{}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, without, withPolicy)
+
+	cfg.Passthrough.AllowedRoutes = append(cfg.Passthrough.AllowedRoutes, schemas.PassthroughRouteRule{Path: "/v1/files/**"})
+	widened, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, withPolicy, widened)
+
+	off, err := (&ProviderConfig{Passthrough: &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{}}}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, without, off, "an empty allowlist is a different config from no policy")
+}

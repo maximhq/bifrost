@@ -1150,6 +1150,45 @@ func TestHybrid_DeleteLog(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// partialDeleteStore deletes the logs and then reports the topic cleanup
+// failure ClickHouse reports, which no SQLite store can be made to.
+type partialDeleteStore struct{ LogStore }
+
+func (s partialDeleteStore) DeleteLog(ctx context.Context, id string) error {
+	if err := s.LogStore.DeleteLog(ctx, id); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: cleanup failed", ErrPartialLogDelete)
+}
+
+func (s partialDeleteStore) DeleteLogs(ctx context.Context, ids []string) error {
+	if err := s.LogStore.DeleteLogs(ctx, ids); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: cleanup failed", ErrPartialLogDelete)
+}
+
+// A partial delete removed the rows, so their payloads leave object storage
+// too, and the caller still gets the error.
+func TestHybrid_PartialDeleteStillDeletesObjects(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	for _, id := range []string{"partial-1", "partial-2"} {
+		entry := &Log{ID: id, Timestamp: time.Now().UTC(), Provider: "anthropic", Model: "claude-3", Status: "success", Object: "chat.completion", InputHistory: `[{"role":"user","content":"delete me"}]`}
+		require.NoError(t, entry.SerializeFields())
+		require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+		waitForOffload(t, inner, id)
+	}
+	require.Equal(t, 2, objStore.Len())
+	hybrid.inner = partialDeleteStore{LogStore: inner}
+
+	require.ErrorIs(t, hybrid.DeleteLog(ctx, "partial-1"), ErrPartialLogDelete)
+	assert.Equal(t, 1, objStore.Len())
+	require.ErrorIs(t, hybrid.DeleteLogs(ctx, []string{"partial-2"}), ErrPartialLogDelete)
+	assert.Equal(t, 0, objStore.Len())
+}
+
 func TestHybrid_Tags(t *testing.T) {
 	hybrid, _, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())

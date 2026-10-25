@@ -105,6 +105,24 @@ func TestOpenAIWireCostResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("chat keeps generated images beside the flattened cost", func(t *testing.T) {
+		const images = `"images":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]`
+		var resp schemas.BifrostChatResponse
+		upstream := `{"id":"gen-1","object":"chat.completion","created":1,"model":"google/gemini-2.5-flash-image",` +
+			`"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Here you go",` + images + `}}]}`
+		if err := schemas.Unmarshal([]byte(upstream), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		resp.Usage = &schemas.BifrostLLMUsage{TotalTokens: 15, Cost: &schemas.BifrostCost{TotalCost: 3}}
+		js, err := sonic.Marshal(openAIWireCostResponse(&resp))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if s := string(js); !strings.Contains(s, images) || !strings.Contains(s, `"content":"Here you go"`) {
+			t.Errorf("drop-in chat wire lost the generated image: %s", s)
+		}
+	})
+
 	t.Run("chat without cost passes through the same pointer", func(t *testing.T) {
 		resp := &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{TotalTokens: 15}}
 		if out := openAIWireCostResponse(resp); any(out) != any(resp) {

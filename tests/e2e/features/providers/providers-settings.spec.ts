@@ -656,6 +656,107 @@ test.describe("Provider Settings", () => {
       }
     });
   });
+
+  // The shared e2e config ships openai with no passthrough policy, so every test that saves
+  // starts from and returns to that default.
+  test.describe("Passthrough Tab", () => {
+    test.beforeEach(async ({ providersPage }) => {
+      await providersPage.goto();
+      await providersPage.selectProvider("openai");
+    });
+
+    test("should show the openai passthrough route", async ({ providerSettingsPage }) => {
+      await providerSettingsPage.selectConfigTab("passthrough");
+
+      const page = providerSettingsPage.page;
+      await expect(page.getByTestId("provider-tab-passthrough")).toHaveAttribute("data-state", "active");
+      await expect(page.getByTestId("provider-config-passthrough-content")).toBeVisible();
+      const hint = page.getByTestId("provider-passthrough-endpoint-hint");
+      await expect(hint).toContainText("/openai_passthrough/");
+      await expect(hint).not.toContainText("x-model-provider");
+    });
+
+    test("should save a custom path rule and keep it after a reload", async ({ providersPage, providerSettingsPage }) => {
+      const page = providerSettingsPage.page;
+      const openTab = async () => {
+        await providersPage.goto();
+        await providersPage.selectProvider("openai");
+        await providerSettingsPage.selectConfigTab("passthrough");
+      };
+      const first = "provider-passthrough-row-0";
+      const row = "provider-passthrough-row-1";
+      try {
+        await providerSettingsPage.resetPassthroughToDefault("openai");
+        await providerSettingsPage.selectPassthroughMode("custom");
+        // Custom starts with one empty rule, which blocks saving until it has a path.
+        await expect(page.getByTestId(`${first}-path-input`)).toHaveValue("");
+        await expect(providerSettingsPage.getPassthroughSaveBtn()).toBeDisabled();
+        await page.getByTestId(`${first}-path-input`).fill("/v1/chat/completions");
+        await page.getByTestId(`${first}-methods-select`).click();
+        await page.getByRole("option", { name: "POST", exact: true }).click();
+        await page.keyboard.press("Escape");
+
+        await page.getByTestId("provider-passthrough-add-btn").click();
+        await page.getByTestId(`${row}-path-input`).fill("v1/files");
+        await expect(page.getByTestId(row)).toContainText("Path must start with /");
+        await expect(providerSettingsPage.getPassthroughSaveBtn()).toBeDisabled();
+        await page.getByTestId(`${row}-path-input`).fill("/v1/files/**");
+        await expect(page.getByTestId(row)).not.toContainText("Path must start with /");
+        await page.getByTestId(`${row}-methods-select`).click();
+        await page.getByRole("option", { name: "GET", exact: true }).click();
+        await page.keyboard.press("Escape");
+
+        const body = await providerSettingsPage.savePassthrough("openai");
+        expect(body.passthrough).toEqual({
+          allowed_routes: [
+            { methods: ["POST"], path: "/v1/chat/completions" },
+            { methods: ["GET"], path: "/v1/files/**" },
+          ],
+        });
+
+        await page.reload();
+        await openTab();
+        await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("Custom");
+        await expect(page.getByTestId(`${first}-path-input`)).toHaveValue("/v1/chat/completions");
+        await expect(page.getByTestId(`${first}-methods-select`)).toContainText("POST");
+        await expect(page.getByTestId(`${row}-path-input`)).toHaveValue("/v1/files/**");
+        await expect(page.getByTestId(`${row}-methods-select`)).toContainText("GET");
+      } finally {
+        await openTab();
+        await providerSettingsPage.resetPassthroughToDefault("openai");
+      }
+    });
+
+    test("should reset to the default by sending null", async ({ providersPage, providerSettingsPage }) => {
+      const page = providerSettingsPage.page;
+      const openTab = async () => {
+        await providersPage.goto();
+        await providersPage.selectProvider("openai");
+        await providerSettingsPage.selectConfigTab("passthrough");
+      };
+      const warning = page.getByTestId("provider-passthrough-all-routes-warning");
+      try {
+        await providerSettingsPage.resetPassthroughToDefault("openai");
+        await providerSettingsPage.selectPassthroughMode("off");
+        await expect(warning).toHaveCount(0);
+        const offBody = await providerSettingsPage.savePassthrough("openai");
+        expect(offBody.passthrough).toEqual({ allowed_routes: [] });
+
+        await providerSettingsPage.selectPassthroughMode("all");
+        await expect(warning).toBeVisible();
+        const body = await providerSettingsPage.savePassthrough("openai");
+        expect(body).toHaveProperty("passthrough", null);
+
+        await page.reload();
+        await openTab();
+        await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("All routes");
+        await expect(warning).toBeVisible();
+      } finally {
+        await openTab();
+        await providerSettingsPage.resetPassthroughToDefault("openai");
+      }
+    });
+  });
 });
 
 // addToolRow appends a Tools row and fills it: the MCP server by name through its

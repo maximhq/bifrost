@@ -1,5 +1,6 @@
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
+import { expectListLoadError } from "../../core/utils/test-helpers";
 import {
   createCustomProviderData,
   createProviderKeyData,
@@ -119,6 +120,12 @@ test.describe("Providers", () => {
       // Switch to Anthropic
       await providersPage.selectProvider("anthropic");
       await expect(providersPage.page).toHaveURL(/provider=anthropic/);
+    });
+
+    test("should show the load error instead of the empty state when providers fail to load", async ({
+      page,
+    }) => {
+      await expectListLoadError(page, "/api/providers", "providers-load-error", "providers-button-read-more");
     });
   });
 
@@ -285,6 +292,79 @@ test.describe("Providers", () => {
       await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
     });
 
+    test("should configure both Vertex OpenAI endpoint methods and restore standard routing", async ({ providersPage, page }) => {
+      if (!(await providersPage.providerExists("vertex"))) {
+        await providersPage.addKnownProviderFromDropdown("vertex");
+        createdProviders.push("vertex");
+      }
+      const keyName = `Vertex-OpenAI-${Date.now()}`;
+      createdKeys.push({ provider: "vertex", keyName });
+      const created = await page.request.post("/api/providers/vertex/keys", {
+        data: {
+          name: keyName,
+          value: "",
+          models: ["*"],
+          weight: 1,
+          vertex_key_config: { project_id: "key-project", region: "us-central1" },
+          aliases: { "customer-vllm": { model_id: "custom-model-version", model_name: "custom-model" } },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider("vertex");
+      const edit = async () => {
+        await providersPage.dismissToasts();
+        await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+        await page.getByRole("menuitem", { name: /Edit/i }).click();
+        await expect(providersPage.keyForm).toBeVisible();
+        await page.getByTestId("deployment-expand-customer-vllm").click();
+      };
+      const selectMode = async (label: string) => {
+        await page.getByTestId("deployment-vertex-serving-mode").click();
+        await page.getByRole("option", { name: label, exact: true }).click();
+      };
+      const save = async () => {
+        await providersPage.keySaveBtn.click();
+        await providersPage.waitForSuccessToast();
+        await expect(providersPage.keyForm).not.toBeVisible();
+      };
+      const savedAlias = async () => {
+        const response = await page.request.get("/api/providers/vertex/keys");
+        expect(response.ok()).toBe(true);
+        const body = await response.json();
+        const key = body.keys.find((entry: { name: string }) => entry.name === keyName);
+        expect(key).toBeTruthy();
+        return key.aliases["customer-vllm"];
+      };
+
+      await edit();
+      await selectMode("OpenAI-compatible — Raw prediction");
+      await providersPage.keySaveBtn.click();
+      await expect(page.getByTestId("deployment-vertex-endpoint-error")).toBeVisible();
+      await expect(providersPage.keyForm).toBeVisible();
+      await page.getByTestId("deployment-vertex-endpoint").fill("https://us-west1-aiplatform.googleapis.com/v1/projects/customer-project/locations/us-west1/endpoints/2222222222:rawPredict");
+      await expect(page.getByTestId("deployment-vertex-endpoint")).toHaveValue("2222222222");
+      await save();
+      let alias = await savedAlias();
+      expect(alias.model_id).toBe("custom-model-version");
+      expect(alias.vertex_endpoint).toEqual({ endpoint_id: "2222222222", format: "openai_chat", method: "raw_predict" });
+      expect(alias.project_id.value).toBe("customer-project");
+      expect(alias.region.value).toBe("us-west1");
+
+      await edit();
+      await expect(page.getByTestId("deployment-vertex-serving-mode")).toContainText("Raw prediction");
+      await selectMode("OpenAI-compatible — Chat completions");
+      await save();
+      alias = await savedAlias();
+      expect(alias.vertex_endpoint).toEqual({ endpoint_id: "2222222222", format: "openai_chat", method: "chat_completions" });
+      await edit();
+      await expect(page.getByTestId("deployment-vertex-serving-mode")).toContainText("Chat completions");
+      await selectMode("Standard Vertex");
+      await expect(page.getByTestId("deployment-vertex-endpoint")).toHaveCount(0);
+      await save();
+      expect((await savedAlias()).vertex_endpoint).toBeUndefined();
+    });
+
     test("should save a Cloudflare key with its account ID", async ({
       providersPage,
       page,
@@ -420,6 +500,31 @@ test.describe("Providers", () => {
       expect(saved.custom_provider_config?.allowed_requests?.decisions).toBe(true);
       expect(saved.custom_provider_config?.allowed_requests?.list_models).toBe(true);
       expect(saved.custom_provider_config?.allowed_requests?.chat_completion).toBe(false);
+    });
+
+    test("should show the bedrock passthrough route on a custom Bedrock provider", async ({
+      providersPage,
+      providerSettingsPage,
+    }) => {
+      const providerData = createCustomProviderData({
+        name: `test-bedrock-${Date.now()}`,
+        baseProviderType: "bedrock",
+        baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+      });
+
+      // Track for cleanup
+      createdProviders.push(providerData.name);
+
+      await providersPage.createProvider(providerData);
+      await expect(providersPage.getProviderItem(providerData.name)).toBeVisible({ timeout: 15000 });
+
+      await providersPage.selectProvider(providerData.name);
+      await providerSettingsPage.selectConfigTab("passthrough");
+      const hint = providerSettingsPage.page.getByTestId("provider-passthrough-endpoint-hint");
+      await expect(hint).toContainText("/bedrock_passthrough/");
+      await expect(hint).toContainText(`x-model-provider: ${providerData.name}`);
+      // A custom provider stays off until it is given a policy.
+      await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("Off");
     });
 
     test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({
