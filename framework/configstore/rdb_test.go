@@ -6303,6 +6303,156 @@ func TestPerUserDiscovery_CascadesWithClientAndVirtualKey(t *testing.T) {
 	assert.Nil(t, got)
 }
 
+// seedCredentialDiscoveries stores clients "notes" (OAuth config "cfg-notes")
+// and "wiki" (OAuth config "cfg-wiki"), the virtual key vk-1, OAuth tokens and
+// header credentials for alice and vk-1 on notes and for alice on wiki, and a
+// discovery for each of those bindings.
+func seedCredentialDiscoveries(t *testing.T) *RDBConfigStore {
+	t.Helper()
+	store := setupMCPSessionsTestStore(t)
+	require.NoError(t, store.DB().AutoMigrate(&tables.TableMCPPerUserDiscovery{}))
+	ctx := context.Background()
+	for _, name := range []string{"notes", "wiki"} {
+		require.NoError(t, store.DB().WithContext(ctx).Create(&tables.TableOauthConfig{
+			ID: "cfg-" + name, ClientID: schemas.NewSecretVar("bifrost"), TokenURL: "https://idp.invalid/token",
+			AuthorizeURL: "https://idp.invalid/authorize", RedirectURI: "http://localhost/api/oauth/callback", Status: "authorized",
+		}).Error)
+		require.NoError(t, store.DB().WithContext(ctx).Create(&tables.TableMCPClient{
+			ClientID: name, Name: name, EndpointSlug: name, ConnectionType: "http", OauthConfigID: schemas.Ptr("cfg-" + name),
+		}).Error)
+	}
+	require.NoError(t, store.DB().WithContext(ctx).Create(&tables.TableVirtualKey{ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1")}).Error)
+	alice, vk := "alice", "vk-1"
+	for _, token := range []*tables.TableMCPOauthToken{
+		{ID: "tok-alice", MCPClientID: "notes", UserID: &alice, AuthMode: "user", Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-notes"},
+		{ID: "tok-vk", MCPClientID: "notes", VirtualKeyID: &vk, AuthMode: "vk", Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-notes"},
+		{ID: "tok-wiki", MCPClientID: "wiki", UserID: &alice, AuthMode: "user", Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-wiki"},
+	} {
+		require.NoError(t, store.DB().WithContext(ctx).Create(token).Error)
+	}
+	for _, cred := range []*tables.TableMCPPerUserHeaderCredential{
+		{ID: "cred-alice", MCPClientID: "notes", UserID: &alice, AuthMode: "user", Status: "active", HeadersJSON: "{}"},
+		{ID: "cred-vk", MCPClientID: "notes", VirtualKeyID: &vk, AuthMode: "vk", Status: "active", HeadersJSON: "{}"},
+		{ID: "cred-wiki", MCPClientID: "wiki", UserID: &alice, AuthMode: "user", Status: "active", HeadersJSON: "{}"},
+	} {
+		require.NoError(t, store.DB().WithContext(ctx).Create(cred).Error)
+	}
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes", "search")))
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "wiki", "read")))
+	return store
+}
+
+// storedDiscoveries lists the bindings holding a discovery, as mode/identity/client.
+func storedDiscoveries(t *testing.T, store *RDBConfigStore) []string {
+	t.Helper()
+	var rows []tables.TableMCPPerUserDiscovery
+	require.NoError(t, store.DB().Find(&rows).Error)
+	bindings := make([]string, 0, len(rows))
+	for _, row := range rows {
+		bindings = append(bindings, row.AuthMode+"/"+row.Identity()+"/"+row.MCPClientID)
+	}
+	return bindings
+}
+
+// orphanSince marks a credential row orphaned since age ago, without the update
+// moving updated_at to now.
+func orphanSince(t *testing.T, store *RDBConfigStore, model any, id string, age time.Duration) {
+	t.Helper()
+	require.NoError(t, store.DB().Model(model).Where("id = ?", id).UpdateColumns(map[string]any{"status": "orphaned", "updated_at": time.Now().Add(-age)}).Error)
+}
+
+// TestPerUserDiscovery_GoesWithItsCredential deletes a caller's discovery in the
+// same write that deletes or invalidates the credential it was made with, and no
+// other caller's.
+func TestPerUserDiscovery_GoesWithItsCredential(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, store *RDBConfigStore)
+		kept   []string
+	}{
+		{
+			name: "oauth token revoked",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.DeleteOauthUserToken(ctx, "tok-alice"))
+			},
+			kept: []string{"vk/vk-1/notes", "user/alice/wiki"},
+		},
+		{
+			name: "header credential revoked",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.DeleteMCPPerUserHeaderCredential(ctx, "cred-vk"))
+			},
+			kept: []string{"user/alice/notes", "user/alice/wiki"},
+		},
+		{
+			name: "token refresh rejected",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.MarkOauthUserTokenNeedsReauthByID(ctx, "tok-alice", "invalid_grant"))
+			},
+			kept: []string{"vk/vk-1/notes", "user/alice/wiki"},
+		},
+		{
+			name: "oauth client credentials rotated",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.MarkTokensNeedsReauthByConfigID(ctx, "cfg-notes", "rotated"))
+			},
+			kept: []string{"user/alice/wiki"},
+		},
+		{
+			name: "token exchange settings changed",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx, "notes", "audience changed"))
+			},
+			kept: []string{"user/alice/wiki"},
+		},
+		{
+			name: "required header keys added",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				require.NoError(t, store.MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx, "notes"))
+			},
+			kept: []string{"user/alice/wiki"},
+		},
+		{
+			name: "orphaned token swept",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				orphanSince(t, store, &tables.TableMCPOauthToken{}, "tok-vk", 48*time.Hour)
+				_, err := store.DeleteOrphanedOauthUserTokens(ctx, 24*time.Hour)
+				require.NoError(t, err)
+			},
+			kept: []string{"user/alice/notes", "user/alice/wiki"},
+		},
+		{
+			name: "orphaned header credential swept",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				orphanSince(t, store, &tables.TableMCPPerUserHeaderCredential{}, "cred-alice", 48*time.Hour)
+				_, err := store.DeleteOrphanedMCPPerUserHeaderCredentials(ctx, 24*time.Hour)
+				require.NoError(t, err)
+			},
+			kept: []string{"vk/vk-1/notes", "user/alice/wiki"},
+		},
+		{
+			name: "orphaned too recently to sweep",
+			change: func(t *testing.T, store *RDBConfigStore) {
+				orphanSince(t, store, &tables.TableMCPOauthToken{}, "tok-vk", time.Hour)
+				orphanSince(t, store, &tables.TableMCPPerUserHeaderCredential{}, "cred-vk", time.Hour)
+				_, err := store.DeleteOrphanedOauthUserTokens(ctx, 24*time.Hour)
+				require.NoError(t, err)
+				_, err = store.DeleteOrphanedMCPPerUserHeaderCredentials(ctx, 24*time.Hour)
+				require.NoError(t, err)
+			},
+			kept: []string{"user/alice/notes", "vk/vk-1/notes", "user/alice/wiki"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := seedCredentialDiscoveries(t)
+			tc.change(t, store)
+			assert.ElementsMatch(t, tc.kept, storedDiscoveries(t, store))
+		})
+	}
+}
+
 func TestPerUserDiscovery_BindingsListsUserAndVirtualKeyHoldersOfOneClient(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

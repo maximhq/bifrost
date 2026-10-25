@@ -308,6 +308,10 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 			// manager rather than the provider, so a clustered deployment's
 			// override reaches its peers.
 			h.mcpCredentialCacheManager.EvictOauthTokenCacheByMCPClient(ctx, clientConfig.ID)
+			// The cascade deleted every caller's discovery of the client too.
+			if clientConfig.PerUserDiscovery != nil && *clientConfig.PerUserDiscovery {
+				h.mcpCredentialCacheManager.EvictMCPPerUserDiscoveryCacheByMCPClient(ctx, clientConfig.ID)
+			}
 			if err := h.mcpManager.CloseAndMarkNeedsReauth(ctx, clientConfig.ID); err != nil && !errors.Is(err, schemas.ErrMCPReconnectNotApplicable) {
 				logger.Error(fmt.Sprintf("Failed to close MCP client %s's connection after registering a new OAuth client: %v", clientConfig.ID, err))
 			}
@@ -3630,6 +3634,14 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			}
 			SendError(ctx, status, fmt.Sprintf("failed to update mcp client config in store: %v", err))
 			return
+		}
+		// For a client that keeps a discovery per caller, this update may delete
+		// callers' discoveries with the credentials they were made with: the
+		// OAuth rotation, the token exchange re-verification or the header keys
+		// check below. Every node drops its cached copies once the update ends,
+		// whichever step it ends at.
+		if existingConfig.PerUserDiscovery != nil && *existingConfig.PerUserDiscovery {
+			defer h.mcpCredentialCacheManager.EvictMCPPerUserDiscoveryCacheByMCPClient(ctx, id)
 		}
 	}
 

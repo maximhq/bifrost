@@ -597,7 +597,7 @@ func TestFlowSubmit_OpenAPIPerUserHeadersSavesWithoutMCPHandshake(t *testing.T) 
 	}
 	require.NoError(t, h.store.ConfigStore.CreateMCPPerUserHeaderFlow(context.Background(), flow))
 
-	headersHandler := NewMCPPerUserHeadersHandler(mgr, h.store, nil)
+	headersHandler := NewMCPPerUserHeadersHandler(mgr, nil, h.store, nil)
 	status, respBody := doMCPRequest(t, headersHandler.flowSubmit, fasthttp.MethodPost, `{"headers":{"x-user-token":"abc"}}`, flow.ID, false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
 	cred, err := h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeSession, "session-1", client.ID)
