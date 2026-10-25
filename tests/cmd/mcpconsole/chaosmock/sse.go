@@ -38,10 +38,8 @@ func (s *Server) ServeSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authResult := s.auth.check(r.Header)
-	if !authResult.OK {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="chaosmock"`)
-		http.Error(w, authResult.Reason, http.StatusUnauthorized)
+	identity, ok := s.authenticate(w, r)
+	if !ok {
 		return
 	}
 
@@ -54,7 +52,7 @@ func (s *Server) ServeSSE(w http.ResponseWriter, r *http.Request) {
 	// The session exists from the moment the stream opens, since under this
 	// transport the stream is what identifies the caller. It is created before
 	// initialize rather than by it, which is the opposite of streamable HTTP.
-	sess := s.sessions.create(authResult.Identity, DefaultProtocolVersion)
+	sess := s.sessions.create(identity, DefaultProtocolVersion)
 	s.counters.session()
 
 	ch := s.streams.addKeyed(sess.ID)
