@@ -64,7 +64,7 @@ export function decisionProviderIconKey(provider: ModelProvider): ProviderIconTy
 
 // isDecisionProvider reports a provider that answers /v1/decisions natively:
 // Typesafe, OpenRouter, Cloudflare (Clef), Perplexity, Ollama, Azure
-// (Microsoft-Decision-1), Databricks (ai_decide), OpenAI or a custom provider built
+// (Microsoft-Decision-1), Databricks (ai_decide, System One), OpenAI or a custom provider built
 // on it (their decision models, such as gpt-6-luna), or a custom provider built on
 // the Typesafe base (Laya, Nimble, Clef). Other providers would only emulate
 // decisions through chat, so decision-model pickers never offer them.
@@ -123,12 +123,5 @@ export function defaultDecisionModel(provider: ModelProvider | undefined): strin
 // nothing else, so any model they name is one.
 export function listsDecisionModels(provider: ModelProvider | undefined, providerName: string): boolean {
 	if (provider ? isOpenAIDecisionProvider(provider) : providerName === "openai") return true;
-	return ["openrouter", "cloudflare", "perplexity", "ollama", "azure"].includes(providerName);
-}
-
-// servesFixedDecisionModel reports a provider whose decision model is fixed by its
-// configuration rather than chosen: Databricks serves only ai_decide, and a Cloudflare
-// URL on a custom provider binds its Clef model. Pickers show the model, not a choice.
-export function servesFixedDecisionModel(provider: ModelProvider | undefined, providerName: string): boolean {
-	return providerName === "databricks" || clefModelFromProvider(provider) !== undefined;
+	return ["openrouter", "cloudflare", "perplexity", "ollama", "azure", "databricks"].includes(providerName);
 }
