@@ -226,6 +226,7 @@ func (h *VirtualMCPHandler) createVirtualMCP(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.refreshDefinition(ctx, def.ID)
+	lib.RecordAuditChange(ctx, "virtual_mcp.created", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, nil, h.toResponse(def, nil))
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, map[string]any{"virtual_mcp": h.toResponse(def, nil)})
 }
@@ -245,6 +246,7 @@ func (h *VirtualMCPHandler) updateVirtualMCP(ctx *fasthttp.RequestCtx) {
 		h.sendLookupError(ctx, err)
 		return
 	}
+	before := lib.AuditSnapshot(h.toResponse(def, nil))
 	if req.Tools != nil {
 		if msg := h.validateToolSpecs(req.Tools); msg != "" {
 			SendError(ctx, fasthttp.StatusBadRequest, msg)
@@ -278,6 +280,7 @@ func (h *VirtualMCPHandler) updateVirtualMCP(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
+	lib.RecordAuditChange(ctx, "virtual_mcp.updated", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, before, h.toResponse(def, nil))
 	SendJSON(ctx, map[string]any{"virtual_mcp": resp})
 }
 
@@ -286,7 +289,8 @@ func (h *VirtualMCPHandler) deleteVirtualMCP(ctx *fasthttp.RequestCtx) {
 	if !ok {
 		return
 	}
-	if _, err := h.store.ConfigStore.GetVirtualMCPByID(ctx, id); err != nil {
+	def, err := h.store.ConfigStore.GetVirtualMCPByID(ctx, id)
+	if err != nil {
 		h.sendLookupError(ctx, err)
 		return
 	}
@@ -296,6 +300,7 @@ func (h *VirtualMCPHandler) deleteVirtualMCP(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.removeDefinition(ctx, id)
+	lib.RecordAuditChange(ctx, "virtual_mcp.deleted", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, h.toResponse(def, nil), nil)
 	SendJSON(ctx, map[string]any{"success": true})
 }
 
@@ -309,11 +314,13 @@ func (h *VirtualMCPHandler) attachVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "virtual key id is required")
 		return
 	}
-	if _, err := h.store.ConfigStore.GetVirtualMCPByID(ctx, id); err != nil {
+	def, err := h.store.ConfigStore.GetVirtualMCPByID(ctx, id)
+	if err != nil {
 		h.sendLookupError(ctx, err)
 		return
 	}
-	if _, err := h.store.ConfigStore.GetVirtualKey(ctx, vkID); err != nil {
+	vk, err := h.store.ConfigStore.GetVirtualKey(ctx, vkID)
+	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "virtual key not found")
 			return
@@ -332,6 +339,7 @@ func (h *VirtualMCPHandler) attachVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.refreshAttachment(ctx, vkID, id, true)
+	lib.RecordAuditChange(ctx, "virtual_mcp.virtual_key_attached", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, nil, map[string]any{"virtual_key_id": vkID, "virtual_key_name": vk.Name})
 	SendJSON(ctx, map[string]any{"success": true})
 }
 
@@ -346,9 +354,14 @@ func (h *VirtualMCPHandler) detachVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Gate on the vMCP like attach does: no visibility (404 under DAC), no detach.
-	if _, err := h.store.ConfigStore.GetVirtualMCPByID(ctx, id); err != nil {
+	def, err := h.store.ConfigStore.GetVirtualMCPByID(ctx, id)
+	if err != nil {
 		h.sendLookupError(ctx, err)
 		return
+	}
+	vkName := vkID
+	if vk, err := h.store.ConfigStore.GetVirtualKey(ctx, vkID); err == nil && vk != nil {
+		vkName = vk.Name
 	}
 	if err := h.store.ConfigStore.DetachVirtualMCPFromVirtualKey(ctx, id, vkID); err != nil {
 		h.logger.Error("failed to detach virtual MCP %d from VK %s: %v", id, vkID, err)
@@ -356,6 +369,7 @@ func (h *VirtualMCPHandler) detachVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.refreshAttachment(ctx, vkID, id, false)
+	lib.RecordAuditChange(ctx, "virtual_mcp.virtual_key_detached", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, map[string]any{"virtual_key_id": vkID, "virtual_key_name": vkName}, nil)
 	SendJSON(ctx, map[string]any{"success": true})
 }
 

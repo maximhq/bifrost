@@ -417,6 +417,27 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 // reject reasoning_effort "none"; only minimal/low/medium/high are accepted. The
 // Vertex case should drop a "none" effort for these models while preserving it for
 // Mistral on Vertex (which does accept "none").
+func TestToOpenAIChatRequest_VertexEndpoint(t *testing.T) {
+	for _, model := range []string{"custom-qwen", "mistral-custom"} {
+		t.Run(model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{VertexAliasCfg: &schemas.VertexAliasCfg{
+				VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat},
+			}}})
+			request := &schemas.BifrostChatRequest{
+				Provider: schemas.Vertex, Model: model,
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+				Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: new("none")}},
+			}
+			result := ToOpenAIChatRequest(ctx, request)
+			require.NotNil(t, result)
+			require.Equal(t, model, result.Model)
+			require.NotNil(t, result.Reasoning)
+			require.Equal(t, "none", *result.Reasoning.Effort)
+		})
+	}
+}
+
 func TestToOpenAIChatRequest_VertexDropsNoneReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -2913,6 +2934,39 @@ func gjsonExists(raw []byte, path string) bool {
 // BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat measures the DeepSeek
 // conversion with no response_format (the common case, which must not pay for
 // the downgrade) and with a json_schema response_format (which does).
+// BenchmarkToOpenAIChatRequest_BytePlusReasoning measures the BytePlus compat case against the
+// generic default branch it replaces, so the reasoning rewrite's cost is visible per request shape.
+func BenchmarkToOpenAIChatRequest_BytePlusReasoning(b *testing.B) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		effort   *string
+	}{
+		{"default_no_reasoning", schemas.Nebius, nil},
+		{"byteplus_no_reasoning", schemas.BytePlus, nil},
+		{"default_effort_low", schemas.Nebius, schemas.Ptr("low")},
+		{"byteplus_effort_low", schemas.BytePlus, schemas.Ptr("low")},
+		{"byteplus_effort_none", schemas.BytePlus, schemas.Ptr("none")},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: tc.provider,
+				Model:    "seed-2-0-lite-260228",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			}
+			if tc.effort != nil {
+				bifrostReq.Params = &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: tc.effort}}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = ToOpenAIChatRequest(ctx, bifrostReq)
+			}
+		})
+	}
+}
+
 func BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat(b *testing.B) {
 	plainBody := `{"model":"deepseek-v4-flash","messages":[{"role":"system","content":"You extract people."},{"role":"user","content":"Ada is 36."}]}`
 	for _, tc := range []struct{ name, body string }{

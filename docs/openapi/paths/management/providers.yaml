@@ -307,7 +307,6 @@ provider-keys:
       digits and hyphens, e.g. us-east-1); any other value is refused with 400.
       Guarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,
       azure_key_config.endpoint, databricks_key_config.workspace_url,
-      github_copilot_key_config.github_domain,
       bedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and
       aliases.<name>.endpoint.
     tags:
@@ -434,7 +433,6 @@ provider-key-by-id:
       digits and hyphens, e.g. us-east-1); any other value is refused with 400.
       Guarded fields: ollama_key_config.url, sgl_key_config.url, vllm_key_config.url,
       azure_key_config.endpoint, databricks_key_config.workspace_url,
-      github_copilot_key_config.github_domain,
       bedrock_key_config.endpoints.*, bedrock_mantle_key_config.endpoints.*, and
       aliases.<name>.endpoint.
     tags:

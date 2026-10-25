@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
+	"github.com/maximhq/bifrost/framework/warp"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
@@ -143,6 +144,192 @@ func TestParseGuardrailOutcomesFilter(t *testing.T) {
 			t.Fatalf("histogram guardrail outcomes = %#v, want %#v", got, want)
 		}
 	})
+}
+
+// TestParseTopicIDsFilter verifies the Warp topic filter reaches every logs
+// query that takes filters: the rows, the stats, and everything parsed as a
+// histogram (histograms, rankings, the dashboard).
+func TestParseTopicIDsFilter(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("topic_ids", "topic-a,topic-b")
+	want := []string{"topic-a", "topic-b"}
+
+	filters := &logstore.SearchFilters{}
+	parseTopicIDsFilter(ctx, filters)
+	if !reflect.DeepEqual(filters.TopicIDs, want) {
+		t.Fatalf("topic ids = %#v, want %#v", filters.TopicIDs, want)
+	}
+	if got := parseHistogramFilters(ctx).TopicIDs; !reflect.DeepEqual(got, want) {
+		t.Fatalf("histogram topic ids = %#v, want %#v", got, want)
+	}
+
+	kept := &logstore.SearchFilters{TopicIDs: []string{"topic-a"}}
+	parseTopicIDsFilter(&fasthttp.RequestCtx{}, kept)
+	if !reflect.DeepEqual(kept.TopicIDs, []string{"topic-a"}) {
+		t.Fatalf("an absent parameter must leave the filter alone, got %#v", kept.TopicIDs)
+	}
+}
+
+// topicFilterLogManager records the filters the rows and stats routes query
+// with, so the inline parse blocks of both can be checked end to end.
+type topicFilterLogManager struct {
+	loggingplugin.LogManager
+	searched     *logstore.SearchFilters
+	counted      *logstore.SearchFilters
+	histogrammed *logstore.SearchFilters
+}
+
+func (m *topicFilterLogManager) GetHistogram(_ context.Context, filters *logstore.SearchFilters, _ int64) (*logstore.HistogramResult, error) {
+	m.histogrammed = filters
+	return &logstore.HistogramResult{}, nil
+}
+
+func (m *topicFilterLogManager) Search(_ context.Context, filters *logstore.SearchFilters, _ *logstore.PaginationOptions) (*logstore.SearchResult, error) {
+	m.searched = filters
+	return &logstore.SearchResult{}, nil
+}
+
+func (m *topicFilterLogManager) GetStats(_ context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
+	if m.counted == nil {
+		m.counted = filters
+	}
+	return &logstore.SearchStats{}, nil
+}
+
+// TestLogsRoutesCarryTheTopicFilter drives the rows and stats routes, which
+// parse their filters inline rather than through parseHistogramFilters, and
+// checks the topic filter reaches the store from both.
+func TestLogsRoutesCarryTheTopicFilter(t *testing.T) {
+	mgr := &topicFilterLogManager{}
+	h := &LoggingHandler{logManager: mgr, redactedKeysManager: noRedactedKeys{}, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("topic_ids", "topic-a,topic-b")
+	h.getLogs(ctx)
+	if mgr.searched == nil || !reflect.DeepEqual(mgr.searched.TopicIDs, []string{"topic-a", "topic-b"}) {
+		t.Fatalf("GET /api/logs searched with %#v", mgr.searched)
+	}
+
+	ctx = &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("topic_ids", "topic-a")
+	h.getLogsStats(ctx)
+	if mgr.counted == nil || !reflect.DeepEqual(mgr.counted.TopicIDs, []string{"topic-a"}) {
+		t.Fatalf("GET /api/logs/stats counted with %#v", mgr.counted)
+	}
+}
+
+// TestLogsRoutesRejectTopicIDsNamingNoTopic checks a topic_ids that parses to
+// no id is refused before the store is queried. Read as absent, it widened the
+// rows, stats and histograms to every topic.
+func TestLogsRoutesRejectTopicIDsNamingNoTopic(t *testing.T) {
+	mgr := &topicFilterLogManager{}
+	h := &LoggingHandler{logManager: mgr, redactedKeysManager: noRedactedKeys{}, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	routes := map[string]fasthttp.RequestHandler{
+		"GET /api/logs":           h.getLogs,
+		"GET /api/logs/stats":     h.getLogsStats,
+		"GET /api/logs/histogram": h.getLogsHistogram,
+	}
+	for name, route := range routes {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("topic_ids", " , ")
+		route(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("%s answered %d: %s", name, ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+	if mgr.searched != nil || mgr.counted != nil || mgr.histogrammed != nil {
+		t.Fatalf("the store was queried: searched %#v, counted %#v, histogrammed %#v", mgr.searched, mgr.counted, mgr.histogrammed)
+	}
+	if !parseTopicIDsFilter(&fasthttp.RequestCtx{}, &logstore.SearchFilters{}) {
+		t.Fatal("an absent topic_ids must be accepted")
+	}
+}
+
+// fakeTopicLister answers list_topics queries for the filter-data tests and
+// records the query it was asked.
+type fakeTopicLister struct {
+	list  *warp.TopicList
+	err   error
+	query warp.TopicQuery
+}
+
+// It applies NameContains the way the reader does, so a test sees what a
+// name search returns.
+func (f *fakeTopicLister) ListTopics(_ context.Context, query warp.TopicQuery) (*warp.TopicList, error) {
+	f.query = query
+	if f.list == nil || query.NameContains == "" {
+		return f.list, f.err
+	}
+	matched := &warp.TopicList{}
+	for _, topic := range f.list.Topics {
+		if strings.Contains(strings.ToLower(topic.Label), query.NameContains) {
+			matched.Topics = append(matched.Topics, topic)
+		}
+	}
+	return matched, f.err
+}
+
+// TestTopicFilterDataListsWhatTheReaderShows verifies the topics dimension is
+// the reader's own answer over the last month - the same scoped list Warp
+// gives the caller - narrowed by name, and empty rather than failing where
+// Warp has no topics to offer.
+func TestTopicFilterDataListsWhatTheReaderShows(t *testing.T) {
+	lister := &fakeTopicLister{list: &warp.TopicList{Topics: []warp.Topic{
+		{ID: "t-1", Label: "Refund requests", Requests: 40},
+		{ID: "t-2", Label: "Password resets", Requests: 12},
+		{ID: "t-3", Label: "Refund fraud", Requests: 3},
+	}}}
+	pairs, err := topicFilterData(context.Background(), lister, 25, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []loggingplugin.KeyPair{{ID: "t-1", Name: "Refund requests"}, {ID: "t-2", Name: "Password resets"}, {ID: "t-3", Name: "Refund fraud"}}
+	if !reflect.DeepEqual(pairs, want) {
+		t.Fatalf("pairs = %#v, want %#v", pairs, want)
+	}
+	if lister.query.Limit != 25 {
+		t.Fatalf("limit = %d, want 25", lister.query.Limit)
+	}
+	if lister.query.Filter.StartTime == nil || lister.query.Filter.EndTime == nil {
+		t.Fatal("the reader needs both ends of a window")
+	}
+	// Upkeep retires a topic silent for 30 days, so a month back is exactly
+	// the topics still in use; a shorter window would hide live ones.
+	if span := lister.query.Filter.EndTime.Sub(*lister.query.Filter.StartTime); span != 30*24*time.Hour {
+		t.Fatalf("window = %s, want 30 days", span)
+	}
+	if lister.query.BucketSeconds != 0 {
+		t.Fatal("a filter dropdown has no use for a series")
+	}
+
+	pairs, err = topicFilterData(context.Background(), lister, 25, "  REFUND ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []loggingplugin.KeyPair{{ID: "t-1", Name: "Refund requests"}, {ID: "t-3", Name: "Refund fraud"}}; !reflect.DeepEqual(pairs, got) {
+		t.Fatalf("name search = %#v, want %#v", pairs, got)
+	}
+	// The search goes to the reader, which applies it before its limit: a
+	// matching topic outside the largest 25 is still offered.
+	if lister.query.NameContains != "refund" {
+		t.Fatalf("NameContains = %q, want the normalized search %q", lister.query.NameContains, "refund")
+	}
+
+	for name, lister := range map[string]warp.TopicLister{
+		"no lister":        nil,
+		"warp unavailable": &fakeTopicLister{err: warp.ErrUnavailable},
+	} {
+		pairs, err := topicFilterData(context.Background(), lister, 25, "")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if pairs == nil || len(pairs) != 0 {
+			t.Fatalf("%s: want an empty list on the wire, got %#v", name, pairs)
+		}
+	}
+	if _, err := topicFilterData(context.Background(), &fakeTopicLister{err: errors.New("boom")}, 25, ""); err == nil {
+		t.Fatal("a store error is the caller's to see")
+	}
 }
 
 // TestParseParentRequestIDFilter verifies the explicit parent-request filter

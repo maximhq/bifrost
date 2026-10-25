@@ -512,7 +512,9 @@ func unwrapResultEnvelope(body []byte) (inner []byte, failed bool) {
 // ToBifrostDecisionRequest converts a native systemone request into the
 // normalized shape: the state becomes the input and the questions are
 // normalized by ToBifrostDecisionQuestions. An explicit null state is
-// SDK-valid and forwarded; only an absent state is rejected locally.
+// SDK-valid and forwarded; only an absent state is rejected locally. A model
+// without a provider prefix is left for routing to resolve, since the route
+// fixes the wire shape, not the provider.
 func (req *TypesafeDecisionRequest) ToBifrostDecisionRequest(ctx *schemas.BifrostContext) (*schemas.BifrostDecisionRequest, error) {
 	if req == nil {
 		return nil, providerUtils.InvalidRequestErrorf("request body is required")
@@ -535,7 +537,7 @@ func (req *TypesafeDecisionRequest) ToBifrostDecisionRequest(ctx *schemas.Bifros
 		}
 	}
 
-	provider, model := schemas.ParseModelString(req.Model, schemas.Typesafe)
+	provider, model := schemas.ParseModelString(req.Model, "")
 	return &schemas.BifrostDecisionRequest{
 		Provider:    provider,
 		Model:       model,

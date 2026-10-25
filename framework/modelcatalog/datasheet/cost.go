@@ -801,7 +801,7 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		// bypass the no-usage guard below on its own: without seconds there is still
 		// nothing to price.
 		input.videoSize = video.Size
-		input.videoCount = len(video.Videos)
+		input.videoCount = videoClipCount(video.Videos)
 
 	case result.OCRResponse != nil:
 		pages := len(result.OCRResponse.Pages)

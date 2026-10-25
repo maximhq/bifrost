@@ -198,6 +198,10 @@ type ModelCapabilities struct {
 	// Model accepts thinking:{type:"between_tools"} (no up-front thinking).
 	SupportsBetweenToolsThinking *bool `json:"supports_between_tools_thinking,omitempty"`
 
+	// Model accepts thinking.display:"updates" (beta thinking-display-updates). Per model, not per surface:
+	// Bedrock rejects it on Opus 4.6 and the 4.5 generation.
+	SupportsThinkingDisplayUpdates *bool `json:"supports_thinking_display_updates,omitempty"`
+
 	// Model accepts a self-managed thinking budget (Gemini thinkingBudget: -1).
 	SupportsDynamicReasoningBudget *bool `json:"supports_dynamic_reasoning_budget,omitempty"`
 

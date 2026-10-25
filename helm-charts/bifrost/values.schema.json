@@ -258,6 +258,42 @@
         }
       }
     },
+    "podDisruptionBudget": {
+      "type": "object",
+      "description": "PodDisruptionBudget for the Bifrost pods. Off by default; when enabled it is rendered only when bifrost.cluster.enabled is true.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Create the PodDisruptionBudget (default false). Takes effect only when cluster mode is enabled."
+        },
+        "minAvailable": {
+          "description": "Minimum pods that must stay available during a voluntary disruption, as an integer or a percentage string such as \"50%\". Ignored when maxUnavailable is set.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^([0-9]|[1-9][0-9]|100)%$"
+            }
+          ]
+        },
+        "maxUnavailable": {
+          "description": "Maximum pods that may be unavailable during a voluntary disruption, as an integer or a percentage string such as \"50%\". When set, replaces minAvailable.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^([0-9]|[1-9][0-9]|100)%$"
+            }
+          ]
+        }
+      }
+    },
     "volumes": {
       "type": "array"
     },
@@ -355,6 +391,10 @@
           "type": "string",
           "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Written into config.json as env_label.",
           "maxLength": 10
+        },
+        "disableOnboarding": {
+          "type": "boolean",
+          "description": "Hides the management UI setup checklist for every user. Read from config.json on every start and never written to the config store, so it holds on stateless deployments. Written into config.json as disable_onboarding; overrides the BIFROST_DISABLE_ONBOARDING env var."
         },
         "setupToken": {
           "type": "string",
@@ -689,6 +729,16 @@
             "deleteExpiredVirtualKeys": {
               "type": "boolean",
               "description": "Delete expired virtual keys automatically. A daily cleanup job removes every key whose expiry has passed unless the key sets delete_after_expire to false; keys with delete_after_expire true are removed regardless. Maps to client.delete_expired_virtual_keys.",
+              "default": false
+            },
+            "skipAccessProfileUserVirtualKeyCreation": {
+              "type": "boolean",
+              "description": "Enterprise only. When true, a user's first access profile never creates a virtual key for them. Maps to client.skip_access_profile_user_virtual_key_creation.",
+              "default": false
+            },
+            "skipAccessProfileUserVirtualKeyDeletion": {
+              "type": "boolean",
+              "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys. Deleting the user still deletes their keys. Maps to client.skip_access_profile_user_virtual_key_deletion.",
               "default": false
             },
             "mcpDisableAutoToolInject": {
@@ -3412,6 +3462,11 @@
                         "type": "string",
                         "description": "Okta API token for Admin API access (optional; enables 24-hour background user/group reconciliation)"
                       },
+                      "syncAllUsers": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Which Okta users directory sync (apiToken) keeps. True (the default when unset) syncs every app-assigned user except those SUSPENDED or DEPROVISIONED (deactivated); false syncs ACTIVE users only. Maps to scim_config.config.syncAllUsers."
+                      },
                       "audience": {
                         "type": "string",
                         "description": "JWT audience for validation (optional)"
@@ -5800,6 +5855,11 @@
               "description": "Maximum time for a single materialized view refresh pass (min 30s, max 30m). Unset derives 5x the refresh interval, at least 5m. A cancelled refresh leaves the existing views intact and readable, just staler; the next tick retries.",
               "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
             },
+            "matviewRefreshTempFileLimit": {
+              "type": "string",
+              "description": "Caps the temp files each Postgres process running a materialized view statement may write (Postgres temp_file_limit, e.g. '10GB'; parallel workers each get the cap). Unset leaves the server setting alone. Needs superuser or GRANT SET ON PARAMETER temp_file_limit; otherwise skipped with a warning.",
+              "pattern": "^(-1|[0-9]+ ?(kB|MB|GB|TB)?)$"
+            },
             "migrationMatviewCancelAfter": {
               "type": "string",
               "description": "How long schema migrations wait for an in-flight materialized view refresh (from any replica, including older releases mid-rollout) before cancelling its REFRESH statements. Unset uses 60s; 'off' never cancels and only waits.",
@@ -7045,6 +7105,26 @@
             "additionalProperties": false
           }
         },
+        "passthrough": {
+          "type": "object",
+          "description": "Routes the HTTP passthrough endpoints forward to this provider. Omit for the default: a built-in provider forwards every route, a custom provider forwards none. An empty allowed_routes forwards nothing",
+          "properties": {
+            "allowed_routes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "methods": { "type": "array", "items": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] }, "description": "Omit to allow any method" },
+                  "path": { "type": "string", "pattern": "^/", "description": "Path after the route prefix; * matches within one segment, a final /** matches the path and everything below it" }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["allowed_routes"],
+          "additionalProperties": false
+        },
         "custom_provider_config": {
           "type": "object",
           "description": "Custom provider configuration",
@@ -7458,38 +7538,6 @@
             "client_id": ["client_secret"],
             "client_secret": ["client_id"]
           },
-          "additionalProperties": false
-        },
-        "github_copilot_key_config": {
-          "type": "object",
-          "description": "GitHub App credentials for a github-copilot provider key. Set this instead of value to mint installation tokens from a GitHub App.",
-          "properties": {
-            "app_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
-            },
-            "installation_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Installation to mint tokens for, digits only (can use env. prefix)"
-            },
-            "repository_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
-            },
-            "private_key": {
-              "type": "string",
-              "minLength": 1,
-              "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
-            },
-            "github_domain": {
-              "type": "string",
-              "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
-            }
-          },
-          "required": ["app_id", "installation_id", "repository_id", "private_key"],
           "additionalProperties": false
         },
         "cloudflare_key_config": {
@@ -9037,6 +9085,10 @@
           "type": "boolean",
           "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
           "default": false
+        },
+        "disable_content_logging": {
+          "type": "boolean",
+          "description": "Per-project override of content logging for requests scoped to this project. Omit to inherit what the request's virtual key decides, or client.disableContentLogging when the key has no setting. The project's value overrides the virtual key's in both directions."
         },
         "budgets": {
           "type": "array",

@@ -40,7 +40,7 @@ In `oauth` mode, clients that authenticate with a virtual key or API key header 
 </Warning>
 
 <Warning>
-`oauth` mode also blocks [Token Exchange (`token_exchange`)](./auth/token-exchange) MCP clients: that auth type needs the caller's own identity-provider token to reach `/mcp`, but `oauth` mode accepts Bifrost-issued JWTs only and rejects everything else, including the caller's IdP token. Use `headers` or `both` for any deployment using `token_exchange`.
+In `oauth` mode, `/mcp` accepts Bifrost-issued JWTs only, so callers cannot send their own identity-provider token to [Token Exchange (`token_exchange`)](./auth/token-exchange) MCP clients through it. On Enterprise with SSO, callers who connect in **user** mode still reach them: Bifrost exchanges the access token from that user's Bifrost sign-in. Virtual-key and session-mode tokens carry nothing to exchange. Use `headers` or `both` if callers send their identity-provider token directly.
 </Warning>
 
 ---
@@ -92,7 +92,7 @@ During the consent step, Bifrost shows the user how they can identify themselves
 
 - **Virtual key** carries the same governance (budgets, rate limits, tool scoping) the key already has — the JWT simply represents that key.
 - **Session** is an anonymous identity for development and open deployments. Because the grant itself carries no identity, Bifrost only lets a signed-in person hand it out: the consent page offers session mode when the browser has a valid dashboard session (or an SSO user), and `PUT /api/oauth2/consent/flows/{id}` answers `401` to a session-mode submit that arrives with only the consent link's token. Running with dashboard auth disabled does not count as being signed in. Session mode is unavailable altogether once `enforce_auth_on_inference` is on.
-- **User** binds the grant to the authenticated person, so per-user upstream tool authorizations unify under one identity.
+- **User** binds the grant to the authenticated person, so per-user upstream tool authorizations unify under one identity. It is also the only consent mode that reaches [Token Exchange](./auth/token-exchange) servers, which exchange the access token from the user's Bifrost sign-in. It needs the user's own sign-in: a request authenticated with a management API key cannot complete it.
 
 <Info>
 **User mode requires SSO/SCIM** (enterprise). When no identity provider is configured, the consent page offers virtual key mode, plus session mode when the consenting person is signed in to the dashboard.

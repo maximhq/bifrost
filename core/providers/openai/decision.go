@@ -222,8 +222,9 @@ func (response *OpenAIDecisionResponse) ToBifrostDecisionResponse(request *schem
 // by name rather than dropped or interpreted: an input that is null or
 // structured, a top-level "state" (Typesafe's input), and any field a question,
 // choice, or level does not define. OpenAI's questions are a subset of the
-// shared ones, so the rest maps across unchanged. A model without a provider
-// prefix is OpenAI's, since this is OpenAI's route.
+// shared ones, so the rest maps across unchanged. The route fixes the wire
+// shape, not the provider: a model without a provider prefix is left for
+// routing to resolve, as on the other OpenAI-compatible routes.
 func (r *OpenAIDecisionRequest) ToBifrostDecisionRequest() (*schemas.BifrostDecisionRequest, error) {
 	if r.Input.IsEmpty() {
 		return nil, fmt.Errorf("input is required for decision")
@@ -245,7 +246,7 @@ func (r *OpenAIDecisionRequest) ToBifrostDecisionRequest() (*schemas.BifrostDeci
 		}
 		questions[i] = converted
 	}
-	provider, model := schemas.ParseModelString(r.Model, schemas.OpenAI)
+	provider, model := schemas.ParseModelString(r.Model, "")
 	return &schemas.BifrostDecisionRequest{
 		Provider:         provider,
 		Model:            model,
@@ -319,13 +320,14 @@ func ToOpenAIDecisionResponse(response *schemas.BifrostDecisionResponse) *OpenAI
 // POST /v1/decisions and converts the reply. The reply is buffered and parsed
 // in-process, as for rerank: it is a short list of answers, and large-response
 // passthrough would relay upstream bytes verbatim to routes that do not speak
-// OpenAI's shape.
+// OpenAI's shape. authHeaders are the caller's own auth headers, so a provider
+// that authenticates otherwise than Bearer (Azure's api-key) can reuse it.
 func HandleOpenAIDecisionRequest(
 	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
 	url string,
 	request *schemas.BifrostDecisionRequest,
-	key schemas.Key,
+	authHeaders map[string]string,
 	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -357,7 +359,7 @@ func HandleOpenAIDecisionRequest(
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	for k, v := range BearerAuthHeader(key) {
+	for k, v := range authHeaders {
 		req.Header.Set(k, v)
 	}
 	// A nil body means large-payload passthrough staged the request as a

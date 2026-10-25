@@ -285,3 +285,30 @@ func TestGetConfigForProvider_CarriesInjectedTools(t *testing.T) {
 		t.Errorf("injected_tools must reach core; got %+v", config.InjectedTools)
 	}
 }
+
+// TestGetConfigForProvider_CarriesPassthrough pins the bridge for the passthrough policy:
+// without it the policy saves fine and core forwards every route.
+func TestGetConfigForProvider_CarriesPassthrough(t *testing.T) {
+	policy := &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{{Methods: []string{"POST"}, Path: "/v1/chat/completions"}}}
+	store := &Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI:    {Passthrough: policy},
+			schemas.Anthropic: {},
+		},
+	}
+
+	config, err := NewBaseAccount(store).GetConfigForProvider(schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider: %v", err)
+	}
+	if config.Passthrough != policy {
+		t.Errorf("passthrough must reach core; got %+v", config.Passthrough)
+	}
+	config, err = NewBaseAccount(store).GetConfigForProvider(schemas.Anthropic)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider: %v", err)
+	}
+	if config.Passthrough != nil {
+		t.Errorf("a provider without a policy must reach core without one; got %+v", config.Passthrough)
+	}
+}

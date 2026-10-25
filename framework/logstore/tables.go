@@ -111,6 +111,8 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
+	// RealtimeInputItemID is an internal lookup of an item in a saved turn's metadata.
+	RealtimeInputItemID  string     `json:"-"`
 	Providers            []string   `json:"providers,omitempty"`
 	Models               []string   `json:"models,omitempty"`
 	Aliases              []string   `json:"aliases,omitempty"`
@@ -135,6 +137,7 @@ type SearchFilters struct {
 	UserIDs              []string   `json:"user_ids,omitempty"`
 	BusinessUnitIDs      []string   `json:"business_unit_ids,omitempty"`
 	ProjectIDs           []string   `json:"project_ids,omitempty"`
+	TopicIDs             []string   `json:"topic_ids,omitempty"`           // Warp topics the request was filed under; a topic merged into one of these counts as it (see applyTopicFilter)
 	RoutingEngineUsed    []string   `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	Apps                 []string   `json:"apps,omitempty"`                // Backend-detected client apps
 	UserAgents           []string   `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
@@ -310,7 +313,7 @@ type Log struct {
 	ParentRequestID         *string   `gorm:"type:varchar(255);index" json:"parent_request_id"`
 	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;index:idx_logs_session_id_timestamp,priority:2;index:idx_logs_vk_ts,priority:2;index:idx_logs_user_ts,priority:2;index:idx_logs_team_ts,priority:2;not null;index:idx_logs_selected_key_ts,priority:2;index:idx_logs_routing_rule_ts,priority:2;index:idx_logs_customer_ts,priority:2;index:idx_logs_business_unit_ts,priority:2;index:idx_logs_project_ts,priority:2" json:"timestamp"`
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
-	IsPassthrough           bool      `gorm:"not null;default:false" json:"is_passthrough,omitempty"`              // Row came from a passthrough route; Object is its inferred type, or passthrough when none is known
+	IsPassthrough           bool      `gorm:"not null;default:false" json:"is_passthrough,omitempty"`            // Row came from a passthrough route; Object is its inferred type, or passthrough when none is known
 	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
 	Model                   string    `gorm:"type:varchar(255);index;not null" json:"model"`
 	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"`          // Set when model was resolved via alias mapping; the original name the caller used
@@ -437,7 +440,8 @@ type Log struct {
 	SessionTotalCost   float64 `gorm:"-" json:"session_total_cost,omitempty"`
 	SessionTotalTokens int64   `gorm:"-" json:"session_total_tokens,omitempty"`
 
-	DeferredGuardrail *schemas.DeferredGuardrailResult `gorm:"-" json:"-"` // Transient: pending output-monitor guardrail result; the writer holds the row until it completes
+	DeferredGuardrail       *schemas.DeferredGuardrailResult `gorm:"-" json:"-"` // Transient: pending output-monitor guardrail result; the writer holds the row until it completes
+	RealtimeInputCorrection *RealtimeInputCorrection         `gorm:"-" json:"-"` // Transient: merge one late transcript into the latest offloaded payload
 
 	RedactionData            *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
 	PassthroughParseFormat   schemas.ModelProvider         `gorm:"-" json:"-"`                           // Transient: base provider whose wire format the log writer parses passthrough bodies with; empty skips parsing

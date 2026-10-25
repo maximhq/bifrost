@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -1121,36 +1123,68 @@ func (c *cancelRecorder) requireCancelled(t *testing.T, msg string) {
 
 // passthroughTestAccount configures a single Anthropic provider whose BaseURL points at a
 // local test upstream, so passthrough tests can observe exactly what (if anything) reaches it.
+// Anthropic-shaped custom providers the passthrough tests reach through x-model-provider:
+// one opted in with a passthrough policy, one never did.
+const (
+	passthroughSidecar    schemas.ModelProvider = "passthrough-sidecar"
+	passthroughSidecarOff schemas.ModelProvider = "passthrough-sidecar-off"
+)
+
 type passthroughTestAccount struct {
-	baseURL string
+	baseURL              string
+	anthropicPassthrough *schemas.PassthroughPolicy
 }
 
 func (a passthroughTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{schemas.Anthropic}, nil
+	return []schemas.ModelProvider{schemas.Anthropic, passthroughSidecar, passthroughSidecarOff}, nil
 }
 
 func (a passthroughTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
-	if p != schemas.Anthropic {
+	value := "sk-ant-test-operator-key"
+	switch p {
+	case schemas.Anthropic:
+	case passthroughSidecar, passthroughSidecarOff:
+		value = "sk-" + string(p)
+	default:
 		return nil, nil
 	}
 	return []schemas.Key{{
-		ID:     "passthrough-test-key",
-		Value:  *schemas.NewSecretVar("sk-ant-test-operator-key"),
+		ID:     "passthrough-test-key-" + string(p),
+		Value:  *schemas.NewSecretVar(value),
 		Models: schemas.WhiteList{"*"},
 		Weight: 1.0,
 	}}, nil
 }
 
 func (a passthroughTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
-	if p != schemas.Anthropic {
-		return nil, fmt.Errorf("unsupported provider %s", p)
-	}
 	nc := schemas.DefaultNetworkConfig
 	nc.BaseURL = a.baseURL
-	return &schemas.ProviderConfig{
+	config := &schemas.ProviderConfig{
 		NetworkConfig:            nc,
 		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-	}, nil
+	}
+	switch p {
+	case schemas.Anthropic:
+		config.Passthrough = a.anthropicPassthrough
+	case passthroughSidecar:
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}
+		config.Passthrough = &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+			{Methods: []string{fasthttp.MethodPost}, Path: "/v1/models/*/predict"},
+		}}
+	case passthroughSidecarOff:
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}
+	default:
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	return config, nil
+}
+
+// passthroughTestStore reports the test account's custom providers the way lib.Config does.
+func passthroughTestStore() *mockHandlerStore {
+	return &mockHandlerStore{customProviders: map[schemas.ModelProvider]mockCustomProvider{
+		passthroughSidecar:    {base: schemas.Anthropic, passthrough: true},
+		passthroughSidecarOff: {base: schemas.Anthropic},
+	}}
 }
 
 type passthroughUpstreamHit struct {
@@ -1259,8 +1293,9 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 
 	r := router.New()
 	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
-	NewGenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
-	NewAnthropicPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+	store := passthroughTestStore()
+	NewGenAIPassthroughRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewAnthropicPassthroughRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
 
 	upstreamHost := strings.TrimPrefix(upstream.URL, "http://")
 
@@ -1273,6 +1308,7 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 		wantUpstream string // expected upstream request URI; empty means no upstream request allowed
 		wantBodyHas  string
 		wantStreamed bool
+		wantKey      string // upstream credential; empty means the anthropic operator key
 	}{
 		{
 			// "/genai_passthrough/v1" no longer matches past the boundary, so the bare prefix
@@ -1336,6 +1372,35 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 			wantStatus:  fasthttp.StatusBadRequest,
 			wantBodyHas: "provider does not match",
 		},
+		{
+			name:         "custom provider with a passthrough policy is reachable on its base route",
+			uri:          "/anthropic_passthrough/v1/models/m1/predict",
+			provider:     string(passthroughSidecar),
+			wantStatus:   fasthttp.StatusOK,
+			wantUpstream: "/v1/models/m1/predict",
+			wantKey:      "sk-" + string(passthroughSidecar),
+		},
+		{
+			name:        "route outside a custom provider's policy is refused",
+			uri:         "/anthropic_passthrough/v1/files",
+			provider:    string(passthroughSidecar),
+			wantStatus:  fasthttp.StatusForbidden,
+			wantBodyHas: "passthrough route POST /v1/files is not allowed for provider " + string(passthroughSidecar),
+		},
+		{
+			name:        "custom provider without a passthrough policy is refused",
+			uri:         "/anthropic_passthrough/v1/messages",
+			provider:    string(passthroughSidecarOff),
+			wantStatus:  fasthttp.StatusForbidden,
+			wantBodyHas: "passthrough is not enabled for provider " + string(passthroughSidecarOff),
+		},
+		{
+			name:        "custom provider on another wire format's route is refused",
+			uri:         "/genai_passthrough/v1beta/models/m1:generateContent",
+			provider:    string(passthroughSidecar),
+			wantStatus:  fasthttp.StatusBadRequest,
+			wantBodyHas: "provider does not match",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1368,9 +1433,64 @@ func TestHandlePassthrough_PathAndProviderGuards(t *testing.T) {
 			}
 			require.Len(t, got, 1)
 			require.Equal(t, tc.wantUpstream, got[0].path)
-			require.Equal(t, "sk-ant-test-operator-key", got[0].apiKey)
+			wantKey := tc.wantKey
+			if wantKey == "" {
+				wantKey = "sk-ant-test-operator-key"
+			}
+			require.Equal(t, wantKey, got[0].apiKey)
 		})
 	}
+}
+
+// TestHandlePassthrough_ProviderPolicy drives a built-in provider whose passthrough policy allows
+// only POST /v1/messages: that route is forwarded, every other route or method is refused with 403
+// and an error naming the route, and nothing refused reaches the upstream.
+func TestHandlePassthrough_ProviderPolicy(t *testing.T) {
+	var mu sync.Mutex
+	var hits []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits = append(hits, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: passthroughTestAccount{baseURL: upstream.URL, anthropicPassthrough: &schemas.PassthroughPolicy{
+			AllowedRoutes: []schemas.PassthroughRouteRule{{Methods: []string{"POST"}, Path: "/v1/messages"}},
+		}},
+		Logger: bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	NewAnthropicPassthroughRouter(client, passthroughTestStore(), nil, &testLogger{}).RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next })
+
+	for _, tc := range []struct {
+		method, uri string
+		wantStatus  int
+		wantBodyHas string
+	}{
+		{fasthttp.MethodPost, "/anthropic_passthrough/v1/messages", fasthttp.StatusOK, ""},
+		{fasthttp.MethodPost, "/anthropic_passthrough/v1/files", fasthttp.StatusForbidden, "passthrough route POST /v1/files is not allowed for provider anthropic"},
+		{fasthttp.MethodGet, "/anthropic_passthrough/v1/messages", fasthttp.StatusForbidden, "passthrough route GET /v1/messages is not allowed"},
+		{fasthttp.MethodPost, "/anthropic_passthrough/v1/messages/batches", fasthttp.StatusForbidden, "add it to the provider's passthrough allowed routes"},
+	} {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(tc.method)
+		ctx.Request.SetRequestURI(tc.uri)
+		ctx.Request.Header.SetContentType("application/json")
+		ctx.Request.SetBodyString(`{}`)
+		r.Handler(&ctx)
+		require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "%s %s: %s", tc.method, tc.uri, ctx.Response.Body())
+		require.Contains(t, string(ctx.Response.Body()), tc.wantBodyHas, "%s %s", tc.method, tc.uri)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"POST /v1/messages"}, hits, "only the allowed route may reach the upstream")
 }
 
 // directKeyHandlerStore is the shared mock store with direct keys allowed.
@@ -1536,94 +1656,6 @@ func TestPassthroughQueryStreams(t *testing.T) {
 	assert.False(t, passthroughQueryStreams(http.MethodPost, "stream=true"), "a POST declares streaming in its body")
 }
 
-func TestPassthroughInferenceRoutes(t *testing.T) {
-	for _, tc := range []struct {
-		provider schemas.ModelProvider
-		path     string
-	}{
-		{schemas.OpenAI, "/v1/chat/completions"}, {schemas.OpenAI, "/v1/responses"},
-		{schemas.OpenAI, "/v1/audio/transcriptions"}, {schemas.Anthropic, "/v1/messages"},
-		{schemas.Anthropic, "/v1/messages/count_tokens"}, {schemas.Azure, "/openai/deployments/gpt-4o/chat/completions"},
-		{schemas.Azure, "/openai/v1/responses"}, {schemas.Gemini, "/models/gemini-2.5-flash:streamGenerateContent"},
-		{schemas.Gemini, "/projects/p/locations/us/publishers/google/models/gemini-2.5-flash:generateContent"},
-		{schemas.Runware, "/v1"},
-		{schemas.Gemini, "/interactions"}, {schemas.Gemini, "/projects/p/locations/global/interactions"},
-	} {
-		cfg := &PassthroughConfig{Provider: tc.provider}
-		require.True(t, passthroughInferenceRoute(cfg, "POST", tc.path), "%s %s", tc.provider, tc.path)
-		for _, method := range []string{"GET", "DELETE", "PATCH", "PUT", "HEAD"} {
-			require.False(t, passthroughInferenceRoute(cfg, method, tc.path), "%s %s", method, tc.path)
-		}
-	}
-	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Azure, schemas.Gemini, schemas.Runware} {
-		for _, path := range []string{"/v1/files", "/v1/fine_tuning/jobs", "/v1/organization/users", "/v1/chat/completions/id/messages", "/v1/messages/batches", "/v1/responses/id", "/models/m:delete", "/v1/./responses", "/v1/%72esponses", "/models/x:generateContent/extra",
-			"/interactions/abc", "/interactions/abc/cancel", "/projects/p/locations/global/interactions/abc", "/projects/p/interactions"} {
-			require.False(t, passthroughInferenceRoute(&PassthroughConfig{Provider: provider}, "POST", path), "%s %s", provider, path)
-		}
-	}
-}
-
-// The Bedrock passthrough forwards only the operations the provider allow-lists, so the
-// route policy must accept exactly those and nothing else.
-func TestPassthroughInferenceRoutesBedrockUsesProviderAllowList(t *testing.T) {
-	cfg := &PassthroughConfig{Provider: schemas.Bedrock}
-	for _, path := range []string{
-		"/agents/AGENT12345/agentAliases/ALIAS12345/sessions/s1/text",
-		"/knowledgebases/KB12345678/retrieve",
-		"/guardrail/gr1a2b3c4d5e/version/DRAFT/apply",
-	} {
-		require.True(t, passthroughInferenceRoute(cfg, "POST", path), path)
-		require.False(t, passthroughInferenceRoute(cfg, "GET", path), "GET %s", path)
-	}
-	for _, path := range []string{
-		"/model/amazon.titan-text-express-v1/invoke",
-		"/knowledgebases/KB12345678/retrieve/extra",
-		"/knowledgebases/kb-with-dash/retrieve",
-		"/agents/AGENT12345/agentAliases/ALIAS12345/sessions/../text",
-	} {
-		require.False(t, passthroughInferenceRoute(cfg, "POST", path), path)
-	}
-}
-
-// Requests outside the Bedrock allow-list are refused by the route policy with 403
-// before the provider, key selection, or AWS is reached.
-func TestBedrockPassthroughRefusalsUseRoutePolicy(t *testing.T) {
-	t.Skip("passthrough route policy is commented out in handlePassthrough")
-	r := router.New()
-	NewBedrockPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
-	for _, tc := range []struct{ method, uri string }{
-		{"POST", "/bedrock_passthrough/model/amazon.titan-text-express-v1/invoke"},
-		{"POST", "/bedrock_passthrough/agents/..%2Fmodel/agentAliases/a/sessions/s/text"},
-		{"GET", "/bedrock_passthrough/knowledgebases/KB12345678/retrieve"},
-		{"POST", "/bedrock_passthrough/agents/AGENT123456/agentAliases/ALIAS12345/sessions/.../text"},
-	} {
-		var ctx fasthttp.RequestCtx
-		ctx.Request.Header.SetMethod(tc.method)
-		ctx.Request.SetRequestURI(tc.uri)
-		r.Handler(&ctx)
-		require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), "%s %s: %s", tc.method, tc.uri, ctx.Response.Body())
-		require.Contains(t, string(ctx.Response.Body()), "supported inference endpoint", "%s %s", tc.method, tc.uri)
-	}
-}
-
-func TestPassthroughManagementRoutesNeverForward(t *testing.T) {
-	t.Skip("passthrough route policy is commented out in handlePassthrough")
-	r := router.New()
-	NewOpenAIPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
-	NewAnthropicPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
-	NewAzurePassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
-	NewGenAIPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
-	for _, prefix := range []string{"openai", "anthropic", "azure", "genai"} {
-		for _, method := range []string{"GET", "POST", "DELETE", "PUT", "PATCH", "HEAD"} {
-			var ctx fasthttp.RequestCtx
-			ctx.Request.Header.SetMethod(method)
-			ctx.Request.SetRequestURI("/" + prefix + "_passthrough/v1/files")
-			r.Handler(&ctx)
-			require.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), "%s %s: %s", prefix, method, ctx.Response.Body())
-		}
-	}
-}
-
 // After provider-injected tools ran, a non-stream response is assembled from several
 // model turns, while RawResponse holds only the last one. Every integration whose
 // converter answers with the raw upstream bytes (OpenAI, Bedrock, Cohere, GenAI,
@@ -1760,5 +1792,737 @@ func BenchmarkChatGPTPassthroughStreamDecision(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = cfg.streams("POST", "/backend-api/codex/responses", false)
+	}
+}
+
+// TestChatGPTPassthroughStreamEndsWithResponseFailedOnUpstreamError covers an upstream that answers
+// 200 text/event-stream and then fails mid-body. The relay used to stop on the error chunk without
+// writing anything, so Codex saw the stream close with no terminal event, retried the same request
+// blind and reported "stream closed before response.completed" instead of the upstream's error.
+func TestChatGPTPassthroughStreamEndsWithResponseFailedOnUpstreamError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = http.ReadRequest(bufio.NewReader(conn))
+		event := "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\"}}\n\n"
+		// Chunked body with no terminating chunk: the connection drops mid-stream.
+		_, _ = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n", len(event), event)
+	}()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	g := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+
+	var ctx fasthttp.RequestCtx
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	g.handlePassthroughStream(&ctx, bifrostCtx, cancel, schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+		Method:      "POST",
+		Path:        "/backend-api/codex/responses",
+		UpstreamURL: "http://" + ln.Addr().String(),
+		Body:        []byte(`{"model":"gpt-5.5","input":[],"stream":true}`),
+		SafeHeaders: map[string]string{"content-type": "application/json"},
+	})
+	require.Equal(t, 200, ctx.Response.StatusCode())
+
+	bodyStream := ctx.Response.BodyStream()
+	require.NotNil(t, bodyStream)
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(bodyStream)
+		done <- b
+	}()
+	var body string
+	select {
+	case b := <-done:
+		body = string(b)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out reading the relayed stream")
+	}
+
+	require.Contains(t, body, `"type":"response.created"`, "events before the failure are relayed unchanged")
+	require.Contains(t, body, "event: response.failed\n", "a stream that fails mid-body must end with a terminal event: %q", body)
+	failed := body[strings.LastIndex(body, "data: ")+len("data: "):]
+	var event struct {
+		Type     string `json:"type"`
+		Response struct {
+			Status string `json:"status"`
+			Error  struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		} `json:"response"`
+	}
+	require.NoError(t, sonic.UnmarshalString(strings.TrimSpace(failed), &event), "terminal frame must be JSON: %q", failed)
+	assert.Equal(t, "response.failed", event.Type)
+	assert.Equal(t, "failed", event.Response.Status)
+	assert.NotEmpty(t, event.Response.Error.Code)
+	assert.NotEmpty(t, event.Response.Error.Message)
+}
+
+// TestPassthroughFailedFrameOnlyForResponsesSSE pins the gate: only an SSE stream on an OpenAI-shaped
+// Responses path speaks response.failed, so every other passthrough keeps ending without a frame.
+func TestPassthroughFailedFrameOnlyForResponsesSSE(t *testing.T) {
+	cases := []struct {
+		name        string
+		provider    schemas.ModelProvider
+		path        string
+		contentType string
+		want        bool
+	}{
+		{"codex responses", schemas.OpenAI, "/backend-api/codex/responses", "text/event-stream", true},
+		{"openai responses", schemas.OpenAI, "/v1/responses", "text/event-stream; charset=utf-8", true},
+		{"azure responses", schemas.Azure, "/openai/v1/responses", "text/event-stream", true},
+		{"openai chat", schemas.OpenAI, "/v1/chat/completions", "text/event-stream", false},
+		{"non sse", schemas.OpenAI, "/v1/responses", "application/json", false},
+		{"anthropic messages", schemas.Anthropic, "/v1/messages", "text/event-stream", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, passthroughEndsWithResponsesFailed(nil, tc.provider, tc.path, tc.contentType))
+		})
+	}
+}
+
+// TestPassthroughResponsesFailedFrameHidesGatewayReadErrors keeps a gateway-side read failure out of
+// the client's response.failed: ProcessAndSendError puts the raw read error ("read tcp 10.0.0.5:...")
+// in the message, which names internal addresses. An upstream's own error still reaches the client.
+func TestPassthroughResponsesFailedFrameHidesGatewayReadErrors(t *testing.T) {
+	failedError := func(frame []byte) (code, message string) {
+		data := strings.TrimSpace(string(frame)[strings.Index(string(frame), "data: ")+len("data: "):])
+		var event struct {
+			Response struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"response"`
+		}
+		require.NoError(t, sonic.UnmarshalString(data, &event), "frame must be JSON: %q", frame)
+		return event.Response.Error.Code, event.Response.Error.Message
+	}
+
+	t.Run("gateway read error", func(t *testing.T) {
+		frame := passthroughResponsesFailedFrame(&schemas.BifrostError{
+			IsBifrostError: true,
+			Error:          &schemas.ErrorField{Message: "Error reading stream: read tcp 10.0.0.5:51234->104.18.32.47:443: read: connection reset by peer"},
+		}, "", 0)
+		require.NotNil(t, frame)
+		assert.NotContains(t, string(frame), "10.0.0.5")
+		assert.NotContains(t, string(frame), "read tcp")
+		code, message := failedError(frame)
+		assert.Equal(t, "server_error", code)
+		assert.Equal(t, "upstream stream failed", message)
+	})
+
+	t.Run("upstream error", func(t *testing.T) {
+		frame := passthroughResponsesFailedFrame(&schemas.BifrostError{
+			Error: &schemas.ErrorField{Code: schemas.Ptr("context_length_exceeded"), Message: "Your input exceeds the context window of this model."},
+		}, "", 0)
+		require.NotNil(t, frame)
+		code, message := failedError(frame)
+		assert.Equal(t, "context_length_exceeded", code)
+		assert.Equal(t, "Your input exceeds the context window of this model.", message)
+	})
+}
+
+// relayResponsesPassthrough runs handlePassthroughStream for a Codex Responses request against a raw
+// TCP upstream scripted by upstream, and returns every byte the client received.
+func relayResponsesPassthrough(t *testing.T, upstream func(conn net.Conn)) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = http.ReadRequest(bufio.NewReader(conn))
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		upstream(conn)
+	}()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, Logger: bifrost.NewNoOpLogger()})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	g := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+
+	var ctx fasthttp.RequestCtx
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	g.handlePassthroughStream(&ctx, bifrostCtx, cancel, schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+		Method:      "POST",
+		Path:        "/backend-api/codex/responses",
+		UpstreamURL: "http://" + ln.Addr().String(),
+		Body:        []byte(`{"model":"gpt-5.5","input":[],"stream":true}`),
+		SafeHeaders: map[string]string{"content-type": "application/json"},
+	})
+	require.Equal(t, 200, ctx.Response.StatusCode())
+	bodyStream := ctx.Response.BodyStream()
+	require.NotNil(t, bodyStream)
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(bodyStream)
+		done <- b
+	}()
+	select {
+	case b := <-done:
+		return string(b)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out reading the relayed stream")
+		return ""
+	}
+}
+
+// writeChunk writes one HTTP/1.1 chunk and pauses so the relay reads it on its own.
+func writeChunk(conn net.Conn, data string) {
+	_, _ = fmt.Fprintf(conn, "%x\r\n%s\r\n", len(data), data)
+	time.Sleep(50 * time.Millisecond)
+}
+
+const relayCreatedFrame = "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\"}}\n\n"
+
+// TestResponsesPassthroughDropsPartialFrameBeforeFailure covers an upstream that drops inside a data
+// line. The half-sent line must never reach the client: SSE has no way to cancel a partial line, so
+// the failure frame would be glued onto it and neither would parse.
+func TestResponsesPassthroughDropsPartialFrameBeforeFailure(t *testing.T) {
+	body := relayResponsesPassthrough(t, func(conn net.Conn) {
+		writeChunk(conn, relayCreatedFrame+"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"del")
+	})
+	require.True(t, strings.HasPrefix(body, relayCreatedFrame), "complete frames are relayed unchanged: %q", body)
+	assert.NotContains(t, body, "response.output_text.delta", "the partial frame must not reach the client")
+	rest := strings.TrimPrefix(body, relayCreatedFrame)
+	require.True(t, strings.HasPrefix(rest, "event: response.failed\ndata: "), "the failure frame starts on a fresh line: %q", rest)
+	require.True(t, strings.HasSuffix(rest, "\n\n"), "the failure frame is terminated: %q", rest)
+	var event struct {
+		Type string `json:"type"`
+	}
+	require.NoError(t, sonic.UnmarshalString(strings.TrimSpace(strings.TrimPrefix(rest, "event: response.failed\ndata: ")), &event))
+	assert.Equal(t, "response.failed", event.Type)
+	assert.Contains(t, rest, `"message":"upstream closed the stream before response.completed"`, "a clean close names the truncation")
+}
+
+// TestResponsesPassthroughHealthyStreamIsByteExact keeps a stream that completes untouched: frames
+// split across reads come out byte for byte, and no failure frame is added after response.completed.
+func TestResponsesPassthroughHealthyStreamIsByteExact(t *testing.T) {
+	completed := "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}\n\n"
+	split := len(completed) / 2
+	body := relayResponsesPassthrough(t, func(conn net.Conn) {
+		writeChunk(conn, relayCreatedFrame+completed[:split])
+		writeChunk(conn, completed[split:])
+		_, _ = io.WriteString(conn, "0\r\n\r\n")
+	})
+	assert.Equal(t, relayCreatedFrame+completed, body)
+}
+
+// TestResponsesPassthroughConnectionResetEndsWithGenericFailure takes the error-chunk path end to end:
+// a TCP reset surfaces as a gateway read error, which ends the stream with response.failed carrying
+// the generic message, never the read error and its addresses.
+func TestResponsesPassthroughConnectionResetEndsWithGenericFailure(t *testing.T) {
+	body := relayResponsesPassthrough(t, func(conn net.Conn) {
+		writeChunk(conn, relayCreatedFrame)
+		time.Sleep(100 * time.Millisecond)
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.SetLinger(0)
+		}
+	})
+	require.True(t, strings.HasPrefix(body, relayCreatedFrame), "complete frames are relayed unchanged: %q", body)
+	assert.Contains(t, body, "event: response.failed\n")
+	assert.Contains(t, body, `"message":"upstream stream failed"`)
+	assert.NotContains(t, body, "127.0.0.1")
+	assert.NotContains(t, body, "connection reset")
+}
+
+// BenchmarkResponsesFrameRelay measures the per-chunk cost the gated Responses passthrough pays for
+// whole-frame forwarding: one text delta frame per read, the common shape of a streamed turn.
+func BenchmarkResponsesFrameRelay(b *testing.B) {
+	delta := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":7,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello world\"}\n\n")
+	relay := &responsesFrameRelay{}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = relay.complete(delta)
+	}
+}
+
+// TestResponsesFrameRelayCapsUnterminatedFrame bounds the relay's buffer: an upstream that never
+// terminates a frame must not grow pending past core's native per-event ceiling.
+func TestResponsesFrameRelayCapsUnterminatedFrame(t *testing.T) {
+	relay := &responsesFrameRelay{}
+	piece := []byte("data: " + strings.Repeat("x", 4090))
+	for sent := 0; sent <= responsesFrameRelayMaxPending; sent += len(piece) {
+		require.Empty(t, relay.complete(piece), "an unterminated frame is never forwarded")
+	}
+	assert.True(t, relay.overflowed, "passing the cap must mark the relay overflowed")
+	assert.Empty(t, relay.pending, "the unterminated tail is discarded, not retained")
+}
+
+// TestResponsesFrameRelayLargeEventIsByteExact keeps a large legitimate event (below the cap) intact
+// when it arrives in 4 KiB reads, the way the passthrough producer reads the upstream.
+func TestResponsesFrameRelayLargeEventIsByteExact(t *testing.T) {
+	event := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"blob\":\"" + strings.Repeat("y", 9<<20) + "\"}\n\n")
+	relay := &responsesFrameRelay{}
+	var out []byte
+	for off := 0; off < len(event); off += 4096 {
+		out = append(out, relay.complete(event[off:min(off+4096, len(event))])...)
+	}
+	assert.Equal(t, len(event), len(out))
+	assert.True(t, bytes.Equal(event, out), "a large event must come out byte-exact")
+	assert.True(t, relay.sawTerminal)
+	assert.False(t, relay.overflowed)
+}
+
+// TestResponsesFrameRelayFindsDelimiterSplitAcrossChunks pins the overlap the incremental scan keeps:
+// a CRLF blank line split across two reads still completes the frame.
+func TestResponsesFrameRelayFindsDelimiterSplitAcrossChunks(t *testing.T) {
+	relay := &responsesFrameRelay{}
+	assert.Empty(t, relay.complete([]byte("event: response.created\r\ndata: {\"type\":\"response.created\"}\r\n\r")))
+	assert.Equal(t, "event: response.created\r\ndata: {\"type\":\"response.created\"}\r\n\r\n", string(relay.complete([]byte("\n"))))
+}
+
+// TestResponsesPassthroughOverflowEndsWithOneFailure fails closed end to end: once an unterminated
+// frame passes the cap the relay stops forwarding and the client gets exactly one response.failed.
+func TestResponsesPassthroughOverflowEndsWithOneFailure(t *testing.T) {
+	body := relayResponsesPassthrough(t, func(conn net.Conn) {
+		writeChunk(conn, relayCreatedFrame)
+		piece := "data: " + strings.Repeat("z", 64<<10)
+		for sent := 0; sent <= responsesFrameRelayMaxPending+len(piece); sent += len(piece) {
+			if _, err := fmt.Fprintf(conn, "%x\r\n%s\r\n", len(piece), piece); err != nil {
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	})
+	require.True(t, strings.HasPrefix(body, relayCreatedFrame), "complete frames are relayed unchanged")
+	rest := strings.TrimPrefix(body, relayCreatedFrame)
+	assert.NotContains(t, rest, "zzzz", "no partial frame bytes reach the client")
+	assert.Equal(t, 1, strings.Count(rest, "event: response.failed\n"), "exactly one failure frame: %.300q", rest)
+	assert.Contains(t, rest, "upstream event exceeded the 10 MB frame limit")
+}
+
+// BenchmarkResponsesFrameRelayLargeEvent measures a 4 MiB event arriving in 4 KiB reads; the scan
+// covers only the new bytes, so the cost grows linearly with the event.
+func BenchmarkResponsesFrameRelayLargeEvent(b *testing.B) {
+	event := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"blob\":\"" + strings.Repeat("y", 4<<20) + "\"}\n\n")
+	b.ReportAllocs()
+	b.SetBytes(int64(len(event)))
+	for b.Loop() {
+		relay := &responsesFrameRelay{}
+		for off := 0; off < len(event); off += 4096 {
+			_ = relay.complete(event[off:min(off+4096, len(event))])
+		}
+	}
+}
+
+// relayedFailedEvent parses the response.failed frame that ends a relayed body.
+func relayedFailedEvent(t *testing.T, body string) (id string, seq int, hasSeq bool) {
+	t.Helper()
+	i := strings.LastIndex(body, "event: response.failed\ndata: ")
+	require.GreaterOrEqual(t, i, 0, "no response.failed frame: %q", body)
+	var event struct {
+		SequenceNumber *int `json:"sequence_number"`
+		Response       struct {
+			ID string `json:"id"`
+		} `json:"response"`
+	}
+	require.NoError(t, sonic.UnmarshalString(strings.TrimSpace(body[i+len("event: response.failed\ndata: "):]), &event))
+	if event.SequenceNumber != nil {
+		return event.Response.ID, *event.SequenceNumber, true
+	}
+	return event.Response.ID, 0, false
+}
+
+// TestResponsesPassthroughFailureCarriesUpstreamIdentity ties the synthetic response.failed to the
+// response the client already saw: the id from response.created and the next sequence number, the
+// way an upstream's own response.failed would (developers.openai.com/api/reference/resources/responses/streaming-events).
+func TestResponsesPassthroughFailureCarriesUpstreamIdentity(t *testing.T) {
+	created := "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_up_42\",\"status\":\"in_progress\"}}\n\n"
+	delta := "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":5,\"item_id\":\"msg_1\",\"delta\":\"hi\"}\n\n"
+	body := relayResponsesPassthrough(t, func(conn net.Conn) {
+		writeChunk(conn, created+delta+"event: response.output_text.delta\ndata: {\"type\":\"resp")
+	})
+	id, seq, hasSeq := relayedFailedEvent(t, body)
+	assert.Equal(t, "resp_up_42", id, "response.failed names the response the client already received")
+	require.True(t, hasSeq)
+	assert.Equal(t, 6, seq, "response.failed continues the upstream sequence")
+}
+
+// TestResponsesPassthroughFailureBeforeCreatedHasNoIdentity covers a failure before response.created:
+// there is no id to repeat, so none is invented, and the sequence starts at 0.
+func TestResponsesPassthroughFailureBeforeCreatedHasNoIdentity(t *testing.T) {
+	body := relayResponsesPassthrough(t, func(conn net.Conn) {
+		writeChunk(conn, "event: response.created\ndata: {\"type\":\"resp")
+	})
+	id, seq, hasSeq := relayedFailedEvent(t, body)
+	assert.Empty(t, id)
+	require.True(t, hasSeq)
+	assert.Equal(t, 0, seq)
+}
+
+// holdUntilFinalPlugin mirrors a buffering output guardrail: it pauses the stream on the
+// first chunk and only resumes it once the final chunk has been seen and evaluated.
+type holdUntilFinalPlugin struct{ paused bool }
+
+func (p *holdUntilFinalPlugin) GetName() string { return "hold-until-final" }
+func (p *holdUntilFinalPlugin) Cleanup() error  { return nil }
+func (p *holdUntilFinalPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *holdUntilFinalPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *holdUntilFinalPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if !p.paused {
+		p.paused = true
+		ctx.PauseStream()
+	}
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
+		ctx.ResumeStream()
+	}
+	return resp, bifrostErr, nil
+}
+
+// blockAtFinalPlugin mirrors a buffering output guardrail that rejects the response once it
+// has seen all of it: it drops the held chunks and ends the stream with an error.
+type blockAtFinalPlugin struct{ holdUntilFinalPlugin }
+
+func (p *blockAtFinalPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if !p.paused {
+		p.paused = true
+		ctx.PauseStream()
+	}
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
+		_ = ctx.ClearPausedStreamBuffer()
+		ctx.ResumeStream()
+		return nil, &schemas.BifrostError{StatusCode: schemas.Ptr(446), Error: &schemas.ErrorField{Message: "blocked by guardrail"}}, nil
+	}
+	return resp, bifrostErr, nil
+}
+
+type heldStreamResult struct {
+	committedAfter time.Duration
+	status         int
+	body           string
+	upstreamHits   int
+}
+
+// runHeldStream sends one streaming request through a real Bifrost whose plugin holds the
+// stream, against an Anthropic upstream that pauses for hold mid-generation.
+func runHeldStream(t *testing.T, plugin schemas.LLMPlugin, hold time.Duration, uri, body string) heldStreamResult {
+	t.Helper()
+	return runHeldStreamWith(t, plugin, hold, uri, body, func(send func(event, data string)) {
+		send("message_start", heldMessageStart)
+		send("content_block_start", heldTextBlockStart)
+		send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`)
+		time.Sleep(hold)
+		send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}`)
+		send("content_block_stop", `{"type":"content_block_stop","index":0}`)
+		send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`)
+		send("message_stop", `{"type":"message_stop"}`)
+	})
+}
+
+const (
+	heldMessageStart   = `{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"usage":{"input_tokens":5,"output_tokens":1}}}`
+	heldTextBlockStart = `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`
+)
+
+// runHeldStreamWith is runHeldStream with the upstream's SSE events scripted by events.
+func runHeldStreamWith(t *testing.T, plugin schemas.LLMPlugin, hold time.Duration, uri, body string, events func(send func(event, data string))) heldStreamResult {
+	t.Helper()
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		events(func(event, data string) {
+			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+			flusher.Flush()
+		})
+	}))
+	t.Cleanup(upstream.Close)
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := tracing.NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:    passthroughTestAccount{baseURL: upstream.URL},
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Tracer:     tracer,
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewAnthropicRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI(uri)
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(body)
+
+	start := time.Now()
+	returned := make(chan struct{})
+	go func() {
+		r.Handler(&ctx)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(2*hold + 5*time.Second):
+		t.Fatal("handler never returned")
+	}
+	res := heldStreamResult{committedAfter: time.Since(start), status: ctx.Response.StatusCode()}
+	if bs := ctx.Response.BodyStream(); bs != nil {
+		raw, _ := io.ReadAll(bs)
+		res.body = string(raw)
+	} else {
+		res.body = string(ctx.Response.Body())
+	}
+	res.upstreamHits = int(hits.Load())
+	return res
+}
+
+// A plugin that holds a stream (a buffering output guardrail) keeps every chunk out of the
+// provider channel until the upstream finishes. The handler must still commit the SSE response
+// and start heartbeats once the upstream has produced output; otherwise a proxy in front of
+// Bifrost (Cloudflare's 125s read timeout) sees zero bytes for the whole generation and cuts the
+// request with a 524, which Bifrost then logs as "client disconnected". Once committed, the
+// client gets heartbeats during the hold and then every held chunk in order, with no trace of
+// the internal commit marker.
+func TestAnthropicHeldStreamDeliversHeartbeatsThenContent(t *testing.T) {
+	const hold = 2500 * time.Millisecond
+	res := runHeldStream(t, &holdUntilFinalPlugin{}, hold, "/anthropic/v1/messages",
+		`{"model":"anthropic/claude-test","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+	require.Equal(t, fasthttp.StatusOK, res.status, "body: %s", res.body)
+	require.Less(t, res.committedAfter, hold/2, "response committed only after %s", res.committedAfter)
+	heartbeat := strings.Index(res.body, ": heartbeat")
+	start := strings.Index(res.body, "event: message_start")
+	require.NotEqual(t, -1, heartbeat, "no heartbeat reached the client during the hold: %s", res.body)
+	require.Less(t, heartbeat, start, "heartbeats must precede the held content: %s", res.body)
+	hello := strings.Index(res.body, `"text":"Hello"`)
+	world := strings.Index(res.body, `"text":" world"`)
+	require.True(t, hello != -1 && world > hello, "held text missing or out of order: %s", res.body)
+	require.Contains(t, res.body, "event: message_stop")
+	require.NotContains(t, res.body, "data: {}", "the commit marker leaked to the client")
+}
+
+// The neutral OpenAI-shaped route reaches Anthropic through the same core path and must
+// commit a held stream just as early.
+func TestOpenAIChatHeldStreamCommitsEarly(t *testing.T) {
+	const hold = 2500 * time.Millisecond
+	res := runHeldStream(t, &holdUntilFinalPlugin{}, hold, "/openai/v1/chat/completions",
+		`{"model":"anthropic/claude-test","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+	require.Equal(t, fasthttp.StatusOK, res.status, "body: %s", res.body)
+	require.Less(t, res.committedAfter, hold/2, "response committed only after %s", res.committedAfter)
+	require.Contains(t, res.body, ": heartbeat")
+	require.Contains(t, res.body, `"content":"Hello"`)
+	require.Contains(t, res.body, "data: [DONE]")
+	require.NotContains(t, res.body, "data: {}", "the commit marker leaked to the client")
+}
+
+// A guardrail that rejects a held stream at its end now reports it as an in-stream error on
+// the already committed response, and the upstream is not called again for it.
+func TestAnthropicHeldStreamBlockedAtEndIsInStreamError(t *testing.T) {
+	const hold = 1500 * time.Millisecond
+	res := runHeldStream(t, &blockAtFinalPlugin{}, hold, "/anthropic/v1/messages",
+		`{"model":"anthropic/claude-test","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+	require.Equal(t, fasthttp.StatusOK, res.status, "body: %s", res.body)
+	require.Less(t, res.committedAfter, hold/2, "response committed only after %s", res.committedAfter)
+	require.Contains(t, res.body, "event: error")
+	require.Contains(t, res.body, "blocked by guardrail")
+	require.NotContains(t, res.body, `"text":"Hello"`, "blocked content reached the client")
+	require.Equal(t, 1, res.upstreamHits, "a guardrail block must not re-run the upstream")
+}
+
+// When the upstream's first events carry no output (an OpenAI-family model, whose startup
+// events the retry loop withholds while it checks for a startup error), a held stream must not
+// commit on them: committing ends that check, along with any first-token deadline. It commits
+// once the first real output is held instead.
+func TestOpenAIChatHeldStreamCommitsOnOutputNotStartupEvents(t *testing.T) {
+	const hold = 1500 * time.Millisecond
+	res := runHeldStreamWith(t, &holdUntilFinalPlugin{}, hold, "/openai/v1/chat/completions",
+		`{"model":"anthropic/gpt-4o-test","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+		func(send func(event, data string)) {
+			send("message_start", heldMessageStart)
+			time.Sleep(hold) // startup only: nothing generated yet
+			send("content_block_start", heldTextBlockStart)
+			send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`)
+			time.Sleep(hold) // a long generation still in progress
+			send("content_block_stop", `{"type":"content_block_stop","index":0}`)
+			send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`)
+			send("message_stop", `{"type":"message_stop"}`)
+		})
+
+	require.Equal(t, fasthttp.StatusOK, res.status, "body: %s", res.body)
+	require.Greater(t, res.committedAfter, hold/2,
+		"the response was committed after %s, on the startup event alone, before any output existed", res.committedAfter)
+	require.Less(t, res.committedAfter, hold+hold/2,
+		"the response was committed only after %s: the held output did not commit it", res.committedAfter)
+	require.Contains(t, res.body, `"content":"Hello"`)
+	require.Contains(t, res.body, "data: [DONE]")
+	require.NotContains(t, res.body, "data: {}", "the commit marker leaked to the client")
+}
+
+// heldDeadlineAccount serves an OpenAI primary and an Anthropic fallback from two test upstreams.
+type heldDeadlineAccount struct{ primaryURL, fallbackURL string }
+
+func (a heldDeadlineAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic}, nil
+}
+
+func (a heldDeadlineAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: string(p) + "-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+func (a heldDeadlineAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	switch p {
+	case schemas.OpenAI:
+		nc.BaseURL = a.primaryURL
+	case schemas.Anthropic:
+		nc.BaseURL = a.fallbackURL
+	default:
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// A first-token deadline still governs a held stream. The startup check only learns that a held
+// attempt produced output through the commit marker, and the marker disarms the deadline: an
+// attempt whose first token came in time must not be cut off, or fall back, while a plugin holds
+// the rest of it past the deadline.
+func TestHeldStreamFirstTokenDeadline(t *testing.T) {
+	const deadline = time.Second
+	openAIChunk := func(w http.ResponseWriter, data string) {
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+		w.(http.Flusher).Flush()
+	}
+	stall := func(r *http.Request, d time.Duration) bool {
+		select {
+		case <-time.After(d):
+			return true
+		case <-r.Context().Done():
+			return false
+		}
+	}
+	cases := []struct {
+		name         string
+		primary      func(w http.ResponseWriter, r *http.Request)
+		wantContent  string
+		wantFallback int32
+	}{
+		{
+			// Output before the deadline, then a hold that outlasts it: the primary made its
+			// first token in time and must not be cut off while the plugin holds the rest.
+			name: "primary with output in time survives a long hold",
+			primary: func(w http.ResponseWriter, r *http.Request) {
+				openAIChunk(w, `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"primary"}}]}`)
+				if !stall(r, 3*deadline) {
+					return
+				}
+				openAIChunk(w, `{"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+				openAIChunk(w, "[DONE]")
+			},
+			wantContent:  "primary",
+			wantFallback: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var primaryHits, fallbackHits atomic.Int32
+			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				primaryHits.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				tc.primary(w, r)
+			}))
+			fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fallbackHits.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				send := func(event, data string) {
+					_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+					w.(http.Flusher).Flush()
+				}
+				send("message_start", heldMessageStart)
+				send("content_block_start", heldTextBlockStart)
+				send("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`)
+				send("content_block_stop", `{"type":"content_block_stop","index":0}`)
+				send("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`)
+				send("message_stop", `{"type":"message_stop"}`)
+			}))
+			t.Cleanup(func() {
+				primary.CloseClientConnections()
+				fallback.CloseClientConnections()
+				primary.Close()
+				fallback.Close()
+			})
+
+			store := tracing.NewTraceStore(5*time.Minute, nil)
+			t.Cleanup(store.Stop)
+			tracer := tracing.NewTracer(store, nil, nil)
+			t.Cleanup(tracer.Stop)
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account:    heldDeadlineAccount{primaryURL: primary.URL, fallbackURL: fallback.URL},
+				LLMPlugins: []schemas.LLMPlugin{&holdUntilFinalPlugin{}},
+				Tracer:     tracer,
+				Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+			})
+			require.NoError(t, err)
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			ctx.SetValue(schemas.BifrostContextKeyStreamFirstTokenTimeout, deadline)
+			stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+				Provider:  schemas.OpenAI,
+				Model:     "gpt-4o-mini",
+				Input:     []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Fallbacks: []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-test"}},
+			})
+			require.Nil(t, bifrostErr, "stream failed: %+v", bifrostErr)
+
+			var content strings.Builder
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for chunk := range stream {
+					require.False(t, schemas.IsStreamCommitMarker(chunk), "the commit marker leaked to the caller")
+					if chunk.BifrostError != nil {
+						t.Errorf("stream error: %+v", chunk.BifrostError.Error)
+						continue
+					}
+					if r := chunk.BifrostChatResponse; r != nil {
+						for _, c := range r.Choices {
+							if c.ChatStreamResponseChoice != nil && c.ChatStreamResponseChoice.Delta != nil && c.ChatStreamResponseChoice.Delta.Content != nil {
+								content.WriteString(*c.ChatStreamResponseChoice.Delta.Content)
+							}
+						}
+					}
+				}
+			}()
+			select {
+			case <-done:
+			case <-time.After(8 * time.Second):
+				t.Fatal("the stream never ended")
+			}
+
+			require.Equal(t, tc.wantContent, content.String())
+			require.Equal(t, int32(1), primaryHits.Load(), "a first-token miss must not retry the primary")
+			require.Equal(t, tc.wantFallback, fallbackHits.Load())
+		})
 	}
 }

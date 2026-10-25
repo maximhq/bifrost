@@ -64,6 +64,27 @@ type BackfillJobMeta struct {
 	EmbeddingCost   *float64 `json:"embedding_cost,omitempty"`
 	LastError       string   `json:"last_error,omitempty"`
 	Message         string   `json:"message,omitempty"`
+	// Merged, MergeThreshold and Topics are set by topic clustering only:
+	// how many clusters were folded into another, the similarity the run
+	// derived for doing so, and each topic it wrote with how tight it came
+	// out. MergeThreshold is nil when the run had nothing to derive one from.
+	Merged int `json:"merged,omitempty"`
+	// Clustered, Assigned and Unassigned split what a topics run read: the
+	// requests that were clustered, the ones given to the nearest topic after
+	// clustering stopped, and the ones that ended in no topic at all.
+	Clustered  int `json:"clustered,omitempty"`
+	Assigned   int `json:"assigned,omitempty"`
+	Unassigned int `json:"unassigned,omitempty"`
+	// Capped is set when a run stopped at a read limit; default runs have none.
+	Capped bool `json:"capped,omitempty"`
+	// MergedByName counts clusters joined after naming because they were
+	// given the same name as another.
+	MergedByName   int            `json:"merged_by_name,omitempty"`
+	MergeThreshold *float64       `json:"merge_threshold,omitempty"`
+	Topics         []TopicSummary `json:"topics,omitempty"`
+	// Themes is how many themes the active topics were grouped into once
+	// the run had written its topics.
+	Themes int `json:"themes,omitempty"`
 }
 
 // embeddingConfigSignature identifies the embedding space a backfill was frozen
@@ -88,8 +109,12 @@ func embeddingConfigSignature(config *schemas.WarpConfig) string {
 	return builder.String()
 }
 
-// RegisterBackfill binds Warp's handler to the shared Sidekiq runner.
+// RegisterBackfill binds Warp's background jobs to the shared Sidekiq runner:
+// the embedding backfill and the topic clustering that reads what it wrote.
+// Topics are registered first and check their own dependencies: they read
+// vectors already indexed, so a deployment with no indexer can still run them.
 func (s *Service) RegisterBackfill(runner *sidekiq.Runner) {
+	s.RegisterTopics(runner)
 	if runner == nil || s.indexer == nil || s.logs == nil {
 		return
 	}
@@ -157,8 +182,9 @@ func (s *Service) BuildBackfillJobMeta(ctx context.Context, start, end time.Time
 	return marshalBackfillMeta(meta)
 }
 
-// BackfillMatchesConfig reports whether a backfill job's checkpoint was frozen
-// against the embedding space the deployment is configured with now.
+// BackfillMatchesConfig reports whether a backfill or topics job was frozen
+// against the embedding space the deployment is configured with now. Both
+// carry the same metadata, signature included.
 //
 // A finished job is only the current state of the index while the space it
 // ran under is still the configured one: after the embedding model, dimension

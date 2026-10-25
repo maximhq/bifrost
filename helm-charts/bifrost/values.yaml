@@ -176,6 +176,20 @@ autoscaling:
     scaleUp:
       stabilizationWindowSeconds: 30
 
+# PodDisruptionBudget for the Bifrost pods. Off by default; when enabled it is rendered only
+# when bifrost.cluster.enabled is true.
+# minAvailable: 1 keeps at least one replica running through a voluntary disruption
+# (node drain, cluster upgrade). Other settings give less: minAvailable: 0 or maxUnavailable: "100%"
+# allow every replica to be evicted, and Kubernetes rounds percentages up. It does not apply to
+# involuntary failures. With minAvailable: 1 a single-replica release blocks node drains, so run
+# at least 2 replicas (replicaCount or autoscaling.minReplicas) before enabling it.
+# minAvailable and maxUnavailable take an integer or a percentage string such as "50%".
+# A PDB accepts only one of them: setting maxUnavailable replaces minAvailable.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
 # Additional volumes on the output Deployment definition.
 volumes: []
 
@@ -234,6 +248,7 @@ bifrost:
   logLevel: info
   logStyle: json
   # envLabel: staging  # Short label (max 10 chars) shown in the UI sidebar to identify the environment
+  # disableOnboarding: true  # Hide the UI setup checklist for everyone; survives pod replacement, unlike "hide for everyone"
 
   # Bootstrap secret to create the first admin account. Use the same value on every node so any
   # node can authorize first-admin creation. Never persisted or logged; also read from
@@ -356,6 +371,8 @@ bifrost:
     # allowedHeaders: []                     # Additional allowed headers for CORS and WebSocket
     # hideDeletedVirtualKeysInFilters: false # Omit deleted virtual keys from logs/MCP filter data
     # deleteExpiredVirtualKeys: false        # Daily job deletes virtual keys past expires_at (per-key delete_after_expire overrides)
+    # skipAccessProfileUserVirtualKeyCreation: false # Enterprise: when true, a user's first access profile does not create a virtual key for them
+    # skipAccessProfileUserVirtualKeyDeletion: false # Enterprise: when true, removing a user's last access profile does not delete their virtual keys (deleting the user still does)
     # whitelistedRoutes: []                  # Routes that bypass auth middleware
     # routingChainMaxDepth: 10               # Maximum depth for routing rule chain evaluation
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
@@ -1110,6 +1127,7 @@ bifrost:
       #   split_policy: "none"             # none (shared caps) | equal (each member gets an equal share); open projects must use none
       #   calendar_aligned: false          # Snap budget and rate-limit windows to calendar boundaries
       #   allow_all_providers: false       # true grants access to every provider incl. ones added later; a provider with a provider_configs entry keeps its model/key/budget/rate-limit rules; false (default) is deny-by-default via provider_configs
+      #   # disable_content_logging: true  # Omit to inherit the virtual key's setting (or the client's); true/false override the virtual key for this project's traffic
       #   budgets:
       #     - max_limit: 5000
       #       reset_duration: "1M"
@@ -1285,6 +1303,7 @@ bifrost:
       # clientId: ""
       # clientSecret: ""
       # apiToken: ""  # optional — enables background user/group reconciliation (every bulkSyncInterval, 24h by default)
+      # syncAllUsers: true  # directory sync keeps every app-assigned user except suspended/deactivated; false = active users only
       # audience: ""
       # # Extra OAuth scopes on top of the base openid/profile/email/offline_access set
       # # (for Custom Authorization Servers where claims like "groups" are gated behind a scope).
@@ -1875,6 +1894,7 @@ storage:
     #   passwordKey: "password"
     # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
     # matviewRefreshTimeout: "5m"  # Max time for one refresh pass (min 30s, max 30m; unset = 5x interval, min 5m). A timeout leaves views intact but staler.
+    # matviewRefreshTempFileLimit: "10GB"  # Cap temp files per Postgres process (Postgres temp_file_limit); parallel workers each get the cap. Keep cap x (workers + 1) well under free disk. Needs superuser or GRANT SET ON PARAMETER temp_file_limit.
     # migrationMatviewCancelAfter: "60s"  # During schema migrations, cancel an in-flight matview refresh (any replica/version) after this long. Unset = 60s; "off" = wait only.
     # ClickHouse connection settings (only applies when type is clickhouse)
     # clickhouse:

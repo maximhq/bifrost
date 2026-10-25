@@ -299,6 +299,9 @@ false
 {{- if .Values.bifrost.envLabel }}
 {{- $_ := set $config "env_label" .Values.bifrost.envLabel }}
 {{- end }}
+{{- if hasKey .Values.bifrost "disableOnboarding" }}
+{{- $_ := set $config "disable_onboarding" .Values.bifrost.disableOnboarding }}
+{{- end }}
 {{- if .Values.bifrost.setupToken }}
 {{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
 {{- end }}
@@ -448,6 +451,12 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.client "deleteExpiredVirtualKeys" }}
 {{- $_ := set $client "delete_expired_virtual_keys" .Values.bifrost.client.deleteExpiredVirtualKeys }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "skipAccessProfileUserVirtualKeyCreation" }}
+{{- $_ := set $client "skip_access_profile_user_virtual_key_creation" .Values.bifrost.client.skipAccessProfileUserVirtualKeyCreation }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "skipAccessProfileUserVirtualKeyDeletion" }}
+{{- $_ := set $client "skip_access_profile_user_virtual_key_deletion" .Values.bifrost.client.skipAccessProfileUserVirtualKeyDeletion }}
 {{- end }}
 {{- if hasKey .Values.bifrost.client "vkRotationCooldown" }}
 {{- $_ := set $client "vk_rotation_cooldown" .Values.bifrost.client.vkRotationCooldown }}
@@ -1147,6 +1156,9 @@ false
 {{- end }}
 {{- if .Values.storage.logsStore.matviewRefreshTimeout }}
 {{- $_ := set $pgConfig "matview_refresh_timeout" .Values.storage.logsStore.matviewRefreshTimeout }}
+{{- end }}
+{{- if .Values.storage.logsStore.matviewRefreshTempFileLimit }}
+{{- $_ := set $pgConfig "matview_refresh_temp_file_limit" .Values.storage.logsStore.matviewRefreshTempFileLimit }}
 {{- end }}
 {{- if .Values.storage.logsStore.migrationMatviewCancelAfter }}
 {{- $_ := set $pgConfig "migration_matview_cancel_after" .Values.storage.logsStore.migrationMatviewCancelAfter }}

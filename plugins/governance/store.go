@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1349,6 +1350,9 @@ func StampVirtualKeyScope(ctx *schemas.BifrostContext, virtualKey *configstoreTa
 // connectors are handed the finished trace without the request context, so the span is the only
 // place they can read the decision from. The mark is one-directional: a key that keeps content on
 // says nothing to a connector, whose own disable_content_logging stays in charge.
+//
+// A project the request is scoped to can override the key's decision once it is admitted, on the
+// context and on the span alike.
 func stampVirtualKeyContentLogging(ctx *schemas.BifrostContext, virtualKey *configstoreTables.TableVirtualKey) {
 	if ctx == nil || virtualKey == nil || virtualKey.DisableContentLogging == nil {
 		return
@@ -1756,6 +1760,28 @@ func (gs *LocalGovernanceStore) DetachVirtualMCPInMemory(vkID string, vmcpID uin
 		return
 	}
 	gs.virtualMCPIDsByVK.Store(vkID, next)
+}
+
+// SetVirtualMCPAssignmentsInMemory replaces a VK's whole assignment set in one write, under
+// virtualMCPAssignMu like Attach/Detach. A key reload uses it to converge the index on what the
+// database holds after a write that changed the assignments by other means (adoption into an
+// access profile strips them). An empty set drops the VK.
+func (gs *LocalGovernanceStore) SetVirtualMCPAssignmentsInMemory(vkID string, vmcpIDs []uint) {
+	gs.virtualMCPAssignMu.Lock()
+	defer gs.virtualMCPAssignMu.Unlock()
+	if len(vmcpIDs) == 0 {
+		gs.virtualMCPIDsByVK.Delete(vkID)
+		return
+	}
+	next := slices.Clone(vmcpIDs)
+	slices.Sort(next)
+	gs.virtualMCPIDsByVK.Store(vkID, slices.Compact(next))
+}
+
+// VirtualMCPAssignmentsInMemory returns a copy of the Virtual MCP IDs the in-memory index assigns a
+// VK directly, sorted, or nil. Callers that converge the index use it to check what it holds.
+func (gs *LocalGovernanceStore) VirtualMCPAssignmentsInMemory(vkID string) []uint {
+	return slices.Clone(gs.assignedVirtualMCPIDs(vkID))
 }
 
 // virtualKeyOf is the key row behind a permit, when the permit is a key's. Nothing else this store

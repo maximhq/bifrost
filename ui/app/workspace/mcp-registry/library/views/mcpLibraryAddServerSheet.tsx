@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useCreateMCPLibraryEntryMutation } from "@/lib/store";
 import type { CreateMCPLibraryEntryRequest, MCPAuthType, MCPConnectionType } from "@/lib/types/mcp";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { Info } from "lucide-react";
 import { useEffect } from "react";
@@ -81,7 +82,8 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 	// Token exchange is backed by the deployment's identity-provider
 	// integration, so the option only renders when one is enabled, same gate
 	// as the create-server sheet.
-	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE });
+	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
+	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE || !hasUserProvisioningAccess });
 	const idpConfigured = !!scimProviders?.find((p) => (p as { enabled?: boolean }).enabled);
 
 	const methods = useForm<MCPLibraryAddServerFormData>({ defaultValues: DEFAULTS });
