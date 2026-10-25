@@ -282114,6 +282114,112 @@
           }
         }
       ]
+    },
+    {
+      "name": "275. Gemini chat sends {} for tool calls without args (PR #8778) (empty tool args)",
+      "description": "Gemini omits `args` for a function call to a tool that takes no parameters. The chat completion converters (final response and stream) left the tool call arguments as an empty string, which OpenAI-shaped clients cannot json-parse; the Responses path already defaulted them to {}. Both rows force a call to a tool declared without parameters and pin that the arguments the client receives parse as a JSON object.",
+      "item": [
+        {
+          "name": "gemini/gemini-3.6-flash /v1/chat/completions tool without parameters returns {} arguments - empty-tool-args",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('no-parameter tool call: arguments parse as a JSON object', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var calls = (pm.response.json().choices[0].message.tool_calls) || [];",
+                  "  pm.expect(calls, 'no tool_calls came back: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  var args = calls[0].function.arguments;",
+                  "  var parsed; try { parsed = JSON.parse(args); } catch (e) { parsed = undefined; }",
+                  "  pm.expect(parsed, 'arguments are not valid JSON: ' + JSON.stringify(args)).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-3.6-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"What time is it? Use the get_time tool.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current time\"}}],\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"get_time\"}},\"max_tokens\":2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /v1/chat/completions stream tool without parameters returns {} arguments - empty-tool-args",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var calls = {};",
+                  "(pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "  l = l.trim(); if (l.indexOf('data:') !== 0) { return; }",
+                  "  var s = l.slice(5).trim(); if (!s || s === '[DONE]') { return; }",
+                  "  var o; try { o = JSON.parse(s); } catch (e) { return; }",
+                  "  ((o.choices || [])[0] && o.choices[0].delta && o.choices[0].delta.tool_calls || []).forEach(function (t) {",
+                  "    var i = t.index || 0; calls[i] = calls[i] || { name: '', args: '' };",
+                  "    if (t.function && t.function.name) { calls[i].name = t.function.name; }",
+                  "    if (t.function && t.function.arguments) { calls[i].args += t.function.arguments; }",
+                  "  });",
+                  "});",
+                  "pm.test('streamed no-parameter tool call: arguments parse as a JSON object', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var keys = Object.keys(calls);",
+                  "  pm.expect(keys.length, 'no streamed tool call: ' + pm.response.text().slice(0, 600)).to.be.above(0);",
+                  "  var parsed; try { parsed = JSON.parse(calls[keys[0]].args); } catch (e) { parsed = undefined; }",
+                  "  pm.expect(parsed, 'streamed arguments are not valid JSON: ' + JSON.stringify(calls[keys[0]].args)).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-3.6-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"What time is it? Use the get_time tool.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current time\"}}],\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"get_time\"}},\"max_tokens\":2048,\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
