@@ -12,6 +12,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
 // Two datasheet rows that fold onto the same stored key (model, provider, mode): extractModelName
@@ -169,4 +170,27 @@ func BenchmarkResolvePricingRows(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = s.resolvePricingRows(entries)
 	}
+}
+
+// The exact-provider rule must decide on its own, not ride on key order (#8492 review): here the
+// bedrock row has the LARGER datasheet key, so only the rule keeps its price. Real datasheet keys
+// such as "openai.*" and "nvidia.*" sort after "bedrock_mantle/".
+func TestResolvePricingRowsExactProviderBeatsSmallerKey(t *testing.T) {
+	entries := map[string]Entry{
+		"openai.x":                costEntry("bedrock", 2e-06),
+		"bedrock_mantle/openai.x": costEntry("bedrock_mantle", 3e-06),
+	}
+	for i := 0; i < syncRepeats; i++ {
+		rows := NewTestStore(nil).resolvePricingRows(entries)
+		if len(rows) != 1 || rows[0].InputCostPerToken == nil || *rows[0].InputCostPerToken != 2e-06 {
+			t.Fatalf("run %d: got %d rows (first input cost %v), want the bedrock row (2e-06) although its key sorts after bedrock_mantle/", i, len(rows), firstInputCost(rows))
+		}
+	}
+}
+
+func firstInputCost(rows []configstoreTables.TableModelPricing) any {
+	if len(rows) == 0 || rows[0].InputCostPerToken == nil {
+		return nil
+	}
+	return *rows[0].InputCostPerToken
 }
