@@ -14,8 +14,11 @@
 # runner passes in as admin_auth_header. The setup token the server boots with
 # is what lets the runner create that first admin account.
 #
-# The MCP library syncs at boot from a one-entry mock catalog file the runner
-# writes, not from the public catalog, so library tests start from known entries.
+# The MCP library syncs at boot from a five-entry mock catalog the mcpchaos fleet
+# serves over HTTP (server library, GET /catalog.json), not from the public
+# catalog, so library tests start from known entries and can change the catalog
+# while the run goes on. A test that changes it resets the library server, which
+# restores this catalog.
 #
 # The upstream MCP servers are an mcpchaos fleet (tests/cmd/mcpconsole), built
 # and started here. Tests reach it through two collection variables: chaos_url,
@@ -138,9 +141,29 @@ if port_in_use "$CHAOS_PORT"; then
     exit 1
 fi
 
-# start_chaos builds mcpchaos and starts its fleet. The servers it boots with are
-# only placeholders: every test re-adds the servers it uses, which resets their
-# tools, faults, auth and counters.
+# write_chaos_seed writes the fleet mcpchaos boots with: alpha and beta, which
+# are only placeholders, since every test re-adds the servers it uses (resetting
+# their tools, faults, auth and counters); and library, which serves the boot
+# catalog. The catalog's array order differs from name order, it has no stdio
+# entry, and its URLs sit under mcp.example.invalid, so no test client can mark an
+# entry installed.
+write_chaos_seed() {
+    cat > "$1" <<'EOF'
+{"servers": {
+  "alpha": {"tools": [{"name": "echo_tool"}, {"name": "add_tool"}]},
+  "beta": {"tools": [{"name": "echo_tool"}, {"name": "add_tool"}]},
+  "library": {"tools": [], "routes": [{"method": "GET", "path": "/catalog.json", "json": {"servers": [
+    {"name": "Harness Catalog Server", "description": "Mock catalog entry for the MCP harness", "category": "testing", "connection_type": "http", "connection_url": "https://mcp.example.invalid/harness/mcp", "auth_type": "none", "publisher": "Harness Labs", "tags": ["x"]},
+    {"name": "Delta Files", "description": "File access, maintained by Acme", "category": "files", "connection_type": "sse", "connection_url": "https://mcp.example.invalid/delta/sse", "auth_type": "headers", "required_header_keys": ["X-Api-Key"], "publisher": "Delta Org", "tags": ["y"]},
+    {"name": "Bravo Search", "description": "Web search", "category": "search", "connection_type": "http", "connection_url": "https://mcp.example.invalid/bravo/mcp", "auth_type": "oauth", "publisher": "ACME Corp", "tags": ["x", "y"]},
+    {"name": "Acme Notes", "description": "Notes", "category": "files", "connection_type": "http", "connection_url": "https://mcp.example.invalid/acme/mcp", "auth_type": "none", "publisher": "Notes Inc"},
+    {"name": "Echo Tickets", "description": "", "category": "", "connection_type": "sse", "connection_url": "https://mcp.example.invalid/echo/sse", "auth_type": "headers", "publisher": "", "tags": [""]}
+  ]}}]}
+}}
+EOF
+}
+
+# start_chaos builds mcpchaos and starts its fleet from the seed above.
 start_chaos() {
     echo -e "${YELLOW}Building mcpchaos...${NC}"
     CHAOS_DIR="$(mktemp -d)"
@@ -148,7 +171,8 @@ start_chaos() {
     ( cd "$REPO_ROOT/tests/cmd/mcpconsole" && GOWORK=off go build -o "$CHAOS_DIR/mcpchaos" ./cmd/mcpchaos ) || {
         echo -e "${RED}Error: failed to build mcpchaos${NC}"; exit 1; }
     local log="$API_DIR/$REPORT_DIR/mcpchaos.log"
-    "$CHAOS_DIR/mcpchaos" -addr "127.0.0.1:$CHAOS_PORT" -servers alpha,beta > "$log" 2>&1 &
+    write_chaos_seed "$CHAOS_DIR/seed.json"
+    "$CHAOS_DIR/mcpchaos" -addr "127.0.0.1:$CHAOS_PORT" -seed "$CHAOS_DIR/seed.json" > "$log" 2>&1 &
     CHAOS_PID=$!
     local waited=0
     while [ $waited -lt 40 ]; do
@@ -166,9 +190,6 @@ start_chaos() {
 
 write_config() {
     local dir="$1"
-    cat > "$dir/mcp-library.json" <<'EOF'
-{"servers": [{"name": "Harness Catalog Server", "description": "Mock catalog entry for the MCP harness", "connection_type": "http", "connection_url": "https://mcp.example.invalid/mcp", "auth_type": "none"}]}
-EOF
     cat > "$dir/config.json" <<EOF
 {
   "\$schema": "https://www.getbifrost.ai/schema",
@@ -182,7 +203,7 @@ EOF
   },
   "config_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/config.db" } },
   "logs_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/logs.db" } },
-  "framework": { "pricing": { "mcp_library_url": "file://$dir/mcp-library.json" } }
+  "framework": { "pricing": { "mcp_library_url": "http://127.0.0.1:$CHAOS_PORT/s/library/rest/catalog.json" } }
 }
 EOF
 }

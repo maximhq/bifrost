@@ -4731,6 +4731,210 @@ const CONN25 = folder("CONN-25 OpenAPI credentials", `Setup: admin credentials; 
   deleteClient("CONN-25", "conn25u-c"),
 ]);
 
+// ================================================================ the MCP library against the mock's HTTP catalog
+
+// The runner boots Bifrost with mcp_library_url at fleet server library's GET /catalog.json, which serves a five-entry
+// catalog (Harness Catalog Server, Delta Files, Bravo Search, Acme Notes, Echo Tickets, in that order). A test that
+// changes the catalog reads it back from library first, so the boot catalog lives in one place, and at the end resets
+// library to it and deletes the remote entries it synced (a delete hides them for good), which leaves the five boot
+// entries as the visible library.
+const LIB_BOOT = ["Harness Catalog Server", "Delta Files", "Bravo Search", "Acme Notes", "Echo Tickets"];
+const LIB_BOOT_TEXT = `the boot catalog (${LIB_BOOT.join(", ")}, in that order)`;
+const LIBRARY = "/api/mcp/library";
+const libEntry = (name, slug, over = {}) => ({ name, description: "", category: "", connection_type: "http", connection_url: `https://mcp.example.invalid/${slug}/mcp`, auth_type: "none", ...over });
+const readBoot = (id) => mockGet(id, "library", "setup: read the boot catalog", [], ["pm.collectionVariables.set('lib_boot', JSON.stringify(pm.response.json().rest.routes[0].json.servers));"]);
+// setCatalog serves the boot catalog plus extra at library's GET /catalog.json, or extra alone with alone set.
+const setCatalog = (id, title, extra, { alone = false } = {}) => request(id, title, "POST", "/control/library/routes/add", {
+  base: CHAOS, noAuth: true, raw: "{{catalog_body}}", asserts: [A.status(200)],
+  pre: [`var servers = ${alone ? "[]" : "JSON.parse(pm.collectionVariables.get('lib_boot'))"}.concat(${lit(extra)});`, "pm.variables.set('catalog_body', JSON.stringify({ route: { method: 'GET', path: '/catalog.json', json: { servers: servers } } }));"],
+});
+const resetLibrary = (id) => request(id, "teardown: reset library to the boot catalog", "POST", "/control", { base: CHAOS, noAuth: true, body: { reset: "library" }, asserts: [A.status(200)] });
+const forceSync = (id, title, n) => request(id, title, "POST", `${LIBRARY}/force-sync`, { asserts: [A.status(200), A.jsonMessage(`MCP library sync completed, ${n} entries synced`)] });
+// byName finds the listed entries named name (ES5, on the list response).
+const byName = (name) => `var found = (pm.response.json().servers || []).filter(function (s) { return s.name === ${lit(name)}; });`;
+const libSearch = (name) => `${LIBRARY}?search=${encodeURIComponent(name)}`;
+// saveLibEntry finds the one entry named name and keeps its id in v and the entry itself in v_entry.
+const saveLibEntry = (id, title, name, v, asserts = []) => request(id, title, "GET", libSearch(name), {
+  asserts: [A.status(200), A.custom(`one entry named ${lit(name)}`, [byName(name), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);"]), ...asserts],
+  extraTests: [byName(name), `if (found.length) { pm.collectionVariables.set(${lit(v)}, found[0].id); pm.collectionVariables.set(${lit(v + "_entry")}, JSON.stringify(found[0])); }`],
+});
+const notListedLib = (id, title, name) => request(id, title, "GET", libSearch(name), { asserts: [A.status(200), A.custom(`no entry named ${lit(name)}`, [byName(name), "pm.expect(found, 'body: ' + pm.response.text()).to.eql([]);"])] });
+const libDeleteAs = (id, title, v) => request(id, title, "DELETE", `${LIBRARY}/{{${v}}}`, { asserts: [A.status(200)] });
+// namesAre checks the listed names, in order.
+const namesAre = (names) => A.custom(`servers are ${names.join(", ")}`, [`pm.expect((pm.response.json().servers || []).map(function (s) { return s.name; }), 'body: ' + pm.response.text()).to.eql(${lit(names)});`]);
+const SORTED = [...LIB_BOOT].sort();
+
+const LIB01 = folder("LIB-01 GET /api/mcp/library after the boot sync", `Setup: ${LIB_BOOT_TEXT}, synced at boot into a fresh database.`, [
+  request("LIB-01", "list the library", "GET", LIBRARY, { asserts: [A.status(200), A.jsonEquals("total_count", 5), A.jsonEquals("limit", 25), A.jsonEquals("offset", 0),
+    A.custom("count equals the number of servers", ["var b = pm.response.json();", "pm.expect(b.count, 'body: ' + pm.response.text()).to.equal(b.servers.length);"]),
+    namesAre(SORTED),
+    A.custom("each entry has source \"remote\" and installed false", ["(pm.response.json().servers || []).forEach(function (s) { pm.expect(s.source, s.name).to.equal('remote'); pm.expect(s.installed, s.name).to.equal(false); });"]),
+  ] }),
+]);
+
+const LIB02 = folder("LIB-02 Search", `Setup: as LIB-01 (${LIB_BOOT_TEXT}). "aCmE" matches Acme Notes by name, Delta Files by description ("maintained by Acme") and Bravo Search by publisher ("ACME Corp").`, [
+  request("LIB-02", "search aCmE", "GET", `${LIBRARY}?search=aCmE`, { asserts: [A.status(200), A.jsonEquals("total_count", 3), namesAre(["Acme Notes", "Bravo Search", "Delta Files"])] }),
+]);
+
+// LIB-03 compares id sets: it keeps every boot entry's id by name first.
+const lib03Ids = (names) => A.custom(`ids are exactly those of ${names.join(", ")}`, [
+  "var ids = JSON.parse(pm.collectionVariables.get('lib03_ids'));",
+  `var want = ${lit(names)}.map(function (n) { return ids[n]; }).sort(function (a, b) { return a - b; });`,
+  "var got = (pm.response.json().servers || []).map(function (s) { return s.id; }).sort(function (a, b) { return a - b; });",
+  "pm.expect(got, 'body: ' + pm.response.text()).to.eql(want);",
+]);
+const LIB03 = folder("LIB-03 Category, connection type and auth filters", `Setup: ${LIB_BOOT_TEXT}: categories testing, files, search, files and none; connection types http, sse, http, http, sse; auth types none, headers, oauth, none, headers.`, [
+  request("LIB-03", "setup: keep each entry's id", "GET", `${LIBRARY}?limit=100`, { asserts: [A.status(200)], extraTests: ["var ids = {}; (pm.response.json().servers || []).forEach(function (s) { ids[s.name] = s.id; });", "pm.collectionVariables.set('lib03_ids', JSON.stringify(ids));"] }),
+  request("LIB-03", "category=files,search", "GET", `${LIBRARY}?category=files,search`, { asserts: [A.status(200), lib03Ids(["Delta Files", "Bravo Search", "Acme Notes"])] }),
+  request("LIB-03", "connection_type=sse", "GET", `${LIBRARY}?connection_type=sse`, { asserts: [A.status(200), lib03Ids(["Delta Files", "Echo Tickets"])] }),
+  request("LIB-03", "auth_type=none,oauth", "GET", `${LIBRARY}?auth_type=none,oauth`, { asserts: [A.status(200), lib03Ids(["Harness Catalog Server", "Bravo Search", "Acme Notes"])] }),
+  request("LIB-03", "category=files and connection_type=http", "GET", `${LIBRARY}?category=files&connection_type=http`, { asserts: [A.status(200), lib03Ids(["Acme Notes"])] }),
+]);
+
+const LIB05 = folder("LIB-05 Pagination and sort", `Setup: ${LIB_BOOT_TEXT}; name order is Acme Notes, Bravo Search, Delta Files, Echo Tickets, Harness Catalog Server.`, [
+  request("LIB-05", "limit=2&offset=2", "GET", `${LIBRARY}?limit=2&offset=2`, { asserts: [A.status(200), namesAre(SORTED.slice(2, 4))] }),
+  request("LIB-05", "limit=500", "GET", `${LIBRARY}?limit=500`, { asserts: [A.status(200), A.jsonEquals("limit", 100)] }),
+  request("LIB-05", "limit=0", "GET", `${LIBRARY}?limit=0`, { asserts: [A.status(200), A.jsonEquals("limit", 25)] }),
+  request("LIB-05", "sort_by=created_at&order=desc", "GET", `${LIBRARY}?sort_by=created_at&order=desc`, { asserts: [A.status(200), namesAre([...LIB_BOOT].reverse())] }),
+  request("LIB-05", "an unknown sort_by", "GET", `${LIBRARY}?sort_by=bogus`, { asserts: [A.status(200), namesAre(SORTED)] }),
+]);
+
+const LIB07_D = libEntry("LIB-07 deleted entry", "lib07", { category: "lib07-deleted", tags: ["lib07-deleted"] });
+const LIB07 = folder("LIB-07 Filter data", `Setup: ${LIB_BOOT_TEXT}, which has category "files" twice, an empty category and an empty tag; plus remote entry "LIB-07 deleted entry" with category and tag "lib07-deleted", synced and then deleted.`, [
+  readBoot("LIB-07"),
+  setCatalog("LIB-07", "setup: the catalog adds LIB-07 deleted entry", [LIB07_D]),
+  forceSync("LIB-07", "setup: force-sync", 6),
+  saveLibEntry("LIB-07", "setup: find LIB-07 deleted entry", "LIB-07 deleted entry", "lib07_d"),
+  request("LIB-07", "control: filterdata lists the entry while it is live", "GET", `${LIBRARY}/filterdata`, { asserts: [A.status(200), A.custom("categories and tags include \"lib07-deleted\"", ["var b = pm.response.json();", "pm.expect(b.categories, 'body: ' + pm.response.text()).to.include('lib07-deleted');", "pm.expect(b.tags).to.include('lib07-deleted');"])] }),
+  libDeleteAs("LIB-07", "setup: delete LIB-07 deleted entry", "lib07_d"),
+  request("LIB-07", "filterdata", "GET", `${LIBRARY}/filterdata`, { asserts: [A.status(200), A.custom("sorted, deduplicated, no empty strings, the deleted entry's values excluded", [
+    "var b = pm.response.json();",
+    "pm.expect(b.categories, 'body: ' + pm.response.text()).to.eql(['files', 'search', 'testing']);",
+    "pm.expect(b.connection_types).to.eql(['http', 'sse']);",
+    "pm.expect(b.auth_types).to.eql(['headers', 'none', 'oauth']);",
+    "pm.expect(b.tags).to.eql(['x', 'y']);",
+  ])] }),
+  resetLibrary("LIB-07"),
+]);
+
+const LIB14_R = libEntry("LIB-14 entry", "lib14", { category: "lib14-r", tags: ["lib14-r"] });
+const LIB14 = folder("LIB-14 Deleted remote entry stays deleted after sync", `Setup: ${LIB_BOOT_TEXT} plus remote entry "LIB-14 entry" (category and tag "lib14-r"), synced; the entry is deleted while the catalog still lists it.`, [
+  readBoot("LIB-14"),
+  setCatalog("LIB-14", "setup: the catalog adds LIB-14 entry", [LIB14_R]),
+  forceSync("LIB-14", "setup: force-sync", 6),
+  saveLibEntry("LIB-14", "control: the entry is listed", "LIB-14 entry", "lib14_r"),
+  request("LIB-14", "control: filterdata lists the entry while it is live", "GET", `${LIBRARY}/filterdata`, { asserts: [A.status(200), A.custom("categories and tags include \"lib14-r\"", ["var b = pm.response.json();", "pm.expect(b.categories, 'body: ' + pm.response.text()).to.include('lib14-r');", "pm.expect(b.tags).to.include('lib14-r');"])] }),
+  libDeleteAs("LIB-14", "delete the entry", "lib14_r"),
+  forceSync("LIB-14", "force-sync with the entry still in the catalog", 5),
+  notListedLib("LIB-14", "the entry is not listed", "LIB-14 entry"),
+  request("LIB-14", "filterdata lacks the entry's category and tag", "GET", `${LIBRARY}/filterdata`, { asserts: [A.status(200), A.custom("no \"lib14-r\" category or tag", [
+    "var b = pm.response.json();",
+    "pm.expect(b.categories, 'body: ' + pm.response.text()).to.not.include('lib14-r');",
+    "pm.expect(b.tags).to.not.include('lib14-r');",
+  ])] }),
+  resetLibrary("LIB-14"),
+]);
+
+const LIB21 = folder("LIB-21 Force-sync adds new entries", `Setup: ${LIB_BOOT_TEXT} plus two new entries, "LIB-21 first" and "LIB-21 second".`, [
+  readBoot("LIB-21"),
+  setCatalog("LIB-21", "setup: the catalog adds LIB-21 first and LIB-21 second", [libEntry("LIB-21 first", "lib21a"), libEntry("LIB-21 second", "lib21b")]),
+  forceSync("LIB-21", "force-sync", 7),
+  saveLibEntry("LIB-21", "LIB-21 first is remote", "LIB-21 first", "lib21_a", [A.custom("source is \"remote\"", [byName("LIB-21 first"), "pm.expect(found[0].source).to.equal('remote');"])]),
+  saveLibEntry("LIB-21", "LIB-21 second is remote", "LIB-21 second", "lib21_b", [A.custom("source is \"remote\"", [byName("LIB-21 second"), "pm.expect(found[0].source).to.equal('remote');"])]),
+  resetLibrary("LIB-21"),
+  libDeleteAs("LIB-21", "teardown: delete LIB-21 first", "lib21_a"),
+  libDeleteAs("LIB-21", "teardown: delete LIB-21 second", "lib21_b"),
+]);
+
+const LIB22 = folder("LIB-22 Force-sync applies changes", `Setup: ${LIB_BOOT_TEXT} plus entry "LIB-22 entry" (description "before", URL .../lib22v1/mcp), synced; then the catalog changes its description to "after" and its URL to .../lib22v2/mcp.`, [
+  readBoot("LIB-22"),
+  setCatalog("LIB-22", "setup: the catalog adds the entry", [libEntry("LIB-22 entry", "lib22v1", { description: "before" })]),
+  forceSync("LIB-22", "setup: force-sync", 6),
+  saveLibEntry("LIB-22", "setup: read the entry", "LIB-22 entry", "lib22_e"),
+  setCatalog("LIB-22", "setup: the catalog changes the entry's description and URL", [libEntry("LIB-22 entry", "lib22v2", { description: "after" })]),
+  forceSync("LIB-22", "force-sync", 6),
+  request("LIB-22", "the entry is updated, keeping its id and created_at", "GET", libSearch("LIB-22 entry"), { asserts: [A.status(200), A.custom("description and URL changed; id and created_at unchanged; updated_at later", [
+    byName("LIB-22 entry"),
+    "var before = JSON.parse(pm.collectionVariables.get('lib22_e_entry'));",
+    "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "var e = found[0];",
+    "pm.expect(e.description).to.equal('after');",
+    "pm.expect(e.connection_url).to.equal('https://mcp.example.invalid/lib22v2/mcp');",
+    "pm.expect(e.id).to.equal(before.id);",
+    "pm.expect(e.created_at).to.equal(before.created_at);",
+    "pm.expect(Date.parse(e.updated_at), e.updated_at + ' vs ' + before.updated_at).to.be.above(Date.parse(before.updated_at));",
+  ])] }),
+  resetLibrary("LIB-22"),
+  libDeleteAs("LIB-22", "teardown: delete the entry", "lib22_e"),
+]);
+
+const LIB23 = folder("LIB-23 Entry removed from the catalog", `Setup: ${LIB_BOOT_TEXT} plus entry "LIB-23 entry", synced; then the entry is dropped from the catalog.`, [
+  readBoot("LIB-23"),
+  setCatalog("LIB-23", "setup: the catalog adds the entry", [libEntry("LIB-23 entry", "lib23")]),
+  forceSync("LIB-23", "setup: force-sync", 6),
+  request("LIB-23", "setup: the catalog drops the entry", "POST", "/control", { base: CHAOS, noAuth: true, body: { reset: "library" }, asserts: [A.status(200)] }),
+  forceSync("LIB-23", "force-sync without the entry", 5),
+  saveLibEntry("LIB-23", "the entry is still listed as remote", "LIB-23 entry", "lib23_e", [A.custom("source is \"remote\"", [byName("LIB-23 entry"), "pm.expect(found[0].source).to.equal('remote');"])]),
+  libDeleteAs("LIB-23", "teardown: delete the entry", "lib23_e"),
+]);
+
+const LIB24 = folder("LIB-24 Catalog name clashes with a custom entry", `Setup: a custom entry "LIB-24 custom" (description "custom", URL .../lib24custom/mcp); ${LIB_BOOT_TEXT} plus a catalog entry with the same name, another description and URL. The catalog is reset before the custom entry is deleted.`, [
+  request("LIB-24", "setup: publish the custom entry", "POST", LIBRARY, { body: { name: "LIB-24 custom", description: "custom", connection_type: "http", connection_url: "https://mcp.example.invalid/lib24custom/mcp" }, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('lib24_c', pm.response.json().entry.id);"] }),
+  readBoot("LIB-24"),
+  setCatalog("LIB-24", "setup: the catalog adds an entry with the same name", [libEntry("LIB-24 custom", "lib24catalog", { description: "from the catalog" })]),
+  forceSync("LIB-24", "force-sync", 5),
+  request("LIB-24", "the custom entry is unchanged", "GET", libSearch("LIB-24 custom"), { asserts: [A.status(200), A.custom("one entry named LIB-24 custom, the custom one, unchanged", [
+    byName("LIB-24 custom"),
+    "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(found[0].id).to.equal(Number(pm.collectionVariables.get('lib24_c')));",
+    "pm.expect(found[0].source).to.equal('custom');",
+    "pm.expect(found[0].description).to.equal('custom');",
+    "pm.expect(found[0].connection_url).to.equal('https://mcp.example.invalid/lib24custom/mcp');",
+  ])] }),
+  resetLibrary("LIB-24"),
+  libDeleteAs("LIB-24", "teardown: delete the custom entry", "lib24_c"),
+]);
+
+const LIB25_NAMES = A.custom("the names are the five boot entries and LIB-25 Dup", ["pm.expect(pm.response.json().servers.map(function (s) { return s.name; }).sort(), 'body: ' + pm.response.text()).to.eql(['Acme Notes', 'Bravo Search', 'Delta Files', 'Echo Tickets', 'Harness Catalog Server', 'LIB-25 Dup']);"]);
+const LIB25 = folder("LIB-25 Payload edge cases", `Setup: ${LIB_BOOT_TEXT} plus "LIB-25 Dup" twice (descriptions "first" and "second"), an entry with an empty name and one named "!!!"; then a catalog of {"servers":[]}.`, [
+  readBoot("LIB-25"),
+  setCatalog("LIB-25", "setup: the catalog adds the duplicates and the bad names", [libEntry("LIB-25 Dup", "lib25a", { description: "first" }), libEntry("LIB-25 Dup", "lib25b", { description: "second" }), libEntry("", "lib25c"), libEntry("!!!", "lib25d")]),
+  forceSync("LIB-25", "force-sync", 6),
+  saveLibEntry("LIB-25", "the duplicates became one entry", "LIB-25 Dup", "lib25_dup"),
+  request("LIB-25", "the library has the five boot entries and LIB-25 Dup", "GET", `${LIBRARY}?limit=100`, { asserts: [A.status(200), A.jsonEquals("total_count", 6), LIB25_NAMES] }),
+  setCatalog("LIB-25", "setup: the catalog is {\"servers\":[]}", [], { alone: true }),
+  forceSync("LIB-25", "force-sync the empty catalog", 0),
+  request("LIB-25", "the entries are kept", "GET", `${LIBRARY}?limit=100`, { asserts: [A.status(200), A.jsonEquals("total_count", 6), LIB25_NAMES] }),
+  resetLibrary("LIB-25"),
+  libDeleteAs("LIB-25", "teardown: delete LIB-25 Dup", "lib25_dup"),
+]);
+
+const LIB26 = folder("LIB-26 Catalog returns HTTP 500", "Setup: library answers every request with 500; its request log is cleared first.", [
+  mockPost("LIB-26", "library", "counters/reset", "setup: clear library's request log", {}),
+  mockPost("LIB-26", "library", "faults", "setup: library answers 500", { faults: { status: 500 } }),
+  request("LIB-26", "force-sync", "POST", `${LIBRARY}/force-sync`, { asserts: [A.status(500), A.custom("error message matches \"failed to sync MCP library: ... HTTP 500\"", ["pm.expect(pm.response.json().error.message, 'body: ' + pm.response.text()).to.match(/^failed to sync MCP library: .* HTTP 500$/);"])] }),
+  mockGet("LIB-26", "library", "the catalog was hit 4 times", [A.custom("4 requests for /catalog.json, each answered 500", [
+    "var calls = ((pm.response.json().rest || {}).calls || []).filter(function (c) { return c.path === '/catalog.json'; });",
+    "pm.expect(calls.length, 'body: ' + pm.response.text()).to.equal(4);",
+    "calls.forEach(function (c) { pm.expect(c.status).to.equal(500); });",
+  ])]),
+  resetLibrary("LIB-26"),
+]);
+
+const LIB34 = folder("LIB-34 Loopback URL over the API", "Setup: PUT /api/config with framework_config.mcp_library_url set to the mock catalog's URL spelled with a query (?lib34=1), so it differs from the stored URL; library's request log is cleared first.", [
+  readConfig("LIB-34"),
+  request("LIB-34", "control: the URL answers 200", "GET", "/s/library/rest/catalog.json?lib34=1", { base: CHAOS, noAuth: true, asserts: [A.status(200)] }),
+  mockPost("LIB-34", "library", "counters/reset", "setup: clear library's request log", {}),
+  frameworkPut("LIB-34", "PUT the mock catalog URL", "mcp_library_url", "pm.variables.get('chaos_url') + '/s/library/rest/catalog.json?lib34=1'", [A.status(400), A.msgContains("url is not reachable")]),
+  mockGet("LIB-34", "library", "control: the PUT never reached the catalog", [A.custom("library's request log is empty", ["pm.expect(((pm.response.json().rest || {}).calls || []), 'body: ' + pm.response.text()).to.eql([]);"])]),
+]);
+
+const LIB36 = folder("LIB-36 Interval validation over the API", "Setup: PUT /api/config with framework_config.mcp_library_sync_interval 0, then -1.", [
+  readConfig("LIB-36"),
+  frameworkPut("LIB-36", "PUT mcp_library_sync_interval 0", "mcp_library_sync_interval", "0", [A.status(400), A.msgEquals("MCP library sync interval must be greater than 0")]),
+  frameworkPut("LIB-36", "PUT mcp_library_sync_interval -1", "mcp_library_sync_interval", "-1", [A.status(400), A.msgEquals("MCP library sync interval must be greater than 0")]),
+]);
+
 // ================================================================ MCP tools inside model requests, on the mock LLM
 
 const alphaClient = (id, over = {}) => createClient(id, httpClient(`${id.toLowerCase()}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], ...over }), "setup: register client alpha");
@@ -4763,7 +4967,7 @@ const collection = {
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV06, GOV11, GOV16, GOV17, GOV29, GOV31, GOV32]),
     section("INF Inference", "Inference tests.", [INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF66]),
-    section("LIB MCP library", "MCP library tests.", [LIB06, LIB08, LIB09, LIB10, LIB11, LIB13, LIB16, LIB18, LIB19, LIB20, LIB32, LIB33, LIB37]),
+    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG27, LOG28, LOG29, LOG31, LOG33, LOG37, LOG38, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18]),
   ],
