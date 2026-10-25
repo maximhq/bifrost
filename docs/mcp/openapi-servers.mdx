@@ -41,7 +41,7 @@ These operations are listed in the preview with a reason instead of becoming too
 - Operations that reference schemas in other files (external `$ref`).
 - Deprecated operations, unless `include_deprecated` is set.
 
-Security schemes of type `oauth2`, `openIdConnect` and `mutualTLS` cannot be satisfied from the gateway; operations that only accept them are still exposed and are called with the static headers you configure.
+Security schemes of type `mutualTLS` cannot be satisfied from the gateway; operations that only accept them are still exposed and are called with the static headers you configure. `oauth2` and `openIdConnect` schemes are satisfied by the access token of a server that uses [OAuth](#oauth).
 
 ## Base URL
 
@@ -52,7 +52,18 @@ The upstream defaults to the first `servers` entry of the document (server varia
 Two layers reach the API on every call:
 
 1. **Security schemes from the document.** The preview lists every `securitySchemes` entry. For `apiKey` (header, query or cookie) and `http` `bearer` schemes you enter one value; for `http` `basic` a username and password. Values accept `env.VAR` and `vault.path` references. Stored credentials are encrypted only when `encryption_key` (or `BIFROST_ENCRYPTION_KEY`) is configured; without a key they are stored in plain text. The first security requirement of an operation whose schemes all have a credential is applied.
-2. **The server's own auth type.** `none`, `headers` (static headers sent with every request) and `per_user_headers` (each caller supplies their own values) work as for any other server. OAuth and token exchange do not apply: there is no MCP server to run that handshake against. For the same reason a caller's per-user headers are saved once every required key has a value, with no verification handshake; the upstream API sees them on the first tool call.
+2. **The server's own auth type.** `none`, `headers` (static headers sent with every request), `per_user_headers` (each caller supplies their own values), `oauth` and `per_user_oauth` (see [OAuth](#oauth)) work as for any other server. Token exchange does not apply: it is verified through a handshake with an MCP server, and there is none here. For the same reason a caller's per-user headers are saved once every required key has a value, with no verification handshake; the upstream API sees them on the first tool call.
+
+### OAuth
+
+For APIs that act on a user's own account and only accept OAuth, set the auth type to `oauth` (one token, authorized once by an admin, shared by every caller) or `per_user_oauth` (each caller connects their own account). Bifrost runs the OAuth flow, stores the tokens and refreshes them, as it does for [OAuth](/mcp/auth/oauth) and [per-user OAuth](/mcp/auth/per-user-oauth) MCP servers. Every tool call sends the current access token as `Authorization: Bearer <token>`, which satisfies the document's `oauth2` and `openIdConnect` schemes. It replaces any static `Authorization` header. Other static headers and stored credentials still apply, so an API that wants an app-level API key next to the user's token gets both.
+
+There is no MCP server to discover OAuth endpoints from, so they come from the document or from you:
+
+- **Authorize URL, token URL and scopes** default to the document's first `oauth2` scheme (by name) with an authorization code flow (`accessCode` in Swagger 2.0). The default scopes are the ones the document's security requirements ask for, not every scope the flow declares. Any value you enter wins. Only absolute URLs are used; an `implicit`, `clientCredentials` or device flow, a relative URL, or an `openIdConnect` scheme does not supply defaults, so enter the endpoints yourself.
+- **Client ID** (and client secret, if the provider issues one) come from the OAuth app you register with the provider. Leave it empty only when you also give a **Registration URL** for dynamic client registration.
+
+The admin authorizes once when creating the server. For `oauth` that token is the one every caller uses. For `per_user_oauth` the login only proves the configuration works and is then discarded (tools come from the document, so nothing is discovered with it); each caller is asked to connect their account on their first tool call, exactly as with a per-user OAuth MCP server.
 
 ### Per-user credentials for security schemes
 
@@ -128,7 +139,26 @@ curl -X POST http://localhost:8080/api/mcp/client \
   }'
 ```
 
-The `env.PETSTORE_API_KEY` reference needs an authenticated admin session: when dashboard authentication is disabled or unconfigured, `env.` and `vault.` references in `security_credentials` are refused with 403 (literal values are accepted). `spec` (inline text) can be sent instead of `spec_url`. A `spec_url` is fetched once and stored with the server. Unknown names in `tools_to_execute` are rejected with 400, as are `auth_type` values other than `none`, `headers` and `per_user_headers`.
+The `env.PETSTORE_API_KEY` reference needs an authenticated admin session: when dashboard authentication is disabled or unconfigured, `env.` and `vault.` references in `security_credentials` are refused with 403 (literal values are accepted). `spec` (inline text) can be sent instead of `spec_url`. A `spec_url` is fetched once and stored with the server. Unknown names in `tools_to_execute` are rejected with 400, as is `auth_type: "token_exchange"`.
+
+For OAuth, add an `oauth_config` block. Endpoints and scopes left out are taken from the document's `oauth2` authorization code flow (a 400 says so when it has none). The response is the usual `pending_oauth` one with an `authorize_url`; the server is created once you approve access and call `complete_url`:
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-session-token>" \
+  -d '{
+    "name": "tasks",
+    "connection_type": "openapi",
+    "auth_type": "per_user_oauth",
+    "tools_to_execute": ["*"],
+    "headers": { "X-App-Key": "env.TASKS_APP_KEY" },
+    "openapi_config": { "spec_url": "https://api.example.com/openapi.json" },
+    "oauth_config": { "client_id": "env.TASKS_CLIENT_ID", "client_secret": "env.TASKS_CLIENT_SECRET" }
+  }'
+```
+
+See [OAuth](/mcp/auth/oauth) for the `pending_oauth` response and the complete step.
 
 Replace the document on an existing server with `PUT /api/mcp/client/{id}`. The block is merged onto the stored one: every field you leave out keeps its stored value, including `include_deprecated` and `max_response_bytes`, and a redacted credential keeps the stored secret. An empty `base_url` removes the override, an empty `spec_url` removes the stored URL, and a `security_credentials` map replaces the stored set (schemes left out are removed). Renaming the server re-checks `tools_to_execute`, since long tool names are shortened to fit beside the name. Replace `{id}` with the server's ID, and pass the new document as a JSON-escaped string:
 
@@ -175,6 +205,8 @@ When dashboard authentication is disabled or unconfigured, `spec_url` and `base_
 }
 ```
 
+For OAuth, set `auth_type` to `oauth` or `per_user_oauth` and add an `oauth_config` block (at least `client_id`). The server starts in **Pending verification** until an admin clicks **Authorize** on it. Endpoints and scopes left out of `oauth_config` are read from the document at that point, which works when it is stored inline (`spec` or `spec_file`); with only a `spec_url`, set `authorize_url` and `token_url` yourself.
+
 `openapi_config` needs at least one document source, used in this order of precedence: `spec` (inline text), `spec_file` (a path relative to the config directory, read at load), then `spec_url` (fetched at every connect when neither of the others is set). Next to `spec`, `spec_url` records where the document came from and resolves its relative servers, so keep it when the document uses them. Editing the document, base URL or credentials in `config.json` is picked up on the next restart like any other client change.
 
 </Tab>
@@ -195,7 +227,7 @@ Without a factory, an openapi client fails to connect with an error naming the m
 ## Limitations
 
 - One tool per operation; very large documents produce many tools. Above 128 tools the preview warns: restrict `tools_to_execute` to limit what the model sees. Above 1000 tools the document is rejected before any allow-list applies; reduce the document to at most 1000 supported operations.
-- File uploads, binary and streaming bodies, OAuth-only APIs and externally referenced schemas are not supported (see above).
+- File uploads, binary and streaming bodies, mutual TLS and externally referenced schemas are not supported (see above).
 - The gateway exposes tools as `<server>-<tool>` within 64 characters, so long `operationId`s are shortened. A server name that leaves fewer than 16 characters for the tool (longer than 47 characters) is rejected for OpenAPI servers.
 - A redirect to another host, or from `https` to plain `http`, is not followed when the call carries credentials, custom headers or query parameters; the model receives the redirect response instead, so credentials never reach a host the document did not name or travel unencrypted.
 - Tool names depend on the document's `operationId`s. With a partial selection, renamed and newly added tools stay unselected until you tick them. If all previous tools were selected, every supported tool in the replacement document is selected, renamed and newly added ones included.

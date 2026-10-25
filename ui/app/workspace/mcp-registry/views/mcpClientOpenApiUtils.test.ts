@@ -34,6 +34,7 @@ import {
 	defaultSchemeHeader,
 	perUserSchemeHeaders,
 	mergePerUserHeaderKeys,
+	specOAuthEndpoints,
 } from "./mcpClientOpenApiUtils";
 
 const preview: MCPOpenAPIPreviewResponse = {
@@ -181,6 +182,40 @@ describe("securitySchemeToInputs", () => {
 		const oauth = securitySchemeToInputs(preview.security_schemes[1]);
 		expect(oauth.fields).toEqual([]);
 		expect(oauth.helper).toContain("not supported");
+	});
+
+	it("gives oauth2 and openIdConnect schemes no stored credential: the OAuth access token satisfies them", () => {
+		const oauth2: MCPOpenAPISecurityScheme = { name: "PetAuth", type: "oauth2", supported: true };
+		const inputs = securitySchemeToInputs(oauth2);
+		expect(inputs.fields).toEqual([]);
+		expect(inputs.label).toBe("PetAuth · OAuth 2.0");
+		expect(inputs.helper).toContain("OAuth 2.0");
+
+		const oidc = securitySchemeToInputs({ name: "OIDC", type: "openIdConnect", supported: true });
+		expect(oidc.fields).toEqual([]);
+		expect(oidc.label).toBe("OIDC · OpenID Connect");
+		expect(defaultSchemeHeader(oauth2)).toBeNull();
+	});
+});
+
+describe("specOAuthEndpoints", () => {
+	it("takes the first oauth2 scheme by name whose authorization code flow names both endpoints", () => {
+		const schemes: MCPOpenAPISecurityScheme[] = [
+			{ name: "Implicit", type: "oauth2", supported: true, oauth: { authorization_url: "https://a.example.com/authorize" } },
+			{
+				name: "Code",
+				type: "oauth2",
+				supported: true,
+				oauth: { authorization_url: "https://auth.example.com/authorize", token_url: "https://auth.example.com/token" },
+			},
+		];
+		expect(specOAuthEndpoints({ ...preview, security_schemes: schemes })).toEqual({
+			schemeName: "Code",
+			authorizeUrl: "https://auth.example.com/authorize",
+			tokenUrl: "https://auth.example.com/token",
+		});
+		expect(specOAuthEndpoints(preview)).toBeNull();
+		expect(specOAuthEndpoints(null)).toBeNull();
 	});
 });
 
