@@ -4608,6 +4608,129 @@ const ADM78 = folder("ADM-78 Per-user OAuth start and callback", `Setup: dashboa
   restoreConfig("ADM-78"),
 ]);
 
+// ================================================================ OpenAPI clients against the mock's REST surface
+
+// PETS is an OpenAPI document with GET /pets/{petId}, GET /pets?limit and POST /pets and no server URL; each test's
+// client points openapi_config.base_url at a fleet server's REST surface, which answers an unrouted request with an
+// echo of it ({"body","method","path","query"}, keys sorted) and logs every request with its headers.
+const PETS = JSON.stringify({ openapi: "3.0.3", info: { title: "Pets", version: "1.0.0" }, paths: {
+  "/pets": {
+    get: { operationId: "listPets", parameters: [{ name: "limit", in: "query", schema: { type: "integer" } }], responses: { 200: { description: "ok" } } },
+    post: { operationId: "createPet", requestBody: { required: true, content: { "application/json": { schema: { type: "object", properties: { name: { type: "string" } } } } } }, responses: { 201: { description: "created" } } },
+  },
+  "/pets/{petId}": { get: { operationId: "getPetById", parameters: [{ name: "petId", in: "path", required: true, schema: { type: "string" } }], responses: { 200: { description: "ok" } } } },
+} });
+const PETS_TEXT = "an inline OpenAPI document with GET /pets/{petId}, GET /pets?limit and POST /pets";
+// PETS_KEY adds an apiKey scheme KeyAuth, sent in header X-Key, required by every operation.
+const PETS_KEY = (() => { const d = JSON.parse(PETS); d.components = { securitySchemes: { KeyAuth: { type: "apiKey", in: "header", name: "X-Key" } } }; d.security = [{ KeyAuth: [] }]; return JSON.stringify(d); })();
+const REST = (srv) => `${CHAOS}/s/${srv}/rest`;
+const oasClient = (clientId, name, srv, over = {}, cfg = {}) => ({ client_id: clientId, name, connection_type: "openapi", auth_type: "none", tools_to_execute: ["*"], ...over, openapi_config: { spec: PETS, base_url: REST(srv), ...cfg } });
+const execArgs = (id, title, tool, args, asserts, { session } = {}) => request(id, title, "POST", "/v1/mcp/tool/execute", {
+  noAuth: true, noCookies: true, asserts,
+  body: { id: "c1", type: "function", function: { name: tool, arguments: lit(args) } },
+  headers: session ? [{ key: "x-bf-mcp-session-id", value: session }] : [],
+});
+const echoOf = (method, path, query, body) => JSON.stringify({ body, method, path, query });
+const toolContent = (text) => A.custom(`content is ${lit(text)}`, [`pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.equal(${lit(text)});`]);
+const toolErrorFlag = (on) => A.custom(on ? "is_error is true" : "is_error is not set", [on ? "pm.expect(pm.response.json().is_error, 'body: ' + pm.response.text()).to.equal(true);" : "pm.expect(pm.response.json().is_error, 'body: ' + pm.response.text()).to.not.equal(true);"]);
+const REST_CALLS = "var calls = ((pm.response.json().rest || {}).calls || []);";
+const noRestCalls = () => A.custom("the REST log is empty", [REST_CALLS, "pm.expect(calls, 'body: ' + pm.response.text()).to.eql([]);"]);
+// lastHeaders checks the latest REST call's headers (canonical names) against want.
+const lastHeaders = (want) => A.custom(`the latest REST call carries ${Object.entries(want).map(([k, v]) => `${k}: ${v}`).join(" and ")}`, [
+  REST_CALLS,
+  "pm.expect(calls.length, 'body: ' + pm.response.text()).to.be.above(0);",
+  "var h = calls[calls.length - 1].headers;",
+  ...Object.entries(want).map(([k, v]) => `pm.expect(h[${lit(k)}], 'headers: ' + JSON.stringify(h)).to.equal(${lit(v)});`),
+]);
+// A 68-byte 1x1 PNG.
+const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=";
+const PREVIEW = "/api/mcp/openapi/preview";
+
+const ADM80 = folder("ADM-80 OpenAPI preview", `Setup: dashboard auth on, admin credentials; alpha serves ${PETS_TEXT} at GET /openapi.json on its REST surface. The unauthenticated case whitelists ${PREVIEW} and sends no credential; the config is restored before the admin case.`, [
+  readConfig("ADM-80"),
+  ...freshServer("ADM-80", "alpha", ["echo_tool", "add_tool"]),
+  mockPost("ADM-80", "alpha", "routes/add", "setup: alpha serves the document at GET /openapi.json", { route: { method: "GET", path: "/openapi.json", json: JSON.parse(PETS) } }),
+  request("ADM-80", "body \"x\"", "POST", PREVIEW, { raw: "x", asserts: [A.status(400)] }),
+  request("ADM-80", "body {}", "POST", PREVIEW, { body: {}, asserts: [A.status(400), A.msgEquals("spec or spec_url is required")] }),
+  request("ADM-80", "a document that is not OpenAPI", "POST", PREVIEW, { body: { spec: "{\"foo\":1}" }, asserts: [A.status(400), A.msgStartsWith("Invalid OpenAPI spec:")] }),
+  whitelist("ADM-80", [PREVIEW]),
+  request("ADM-80", "loopback spec_url with no credential", "POST", PREVIEW, { noAuth: true, noCookies: true, body: { spec_url: `${REST("alpha")}/openapi.json` }, asserts: [A.status(403)] }),
+  mockGet("ADM-80", "alpha", "control: alpha served nothing", [noRestCalls()]),
+  restoreConfig("ADM-80"),
+  request("ADM-80", "loopback spec_url with admin credentials", "POST", PREVIEW, { body: { spec_url: `${REST("alpha")}/openapi.json` }, asserts: [A.status(200)] }),
+  mockGet("ADM-80", "alpha", "control: alpha served one GET /openapi.json to Bifrost", [A.custom("one REST call, GET /openapi.json, User-Agent Bifrost-OpenAPI-MCP/1.0", [
+    REST_CALLS,
+    "pm.expect(calls.length, 'body: ' + pm.response.text()).to.equal(1);",
+    "pm.expect(calls[0].method).to.equal('GET');",
+    "pm.expect(calls[0].path).to.equal('/openapi.json');",
+    "pm.expect(calls[0].headers['User-Agent']).to.equal('Bifrost-OpenAPI-MCP/1.0');",
+  ])]),
+]);
+
+const CONN23 = folder("CONN-23 OpenAPI request mapping", `Setup: fleet server conn23, whose REST surface echoes every request; an OpenAPI client conn23 from ${PETS_TEXT}, base_url conn23's REST surface, tools_to_execute ["*"].`, [
+  ...freshServer("CONN-23", "conn23", ["echo_tool"]),
+  createClient("CONN-23", oasClient("conn23-c", "conn23", "conn23"), "setup: create the OpenAPI client"),
+  getClient("CONN-23", "conn23-c", "tools listed, no spec, operation_count 3", [A.custom("tools createPet, getPetById and listPets; no spec; operation_count 3", [
+    "var c = pm.response.json().clients[0];",
+    "pm.expect(c.tools.map(function (t) { return t.name; }).sort(), 'body: ' + pm.response.text()).to.eql(['createPet', 'getPetById', 'listPets']);",
+    "pm.expect(c.config.openapi_config).to.not.have.property('spec');",
+    "pm.expect(c.config.openapi_config.operation_count).to.equal(3);",
+  ])]),
+  execArgs("CONN-23", "execute getPetById with petId 7", "conn23-getPetById", { petId: "7" }, [A.status(200), toolContent(echoOf("GET", "/pets/7", "", ""))]),
+  execArgs("CONN-23", "execute listPets with limit 2", "conn23-listPets", { limit: 2 }, [A.status(200), toolContent(echoOf("GET", "/pets", "limit=2", ""))]),
+  execArgs("CONN-23", "execute createPet with name x", "conn23-createPet", { name: "x" }, [A.status(200), toolContent(echoOf("POST", "/pets", "", "{\"name\":\"x\"}"))]),
+  mockGet("CONN-23", "conn23", "the REST log shows the three requests", [A.custom("GET /pets/7, GET /pets?limit=2, POST /pets with {\"name\":\"x\"}", [
+    REST_CALLS,
+    "pm.expect(calls.map(function (x) { return [x.method, x.path, x.query, x.body]; }), 'body: ' + pm.response.text()).to.eql([['GET', '/pets/7', '', ''], ['GET', '/pets', 'limit=2', ''], ['POST', '/pets', '', '{\"name\":\"x\"}']]);",
+  ])]),
+  deleteClient("CONN-23", "conn23-c"),
+]);
+
+const CONN24 = folder("CONN-24 OpenAPI responses", `Setup: fleet server conn24, whose REST surface answers GET /pets/404 with 404 {"e":1}, GET /pets/png with a 68-byte image/png and GET /pets/big with the 20-byte text 0123456789ABCDEFGHIJ; two OpenAPI clients from ${PETS_TEXT} with base_url conn24's REST surface: conn24 with the default response cap and conn24_t with max_response_bytes 10.`, [
+  ...freshServer("CONN-24", "conn24", ["echo_tool"]),
+  mockPost("CONN-24", "conn24", "routes/set", "setup: conn24 serves the 404, the PNG and the 20-byte text", { routes: [
+    { method: "GET", path: "/pets/404", status: 404, content_type: "application/json", body: "{\"e\":1}" },
+    { method: "GET", path: "/pets/png", content_type: "image/png", body_base64: PNG_B64 },
+    { method: "GET", path: "/pets/big", content_type: "text/plain", body: "0123456789ABCDEFGHIJ" },
+  ] }),
+  createClient("CONN-24", oasClient("conn24-c", "conn24", "conn24"), "setup: create the OpenAPI client with the default cap"),
+  createClient("CONN-24", oasClient("conn24-t", "conn24_t", "conn24", {}, { max_response_bytes: 10 }), "setup: create the OpenAPI client with max_response_bytes 10"),
+  execArgs("CONN-24", "execute the 404", "conn24-getPetById", { petId: "404" }, [A.status(200), toolErrorFlag(true), toolContent("HTTP 404 Not Found\n{\"e\":1}")]),
+  execArgs("CONN-24", "execute the PNG", "conn24-getPetById", { petId: "png" }, [A.status(200), toolContent("[binary response: image/png, 68 bytes]")]),
+  execArgs("CONN-24", "execute the oversized body with the 10-byte cap", "conn24_t-getPetById", { petId: "big" }, [A.status(200), A.custom("content ends \"[response truncated at 10 bytes]\"", [
+    "var t = pm.response.json().content;",
+    "pm.expect(t, 'body: ' + pm.response.text()).to.be.a('string');",
+    "pm.expect(t.slice(-'[response truncated at 10 bytes]'.length)).to.equal('[response truncated at 10 bytes]');",
+  ])]),
+  mockGet("CONN-24", "conn24", "setup: record conn24's REST call count", [], ["pm.collectionVariables.set('conn24_calls', ((pm.response.json().rest || {}).calls || []).length);"]),
+  execArgs("CONN-24", "execute getPetById without petId", "conn24-getPetById", {}, [A.status(200), toolErrorFlag(true), toolContent("missing required path parameter \"petId\"")]),
+  mockGet("CONN-24", "conn24", "control: no REST call for the missing path parameter", [A.custom("the REST call count is unchanged", [REST_CALLS, "pm.expect(calls.length, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get('conn24_calls')));"])]),
+  deleteClient("CONN-24", "conn24-c"),
+  deleteClient("CONN-24", "conn24-t"),
+]);
+
+const CONN25 = folder("CONN-25 OpenAPI credentials", `Setup: admin credentials; fleet servers conn25h, conn25k and conn25u, each with a REST surface that echoes and logs every request; OpenAPI clients from ${PETS_TEXT}: conn25h with auth_type headers and headers Authorization "Bearer T1" and X-Static "s"; conn25k from the same document with an apiKey scheme sent in header X-Key, credential k-1; conn25u with auth_type per_user_headers and per_user_header_keys ["x-user"], called as session conn25-sess1. Each points base_url at its own server's REST surface.`, [
+  ...freshServer("CONN-25", "conn25h", ["echo_tool"]),
+  ...freshServer("CONN-25", "conn25k", ["echo_tool"]),
+  ...freshServer("CONN-25", "conn25u", ["echo_tool"]),
+  createClient("CONN-25", oasClient("conn25h-c", "conn25h", "conn25h", { auth_type: "headers", headers: { Authorization: "Bearer T1", "X-Static": "s" } }), "setup: create the headers OpenAPI client"),
+  createClient("CONN-25", oasClient("conn25k-c", "conn25k", "conn25k", {}, { spec: PETS_KEY, security_credentials: { KeyAuth: { value: "k-1" } } }), "setup: create the apiKey OpenAPI client"),
+  createClient("CONN-25", oasClient("conn25u-c", "conn25u", "conn25u", { auth_type: "per_user_headers", per_user_header_keys: ["x-user"] }), "setup: create the per_user_headers OpenAPI client"),
+  execArgs("CONN-25", "execute on the headers client", "conn25h-getPetById", { petId: "1" }, [A.status(200)]),
+  mockGet("CONN-25", "conn25h", "the REST log shows Bearer T1 and X-Static", [lastHeaders({ Authorization: "Bearer T1", "X-Static": "s" })]),
+  execArgs("CONN-25", "execute on the apiKey client", "conn25k-getPetById", { petId: "1" }, [A.status(200)]),
+  mockGet("CONN-25", "conn25k", "the REST log shows the X-Key value", [lastHeaders({ "X-Key": "k-1" })]),
+  execArgs("CONN-25", "execute on the per_user_headers client without a credential", "conn25u-getPetById", { petId: "1" }, [A.status(400), headersFlow({ saveAs: "conn25_hf" })], { session: "conn25-sess1" }),
+  mockGet("CONN-25", "conn25u", "control: no REST call without a credential", [noRestCalls()]),
+  request("CONN-25", "setup: submit x-user u-1", "PUT", "/api/mcp/per-user-headers/flows/{{conn25_hf}}", { body: { headers: { "x-user": "u-1" } }, asserts: [A.status(200)] }),
+  execArgs("CONN-25", "execute on the per_user_headers client with a credential", "conn25u-getPetById", { petId: "1" }, [A.status(200)], { session: "conn25-sess1" }),
+  mockGet("CONN-25", "conn25u", "the REST log shows the caller's value", [lastHeaders({ "X-User": "u-1" })]),
+  createExpect("CONN-25", "create an OpenAPI client with auth_type oauth", oasClient("conn25o-c", "conn25o", "conn25h", { auth_type: "oauth", oauth_config: {} }), [A.status(400), A.msgContains("not supported for connection_type 'openapi'")]),
+  deleteClient("CONN-25", "conn25h-c"),
+  deleteClient("CONN-25", "conn25k-c"),
+  deleteClient("CONN-25", "conn25u-c"),
+]);
+
 // ================================================================ MCP tools inside model requests, on the mock LLM
 
 const alphaClient = (id, over = {}) => createClient(id, httpClient(`${id.toLowerCase()}-alpha`, "alpha", "alpha", { tools_to_execute: ["*"], ...over }), "setup: register client alpha");
@@ -4632,9 +4755,9 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM31, ADM32, ADM33, ADM34, ADM38, ADM39, ADM40, ADM42, ADM44, ADM46, ADM47, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM75, ADM76, ADM77, ADM78, ADM81, ADM82, ADM83]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM31, ADM32, ADM33, ADM34, ADM38, ADM39, ADM40, ADM42, ADM44, ADM46, ADM47, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
-    section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN06, CONN09, CONN10, CONN12, CONN17, CONN18, CONN20, CONN22]),
+    section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN06, CONN09, CONN10, CONN12, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
