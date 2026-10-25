@@ -938,6 +938,7 @@ func HandleOpenAITextCompletionStreaming(
 
 				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = jsonData
+					response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAITextCompletionChunk
 				}
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(&response, nil, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -1710,6 +1711,7 @@ func HandleOpenAIChatCompletionStreaming(
 					// of their own.
 					if sendBackRawResponse && i == 0 {
 						response.ExtraFields.RawResponse = drainPendingRawFrames()
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIChatCompletionChunk
 					}
 
 					if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
@@ -1865,6 +1867,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 					if sendBackRawResponse {
 						response.ExtraFields.RawResponse = drainPendingRawFrames()
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIChatCompletionChunk
 					}
 
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -1921,6 +1924,7 @@ func HandleOpenAIChatCompletionStreaming(
 						trailing = existing + "\n\n" + trailing
 					}
 					pendingFinalEvent.ExtraFields.RawResponse = trailing
+					pendingFinalEvent.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIChatCompletionChunk
 				}
 				pendingFinalEvent.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1948,6 +1952,7 @@ func HandleOpenAIChatCompletionStreaming(
 			// carrier they will ever get.
 			if sendBackRawResponse && len(pendingRawFrames) > 0 {
 				response.ExtraFields.RawResponse = drainPendingRawFrames()
+				response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIChatCompletionChunk
 			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -2423,6 +2428,7 @@ func HandleOpenAIResponsesStreaming(
 				}
 				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = jsonData
+					response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIResponsesStreamEvent
 				}
 			} else {
 				// Per-event decode -> "response-parse" (Serialization) stream phase.
@@ -2454,6 +2460,7 @@ func HandleOpenAIResponsesStreaming(
 
 				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = jsonData
+					response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIResponsesStreamEvent
 				}
 			}
 
