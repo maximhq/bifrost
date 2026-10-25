@@ -25612,7 +25612,7 @@ func TestReconcileProviderKeys_LegacyAliasHashKeepsStoredEdits(t *testing.T) {
 // config.json is normalized at load: spec_file is read relative to the config
 // directory and inlined, the server-computed metadata is filled from a parse,
 // a spec_url-only entry is left for connect time, and the auth types the
-// synthesized server cannot honor are refused.
+// synthesized server cannot honor (token exchange) are refused.
 func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 	dir := t.TempDir()
 	spec := "openapi: 3.0.3\ninfo:\n  title: Petstore\n  version: 1.0.0\nservers:\n  - url: https://petstore.example.com/v1\npaths:\n  /pets:\n    get:\n      operationId: listPets\n      responses:\n        '200':\n          description: ok\n"
@@ -25632,10 +25632,14 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir))
 	assert.Empty(t, urlOnly.OpenAPIConfig.Spec, "a spec_url is fetched at connect time, not at load")
 
+	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth} {
+		oauth := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: authType, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}}
+		assert.NoError(t, prepareOpenAPIClientFromFile(oauth, dir), "%s only needs the provider's endpoints, not an MCP server", authType)
+	}
+
 	for name, cfg := range map[string]*schemas.MCPClientConfig{
 		"missing block":  {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI},
 		"no source":      {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{}},
-		"oauth":          {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeOauth, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}},
 		"token exchange": {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeTokenExchange, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}},
 		"missing file":   {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("specs/nope.yaml")}},
 		"escaping file":  {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("../../etc/passwd")}},

@@ -164,6 +164,7 @@ type preparedOpenAPIClient struct {
 	config    *schemas.MCPOpenAPIConfig
 	toolNames map[string]bool
 	baseURL   string
+	oauth     *openapimcp.OAuthEndpoints // the spec's oauth2 authorization code endpoints, nil when it declares none
 }
 
 // requestSpecFileRefusal refuses a spec_file sent over the API. A stored
@@ -261,7 +262,53 @@ func prepareOpenAPIConfig(ctx *fasthttp.RequestCtx, clientName string, cfg *sche
 	for _, name := range syn.ToolNames() {
 		names[name] = true
 	}
-	return &preparedOpenAPIClient{config: cfg, toolNames: names, baseURL: result.BaseURL}, 0, ""
+	prepared := &preparedOpenAPIClient{config: cfg, toolNames: names, baseURL: result.BaseURL}
+	if endpoints, ok := openapimcp.SpecOAuthEndpoints(syn.Document); ok {
+		prepared.oauth = &endpoints
+	}
+	return prepared, 0, ""
+}
+
+// applyOpenAPIOAuthDefaults completes the OAuth settings of an oauth or
+// per_user_oauth openapi client. There is no MCP server to discover endpoints
+// from, so empty ones come from the spec's oauth2 authorization code flow;
+// both endpoints must then be known, and without a client_id a registration
+// URL must be given for dynamic registration. It returns a message for a 400,
+// or "".
+func applyOpenAPIOAuthDefaults(oauthCfg *OAuthConfigRequest, endpoints *openapimcp.OAuthEndpoints) string {
+	if endpoints != nil {
+		endpoints.Fill(&oauthCfg.AuthorizeURL, &oauthCfg.TokenURL, &oauthCfg.Scopes)
+	}
+	if strings.TrimSpace(oauthCfg.AuthorizeURL) == "" || strings.TrimSpace(oauthCfg.TokenURL) == "" {
+		return "oauth_config.authorize_url and oauth_config.token_url are required for connection_type 'openapi': the spec declares no oauth2 authorization code flow to take them from"
+	}
+	if !oauthCfg.ClientID.IsSet() && strings.TrimSpace(oauthCfg.RegistrationURL) == "" {
+		return "oauth_config.client_id is required for connection_type 'openapi', unless oauth_config.registration_url names a dynamic client registration endpoint"
+	}
+	return ""
+}
+
+// storedSpecOAuthEndpoints reads the OAuth endpoints from an openapi client's
+// stored document, for a client declared in config.json whose OAuth flow runs
+// later. A document that is not stored inline (spec_url only) or does not
+// parse yields nil, leaving the admin-configured endpoints to stand alone.
+func storedSpecOAuthEndpoints(cfg *schemas.MCPOpenAPIConfig) *openapimcp.OAuthEndpoints {
+	if cfg == nil || strings.TrimSpace(cfg.Spec) == "" {
+		return nil
+	}
+	specURL := ""
+	if cfg.SpecURL != nil {
+		specURL = strings.TrimSpace(*cfg.SpecURL)
+	}
+	doc, err := openapimcp.Parse([]byte(cfg.Spec), openapimcp.ParseOptions{SpecURL: specURL})
+	if err != nil {
+		return nil
+	}
+	endpoints, ok := openapimcp.SpecOAuthEndpoints(doc)
+	if !ok {
+		return nil
+	}
+	return &endpoints
 }
 
 // unknownOpenAPITools lists entries of a tool allow-list that the synthesized
@@ -415,9 +462,11 @@ func openAPITargetChanged(existing, merged *schemas.MCPOpenAPIConfig) bool {
 // openAPIRetargetCarriesStoredSecrets reports whether a retargeted OpenAPI
 // client would send secrets stored for its old target to the new one: a
 // security credential or static header kept from storage (omitted or sent
-// back redacted), or the per-user tokens of a per_user_headers client.
+// back redacted), or the per-user tokens of a per_user_headers client, or the
+// OAuth bearer of an oauth or per_user_oauth client.
 func openAPIRetargetCarriesStoredSecrets(existing *schemas.MCPClientConfig, merged *schemas.MCPOpenAPIConfig, headers map[string]schemas.SecretVar) bool {
-	if existing.AuthType == schemas.MCPAuthTypePerUserHeaders {
+	switch existing.AuthType {
+	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth:
 		return true
 	}
 	for name, stored := range existing.Headers {

@@ -9297,7 +9297,7 @@
           }
         },
         {
-          "$comment": "A synthesized OpenAPI server has no remote MCP handshake to authenticate: only none, headers and per_user_headers apply. OAuth-flavored and token-exchange auth types are refused.",
+          "$comment": "A synthesized OpenAPI server has no remote MCP handshake: token exchange, verified through one, is refused. OAuth needs only the provider's authorize and token endpoints (from oauth_config or the spec's oauth2 authorization code flow), and its bearer is sent on every upstream call.",
           "if": {
             "properties": {
               "connection_type": {
@@ -9314,7 +9314,9 @@
                 "enum": [
                   "none",
                   "headers",
-                  "per_user_headers"
+                  "per_user_headers",
+                  "oauth",
+                  "per_user_oauth"
                 ]
               }
             }

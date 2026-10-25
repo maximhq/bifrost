@@ -439,14 +439,23 @@ MCPClientCreateRequestOpenAPI:
           enum: [openapi]
         auth_type:
           type: string
-          enum: [none, headers, per_user_headers]
+          enum: [none, headers, per_user_headers, oauth, per_user_oauth]
           description: |
-            The synthesized server has no remote MCP handshake, so only the
-            header-shaped auth types apply. Static `headers` and per-user
-            headers are forwarded to the upstream API on every call; the
-            document's own security schemes are satisfied from
-            `openapi_config.security_credentials`. OAuth-flavored and
-            token-exchange auth types are rejected with 400.
+            Static `headers` and per-user headers are forwarded to the upstream
+            API on every call; the document's own apiKey and http security
+            schemes are satisfied from `openapi_config.security_credentials`.
+
+            `oauth` and `per_user_oauth` send the shared or the caller's access
+            token as `Authorization: Bearer <token>`, which satisfies the
+            document's `oauth2` and `openIdConnect` schemes; static headers
+            still apply alongside it. There is no MCP server to discover OAuth
+            endpoints from, so `oauth_config.authorize_url`, `token_url` and
+            `scopes` default to the document's first `oauth2` authorization
+            code flow (scopes: those its security requirements ask for). A 400
+            is returned when neither supplies both endpoints, or when
+            `oauth_config.client_id` is empty and no `registration_url` names a
+            dynamic client registration endpoint. Token exchange is rejected
+            with 400.
         openapi_config:
           $ref: '#/MCPOpenAPIConfig'
         tools_to_execute:
@@ -575,10 +584,28 @@ MCPOpenAPISecurityScheme:
       type: string
     supported:
       type: boolean
-      description: Whether a credential for this scheme can be configured (apiKey header/query/cookie, http bearer/basic).
+      description: Whether the scheme can be satisfied. apiKey (header/query/cookie) and http bearer/basic take a credential in `security_credentials`; oauth2 and openIdConnect are satisfied by the OAuth access token of an `oauth` or `per_user_oauth` client. mutualTLS is unsupported.
     reason:
       type: string
       description: Why the scheme is unsupported.
+    oauth:
+      type: object
+      description: oauth2 and openIdConnect schemes only, and only when the document names absolute endpoints. An `oauth` or `per_user_oauth` client defaults `oauth_config` from the first oauth2 scheme (by name) with both `authorization_url` and `token_url`.
+      properties:
+        authorization_url:
+          type: string
+          description: oauth2 — the authorization code flow's authorize endpoint.
+        token_url:
+          type: string
+          description: oauth2 — the authorization code flow's token endpoint.
+        scopes:
+          type: array
+          items:
+            type: string
+          description: oauth2 — the scopes the authorization code flow declares.
+        openid_connect_url:
+          type: string
+          description: openIdConnect — the discovery document URL.
 
 MCPOpenAPIPreviewTool:
   type: object

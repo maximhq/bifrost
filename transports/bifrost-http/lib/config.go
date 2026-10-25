@@ -2238,9 +2238,10 @@ func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) 
 		return fmt.Errorf("connection_type 'openapi' requires openapi_config")
 	}
 	switch c.AuthType {
-	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypePerUserHeaders:
+	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypePerUserHeaders,
+		schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth:
 	default:
-		return fmt.Errorf("auth_type %q is not supported for connection_type 'openapi' (use none, headers or per_user_headers)", c.AuthType)
+		return fmt.Errorf("auth_type %q is not supported for connection_type 'openapi' (use none, headers, per_user_headers, oauth or per_user_oauth)", c.AuthType)
 	}
 	oc := c.OpenAPIConfig
 	if strings.TrimSpace(oc.Spec) == "" && oc.SpecFile != nil && strings.TrimSpace(*oc.SpecFile) != "" {
