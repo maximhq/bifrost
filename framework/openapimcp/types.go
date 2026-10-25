@@ -65,14 +65,24 @@ type Document struct {
 
 // SecurityScheme is one components.securitySchemes (or securityDefinitions) entry.
 type SecurityScheme struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`                 // apiKey | http | oauth2 | openIdConnect | mutualTLS
-	In          string `json:"in,omitempty"`         // apiKey: header | query | cookie
-	ParamName   string `json:"param_name,omitempty"` // apiKey: header/query/cookie name
-	Scheme      string `json:"scheme,omitempty"`     // http: bearer | basic | ...
-	Description string `json:"description,omitempty"`
-	Supported   bool   `json:"supported"`
-	Reason      string `json:"reason,omitempty"` // why unsupported
+	Name        string     `json:"name"`
+	Type        string     `json:"type"`                 // apiKey | http | oauth2 | openIdConnect | mutualTLS
+	In          string     `json:"in,omitempty"`         // apiKey: header | query | cookie
+	ParamName   string     `json:"param_name,omitempty"` // apiKey: header/query/cookie name
+	Scheme      string     `json:"scheme,omitempty"`     // http: bearer | basic | ...
+	Description string     `json:"description,omitempty"`
+	Supported   bool       `json:"supported"`
+	Reason      string     `json:"reason,omitempty"` // why unsupported
+	OAuth       *OAuthFlow `json:"oauth,omitempty"`  // oauth2/openIdConnect only; a pointer keeps the per-call scheme copies small
+}
+
+// OAuthFlow is what an oauth2 or openIdConnect scheme says about running OAuth
+// against the API. Only absolute URLs are kept.
+type OAuthFlow struct {
+	AuthorizationURL string   `json:"authorization_url,omitempty"`  // oauth2: authorization code flow's authorize endpoint
+	TokenURL         string   `json:"token_url,omitempty"`          // oauth2: authorization code flow's token endpoint
+	Scopes           []string `json:"scopes,omitempty"`             // oauth2: scopes the authorization code flow declares
+	OpenIDConnectURL string   `json:"openid_connect_url,omitempty"` // openIdConnect: discovery document URL
 }
 
 // SecurityRequirement maps scheme names to scopes; all listed schemes apply together.
