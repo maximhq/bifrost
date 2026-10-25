@@ -131,6 +131,12 @@ type Auth struct {
 	// header requirement. Left false, an unauthenticated caller is served as
 	// the anonymous identity.
 	Require bool `json:"require,omitempty"`
+
+	// OAuth, when set, makes the server an OAuth protected resource with its
+	// own authorization server (see oauth.go). POST and GET then need an
+	// access token that server issued, or one of the Bearer tokens above;
+	// RequireHeaders, IdentityHeader and Require no longer apply.
+	OAuth *OAuthConfig `json:"oauth,omitempty"`
 }
 
 // authState guards Auth for concurrent control-API writes.

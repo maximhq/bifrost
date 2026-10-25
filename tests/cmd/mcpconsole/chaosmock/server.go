@@ -26,6 +26,7 @@ type Server struct {
 	sessions *sessionStore
 	counters *Counters
 	streams  *streamRegistry
+	oauth    *oauthState
 
 	// version is reported in serverInfo. Scenarios that restart a server with
 	// changed behaviour bump it so a client's own logs distinguish the two.
@@ -60,6 +61,7 @@ func NewServer(name string) *Server {
 		sessions: newSessionStore(),
 		counters: newCounters(),
 		streams:  newStreamRegistry(),
+		oauth:    newOAuthState(),
 		version:  "1.0.0",
 	}
 }
@@ -86,8 +88,17 @@ func (s *Server) Faults() Faults { return s.faults.peek() }
 // ClearFaults returns the server to healthy.
 func (s *Server) ClearFaults() { s.faults.clear() }
 
-// SetAuth replaces the auth requirements.
-func (s *Server) SetAuth(a Auth) { s.auth.set(a) }
+// SetAuth replaces the auth requirements. OAuth clients in the configuration
+// are registered with the authorization server, which keeps the clients and
+// grants it already has.
+func (s *Server) SetAuth(a Auth) {
+	s.auth.set(a)
+	if a.OAuth != nil {
+		for _, c := range a.OAuth.Clients {
+			s.oauth.addClient(c)
+		}
+	}
+}
 
 // Auth returns the current auth requirements.
 func (s *Server) Auth() Auth { return s.auth.get() }

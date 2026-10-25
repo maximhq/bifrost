@@ -36,10 +36,16 @@ type State struct {
 	StdioPID int `json:"stdio_pid"`
 	// StdioEnv is the environment that child registered.
 	StdioEnv map[string]string `json:"stdio_env,omitempty"`
+	// OAuth is the authorization server's state, present while OAuth is on.
+	OAuth *OAuthState `json:"oauth,omitempty"`
 }
 
 // State captures a server's current state.
 func (s *Server) State() State {
+	var oauth *OAuthState
+	if s.auth.get().OAuth != nil {
+		oauth = s.oauth.snapshot()
+	}
 	return State{
 		Name:         s.name,
 		Tools:        s.tools.List(""),
@@ -52,6 +58,7 @@ func (s *Server) State() State {
 		Instructions: s.Instructions(),
 		StdioPID:     s.StdioPID(),
 		StdioEnv:     s.StdioEnv(),
+		OAuth:        oauth,
 	}
 }
 
@@ -143,6 +150,8 @@ type controlBody struct {
 	Clear bool `json:"clear,omitempty"`
 	// Env is the environment a stdio bridge shares when it registers.
 	Env map[string]string `json:"env,omitempty"`
+	// Fail is a failure to queue on the OAuth authorization server.
+	Fail *OAuthFail `json:"fail,omitempty"`
 }
 
 func (s *Server) applyControl(verb string, r *http.Request) error {
@@ -210,11 +219,17 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		s.faults.set(*body.Faults)
 	case "faults/clear":
 		s.faults.clear()
+		s.oauth.clearFails()
 	case "auth":
 		if body.Auth == nil {
 			return errBadRequest("auth body is required")
 		}
-		s.auth.set(*body.Auth)
+		if body.Auth.OAuth != nil {
+			if err := body.Auth.OAuth.validate(); err != nil {
+				return errBadRequest(err.Error())
+			}
+		}
+		s.SetAuth(*body.Auth)
 	case "auth/grant":
 		s.auth.grant(body.Token, body.Identity)
 	case "auth/revoke":
@@ -238,8 +253,38 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		}
 	case "counters/reset":
 		s.counters.Reset()
+		s.oauth.resetCounters()
+	case "oauth/expire", "oauth/revoke", "oauth/fail":
+		return s.applyOAuthControl(strings.TrimSuffix(verb, "/"), body)
 	default:
 		return errBadRequest("unknown control verb: " + verb)
+	}
+	return nil
+}
+
+// applyOAuthControl handles the oauth/* verbs. Each refuses to do nothing:
+// expiring or revoking no token is a scenario that names the wrong identity,
+// and it would otherwise look like the client coping.
+func (s *Server) applyOAuthControl(verb string, body controlBody) error {
+	if s.auth.get().OAuth == nil {
+		return errBadRequest("oauth is not enabled on this server")
+	}
+	switch verb {
+	case "oauth/expire":
+		if s.oauth.expire(body.Identity) == 0 {
+			return errBadRequest("no live access token matched")
+		}
+	case "oauth/revoke":
+		if s.oauth.revoke(body.Identity, body.Token) == 0 {
+			return errBadRequest("no live grant matched")
+		}
+	case "oauth/fail":
+		if body.Fail == nil {
+			return errBadRequest("fail body is required")
+		}
+		if err := s.oauth.queueFail(*body.Fail); err != nil {
+			return errBadRequest(err.Error())
+		}
 	}
 	return nil
 }

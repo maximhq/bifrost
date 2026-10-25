@@ -22,8 +22,11 @@ import (
 // provisions a client can compute the URL without asking the fleet:
 //
 //	/s/<name>/mcp        streamable HTTP
+//	/s/<name>/as/...     that server's OAuth authorization server, when on
 //	/control/<name>/...  that server's control API
 //	/control             fleet-wide control API
+//
+// plus the path-inserted OAuth metadata documents described in oauth.go.
 type Fleet struct {
 	mu      sync.RWMutex
 	servers map[string]*Server
@@ -173,6 +176,8 @@ func (f *Fleet) SSEURL(name string) string {
 func (f *Fleet) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/s/", f.routeServer)
+	mux.HandleFunc(wellKnownResource, f.routeWellKnown)
+	mux.HandleFunc(wellKnownAuthServer, f.routeWellKnown)
 	mux.HandleFunc("/control", f.routeFleetControl)
 	mux.HandleFunc("/control/", f.routeControl)
 	return mux
@@ -193,13 +198,50 @@ func (f *Fleet) routeServer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such server: "+name, http.StatusNotFound)
 		return
 	}
-	switch rest {
-	case "mcp":
+	switch {
+	case rest == "mcp":
 		s.ServeStreamableHTTP(w, r)
-	case "sse":
+	case rest == "sse":
 		s.ServeSSE(w, r)
-	case "sse/message":
+	case rest == "sse/message":
 		s.ServeSSEMessage(w, r)
+	case strings.HasPrefix(rest, "as/"):
+		s.ServeOAuth(w, r, strings.TrimPrefix(rest, "as/"))
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// The well-known prefixes the OAuth metadata documents sit under. A server's
+// document is path-inserted (RFC 8414 section 3.1, RFC 9728 section 3.1): the
+// prefix followed by the path of the thing it describes.
+const (
+	wellKnownResource   = "/.well-known/oauth-protected-resource/"
+	wellKnownAuthServer = "/.well-known/oauth-authorization-server/"
+)
+
+// routeWellKnown dispatches a path-inserted metadata request to the server
+// whose endpoint the inserted path names. Anything else, the bare root
+// documents included, is a 404.
+func (f *Fleet) routeWellKnown(w http.ResponseWriter, r *http.Request) {
+	prefix := wellKnownResource
+	if strings.HasPrefix(r.URL.Path, wellKnownAuthServer) {
+		prefix = wellKnownAuthServer
+	}
+	inserted := "/" + strings.TrimPrefix(r.URL.Path, prefix)
+	name, rest, ok := splitServerPath(inserted, "/s/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	s, found := f.Get(name)
+	switch {
+	case !found:
+		http.NotFound(w, r)
+	case prefix == wellKnownResource && (rest == "mcp" || rest == "sse"):
+		s.ServeProtectedResourceMetadata(w, r, inserted)
+	case prefix == wellKnownAuthServer && rest == "as":
+		s.ServeAuthorizationServerMetadata(w, r)
 	default:
 		http.NotFound(w, r)
 	}
