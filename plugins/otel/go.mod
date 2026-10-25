@@ -4,8 +4,8 @@ go 1.27.3
 
 require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
-	github.com/maximhq/bifrost/core v1.13.0
-	github.com/maximhq/bifrost/framework v1.10.0
+	github.com/maximhq/bifrost/core v1.13.1
+	github.com/maximhq/bifrost/framework v1.10.1
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0

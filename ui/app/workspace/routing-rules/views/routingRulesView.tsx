@@ -3,11 +3,13 @@
  * Main orchestrator component for routing rules management
  */
 
+import { LoadErrorView } from "@/components/loadErrorView";
 import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { RoutingRule } from "@/lib/types/routingRules";
+import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { GitBranch, Plus } from "lucide-react";
@@ -42,7 +44,12 @@ export function RoutingRulesView() {
 	const canUpdate = useRbac(RbacResource.RoutingRules, RbacOperation.Update);
 
 	// API
-	const { data: rulesData, isLoading } = useGetRoutingRulesQuery(
+	const {
+		data: rulesData,
+		isLoading,
+		error,
+		refetch,
+	} = useGetRoutingRulesQuery(
 		{
 			limit: PAGE_SIZE,
 			offset,
@@ -102,6 +109,10 @@ export function RoutingRulesView() {
 	};
 
 	const hasActiveFilters = debouncedSearch;
+
+	if (showLoadError(error, rulesData)) {
+		return <LoadErrorView entity="routing rules" error={error} onRetry={() => void refetch()} testId="routing-rules-load-error" />;
+	}
 
 	// True empty state: no rules at all (not just filtered to zero)
 	if (!isLoading && totalCount === 0 && !hasActiveFilters) {

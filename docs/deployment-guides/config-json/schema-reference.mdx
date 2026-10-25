@@ -38,6 +38,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `mcp` | object | MCP server and tool configuration | [MCP](#mcp) |
 | `websocket` | object | WebSocket / Realtime API connection pool tuning | [WebSocket](#websocket) |
 | `proxy_config` | object | Global outbound proxy and which components use it (SCIM directory sync, inference, API) | [Client](/deployment-guides/config-json/client#global-proxy) |
+| `warp` | object | Warp settings: models, behaviour and limits, log search, and topics | [Warp](/features/warp#configure-warp) |
 | `auth_config` | object | **Deprecated** - use `governance.auth_config` | [Client](/deployment-guides/config-json/client#authentication) |
 
 ---
@@ -161,7 +162,7 @@ Origin approval applies even without configured runtime credentials. It does not
 
 Keyed by provider name. Each entry contains a `keys` array and optional `network_config`, `concurrency_and_buffer_size`, `proxy_config`.
 
-Supported provider keys: `anthropic`, `azure`, `bedrock`, `bedrock_mantle`, `cerebras`, `cohere`, `deepseek`, `gemini`, `groq`, `mistral`, `ollama`, `opencode-go`, `opencode-zen`, `openai`, `parasail`, `perplexity`, `sgl`, `vertex`, `openrouter`, `elevenlabs`, `huggingface`, `nebius`, `xai`, `replicate`, `vllm`, `runway`, `runware`, `fireworks`, `sarvam`, `wafer`, `databricks`.
+Supported provider keys: `anthropic`, `azure`, `bedrock`, `bedrock_mantle`, `cerebras`, `cohere`, `deepseek`, `gemini`, `groq`, `mistral`, `ollama`, `opencode-go`, `opencode-zen`, `openai`, `parasail`, `perplexity`, `sgl`, `vertex`, `openrouter`, `elevenlabs`, `huggingface`, `nebius`, `xai`, `replicate`, `vllm`, `runway`, `runware`, `fireworks`, `sarvam`, `wafer`, `databricks`, `minimax`, `byteplus`.
 
 Full documentation: [Provider Setup](/deployment-guides/config-json/providers).
 
@@ -572,6 +573,28 @@ The global outbound proxy from the dashboard's Proxy page. `enable_for_scim` *(e
 ```
 
 Full documentation: [Client → Global Proxy](/deployment-guides/config-json/client#global-proxy).
+
+---
+
+## `warp`
+
+The settings from the dashboard's Warp page: the models Warp runs on, its behaviour and limits, log search, and topics. It takes the same fields as `PUT /api/warp/config` and is validated the same way. Applied when new or changed under split mode, and on every startup under `source_of_truth: "config.json"`. The `warp` feature flag under `feature_flags` is set separately.
+
+```json
+{
+  "warp": {
+    "enabled": true,
+    "provider": "anthropic",
+    "model": "claude-sonnet-5-5",
+    "embedding_provider": "openai",
+    "embedding_model": "text-embedding-3-small",
+    "embedding_dimension": 1536,
+    "topic_discovery_min_requests": 100
+  }
+}
+```
+
+Full documentation: [Warp → Configure Warp](/features/warp#configure-warp).
 
 ---
 

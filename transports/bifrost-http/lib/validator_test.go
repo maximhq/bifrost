@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -140,6 +142,106 @@ func TestValidateConfigSchema_AgentOAuthRejectsUnknownFields(t *testing.T) {
 	invalidConfig := strings.Replace(validConfig, `"client_secret": "client-secret"`, `"client_secert": "client-secret"`, 1)
 	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
 		t.Fatal("expected an unknown Agent OAuth field to fail validation")
+	}
+}
+
+// TestValidateConfigSchema_WarpSection: the warp section takes every Warp settings field, topics
+// included, and refuses values the settings page would refuse.
+func TestValidateConfigSchema_WarpSection(t *testing.T) {
+	validConfig := `{
+		"warp": {
+			"enabled": true,
+			"provider": "anthropic",
+			"model": "claude-sonnet-5-5",
+			"api_key_id": "warp-key",
+			"additional_models": [{"provider": "openai", "model": "gpt-4o", "api_key_id": "other-key"}],
+			"max_iterations": 8,
+			"request_timeout_seconds": 120,
+			"history_retention_days": 30,
+			"system_prompt_suffix": "prod keys start with prod-",
+			"temperature": 0,
+			"reasoning_effort": "low",
+			"embedding_provider": "openai",
+			"embedding_model": "text-embedding-3-small",
+			"embedding_api_key_id": "embed-key",
+			"embedding_dimension": 1536,
+			"log_vector_store_namespace": "BifrostWarpLogs",
+			"semantic_search_threshold": 0.5,
+			"semantic_search_limit": 10,
+			"topic_discovery_min_requests": 100
+		}
+	}`
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected a complete warp section to pass validation: %v", err)
+	}
+
+	for name, replacement := range map[string][2]string{
+		"unknown field":                     {`"model": "claude-sonnet-5-5"`, `"modle": "claude-sonnet-5-5"`},
+		"one iteration":                     {`"max_iterations": 8`, `"max_iterations": 1`},
+		"temperature above 2":               {`"temperature": 0`, `"temperature": 2.5`},
+		"unknown reasoning effort":          {`"reasoning_effort": "low"`, `"reasoning_effort": "extreme"`},
+		"negative similarity threshold":     {`"semantic_search_threshold": 0.5`, `"semantic_search_threshold": -0.1`},
+		"negative semantic match limit":     {`"semantic_search_limit": 10`, `"semantic_search_limit": -1`},
+		"too many semantic matches":         {`"semantic_search_limit": 10`, `"semantic_search_limit": 26`},
+		"topic threshold below the minimum": {`"topic_discovery_min_requests": 100`, `"topic_discovery_min_requests": 9`},
+		"topic threshold above the maximum": {`"topic_discovery_min_requests": 100`, `"topic_discovery_min_requests": 20001`},
+		"additional model without a model":  {`"model": "gpt-4o", `, ``},
+		"enabled without a provider":        {`"provider": "anthropic",`, ``},
+		"enabled without a model":           {`"model": "claude-sonnet-5-5",`, ``},
+	} {
+		invalidConfig := strings.Replace(validConfig, replacement[0], replacement[1], 1)
+		if invalidConfig == validConfig {
+			t.Fatalf("%s: replacement did not apply", name)
+		}
+		if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+			t.Errorf("%s: expected the warp section to fail validation", name)
+		}
+	}
+
+	// Zero is what the settings API reads as "reset to the default", so it
+	// validates here too. Embedding fields are not required by the schema: an
+	// omitted one keeps its stored value, and runtime validation decides
+	// whether the result can be enabled. A disabled section needs no model.
+	for name, config := range map[string]string{
+		"zero search and topic settings": `{"warp": {"enabled": true, "provider": "anthropic", "model": "claude-sonnet-5-5", "semantic_search_threshold": 0, "semantic_search_limit": 0, "topic_discovery_min_requests": 0}}`,
+		"enabled without embedding":      `{"warp": {"enabled": true, "provider": "anthropic", "model": "claude-sonnet-5-5"}}`,
+		"disabled without a model":       `{"warp": {"enabled": false}}`,
+		"enabled left out":               `{"warp": {"system_prompt_suffix": "x"}}`,
+	} {
+		if err := ValidateConfigSchema([]byte(config), loadLocalSchema(t)); err != nil {
+			t.Errorf("%s: expected the warp section to pass validation: %v", name, err)
+		}
+	}
+}
+
+// TestValidateConfigSchema_WarpSectionCoversEverySetting: every field the Warp settings API takes is
+// declared in the schema, so a setting added to the page cannot be left out of config.json.
+func TestValidateConfigSchema_WarpSectionCoversEverySetting(t *testing.T) {
+	var schema struct {
+		Defs map[string]struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(loadLocalSchema(t), &schema); err != nil {
+		t.Fatalf("failed to parse config.schema.json: %v", err)
+	}
+	declared := schema.Defs["warp_config"].Properties
+	inputType := reflect.TypeOf(warp.ConfigInput{})
+	fields := map[string]bool{}
+	for i := range inputType.NumField() {
+		name, _, _ := strings.Cut(inputType.Field(i).Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		fields[name] = true
+		if _, ok := declared[name]; !ok {
+			t.Errorf("warp.ConfigInput field %q is missing from $defs.warp_config in config.schema.json", name)
+		}
+	}
+	for name := range declared {
+		if !fields[name] {
+			t.Errorf("$defs.warp_config declares %q, which warp.ConfigInput does not take", name)
+		}
 	}
 }
 
@@ -3680,6 +3782,9 @@ func TestSchemaGovernanceProjectsValidation(t *testing.T) {
 		{name: "a negative token cap is rejected", project: `{"name": "p", "access_rule": "union", "rate_limit": {"token_max_limit": -1, "token_reset_duration": "1h"}}`, wantError: true},
 		{name: "a negative request cap is rejected", project: `{"name": "p", "access_rule": "union", "rate_limit": {"request_max_limit": -1, "request_reset_duration": "1m"}}`, wantError: true},
 		{name: "a members list cannot be declared", project: `{"name": "p", "access_rule": "union", "members": [{"user_id": "u-1"}]}`, wantError: true},
+		{name: "content logging can be turned off for a project", project: `{"name": "p", "access_rule": "union", "disable_content_logging": true}`},
+		{name: "content logging can be turned on for a project", project: `{"name": "p", "access_rule": "union", "disable_content_logging": false}`},
+		{name: "content logging must be a boolean", project: `{"name": "p", "access_rule": "union", "disable_content_logging": "off"}`, wantError: true},
 	}
 
 	for _, tt := range tests {
@@ -3791,69 +3896,21 @@ func TestSchemaOAuthKeyConfig(t *testing.T) {
 	}
 }
 
-// TestSchemaGithubCopilotCredentialRequired pins that the schema demands one of the two
-// credential forms. core/utils.go rejects a key carrying neither, and the schema is the
-// source of truth for config fields, so it has to reject the same shape rather than
-// deferring the failure to boot.
+// TestSchemaGithubCopilotCredentialRequired pins that the schema demands a token, as
+// core/utils.go does: every way to authenticate, including Sign in with GitHub, ends with one.
 func TestSchemaGithubCopilotCredentialRequired(t *testing.T) {
 	compiled := compileSchema(t)
 
-	const appConfig = `"github_copilot_key_config": {
-		"app_id": "123456",
-		"installation_id": "87654321",
-		"repository_id": "999000111",
-		"private_key": "pem"
-	}`
-
-	valid := []struct {
-		name   string
-		config string
-	}{
-		{
-			name:   "direct token alone",
-			config: copilotKeyConfig(`"name": "k", "value": "tid=abc", "models": ["*"], "weight": 1.0`),
-		},
-		{
-			name:   "github app config alone",
-			config: copilotKeyConfig(`"name": "k", "models": ["*"], "weight": 1.0, ` + appConfig),
-		},
-		{
-			name:   "both forms together",
-			config: copilotKeyConfig(`"name": "k", "value": "tid=abc", "models": ["*"], "weight": 1.0, ` + appConfig),
-		},
+	if err := validateConfig(t, compiled, copilotKeyConfig(`"name": "k", "value": "github_pat_abc", "models": ["*"], "weight": 1.0`)); err != nil {
+		t.Fatalf("a token alone should be valid: %v", err)
 	}
-	for _, tt := range valid {
-		t.Run(tt.name, func(t *testing.T) {
-			if err := validateConfig(t, compiled, tt.config); err != nil {
-				t.Fatalf("config should be valid: %v", err)
-			}
-		})
-	}
-
-	invalid := []struct {
-		name   string
-		config string
-	}{
-		{
-			name:   "neither credential form",
-			config: copilotKeyConfig(`"name": "k", "models": ["*"], "weight": 1.0`),
-		},
-		{
-			name:   "empty token with no app config",
-			config: copilotKeyConfig(`"name": "k", "value": "", "models": ["*"], "weight": 1.0`),
-		},
-		{
-			name: "app config missing the private key",
-			config: copilotKeyConfig(`"name": "k", "models": ["*"], "weight": 1.0,
-				"github_copilot_key_config": {"app_id": "1", "installation_id": "2", "repository_id": "3"}`),
-		},
-	}
-	for _, tt := range invalid {
-		t.Run(tt.name, func(t *testing.T) {
-			if err := validateConfig(t, compiled, tt.config); err == nil {
-				t.Fatal("config should be invalid")
-			}
-		})
+	for name, key := range map[string]string{
+		"no token":       `"name": "k", "models": ["*"], "weight": 1.0`,
+		"an empty token": `"name": "k", "value": "", "models": ["*"], "weight": 1.0`,
+	} {
+		if err := validateConfig(t, compiled, copilotKeyConfig(key)); err == nil {
+			t.Errorf("%s should be invalid", name)
+		}
 	}
 }
 
@@ -4143,6 +4200,67 @@ func TestValidateConfigSchema_InjectedTools(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_Passthrough pins passthrough on every provider shape, including a
+// custom provider, and mirrors the rule checks PassthroughPolicy.Validate makes at write time.
+func TestValidateConfigSchema_Passthrough(t *testing.T) {
+	schema := loadLocalSchema(t)
+	const passthrough = `"passthrough": {"allowed_routes": [{"methods": ["POST"], "path": "/v1/chat/completions"}, {"methods": ["GET", "DELETE"], "path": "/v1/files/*"}, {"path": "/v1beta/models/*:generateContent"}, {"path": "/v1/batches/**"}]}`
+	keyConfigs := map[string]string{
+		"azure":      `, "azure_key_config": {"endpoint": "https://example.openai.azure.com"}`,
+		"vertex":     `, "vertex_key_config": {"project_id": "p", "region": "us-central1"}`,
+		"ollama":     `, "ollama_key_config": {"url": "http://localhost:11434"}`,
+		"sgl":        `, "sgl_key_config": {"url": "http://localhost:30000"}`,
+		"vllm":       `, "vllm_key_config": {"url": "http://localhost:8000", "model_name": "m"}`,
+		"databricks": `, "databricks_key_config": {"workspace_url": "https://dbc-1234abcd-5678.cloud.databricks.com"}`,
+	}
+	for _, provider := range []string{"openai", "anthropic", "bedrock", "bedrock_mantle", "azure", "vertex", "ollama", "sgl", "vllm", "replicate", "databricks", "deepseek", "fireworks", "github_copilot"} {
+		key := fmt.Sprintf(`{"name": "k", "value": "v", "weight": 1.0%s}`, keyConfigs[provider])
+		base := fmt.Sprintf(`{"providers": {%q: {"keys": [%s]}}}`, provider, key)
+		if err := ValidateConfigSchema([]byte(base), schema); err != nil {
+			t.Errorf("%s: base config must pass before passthrough is checked: %v", provider, err)
+			continue
+		}
+		with := fmt.Sprintf(`{"providers": {%q: {"keys": [%s], %s}}}`, provider, key, passthrough)
+		if err := ValidateConfigSchema([]byte(with), schema); err != nil {
+			t.Errorf("%s: passthrough rejected: %v", provider, err)
+		}
+	}
+	custom := `{"providers": {"baseten-sidecar": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "custom_provider_config": {"base_provider_type": "openai"}, ` + passthrough + `}}}`
+	if err := ValidateConfigSchema([]byte(custom), schema); err != nil {
+		t.Errorf("custom provider: passthrough rejected: %v", err)
+	}
+
+	config := func(block string) string {
+		return `{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "passthrough": ` + block + `}}}`
+	}
+	for _, block := range []string{`{"allowed_routes": []}`, `{"allowed_routes": [{"path": "/**"}]}`, `{"allowed_routes": [{"path": "/"}]}`, `{"allowed_routes": [{"path": "/v1/models/*/predict"}]}`, `{"allowed_routes": [{"path": "/v1/.well-known/**"}]}`} {
+		if err := ValidateConfigSchema([]byte(config(block)), schema); err != nil {
+			t.Errorf("%s: passthrough rejected: %v", block, err)
+		}
+	}
+	for name, block := range map[string]string{
+		"missing allowed_routes":  `{}`,
+		"unknown field":           `{"allowed_routes": [], "deny": []}`,
+		"rule without a path set": `{"allowed_routes": [{"methods": ["GET"]}]}`,
+		"lowercase method":        `{"allowed_routes": [{"methods": ["get"], "path": "/v1/files"}]}`,
+		"relative path":           `{"allowed_routes": [{"path": "v1/files"}]}`,
+		"query in path":           `{"allowed_routes": [{"path": "/v1/files?purpose=batch"}]}`,
+		"encoded path":            `{"allowed_routes": [{"path": "/v1/%66iles"}]}`,
+		"empty segment":           `{"allowed_routes": [{"path": "/v1//files"}]}`,
+		"trailing slash":          `{"allowed_routes": [{"path": "/v1/files/"}]}`,
+		"dot segment":             `{"allowed_routes": [{"path": "/v1/./files"}]}`,
+		"dot-dot segment":         `{"allowed_routes": [{"path": "/v1/../admin"}]}`,
+		"inner double star":       `{"allowed_routes": [{"path": "/v1/**/content"}]}`,
+		"double star in segment":  `{"allowed_routes": [{"path": "/v1/files**"}]}`,
+		"unknown rule field":      `{"allowed_routes": [{"path": "/v1/files", "method": "GET"}]}`,
+		"null rule":               `{"allowed_routes": [null]}`,
+	} {
+		if err := ValidateConfigSchema([]byte(config(block)), schema); err == nil {
+			t.Errorf("%s: expected passthrough to fail validation", name)
+		}
+	}
+}
+
 // TestValidateConfigSchema_MCPOpenAPIClient pins the config.schema.json rules
 // for connection_type "openapi": openapi_config is required there and only
 // there, it must name a spec source, and only header-shaped auth types apply.
@@ -4177,6 +4295,42 @@ func TestValidateConfigSchema_MCPOpenAPIClient(t *testing.T) {
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("expected %s to pass schema validation, got: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestSchemaAuditLogsSigningKeys pins the audit signing-key rules the gateway
+// enforces at startup: a literal key needs 32 characters (an env. reference
+// is resolved later), and several keys need active_key_id, where hmac_key
+// counts as the key "default".
+func TestSchemaAuditLogsSigningKeys(t *testing.T) {
+	compiled := compileSchema(t)
+	key := `"` + strings.Repeat("k", 32) + `"`
+
+	tests := []struct {
+		name      string
+		auditLogs string
+		wantError bool
+	}{
+		{name: "one named key", auditLogs: `{"hmac_keys":[{"id":"a","key":` + key + `}]}`},
+		{name: "env reference key", auditLogs: `{"hmac_key":"env.AUDIT_KEY"}`},
+		{name: "short literal hmac_key", auditLogs: `{"hmac_key":"short"}`, wantError: true},
+		{name: "short literal named key", auditLogs: `{"hmac_keys":[{"id":"a","key":"short"}]}`, wantError: true},
+		{name: "two named keys without active_key_id", auditLogs: `{"hmac_keys":[{"id":"a","key":` + key + `},{"id":"b","key":` + key + `}]}`, wantError: true},
+		{name: "two named keys with active_key_id", auditLogs: `{"hmac_keys":[{"id":"a","key":` + key + `},{"id":"b","key":` + key + `}],"active_key_id":"b"}`},
+		{name: "hmac_key plus a named key without active_key_id", auditLogs: `{"hmac_key":` + key + `,"hmac_keys":[{"id":"a","key":` + key + `}]}`, wantError: true},
+		{name: "hmac_key plus a named key with active_key_id", auditLogs: `{"hmac_key":` + key + `,"hmac_keys":[{"id":"a","key":` + key + `}],"active_key_id":"a"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, `{"audit_logs":`+tt.auditLogs+`}`)
+			if tt.wantError && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected schema validation to pass, got: %v", err)
 			}
 		})
 	}

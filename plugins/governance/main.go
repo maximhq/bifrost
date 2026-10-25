@@ -1765,11 +1765,14 @@ func (p *GovernancePlugin) defaultAgentPermit(identity schemas.Identity) schemas
 // PreA2AHook is the Agent Gateway governance decision point. It authorizes each decoded operation
 // from the request's settled grant before any upstream effect. Anonymous requests pass through;
 // identified requests resolve access through the same path as every other governed request.
+// Identified is the test inference applies: a presented credential or a known user. An
+// authenticating layer can name the user without recording what it verified, and that user is
+// governed rather than passed through as anonymous.
 func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
 	if req == nil {
 		return req, nil, nil
 	}
-	if ctx == nil || ctx.Grant() == nil || ctx.Grant().Identity() == nil || !ctx.Grant().Identity().Presented() {
+	if ctx == nil || !presentedGrantBearingCredential(ctx) {
 		return req, nil, nil
 	}
 
@@ -1861,7 +1864,13 @@ func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req
 	}
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
-	stampVirtualKeyContentLogging(ctx, vk)
+	// A tool call opens its connection after the request's access was resolved, and a decision
+	// already on the context came from that resolution, which may have applied a project that
+	// overrides the key's. Stamping the key's own decision again would put it back over the
+	// project's, on the context and on the root span.
+	if _, resolved := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); !resolved {
+		stampVirtualKeyContentLogging(ctx, vk)
+	}
 	stampVirtualKeyMetadata(ctx, vk)
 	if vk.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)

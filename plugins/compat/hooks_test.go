@@ -257,7 +257,7 @@ func TestConfigForceReasoningOnlyModelsToResponsesDefaultsOn(t *testing.T) {
 // emulation unless the model catalog lists the model as a native decisions model:
 // a supports_decisions row decides in either direction, and without a row the
 // gpt-6-luna on OpenAI, Typesafe, Clef on Cloudflare, deciders on Perplexity, System One
-// models on Ollama and Microsoft's decision models on Azure are native. Typesafe and other
+// models on Ollama and Microsoft's decision models and gpt-6-luna on Azure are native. Typesafe and other
 // request types are never marked.
 func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false, "clef": false}
@@ -318,13 +318,16 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 		{name: "tagged system one model on ollama is native", enabled: true, req: decision(schemas.Ollama, "tev1:0.8b")},
 		{name: "clef on ollama is native", enabled: true, req: decision(schemas.Ollama, "clef-flash")},
 		{name: "chat model on ollama marked", enabled: true, req: decision(schemas.Ollama, "llama3.1:latest"), wantConverted: true},
-		{name: "gpt-6-luna on azure marked", enabled: true, req: decision(schemas.Azure, "gpt-6-luna"), wantConverted: true},
+		{name: "gpt-6-luna on azure is native", enabled: true, req: decision(schemas.Azure, "gpt-6-luna")},
+		{name: "dated gpt-6-luna on azure is native", enabled: true, req: decision(schemas.Azure, "gpt-6-luna-2026-09-22")},
 		{name: "gpt-6-luna on groq marked", enabled: true, req: decision(schemas.Groq, "gpt-6-luna"), wantConverted: true},
 		{name: "gpt-6-luna on a custom provider marked", enabled: true, req: decision(schemas.ModelProvider("my-openai"), "gpt-6-luna"), wantConverted: true},
 		{name: "microsoft decision model on azure is native", enabled: true, req: decision(schemas.Azure, "Microsoft-Decision-1")},
 		{name: "chat model on azure marked", enabled: true, req: decision(schemas.Azure, "gpt-4o"), wantConverted: true},
 		{name: "microsoft decision model on openai marked", enabled: true, req: decision(schemas.OpenAI, "Microsoft-Decision-1"), wantConverted: true},
 		{name: "ai_decide on databricks is native", enabled: true, req: decision(schemas.Databricks, "ai_decide")},
+		{name: "openjev on databricks is native", enabled: true, req: decision(schemas.Databricks, "system.ai.openjev-qwen35-4b")},
+		{name: "typesafe jev on databricks is native", enabled: true, req: decision(schemas.Databricks, "system.ai.typesafeai-jev-1-14-0")},
 		{name: "serving endpoint model on databricks marked", enabled: true, req: decision(schemas.Databricks, "databricks-claude-sonnet-4"), wantConverted: true},
 		{name: "ai_decide on openai marked", enabled: true, req: decision(schemas.OpenAI, "ai_decide"), wantConverted: true},
 		{name: "typesafe provider never marked", enabled: true, req: decision(schemas.Typesafe, "jev-latest")},

@@ -505,7 +505,6 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"clear_plugin_config_hashes"}, run: migrationClearPluginConfigHashes},
 	{IDs: []string{"add_mcp_oauth_token_status_reason_column"}, run: migrationAddMCPOauthTokenStatusReasonColumn},
 	{IDs: []string{"add_databricks_key_config_columns"}, run: migrationAddDatabricksKeyConfigColumns},
-	{IDs: []string{"add_github_copilot_config_columns"}, run: migrationAddGithubCopilotConfigColumns},
 	{IDs: []string{"add_oauth_key_config_columns"}, run: migrationAddOAuthKeyConfigColumns},
 	{IDs: []string{"add_mcp_client_endpoint_slug"}, run: migrationAddMCPClientEndpointSlug},
 	{IDs: []string{"add_allow_all_providers_to_virtual_key"}, run: migrationAddAllowAllProvidersToVirtualKey},
@@ -568,8 +567,11 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_agent_destination_policy_columns"}, run: migrationAddAgentDestinationPolicyColumns},
 	{IDs: []string{"drop_agent_registration_options"}, run: migrationDropAgentRegistrationOptions},
 	{IDs: []string{"add_vertex_use_session_routing_column"}, run: migrationAddVertexUseSessionRoutingColumn},
+	{IDs: []string{"add_client_config_skip_access_profile_user_virtual_key_lifecycle_columns"}, run: migrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns},
 	{IDs: []string{"add_rss_feeds_table"}, run: migrationAddRSSFeedsTable},
 	{IDs: []string{"add_rss_feeds_icon_url_column"}, run: migrationAddRSSFeedsIconURLColumn},
+	{IDs: []string{"add_passthrough_json_column"}, run: migrationAddPassthroughJSONColumn},
+	{IDs: []string{"add_warp_topic_discovery_min_requests_column"}, run: migrationAddWarpTopicDiscoveryMinRequestsColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -685,6 +687,30 @@ func migrationAddWarpAdditionalModelsColumn(ctx context.Context, db *gorm.DB, lo
 			// Reversible: the default model lives in its own columns, so dropping
 			// this costs the extra choices and leaves Warp answering.
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "additional_models")
+		},
+	})
+}
+
+// migrationAddWarpTopicDiscoveryMinRequestsColumn adds how many requests that
+// matched no topic start a discovery. An existing row reads it as 0, which is
+// the default.
+func migrationAddWarpTopicDiscoveryMinRequestsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_topic_discovery_min_requests_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			// Only the column this migration owns; see
+			// migrationAddWarpLogEmbeddingColumns.
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "topic_discovery_min_requests"); err != nil {
+				return fmt.Errorf("add topic_discovery_min_requests column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: without the column discovery runs at the default.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "topic_discovery_min_requests")
 		},
 	})
 }
@@ -14198,52 +14224,6 @@ func migrationAddDatabricksKeyConfigColumns(ctx context.Context, db *gorm.DB, lo
 	return nil
 }
 
-// githubCopilotConfigColumns are the GitHub App credential columns on the key table.
-var githubCopilotConfigColumns = []string{
-	"github_copilot_app_id",
-	"github_copilot_installation_id",
-	"github_copilot_repository_id",
-	"github_copilot_private_key",
-	"github_copilot_github_domain",
-}
-
-// migrationAddGithubCopilotConfigColumns adds the GitHub App credential columns to the key
-// table. There is nothing to backfill: github-copilot is a new provider, so no existing row
-// can carry these values.
-func migrationAddGithubCopilotConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_github_copilot_config_columns"
-	logger.Info("[configstore] starting migration %s", migrationName)
-	defer logger.Info("[configstore] finished migration %s", migrationName)
-
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: migrationName,
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			for _, column := range githubCopilotConfigColumns {
-				if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, column); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
-		Rollback: rollbackGithubCopilotConfigColumns,
-	}})
-
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running %s migration: %w", migrationName, err)
-	}
-	return nil
-}
-
-// rollbackGithubCopilotConfigColumns refuses rather than dropping, unlike most column
-// migrations in this file. github_copilot_private_key holds a GitHub App private key, which
-// GitHub lets you download exactly once: dropping it does not lose a recomputable config
-// value, it forces the operator to generate a new key on GitHub and re-install the App. The
-// columns are additive, so an older binary ignores them and there is nothing to undo.
-func rollbackGithubCopilotConfigColumns(*gorm.DB) error {
-	return fmt.Errorf("add_github_copilot_config_columns is non-rollbackable: dropping the github_copilot_* columns would permanently delete every stored GitHub App private key, which GitHub only issues once and cannot re-supply; the columns are additive and older binaries safely ignore them")
-}
-
 // oauthKeyConfigColumns are the oauth_key_config columns on the key table.
 var oauthKeyConfigColumns = []string{
 	"oauth_token_url",
@@ -16344,6 +16324,67 @@ func migrationAddVertexUseSessionRoutingColumn(ctx context.Context, db *gorm.DB,
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "vertex_use_session_routing")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddPassthroughJSONColumn adds the passthrough_json column to the provider
+// table, backing ProviderConfig.Passthrough.
+func migrationAddPassthroughJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_passthrough_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "PassthroughJSON")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackPassthroughJSONColumn(tx)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// rollbackPassthroughJSONColumn refuses to undo add_passthrough_json_column.
+func rollbackPassthroughJSONColumn(*gorm.DB) error {
+	return fmt.Errorf("add_passthrough_json_column is non-rollbackable: dropping passthrough_json would delete every provider's passthrough allowlist, and after a re-upgrade built-in providers would silently forward every passthrough route again; the column is additive and older binaries safely ignore it")
+}
+
+// migrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns adds
+// skip_access_profile_user_virtual_key_creation and skip_access_profile_user_virtual_key_deletion to
+// config_client. Existing rows default to false, keeping access profiles managing user keys.
+func migrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_skip_access_profile_user_virtual_key_lifecycle_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range []string{"skip_access_profile_user_virtual_key_creation", "skip_access_profile_user_virtual_key_deletion"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range []string{"skip_access_profile_user_virtual_key_creation", "skip_access_profile_user_virtual_key_deletion"} {
+				if err := dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {

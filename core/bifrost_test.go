@@ -813,6 +813,36 @@ func BenchmarkCalculateBackoff(b *testing.B) {
 	}
 }
 
+// BenchmarkReadyHeldStreamCommit measures what the held-stream commit signal adds per stream
+// attempt, on the chunk that commits it. An ungated stream (nothing paused it) pays one context
+// lookup; only a held stream also marks the watch, which the gate then consumes.
+func BenchmarkReadyHeldStreamCommit(b *testing.B) {
+	newCtx := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req")
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace")
+		return ctx
+	}
+	b.Run("ungated", func(b *testing.B) {
+		ctx := newCtx()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			readyHeldStreamCommit(ctx)
+		}
+	})
+	b.Run("held", func(b *testing.B) {
+		ctx := newCtx()
+		ctx.SetValue(schemas.BifrostContextKeyStreamGated, true)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			readyHeldStreamCommit(ctx)
+			ctx.ConsumeStreamCommitWatch()
+		}
+	})
+}
+
 // BenchmarkAgentContinuationChecksOnPlainRequest measures what the MCP agent-loop continuation
 // and MCP-instructions cache-placement checks add to a request that uses neither: one context
 // lookup each, expected to allocate nothing.
@@ -3704,6 +3734,7 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 		{"anthropic integration to bedrock clears", "anthropic", schemas.Bedrock, "anthropic.claude-sonnet-4-20250514-v1:0", nil, true},
 		{"anthropic integration to anthropic preserved", "anthropic", schemas.Anthropic, "claude-sonnet-4-20250514", nil, false},
 		{"anthropic integration to vertex preserved", "anthropic", schemas.Vertex, "claude-sonnet-4@20250514", nil, false},
+		{"anthropic integration to Vertex OpenAI custom deployment clears", "anthropic", schemas.Vertex, "claude-custom", &schemas.ResolvedAlias{Config: &schemas.AliasConfig{ModelFamily: schemas.Ptr(schemas.ModelFamilyAnthropic), VertexAliasCfg: &schemas.VertexAliasCfg{VertexEndpoint: &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}}}}, true},
 		{"anthropic integration to azure preserved", "anthropic", schemas.Azure, "claude-sonnet-4-20250514", nil, false},
 		{"anthropic integration to bedrock mantle preserved", "anthropic", schemas.BedrockMantle, "claude-sonnet-4-20250514", nil, false},
 		{"anthropic integration to bedrock mantle openai model clears", "anthropic", schemas.BedrockMantle, "gpt-5-6-luna", nil, true},

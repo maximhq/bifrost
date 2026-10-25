@@ -262,6 +262,7 @@ Enter the credentials you copied in Step 4:
 - **Client Secret**: from the Okta app General tab
 - **Audience**: required only for Custom Authorization Server
 - **API Token**: optional - paste the token from Step 4 if you want background sync every **Directory sync interval** (default 24 hours)
+- **Sync all users**: with an API token, choose which Okta users that sync keeps. On (the default) keeps every user assigned to the app except **suspended** and **deactivated** ones; off keeps **active** users only. In `config.json` or Helm this is `syncAllUsers` under the SCIM provider `config`.
 
 Click **Verify & Next** to confirm the connection.
 

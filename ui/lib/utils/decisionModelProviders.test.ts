@@ -8,7 +8,6 @@ import {
 	isOpenAIDecisionProvider,
 	listsDecisionModels,
 	selfHostedModelGroups,
-	servesFixedDecisionModel,
 } from "./decisionModelProviders";
 
 const CLEF_URL = "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef";
@@ -111,12 +110,12 @@ describe("decision model provider helpers", () => {
 		expect(defaultDecisionModel(openrouter)).toBe("~typesafe/jev-latest");
 		expect(defaultDecisionModel(openai)).toBe("gpt-6-luna");
 		expect(defaultDecisionModel(cloudflare)).toBe("@cf/cloudflare/clef-flash");
-		expect(defaultDecisionModel(perplexity)).toBe("pplx-decider-v1.1-27b");
+		expect(defaultDecisionModel(perplexity)).toBe("pplx-decider-latest");
 		// Only Ollama's listing says which System One models are pulled locally.
 		expect(defaultDecisionModel(ollama)).toBe("");
 		// The model name a key alias maps to the user's deployment.
 		expect(defaultDecisionModel(azure)).toBe("Microsoft-Decision-1");
-		// ai_decide is the only decision model a Databricks workspace serves.
+		// The ai_decide AI Function; the picker also lists the System One models.
 		expect(defaultDecisionModel(databricks)).toBe("ai_decide");
 		expect(defaultDecisionModel(clefFlash)).toBe("clef-flash");
 		expect(defaultDecisionModel(laya)).toBe("english");
@@ -125,7 +124,7 @@ describe("decision model provider helpers", () => {
 	});
 
 	test("lists only decision models for providers whose catalog mixes in chat models", () => {
-		for (const candidate of [openai, openrouter, cloudflare, perplexity, ollama, azure])
+		for (const candidate of [openai, openrouter, cloudflare, perplexity, ollama, azure, databricks])
 			expect(listsDecisionModels(candidate, candidate.name)).toBe(true);
 		expect(
 			listsDecisionModels(
@@ -134,13 +133,7 @@ describe("decision model provider helpers", () => {
 			),
 		).toBe(true);
 		expect(listsDecisionModels(undefined, "openai")).toBe(true);
-		for (const candidate of [typesafe, databricks, laya, clef]) expect(listsDecisionModels(candidate, candidate.name)).toBe(false);
-	});
-
-	test("fixes the model for Databricks and a Cloudflare-URL provider", () => {
-		expect(servesFixedDecisionModel(databricks, "databricks")).toBe(true);
-		expect(servesFixedDecisionModel(clef, clef.name)).toBe(true);
-		for (const candidate of [typesafe, openai, azure, laya]) expect(servesFixedDecisionModel(candidate, candidate.name)).toBe(false);
+		for (const candidate of [typesafe, laya, clef]) expect(listsDecisionModels(candidate, candidate.name)).toBe(false);
 	});
 
 	test("starts a self-hosted provider whose name says nothing on none", () => {

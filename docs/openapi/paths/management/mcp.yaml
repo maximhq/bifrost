@@ -215,6 +215,14 @@ client:
       subprocess), and connection_type "http"/"sse" whose connection_string
       resolves to a loopback, private-network, link-local, or CGNAT address.
       Public http/sse targets are unaffected.
+
+      For auth_type "token_exchange", verification and tool discovery run
+      during the create as the signed-in admin: Bifrost exchanges the
+      identity-provider token on the request or, when it carries none, the
+      access token from the admin's own Bifrost sign-in. A request with
+      neither (for example one made with an API key) creates the client in
+      pending_verification; finish it with
+      POST /api/mcp/client/{id}/verify-exchange.
     tags:
       - MCP
     requestBody:
@@ -248,6 +256,17 @@ client:
           is disabled or unconfigured) and connection_type is "stdio", or is
           "http"/"sse" with a connection_string resolving to a loopback,
           private-network, link-local, or CGNAT address.
+      '422':
+        description: |
+          A per-user client failed verification during create, and was not
+          created: per_user_headers sample values were rejected upstream, or
+          for token_exchange the admin credential exchange failed, the
+          admin's Bifrost sign-in has expired (sign in to Bifrost again and
+          retry), or the upstream verification connection failed.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -860,15 +879,19 @@ client-verify-exchange:
     description: |
       Completes admin verification for an MCP client with auth_type
       "token_exchange". No request body: the subject of the exchange is
-      always the signed-in admin's own identity-provider token (from an SSO
-      session or an identity-authenticated bearer request) — there is no
-      manual token input. Bifrost exchanges it exactly like a real caller's
+      always the signed-in admin's own identity-provider token, either the
+      one an identity-authenticated bearer request carries or, when the
+      request carries none, the access token from the admin's own Bifrost
+      sign-in (an SSO dashboard session), refreshed first when it has
+      expired or is about to. There is no manual token input. Bifrost
+      exchanges it exactly like a real caller's
       token would be exchanged, opens an upstream connection with the result,
       discovers the tool list, persists it, and transitions the client to
       connected. The exchanged token (and any refresh token the identity
       provider issued alongside it) is retained as the admin discovery
       credential the periodic tool syncer uses to refresh the tool list;
-      end-user tool calls always exchange the caller's own token instead.
+      end-user tool calls always exchange the caller's own token or Bifrost
+      sign-in instead.
       Synchronous; no browser flow.
 
       Serves two situations: the one-time bootstrap verification for a client
@@ -908,14 +931,16 @@ client-verify-exchange:
       '400':
         description: |
           Client is not auth_type "token_exchange", token exchange is
-          unavailable (no identity-provider integration configured), or the
-          request carries no identity-provider token to exchange (sign in
-          with your identity provider and retry)
+          unavailable (no identity-provider integration configured), the
+          request has nothing to exchange (no identity-provider token and no
+          sign-in of the admin's own, as with an API key: sign in with your
+          identity provider and retry), or the admin's Bifrost sign-in has
+          expired (sign in to Bifrost again and retry)
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '422':
-        description: The identity provider rejected the exchange, or the upstream verification connection failed
+        description: The identity provider rejected or failed the exchange, or the upstream verification connection failed
         content:
           application/json:
             schema:

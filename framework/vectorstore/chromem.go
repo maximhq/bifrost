@@ -9,7 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	chromem "github.com/philippgille/chromem-go"
 )
@@ -33,7 +35,9 @@ type ChromemConfig struct {
 //     with a probe vector, which requires the namespace dimension. Like the
 //     Pinecone backend, the dimension is recorded in memory by CreateNamespace,
 //     so callers must CreateNamespace after every process start (all current
-//     callers already do).
+//     callers already do);
+//   - a paged GetAll enumerates once, on its first page, and later pages read
+//     only their own documents (see chromemPageSnapshot).
 type ChromemStore struct {
 	db     *chromem.DB
 	config *ChromemConfig
@@ -41,7 +45,31 @@ type ChromemStore struct {
 
 	mu                  sync.RWMutex
 	namespaceDimensions map[string]int
+
+	snapshotsMu sync.Mutex
+	snapshots   map[string]*chromemPageSnapshot
 }
+
+// chromemPageSnapshot is the sorted ids a paged GetAll matched on its first
+// page. Enumerating is an exhaustive similarity query plus a metadata decode
+// and a sort over the whole namespace, so doing it on every page made reading
+// a namespace of N documents cost N squared; the cursor names the snapshot
+// instead, and a later page fetches only its own documents by id.
+//
+// It holds the ids alone - string headers sharing chromem's own id bytes, 16
+// bytes a document - and is dropped when its last page is served, when it has
+// sat unused for chromemSnapshotTTL, or when chromemMaxSnapshots newer ones
+// push it out.
+type chromemPageSnapshot struct {
+	namespace string
+	ids       []string
+	lastUsed  time.Time
+}
+
+const (
+	chromemSnapshotTTL  = 10 * time.Minute
+	chromemMaxSnapshots = 8
+)
 
 // chromemStubEmbeddingFunc is passed to chromem collection constructors.
 // All entries carry precomputed vectors (RequiresVectors is true), so chromem
@@ -71,6 +99,7 @@ func newChromemStore(_ context.Context, config *ChromemConfig, logger schemas.Lo
 		config:              config,
 		logger:              logger,
 		namespaceDimensions: make(map[string]int),
+		snapshots:           make(map[string]*chromemPageSnapshot),
 	}, nil
 }
 
@@ -209,56 +238,155 @@ func (s *ChromemStore) GetChunks(ctx context.Context, namespace string, ids []st
 
 // GetAll retrieves documents with optional filtering, using an offset cursor
 // for pagination. Results are ordered by ID for deterministic paging.
+//
+// The cursor is "<snapshot>:<offset>". A snapshot that has expired, or a bare
+// offset, is rebuilt from the namespace as it is now and read from the same
+// offset, which is what every page cost before snapshots. A document deleted,
+// or changed so it no longer matches, after the first page is skipped, and
+// the page is filled from further on so it is never short before the end.
 func (s *ChromemStore) GetAll(ctx context.Context, namespace string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {
-	docs, err := s.enumerateAll(ctx, namespace)
+	token, offset, err := parseChromemCursor(cursor)
 	if err != nil {
 		return nil, nil, err
-	}
-
-	filtered := make([]SearchResult, 0, len(docs))
-	for _, doc := range docs {
-		props := decodeChromemMetadata(doc.Metadata)
-		if !matchesChromemQueries(props, queries) {
-			continue
-		}
-		filtered = append(filtered, SearchResult{
-			ID:         doc.ID,
-			Properties: applyChromemSelectFields(props, selectFields),
-		})
-	}
-	sort.Slice(filtered, func(i, j int) bool { return filtered[i].ID < filtered[j].ID })
-
-	offset := int64(0)
-	if cursor != nil && *cursor != "" {
-		offset, err = strconv.ParseInt(*cursor, 10, 64)
-		if err != nil || offset < 0 {
-			return nil, nil, fmt.Errorf("%w: invalid cursor %q", ErrQuerySyntax, *cursor)
-		}
 	}
 	if limit <= 0 {
 		limit = 100
 	}
+	col := s.db.GetCollection(namespace, chromemStubEmbeddingFunc)
+	if col == nil {
+		return nil, nil, fmt.Errorf("%w: namespace %s", ErrNotFound, namespace)
+	}
 
-	total := int64(len(filtered))
+	ids := s.takeSnapshot(token, namespace)
+	if ids == nil {
+		docs, err := s.enumerateAll(ctx, namespace)
+		if err != nil {
+			return nil, nil, err
+		}
+		ids = make([]string, 0, len(docs))
+		for _, doc := range docs {
+			if matchesChromemQueries(decodeChromemMetadata(doc.Metadata), queries) {
+				ids = append(ids, doc.ID)
+			}
+		}
+		sort.Strings(ids)
+		token = ""
+	}
+
+	total := int64(len(ids))
 	if offset >= total {
+		s.dropSnapshot(token)
 		return []SearchResult{}, nil, nil
 	}
-	// Compare against what is left rather than forming offset+limit: limit is
-	// caller-supplied and unbounded, so the sum overflows int64 and wraps
-	// negative for a large enough value. A negative end fails the end > total
-	// check and reaches the slice as a bound below offset, panicking mid-request.
-	end := total
-	if remaining := total - offset; limit < remaining {
-		end = offset + limit
+	includeVectors := IncludeVectorsRequested(ctx)
+	// Compared against what is left rather than forming offset+limit: limit is
+	// caller-supplied and unbounded, so the sum would overflow int64.
+	capacity := limit
+	if remaining := total - offset; remaining < capacity {
+		capacity = remaining
 	}
-	page := filtered[offset:end]
+	page := make([]SearchResult, 0, capacity)
+	next := offset
+	for ; next < total && int64(len(page)) < limit; next++ {
+		// GetByID hands back its own copy of the vector, so nothing a caller
+		// does to the page reaches the collection.
+		doc, err := col.GetByID(ctx, ids[next])
+		if err != nil {
+			continue
+		}
+		props := decodeChromemMetadata(doc.Metadata)
+		if !matchesChromemQueries(props, queries) {
+			continue
+		}
+		result := SearchResult{ID: doc.ID, Properties: applyChromemSelectFields(props, selectFields)}
+		if includeVectors {
+			result.Vector = doc.Embedding
+		}
+		page = append(page, result)
+	}
 
-	var nextCursor *string
-	if end < total {
-		next := strconv.FormatInt(end, 10)
-		nextCursor = &next
+	if next >= total {
+		s.dropSnapshot(token)
+		return page, nil, nil
 	}
-	return page, nextCursor, nil
+	if token == "" {
+		token = s.saveSnapshot(namespace, ids)
+	}
+	nextCursor := token + ":" + strconv.FormatInt(next, 10)
+	return page, &nextCursor, nil
+}
+
+// parseChromemCursor splits a GetAll cursor into its snapshot and offset. A
+// bare offset has no snapshot.
+func parseChromemCursor(cursor *string) (string, int64, error) {
+	if cursor == nil || *cursor == "" {
+		return "", 0, nil
+	}
+	token, rawOffset, found := strings.Cut(*cursor, ":")
+	if !found {
+		token, rawOffset = "", *cursor
+	}
+	offset, err := strconv.ParseInt(rawOffset, 10, 64)
+	if err != nil || offset < 0 {
+		return "", 0, fmt.Errorf("%w: invalid cursor %q", ErrQuerySyntax, *cursor)
+	}
+	return token, offset, nil
+}
+
+// takeSnapshot returns the ids a snapshot holds and marks it used, or nil when
+// there is no live snapshot by that token for this namespace.
+func (s *ChromemStore) takeSnapshot(token, namespace string) []string {
+	if token == "" {
+		return nil
+	}
+	s.snapshotsMu.Lock()
+	defer s.snapshotsMu.Unlock()
+	snapshot, ok := s.snapshots[token]
+	if !ok || snapshot.namespace != namespace {
+		return nil
+	}
+	now := time.Now()
+	if now.Sub(snapshot.lastUsed) > chromemSnapshotTTL {
+		delete(s.snapshots, token)
+		return nil
+	}
+	snapshot.lastUsed = now
+	return snapshot.ids
+}
+
+// saveSnapshot keeps ids for the pages after the first and returns its token,
+// first making room: expired snapshots go, then the least recently used.
+func (s *ChromemStore) saveSnapshot(namespace string, ids []string) string {
+	token := uuid.NewString()
+	now := time.Now()
+	s.snapshotsMu.Lock()
+	defer s.snapshotsMu.Unlock()
+	for key, snapshot := range s.snapshots {
+		if now.Sub(snapshot.lastUsed) > chromemSnapshotTTL {
+			delete(s.snapshots, key)
+		}
+	}
+	for len(s.snapshots) >= chromemMaxSnapshots {
+		oldest := ""
+		for key, snapshot := range s.snapshots {
+			if oldest == "" || snapshot.lastUsed.Before(s.snapshots[oldest].lastUsed) {
+				oldest = key
+			}
+		}
+		delete(s.snapshots, oldest)
+	}
+	s.snapshots[token] = &chromemPageSnapshot{namespace: namespace, ids: ids, lastUsed: now}
+	return token
+}
+
+// dropSnapshot forgets a snapshot whose last page has been served.
+func (s *ChromemStore) dropSnapshot(token string) {
+	if token == "" {
+		return
+	}
+	s.snapshotsMu.Lock()
+	delete(s.snapshots, token)
+	s.snapshotsMu.Unlock()
 }
 
 // GetNearest performs an exhaustive cosine-similarity search.

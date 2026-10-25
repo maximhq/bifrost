@@ -76,6 +76,11 @@
       "description": "Short label (max 10 characters) displayed in the management UI sidebar to identify the environment (e.g. \"staging\", \"prod\"). Overrides the BIFROST_ENV_LABEL environment variable when both are set.",
       "maxLength": 10
     },
+    "disable_onboarding": {
+      "type": "boolean",
+      "description": "Hides the management UI setup checklist for every user. Unlike the in-app \"hide for everyone\" action, this is read from config.json on every start and never written to the config store, so it stays in effect on stateless deployments (ephemeral container storage, provider-less log viewers). Overrides the BIFROST_DISABLE_ONBOARDING environment variable when both are set.",
+      "default": false
+    },
     "auth_config": {
       "$ref": "#/$defs/auth_config"
     },
@@ -342,6 +347,16 @@
           "type": "boolean",
           "description": "Restrict provider objects (files, batches, videos, containers, container files, cached contents and live sessions) to the virtual key that created them. Another virtual key gets 404 for them and does not see them in list responses. Requests without a virtual key are not restricted. Creators are recorded even while this is off, so turning it back on also covers objects created meanwhile; an object whose creator could not be recorded stays reachable to every virtual key.",
           "default": true
+        },
+        "skip_access_profile_user_virtual_key_creation": {
+          "type": "boolean",
+          "description": "Enterprise only. When true, a user's first access profile never creates a virtual key for them. Keys the user already owns are still governed by the profile while they hold one.",
+          "default": false
+        },
+        "skip_access_profile_user_virtual_key_deletion": {
+          "type": "boolean",
+          "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys with none of the profile's providers or access. Deleting the user still deletes their keys.",
+          "default": false
         },
         "vk_rotation_cooldown": {
           "type": [
@@ -695,6 +710,12 @@
           "$ref": "#/$defs/provider_with_deepseek_config"
         },
         "wafer": {
+          "$ref": "#/$defs/provider"
+        },
+        "minimax": {
+          "$ref": "#/$defs/provider"
+        },
+        "byteplus": {
           "$ref": "#/$defs/provider"
         },
         "cloudflare": {
@@ -3339,6 +3360,11 @@
                     "description": "Maximum time for a single materialized view refresh pass. Go duration string, min 30s, max 30m. Unset derives a budget from matview_refresh_interval (5x the interval, at least 5m). A refresh holds a pooled connection and a session advisory lock across every view, so without a bound one stuck refresh leaves the views permanently stale across all replicas.",
                     "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$"
                   },
+                  "matview_refresh_temp_file_limit": {
+                    "type": "string",
+                    "description": "Caps the temp files each Postgres process running a materialized view statement may write (Postgres temp_file_limit, e.g. '10GB'; parallel workers each get the cap). A refresh over a very large logs table can spill tens of GB, and a full disk fails every query on the server. A statement that hits the cap fails and the view keeps its previous contents. Unset leaves the server setting alone. The database role needs superuser or GRANT SET ON PARAMETER temp_file_limit; without it the cap is skipped with a warning.",
+                    "pattern": "^(-1|[0-9]+ ?(kB|MB|GB|TB)?)$"
+                  },
                   "migration_matview_cancel_after": {
                     "type": "string",
                     "description": "How long schema migrations wait for an in-flight materialized view refresh pass (from any replica, including older releases during a rolling upgrade) before cancelling its REFRESH statements. Migrations pause refreshes for their whole run, because a long refresh on a large logs table blocks their CREATE INDEX CONCURRENTLY and ALTER TABLE logs statements. A cancelled concurrent refresh rolls back and the view keeps its previous contents. Go duration string; unset uses 60s; \"off\" never cancels and only waits.",
@@ -4480,7 +4506,8 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "cloudflare"
+                        "cloudflare",
+                        "byteplus"
                       ]
                     },
                     "embedding_model": {
@@ -5376,10 +5403,170 @@
     },
     "proxy_config": {
       "$ref": "#/$defs/global_proxy_config"
+    },
+    "warp": {
+      "$ref": "#/$defs/warp_config"
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "warp_config": {
+      "type": "object",
+      "description": "Warp settings (the dashboard's Settings > Warp page): the models Warp runs on, its behaviour and limits, log search, and topics. Takes the same body as PUT /api/warp/config and goes through the same validation and vector namespace provisioning. An omitted embedding, search or topic field keeps its stored value; every other omitted field takes its default, and additional_models is replaced whole. Under source_of_truth \"split\" it is applied when new or changed and dashboard edits are kept otherwise; under \"config.json\" it is applied on every startup. Omit to manage Warp from the dashboard. The warp feature flag (feature_flags.flags.warp) is separate.",
+      "if": {
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "then": {
+        "required": [
+          "provider",
+          "model"
+        ]
+      },
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show Warp in the dashboard. Requires a connected vector store, provider, model, embedding_provider, embedding_model and embedding_dimension."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider of the default model that runs Warp's agent loop. Required when enabled."
+        },
+        "model": {
+          "type": "string",
+          "description": "Default model that runs Warp's agent loop. Required when enabled."
+        },
+        "api_key_id": {
+          "type": "string",
+          "description": "ID of one of the provider's configured keys to pin Warp to. Omit to load-balance across the provider's keys, or for a provider that needs no key."
+        },
+        "additional_models": {
+          "type": "array",
+          "maxItems": 20,
+          "description": "Other models people can switch to in the chat panel. Replaced whole: omitting it removes every additional model.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "api_key_id": {
+                "type": "string",
+                "description": "ID of one of the provider's configured keys to pin this model to"
+              }
+            },
+            "required": [
+              "provider",
+              "model"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "max_iterations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20,
+          "not": {
+            "const": 1
+          },
+          "default": 8,
+          "description": "Tool-call rounds Warp may run before it must answer. 0 means the default; 1 is rejected because the last round is reserved for answering."
+        },
+        "request_timeout_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 120,
+          "description": "Deadline for each call to Warp's model. 0 means the default."
+        },
+        "history_retention_days": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30,
+          "description": "How long a saved chat is kept after its last turn. 0 means the default. Independent of logs_store retention."
+        },
+        "system_prompt_suffix": {
+          "type": "string",
+          "description": "Text appended to Warp's built-in system prompt, such as naming conventions or cost model"
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature. Omit to use the provider's default; 0 is fully deterministic."
+        },
+        "reasoning_effort": {
+          "type": "string",
+          "enum": [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "description": "Effort level for reasoning models. Omit for models that are not reasoning models."
+        },
+        "embedding_provider": {
+          "type": "string",
+          "description": "Provider of the model used to index and search logs. Required when enabled."
+        },
+        "embedding_model": {
+          "type": "string",
+          "description": "Model used to index and search logs. Required when enabled."
+        },
+        "embedding_api_key_id": {
+          "type": "string",
+          "description": "ID of one of the embedding provider's configured keys to pin embedding calls to"
+        },
+        "embedding_dimension": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Vector size the embedding model returns, e.g. 1536 for text-embedding-3-small. Required when enabled."
+        },
+        "log_vector_store_namespace": {
+          "type": "string",
+          "default": "BifrostWarpLogs",
+          "description": "Vector store namespace holding Warp's log index. Must change whenever embedding_provider, embedding_model or embedding_dimension changes."
+        },
+        "semantic_search_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5,
+          "description": "Minimum similarity for a semantic log search match. 0 resets it to the default; omitting it keeps the stored value."
+        },
+        "semantic_search_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 25,
+          "default": 10,
+          "description": "Most matches one semantic log search returns. 0 resets it to the default; omitting it keeps the stored value."
+        },
+        "topic_discovery_min_requests": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20000,
+          "not": {
+            "minimum": 1,
+            "maximum": 9
+          },
+          "default": 100,
+          "description": "New topic threshold: how many requests that matched no topic must be waiting before Warp clusters them into new topics. Between 10 and 20000; 0 resets it to the default; omitting it keeps the stored value."
+        }
+      },
+      "additionalProperties": false
+    },
     "global_proxy_config": {
       "type": "object",
       "description": "Global outbound proxy (the dashboard's proxy settings page) and which components use it. Under source_of_truth \"split\" it is applied when new or changed and dashboard edits are kept otherwise; under \"config.json\" it is applied on every startup. Omit to manage the proxy from the dashboard. Not the same as a provider's own proxy_config.",
@@ -6787,6 +6974,57 @@
       ],
       "additionalProperties": false
     },
+    "passthrough_policy": {
+      "type": "object",
+      "description": "Routes the HTTP passthrough endpoints (/openai_passthrough, /anthropic_passthrough, /azure_passthrough, /genai_passthrough, /bedrock_passthrough) forward to this provider. Omit to use the default: a built-in provider forwards every route, a custom provider forwards none. An empty allowed_routes forwards nothing. A custom provider is reached on its base provider's route with the x-model-provider header, once it has a policy.",
+      "properties": {
+        "allowed_routes": {
+          "type": "array",
+          "description": "Routes forwarded to the provider. A request is forwarded when any rule allows it.",
+          "items": {
+            "$ref": "#/$defs/passthrough_route_rule"
+          }
+        }
+      },
+      "required": [
+        "allowed_routes"
+      ],
+      "additionalProperties": false
+    },
+    "passthrough_route_rule": {
+      "type": "object",
+      "description": "One allowed route: a path with optional methods.",
+      "properties": {
+        "methods": {
+          "type": "array",
+          "description": "HTTP methods the rule allows. Omit to allow any method.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "GET",
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE",
+              "HEAD",
+              "OPTIONS"
+            ]
+          }
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^(?:/|/\\*\\*|(?:/(?:(?:[^/?#%\\\\\\[\\]*]|\\*[^/?#%\\\\\\[\\]*])+\\*?|\\*))+(?:/\\*\\*)?)$",
+          "not": {
+            "pattern": "(?:^|/)\\.\\.?(?:/|$)"
+          },
+          "description": "Path after the route prefix, as the client calls it. * matches within one segment; a final /** matches the path and everything below it."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
     "concurrency_and_buffer_size": {
       "type": "object",
       "properties": {
@@ -7044,6 +7282,30 @@
                   "force_single_region": {
                     "type": "boolean",
                     "description": "Per-alias Vertex override: when true, call the alias region as-is and skip promoting multi-region-only models to a multi-region endpoint."
+                  },
+                  "vertex_endpoint": {
+                    "type": "object",
+                    "description": "Routes this alias to a custom Vertex endpoint. format is the request body the deployment accepts and method the Vertex route that carries it; neither is inferred from the model name. model_id is the served model name in the JSON body; endpoint_id selects the Vertex endpoint. Uses the key's Google credentials and project/region, with per-alias overrides.",
+                    "properties": {
+                      "endpoint_id": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_-]+$",
+                        "description": "Vertex endpoint resource ID, separate from the served model name."
+                      },
+                      "format": {
+                        "type": "string",
+                        "enum": ["openai_chat"],
+                        "description": "Request body the deployment accepts. openai_chat sends OpenAI chat completions and supports chat completions and the Responses-to-chat bridge only."
+                      },
+                      "method": {
+                        "type": "string",
+                        "enum": ["raw_predict", "chat_completions"],
+                        "default": "raw_predict",
+                        "description": "Vertex route for the format. raw_predict uses v1 :rawPredict / :streamRawPredict; chat_completions uses v1beta1 /chat/completions for both unary and streaming."
+                      }
+                    },
+                    "required": ["endpoint_id", "format"],
+                    "additionalProperties": false
                   },
                   "inference_profile_arn": {
                     "type": "string",
@@ -7342,63 +7604,14 @@
           "$ref": "#/$defs/base_key"
         },
         {
-          "type": "object",
           "properties": {
-            "github_copilot_key_config": {
-              "type": "object",
-              "properties": {
-                "app_id": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
-                },
-                "installation_id": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Installation to mint tokens for, digits only (can use env. prefix)"
-                },
-                "repository_id": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
-                },
-                "private_key": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
-                },
-                "github_domain": {
-                  "type": "string",
-                  "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
-                }
-              },
-              "required": [
-                "app_id",
-                "installation_id",
-                "repository_id",
-                "private_key"
-              ],
-              "additionalProperties": false
+            "value": {
+              "minLength": 1,
+              "description": "A fine-grained personal access token (github_pat_), a GitHub OAuth token from Sign in with GitHub (ghu_ or gho_), or a Copilot API token with network_config.base_url (can use env. prefix)"
             }
-          }
-        },
-        {
-          "anyOf": [
-            {
-              "properties": {
-                "value": {
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "value"
-              ]
-            },
-            {
-              "required": [
-                "github_copilot_key_config"
-              ]
-            }
+          },
+          "required": [
+            "value"
           ]
         }
       ]
@@ -7791,6 +8004,9 @@
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
         },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7838,6 +8054,9 @@
         },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
+        },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7887,6 +8106,9 @@
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
         },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -7934,6 +8156,9 @@
         },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
+        },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -7983,6 +8208,9 @@
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
         },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -8030,6 +8258,9 @@
         },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
+        },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -8079,6 +8310,9 @@
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
         },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -8126,6 +8360,9 @@
         },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
+        },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -8175,6 +8412,9 @@
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
         },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -8223,6 +8463,9 @@
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
         },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -8267,6 +8510,9 @@
         },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
+        },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -8313,6 +8559,9 @@
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
         },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
+        },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
         }
@@ -8357,6 +8606,9 @@
         },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
+        },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -8405,6 +8657,9 @@
         },
         "injected_tools": {
           "$ref": "#/$defs/injected_tools"
+        },
+        "passthrough": {
+          "$ref": "#/$defs/passthrough_policy"
         },
         "custom_provider_config": {
           "$ref": "#/$defs/custom_provider_config"
@@ -10165,6 +10420,11 @@
           "type": "string",
           "description": "Okta API token for Admin API access (optional; enables background user/group reconciliation on the bulkSyncInterval schedule, 24h by default)"
         },
+        "syncAllUsers": {
+          "type": "boolean",
+          "default": true,
+          "description": "Which Okta users directory sync (apiToken) keeps. True (the default when unset) syncs every app-assigned user except those SUSPENDED or DEPROVISIONED (deactivated); false syncs ACTIVE users only."
+        },
         "audience": {
           "type": "string",
           "description": "JWT audience for validation (optional)"
@@ -11693,6 +11953,10 @@
           "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
           "default": false
         },
+        "disable_content_logging": {
+          "type": "boolean",
+          "description": "Per-project override of content logging for requests scoped to this project. Omit to inherit what the request's virtual key decides, or client.disable_content_logging when the key has no setting or the request has no key. The project's value overrides the virtual key's in both directions. true keeps request and response content out of the log store and out of observability connector export for the project's traffic. false forces content into the log store even when the virtual key or client setting turns it off, and lifts a virtual key's connector stripping; each connector then follows its own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence over this value for the log store."
+        },
         "budgets": {
           "type": "array",
           "description": "Project-level spend caps. Declared without ids: on a change, a budget is matched to its stored row by reset_duration so its accumulated spend and window carry over.",
@@ -12093,16 +12357,54 @@
         },
         "hmac_key": {
           "type": "string",
-          "description": "HMAC secret key for signing audit events (minimum 32 bytes). Can use env. prefix for environment variables (e.g., 'env.AUDIT_HMAC_KEY')."
+          "description": "HMAC secret key for signing audit events (minimum 32 bytes). Can use env. prefix for environment variables (e.g., 'env.AUDIT_HMAC_KEY').",
+          "anyOf": [
+            { "pattern": "^env\\." },
+            { "minLength": 32 }
+          ]
         },
         "retention_days": {
           "type": "integer",
           "minimum": 0,
           "description": "Number of days to retain audit logs (0 means no retention limit)"
         },
+        "hmac_keys": {
+          "type": "array",
+          "description": "Named HMAC signing keys for rotation. active_key_id picks the key that signs new events; the others still verify older events. hmac_key, when also set, is the key named \"default\". Each key needs at least 32 bytes and supports the env. prefix.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,32}$",
+                "description": "Key ID recorded in each signature, e.g. \"2026-q4\""
+              },
+              "key": {
+                "type": "string",
+                "description": "HMAC secret (minimum 32 bytes). Can use env. prefix (e.g. 'env.AUDIT_HMAC_KEY_2026Q4').",
+                "anyOf": [
+                  { "pattern": "^env\\." },
+                  { "minLength": 32 }
+                ]
+              }
+            },
+            "required": ["id", "key"],
+            "additionalProperties": false
+          }
+        },
+        "active_key_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,32}$",
+          "description": "ID of the key that signs new audit events. Required when more than one key is configured."
+        },
         "omit_ip_addresses": {
           "type": "boolean",
           "description": "Stop recording client IP addresses in audit logs while keeping every other field. When true, new events are stored without request_ip or initiator host, and IPs from rows written before the setting was enabled are hidden from the API, filter data, search, exports and object storage archives. Existing database rows are not rewritten. Use this where employee privacy rules or works council agreements forbid tracking IPs. Default: false",
+          "default": false
+        },
+        "include_reads": {
+          "type": "boolean",
+          "description": "Audit every GET request. When false, reads are audited only when they disclose a secret or export data (virtual key reveal/copy, audit log export, downloads) or a handler tags them with an explicit audit action (such as an SSO login) or a high severity. Default: false",
           "default": false
         },
         "archive_interval": {
@@ -12566,7 +12868,14 @@
           }
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": {
+        "anyOf": [
+          { "properties": { "hmac_keys": { "minItems": 2 } }, "required": ["hmac_keys"] },
+          { "properties": { "hmac_keys": { "minItems": 1 } }, "required": ["hmac_keys", "hmac_key"] }
+        ]
+      },
+      "then": { "required": ["active_key_id"] }
     },
     "large_payload_optimization": {
       "type": "object",

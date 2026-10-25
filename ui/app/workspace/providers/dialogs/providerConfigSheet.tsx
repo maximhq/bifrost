@@ -10,14 +10,16 @@ import {
 	GovernanceFormFragment,
 	InjectedToolsFormFragment,
 	OpenAIConfigFormFragment,
+	PassthroughFormFragment,
 	PricingFormFragment,
 	ProxyFormFragment,
 } from "../fragments";
-import { isTypesafeBased } from "../fragments/betaHeadersFormFragment";
+import { sendsTypesafeHeaders } from "../fragments/betaHeadersFormFragment";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { PromptCacheFormFragment } from "../fragments/promptCacheFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
+import { passthroughRoutePrefix } from "../fragments/passthroughForm.utils";
 
 interface Props {
 	show: boolean;
@@ -27,7 +29,13 @@ interface Props {
 
 const ANTHROPIC_FAMILY_PROVIDERS = ["anthropic", "vertex", "bedrock", "bedrock_mantle", "azure"];
 
-const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean, isOpenAI: boolean, hasBetaHeaders: boolean) => {
+const availableTabs = (
+	hasCustomProviderConfig: boolean,
+	hasGovernanceAccess: boolean,
+	isOpenAI: boolean,
+	hasBetaHeaders: boolean,
+	hasPassthrough: boolean,
+) => {
 	const tabs = [];
 	if (hasCustomProviderConfig) {
 		tabs.push({
@@ -71,6 +79,12 @@ const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: bo
 		id: "tools",
 		label: "Tools",
 	});
+	if (hasPassthrough) {
+		tabs.push({
+			id: "passthrough",
+			label: "Passthrough",
+		});
+	}
 	tabs.push({
 		id: "debugging",
 		label: "Debugging",
@@ -89,11 +103,12 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasCustomProviderConfig = !!provider.custom_provider_config;
 	const isOpenAI = provider.name === "openai";
-	const hasBetaHeaders = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase()) || isTypesafeBased(provider);
+	const hasBetaHeaders = ANTHROPIC_FAMILY_PROVIDERS.includes(provider.name.toLowerCase()) || sendsTypesafeHeaders(provider);
+	const hasPassthrough = passthroughRoutePrefix(provider) !== undefined;
 
 	const tabs = useMemo(() => {
-		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, hasBetaHeaders);
-	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, hasBetaHeaders]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, hasBetaHeaders, hasPassthrough);
+	}, [hasCustomProviderConfig, hasGovernanceAccess, isOpenAI, hasBetaHeaders, hasPassthrough]);
 
 	useEffect(() => {
 		setSelectedTab((previousTab) => {
@@ -171,6 +186,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							</TabsContent>
 							<TabsContent value="tools">
 								<InjectedToolsFormFragment provider={provider} />
+							</TabsContent>
+							<TabsContent value="passthrough">
+								<PassthroughFormFragment provider={provider} />
 							</TabsContent>
 							<TabsContent value="debugging">
 								<DebuggingFormFragment provider={provider} />

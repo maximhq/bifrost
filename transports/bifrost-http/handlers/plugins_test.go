@@ -1116,3 +1116,59 @@ func TestUpdatePluginRefusedForAMissingPluginWritesNothing(t *testing.T) {
 		t.Fatalf("a malformed update must not create the plugin row, created %+v", store.existingPlugin)
 	}
 }
+
+// auditPluginsStore adds DeletePlugin to capturePluginsStore.
+type auditPluginsStore struct{ capturePluginsStore }
+
+func (s *auditPluginsStore) DeletePlugin(_ context.Context, _ string, _ ...*gorm.DB) error {
+	return nil
+}
+
+// failingRemovePluginsLoader fails RemovePlugin the way a runtime that cannot stop a plugin would.
+type failingRemovePluginsLoader struct{ noopPluginsLoader }
+
+func (failingRemovePluginsLoader) RemovePlugin(_ context.Context, _ string) error {
+	return errors.New("stop failed")
+}
+
+func TestUpdatePlugin_AuditsCreationWhenPluginMissing(t *testing.T) {
+	SetLogger(&mockLogger{})
+	h := &PluginsHandler{pluginsLoader: noopPluginsLoader{}, configStore: &capturePluginsStore{}}
+
+	ctx := buildUpdateRequest(t, map[string]any{"enabled": true, "config": map[string]any{"collector_url": "localhost:4317", "trace_type": "genai_extension", "protocol": "grpc"}})
+	h.updatePlugin(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	requireSingleAuditChange(t, ctx, "plugin.created")
+}
+
+func TestDeletePlugin_AuditsCommittedDeleteWhenRuntimeRemovalFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := &auditPluginsStore{capturePluginsStore{existingPlugin: &configstoreTables.TablePlugin{Name: "otel", Enabled: true}}}
+	h := &PluginsHandler{pluginsLoader: failingRemovePluginsLoader{}, configStore: store}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("name", "otel")
+	h.deletePlugin(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected 500, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	requireSingleAuditChange(t, ctx, "plugin.deleted")
+}
+
+func TestUpdatePlugin_AuditsCommittedUpdateWhenRuntimeStopFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := &capturePluginsStore{existingPlugin: &configstoreTables.TablePlugin{Name: "otel", Enabled: true, Config: map[string]any{}}}
+	h := &PluginsHandler{pluginsLoader: failingRemovePluginsLoader{}, configStore: store}
+
+	ctx := buildUpdateRequest(t, map[string]any{"enabled": false})
+	h.updatePlugin(ctx)
+
+	if ctx.Response.StatusCode() != 500 {
+		t.Fatalf("expected 500, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	requireSingleAuditChange(t, ctx, "plugin.updated")
+}
