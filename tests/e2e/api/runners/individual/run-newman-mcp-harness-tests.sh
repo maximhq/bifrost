@@ -20,6 +20,11 @@
 # while the run goes on. A test that changes it resets the library server, which
 # restores this catalog.
 #
+# The openai, anthropic and gemini providers point at the fleet's LLM surface
+# (server llm), which answers model requests with replies each test scripts and
+# records what it was sent, and the pricing and model-parameter datasheets come
+# from routes on that server, so a run calls nothing outside this machine.
+#
 # The upstream MCP servers are an mcpchaos fleet (tests/cmd/mcpconsole), built
 # and started here. Tests reach it through two collection variables: chaos_url,
 # the fleet's base URL for both its MCP endpoints and its control API, and
@@ -144,9 +149,11 @@ fi
 # write_chaos_seed writes the fleet mcpchaos boots with: alpha and beta, which
 # are only placeholders, since every test re-adds the servers it uses (resetting
 # their tools, faults, auth and counters); and library, which serves the boot
-# catalog. The catalog's array order differs from name order, it has no stdio
-# entry, and its URLs sit under mcp.example.invalid, so no test client can mark an
-# entry installed.
+# catalog; and llm, the model provider every configured provider points at, which
+# also serves the datasheets. The catalog's array order differs from name order,
+# it has no stdio entry, and its URLs sit under mcp.example.invalid, so no test
+# client can mark an entry installed. The pricing datasheet prices mock-model on
+# each provider, so a model request has a known cost.
 write_chaos_seed() {
     cat > "$1" <<'EOF'
 {"servers": {
@@ -158,7 +165,14 @@ write_chaos_seed() {
     {"name": "Bravo Search", "description": "Web search", "category": "search", "connection_type": "http", "connection_url": "https://mcp.example.invalid/bravo/mcp", "auth_type": "oauth", "publisher": "ACME Corp", "tags": ["x", "y"]},
     {"name": "Acme Notes", "description": "Notes", "category": "files", "connection_type": "http", "connection_url": "https://mcp.example.invalid/acme/mcp", "auth_type": "none", "publisher": "Notes Inc"},
     {"name": "Echo Tickets", "description": "", "category": "", "connection_type": "sse", "connection_url": "https://mcp.example.invalid/echo/sse", "auth_type": "headers", "publisher": "", "tags": [""]}
-  ]}}]}
+  ]}}]},
+  "llm": {"tools": [], "llm_models": ["mock-model"], "routes": [
+    {"method": "GET", "path": "/pricing.json", "json": {
+      "openai/mock-model": {"provider": "openai", "mode": "chat", "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
+      "anthropic/mock-model": {"provider": "anthropic", "mode": "chat", "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
+      "gemini/mock-model": {"provider": "gemini", "mode": "chat", "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002}}},
+    {"method": "GET", "path": "/model-parameters.json", "json": {}}
+  ]}
 }}
 EOF
 }
@@ -203,7 +217,19 @@ write_config() {
   },
   "config_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/config.db" } },
   "logs_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/logs.db" } },
-  "framework": { "pricing": { "mcp_library_url": "http://127.0.0.1:$CHAOS_PORT/s/library/rest/catalog.json" } }
+  "providers": {
+    "openai": { "keys": [{ "name": "mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],
+      "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/openai", "max_retries": 0, "default_request_timeout_in_seconds": 30 } },
+    "anthropic": { "keys": [{ "name": "mock", "value": "sk-ant-mock", "models": ["*"], "weight": 1 }],
+      "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/anthropic", "max_retries": 0, "default_request_timeout_in_seconds": 30 } },
+    "gemini": { "keys": [{ "name": "mock", "value": "mock-gemini-key", "models": ["*"], "weight": 1 }],
+      "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/genai/v1beta", "max_retries": 0, "default_request_timeout_in_seconds": 30 } }
+  },
+  "framework": { "pricing": {
+    "mcp_library_url": "http://127.0.0.1:$CHAOS_PORT/s/library/rest/catalog.json",
+    "pricing_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/rest/pricing.json",
+    "model_parameters_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/rest/model-parameters.json"
+  } }
 }
 EOF
 }
