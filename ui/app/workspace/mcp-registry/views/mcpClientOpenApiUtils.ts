@@ -148,10 +148,22 @@ export interface OpenAPISecurityInput {
 	helper?: string;
 }
 
-/** Renders a security scheme as the credential inputs it needs. Unsupported schemes get no fields. */
+/**
+ * Renders a security scheme as the credential inputs it needs. Unsupported
+ * schemes get no fields, nor do oauth2 and openIdConnect ones: the server's
+ * OAuth access token satisfies those.
+ */
 export function securitySchemeToInputs(scheme: MCPOpenAPISecurityScheme): OpenAPISecurityInput {
 	if (!scheme.supported) {
 		return { scheme, label: scheme.name, fields: [], helper: scheme.reason };
+	}
+	if (scheme.type === "oauth2" || scheme.type === "openIdConnect") {
+		return {
+			scheme,
+			label: `${scheme.name} · ${scheme.type === "oauth2" ? "OAuth 2.0" : "OpenID Connect"}`,
+			fields: [],
+			helper: "Satisfied by the access token when this server's authentication is OAuth 2.0; nothing is stored here.",
+		};
 	}
 	if (scheme.type === "apiKey") {
 		const where = scheme.in ?? "header";
@@ -189,6 +201,26 @@ export function securitySchemeToInputs(scheme: MCPOpenAPISecurityScheme): OpenAP
 		],
 		helper: scheme.description,
 	};
+}
+
+export interface OpenAPIOAuthEndpoints {
+	schemeName: string;
+	authorizeUrl: string;
+	tokenUrl: string;
+}
+
+/**
+ * The OAuth endpoints the server takes from the document when the OAuth form
+ * leaves them empty: the first oauth2 scheme by name (the preview lists them
+ * sorted) whose authorization code flow names both. Mirrors the server's
+ * openapimcp.SpecOAuthEndpoints.
+ */
+export function specOAuthEndpoints(preview: MCPOpenAPIPreviewResponse | null | undefined): OpenAPIOAuthEndpoints | null {
+	const scheme = [...(preview?.security_schemes ?? [])]
+		.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+		.find((s) => s.type === "oauth2" && s.oauth?.authorization_url && s.oauth.token_url);
+	if (!scheme?.oauth?.authorization_url || !scheme.oauth.token_url) return null;
+	return { schemeName: scheme.name, authorizeUrl: scheme.oauth.authorization_url, tokenUrl: scheme.oauth.token_url };
 }
 
 function toEnvName(name: string): string {

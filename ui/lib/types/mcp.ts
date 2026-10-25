@@ -50,6 +50,14 @@ export interface MCPOpenAPISecurityScheme {
 	description?: string;
 	supported: boolean;
 	reason?: string; // why unsupported
+	oauth?: MCPOpenAPIOAuthFlow; // oauth2/openIdConnect only
+}
+
+export interface MCPOpenAPIOAuthFlow {
+	authorization_url?: string; // oauth2: authorization code flow's authorize endpoint
+	token_url?: string; // oauth2: authorization code flow's token endpoint
+	scopes?: string[]; // oauth2: scopes the authorization code flow declares
+	openid_connect_url?: string; // openIdConnect: discovery document URL
 }
 
 export interface MCPOpenAPIPreviewTool {
