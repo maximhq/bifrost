@@ -47,7 +47,9 @@ import {
 	perUserSchemeHeaders,
 	specFingerprint,
 	supportedToolNames,
+	specOAuthEndpoints,
 	type OpenAPICredentialField,
+	type OpenAPIOAuthEndpoints,
 	type OpenAPISourceMode,
 } from "./mcpClientOpenApiUtils";
 import { MaxProtocolVersionSelect } from "./maxProtocolVersionSelect";
@@ -67,6 +69,26 @@ import { exchangesAsSSOApplication, TokenExchangeFields, tokenExchangeProfilePay
  */
 
 const emptySecretVar: SecretVar = { value: "", ref: "" };
+
+/**
+ * Labels for the OAuth fields of an openapi server. There is no MCP server to
+ * discover endpoints from: they default to the document's oauth2 authorization
+ * code flow when it has one, and must be entered otherwise.
+ */
+function openAPIOAuthFieldText(endpoints: OpenAPIOAuthEndpoints | null) {
+	return {
+		clientIdLabel: "OAuth Client ID",
+		clientIdPlaceholder: "your-client-id",
+		clientIdHelperText:
+			"From the OAuth app registered with the API's provider. Leave empty only with a Registration URL for dynamic registration.",
+		clientIdTooltip: undefined,
+		authorizeUrlLabel: endpoints ? "Authorization URL (optional, from the OpenAPI document)" : "Authorization URL",
+		authorizeUrlPlaceholder: endpoints?.authorizeUrl,
+		tokenUrlLabel: endpoints ? "Token URL (optional, from the OpenAPI document)" : "Token URL",
+		tokenUrlPlaceholder: endpoints?.tokenUrl,
+		registrationUrlLabel: "Registration URL (optional)",
+	};
+}
 
 export type MCPAuthKind = "none" | "headers" | "oauth" | "token_exchange";
 export type MCPAuthScope = "shared" | "per_user";
@@ -699,14 +721,14 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 		}
 		if (value === "openapi") {
 			// The upstream is the API described by the spec, not an
-			// MCP endpoint: no connection URL, and only the
-			// header-shaped auth types apply.
+			// MCP endpoint: no connection URL, and no token exchange
+			// (it is verified through an MCP handshake). OAuth stays:
+			// it only needs the provider's endpoints.
 			setValue("connection_string", undefined);
-			setValue("oauth_config", undefined);
 			setValue("token_exchange", undefined);
 			setValue("openapi_config", { spec: "", spec_url: "", base_url: "", security_credentials: {} });
 			setValue("tools_to_execute", []);
-			if (authKind === "oauth" || authKind === "token_exchange") {
+			if (authKind === "token_exchange") {
 				setValue("auth_type", "none");
 			}
 		} else if (connectionType === "openapi") {
@@ -1081,15 +1103,11 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 										<SelectItem value="headers" data-testid="auth-type-headers">
 											{t("registry.filter.headers")}
 										</SelectItem>
-										{/* A synthesized openapi server has no MCP handshake to run an
-										    OAuth or token-exchange flow against; the API's own security
-										    schemes are configured from the parsed document instead. */}
-										{!isOpenAPI && (
-											<SelectItem value="oauth" data-testid="auth-type-oauth">
-												{t("registry.form.oauth20")}
-											</SelectItem>
-										)}
-										{/* Also rendered when it is already the selected value, so the
+										<SelectItem value="oauth" data-testid="auth-type-oauth">
+											{t("registry.form.oauth20")}
+										</SelectItem>
+										{/* A synthesized openapi server has no MCP handshake to verify a
+										    token exchange through. Also rendered when it is already the selected value, so the
 										    trigger shows the real auth type rather than a placeholder. */}
 										{!isOpenAPI &&
 											(!isSSE || authKind === "token_exchange") &&
@@ -1337,21 +1355,25 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 										resource={{ mode: "raw", value: satellites.resourceText, onChange: satellites.setResourceText }}
 										resourceLabel={t("registry.form.resource")}
 										resourceTestId="mcp-oauth-resource-input"
-										clientIdLabel={t("registry.form.oauthClientIdOptional")}
-										clientIdPlaceholder={t("registry.form.oauthClientIdPlaceholder")}
-										clientIdHelperText={t("registry.form.oauthClientIdHelper")}
-										clientIdTooltip={t("registry.form.oauthClientIdTooltip")}
+										{...(isOpenAPI
+											? openAPIOAuthFieldText(specOAuthEndpoints(openapi.preview))
+											: {
+													clientIdLabel: t("registry.form.oauthClientIdOptional"),
+													clientIdPlaceholder: t("registry.form.oauthClientIdPlaceholder"),
+													clientIdHelperText: t("registry.form.oauthClientIdHelper"),
+													clientIdTooltip: t("registry.form.oauthClientIdTooltip"),
+													authorizeUrlLabel: t("registry.form.authorizeUrlOptional"),
+													tokenUrlLabel: t("registry.form.tokenUrlOptional"),
+													registrationUrlLabel: t("registry.form.registrationUrlOptional"),
+												})}
 										clientIdTestId="mcp-oauth-client-id"
 										clientMetadataDocumentTestId="mcp-oauth-use-client-metadata-document"
 										clientSecretLabel={t("registry.form.oauthClientSecretPkce")}
 										clientSecretPlaceholder={t("registry.form.oauthClientSecretPlaceholder")}
 										clientSecretHelperText={t("registry.form.oauthClientSecretHelper")}
 										clientSecretTestId="mcp-oauth-client-secret"
-										authorizeUrlLabel={t("registry.form.authorizeUrlOptional")}
 										authorizeUrlTestId="mcp-oauth-authorize-url"
-										tokenUrlLabel={t("registry.form.tokenUrlOptional")}
 										tokenUrlTestId="mcp-oauth-token-url"
-										registrationUrlLabel={t("registry.form.registrationUrlOptional")}
 										registrationUrlTestId="mcp-oauth-registration-url"
 										onFieldTouched={(field) => clearErrors(`oauth_config.${field}`)}
 									/>

@@ -40,8 +40,10 @@ interface OAuthAdvancedFieldsProps {
 	clientSecretTestId: string;
 
 	authorizeUrlLabel: React.ReactNode;
+	authorizeUrlPlaceholder?: string;
 	authorizeUrlTestId: string;
 	tokenUrlLabel: React.ReactNode;
+	tokenUrlPlaceholder?: string;
 	tokenUrlTestId: string;
 	registrationUrlLabel: React.ReactNode;
 	registrationUrlTestId: string;
@@ -75,8 +77,10 @@ export function OAuthAdvancedFields({
 	clientSecretHelperText,
 	clientSecretTestId,
 	authorizeUrlLabel,
+	authorizeUrlPlaceholder,
 	authorizeUrlTestId,
 	tokenUrlLabel,
+	tokenUrlPlaceholder,
 	tokenUrlTestId,
 	registrationUrlLabel,
 	registrationUrlTestId,
@@ -183,7 +187,7 @@ export function OAuthAdvancedFields({
 										field.onChange(e);
 										onFieldTouched?.("authorize_url");
 									}}
-									placeholder={t("registry.oauthFields.authorizeUrlPlaceholder")}
+									placeholder={authorizeUrlPlaceholder ?? t("registry.oauthFields.authorizeUrlPlaceholder")}
 									data-testid={authorizeUrlTestId}
 								/>
 							</FormControl>
@@ -206,7 +210,7 @@ export function OAuthAdvancedFields({
 										field.onChange(e);
 										onFieldTouched?.("token_url");
 									}}
-									placeholder={t("registry.oauthFields.tokenUrlPlaceholder")}
+									placeholder={tokenUrlPlaceholder ?? t("registry.oauthFields.tokenUrlPlaceholder")}
 									data-testid={tokenUrlTestId}
 								/>
 							</FormControl>
