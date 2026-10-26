@@ -12,6 +12,8 @@ Start with a dedicated virtual key for your application. Add more callers as you
 For a protected gateway, enable authentication enforcement. Without it, requests that present no identity can pass through anonymously; explicit grants do not make anonymous traffic private. Set `client.enforce_auth_on_inference` to `true`, or `bifrost.client.enforceAuthOnInference: true` in Helm.
 </Warning>
 
+Any request that names a known Bifrost user is governed as that user, however the user was authenticated. In Enterprise that includes an identity-provider token, a dashboard session, a Bifrost Edge or Bifrost CLI session, an identity-aware [auth proxy](/enterprise/auth-proxy/generic-proxy), and a management API key, which names the user who created it. The agent must be enabled, and the user needs a grant from an [access profile](#enterprise-access-profiles) or an agent with [Allow any virtual key](#allow-any-virtual-key) enabled; otherwise the request is refused.
+
 ## Grant a virtual key access
 
 In **Agent Gateway**, add or edit an agent, find **Access**, and choose **Add key**. Select the virtual keys that should call this agent and save.
@@ -235,7 +237,7 @@ Enable [credential forwarding](/features/agent-gateway/authentication#forward-bi
 Check these in order:
 
 1. Is the agent enabled and is the registration name correct?
-2. Is the client sending a valid, active credential? An explicitly invalid key is refused even if another user identity is available.
+2. Is the client sending a valid, active credential? An explicitly invalid key is refused even if another user identity is available. A signed-in user with no key is still checked against the user's own grants.
 3. Does the key or its governing profile grant the agent, or does the agent allow default access?
 4. If a project header is present, is the caller admitted to that project and does its access rule allow the agent? An unadmitted project currently falls back to caller access, as described above.
 5. If only an LLM or MCP call fails, inspect that call's provider or tool permissions and the credential your server used.

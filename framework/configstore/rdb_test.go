@@ -2712,6 +2712,47 @@ func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
 	assert.NotEqual(t, onHash, offHash)
 }
 
+// TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip pins that the two
+// access-profile user-key settings persist independently, and that only an opt-in is hashed so a
+// config written before the fields existed keeps its hash.
+func TestUpdateClientConfig_SkipAccessProfileUserVirtualKeyLifecycleRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	off := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &off))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyCreation)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyDeletion)
+
+	creationOnly := off
+	creationOnly.SkipAccessProfileUserVirtualKeyCreation = true
+	require.NoError(t, store.UpdateClientConfig(ctx, &creationOnly))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.SkipAccessProfileUserVirtualKeyCreation)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyDeletion, "the settings are independent")
+
+	deletionOnly := off
+	deletionOnly.SkipAccessProfileUserVirtualKeyDeletion = true
+	require.NoError(t, store.UpdateClientConfig(ctx, &deletionOnly))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeyCreation, "the settings are independent")
+	assert.True(t, result.SkipAccessProfileUserVirtualKeyDeletion)
+
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	creationHash, err := creationOnly.GenerateClientConfigHash()
+	require.NoError(t, err)
+	deletionHash, err := deletionOnly.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, offHash, creationHash)
+	assert.NotEqual(t, offHash, deletionHash)
+	assert.NotEqual(t, creationHash, deletionHash)
+}
+
 func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -5570,6 +5611,41 @@ func TestProviderInjectedToolsRoundTrip(t *testing.T) {
 	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
 	require.NoError(t, err)
 	assert.Empty(t, got.InjectedTools, "an empty list clears the stored column too")
+}
+
+// TestProviderPassthroughRoundTrip pins passthrough through every provider write path and
+// both read paths. An empty allowlist must come back as a policy: it forwards nothing,
+// which is not the same as no policy, which forwards every route.
+func TestProviderPassthroughRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	policy := &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+		{Methods: []string{"POST"}, Path: "/v1/chat/completions"},
+		{Methods: []string{"GET", "DELETE"}, Path: "/v1/files/*"},
+	}}
+
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		schemas.OpenAI: {Passthrough: policy},
+	}))
+	all, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, policy, all[schemas.OpenAI].Passthrough)
+
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, ProviderConfig{Passthrough: policy}))
+	got, err := store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Equal(t, policy, got.Passthrough)
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{Passthrough: &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{}}}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	require.NotNil(t, got.Passthrough, "an empty allowlist must survive the round trip as a policy")
+	assert.Empty(t, got.Passthrough.AllowedRoutes)
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Nil(t, got.Passthrough, "updating with a nil policy must clear the stored column")
 }
 
 func TestUpdateClientConfig_CompatConvertDecisionToResponsesRoundTrip(t *testing.T) {

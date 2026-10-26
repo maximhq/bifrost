@@ -69,9 +69,44 @@ export const secretVarSchema = Object.assign(_secretVarBase, {
 });
 
 // Helper to check if a secretVar field has a value or secret reference
-function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolean {
+export function isSecretVarSet(v: { value?: string; ref?: string } | undefined): boolean {
 	if (!v) return false;
 	return !!v.value?.trim() || !!v.ref?.trim();
+}
+
+// Message for private_key_jwt settings saved without the key they configure.
+export const PRIVATE_KEY_REQUIRED_MESSAGE = "A private key is required for private_key_jwt";
+
+// Message for a send method chosen without the secret it sends.
+export const SECRET_REQUIRED_FOR_METHOD_MESSAGE = "A client secret is required to choose how it is sent";
+
+// The id_jag upstream-authentication fields the form checks below read.
+interface IDJAGUpstreamAuthFields {
+	profile?: string;
+	resource_auth_mode?: string;
+	resource_client_secret?: { value?: string; ref?: string };
+	resource_client_auth_method?: string;
+	resource_private_key?: { value?: string; ref?: string };
+	resource_key_id?: string;
+	resource_signing_algorithm?: string;
+	resource_assertion_audience?: string;
+}
+
+// hasPrivateKeySettingsWithoutKey reports an id_jag config set to private_key_jwt, or carrying a key
+// ID, signing algorithm or assertion audience, without a private key. Saved as is, the payload would
+// store a public client, so the forms refuse it.
+export function hasPrivateKeySettingsWithoutKey(te?: IDJAGUpstreamAuthFields): boolean {
+	if (te?.profile !== "id_jag" || isSecretVarSet(te.resource_private_key)) return false;
+	return (
+		te.resource_auth_mode === "private_key" ||
+		!!(te.resource_key_id?.trim() || te.resource_signing_algorithm || te.resource_assertion_audience?.trim())
+	);
+}
+
+// hasSendMethodWithoutSecret reports an id_jag config that names how to send the client secret but
+// has none. The payload would drop the method and store a public client, which the server refuses.
+export function hasSendMethodWithoutSecret(te?: IDJAGUpstreamAuthFields): boolean {
+	return te?.profile === "id_jag" && !!te.resource_client_auth_method && !isSecretVarSet(te.resource_client_secret);
 }
 
 // Azure key config schema
@@ -321,76 +356,41 @@ const isSecretVarMasked = (v: { value?: string; ref?: string; type?: string } | 
 	return isRedacted(value);
 };
 
-const isLiteralDigits = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
-	if (!isSecretVarSet(v)) return true; // presence is checked separately
-	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
-	return /^\d+$/.test((v?.value ?? "").trim());
-};
+// The id_jag fields resourceCredentialResendRequired compares.
+interface IDJAGResourceTarget {
+	audience?: string;
+	resource_token_endpoint?: string;
+	resource_assertion_audience?: string;
+	resource_client_secret?: { value?: string; ref?: string; type?: string };
+	resource_private_key?: { value?: string; ref?: string; type?: string };
+}
 
-// GitHub issues App keys as PKCS#1 ("RSA PRIVATE KEY"); openssl can convert them to PKCS#8
-// ("PRIVATE KEY"). Nothing else signs an RS256 App JWT, so an EC or passphrase-encrypted key
-// is rejected here rather than at the first inference call.
-//
-// This checks the envelope only: the browser cannot parse DER. The server does the real
-// parse in validateProviderKeyURL, so this is a fast typo check, not the security boundary.
-// Literal backslash-n is tolerated because that is how a PEM most often arrives when it has
-// been round-tripped through JSON or an environment variable.
-const PEM_PRIVATE_KEY = /^-----BEGIN (RSA PRIVATE KEY|PRIVATE KEY)-----\s*\n([\s\S]*?)\n\s*-----END \1-----$/;
+// RESOURCE_CREDENTIAL_RESEND_MESSAGE explains why a saved secret or key must be typed again.
+export const RESOURCE_CREDENTIAL_RESEND_MESSAGE =
+	"Re-enter it: the audience, upstream token endpoint or assertion audience changed, so the saved value is not sent to the new target";
 
-const isLiteralPEM = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
-	if (!isSecretVarSet(v)) return true;
-	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
-	const body = (v?.value ?? "").replace(/\\n/g, "\n").trim();
-	const match = PEM_PRIVATE_KEY.exec(body);
-	// The back-reference makes BEGIN and END agree; the body must also carry something.
-	return !!match && match[2].trim().length > 0;
-};
-
-// githubCopilotKeyConfigComplete reports whether all four App credentials are present. It is
-// the check the outer key schema uses to decide whether this block is a real credential.
-export const githubCopilotKeyConfigComplete = (
-	data: { app_id?: unknown; installation_id?: unknown; repository_id?: unknown; private_key?: unknown } | undefined,
-): boolean => {
-	if (!data) return false;
-	const d = data as Record<string, { value?: string; ref?: string } | undefined>;
-	return isSecretVarSet(d.app_id) && isSecretVarSet(d.installation_id) && isSecretVarSet(d.repository_id) && isSecretVarSet(d.private_key);
-};
-
-// GitHub Copilot key config schema. Every field is optional because the whole block is
-// optional: a Copilot API token in `value` is the other valid auth mode. Once the operator
-// starts filling this block in, all four become required together and literals are checked
-// for shape, so a typo is caught in the form rather than at the first inference call.
-export const githubCopilotKeyConfigSchema = z
-	.object({
-		app_id: secretVarSchema.optional(),
-		installation_id: secretVarSchema.optional(),
-		repository_id: secretVarSchema.optional(),
-		private_key: secretVarSchema.optional(),
-		github_domain: secretVarSchema.optional(),
-	})
-	.superRefine((data, ctx) => {
-		const started =
-			isSecretVarSet(data.app_id) ||
-			isSecretVarSet(data.installation_id) ||
-			isSecretVarSet(data.repository_id) ||
-			isSecretVarSet(data.private_key);
-		if (!started) return;
-
-		for (const field of ["app_id", "installation_id", "repository_id", "private_key"] as const) {
-			if (!isSecretVarSet(data[field])) {
-				ctx.addIssue({ code: "custom", path: [field], message: "Required when using GitHub App credentials" });
-			}
-		}
-		if (!isLiteralDigits(data.installation_id)) {
-			ctx.addIssue({ code: "custom", path: ["installation_id"], message: "Installation ID must be numeric" });
-		}
-		if (!isLiteralDigits(data.repository_id)) {
-			ctx.addIssue({ code: "custom", path: ["repository_id"], message: "Repository ID must be numeric" });
-		}
-		if (!isLiteralPEM(data.private_key)) {
-			ctx.addIssue({ code: "custom", path: ["private_key"], message: "Private key must be a PKCS#1 or PKCS#8 PEM block" });
-		}
-	});
+// resourceCredentialResendRequired mirrors the server's rule: an edit that changes where the
+// upstream credential is sent (the audience it is discovered from, the token endpoint, or the
+// client assertion's audience) must carry a saved literal secret or key again rather than its
+// mask. It returns the field to re-enter, or undefined when the edit can be saved as is.
+export function resourceCredentialResendRequired(
+	saved: IDJAGResourceTarget | undefined,
+	edited: IDJAGResourceTarget | undefined,
+): "resource_client_secret" | "resource_private_key" | undefined {
+	if (!saved || !edited) return undefined;
+	const same = (a?: string, b?: string) => (a ?? "").trim() === (b ?? "").trim();
+	const targetChanged =
+		!same(saved.audience, edited.audience) ||
+		!same(saved.resource_token_endpoint, edited.resource_token_endpoint) ||
+		!same(saved.resource_assertion_audience, edited.resource_assertion_audience);
+	if (!targetChanged) return undefined;
+	// A credential kept as an env or vault reference is resent as the reference, which the server
+	// accepts; only a saved literal, shown masked, has to be typed again.
+	const savedLiteral = (v?: { value?: string; ref?: string; type?: string }) => !v?.ref?.trim() && isSecretVarMasked(v);
+	if (savedLiteral(edited.resource_client_secret)) return "resource_client_secret";
+	if (savedLiteral(edited.resource_private_key)) return "resource_private_key";
+	return undefined;
+}
 
 // oauthKeyConfigComplete reports whether the block carries a usable credential for its grant.
 // It is the check the outer key schema uses to decide whether an empty key value is fine.
@@ -454,14 +454,14 @@ const literalURLCarriesForbiddenParts = (v: { value?: string; ref?: string; type
 	const u = parseLiteralURL(v);
 	return !!u && (u.username !== "" || u.password !== "" || u.search !== "" || u.hash !== "");
 };
-const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
-	if (!isSecretVarSet(v)) return true;
-	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
-	const raw = (v?.value ?? "").trim();
+// hasHTTPSOrLoopbackScheme accepts https URLs, and plain http only on a loopback host, for local
+// testing. Same loopback rule as the server (net.IP.IsLoopback): any 127.x.x.x, ::1, or localhost.
+// The server re-checks every URL and refuses private targets when it connects; this only lets the
+// form reject a value the server would refuse.
+const hasHTTPSOrLoopbackScheme = (raw: string): boolean => {
 	try {
-		const u = new URL(raw);
-		if (u.protocol === "https:") return true;
-		// Same loopback rule as the server (net.IP.IsLoopback): any 127.x.x.x, ::1, or localhost.
+		const u = new URL(raw.trim());
+		if (u.protocol === "https:") return u.hostname !== "";
 		const host = u.hostname.toLowerCase();
 		return (
 			u.protocol === "http:" &&
@@ -470,6 +470,26 @@ const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: s
 	} catch {
 		return false;
 	}
+};
+
+// isHTTPSOrLoopbackURL is hasHTTPSOrLoopbackScheme for the id_jag URLs, which the server also
+// refuses when they carry credentials or a fragment.
+export const isHTTPSOrLoopbackURL = (raw: string): boolean => {
+	try {
+		const u = new URL(raw.trim());
+		if (u.username !== "" || u.password !== "" || u.hash !== "") return false;
+	} catch {
+		return false;
+	}
+	return hasHTTPSOrLoopbackScheme(raw);
+};
+
+// isLiteralHTTPSOrLoopbackURL checks only the scheme: the OAuth token URL's credentials, query and
+// fragment are reported separately, pointing at extra_params.
+const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
+	return hasHTTPSOrLoopbackScheme(v?.value ?? "");
 };
 
 // OAuth key config schema. Honoured by openai-based providers: the key value may be empty
@@ -640,6 +660,13 @@ const aliasConfigObjectSchema = z.object({
 	// Vertex overrides
 	project_number: secretVarSchema.optional(),
 	force_single_region: z.boolean().optional(),
+	vertex_endpoint: z
+		.object({
+			endpoint_id: z.string().regex(/^[A-Za-z0-9_-]+$/, "Enter a Vertex endpoint ID or paste a supported endpoint URL"),
+			format: z.enum(["openai_chat"]),
+			method: z.enum(["raw_predict", "chat_completions"]).optional(),
+		})
+		.optional(),
 	// Bedrock overrides
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
@@ -692,7 +719,6 @@ export const modelProviderKeySchema = z
 		ollama_key_config: ollamaKeyConfigSchema.optional(),
 		sgl_key_config: sglKeyConfigSchema.optional(),
 		databricks_key_config: databricksKeyConfigSchema.optional(),
-		github_copilot_key_config: githubCopilotKeyConfigSchema.optional(),
 		cloudflare_key_config: cloudflareKeyConfigSchema.optional(),
 		oauth_key_config: oauthKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
@@ -732,13 +758,6 @@ export const modelProviderKeySchema = z
 					return true;
 				}
 				return isSecretVarSet(data.value);
-			}
-			// GitHub Copilot authenticates from its own key config when no API token is given.
-			// An empty block, or one carrying only github_domain, is not a credential: the
-			// nested schema permits it so token auth stays valid, so this is the only place
-			// that catches a key with no usable authentication at all.
-			if (githubCopilotKeyConfigComplete(data.github_copilot_key_config)) {
-				return true;
 			}
 			// Bedrock Mantle authenticates via SigV4 (its key config) or a Bearer key — only require
 			// a top-level API key when the user explicitly chose the api_key auth method.
@@ -1070,6 +1089,78 @@ export const injectedToolsFormSchema = z
 export type InjectedToolRowSchema = z.infer<typeof injectedToolRowSchema>;
 export type InjectedToolsFormSchema = z.infer<typeof injectedToolsFormSchema>;
 
+// PASSTHROUGH_METHODS are the HTTP methods a passthrough route rule can name.
+export const PASSTHROUGH_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
+export type PassthroughMethod = (typeof PASSTHROUGH_METHODS)[number];
+
+export function isPassthroughMethod(method: string): boolean {
+	return (PASSTHROUGH_METHODS as readonly string[]).includes(method);
+}
+
+// passthroughPathIssue mirrors the server's check on a rule path and returns the first
+// problem, or undefined when the path is valid.
+export function passthroughPathIssue(path: string): string | undefined {
+	if (path === "") return "Enter a path";
+	if (!path.startsWith("/")) return "Path must start with /";
+	if (/[?#%\\[\]]/.test(path)) return "Path must not contain ?, #, %, \\, [ or ]";
+	if (path === "/") return undefined;
+	const segments = path.slice(1).split("/");
+	for (let i = 0; i < segments.length; i++) {
+		const segment = segments[i];
+		if (segment === "" || segment === "." || segment === "..") return "Path must not contain empty, . or .. segments";
+		if (segment.includes("**") && (segment !== "**" || i !== segments.length - 1)) return "** is only allowed as the last path segment";
+	}
+	return undefined;
+}
+
+// One saved passthrough rule: a path pattern with optional methods.
+export const passthroughRouteRuleSchema = z
+	.object({
+		methods: z.array(z.string()).optional(),
+		path: z.string().optional(),
+	})
+	.superRefine((rule, ctx) => {
+		rule.methods?.forEach((method, index) => {
+			if (!isPassthroughMethod(method)) {
+				ctx.addIssue({ code: "custom", path: ["methods", index], message: `Unsupported method ${method}` });
+			}
+		});
+		const issue = passthroughPathIssue(rule.path ?? "");
+		if (issue) ctx.addIssue({ code: "custom", path: ["path"], message: issue });
+	});
+
+// The saved passthrough policy, as the provider API returns and accepts it.
+export const passthroughPolicySchema = z.object({
+	allowed_routes: z.array(passthroughRouteRuleSchema),
+});
+
+// One row of the provider Passthrough tab's rule editor.
+export const passthroughRuleRowSchema = z.object({
+	methods: z.array(z.enum(PASSTHROUGH_METHODS)),
+	path: z.string(),
+});
+
+// The Passthrough tab. Rules are checked only in custom mode; the other modes ignore them.
+export const passthroughFormSchema = z
+	.object({
+		mode: z.enum(["all", "custom", "off"]),
+		rules: z.array(passthroughRuleRowSchema),
+	})
+	.superRefine((data, ctx) => {
+		if (data.mode !== "custom") return;
+		if (data.rules.length === 0) {
+			ctx.addIssue({ code: "custom", path: ["rules"], message: "Add a rule, or choose Off to forward nothing" });
+			return;
+		}
+		data.rules.forEach((rule, index) => {
+			const issue = passthroughPathIssue(rule.path);
+			if (issue) ctx.addIssue({ code: "custom", path: ["rules", index, "path"], message: issue });
+		});
+	});
+
+export type PassthroughRuleRowSchema = z.infer<typeof passthroughRuleRowSchema>;
+export type PassthroughFormSchema = z.infer<typeof passthroughFormSchema>;
+
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
 	text_completion: z.boolean(),
@@ -1103,6 +1194,8 @@ export const allowedRequestsSchema = z.object({
 	video_delete: z.boolean(),
 	video_list: z.boolean(),
 	video_remix: z.boolean(),
+	passthrough: z.boolean().optional(),
+	passthrough_stream: z.boolean().optional(),
 	count_tokens: z.boolean(),
 	list_models: z.boolean(),
 	model_retrieve: z.boolean().optional(),
@@ -1208,6 +1301,7 @@ export const addProviderRequestSchema = z.object({
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
 	injected_tools: injectedToolsConfigSchema.nullable().optional(),
+	passthrough: passthroughPolicySchema.nullable().optional(),
 });
 
 // Update provider request schema
@@ -1224,6 +1318,7 @@ export const updateProviderRequestSchema = z.object({
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
 	injected_tools: injectedToolsConfigSchema.nullable().optional(),
+	passthrough: passthroughPolicySchema.nullable().optional(),
 });
 
 // Cache config schema
@@ -1270,6 +1365,8 @@ export const coreConfigSchema = z.object({
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
 	delete_expired_virtual_keys: z.boolean().default(false),
 	enforce_vk_object_ownership: z.boolean().default(true),
+	skip_access_profile_user_virtual_key_creation: z.boolean().default(false),
+	skip_access_profile_user_virtual_key_deletion: z.boolean().default(false),
 	extra_fields_placement: z.enum(["body", "headers"]).default("body"),
 	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),
@@ -1774,6 +1871,42 @@ export const mcpClientUpdateSchema = z
 						message: "Authorization Server URL must start with http:// or https://",
 					}),
 				scopes: z.array(z.string()).optional(),
+				profile: z.enum(["", "id_jag"]).optional(),
+				resource: z.string().optional(),
+				resource_token_endpoint: z.string().optional(),
+				resource_client_id: secretVarSchema.optional(),
+				resource_client_secret: secretVarSchema.optional(),
+				resource_client_auth_method: z.enum(["", "client_secret_basic", "client_secret_post"]).optional(),
+				resource_private_key: secretVarSchema.optional(),
+				resource_key_id: z.string().optional(),
+				resource_signing_algorithm: z.string().optional(),
+				resource_auth_mode: z.enum(["secret", "private_key"]).optional(),
+				resource_assertion_audience: z.string().optional(),
+			})
+			// The id_jag fields are hidden for the direct profile, so they are checked only
+			// with it selected: a value left behind must not block Save with no visible error.
+			.superRefine((te, ctx) => {
+				if (te.profile !== "id_jag") return;
+				const issue = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
+				if (!isSecretVarSet(te.resource_client_id)) {
+					issue("resource_client_id", "Client ID at the upstream server is required for Cross App Access");
+				}
+				if (te.resource_token_endpoint && !isHTTPSOrLoopbackURL(te.resource_token_endpoint)) {
+					issue("resource_token_endpoint", "Token endpoint must be an https URL (http is allowed only for localhost)");
+				}
+				const audience = te.resource_assertion_audience?.trim();
+				if (audience && !isHTTPSOrLoopbackURL(audience)) {
+					issue("resource_assertion_audience", "Assertion audience must be an https URL (http is allowed only for localhost)");
+				}
+				if (isSecretVarSet(te.resource_client_secret) && isSecretVarSet(te.resource_private_key)) {
+					issue("resource_private_key", "Use either a client secret or a private key at the upstream server, not both");
+				}
+				if (hasPrivateKeySettingsWithoutKey(te)) {
+					issue("resource_private_key", PRIVATE_KEY_REQUIRED_MESSAGE);
+				}
+				if (hasSendMethodWithoutSecret(te)) {
+					issue("resource_client_secret", SECRET_REQUIRED_FOR_METHOD_MESSAGE);
+				}
 			})
 			.optional(),
 		tls_config: z

@@ -100,7 +100,7 @@ func TestConvertBifrostReasoningToAnthropicThinkingFallsThrough(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			blocks := convertBifrostReasoningToAnthropicThinking(ctx, tc.msg, schemas.OpenAI, "gpt-5.5")
+			blocks := convertBifrostReasoningToAnthropicThinking(ctx, tc.msg, schemas.OpenAI, "gpt-5.5", false)
 			require.Len(t, blocks, tc.wantTotalCount)
 
 			var thinking, redacted []string

@@ -172,12 +172,14 @@ func newRealtimeWebRTCSDPError(status int, errorType, message string, err error)
 	return bifrostErr
 }
 
+// ShouldStartRealtimeTurn distinguishes response creation from an audio commit acknowledgment.
+// Transcription-only transports start their input units separately on committed audio.
 func (provider *OpenAIProvider) ShouldStartRealtimeTurn(event *schemas.BifrostRealtimeEvent) bool {
 	if event == nil {
 		return false
 	}
 	switch event.Type {
-	case schemas.RTEventResponseCreate, schemas.RTEventInputAudioBufferCommitted:
+	case schemas.RTEventResponseCreate, schemas.RTEventResponseCreated:
 		return true
 	default:
 		return false

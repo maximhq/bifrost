@@ -193,6 +193,19 @@ type RealtimeProvider interface {
 	ShouldAccumulateRealtimeOutput(eventType RealtimeEventType) bool
 }
 
+// RealtimeUpstream is an open provider realtime connection exchanging WebSocket-style frames (1 = text).
+type RealtimeUpstream interface {
+	ReadMessage() (messageType int, data []byte, err error)
+	WriteMessage(messageType int, data []byte) error
+	Close() error
+}
+
+// RealtimeConnector is optional: providers whose realtime transport is not a WebSocket dial
+// (Bedrock's HTTP/2 event stream) are connected through it instead of RealtimeWebSocketURL.
+type RealtimeConnector interface {
+	ConnectRealtime(ctx *BifrostContext, key Key, model, intent string) (RealtimeUpstream, *BifrostError)
+}
+
 // RealtimeLegacyWebRTCProvider is an optional interface for providers that
 // support the beta WebRTC handshake (e.g., OpenAI's /v1/realtime).
 // Only checked for legacy integration routes via type assertion.

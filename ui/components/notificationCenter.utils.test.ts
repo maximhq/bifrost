@@ -86,6 +86,8 @@ describe("sidekiq job helpers", () => {
 
 	it("labels known kinds and humanizes unknown ones", () => {
 		expect(sidekiqJobLabel("logs_recalculate_cost")).toBe("Recalculating log costs");
+		expect(sidekiqJobLabel("warp_topic_clustering")).toBe("Computing Warp topics");
+		expect(sidekiqJobLabel("warp_topic_discovery")).toBe("Discovering new Warp topics");
 		expect(sidekiqJobLabel("some_new_kind")).toBe("Some new kind");
 		expect(sidekiqJobLabel("")).toBe("Background job");
 	});

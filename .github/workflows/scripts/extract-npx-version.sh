@@ -4,6 +4,9 @@ set -euo pipefail
 # Extract NPX version from package.json
 # Usage: ./extract-npx-version.sh
 
+# shellcheck source=SCRIPTDIR/semver.sh
+source "$(dirname "${BASH_SOURCE[0]}")/semver.sh"
+
 # Path to package.json
 PACKAGE_JSON="npx/bifrost/package.json"
 
@@ -22,8 +25,8 @@ if [[ -z "${VERSION}" ]] || [[ "${VERSION}" == "null" ]]; then
   exit 1
 fi
 
-# Validate version format (X.Y.Z or prerelease like X.Y.Z-rc.1)
-if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+# Validate version format: SemVer 2.0.0 (X.Y.Z, X.Y.Z-rc.1, X.Y.Z+build)
+if ! is_semver "${VERSION}"; then
   echo "❌ Invalid version format '${VERSION}'. Expected format: MAJOR.MINOR.PATCH"
   exit 1
 fi

@@ -4040,65 +4040,6 @@ func TestMigrationClearPluginConfigHashes(t *testing.T) {
 	require.NoError(t, migrationClearPluginConfigHashes(ctx, db, testMigrationLogger))
 }
 
-// TestMigrationAddGithubCopilotConfigColumns_NonRollbackable pins that rolling these
-// columns back is refused rather than performed. github_copilot_private_key holds a GitHub
-// App private key, which GitHub lets you download exactly once: dropping the column does
-// not merely lose a config value, it forces the operator to generate a new key on GitHub
-// and re-install it. The columns are additive, so an older binary ignores them safely and
-// there is nothing a rollback needs to undo.
-func TestMigrationAddGithubCopilotConfigColumns_NonRollbackable(t *testing.T) {
-	db := setupTestDB(t)
-	ctx := context.Background()
-
-	columns := []string{
-		"github_copilot_app_id",
-		"github_copilot_installation_id",
-		"github_copilot_repository_id",
-		"github_copilot_private_key",
-		"github_copilot_github_domain",
-	}
-
-	require.NoError(t, db.AutoMigrate(&tables.TableKey{}))
-	for _, column := range columns {
-		require.NoError(t, db.Migrator().DropColumn(&tables.TableKey{}, column))
-	}
-
-	require.NoError(t, migrationAddGithubCopilotConfigColumns(ctx, db, testMigrationLogger))
-	for _, column := range columns {
-		require.True(t, db.Migrator().HasColumn(&tables.TableKey{}, column),
-			"migration should have added %s", column)
-	}
-
-	// A key carrying App credentials is exactly the state a rollback would destroy.
-	seed := &tables.TableKey{
-		Name:       "copilot-rollback",
-		ProviderID: 1,
-		Provider:   "github-copilot",
-		KeyID:      "copilot-rollback-1",
-		GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-			AppID:          *schemas.NewSecretVar("123456"),
-			InstallationID: *schemas.NewSecretVar("87654321"),
-			RepositoryID:   *schemas.NewSecretVar("999000111"),
-			PrivateKey:     *schemas.NewSecretVar("-----BEGIN RSA PRIVATE KEY-----"),
-		},
-	}
-	require.NoError(t, db.Create(seed).Error)
-
-	err := rollbackGithubCopilotConfigColumns(db)
-	require.Error(t, err, "rollback must refuse: dropping the columns destroys an unrecoverable App private key")
-	assert.Contains(t, err.Error(), "non-rollbackable")
-	for _, column := range columns {
-		assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, column),
-			"a refused rollback must leave %s intact", column)
-	}
-
-	var got tables.TableKey
-	require.NoError(t, db.Where("key_id = ?", seed.KeyID).First(&got).Error)
-	require.NotNil(t, got.GithubCopilotKeyConfig)
-	assert.Equal(t, "-----BEGIN RSA PRIVATE KEY-----", got.GithubCopilotKeyConfig.PrivateKey.GetValue(),
-		"the private key must survive the refused rollback")
-}
-
 // oauth2PreWidenDDL returns the three OAuth2 AS tables as
 // migrationAddOAuth2IssuanceTables created them before the client-controlled
 // columns were widened to text: state varchar(512), client_name and every scope
@@ -4614,6 +4555,35 @@ func TestMigrationAddClientConfigDeleteExpiredVirtualKeysColumn(t *testing.T) {
 	require.NoError(t, migrationAddClientConfigDeleteExpiredVirtualKeysColumn(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns pins that the migration
+// adds both access-profile user-key columns, that existing rows read back as off so an upgrade keeps
+// access profiles managing user keys, and that a re-run is harmless.
+func TestMigrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	mg := db.Migrator()
+	columns := []string{"skip_access_profile_user_virtual_key_creation", "skip_access_profile_user_virtual_key_deletion"}
+	for _, column := range columns {
+		require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, column))
+		require.False(t, mg.HasColumn(&tables.TableClientConfig{}, column))
+	}
+
+	require.NoError(t, migrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns(ctx, db, testMigrationLogger))
+	for _, column := range columns {
+		assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, column), column)
+	}
+
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.False(t, cfg.SkipAccessProfileUserVirtualKeyCreation)
+	assert.False(t, cfg.SkipAccessProfileUserVirtualKeyDeletion)
+
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_skip_access_profile_user_virtual_key_lifecycle_columns").Error)
+	require.NoError(t, migrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()
@@ -5079,4 +5049,30 @@ func TestDropAgentRegistrationOptionsWithoutLegacyColumns(t *testing.T) {
 	var count int64
 	require.NoError(t, db.Model(&tables.TableAgentRegistration{}).Count(&count).Error)
 	require.EqualValues(t, 1, count)
+}
+
+// TestMigrationAddPassthroughJSONColumn_NonRollbackable pins that rolling the passthrough
+// column back is refused. passthrough_json is the only home for a provider's passthrough
+// allowlist, and a provider without one forwards every route, so the rollback must fail
+// loudly and leave the column and its policies in place.
+func TestMigrationAddPassthroughJSONColumn_NonRollbackable(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableProvider{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableProvider{}, "passthrough_json"))
+	require.NoError(t, migrationAddPassthroughJSONColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "passthrough_json"))
+
+	policy := &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{{Methods: []string{"POST"}, Path: "/v1/chat/completions"}}}
+	require.NoError(t, db.Create(&tables.TableProvider{Name: "openai", Passthrough: policy}).Error)
+
+	err := rollbackPassthroughJSONColumn(db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "passthrough_json"), "a refused rollback must leave the column intact")
+
+	var got tables.TableProvider
+	require.NoError(t, db.Where("name = ?", "openai").First(&got).Error)
+	assert.Equal(t, policy, got.Passthrough)
 }

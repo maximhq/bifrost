@@ -390,6 +390,11 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 	case schemas.Groq, schemas.Replicate, schemas.Perplexity, schemas.OpenRouter:
 		return mc.refineNestedProviderModel(provider, model)
 	case schemas.Databricks:
+		// A key alias is resolved later, against the name it is given, so prefixing it here
+		// would turn "my-alias" into a name no key alias matches.
+		if _, ok := mc.keyconf.ResolveAlias(provider, model); ok {
+			return model, nil
+		}
 		return refineDatabricksModel(model), nil
 	}
 	return model, nil
@@ -400,7 +405,8 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 // - Other names get the `system.ai.` prefix.
 // - A single dot is treated as a version separator (e.g. `gpt-5.5`).
 //
-// Aliases and explicit `api_format` are handled by the provider and are not visible here.
+// Key aliases never reach here (the Databricks case returns them unchanged). Explicit
+// `api_format` is handled by the provider and is not visible here.
 func refineDatabricksModel(model string) string {
 	const (
 		// defaultCatalogPrefix is the Unity Catalog prefix under which Databricks publishes

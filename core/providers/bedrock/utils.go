@@ -720,6 +720,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					} else {
 						thinkingConfig["display"] = "summarized"
 					}
+					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 					// Preserve a co-present effort — these models support effort,
 					// and the budget is otherwise dropped.
@@ -730,10 +731,15 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					if tokenBudget < anthropic.MinimumReasoningMaxTokens {
 						return fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
 					}
-					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+					thinkingConfig := map[string]any{
 						"type":          "enabled",
 						"budget_tokens": tokenBudget,
-					})
+					}
+					if bifrostReq.Params.Reasoning.Display != nil {
+						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
+					}
+					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 				}
 			} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 				minBudgetTokens := MinimumReasoningMaxTokens
@@ -834,6 +840,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					} else if caps.AdaptiveOnlyThinking(anthropic.DefaultAdaptiveOnlyThinking(caps.Model())) {
 						thinkingConfig["display"] = "summarized"
 					}
+					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 				} else {
@@ -842,10 +849,15 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					if err != nil {
 						return err
 					}
-					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+					thinkingConfig := map[string]any{
 						"type":          "enabled",
 						"budget_tokens": budgetTokens,
-					})
+					}
+					if bifrostReq.Params.Reasoning.Display != nil {
+						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
+					}
+					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 				}
 			} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
 				setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, *bifrostReq.Params.Reasoning.Effort)
@@ -1556,6 +1568,21 @@ func appendAnthropicBetaToFields(fields *schemas.OrderedMap, header string) {
 		}
 	}
 	fields.Set("anthropic_beta", append(existing, header))
+}
+
+// applyBedrockThinkingDisplayUpdates settles thinking.display:"updates" on a Converse thinking
+// config. A model that takes it gets the beta in additionalModelRequestFields, where Bedrock's edge
+// leaves it for the model; any other model gets "omitted", which Bedrock accepts everywhere and which
+// is what "updates" returns on a model that writes no progress updates.
+func applyBedrockThinkingDisplayUpdates(bedrockReq *BedrockConverseRequest, caps schemas.ModelCaps, thinkingConfig map[string]any) {
+	if thinkingConfig["display"] != anthropic.AnthropicThinkingDisplayUpdates {
+		return
+	}
+	if anthropic.SupportsThinkingDisplayUpdates(caps) {
+		appendAnthropicBetaToFields(bedrockReq.AdditionalModelRequestFields, anthropic.AnthropicThinkingDisplayUpdatesBetaHeader)
+		return
+	}
+	thinkingConfig["display"] = "omitted"
 }
 
 // applyBedrockFineGrainedToolStreaming opts a Claude Converse request into
@@ -3133,6 +3160,42 @@ func deriveBedrockBetaHeadersForToolType(toolType string) []string {
 	return nil
 }
 
+// bedrockStrictGate decides whether a tool's strict flag reaches Converse
+// toolSpec.strict for one request.
+type bedrockStrictGate struct {
+	ctx      *schemas.BifrostContext
+	model    string
+	resolved bool
+	allowed  bool
+}
+
+// forward returns the client's tool strict flag for Converse toolSpec.strict
+// ("Flag to enable structured output enforcement on a tool usage response",
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolSpecification.html).
+// It is forwarded for Claude only: AWS documents strict tool use for Claude on
+// Converse, while support for other families varies per model and is unverified,
+// so they keep the prior behaviour of dropping it. Only true is forwarded: false
+// is the default, and omitting it keeps clients that never asked for enforcement
+// (Codex sends strict:false on every tool) on the pre-strict bytes even for
+// profiles without structured outputs, such as in.anthropic Claude Haiku 4.5
+// (https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html).
+// An explicit true is left for Bedrock to accept or reject rather than silently
+// dropping the enforcement the client asked for. The family is resolved on the
+// first true flag and reused, so requests without one pay nothing.
+func (g *bedrockStrictGate) forward(strict *bool) *bool {
+	if strict == nil || !*strict {
+		return nil
+	}
+	if !g.resolved {
+		g.allowed = schemas.IsAnthropicModelFamily(g.ctx, g.model)
+		g.resolved = true
+	}
+	if !g.allowed {
+		return nil
+	}
+	return strict
+}
+
 // convertToolConfig converts Bifrost tools to Bedrock tool config.
 //
 // Responsibilities (split from collectBedrockServerTools):
@@ -3191,6 +3254,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 	}
 
 	isNova2 := schemas.IsNova2Model(model)
+	strictGate := bedrockStrictGate{ctx: ctx, model: model}
 	var bedrockTools []BedrockTool
 	var droppedForModel []string
 	for _, tool := range filtered {
@@ -3229,6 +3293,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 					InputSchema: BedrockToolInputSchema{
 						JSON: json.RawMessage(schemaObjectBytes),
 					},
+					Strict: strictGate.forward(tool.Function.Strict),
 				},
 			}
 			bedrockTools = append(bedrockTools, bedrockTool)

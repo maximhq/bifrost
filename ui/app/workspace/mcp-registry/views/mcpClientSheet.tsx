@@ -41,7 +41,12 @@ import {
 	useUpdateMCPClientMutation
 } from "@/lib/store";
 import { MCPClient, MCPOpenAPICredential, MCPOpenAPIPreviewResponse, MCPVKConfig, SecretVar } from "@/lib/types/mcp";
-import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
+import {
+	mcpClientUpdateSchema,
+	RESOURCE_CREDENTIAL_RESEND_MESSAGE,
+	resourceCredentialResendRequired,
+	type MCPClientUpdateSchema,
+} from "@/lib/types/schemas";
 import { VirtualMCP } from "@/lib/types/virtualMcps";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { failureStageLabel, formatDurationSince, hasStateReason, stateReasonTitle } from "@/lib/utils/mcpConnectionFailure";
@@ -78,7 +83,12 @@ import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreview
 import { OpenAPISpecSource } from "./openApiSpecSource";
 import { SectionHeader } from "./sectionHeader";
 import { TLSConfigFields } from "./tlsConfigFields";
-import { TokenExchangeFields } from "./tokenExchangeFields";
+import {
+	exchangesAsSSOApplication,
+	TokenExchangeFields,
+	tokenExchangeProfileFormValues,
+	tokenExchangeProfilePayload,
+} from "./tokenExchangeFields";
 
 interface MCPClientSheetProps {
 	mcpClient: MCPClient;
@@ -455,7 +465,10 @@ export default function MCPClientSheet({
 	// Entra's on-behalf-of grant requires use_idp_credentials — see the
 	// Prerequisites warning in docs/mcp/auth/token-exchange.mdx for why a
 	// dedicated exchange app structurally can't work there.
-	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE || !supportsTokenExchangeCredentialUpdate });
+	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
+	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, {
+		skip: !IS_ENTERPRISE || !supportsTokenExchangeCredentialUpdate || !hasUserProvisioningAccess,
+	});
 	const enabledScimProvider = scimProviders?.find((p) => (p as { enabled?: boolean }).enabled) as { name?: string } | undefined;
 	// Matches the create form's idpConfigured gate: without an enabled
 	// provider there's nothing for use_idp_credentials to resolve against at
@@ -531,6 +544,7 @@ export default function MCPClientSheet({
 					client_id: mcpClient.config.token_exchange?.client_id,
 					client_secret: mcpClient.config.token_exchange?.client_secret,
 					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+					...tokenExchangeProfileFormValues(mcpClient.config.token_exchange),
 				}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
@@ -605,6 +619,7 @@ export default function MCPClientSheet({
 					client_id: mcpClient.config.token_exchange?.client_id,
 					client_secret: mcpClient.config.token_exchange?.client_secret,
 					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+					...tokenExchangeProfileFormValues(mcpClient.config.token_exchange),
 				}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
@@ -656,6 +671,16 @@ export default function MCPClientSheet({
 		form.formState.dirtyFields.token_exchange?.client_id ||
 		form.formState.dirtyFields.token_exchange?.client_secret ||
 		form.formState.dirtyFields.token_exchange?.authorization_server_url ||
+		form.formState.dirtyFields.token_exchange?.profile ||
+		form.formState.dirtyFields.token_exchange?.resource ||
+		form.formState.dirtyFields.token_exchange?.resource_token_endpoint ||
+		form.formState.dirtyFields.token_exchange?.resource_client_id ||
+		form.formState.dirtyFields.token_exchange?.resource_client_secret ||
+		form.formState.dirtyFields.token_exchange?.resource_client_auth_method ||
+		form.formState.dirtyFields.token_exchange?.resource_private_key ||
+		form.formState.dirtyFields.token_exchange?.resource_key_id ||
+		form.formState.dirtyFields.token_exchange?.resource_signing_algorithm ||
+		form.formState.dirtyFields.token_exchange?.resource_assertion_audience ||
 		tokenExchangeScopesDirty
 	);
 	// Gates the "takes effect immediately" warning below the toggle — the
@@ -689,6 +714,16 @@ export default function MCPClientSheet({
 					description: "Declare at least one header name users must supply.",
 					variant: "destructive",
 				});
+				return;
+			}
+			// The server refuses an id_jag edit that moves where the upstream credential
+			// is sent while keeping its saved mask, so ask for it again beside the field.
+			const resendField =
+				data.token_exchange?.profile === "id_jag"
+					? resourceCredentialResendRequired(mcpClient.config.token_exchange, data.token_exchange)
+					: undefined;
+			if (resendField) {
+				form.setError(`token_exchange.${resendField}`, { message: RESOURCE_CREDENTIAL_RESEND_MESSAGE });
 				return;
 			}
 			// A replacement document must have been parsed (and not edited since)
@@ -847,13 +882,14 @@ export default function MCPClientSheet({
 					token_exchange: shouldUpdateTokenExchange
 						? {
 							audience: data.token_exchange?.audience?.trim() || "",
-							use_idp_credentials: data.token_exchange?.use_idp_credentials ?? false,
-							client_id: data.token_exchange?.use_idp_credentials
+							use_idp_credentials: exchangesAsSSOApplication(data.token_exchange),
+							client_id: exchangesAsSSOApplication(data.token_exchange)
 								? undefined
 								: (data.token_exchange?.client_id ?? { value: "", ref: "" }),
-							client_secret: data.token_exchange?.use_idp_credentials ? undefined : data.token_exchange?.client_secret,
+							client_secret: exchangesAsSSOApplication(data.token_exchange) ? undefined : data.token_exchange?.client_secret,
 							authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
 							scopes: tokenExchangeScopes,
+							...tokenExchangeProfilePayload(data.token_exchange),
 						}
 						: undefined,
 					tls_config:
@@ -1827,7 +1863,7 @@ export default function MCPClientSheet({
 																		clientSecretMaskNonEnvValue={true}
 																		clientSecretRedactNonEnvValue={false}
 																		authServerUrlLabel="Authorization Server URL"
-																		authServerUrlHelperText="Leave blank to use the deployment's SSO login issuer."
+																		authServerUrlHelperText="Leave blank to use the deployment's SSO login issuer. Enter an issuer, or a full token endpoint ending in /token to use it as is."
 																		authServerUrlTestId="mcpclient-input-token-exchange-authorization-server-url"
 																		scopes={{
 																			variant: "input",

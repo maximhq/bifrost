@@ -51,6 +51,54 @@ AuditResourceType:
     - session
     - inference
 
+AuditSeverity:
+  type: string
+  description: |
+    How sensitive the action is. `info` for routine changes, `high` for admin
+    actions with a large blast radius, such as role assignment or API key
+    creation.
+  enum: [info, high]
+
+AuditAuthMethod:
+  type: string
+  description: How the initiator authenticated.
+  enum: [sso_login, sso_session, idp_token, auth_proxy, agent_token, api_key]
+
+AuditFieldChange:
+  type: object
+  description: |
+    One field that differs between the before and after state of the target.
+    Secret fields have `redacted: true` and carry no `old` or `new` value.
+  properties:
+    path:
+      type: string
+      description: Dotted path of the field (e.g., "budget.max_limit", "keys[0].value").
+    old:
+      description: Value before the change. Omitted for created fields and redacted fields.
+    new:
+      description: Value after the change. Omitted for deleted fields and redacted fields.
+    redacted:
+      type: boolean
+      description: True when the field holds a secret. The diff records that it changed, never its value.
+  required:
+    - path
+
+AuditChangeSet:
+  type: object
+  description: |
+    Before/after diff of the target. Capped at 200 fields and 16 KB; a larger
+    diff is cut short and has `truncated: true`.
+  properties:
+    fields:
+      type: array
+      items:
+        $ref: '#/AuditFieldChange'
+    truncated:
+      type: boolean
+      description: True when the diff was cut at the field or size cap.
+  required:
+    - fields
+
 AuditResource:
   type: object
   description: A CADF resource (initiator, target, or observer).
@@ -119,10 +167,18 @@ AuditEvent:
       type: string
       format: date-time
       description: When the event occurred (RFC 3339).
+    eventName:
+      type: string
+      description: |
+        Named event in the form `<resource>.<verb>`, such as
+        `virtual_key.updated`, `user.role_assigned` or `audit.settings_changed`.
+      example: virtual_key.updated
     action:
       $ref: '#/AuditAction'
     outcome:
       $ref: '#/AuditOutcome'
+    severity:
+      $ref: '#/AuditSeverity'
     initiator:
       $ref: '#/AuditResource'
     target:
@@ -135,6 +191,12 @@ AuditEvent:
       type: array
       items:
         $ref: '#/AuditAttachment'
+    changes:
+      allOf:
+        - $ref: '#/AuditChangeSet'
+      description: |
+        Before/after diff of the target, with secrets redacted. Omitted from
+        list responses; returned by get-by-id and in exports.
     tags:
       type: array
       description: Searchable labels for categorization.
@@ -152,13 +214,32 @@ AuditEvent:
     userAgent:
       type: string
       description: HTTP User-Agent header.
+    requestID:
+      type: string
+      description: |
+        The request's `X-Request-ID`. Bifrost keeps a caller-supplied value of
+        up to 128 characters and generates one otherwise.
+    sessionID:
+      type: string
+      description: |
+        One-way hash of the initiator's dashboard session. It links events from
+        one session and cannot be used as a session.
+    authMethod:
+      $ref: '#/AuditAuthMethod'
+    onBehalfOfId:
+      type: string
+      description: |
+        For API keys, the user who created the key. For system jobs, the user
+        who queued the job, when there is one.
     duration:
       type: integer
       format: int64
       description: Request duration in milliseconds.
     signature:
       type: string
-      description: HMAC-SHA256 signature for tamper detection.
+      description: |
+        HMAC-SHA256 signature for tamper detection. Rows written by current
+        versions use `v2:<key id>:<hex>`; older rows keep the v1 format.
     createdAt:
       type: string
       format: date-time
@@ -281,21 +362,34 @@ AuditFilterDataResponse:
       type: array
       items:
         type: string
+    severities:
+      type: array
+      items:
+        type: string
+    event_names:
+      type: array
+      items:
+        type: string
 
 AuditVerifyResult:
   type: object
-  description: The result of an audit log signature verification.
+  description: |
+    The result of an audit log signature check. The expected signature is never
+    returned, since a reader holding it could forge a matching row.
   properties:
     valid:
       type: boolean
-      description: Whether the stored signature matches the recomputed signature.
-    computed:
+      description: Whether the stored signature matches the one recomputed from the row.
+    algorithm:
       type: string
-      description: The signature recomputed from the stored event fields.
-    stored:
+      description: Signature scheme of the row.
+      enum: [hmac-sha256-v1, hmac-sha256-v2]
+    key_id:
       type: string
-      description: The signature persisted with the event.
+      description: ID of the key the row was signed with (v2 rows only).
+    reason:
+      type: string
+      description: Why the check failed, for example when the signing key is no longer configured.
   required:
     - valid
-    - computed
-    - stored
+  additionalProperties: false

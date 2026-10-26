@@ -10,8 +10,8 @@ interface ProviderProps {
 
 export default function Provider({ provider, size = 16, className }: ProviderProps) {
 	return (
-		<div className="flex items-center gap-1">
-			<RenderProviderIcon provider={provider as ProviderIconType} size={size} className={cn("mt-0.5", className)} />
+		<div className="flex items-center gap-2">
+			<RenderProviderIcon provider={provider as ProviderIconType} size={size} className={cn("mt-0", className)} />
 			<span>{getProviderLabel(provider)}</span>
 		</div>
 	);
