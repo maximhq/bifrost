@@ -1,11 +1,15 @@
 package openai
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -116,6 +120,67 @@ func TestPassthroughStreamFinalizesOnResponsesTerminalEvent(t *testing.T) {
 		case <-timeout.C:
 			t.Fatal("the stream did not finalize on response.completed while the upstream stayed open")
 		}
+	}
+}
+
+// Only the events that end a Responses stream with its final usage finalize the passthrough
+// early. Codex keeps reading after response.failed, so it, like every content event, waits for EOF.
+func TestIsResponsesTerminalEvent(t *testing.T) {
+	tests := []struct {
+		event string
+		want  bool
+	}{
+		{`{"type":"response.completed","response":{"usage":{"input_tokens":1}}}`, true},
+		{`{"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}`, true},
+		{`{"type":"response.failed","response":{"error":{"code":"server_error"}}}`, false},
+		{`{"type":"response.output_text.delta","delta":"hi"}`, false},
+		{`{"choices":[{"delta":{},"finish_reason":"stop"}]}`, false},
+	}
+	for _, tt := range tests {
+		if got := isResponsesTerminalEvent([]byte(tt.event)); got != tt.want {
+			t.Errorf("isResponsesTerminalEvent(%s) = %v, want %v", tt.event, got, tt.want)
+		}
+	}
+}
+
+// BenchmarkPassthroughStreamResponses runs the passthrough stream loop over a Responses stream of
+// 200 text deltas and its response.completed event, without and with the terminal-event check.
+func BenchmarkPassthroughStreamResponses(b *testing.B) {
+	var body bytes.Buffer
+	for i := 0; i < 200; i++ {
+		body.WriteString("event: response.output_text.delta\n")
+		body.WriteString(`data: {"type":"response.output_text.delta","sequence_number":` + strconv.Itoa(i) +
+			`,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"token "}` + "\n\n")
+	}
+	body.WriteString("event: response.completed\n")
+	body.WriteString(`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed",` +
+		`"usage":{"input_tokens":12,"output_tokens":200,"total_tokens":212}}}` + "\n\n")
+	stream := body.Bytes()
+
+	for _, bc := range []struct {
+		name       string
+		isTerminal func(event []byte) bool
+	}{
+		{"terminal_check_off", nil},
+		{"terminal_check_on", isResponsesTerminalEvent},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				ch := providerUtils.StreamPassthroughHTTP(newStreamTestContext(), passthroughPostHook, nil, io.NopCloser(bytes.NewReader(stream)), providerUtils.PassthroughStreamParams{
+					StatusCode: http.StatusOK,
+					Path:       "/v1/responses",
+					Logger:     testNoopLogger{},
+					HasUsage:   HasOpenAIPassthroughUsage,
+					Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
+						return ExtractOpenAIPassthroughUsage(http.MethodPost, "/v1/responses", nil, event)
+					},
+					IsTerminal: bc.isTerminal,
+				})
+				for range ch {
+				}
+			}
+		})
 	}
 }
 
