@@ -828,9 +828,11 @@ storage:
       compression: snappy
 ```
 
-The secret's `connection-string` key is injected as `BIFROST_OBJECT_STORAGE_CONNECTION_STRING` in both Deployment and StatefulSet workloads. Azure `bucket`, `endpoint`, and `connectionString` also accept structured SecretVar objects, such as `{value: AZURE_BLOB_ENDPOINT, type: env}`.
+The secret's `connection-string` key is injected as `BIFROST_OBJECT_STORAGE_CONNECTION_STRING` in both Deployment and StatefulSet workloads. Azure `bucket`, `endpoint`, and `connectionString` also accept structured SecretVar objects, such as `{ref: env.AZURE_BLOB_ENDPOINT, type: env}`.
 
 For enterprise audit configuration, `bifrost.auditLogs.objectStorage` uses the same `type`, `bucket`, `endpoint`, and `connectionString` mapping into `audit_logs.object_storage`. Supply audit secret environment variables through `bifrost.providerSecrets` (with `existingSecret`, `key`, and `envVar`) and reference them as `connectionString: env.AZURE_AUDIT_STORAGE_CONNECTION_STRING`. Audit archival retains its JSONL and legacy `compress` configuration; log payload `format` and `compression` do not apply there.
+
+**Credential storage:** Literal `connectionString` values, including structured objects containing a plaintext `value`, are copied into the generated ConfigMap for both logs and audit storage. Anyone able to read that ConfigMap can read the credential. Prefer Azure identity, `existingSecret` for logs, or environment/vault references; use `bifrost.providerSecrets` for audit environment references as shown above.
 
 
 #### Mixed Backend Example

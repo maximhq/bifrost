@@ -359,10 +359,10 @@ Retention is configured on the **client config**, not on `logs_store`. The activ
 | Default | `365` days |
 | Minimum | `1` day (enforced by validator) |
 | Disable | Set to `0` (cleanup is skipped entirely) |
-| Cleanup cadence | Every 24 hours, plus a random jitter of 15-30 minutes |
+| Cleanup cadence | 24 hours after each pass finishes, plus a random jitter of 15-30 minutes |
 | Startup behaviour | A cleanup pass runs immediately when Bifrost starts |
-| Delete batch size | 100 rows per query |
-| Per-pass timeout | 30 minutes |
+| Delete batch size | 5,000 rows per query |
+| Per-pass timeout | 6 hours |
 
 Source: `framework/logstore/cleaner.go` and `transports/bifrost-http/server/server.go`.
 
@@ -372,7 +372,7 @@ The cleaner deletes **database rows** older than `now - retention_days` (UTC). I
 
 ### What does NOT get deleted automatically
 
-The retention cleaner deletes database rows, **not stored payloads**. Configure lifecycle rules for `logs/`, `mcp-logs/`, and `agent-logs/` under your configured `prefix`, with retention at least as long as `log_retention_days`. Do not expire `skills/` or the whole container.
+The retention cleaner deletes database rows, **not stored payloads**. Configure lifecycle rules for `logs/`, `mcp-logs/`, and `agent-logs/` under your configured `prefix`, with retention longer than `log_retention_days` to cover the cleaner's 24-hour interval, 15-30 minute jitter, and pass duration. For example, use 32 days for a 30-day `log_retention_days` setting. Allow more time for cleanup backlogs, failures, or downtime: missing payloads leave database rows readable without their offloaded content. Do not expire `skills/` or the whole container.
 
 **Amazon S3 lifecycle rule (example)**
 
@@ -380,10 +380,10 @@ The retention cleaner deletes database rows, **not stored payloads**. Configure 
 {
   "Rules": [
     {
-      "ID": "bifrost-logs-expire-30d",
+      "ID": "bifrost-logs-expire-32d",
       "Status": "Enabled",
       "Filter": { "Prefix": "bifrost/logs/" },
-      "Expiration": { "Days": 30 }
+      "Expiration": { "Days": 32 }
     }
   ]
 }
@@ -400,7 +400,7 @@ Apply with `aws s3api put-bucket-lifecycle-configuration --bucket <bucket> --lif
       {
         "action": { "type": "Delete" },
         "condition": {
-          "age": 30,
+          "age": 32,
           "matchesPrefix": ["bifrost/logs/"]
         }
       }
