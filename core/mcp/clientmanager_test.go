@@ -1865,17 +1865,6 @@ func TestAcquireClientConn_OpenAPIPerUserHeaders_PreflightsCredential(t *testing
 	assert.Nil(t, release)
 }
 
-func TestAwaitsAdminVerification_OpenAPINeverWaits(t *testing.T) {
-	cfg := newOpenAPITestConfig("peruser", "listPets")
-	cfg.AuthType = schemas.MCPAuthTypePerUserHeaders
-	cfg.PerUserHeaderKeys = []string{"X-User-Token"}
-	assert.False(t, awaitsAdminVerification(cfg), "nothing upstream to verify for a synthesized server")
-
-	httpCfg := *cfg
-	httpCfg.ConnectionType = schemas.MCPConnectionTypeHTTP
-	assert.True(t, awaitsAdminVerification(&httpCfg), "control: the same auth type over HTTP still awaits verification")
-}
-
 func TestOpenAPIConfigChanged(t *testing.T) {
 	str := func(s string) *string { return &s }
 	base := func() *schemas.MCPOpenAPIConfig {

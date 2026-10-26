@@ -1811,6 +1811,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 					RequirePublicTarget:       dbClient.RequirePublicTarget,
 					PerUserDiscovery:          dbClient.PerUserDiscovery,
+					PendingVerification:       dbClient.AwaitsAdminVerification(),
 					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 					MaxProtocolVersion:        dbClient.MaxProtocolVersion,
 					ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
@@ -1879,6 +1880,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 			RequirePublicTarget:       dbClient.RequirePublicTarget,
 			PerUserDiscovery:          dbClient.PerUserDiscovery,
+			PendingVerification:       dbClient.AwaitsAdminVerification(),
 			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			MaxProtocolVersion:        dbClient.MaxProtocolVersion,
 			ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
@@ -2330,6 +2332,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 		RequirePublicTarget:       dbClient.RequirePublicTarget,
 		PerUserDiscovery:          dbClient.PerUserDiscovery,
+		PendingVerification:       dbClient.AwaitsAdminVerification(),
 		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 		MaxProtocolVersion:        dbClient.MaxProtocolVersion,
 		ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
@@ -2449,15 +2452,16 @@ func (s *RDBConfigStore) UpdateMCPClientDiscovery(ctx context.Context, clientID 
 	return nil
 }
 
-// ClearMCPClientPendingOAuthConfig sets pending_oauth_config_json to NULL for
-// the given client. Called once OAuth authorization succeeds so the runtime no
-// longer sees the bootstrap stash and the next reconnect runs the normal
-// connect path instead of parking the client in pending_verification.
-func (s *RDBConfigStore) ClearMCPClientPendingOAuthConfig(ctx context.Context, clientID string) error {
+// ClearMCPClientPendingVerification records that the given client passed its
+// one-time admin step: pending_verification is cleared, and with it the OAuth
+// bootstrap stash an OAuth client was parked with, so the next load runs the
+// normal connect path instead of parking the client in pending_verification.
+func (s *RDBConfigStore) ClearMCPClientPendingVerification(ctx context.Context, clientID string) error {
 	res := s.DB().WithContext(ctx).
 		Model(&tables.TableMCPClient{}).
 		Where("client_id = ?", clientID).
 		Updates(map[string]interface{}{
+			"pending_verification":      false,
 			"pending_oauth_config_json": nil,
 			"updated_at":                time.Now(),
 		})
@@ -2526,11 +2530,13 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			NeedsSessionStickiness: clientConfigCopy.NeedsSessionStickiness,
 			RequirePublicTarget:    clientConfigCopy.RequirePublicTarget,
 			PerUserDiscovery:       clientConfigCopy.PerUserDiscovery,
-			ToolSyncInterval:       toolSyncIntervalSec,
-			MaxProtocolVersion:     clientConfigCopy.MaxProtocolVersion,
-			ToolExecutionTimeout:   toolExecutionTimeoutSec,
-			MaxInstructionsLength:  clientConfigCopy.MaxInstructionsLength,
-			AllowByDefault:         clientConfigCopy.AllowByDefault,
+			// PendingVerification has json:"-" so deepCopy loses it; use original clientConfig
+			PendingVerification:   clientConfig.PendingVerification,
+			ToolSyncInterval:      toolSyncIntervalSec,
+			MaxProtocolVersion:    clientConfigCopy.MaxProtocolVersion,
+			ToolExecutionTimeout:  toolExecutionTimeoutSec,
+			MaxInstructionsLength: clientConfigCopy.MaxInstructionsLength,
+			AllowByDefault:        clientConfigCopy.AllowByDefault,
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,

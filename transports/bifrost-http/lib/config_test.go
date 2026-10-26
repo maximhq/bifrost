@@ -24086,6 +24086,70 @@ func TestLoadMCPConfig_PerUserDiscoveryFollowsSourceOfTruth(t *testing.T) {
 	}
 }
 
+// TestMCPClientStartsPendingVerification: a client declared in config.json
+// starts pending its admin step exactly when its auth type has one and there is
+// an upstream to run it against.
+func TestMCPClientStartsPendingVerification(t *testing.T) {
+	for authType, want := range map[schemas.MCPAuthType]bool{
+		schemas.MCPAuthTypeOauth:          true,
+		schemas.MCPAuthTypePerUserOauth:   true,
+		schemas.MCPAuthTypePerUserHeaders: true,
+		schemas.MCPAuthTypeTokenExchange:  true,
+		schemas.MCPAuthTypeHeaders:        false,
+		schemas.MCPAuthTypeNone:           false,
+	} {
+		http := &schemas.MCPClientConfig{AuthType: authType, ConnectionType: schemas.MCPConnectionTypeHTTP}
+		assert.Equal(t, want, mcpClientStartsPendingVerification(http), authType)
+		openAPI := &schemas.MCPClientConfig{AuthType: authType, ConnectionType: schemas.MCPConnectionTypeOpenAPI}
+		assert.False(t, mcpClientStartsPendingVerification(openAPI), "%s over openapi has nothing upstream to verify", authType)
+	}
+}
+
+// TestLoadMCPConfig_NewClientsStartPendingTheirAdminStep: a client config.json
+// adds starts pending its admin step when its auth type has one, and a reload
+// that edits the client keeps the stored record rather than resetting it from
+// the file.
+func TestLoadMCPConfig_NewClientsStartPendingTheirAdminStep(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func(tools schemas.WhiteList) *schemas.MCPConfig {
+		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+			{Name: "signin", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"), AuthType: schemas.MCPAuthTypeOauth, ToolsToExecute: tools},
+			{Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3002/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: tools},
+			{Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3003/mcp"), ToolsToExecute: tools},
+		}}
+	}
+	pending := func(cfg *Config) map[string]bool {
+		got := map[string]bool{}
+		for _, c := range cfg.MCPConfig.ClientConfigs {
+			got[c.Name] = c.PendingVerification
+		}
+		return got
+	}
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{MCP: fileMCP(schemas.WhiteList{"*"})})
+	assert.Equal(t, map[string]bool{"signin": true, "notes": true, "wiki": false}, pending(first))
+
+	var notesID string
+	for _, c := range first.MCPConfig.ClientConfigs {
+		if c.Name == "notes" {
+			notesID = c.ID
+		}
+	}
+	// Verified as verify-headers does it: the tools found, then the record.
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, notesID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}}))
+	require.NoError(t, store.ClearMCPClientPendingVerification(ctx, notesID))
+
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	loadMCPConfig(ctx, second, &ConfigData{MCP: fileMCP(schemas.WhiteList{"search"})})
+	assert.Equal(t, map[string]bool{"signin": true, "notes": false, "wiki": false}, pending(second), "the stored record wins over the edited file")
+	stored, err := store.GetMCPClientConfigByID(ctx, notesID)
+	require.NoError(t, err)
+	assert.False(t, stored.PendingVerification)
+}
+
 // TestReconcileVirtualMCPsConfig covers the config.json → store reconciliation for
 // mcp.virtual_mcps: create (with explicit slug + name-resolved tool client + VK attach),
 // idempotent no-op on unchanged hash, update on change, and prune of absent entries.

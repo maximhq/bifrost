@@ -17,31 +17,38 @@ func snapshotAddClientState(m *MCPManager, id string) (state clientSnapshot, exi
 	return snapshotClientState(m, id)
 }
 
-// TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection covers
-// AddClient's per_user_headers registration path, where nil vs. non-nil
-// DiscoveredTools carries a real lifecycle distinction, but non-nil-empty vs.
-// populated does not: a nil map means admin verification has never run (park
-// in pending_verification, before ever reaching the RequiresPerCallConnection
-// branch below); any non-nil map (empty or populated) means verification ran
-// and lands in Healthy — an empty ToolMap already says "no tools discovered
-// yet" (or "server legitimately exposes zero tools") on its own, no dedicated
-// pending_tools state needed. All three cases must also preserve
-// ConnectionURL from ConnectionString.
-func TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection(t *testing.T) {
+// TestAddClient_PerUserHeaders_StateSelection covers AddClient's
+// per_user_headers registration path. The client's record of its admin step
+// decides whether it parks in pending_verification, before ever reaching the
+// RequiresPerCallConnection branch below; its tools do not. Any verified client
+// lands in Healthy, with or without tools — an empty ToolMap already says "no
+// tools discovered yet" (or "server legitimately exposes zero tools") on its
+// own. Every case must also preserve ConnectionURL from ConnectionString.
+func TestAddClient_PerUserHeaders_StateSelection(t *testing.T) {
 	tests := []struct {
 		name            string
 		clientID        string
 		clientName      string
+		pending         bool
 		discoveredTools map[string]schemas.ChatTool
 		wantState       schemas.MCPConnectionState
 		wantToolCount   int
 	}{
 		{
-			name:            "nil DiscoveredTools parks in pending_verification",
+			name:            "pending its admin step parks in pending_verification",
+			clientID:        "discovered-tools-pending",
+			clientName:      "discovered_tools_pending",
+			pending:         true,
+			discoveredTools: nil,
+			wantState:       schemas.MCPConnectionStatePendingVerification,
+			wantToolCount:   0,
+		},
+		{
+			name:            "verified with no stored tools is healthy",
 			clientID:        "discovered-tools-nil",
 			clientName:      "discovered_tools_nil",
 			discoveredTools: nil,
-			wantState:       schemas.MCPConnectionStatePendingVerification,
+			wantState:       schemas.MCPConnectionStateHealthy,
 			wantToolCount:   0,
 		},
 		{
@@ -74,13 +81,14 @@ func TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection(t *testing.T) {
 			t.Cleanup(func() { _ = m.Cleanup() })
 
 			config := &schemas.MCPClientConfig{
-				ID:                tt.clientID,
-				Name:              tt.clientName,
-				ConnectionType:    schemas.MCPConnectionTypeHTTP,
-				ConnectionString:  schemas.NewSecretVar("https://example.invalid/mcp"),
-				AuthType:          schemas.MCPAuthTypePerUserHeaders,
-				PerUserHeaderKeys: []string{"X-User-Token"},
-				DiscoveredTools:   tt.discoveredTools,
+				ID:                  tt.clientID,
+				Name:                tt.clientName,
+				ConnectionType:      schemas.MCPConnectionTypeHTTP,
+				ConnectionString:    schemas.NewSecretVar("https://example.invalid/mcp"),
+				AuthType:            schemas.MCPAuthTypePerUserHeaders,
+				PerUserHeaderKeys:   []string{"X-User-Token"},
+				DiscoveredTools:     tt.discoveredTools,
+				PendingVerification: tt.pending,
 			}
 
 			require.NoError(t, m.AddClient(context.Background(), config))
@@ -114,11 +122,7 @@ func TestAddClient_PerCallConnection_StartsConnectionChecker(t *testing.T) {
 		ConnectionString:  schemas.NewSecretVar("https://example.invalid/mcp"),
 		AuthType:          schemas.MCPAuthTypePerUserHeaders,
 		PerUserHeaderKeys: []string{"X-User-Token"},
-		// Non-nil (even empty) DiscoveredTools: a nil map means admin
-		// verification never ran, parking in pending_verification BEFORE
-		// ever reaching the RequiresPerCallConnection branch this test
-		// targets — see TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection.
-		DiscoveredTools: map[string]schemas.ChatTool{},
+		DiscoveredTools:   map[string]schemas.ChatTool{},
 	}
 
 	require.NoError(t, m.AddClient(context.Background(), config))
