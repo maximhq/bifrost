@@ -1,1 +1,2 @@
+- fix: calendar-aligned rate limits stay enforced on the last day of the period [@pratyagarwal](https://github.com/pratyagarwal)
 - chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1

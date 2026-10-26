@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -545,6 +546,122 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 			t.Fatalf("expected future-dated counter preserved and bumped to 7, got %d", bumped.TokenCurrentUsage)
 		}
 	})
+}
+
+// TestCheckRateLimitEnforcesCalendarAlignedPeriodToItsLastDay pins that
+// CheckRateLimit decides "window closed" with the same predicate the reset path
+// uses. It used to test time.Since(LastReset) >= ParseDuration(...), which
+// treats 1M/1Q/1Y as 30/90/365 days: on the last day of a 31-day month, a
+// 91-day quarter or a leap year the check skipped enforcement while
+// rateLimitResetTargets still returned nil, so the limit was not enforced
+// until the calendar boundary. synctest's clock starts at 2000-01-01 UTC (a
+// leap year), so every case below lands on such a day.
+func TestCheckRateLimitEnforcesCalendarAlignedPeriodToItsLastDay(t *testing.T) {
+	cases := []struct {
+		name     string
+		duration string
+		lastDay  time.Duration // offset from the period start to noon on its last day
+	}{
+		{"1M on Jan 31", "1M", 30*24*time.Hour + 12*time.Hour},
+		{"1Q on Mar 31", "1Q", 90*24*time.Hour + 12*time.Hour},
+		{"1Y on Dec 31 of a leap year", "1Y", 365*24*time.Hour + 12*time.Hour},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				store := newStandaloneStoreForResetBenchmark()
+				rl := buildRateLimit("calendar-last-day-"+tc.duration, 1_000, 100)
+				rl.TokenResetDuration = &tc.duration
+				rl.RequestResetDuration = &tc.duration
+				rl.IsCalendarAligned = true
+				rl.TokenLastReset = time.Now()
+				rl.RequestLastReset = time.Now()
+				rl.CreatedAt = time.Now()
+				rl.TokenCurrentUsage = 5_000
+				rl.RequestCurrentUsage = 500
+				store.rateLimits.Store(rl.ID, rl)
+
+				time.Sleep(tc.lastDay)
+				if tok, req := store.rateLimitResetTargets(rl, time.Now()); tok != nil || req != nil {
+					t.Fatalf("precondition: %s window must still be open at %s", tc.duration, time.Now().UTC())
+				}
+				// Both caps are exceeded, so both must be enforced: a decision
+				// for only one of them would hide the other staying broken.
+				decision, _ := store.CheckRateLimit(ctx, EntityWiseRateLimits{"virtual_key": {store.LoadRateLimit(ctx, rl.ID)}}, nil, nil)
+				if decision != DecisionRateLimited {
+					t.Fatalf("%s rate limit over both caps was not fully enforced at %s, the last day of its calendar period: got %s, want %s", tc.duration, time.Now().UTC(), decision, DecisionRateLimited)
+				}
+
+				// Past the boundary the window is closed but unswept: the check
+				// is skipped, as before, until the sweep or usage bump resets it.
+				time.Sleep(24 * time.Hour)
+				decision, _ = store.CheckRateLimit(ctx, EntityWiseRateLimits{"virtual_key": {store.LoadRateLimit(ctx, rl.ID)}}, nil, nil)
+				if decision != DecisionAllow {
+					t.Fatalf("expected the closed-but-unswept %s window to be skipped at %s, got %s", tc.duration, time.Now().UTC(), decision)
+				}
+			})
+		})
+	}
+}
+
+// TestCheckRateLimitEnforcesNonPositiveResetDuration pins the second
+// disagreement the shared predicate removes: time.Since(LastReset) >= 0 is
+// always true, so a non-positive duration used to skip enforcement forever,
+// while the reset path treats it as invalid and never resets the counter.
+func TestCheckRateLimitEnforcesNonPositiveResetDuration(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStoreForResetBenchmark()
+	duration := "0m"
+	rl := buildRateLimit("non-positive-check", 1_000, 100)
+	rl.TokenResetDuration = &duration
+	rl.RequestResetDuration = &duration
+	rl.TokenCurrentUsage = 5_000
+	rl.RequestCurrentUsage = 500
+	store.rateLimits.Store(rl.ID, rl)
+
+	decision, _ := store.CheckRateLimit(ctx, EntityWiseRateLimits{"virtual_key": {store.LoadRateLimit(ctx, rl.ID)}}, nil, nil)
+	if decision != DecisionRateLimited {
+		t.Fatalf("rate limit over both caps with a non-positive reset duration was not fully enforced: got %s, want %s", decision, DecisionRateLimited)
+	}
+	// CheckRateLimit runs on every request; the misconfiguration is reported
+	// by the reset path, not once per check.
+	if logger := store.logger.(*MockLogger); len(logger.errors) != 0 {
+		t.Fatalf("CheckRateLimit logged %d errors for a non-positive reset duration, want 0: %v", len(logger.errors), logger.errors)
+	}
+}
+
+// BenchmarkCheckRateLimit measures the per-request cost of the window-closed
+// predicate in CheckRateLimit for a rolling and a calendar-aligned limit that
+// are both within their window and under their caps.
+func BenchmarkCheckRateLimit(b *testing.B) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name            string
+		calendarAligned bool
+	}{{"rolling", false}, {"calendar_aligned", true}} {
+		b.Run(tc.name, func(b *testing.B) {
+			store := newStandaloneStoreForResetBenchmark()
+			duration := "1M"
+			rl := buildRateLimit("check-rate-limit-bench", 1_000_000, 1_000_000)
+			rl.TokenResetDuration = &duration
+			rl.RequestResetDuration = &duration
+			rl.IsCalendarAligned = tc.calendarAligned
+			now := time.Now()
+			if tc.calendarAligned {
+				now = configstoreTables.GetCalendarPeriodStart(duration, now, configstoreTables.QuarterStartNotApplicable)
+			}
+			rl.TokenLastReset = now
+			rl.RequestLastReset = now
+			limits := EntityWiseRateLimits{"virtual_key": {rl}}
+			b.ReportAllocs()
+			for b.Loop() {
+				if decision, _ := store.CheckRateLimit(ctx, limits, nil, nil); decision != DecisionAllow {
+					b.Fatalf("expected allow, got %s", decision)
+				}
+			}
+		})
+	}
 }
 
 // TestBackgroundResetReferenceRefreshScales demonstrates the background-sweep
