@@ -2291,6 +2291,102 @@ func postgresStoreConfig(storeName string, passwordFields string) string {
 	}`, storeName, passwordFields)
 }
 
+func TestSchemaObjectStorageAzure(t *testing.T) {
+	compiled := compileSchema(t)
+	tests := []struct {
+		name      string
+		storage   string
+		wantError bool
+	}{
+		{name: "identity", storage: `{"type":"azure","bucket":"logs","endpoint":"https://example.blob.core.windows.net"}`},
+		{name: "connection string", storage: `{"type":"azure","bucket":"logs","connection_string":"UseDevelopmentStorage=true"}`},
+		{name: "environment references", storage: `{"type":"azure","bucket":"env.AZURE_CONTAINER","connection_string":"env.AZURE_STORAGE_CONNECTION_STRING"}`},
+		{name: "structured secrets", storage: `{"type":"azure","bucket":{"value":"","ref":"env.AZURE_CONTAINER","type":"env"},"endpoint":{"value":"","ref":"env.AZURE_BLOB_ENDPOINT","type":"env"}}`},
+		{name: "structured connection string", storage: `{"type":"azure","bucket":"logs","connection_string":{"value":"","ref":"env.AZURE_STORAGE_CONNECTION_STRING","type":"env"}}`},
+		{name: "inferred structured env reference", storage: `{"type":"azure","bucket":"logs","endpoint":{"value":"","ref":"env.AZURE_BLOB_ENDPOINT"}}`},
+		{name: "structured vault references", storage: `{"type":"azure","bucket":{"value":"","ref":"vault.azure/container","type":"vault"},"connection_string":{"value":"","ref":"vault.azure/connection-string","type":"vault"}}`},
+		{name: "structured vault endpoint", storage: `{"type":"azure","bucket":"logs","endpoint":{"value":"","ref":"vault.azure/endpoint","type":"vault"}}`},
+		{name: "legacy env references", storage: `{"type":"azure","bucket":{"value":"","env_var":"AZURE_CONTAINER","from_env":true},"endpoint":{"value":"","env_var":"AZURE_BLOB_ENDPOINT","from_env":true}}`},
+		{name: "legacy connection string reference", storage: `{"type":"azure","bucket":"logs","connection_string":{"value":"","env_var":"AZURE_STORAGE_CONNECTION_STRING","from_env":true}}`},
+		{name: "gzip", storage: `{"type":"azure","bucket":"logs","connection_string":"UseDevelopmentStorage=true","compress":true}`},
+		{name: "missing container", storage: `{"type":"azure","endpoint":"https://example.blob.core.windows.net"}`, wantError: true},
+		{name: "empty container", storage: `{"type":"azure","bucket":"","endpoint":"https://example.blob.core.windows.net"}`, wantError: true},
+		{name: "empty structured container", storage: `{"type":"azure","bucket":{"value":""},"endpoint":"https://example.blob.core.windows.net"}`, wantError: true},
+		{name: "missing authentication", storage: `{"type":"azure","bucket":"logs"}`, wantError: true},
+		{name: "conflicting authentication", storage: `{"type":"azure","bucket":"logs","endpoint":"https://example.blob.core.windows.net","connection_string":"UseDevelopmentStorage=true"}`, wantError: true},
+		{name: "empty endpoint", storage: `{"type":"azure","bucket":"logs","endpoint":""}`, wantError: true},
+		{name: "empty connection string", storage: `{"type":"azure","bucket":"logs","connection_string":""}`, wantError: true},
+		{name: "empty structured endpoint", storage: `{"type":"azure","bucket":"logs","endpoint":{"value":""}}`, wantError: true},
+		{name: "empty structured connection string", storage: `{"type":"azure","bucket":"logs","connection_string":{"value":""}}`, wantError: true},
+		{name: "empty reference rejected", storage: `{"type":"azure","bucket":"logs","connection_string":{"value":"","ref":"","type":"env"}}`, wantError: true},
+		{name: "empty legacy env name rejected", storage: `{"type":"azure","bucket":"logs","endpoint":{"value":"","env_var":"","from_env":true}}`, wantError: true},
+		{name: "inactive legacy env reference rejected", storage: `{"type":"azure","bucket":"logs","endpoint":{"value":"","env_var":"AZURE_BLOB_ENDPOINT","from_env":false}}`, wantError: true},
+		{name: "legacy name without flag rejected", storage: `{"type":"azure","bucket":"logs","connection_string":{"value":"","env_var":"AZURE_STORAGE_CONNECTION_STRING"}}`, wantError: true},
+		{name: "null endpoint", storage: `{"type":"azure","bucket":"logs","endpoint":null}`, wantError: true},
+		{name: "S3 field rejected", storage: `{"type":"azure","bucket":"logs","endpoint":"https://example.blob.core.windows.net","access_key_id":"key"}`, wantError: true},
+		{name: "GCS field rejected", storage: `{"type":"azure","bucket":"logs","endpoint":"https://example.blob.core.windows.net","credentials_json":"{}"}`, wantError: true},
+		{name: "unknown field rejected", storage: `{"type":"azure","bucket":"logs","endpoint":"https://example.blob.core.windows.net","unknown":true}`, wantError: true},
+		{name: "S3 unchanged", storage: `{"type":"s3","bucket":"logs","region":"us-east-1","endpoint":"https://minio.example","access_key_id":"key","secret_access_key":"secret"}`},
+		{name: "GCS unchanged", storage: `{"type":"gcs","bucket":"logs","project_id":"project","credentials_json":{"value":"GCS_CREDENTIALS","type":"env"}}`},
+		{name: "S3 rejects Azure connection string", storage: `{"type":"s3","bucket":"logs","connection_string":"UseDevelopmentStorage=true"}`, wantError: true},
+		{name: "GCS rejects Azure endpoint", storage: `{"type":"gcs","bucket":"logs","endpoint":"https://example.blob.core.windows.net"}`, wantError: true},
+	}
+	for _, target := range []struct {
+		name   string
+		config string
+	}{
+		{name: "logs", config: `{"logs_store":{"enabled":true,"type":"sqlite","config":{"path":"/tmp/logs.db"},"object_storage":%s}}`},
+		{name: "audit", config: `{"audit_logs":{"object_storage":%s}}`},
+	} {
+		t.Run(target.name, func(t *testing.T) {
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					err := validateConfig(t, compiled, fmt.Sprintf(target.config, tt.storage))
+					if tt.wantError && err == nil {
+						t.Fatal("expected schema validation to fail")
+					}
+					if !tt.wantError && err != nil {
+						t.Fatalf("expected schema validation to pass: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestSchemaObjectStorageAzureFormats(t *testing.T) {
+	compiled := compileSchema(t)
+	for _, tt := range []struct {
+		name      string
+		target    string
+		fields    string
+		wantError bool
+	}{
+		{name: "Parquet snappy", target: "logs_store", fields: `"format":"parquet","compression":"snappy"`},
+		{name: "Parquet zstd", target: "logs_store", fields: `"format":"parquet","compression":"zstd"`},
+		{name: "JSON gzip", target: "logs_store", fields: `"format":"json","compression":"gzip"`},
+		{name: "JSON rejects snappy", target: "logs_store", fields: `"format":"json","compression":"snappy"`, wantError: true},
+		{name: "default JSON rejects zstd", target: "logs_store", fields: `"compression":"zstd"`, wantError: true},
+		{name: "audit keeps JSONL format contract", target: "audit_logs", fields: `"format":"parquet"`, wantError: true},
+		{name: "audit keeps gzip switch contract", target: "audit_logs", fields: `"compression":"zstd"`, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			storage := `{"type":"azure","bucket":"logs","connection_string":"UseDevelopmentStorage=true",` + tt.fields + `}`
+			config := `{"audit_logs":{"object_storage":` + storage + `}}`
+			if tt.target == "logs_store" {
+				config = `{"logs_store":{"enabled":true,"type":"sqlite","config":{"path":"/tmp/logs.db"},"object_storage":` + storage + `}}`
+			}
+			err := validateConfig(t, compiled, config)
+			if tt.wantError && err == nil {
+				t.Fatal("expected schema validation to fail")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected schema validation to pass: %v", err)
+			}
+		})
+	}
+}
+
 // compileSchema loads and compiles the config.schema.json for validation tests.
 func compileSchema(t *testing.T) *jsonschema.Schema {
 	t.Helper()
