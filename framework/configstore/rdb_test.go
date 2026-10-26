@@ -6475,6 +6475,41 @@ func TestPerUserDiscovery_BindingsListsUserAndVirtualKeyHoldersOfOneClient(t *te
 	assert.Empty(t, rows)
 }
 
+// TestPerUserDiscovery_ToolCallerCountsOfEachClient counts, for each client, how
+// many user and virtual-key callers' discoveries include each tool. Callers
+// holding the same discovery are each counted, though only one of their rows is
+// read.
+func TestPerUserDiscovery_ToolCallerCountsOfEachClient(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	shared := func(discovery *tables.TableMCPPerUserDiscovery) *tables.TableMCPPerUserDiscovery {
+		discovery.DiscoveryHash = "hash-shared"
+		return discovery
+	}
+	for _, discovery := range []*tables.TableMCPPerUserDiscovery{
+		shared(samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search", "read")),
+		shared(samplePerUserDiscovery(schemas.MCPAuthModeUser, "bob", "notes", "search", "read")),
+		samplePerUserDiscovery(schemas.MCPAuthModeUser, "carol", "notes", "search", "write"),
+		samplePerUserDiscovery(schemas.MCPAuthModeVK, "vk-1", "notes", "search"),
+		samplePerUserDiscovery(schemas.MCPAuthModeSession, "sess-1", "notes", "admin"),
+		samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "wiki", "read"),
+		samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "jira", "issues"),
+	} {
+		require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, discovery))
+	}
+
+	counts, err := store.GetMCPPerUserDiscoveryToolCallerCounts(ctx, []string{"notes", "wiki", "missing"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]map[string]int{
+		"notes": {"search": 4, "read": 2, "write": 1},
+		"wiki":  {"read": 1},
+	}, counts, "session rows, clients not asked for and clients with no discoveries are left out")
+
+	counts, err = store.GetMCPPerUserDiscoveryToolCallerCounts(ctx, nil)
+	require.NoError(t, err)
+	assert.Empty(t, counts)
+}
+
 // TestMCPClientPendingVerification_OnlyItsSetterClearsIt: for a client read
 // from the record (one with per_user_discovery on), the record is stored at
 // create and read back on every load, an ordinary update leaves it as it is

@@ -927,6 +927,11 @@ type ConfigStore interface {
 	// client: the user and virtual-key rows with only their identity columns
 	// and discovery hash filled.
 	GetMCPPerUserDiscoveryBindings(ctx context.Context, mcpClientID string) ([]tables.TableMCPPerUserDiscovery, error)
+	// GetMCPPerUserDiscoveryToolCallerCounts returns, for each of the clients,
+	// every tool name in its user and virtual-key callers' discoveries with how
+	// many of those discoveries include it. Clients no caller holds a discovery
+	// of are left out.
+	GetMCPPerUserDiscoveryToolCallerCounts(ctx context.Context, mcpClientIDs []string) (map[string]map[string]int, error)
 	UpsertMCPPerUserDiscovery(ctx context.Context, discovery *tables.TableMCPPerUserDiscovery) error
 	DeleteMCPPerUserDiscovery(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
 	DeleteMCPPerUserDiscoveriesByClient(ctx context.Context, mcpClientID string) error

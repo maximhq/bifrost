@@ -11189,6 +11189,48 @@ func (s *RDBConfigStore) GetMCPPerUserDiscoveryBindings(ctx context.Context, mcp
 	return rows, nil
 }
 
+// GetMCPPerUserDiscoveryToolCallerCounts returns, for each of the clients,
+// every tool name in its user and virtual-key callers' discoveries with how many
+// of those discoveries include it. Callers who see the same tools share a
+// discovery hash, so one query reads one row per distinct discovery with its
+// number of holders, and decodes only the tool names of that row.
+func (s *RDBConfigStore) GetMCPPerUserDiscoveryToolCallerCounts(ctx context.Context, mcpClientIDs []string) (map[string]map[string]int, error) {
+	counts := make(map[string]map[string]int)
+	if len(mcpClientIDs) == 0 {
+		return counts, nil
+	}
+	distinct := s.DB().WithContext(ctx).Model(&tables.TableMCPPerUserDiscovery{}).
+		Select("MIN(id) AS id, COUNT(*) AS callers").
+		Where("mcp_client_id IN ? AND auth_mode IN ?", mcpClientIDs, []string{string(schemas.MCPAuthModeUser), string(schemas.MCPAuthModeVK)}).
+		Group("mcp_client_id, discovery_hash")
+	var rows []struct {
+		MCPClientID string
+		ToolsJSON   string
+		Callers     int
+	}
+	if err := s.DB().WithContext(ctx).Table("mcp_per_user_discoveries AS d").
+		Select("d.mcp_client_id, d.tools_json, g.callers").
+		Joins("JOIN (?) AS g ON g.id = d.id", distinct).
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to count the tools of mcp per-user discoveries: %w", err)
+	}
+	for _, row := range rows {
+		var tools map[string]json.RawMessage
+		if err := sonic.UnmarshalString(row.ToolsJSON, &tools); err != nil {
+			return nil, fmt.Errorf("failed to read the tool names of a per-user discovery of mcp client %s: %w", row.MCPClientID, err)
+		}
+		clientCounts := counts[row.MCPClientID]
+		if clientCounts == nil {
+			clientCounts = make(map[string]int, len(tools))
+			counts[row.MCPClientID] = clientCounts
+		}
+		for name := range tools {
+			clientCounts[name] += row.Callers
+		}
+	}
+	return counts, nil
+}
+
 // GetMCPPerUserDiscoveryByMode looks up the discovery for one (mode, identity,
 // mcp client) binding. Returns nil, nil when the binding has none.
 func (s *RDBConfigStore) GetMCPPerUserDiscoveryByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error) {
