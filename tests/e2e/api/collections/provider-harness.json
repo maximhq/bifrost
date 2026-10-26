@@ -282985,6 +282985,72 @@
           }
         }
       ]
+    },
+    {
+      "name": "276. ChatGPT Codex passthrough forwards the model list (#9139) (codex-model-list)",
+      "description": "Codex fetches GET /backend-api/codex/models when it starts, against the same base URL as its responses requests. /chatgpt_passthrough only registered POST /backend-api/codex/responses, so the GET fell through to the dashboard fallback and Codex received the UI's index.html with a 200, which it failed to decode. Like folder 257, this requires openaiKey to contain a valid ChatGPT subscription access token, not an OpenAI API key. Pins that the request is dispatched as a passthrough to /backend-api/codex/models and that ChatGPT's JSON model list comes back. Authentication, policy, rate-limit and upstream failures must fail, not skip.",
+      "item": [
+        {
+          "name": "openai Codex model list through /chatgpt_passthrough returns the ChatGPT catalog - codex-model-list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('Codex model list uses passthrough dispatch (pre-fix: the dashboard HTML)', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), pm.response.text()).to.equal('passthrough');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-passthrough-path'), pm.response.text()).to.equal('/backend-api/codex/models');",
+                  "});",
+                  "pm.test('ChatGPT returns the JSON model list Codex decodes', function () {",
+                  "  var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.models, 'expected a models array: ' + pm.response.text().slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/models?client_version=0.164.0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "client_version",
+                  "value": "0.164.0"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
