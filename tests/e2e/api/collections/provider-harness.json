@@ -282985,6 +282985,204 @@
           }
         }
       ]
+    },
+    {
+      "name": "277. ChatGPT Codex passthrough forwards web search and image generation (#9151 / PR #9152)",
+      "description": "Codex's web search tool posts to /backend-api/codex/alpha/search, and its image generation tool to /backend-api/codex/images/generations and /images/edits, against the same base URL as its responses requests. Codex's current models take no hosted tools, so alpha/search is how Codex searches the web. /chatgpt_passthrough only registered POST /backend-api/codex/responses, so Bifrost answered these requests with 405 Method Not Allowed and both tools failed. Like folder 257, this requires openaiKey to contain a valid ChatGPT subscription access token, not an OpenAI API key. Each body is intentionally invalid, missing a required field, so ChatGPT rejects it without searching or generating an image. Each case pins that the request is dispatched as a passthrough to its route and that ChatGPT's own 4xx comes back. Authentication, method and rate-limit failures must fail, not skip.",
+      "item": [
+        {
+          "name": "277.1 openai Codex web search through /chatgpt_passthrough reaches ChatGPT [EXPECT-4XX] - #9151",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ChatGPT rejects the search request without a model (pre-fix: 405 from Bifrost)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(400, 499);",
+                  "  pm.expect([401, 403, 405, 429], 'auth, method or rate-limit failure: ' + pm.response.text()).to.not.include(pm.response.code);",
+                  "});",
+                  "pm.test('Codex uses passthrough dispatch', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), pm.response.text()).to.equal('passthrough');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-passthrough-path'), pm.response.text()).to.equal('/backend-api/codex/alpha/search');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"harness-codex-web-search\",\n  \"commands\": {\n    \"search_query\": [\n      {\n        \"q\": \"bifrost\"\n      }\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/alpha/search",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "alpha",
+                "search"
+              ]
+            }
+          }
+        },
+        {
+          "name": "277.2 openai gpt-image-2 Codex image generation through /chatgpt_passthrough reaches ChatGPT [EXPECT-4XX] - #9151",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ChatGPT rejects the image generation request without a prompt (pre-fix: 405 from Bifrost)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(400, 499);",
+                  "  pm.expect([401, 403, 405, 429], 'auth, method or rate-limit failure: ' + pm.response.text()).to.not.include(pm.response.code);",
+                  "});",
+                  "pm.test('Codex uses passthrough dispatch', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), pm.response.text()).to.equal('passthrough');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-passthrough-path'), pm.response.text()).to.equal('/backend-api/codex/images/generations');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-image-2\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "277.3 openai gpt-image-2 Codex image edit through /chatgpt_passthrough reaches ChatGPT [EXPECT-4XX] - #9151",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ChatGPT rejects the image edit request without images (pre-fix: 405 from Bifrost)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(400, 499);",
+                  "  pm.expect([401, 403, 405, 429], 'auth, method or rate-limit failure: ' + pm.response.text()).to.not.include(pm.response.code);",
+                  "});",
+                  "pm.test('Codex uses passthrough dispatch', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), pm.response.text()).to.equal('passthrough');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-passthrough-path'), pm.response.text()).to.equal('/backend-api/codex/images/edits');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-image-2\",\n  \"prompt\": \"harness\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
