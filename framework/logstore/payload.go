@@ -257,7 +257,12 @@ func ClearPayload(l *Log) {
 	l.RoutingEngineLogs = ""
 	l.PluginLogs = ""
 
-	// Clear Parsed virtual fields so GORM's SerializeFields won't re-serialize them.
+	clearParsedPayload(l)
+}
+
+// clearParsedPayload clears the Parsed virtual fields so SerializeFields
+// won't re-serialize them over the TEXT columns.
+func clearParsedPayload(l *Log) {
 	l.InputHistoryParsed = nil
 	l.ResponsesInputHistoryParsed = nil
 	l.OutputMessageParsed = nil
