@@ -282116,7 +282116,367 @@
       ]
     },
     {
-      "name": "273. Cloudflare 520 origin errors retry on the same key (provider error fixture)",
+      "name": "273. Regex allowlist lists aliases the upstream catalog never returns (regex-alias-listing)",
+      "description": "Pins the list-models backfill for aliases that a key allows only through a `regex:` entry. With a restricted allowlist, `ListModelsPipeline.BackfillModels` backfilled exact allowlist entries but skipped every `regex:` entry, so an alias whose name matched only a pattern, and whose target the upstream list never returns (a Bedrock inference profile, an Azure deployment name, a fine-tune), was missing from GET /v1/models while requests to it were routed. The shared pipeline is used by every provider's list-models, so the case drives it through a run-scoped custom provider on the OpenAI base: its key allows `regex:^harness-.*` and `gpt-4o-mini`, blocks `harness-blocked`, and maps two `harness-` aliases to fine-tune IDs OpenAI does not list. The listing must hold exactly the exact entry and the pattern-allowed alias (with its target in `alias`), never the blacklisted alias and never the pattern itself. Pre-fix the alias is missing. The listing call is free; the provider is deleted afterwards and stale run-scoped providers are swept first.",
+      "item": [
+        {
+          "name": "openai custom provider GET /v1/models lists an alias allowed only by a regex: entry - regex-alias-listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped custom provider whose key allows models by pattern ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-regexalias-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'run-' + Date.now();",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('rgxAliasProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function () { sweep(); }); }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) {",
+                  "      if (!expectOk('setup: created run-scoped provider', res)) { return; }",
+                  "      // Recorded before the key, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('rgxAliasProvider', name);",
+                  "      var key = {",
+                  "        name: name + '-key',",
+                  "        value: 'env.OPENAI_API_KEY',",
+                  "        weight: 1,",
+                  "        models: ['regex:^harness-.*', 'gpt-4o-mini'],",
+                  "        blacklisted_models: ['harness-blocked'],",
+                  "        aliases: {",
+                  "          'harness-pinned': { model_id: 'ft:gpt-4o-mini-2024-07-18:harness::regexalias' },",
+                  "          'harness-blocked': { model_id: 'ft:gpt-4o-mini-2024-07-18:harness::blocked' }",
+                  "        }",
+                  "      };",
+                  "      call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', key, function (res2) {",
+                  "        expectOk('setup: created key with a regex allowlist and two aliases', res2);",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('rgxAliasProvider');",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var byId = {}; (body.data || []).forEach(function (m) { byId[m.id] = m; });",
+                  "// Every listed id, duplicates kept, so the exact-set check below catches a model listed twice.",
+                  "var ids = (body.data || []).map(function (m) { return m.id; });",
+                  "pm.test('an alias allowed only by regex:^harness-.* is listed with its target (pre-fix: missing)', function () {",
+                  "  var m = byId[name + '/harness-pinned'];",
+                  "  pm.expect(m, 'not in ' + JSON.stringify(ids)).to.be.an('object');",
+                  "  pm.expect(m.alias).to.eql('ft:gpt-4o-mini-2024-07-18:harness::regexalias');",
+                  "});",
+                  "pm.test('a blacklisted alias stays out although the pattern matches it', function () {",
+                  "  pm.expect(ids).to.not.include(name + '/harness-blocked');",
+                  "});",
+                  "pm.test('exactly the exact entry and the regex-allowed alias are listed, no pattern among them', function () {",
+                  "  pm.expect(ids.slice().sort(), JSON.stringify(ids)).to.eql([name + '/gpt-4o-mini', name + '/harness-pinned'].sort());",
+                  "});",
+                  "if (name && name.indexOf('setup-failed') === -1) {",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider={{rgxAliasProvider}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{rgxAliasProvider}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "274. Vertex lists the Model Garden catalog for OAuth keys with deployments or a regex allowlist (vertex-catalog-listing)",
+      "description": "Pins Vertex list-models for keys that can mint an OAuth token. `listModelsByKey` used to answer from the key's configuration, without calling Model Garden, whenever the key had a deployment or an allowlist other than `*`: a `*` key with deployments listed only the deployments, and a `regex:` allowlist listed nothing but the deployments it matched, although requests to the catalog models were routed. Keys with a service account (or workload identity, or default credentials) now list the Model Garden catalog through the allowlist and add their deployments; keys with only an API key keep the configuration listing, because Model Garden rejects API keys (that path has Go coverage, the profile has no Vertex API key). Each case creates a run-scoped custom provider on the vertex base with the profile's service account and deletes it afterwards. (1) `regex:^gemini-2[.]5-.*` plus a deployment to a numeric endpoint: catalog models matching the pattern are listed, every listed model matches it, and the deployment carries its target. (2) `*` plus a deployment: catalog models are listed next to the deployment. Model ids are compared without their provider segment. The listing calls are free.",
+      "item": [
+        {
+          "name": "vertex service-account key with a regex: allowlist lists the matching Model Garden models and its endpoint deployment - vertex-catalog-listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped vertex provider with the profile's service account ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-vertexlist-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'regex-run-' + Date.now();",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('vertexListRegexProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  if (!expectOk('setup: listed providers to sweep stale run-scoped ones', r0)) { return; }",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) {",
+                  "      var staleName = stale.shift().name;",
+                  "      return call('DELETE', '/api/providers/' + encodeURIComponent(staleName), null, function (rd) {",
+                  "        // 404: a parallel run deleted it first.",
+                  "        pm.test('setup: swept stale provider ' + staleName, function () { pm.expect(rd && rd.code, rd ? rd.text() : 'no response').to.be.oneOf([200, 404]); });",
+                  "        sweep();",
+                  "      });",
+                  "    }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'vertex', is_key_less: false } }, function (res) {",
+                  "      if (!expectOk('setup: created run-scoped vertex provider', res)) { return; }",
+                  "      // Recorded before the key, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('vertexListRegexProvider', name);",
+                  "      var key = { models: ['regex:^gemini-2[.]5-.*'], aliases: { 'gemini-2.5-harness-endpoint': { model_id: '1234567890' } } };",
+                  "      key.name = name + '-key';",
+                  "      key.weight = 1;",
+                  "      key.vertex_key_config = { project_id: 'env.VERTEX_PROJECT_ID', region: 'env.GOOGLE_LOCATION', auth_credentials: 'env.VERTEX_CREDENTIALS' };",
+                  "      call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', key, function (res2) {",
+                  "        expectOk('setup: created service-account key', res2);",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('vertexListRegexProvider');",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// Model ids without their provider segment, mapped to their alias ('' when none).",
+                  "var models = {}; (body.data || []).forEach(function (m) { models[String(m.id).slice(String(m.id).indexOf('/') + 1)] = m.alias || ''; });",
+                  "var ids = Object.keys(models);",
+                  "pm.test('Model Garden models matching the pattern are listed (pre-fix: only the deployment)', function () {",
+                  "  var catalog = ids.filter(function (id) { return id !== 'gemini-2.5-harness-endpoint'; });",
+                  "  pm.expect(catalog.length, JSON.stringify(ids)).to.be.above(0);",
+                  "});",
+                  "pm.test('every listed model matches regex:^gemini-2[.]5-.*', function () {",
+                  "  ids.forEach(function (id) { pm.expect(id, JSON.stringify(ids)).to.match(/^gemini-2[.]5-/i); });",
+                  "});",
+                  "pm.test('the endpoint deployment the pattern allows is listed with its target', function () {",
+                  "  pm.expect(models['gemini-2.5-harness-endpoint'], JSON.stringify(models)).to.eql('1234567890');",
+                  "});",
+                  "if (name && name.indexOf('setup-failed') === -1) {",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider={{vertexListRegexProvider}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{vertexListRegexProvider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex service-account key with * and a deployment lists the Model Garden catalog plus the deployment - vertex-catalog-listing",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped vertex provider with the profile's service account ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-vertexlist-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'wildcard-run-' + Date.now();",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('vertexListWildcardProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  if (!expectOk('setup: listed providers to sweep stale run-scoped ones', r0)) { return; }",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) {",
+                  "      var staleName = stale.shift().name;",
+                  "      return call('DELETE', '/api/providers/' + encodeURIComponent(staleName), null, function (rd) {",
+                  "        // 404: a parallel run deleted it first.",
+                  "        pm.test('setup: swept stale provider ' + staleName, function () { pm.expect(rd && rd.code, rd ? rd.text() : 'no response').to.be.oneOf([200, 404]); });",
+                  "        sweep();",
+                  "      });",
+                  "    }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'vertex', is_key_less: false } }, function (res) {",
+                  "      if (!expectOk('setup: created run-scoped vertex provider', res)) { return; }",
+                  "      // Recorded before the key, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('vertexListWildcardProvider', name);",
+                  "      var key = { models: ['*'], aliases: { 'harness-vertex-deployment': { model_id: 'gemini-2.5-flash' } } };",
+                  "      key.name = name + '-key';",
+                  "      key.weight = 1;",
+                  "      key.vertex_key_config = { project_id: 'env.VERTEX_PROJECT_ID', region: 'env.GOOGLE_LOCATION', auth_credentials: 'env.VERTEX_CREDENTIALS' };",
+                  "      call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', key, function (res2) {",
+                  "        expectOk('setup: created service-account key', res2);",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('vertexListWildcardProvider');",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// Model ids without their provider segment, mapped to their alias ('' when none).",
+                  "var models = {}; (body.data || []).forEach(function (m) { models[String(m.id).slice(String(m.id).indexOf('/') + 1)] = m.alias || ''; });",
+                  "var ids = Object.keys(models);",
+                  "pm.test('Model Garden catalog models are listed next to the deployment (pre-fix: only the deployment)', function () {",
+                  "  var gemini = ids.filter(function (id) { return /^gemini-/i.test(id); });",
+                  "  pm.expect(gemini.length, JSON.stringify(ids)).to.be.above(0);",
+                  "});",
+                  "pm.test('the deployment is listed with its target', function () {",
+                  "  pm.expect(models['harness-vertex-deployment'], JSON.stringify(models)).to.eql('gemini-2.5-flash');",
+                  "});",
+                  "if (name && name.indexOf('setup-failed') === -1) {",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider={{vertexListWildcardProvider}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{vertexListWildcardProvider}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "275. Cloudflare 520 origin errors retry on the same key (provider error fixture)",
       "description": "Cloudflare answers 520-524 when its edge gets nothing usable from the origin, and providers behind it (OpenAI) pass that through, usually as a plain-text body such as \"error code: 520\". These statuses are transient (core/failureclass.go), so Bifrost retries them on the same key instead of returning them. The row uses the routing-error-fixture setup (see folder 185's description): a run-scoped OpenAI-backed provider on the provider error fixture with max_retries 2, one key whose alias sends upstream-520-once, which answers the first attempt with a plain-text 520 and the next with a response. Before the change the client gets the 520; after it the request succeeds on the second attempt with the same key. Run with providerErrorFixture=1 (and providerErrorFixtureUrl when the fixture is not on http://127.0.0.1:8791); skipped otherwise.",
       "item": [
         {

@@ -46,8 +46,7 @@ jobs:
             echo "Installing Docker Compose plugin..."
             DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
             mkdir -p "$DOCKER_CONFIG/cli-plugins"
-            curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
-            chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+            ./.github/workflows/scripts/install-docker-compose.sh "$DOCKER_CONFIG/cli-plugins/docker-compose"
             docker compose version
           else
             echo "Docker Compose plugin is available"

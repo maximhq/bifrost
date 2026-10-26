@@ -7,7 +7,9 @@ icon: "right-left"
 
 ## Overview
 
-`auth_type: "token_exchange"` lets each caller reach an upstream MCP server **as themselves**, without Bifrost storing a credential per user for that server. On every tool call, Bifrost takes the caller's own identity-provider (IdP) token and exchanges it, via [RFC 8693 Token Exchange](https://datatracker.ietf.org/doc/html/rfc8693) or the equivalent on-behalf-of grant, for a short-lived token scoped to that MCP server's audience. When the request carries no IdP token but was authenticated through the caller's own Bifrost sign-in, Bifrost exchanges the access token from that sign-in instead; see [Identity requirements](#identity-requirements). The exchanged token is sent upstream; the caller's original token never is.
+`auth_type: "token_exchange"` lets each caller reach an upstream MCP server **as themselves**, without Bifrost storing a credential per user for that server. With the default (direct) profile, described on this page, on every tool call Bifrost takes the caller's own identity-provider (IdP) token and exchanges it, via [RFC 8693 Token Exchange](https://datatracker.ietf.org/doc/html/rfc8693) or the equivalent on-behalf-of grant, for a short-lived token scoped to that MCP server's audience. When the request carries no IdP token but was authenticated through the caller's own Bifrost sign-in, Bifrost exchanges the access token from that sign-in instead; see [Identity requirements](#identity-requirements). The exchanged token is sent upstream; the caller's original token never is.
+
+The [Cross App Access (`id_jag`) profile](./cross-app-access) works differently: the subject is the user's SSO session rather than their access token, and the upstream server's own authorization server issues the token.
 
 This is strictly delegated: there is no shared service-account fallback. A caller with neither an identity token nor a Bifrost sign-in of their own cannot use a `token_exchange` server. See [Identity requirements](#identity-requirements).
 
@@ -21,7 +23,7 @@ Requires an **enabled SCIM identity provider** (enterprise). Token exchange runs
 The `/mcp` gateway's own authentication mode is a separate, global setting from any MCP client's `auth_type` (see [Gateway Authentication → Authentication Modes](../gateway-auth#authentication-modes)), and it decides how callers reach a `token_exchange` server through `/mcp`. In strict **`oauth`** mode, `/mcp` accepts only Bifrost-issued OAuth tokens, so a caller cannot send their own identity-provider token there. Callers who connect in **user** mode still reach `token_exchange` servers: Bifrost exchanges the access token from their Bifrost sign-in. Virtual-key and session-mode tokens carry nothing to exchange. Use **`headers`** or **`both`** if your callers send their identity-provider token to `/mcp` directly.
 </Warning>
 
-| | Per-User OAuth (`per_user_oauth`) | Token Exchange (`token_exchange`) |
+| | Per-User OAuth (`per_user_oauth`) | Token Exchange (`token_exchange`, direct profile) |
 | --- | --- | --- |
 | Who authenticates | Each end-user, via a one-time browser consent | Nobody, per call: the caller's existing IdP token, or the access token from their Bifrost sign-in, is reused |
 | Credential stored per user | Yes — an OAuth token row per `(identity, mcp_client)` | No — nothing is stored per caller; exchanged tokens are cached in memory only |
@@ -29,7 +31,7 @@ The `/mcp` gateway's own authentication mode is a separate, global setting from 
 | Best for | Third-party SaaS (Notion, GitHub, Sentry) that runs its own OAuth | First-party/internal MCP servers that trust your organization's IdP |
 | Setup | Admin OAuth app registration per service | Audience + a dedicated IdP application per MCP server |
 
-If the upstream MCP server doesn't trust your SCIM identity provider's issuer — most third-party SaaS services — token exchange cannot work there. Use [Per-User OAuth](./per-user-oauth) instead.
+If the upstream MCP server doesn't trust your SCIM identity provider's issuer — most third-party SaaS services — direct token exchange cannot work there. If the service supports Okta Cross App Access, use the [Cross App Access (`id_jag`) profile](./cross-app-access); otherwise use [Per-User OAuth](./per-user-oauth).
 
 This auth type is only valid for **HTTP** and **SSE** connections.
 
@@ -254,10 +256,10 @@ Sending both an identity token and a virtual key is fine: [`dual_credential_conf
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `audience` | string | Yes | Resource identifier this server is scoped to at the identity provider. For Microsoft Entra ID, this is the resource app's Application (client) ID — a bare GUID, not its `api://...` Application ID URI. |
-| `use_idp_credentials` | boolean | No (default `false`) | When `true`, performs the exchange as the SSO login application itself instead of `client_id`/`client_secret`, which are then ignored. Required for Microsoft Entra ID — see [Prerequisites](#prerequisites) |
+| `use_idp_credentials` | boolean | No (default `false`) | When `true`, performs the exchange as the SSO login application itself instead of `client_id`/`client_secret`, which are then ignored. Required for Microsoft Entra ID — see [Prerequisites](#prerequisites). Always on for the [Cross App Access](/mcp/auth/cross-app-access) profile |
 | `client_id` | string | Yes, unless `use_idp_credentials` is `true` | The dedicated exchange application's client ID (env./vault. references supported) |
 | `client_secret` | string | No | The exchange application's secret; omit for public clients. Ignored when `use_idp_credentials` is `true` (env./vault. references supported) |
-| `authorization_server_url` | string | No | Overrides which Authorization Server the exchange is sent to. Only needed when `audience` is registered on a different Authorization Server than your SSO login uses — see [Okta: per-resource Authorization Server](#okta-per-resource-authorization-server). Leave unset for Entra and Auth0. |
+| `authorization_server_url` | string | No | Overrides which Authorization Server the exchange is sent to. Only needed when `audience` is registered on a different Authorization Server than your SSO login uses — see [Okta: per-resource Authorization Server](#okta-per-resource-authorization-server). Leave unset for Entra and Auth0. Takes an issuer URL, from which the token endpoint is derived, or a full token endpoint URL ending in `/token`, which is used as is (Bifrost Enterprise). |
 | `scopes` | string[] | No | Scopes requested on the exchanged token; include `offline_access` for a self-renewing admin discovery credential. For Okta, must include a custom scope defined on the target Authorization Server — standard OIDC scopes are not valid here. For Microsoft Entra ID, `offline_access` is the only scope Bifrost will combine with the audience's default resource access (`<audience>/.default offline_access`) — any other configured scope fully replaces the default instead of adding to it, matching Entra's own restriction on combining `.default` with other delegated scopes. |
 
 `client_id` and `client_secret` are redacted in API responses, same as other MCP credential fields.
