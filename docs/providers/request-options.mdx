@@ -357,9 +357,9 @@ Input: messages,
 
 Bound the total duration of a single request or stream, end to end. Arms once per call, including every configured fallback attempt -- a request that falls back to N other providers is still bound by the same declared deadline, not N times it. Applies to both streaming and non-streaming requests.
 
-Independent of any per-chunk stream-idle timeout: setting one does not imply or stretch the other. A caller who wants both a total budget and a tighter idle tolerance sets both headers; a caller who only cares about one sets just that one and the other falls through to the server's own configured default.
+Independent of any per-chunk stream-idle timeout: setting one does not imply or stretch the other. A caller who wants both a total budget and a tighter idle tolerance sets both headers. A caller who only sets `x-bf-request-timeout` keeps the server's configured stream idle timeout. A caller who only sets `x-bf-stream-idle-timeout` has no total deadline, because an unset `x-bf-request-timeout` arms no timer.
 
-Accepts duration strings (`"30s"`, `"5m"`, `"1h"`) or plain numbers (treated as seconds). Clamped to 30 minutes.
+Accepts duration strings (`"30s"`, `"5m"`, `"1h"`) or plain numbers (treated as seconds). Header values are clamped to 30 minutes. Go SDK callers that set `BifrostContextKeyRequestTimeout` directly are not clamped.
 
 <Tabs>
 <Tab title="Gateway (cURL)">
@@ -390,7 +390,7 @@ Input: messages,
 </Tabs>
 
 <Note>
-When the deadline fires, Bifrost sets the internal `BifrostContextKeyRequestTimeoutFired` sentinel before cancelling the request, so plugins can distinguish a declared deadline firing from an arbitrary caller-disconnect or network cancellation.
+When the deadline fires, Bifrost sets the internal `BifrostContextKeyRequestTimeoutFired` sentinel before cancelling the request, so plugins can distinguish a declared deadline firing from an arbitrary caller-disconnect or network cancellation. For a streaming request, the client also receives a terminal `504` error on the stream instead of the connection simply ending, so a truncated response cannot be mistaken for a complete one.
 </Note>
 
 ### Stream Idle Timeout
