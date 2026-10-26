@@ -282114,6 +282114,188 @@
           }
         }
       ]
+    },
+    {
+      "name": "274. Provider-reported zero cost keeps total_cost (zero provider cost) (#9000 / PR #9006)",
+      "description": "Local fixture regression for #9000, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1. The fixture model upstream-zero-cost answers like upstream-ok and reports usage.cost as a bare 0, as OpenCode Zen does for a request inside a plan. BifrostCost decodes that into TotalCost 0, and before the fix every BifrostCost field was omitempty, so the native routes returned \"cost\": {} and a client could not tell a free request from one with no reported cost. 274.1 and 274.2 pin cost {\"total_cost\": 0} on the native /v1/chat/completions route, non-streaming and on the streamed usage chunk. 274.3 pins that the OpenAI SDK route, which flattens cost to the bare total, still answers cost 0 (green before and after). Setup and scoped run commands are in tests/e2e/api/README.md under Provider-reported zero cost.",
+      "item": [
+        {
+          "name": "274.1 openai openai/upstream-zero-cost keeps a zero usage.cost as total_cost 0 (zero provider cost) - #9000",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completion succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('a provider-reported zero cost comes back as total_cost 0, not {}', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.usage, 'usage missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.usage.cost, 'cost: ' + JSON.stringify(body.usage)).to.eql({ total_cost: 0 });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-zero-cost\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "274.2 openai openai/upstream-zero-cost stream usage chunk keeps a zero cost as total_cost 0 (zero provider cost) - #9000",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var usage = null;",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: {') !== 0) { return; }",
+                  "  var chunk = JSON.parse(line.slice(6));",
+                  "  if (chunk.usage) { usage = chunk.usage; }",
+                  "});",
+                  "pm.test('stream completes', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(raw, 'completion missing: ' + raw).to.include('[DONE]');",
+                  "});",
+                  "pm.test('the usage chunk carries the zero cost as total_cost 0, not {}', function () {",
+                  "  pm.expect(usage, 'no usage chunk: ' + raw).to.be.an('object');",
+                  "  pm.expect(usage.cost, 'cost: ' + JSON.stringify(usage)).to.eql({ total_cost: 0 });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-zero-cost\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "274.3 openai upstream-zero-cost keeps a zero cost on the OpenAI SDK route (zero provider cost) - #9000",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completion succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the OpenAI SDK route keeps the zero cost as a bare 0', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.usage, 'usage missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.usage.cost, 'cost: ' + JSON.stringify(body.usage)).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"upstream-zero-cost\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

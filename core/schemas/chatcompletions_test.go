@@ -287,3 +287,83 @@ func BenchmarkBifrostLLMUsageUnmarshal(b *testing.B) {
 		})
 	}
 }
+
+func TestBifrostCostZeroTotalSurvivesRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"bare zero", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0}`, `{"total_cost":0}`},
+		{"nested zero total", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":{"total_cost":0}}`, `{"total_cost":0}`},
+		{"nested zero split", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":{"input_cost":0,"output_cost":0,"total_cost":0}}`, `{"total_cost":0}`},
+		{"bare nonzero", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0.25}`, `{"total_cost":0.25}`},
+		{"nested split", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":{"input_cost":0.1,"output_cost":0.15,"total_cost":0.25}}`, `{"input_cost":0.1,"output_cost":0.15,"total_cost":0.25}`},
+		{"absent", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}`, ""},
+		{"null", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":null}`, ""},
+	}
+	marshalers := map[string]func(any) ([]byte, error){
+		"sonic":         Marshal,
+		"encoding/json": json.Marshal,
+	}
+	for _, tc := range cases {
+		for mName, marshal := range marshalers {
+			t.Run(tc.name+"/"+mName, func(t *testing.T) {
+				var u BifrostLLMUsage
+				if err := Unmarshal([]byte(tc.in), &u); err != nil {
+					t.Fatal(err)
+				}
+				out, err := marshal(&u)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got map[string]json.RawMessage
+				if err := json.Unmarshal(out, &got); err != nil {
+					t.Fatal(err)
+				}
+				cost, ok := got["cost"]
+				if tc.want == "" {
+					if ok {
+						t.Fatalf("cost must stay absent, got %s in %s", cost, out)
+					}
+					return
+				}
+				if !ok || string(cost) != tc.want {
+					t.Fatalf("cost = %s, want %s (usage %s)", cost, tc.want, out)
+				}
+			})
+		}
+	}
+}
+
+func TestResponsesUsageZeroCostSurvivesRoundTrip(t *testing.T) {
+	var u ResponsesResponseUsage
+	if err := Unmarshal([]byte(`{"input_tokens":3,"output_tokens":1,"total_tokens":4,"cost":0}`), &u); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Marshal(&u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"cost":{"total_cost":0}`) {
+		t.Fatalf("zero cost lost on the responses usage: %s", out)
+	}
+}
+
+func BenchmarkBifrostLLMUsageMarshalCost(b *testing.B) {
+	cases := map[string]*BifrostLLMUsage{
+		"zero":  {PromptTokens: 1200, CompletionTokens: 300, TotalTokens: 1500, Cost: &BifrostCost{}},
+		"total": {PromptTokens: 1200, CompletionTokens: 300, TotalTokens: 1500, Cost: &BifrostCost{TotalCost: 0.0042}},
+		"split": {PromptTokens: 1200, CompletionTokens: 300, TotalTokens: 1500, Cost: &BifrostCost{InputCost: 0.003, OutputCost: 0.0012, TotalCost: 0.0042}},
+	}
+	for name, u := range cases {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := Marshal(u); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
