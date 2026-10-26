@@ -27,7 +27,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronRight, Info, Trash2 } from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { useFieldArray, useForm } from "react-hook-form";
+import { type FieldErrors, useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { buildProviderUpdatePayload } from "../views/utils";
@@ -317,6 +317,12 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	// glob is written; the form value only ever holds the non-empty lines.
 	const [streamingPathsText, setStreamingPathsText] = useState(() => (genericConfig?.streaming?.paths ?? []).join("\n"));
 
+	// A refused save must show its reason: the routes list is collapsed by default, so a route
+	// error inside it opens the list instead of failing silently.
+	const onInvalid = (errors: FieldErrors<FormValues>) => {
+		if (errors.routes) setRoutesOpen(true);
+	};
+
 	const onSubmit = (values: FormValues) => {
 		// Under SigV4 the relay signs with the key's AWS credentials and never reads its value, so
 		// keys that were plain values for another auth type stop doing anything without a word.
@@ -547,7 +553,11 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 
 	return (
 		<Form {...form}>
-			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8 px-4 pb-6 md:px-6" data-testid="generic-passthrough-form">
+			<form
+				onSubmit={form.handleSubmit(onSubmit, onInvalid)}
+				className="space-y-8 px-4 pb-6 md:px-6"
+				data-testid="generic-passthrough-form"
+			>
 				<p className="text-muted-foreground text-sm">
 					Requests to <code className="font-mono text-xs">/passthrough/{provider.name}/&lt;path&gt;</code> are sent on to{" "}
 					<code className="font-mono text-xs">{provider.network_config?.base_url || "the configured base URL"}</code> unchanged, with your
