@@ -5172,6 +5172,59 @@ func TestMigrationAddMCPClientDiscoveredResourcesPromptsColumnsBoundsLockWait(t 
 	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
 }
 
+// TestMigrationAddMCPClientExposeListsColumns adds both allow-list columns, leaving existing rows
+// empty (expose all), and is a no-op on a re-run.
+func TestMigrationAddMCPClientExposeListsColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE config_mcp_clients (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id VARCHAR(255) NOT NULL UNIQUE)").Error)
+	require.NoError(t, db.Exec("INSERT INTO config_mcp_clients (client_id) VALUES ('existing')").Error)
+	for range 2 {
+		require.NoError(t, migrationAddMCPClientExposeListsColumns(context.Background(), db, testMigrationLogger))
+	}
+	for _, column := range []string{"prompts_to_expose_json", "resources_to_expose_json"} {
+		require.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column))
+		var value *string
+		require.NoError(t, db.Table("config_mcp_clients").Select(column).Where("client_id = 'existing'").Scan(&value).Error)
+		assert.True(t, value == nil || *value == "", "an existing client keeps exposing everything")
+	}
+}
+
+// TestMigrationAddMCPClientExposeListsColumnsBoundsLockWait pins that on postgres the migration gives up
+// on a held config_mcp_clients lock (lock_not_available, which the startup retry handles) instead of
+// queueing every later MCP client query behind it.
+func TestMigrationAddMCPClientExposeListsColumnsBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE config_mcp_clients (id SERIAL PRIMARY KEY, client_id VARCHAR(255) NOT NULL UNIQUE)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	// A long reader's ACCESS SHARE lock conflicts with the ACCESS EXCLUSIVE lock ALTER TABLE needs.
+	_, err = reader.ExecContext(ctx, "SELECT * FROM config_mcp_clients")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddMCPClientExposeListsColumns(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
 // TestA2ARawCaptureSettingMigration defaults existing deployments to capture disabled.
 func TestA2ARawCaptureSettingMigration(t *testing.T) {
 	db := setupTestDB(t)
@@ -5382,4 +5435,11 @@ func TestMigrationAddPassthroughJSONColumn_NonRollbackable(t *testing.T) {
 	var got tables.TableProvider
 	require.NoError(t, db.Where("name = ?", "openai").First(&got).Error)
 	assert.Equal(t, policy, got.Passthrough)
+}
+
+func TestMigrationAddMCPClientExposeListsColumns_RollbackRefuses(t *testing.T) {
+	m := mcpClientExposeListsColumnsMigration(context.Background(), "add_mcp_client_expose_lists_columns", testMigrationLogger)
+	err := m.Rollback(nil)
+	require.Error(t, err, "dropping the allow-lists would serve everything they restrict")
+	require.Contains(t, err.Error(), "non-rollbackable")
 }

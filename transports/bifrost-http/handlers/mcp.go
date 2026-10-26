@@ -697,6 +697,8 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		OauthConfigID:             clientConfig.OauthConfigID,
 		ToolsToExecute:            clientConfig.ToolsToExecute,
 		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
+		PromptsToExpose:           clientConfig.PromptsToExpose,
+		ResourcesToExpose:         clientConfig.ResourcesToExpose,
 		Headers:                   clientConfig.Headers,
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
@@ -887,6 +889,8 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		OauthConfigID:             clientConfig.OauthConfigID,
 		ToolsToExecute:            clientConfig.ToolsToExecute,
 		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
+		PromptsToExpose:           clientConfig.PromptsToExpose,
+		ResourcesToExpose:         clientConfig.ResourcesToExpose,
 		Headers:                   clientConfig.Headers,
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
@@ -1757,6 +1761,8 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			OauthConfigID:          dbClient.OauthConfigID,
 			ToolsToExecute:         dbClient.ToolsToExecute,
 			ToolsToAutoExecute:     dbClient.ToolsToAutoExecute,
+			PromptsToExpose:        dbClient.PromptsToExpose,
+			ResourcesToExpose:      dbClient.ResourcesToExpose,
 			Headers:                dbClient.Headers,
 			AllowedExtraHeaders:    dbClient.AllowedExtraHeaders,
 			IsPingAvailable:        &isPingAvailable,
@@ -2036,6 +2042,8 @@ type MCPClientUpdateRequest struct {
 	ToolPricing            map[string]float64              `json:"tool_pricing,omitempty"`
 	ToolsToExecute         *schemas.WhiteList              `json:"tools_to_execute,omitempty"`
 	ToolsToAutoExecute     *schemas.WhiteList              `json:"tools_to_auto_execute,omitempty"`
+	PromptsToExpose        *schemas.WhiteList              `json:"prompts_to_expose,omitempty"`
+	ResourcesToExpose      *schemas.WhiteList              `json:"resources_to_expose,omitempty"`
 	PerUserHeaderKeys      *[]string                       `json:"per_user_header_keys,omitempty"`
 	TokenExchange          *schemas.MCPTokenExchangeConfig `json:"token_exchange,omitempty"`
 	TLSConfig              *schemas.MCPTLSConfig           `json:"tls_config,omitempty"`
@@ -2310,6 +2318,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
 		return
 	}
+	if err := validateExposeLists(req.PromptsToExpose, req.ResourcesToExpose); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 	if err := mcp.ValidateMCPClientName(req.Name); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
@@ -2488,6 +2500,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			PerUserHeaderKeys:      canonHeaderKeys,
 			ToolsToExecute:         req.ToolsToExecute,
 			ToolsToAutoExecute:     req.ToolsToAutoExecute,
+			PromptsToExpose:        req.PromptsToExpose,
+			ResourcesToExpose:      req.ResourcesToExpose,
 			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
@@ -2618,6 +2632,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			TokenExchange:          req.TokenExchange,
 			ToolsToExecute:         req.ToolsToExecute,
 			ToolsToAutoExecute:     req.ToolsToAutoExecute,
+			PromptsToExpose:        req.PromptsToExpose,
+			ResourcesToExpose:      req.ResourcesToExpose,
 			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
@@ -2758,6 +2774,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			OauthConfigID:          &flowInitiation.OauthConfigID,
 			ToolsToExecute:         req.ToolsToExecute,
 			ToolsToAutoExecute:     req.ToolsToAutoExecute,
+			PromptsToExpose:        req.PromptsToExpose,
+			ResourcesToExpose:      req.ResourcesToExpose,
 			ToolPricing:            req.ToolPricing,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
@@ -2847,6 +2865,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			OauthConfigID:          &flowInitiation.OauthConfigID,
 			ToolsToExecute:         req.ToolsToExecute,
 			ToolsToAutoExecute:     req.ToolsToAutoExecute,
+			PromptsToExpose:        req.PromptsToExpose,
+			ResourcesToExpose:      req.ResourcesToExpose,
 			Headers:                req.Headers,
 			AllowedExtraHeaders:    req.AllowedExtraHeaders,
 			ToolPricing:            req.ToolPricing,
@@ -2900,6 +2920,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		TLSConfig:              req.TLSConfig,
 		ToolsToExecute:         req.ToolsToExecute,
 		ToolsToAutoExecute:     req.ToolsToAutoExecute,
+		PromptsToExpose:        req.PromptsToExpose,
+		ResourcesToExpose:      req.ResourcesToExpose,
 		Headers:                req.Headers,
 		AllowedExtraHeaders:    req.AllowedExtraHeaders,
 		AuthType:               schemas.MCPAuthType(req.AuthType),
@@ -3146,6 +3168,17 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	if err := validateToolsToAutoExecute(resolvedToolsToAutoExecute, resolvedToolsToExecute); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
+		return
+	}
+	resolvedPromptsToExpose, resolvedResourcesToExpose := existingConfig.PromptsToExpose, existingConfig.ResourcesToExpose
+	if req.PromptsToExpose != nil {
+		resolvedPromptsToExpose = *req.PromptsToExpose
+	}
+	if req.ResourcesToExpose != nil {
+		resolvedResourcesToExpose = *req.ResourcesToExpose
+	}
+	if err := validateExposeLists(resolvedPromptsToExpose, resolvedResourcesToExpose); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 	if err := mcp.ValidateMCPClientName(name); err != nil {
@@ -3498,6 +3531,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		StdioConfig:            existingConfig.StdioConfig,
 		ToolsToExecute:         resolvedToolsToExecute,
 		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
+		PromptsToExpose:        resolvedPromptsToExpose,
+		ResourcesToExpose:      resolvedResourcesToExpose,
 		Headers:                headers,
 		AllowedExtraHeaders:    allowedExtraHeaders,
 		IsPingAvailable:        isPingAvailable,
@@ -3563,6 +3598,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		TLSConfig:              tlsConfig,
 		ToolsToExecute:         resolvedToolsToExecute,
 		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
+		PromptsToExpose:        resolvedPromptsToExpose,
+		ResourcesToExpose:      resolvedResourcesToExpose,
 		Headers:                headers,
 		AllowedExtraHeaders:    allowedExtraHeaders,
 		AuthType:               existingConfig.AuthType,
@@ -3975,6 +4012,17 @@ func getIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 	return idStr, nil
 }
 
+// validateExposeLists checks the prompts and resources allow-lists; nil (expose all) is valid.
+func validateExposeLists(prompts, resources schemas.WhiteList) error {
+	if err := prompts.Validate(); err != nil {
+		return fmt.Errorf("invalid prompts_to_expose: %v", err)
+	}
+	if err := resources.Validate(); err != nil {
+		return fmt.Errorf("invalid resources_to_expose: %v", err)
+	}
+	return nil
+}
+
 func validateToolsToExecute(toolsToExecute schemas.WhiteList) error {
 	if err := toolsToExecute.Validate(); err != nil {
 		return fmt.Errorf("invalid tools_to_execute: %w", err)
@@ -4210,6 +4258,8 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		OauthConfigID:             clientConfig.OauthConfigID,
 		ToolsToExecute:            clientConfig.ToolsToExecute,
 		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
+		PromptsToExpose:           clientConfig.PromptsToExpose,
+		ResourcesToExpose:         clientConfig.ResourcesToExpose,
 		Headers:                   clientConfig.Headers,
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
@@ -4485,6 +4535,8 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				OauthConfigID:             mcpClientConfig.OauthConfigID,
 				ToolsToExecute:            mcpClientConfig.ToolsToExecute,
 				ToolsToAutoExecute:        mcpClientConfig.ToolsToAutoExecute,
+				PromptsToExpose:           mcpClientConfig.PromptsToExpose,
+				ResourcesToExpose:         mcpClientConfig.ResourcesToExpose,
 				Headers:                   mcpClientConfig.Headers,
 				AllowedExtraHeaders:       mcpClientConfig.AllowedExtraHeaders,
 				IsPingAvailable:           mcpClientConfig.IsPingAvailable,
@@ -4619,6 +4671,8 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			OauthConfigID:             mcpClientConfig.OauthConfigID,
 			ToolsToExecute:            mcpClientConfig.ToolsToExecute,
 			ToolsToAutoExecute:        mcpClientConfig.ToolsToAutoExecute,
+			PromptsToExpose:           mcpClientConfig.PromptsToExpose,
+			ResourcesToExpose:         mcpClientConfig.ResourcesToExpose,
 			Headers:                   mcpClientConfig.Headers,
 			AllowedExtraHeaders:       mcpClientConfig.AllowedExtraHeaders,
 			IsPingAvailable:           mcpClientConfig.IsPingAvailable,

@@ -261,6 +261,8 @@ export interface MCPClientConfig {
 	oauth_resource?: string;
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
+	prompts_to_expose?: string[] | null; // Prompts served through the gateway; null/absent = all, [] = none
+	resources_to_expose?: string[] | null; // Resource URIs and URI templates served; null/absent = all, [] = none
 	headers?: Record<string, SecretVar>;
 	// per_user_header_keys: admin-declared header *names* that each caller
 	// must supply when auth_type === "per_user_headers". Values live per-user
@@ -332,9 +334,36 @@ export interface MCPClientCredential {
 	updated_at: string;
 }
 
+// A prompt, resource or resource template an MCP server lists. Prompt names carry the client prefix.
+export interface MCPPrompt {
+	name: string;
+	title?: string;
+	description?: string;
+	arguments?: { name: string; description?: string; required?: boolean }[];
+}
+
+export interface MCPResource {
+	uri: string;
+	name: string;
+	title?: string;
+	description?: string;
+	mimeType?: string;
+}
+
+export interface MCPResourceTemplate {
+	uriTemplate: string;
+	name: string;
+	title?: string;
+	description?: string;
+	mimeType?: string;
+}
+
 export interface MCPClient {
 	config: MCPClientConfig;
 	tools: ToolFunction[];
+	prompts?: MCPPrompt[];
+	resources?: MCPResource[];
+	resource_templates?: MCPResourceTemplate[];
 	state: MCPConnectionState;
 	vk_configs: MCPVKConfigResponse[];
 	// The failure behind a `state` other than healthy, as recorded by the
@@ -429,6 +458,8 @@ export interface UpdateMCPClientRequest {
 	per_user_header_keys?: string[];
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
+	prompts_to_expose?: string[]; // ["*"] = all, [] = none; omitted = keep
+	resources_to_expose?: string[]; // ["*"] = all, [] = none; omitted = keep
 	is_ping_available?: boolean;
 	// Only meaningful when connection_type === "http". Toggling this on an
 	// existing client takes effect immediately: switching to true dials the

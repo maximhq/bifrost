@@ -288619,6 +288619,981 @@
           }
         }
       ]
+    },
+    {
+      "name": "277. MCP gateway serves upstream prompts and resources (mcp-gateway-prompts-resources)",
+      "description": "Bifrost's /mcp now serves what upstream MCP servers offer besides tools: prompts (named <client>-<prompt>, like tools), resources and resource templates (the server's own URIs), and completion/complete, each routed to the upstream that owns it through the MCP plugin gate. A caller sees a client's prompts and resources when it may reach that client (include headers, Virtual MCP slugs and virtual keys name the client or one of its tools), narrowed by the client's prompts_to_expose / resources_to_expose allow-lists, so a server without tools is served too. Before, initialize declared no prompts or resources and these methods were unknown. Uses the profile's sse_mcp fixture (examples/mcps/remote-test-server), which offers the review prompt, file:///fixture/handbook.md and fixture://notes/{id} but no completions; a stale fixture build or an older process on port 3012 lists none. No provider calls; the openai keyword is a harness filter label. Run with FEATURE=mcp-gateway-prompts-resources.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources initialize declares prompts, resources and completions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"the gateway advertises prompts, resources and completions\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  pm.expect(result.capabilities.prompts, 'no prompts capability: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.capabilities.resources, 'no resources capability: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.capabilities.completions, 'no completions capability: ' + pm.response.text()).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources prompts/list includes the upstream prompt, prefixed",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"sse_mcp's review prompt is listed as sse_mcp-review\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  var names = (result.prompts || []).map(function (p) { return p.name; });",
+                  "  pm.expect(names, 'prompts: ' + pm.response.text()).to.include('sse_mcp-review');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"prompts/list\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources prompts/get renders the upstream prompt",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"the upstream renders its own prompt with the caller's arguments\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  pm.expect(result.messages, 'no messages: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(result.messages[0].content.text).to.equal('Review this change: +harness');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"prompts/get\",\"params\":{\"name\":\"sse_mcp-review\",\"arguments\":{\"diff\":\"+harness\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources resources/list includes the upstream resource",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"sse_mcp's resource is listed under its own URI\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  var uris = (result.resources || []).map(function (r) { return r.uri; });",
+                  "  pm.expect(uris, 'resources: ' + pm.response.text()).to.include('file:///fixture/handbook.md');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/list\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources resources/templates/list includes the upstream template",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"sse_mcp's resource template is listed as the server's own\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  var templates = (result.resourceTemplates || []).map(function (t) { return t.uriTemplate; });",
+                  "  pm.expect(templates, 'templates: ' + pm.response.text()).to.include('fixture://notes/{id}');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/templates/list\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources resources/read reads the upstream resource",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"the resource is read from the upstream that offers it\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  pm.expect(result.contents, 'no contents: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(result.contents[0].text).to.equal('# Fixture handbook');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\",\"params\":{\"uri\":\"file:///fixture/handbook.md\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources resources/read resolves a URI through the upstream template",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"a URI matching the upstream's template is read from it\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  pm.expect(result.contents, 'no contents: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(result.contents[0].uri).to.equal('fixture://notes/42');",
+                  "  pm.expect(result.contents[0].text).to.equal('note');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\",\"params\":{\"uri\":\"fixture://notes/42\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources completion/complete answers for an upstream without completions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"an upstream that offers no completions completes to nothing rather than failing\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  pm.expect(result.completion.values, 'completion: ' + pm.response.text()).to.be.an('array').that.is.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"completion/complete\",\"params\":{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"sse_mcp-review\"},\"argument\":{\"name\":\"diff\",\"value\":\"+\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources 2026-07-28 prompts/get renders the upstream prompt",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"a 2026-07-28 client gets the same prompt\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  pm.expect(result.messages[0].content.text).to.equal('Review this change: +modern');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2026-07-28"
+              },
+              {
+                "key": "Mcp-Method",
+                "value": "prompts/get"
+              },
+              {
+                "key": "Mcp-Name",
+                "value": "sse_mcp-review"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"prompts/get\",\"params\":{\"name\":\"sse_mcp-review\",\"arguments\":{\"diff\":\"+modern\"},\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\"io.modelcontextprotocol/clientCapabilities\":{},\"io.modelcontextprotocol/clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources narrowed caller does not list the upstream prompt",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"a caller narrowed to another client sees none of sse_mcp's prompts\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + pm.response.text()).to.be.undefined;",
+                  "  var result = msg.result;",
+                  "  var names = (result.prompts || []).map(function (p) { return p.name; });",
+                  "  pm.expect(names, 'prompts: ' + pm.response.text()).to.not.include('sse_mcp-review');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "harness_no_such_client"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"prompts/list\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] [NO-CONTENT] openai mcp-gateway-prompts-resources narrowed caller cannot read the upstream resource",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"a caller narrowed to another client gets resource-not-found\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'expected a JSON-RPC error: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(msg.error.code, 'expected -32002: ' + pm.response.text()).to.equal(-32002);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              },
+              {
+                "key": "x-bf-mcp-include-clients",
+                "value": "harness_no_such_client"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\",\"params\":{\"uri\":\"file:///fixture/handbook.md\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "278. MCP gateway prompts_to_expose hides and restores a prompt (mcp-gateway-prompts-resources) [SERIAL]",
+      "description": "Split from 277 because it changes shared client config: sets sse_mcp's prompts_to_expose to [] (prompts/list hides sse_mcp-review, prompts/get of it is refused with -32602), then back to ['*'] (listed again), which also restores the fixture. [SERIAL] keeps a parallel sweep from racing these rows against 277 or each other. Run with FEATURE=mcp-gateway-prompts-resources.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources prompts_to_expose [] hides the upstream prompt",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set sse_mcp's prompts_to_expose, then let the gateway resync before the request runs.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=sse_mcp', method: 'GET' }, function (err, res) {",
+                  "  if (err) { throw err; }",
+                  "  var mine = (res.json().clients || []).filter(function (c) { return c.config && c.config.name === 'sse_mcp'; })[0];",
+                  "  if (!mine) { throw new Error('sse_mcp is not registered: ' + res.text()); }",
+                  "  pm.sendRequest({",
+                  "    url: pm.variables.get('baseUrl') + '/api/mcp/client/' + mine.config.client_id,",
+                  "    method: 'PUT',",
+                  "    header: { 'Content-Type': 'application/json' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({ prompts_to_expose: [] }) }",
+                  "  }, function (putErr, putRes) {",
+                  "    if (putErr) { throw putErr; }",
+                  "    if (putRes.code !== 200) { throw new Error('updating prompts_to_expose failed: ' + putRes.code + ' ' + putRes.text()); }",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"with prompts_to_expose [] the gateway lists none of sse_mcp's prompts\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + pm.response.text()).to.be.undefined;",
+                  "  var names = (msg.result.prompts || []).map(function (p) { return p.name; });",
+                  "  pm.expect(names, 'prompts: ' + pm.response.text()).to.not.include('sse_mcp-review');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"prompts/list\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] [NO-CONTENT] openai mcp-gateway-prompts-resources prompts/get of a prompt off the allow-list is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test('a prompt the allow-list leaves out cannot be fetched', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'expected a JSON-RPC error: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(msg.error.code, 'expected invalid params (-32602): ' + pm.response.text()).to.equal(-32602);",
+                  "  pm.expect(msg.result, 'no prompt is rendered: ' + pm.response.text()).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"prompts/get\",\"params\":{\"name\":\"sse_mcp-review\",\"arguments\":{\"diff\":\"+1\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources prompts_to_expose ['*'] serves the upstream prompt again",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Set sse_mcp's prompts_to_expose, then let the gateway resync before the request runs.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=sse_mcp', method: 'GET' }, function (err, res) {",
+                  "  if (err) { throw err; }",
+                  "  var mine = (res.json().clients || []).filter(function (c) { return c.config && c.config.name === 'sse_mcp'; })[0];",
+                  "  if (!mine) { throw new Error('sse_mcp is not registered: ' + res.text()); }",
+                  "  pm.sendRequest({",
+                  "    url: pm.variables.get('baseUrl') + '/api/mcp/client/' + mine.config.client_id,",
+                  "    method: 'PUT',",
+                  "    header: { 'Content-Type': 'application/json' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({ prompts_to_expose: ['*'] }) }",
+                  "  }, function (putErr, putRes) {",
+                  "    if (putErr) { throw putErr; }",
+                  "    if (putRes.code !== 200) { throw new Error('updating prompts_to_expose failed: ' + putRes.code + ' ' + putRes.text()); }",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpc(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line);",
+                  "}",
+                  "",
+                  "pm.test(\"with prompts_to_expose ['*'] sse_mcp-review is listed again\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var msg = rpc(pm.response);",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + pm.response.text()).to.be.undefined;",
+                  "  var names = (msg.result.prompts || []).map(function (p) { return p.name; });",
+                  "  pm.expect(names, 'prompts: ' + pm.response.text()).to.include('sse_mcp-review');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              },
+              {
+                "key": "MCP-Protocol-Version",
+                "value": "2025-06-18"
+              }
+            ],
+            "url": "{{baseUrl}}/mcp",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"prompts/list\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   ]
 }

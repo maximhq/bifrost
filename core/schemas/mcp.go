@@ -835,7 +835,9 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable *bool `json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	PromptsToExpose   WhiteList `json:"prompts_to_expose"`           // Prompt names (unprefixed) served through the gateway; nil = all, [] = none
+	ResourcesToExpose WhiteList `json:"resources_to_expose"`         // Resource URIs and URI templates served through the gateway; nil = all, [] = none
+	IsPingAvailable   *bool     `json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
 	// NeedsSessionStickiness controls whether this shared client (auth_type
 	// oauth/headers) maintains one persistent connection reused across every
 	// caller (true) or connects fresh per call, same model as the per-user

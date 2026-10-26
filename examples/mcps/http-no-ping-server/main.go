@@ -22,7 +22,21 @@ func main() {
 	mcpServer := server.NewMCPServer(
 		"http-no-ping-server",
 		"1.0.0",
+		server.WithResourceCapabilities(false, false),
+		server.WithPromptCapabilities(false),
 	)
+
+	// One prompt and one resource for the registry's Prompts & Resources tab.
+	mcpServer.AddPrompt(mcp.NewPrompt("review", mcp.WithPromptDescription("Review a change")),
+		func(context.Context, mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			return mcp.NewGetPromptResult("Review a change", []mcp.PromptMessage{
+				mcp.NewPromptMessage(mcp.RoleUser, mcp.NewTextContent("Review this change.")),
+			}), nil
+		})
+	mcpServer.AddResource(mcp.NewResource("file:///fixture/handbook.md", "handbook", mcp.WithMIMEType("text/markdown")),
+		func(context.Context, mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			return []mcp.ResourceContents{mcp.TextResourceContents{URI: "file:///fixture/handbook.md", MIMEType: "text/markdown", Text: "# Handbook"}}, nil
+		})
 
 	// Define tools using the proper NewTool API
 	echoTool := mcp.NewTool(

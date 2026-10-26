@@ -1269,6 +1269,9 @@ const (
 	MCPRequestTypeListResources         MCPRequestType = "list_resources"
 	MCPRequestTypeListResourceTemplates MCPRequestType = "list_resource_templates"
 	MCPRequestTypeListPrompts           MCPRequestType = "list_prompts"
+	MCPRequestTypeGetPrompt             MCPRequestType = "get_prompt"
+	MCPRequestTypeReadResource          MCPRequestType = "read_resource"
+	MCPRequestTypeComplete              MCPRequestType = "complete"
 
 	// [DEPRECATED] these will be replaced by MCPRequestTypeExecuteTool in the next major bump, but are kept for backward compatibility for now since some tools still rely on the old fields
 	MCPRequestTypeChatToolCall      MCPRequestType = "chat_tool_call"      // Chat API format
@@ -1311,6 +1314,12 @@ func (t MCPRequestType) OTelMethodName() string {
 		return "resources/templates/list"
 	case t == MCPRequestTypeListPrompts:
 		return "prompts/list"
+	case t == MCPRequestTypeGetPrompt:
+		return "prompts/get"
+	case t == MCPRequestTypeReadResource:
+		return "resources/read"
+	case t == MCPRequestTypeComplete:
+		return "completion/complete"
 	case t == MCPRequestTypePing:
 		return "ping"
 	default:
@@ -1327,6 +1336,7 @@ func (t MCPRequestType) OTelMethodName() string {
 //   - RequestType == MCPRequestTypePing       → BifrostMCPPingRequest
 //   - RequestType == MCPRequestTypeListTools  → BifrostMCPListToolsRequest
 //   - RequestType == MCPRequestTypeListResources / ListResourceTemplates / ListPrompts → the matching empty request
+//   - RequestType == MCPRequestTypeGetPrompt / ReadResource / Complete → the matching request
 //   - RequestType == MCPRequestTypeExecuteTool / MCPRequestTypeChatToolCall / MCPRequestTypeResponsesToolCall → BifrostMCPExecuteToolRequest
 type BifrostMCPRequest struct {
 	RequestType MCPRequestType
@@ -1337,6 +1347,9 @@ type BifrostMCPRequest struct {
 	*BifrostMCPListResourcesRequest
 	*BifrostMCPListResourceTemplatesRequest
 	*BifrostMCPListPromptsRequest
+	*BifrostMCPGetPromptRequest
+	*BifrostMCPReadResourceRequest
+	*BifrostMCPCompleteRequest
 
 	// [DEPRECATED] these will be replaced by BifrostMCPExecuteToolRequest in the next major bump, but are kept for backward compatibility for now since some tools still rely on the old fields
 	*ChatAssistantMessageToolCall
@@ -1382,6 +1395,22 @@ type BifrostMCPListResourceTemplatesRequest struct {
 }
 
 type BifrostMCPListPromptsRequest struct {
+}
+
+// BifrostMCPGetPromptRequest is a prompts/get forwarded to the client that owns the prompt.
+type BifrostMCPGetPromptRequest struct {
+	Name      string            // Prefixed with the client name
+	Arguments map[string]string // mutable
+}
+
+// BifrostMCPReadResourceRequest is a resources/read forwarded to the client that owns the URI.
+type BifrostMCPReadResourceRequest struct {
+	URI string
+}
+
+// BifrostMCPCompleteRequest is a completion/complete forwarded to the client that owns the reference.
+type BifrostMCPCompleteRequest struct {
+	Params mcp.CompleteParams // A prompt reference carries the prefixed prompt name
 }
 
 // Keeping the stub for now, will be used from the next major bump when we remove the old ChatToolCall and ResponsesToolMessage fields.
@@ -1859,6 +1888,9 @@ type BifrostMCPResponse struct {
 	*BifrostMCPListResourcesResponse
 	*BifrostMCPListResourceTemplatesResponse
 	*BifrostMCPListPromptsResponse
+	*BifrostMCPGetPromptResponse
+	*BifrostMCPReadResourceResponse
+	*BifrostMCPCompleteResponse
 
 	// [DEPRECATED] back-compat fields for execute-tool requests; will move into
 	// BifrostMCPExecuteToolResponse in the next major bump.
@@ -1933,6 +1965,18 @@ type BifrostMCPListResourceTemplatesResponse struct {
 
 type BifrostMCPListPromptsResponse struct {
 	Prompts []mcp.Prompt // Names prefixed with the client name
+}
+
+type BifrostMCPGetPromptResponse struct {
+	Prompt *mcp.GetPromptResult
+}
+
+type BifrostMCPReadResourceResponse struct {
+	Resource *mcp.ReadResourceResult
+}
+
+type BifrostMCPCompleteResponse struct {
+	Completion *mcp.CompleteResult
 }
 
 // SkippedMCPTool describes a tool that the MCP server returned but Bifrost did not include

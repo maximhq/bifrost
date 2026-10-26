@@ -337,6 +337,22 @@ MCPClientCreateRequestBase:
         ["*"] => all executable tools can be auto-executed
         [] => no tools are auto-executed
         ["tool1", "tool2"] => only specified tools can be auto-executed
+    prompts_to_expose:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: |
+        Prompts (by the server's own name) served through Bifrost's MCP gateway.
+        Omitted, null or ["*"] => all prompts; [] => none.
+    resources_to_expose:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: |
+        Resource URIs and URI templates served through Bifrost's MCP gateway.
+        Omitted, null or ["*"] => all; [] => none.
     allow_on_all_virtual_keys:
       type: boolean
       default: false
@@ -803,6 +819,22 @@ MCPClientUpdateRequest:
         ["*"] => all executable tools can be auto-executed
         [] => no tools are auto-executed
         ["tool1", "tool2"] => only specified tools can be auto-executed
+    prompts_to_expose:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: |
+        Prompts (by the server's own name) served through Bifrost's MCP gateway.
+        Omitted or null keeps the current list; ["*"] => all prompts; [] => none.
+    resources_to_expose:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: |
+        Resource URIs and URI templates served through Bifrost's MCP gateway.
+        Omitted or null keeps the current list; ["*"] => all; [] => none.
     tool_pricing:
       type: object
       additionalProperties:
@@ -962,6 +994,22 @@ MCPClientConfig:
         ["*"] => all executable tools can be auto-executed
         [] => no tools are auto-executed
         ["tool1", "tool2"] => only specified tools can be auto-executed
+    prompts_to_expose:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: |
+        Prompts (by the server's own name) served through Bifrost's MCP gateway.
+        Omitted, null or ["*"] => all prompts; [] => none.
+    resources_to_expose:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: |
+        Resource URIs and URI templates served through Bifrost's MCP gateway.
+        Omitted, null or ["*"] => all; [] => none.
     tool_pricing:
       type: object
       additionalProperties:

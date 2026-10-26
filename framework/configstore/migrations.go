@@ -579,6 +579,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_oauth2_refresh_token_client_display_name_column"}, run: migrationAddOAuth2RefreshTokenClientDisplayNameColumn},
 	{IDs: []string{"add_mcp_max_protocol_version_columns"}, run: migrationAddMCPMaxProtocolVersionColumns},
 	{IDs: []string{"add_mcp_client_discovered_resources_prompts_columns"}, run: migrationAddMCPClientDiscoveredResourcesPromptsColumns},
+	{IDs: []string{"add_mcp_client_expose_lists_columns"}, run: migrationAddMCPClientExposeListsColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16691,4 +16692,41 @@ func migrationAddMCPClientDiscoveredResourcesPromptsColumns(ctx context.Context,
 		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
 	}
 	return nil
+}
+
+// migrationAddMCPClientExposeListsColumns adds the prompts and resources allow-lists. Existing rows
+// keep them empty, which exposes everything, as before.
+func migrationAddMCPClientExposeListsColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_expose_lists_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{mcpClientExposeListsColumnsMigration(ctx, migrationName, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// mcpClientExposeListsColumnsMigration builds the migration applied by
+// migrationAddMCPClientExposeListsColumns, so tests exercise the same callbacks the upgrade runs.
+func mcpClientExposeListsColumnsMigration(ctx context.Context, migrationName string, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range []string{"prompts_to_expose_json", "resources_to_expose_json"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		// Dropping the columns would silently serve everything an admin restricted.
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the allow-lists would expose every prompt and resource they restrict", migrationName)
+		},
+	}
 }

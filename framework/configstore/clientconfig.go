@@ -2152,6 +2152,21 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	if m.MaxProtocolVersion != "" {
 		hash.Write([]byte("max_protocol_version:" + m.MaxProtocolVersion))
 	}
+	// nil (expose all) contributes nothing; [] and listed entries do.
+	for _, list := range []struct {
+		name  string
+		value schemas.WhiteList
+	}{{"prompts_to_expose", m.PromptsToExpose}, {"resources_to_expose", m.ResourcesToExpose}} {
+		if list.value != nil {
+			// JSON keeps entry boundaries: ["a,b"] and ["a","b"] hash apart.
+			data, err := sonic.Marshal([]string(list.value))
+			if err != nil {
+				return "", err
+			}
+			hash.Write([]byte(list.name + ":"))
+			hash.Write(data)
+		}
+	}
 
 	// Hash PerUserHeaderKeys (sorted for deterministic hashing) so edits to
 	// the declared header-name schema in config.json drift the hash.

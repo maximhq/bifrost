@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/keyselectors"
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/mcp/codemode/starlark"
@@ -4982,6 +4983,73 @@ func (bifrost *Bifrost) UpdateMCPToolSyncInterval(interval time.Duration) error 
 	}
 	bifrost.MCPManager.UpdateToolSyncInterval(interval)
 	return nil
+}
+
+// mcpResourcesAndPrompts is the MCP manager's resources and prompts server, or nil when there is none.
+func (bifrost *Bifrost) mcpResourcesAndPrompts() mcp.ResourcesAndPromptsServer {
+	served, _ := bifrost.MCPManager.(mcp.ResourcesAndPromptsServer)
+	return served
+}
+
+// GetAvailableMCPPrompts lists the upstream prompts ctx may reach, names prefixed with the client name.
+func (bifrost *Bifrost) GetAvailableMCPPrompts(ctx *schemas.BifrostContext) []mcpgo.Prompt {
+	if served := bifrost.mcpResourcesAndPrompts(); served != nil {
+		return served.GetAvailablePrompts(ctx)
+	}
+	return nil
+}
+
+// GetAvailableMCPResources lists the upstream resources ctx may reach.
+func (bifrost *Bifrost) GetAvailableMCPResources(ctx *schemas.BifrostContext) []mcpgo.Resource {
+	if served := bifrost.mcpResourcesAndPrompts(); served != nil {
+		return served.GetAvailableResources(ctx)
+	}
+	return nil
+}
+
+// GetAvailableMCPResourceTemplates lists the upstream resource templates ctx may reach.
+func (bifrost *Bifrost) GetAvailableMCPResourceTemplates(ctx *schemas.BifrostContext) []mcpgo.ResourceTemplate {
+	if served := bifrost.mcpResourcesAndPrompts(); served != nil {
+		return served.GetAvailableResourceTemplates(ctx)
+	}
+	return nil
+}
+
+// GetMCPPrompt runs prompts/get on the upstream that owns the prefixed prompt name.
+func (bifrost *Bifrost) GetMCPPrompt(ctx *schemas.BifrostContext, name string, arguments map[string]string) (*mcpgo.GetPromptResult, *schemas.BifrostError) {
+	served, bErr := bifrost.mcpServing(ctx)
+	if bErr != nil {
+		return nil, bErr
+	}
+	return served.GetPrompt(ctx, name, arguments)
+}
+
+// ReadMCPResource runs resources/read on the upstream that owns the URI.
+func (bifrost *Bifrost) ReadMCPResource(ctx *schemas.BifrostContext, uri string) (*mcpgo.ReadResourceResult, *schemas.BifrostError) {
+	served, bErr := bifrost.mcpServing(ctx)
+	if bErr != nil {
+		return nil, bErr
+	}
+	return served.ReadResource(ctx, uri)
+}
+
+// CompleteMCPArgument runs completion/complete on the upstream that owns the reference.
+func (bifrost *Bifrost) CompleteMCPArgument(ctx *schemas.BifrostContext, params mcpgo.CompleteParams) (*mcpgo.CompleteResult, *schemas.BifrostError) {
+	served, bErr := bifrost.mcpServing(ctx)
+	if bErr != nil {
+		return nil, bErr
+	}
+	return served.Complete(ctx, params)
+}
+
+// mcpServing prepares ctx for a call to an upstream's prompts or resources.
+func (bifrost *Bifrost) mcpServing(ctx *schemas.BifrostContext) (mcp.ResourcesAndPromptsServer, *schemas.BifrostError) {
+	served := bifrost.mcpResourcesAndPrompts()
+	if served == nil {
+		return nil, newBifrostErrorFromMsg("mcp is not configured in this bifrost instance")
+	}
+	ensureMCPTracerContext(ctx, bifrost.getTracer())
+	return served, nil
 }
 
 // UpdateMCPMaxProtocolVersion hot-reloads the global max MCP protocol version ("" or "auto" =

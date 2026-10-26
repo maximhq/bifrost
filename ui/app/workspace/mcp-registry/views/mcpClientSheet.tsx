@@ -58,6 +58,7 @@ import { Check, ChevronDown, ChevronRight, Copy, Info, Plus, Trash2 } from "luci
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { MCPClientCredentialSection, MCPClientSessionsSection } from "./mcpClientCredentialSection";
+import { MCPExposeList, type MCPExposeItem } from "./mcpExposeList";
 import {
 	applyParsedPreview,
 	buildOpenAPIConfigPayload,
@@ -221,6 +222,26 @@ export default function MCPClientSheet({
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
 	const allToolNames = useMemo(() => mcpClient.tools?.map((t) => t.name) ?? [], [mcpClient.tools]);
+	// Prompts are listed with the client prefix; the allow-list holds the server's own names.
+	const promptExposeItems = useMemo<MCPExposeItem[]>(() => {
+		const prefix = `${mcpClient.config.name}-`;
+		return (mcpClient.prompts ?? []).map((prompt) => {
+			const name = prompt.name.startsWith(prefix) ? prompt.name.slice(prefix.length) : prompt.name;
+			return { key: name, label: prompt.title || name, detail: prompt.title ? name : undefined, description: prompt.description };
+		});
+	}, [mcpClient.prompts, mcpClient.config.name]);
+	const resourceExposeItems = useMemo<MCPExposeItem[]>(
+		() => [
+			...(mcpClient.resources ?? []).map((r) => ({ key: r.uri, label: r.title || r.name, detail: r.uri, description: r.description })),
+			...(mcpClient.resource_templates ?? []).map((t) => ({
+				key: t.uriTemplate,
+				label: t.title || t.name,
+				detail: t.uriTemplate,
+				description: t.description,
+			})),
+		],
+		[mcpClient.resources, mcpClient.resource_templates],
+	);
 
 	// Initial VK configs come directly from the MCP client response — always complete, no pagination issue.
 	const initialVKConfigs = useMemo<MCPVKConfig[]>(
@@ -520,6 +541,8 @@ export default function MCPClientSheet({
 			per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? mcpClient.config.per_user_header_keys || [] : undefined,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
+			prompts_to_expose: mcpClient.config.prompts_to_expose ?? ["*"],
+			resources_to_expose: mcpClient.config.resources_to_expose ?? ["*"],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
 			max_protocol_version: (mcpClient.config.max_protocol_version ?? "") as MCPClientUpdateSchema["max_protocol_version"],
@@ -596,6 +619,8 @@ export default function MCPClientSheet({
 			per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? mcpClient.config.per_user_header_keys || [] : undefined,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
+			prompts_to_expose: mcpClient.config.prompts_to_expose ?? ["*"],
+			resources_to_expose: mcpClient.config.resources_to_expose ?? ["*"],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
 			max_protocol_version: (mcpClient.config.max_protocol_version ?? "") as MCPClientUpdateSchema["max_protocol_version"],
@@ -863,6 +888,8 @@ export default function MCPClientSheet({
 					per_user_header_keys: mcpClient.config.auth_type === "per_user_headers" ? data.per_user_header_keys : undefined,
 					tools_to_execute: resolvedToolsToExecute,
 					tools_to_auto_execute: resolvedToolsToAutoExecute,
+					prompts_to_expose: form.formState.dirtyFields.prompts_to_expose ? data.prompts_to_expose : undefined,
+					resources_to_expose: form.formState.dirtyFields.resources_to_expose ? data.resources_to_expose : undefined,
 					tool_pricing: resolvedToolPricing,
 					// Sent only when edited: PUT has PATCH semantics, and the
 					// nanoseconds-to-minutes normalization is lossy for a sub-minute
@@ -1065,6 +1092,9 @@ export default function MCPClientSheet({
 											</TabsTrigger>
 											<TabsTrigger value="tools" data-testid="mcpclient-tab-tools">
 												Tools
+											</TabsTrigger>
+											<TabsTrigger value="resources" data-testid="mcpclient-tab-resources">
+												Prompts & Resources
 											</TabsTrigger>
 											<TabsTrigger value="access" data-testid="mcpclient-tab-access">
 												Access
@@ -2230,6 +2260,37 @@ export default function MCPClientSheet({
 												</div>
 											)}
 										</div>
+									</TabsContent>
+
+									<TabsContent value="resources" className="space-y-8 pb-10">
+										<FormField
+											control={form.control}
+											name="prompts_to_expose"
+											render={({ field }) => (
+												<MCPExposeList
+													kind="prompts"
+													title="Prompts"
+													description="Prompts this server lists, and which of them MCP clients connected to Bifrost can use."
+													items={promptExposeItems}
+													value={field.value}
+													onChange={(next) => form.setValue("prompts_to_expose", next, { shouldDirty: true })}
+												/>
+											)}
+										/>
+										<FormField
+											control={form.control}
+											name="resources_to_expose"
+											render={({ field }) => (
+												<MCPExposeList
+													kind="resources"
+													title="Resources"
+													description="Resources and resource templates this server lists, and which of them MCP clients connected to Bifrost can read."
+													items={resourceExposeItems}
+													value={field.value}
+													onChange={(next) => form.setValue("resources_to_expose", next, { shouldDirty: true })}
+												/>
+											)}
+										/>
 									</TabsContent>
 
 									<TabsContent value="access" className="space-y-6 pb-10">

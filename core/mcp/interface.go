@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -153,3 +154,16 @@ type MCPManagerInterface interface {
 
 // Ensure MCPManager implements MCPManagerInterface
 var _ MCPManagerInterface = (*MCPManager)(nil)
+
+// ResourcesAndPromptsServer serves upstream resources and prompts. Optional, so MCPManagerInterface
+// implementations stay source compatible.
+type ResourcesAndPromptsServer interface {
+	GetAvailablePrompts(ctx context.Context) []mcp.Prompt
+	GetAvailableResources(ctx context.Context) []mcp.Resource
+	GetAvailableResourceTemplates(ctx context.Context) []mcp.ResourceTemplate
+	GetPrompt(ctx *schemas.BifrostContext, name string, arguments map[string]string) (*mcp.GetPromptResult, *schemas.BifrostError)
+	ReadResource(ctx *schemas.BifrostContext, uri string) (*mcp.ReadResourceResult, *schemas.BifrostError)
+	Complete(ctx *schemas.BifrostContext, params mcp.CompleteParams) (*mcp.CompleteResult, *schemas.BifrostError)
+}
+
+var _ ResourcesAndPromptsServer = (*MCPManager)(nil)
