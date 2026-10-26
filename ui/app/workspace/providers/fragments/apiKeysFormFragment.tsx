@@ -1789,6 +1789,9 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, hi
 								<FormControl>
 									<SecretVarInput placeholder="us-east-1 or env.AWS_REGION" {...field} />
 								</FormControl>
+								{hideModelFields && (
+									<FormDescription>Requests are signed for this region, so use the region in the provider&apos;s base URL.</FormDescription>
+								)}
 								<FormMessage />
 							</FormItem>
 						)}

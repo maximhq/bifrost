@@ -432,26 +432,9 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 												</FormItem>
 											)}
 										/>
-										<FormField
-											control={form.control}
-											name="generic_auth.aws.region"
-											render={({ field }) => (
-												<FormItem className="flex flex-col gap-2">
-													<FormLabel>AWS region (optional, falls back to the key's region)</FormLabel>
-													<FormControl>
-														<Input
-															placeholder="us-east-1"
-															data-testid="generic-aws-region-input"
-															disabled={!hasProviderCreateAccess}
-															{...field}
-														/>
-													</FormControl>
-													<FormMessage />
-												</FormItem>
-											)}
-										/>
 										<p className="text-muted-foreground text-xs">
-											Keys for this provider carry AWS credentials (access key, secret, region or a role ARN) instead of a value.
+											Keys for this provider carry AWS credentials (access key, secret, region or a role ARN) instead of a value. Each
+											key&apos;s region is the one requests are signed for, so set it to the region in the base URL.
 										</p>
 									</>
 								)}

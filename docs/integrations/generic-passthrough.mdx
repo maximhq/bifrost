@@ -35,8 +35,8 @@ POST /passthrough/azure-tts/cognitiveservices/v1 → https://eastus.tts.speech.m
 <Tab title="Web UI">
 1. Go to **Providers** and choose **Add New Provider → Custom provider...**
 2. Set a name (this becomes the route segment), choose **generic** as the base format, and enter the API's base URL.
-3. Pick the **Auth type** and fill its fields (header name for `header`, query parameter for `query`, service and region for `aws_sigv4`).
-4. Save, then add a key. For `aws_sigv4` the key carries AWS credentials (access key, secret key, region, or a role ARN) instead of a value.
+3. Pick the **Auth type** and fill its fields (header name for `header`, query parameter for `query`, service for `aws_sigv4`).
+4. Save, then add a key. For `aws_sigv4` the key carries AWS credentials (access key, secret key, region, or a role ARN) instead of a value. Requests are signed for the key's region, so use the region in the base URL.
 5. Open the provider's **Passthrough** tab. Every field has an info icon explaining what it does.
    - **Routes**: import them from the API's OpenAPI spec (an import replaces the routes listed), then adjust them in the route list below it (collapsed by default), or use **Add route manually**. Each route can be priced, made non-billable, or matched on a header. **Only allow the routes above** is `strict_routes`.
    - **What a call costs**: a **Flat fee per call** and **Charge by quantity** (where to count from, what to count, where to find it, price per unit, and optional blocks and minimum).
@@ -148,7 +148,7 @@ Key names are unique across all providers, so give each provider's key its own n
 | `value_prefix` | `header` | Literal prefix placed before the key value, e.g. `Token ` |
 | `query_param` | `query` | Query parameter that carries the key, e.g. `api_key` |
 | `aws.service` | `aws_sigv4` | SigV4 signing name, e.g. `textract`, `translate`, `execute-api` |
-| `aws.region` | `aws_sigv4` | AWS region; falls back to the key's `bedrock_key_config.region` |
+| `aws.region` | `aws_sigv4` | AWS region; config.json only, the dashboard leaves it empty. When empty, each key's `bedrock_key_config.region` is used |
 
 - `bearer` sends `Authorization: Bearer <key>`; `basic` sends `Authorization: Basic base64(<key>)` where the key value is `user:password`.
 - `aws_sigv4` signs the request with the key's `bedrock_key_config` credentials (static keys, an assumed role, or the default AWS credential chain when the key holds none). Caller signature headers (`x-amz-date`, `x-amz-security-token`, `x-amz-content-sha256`, ...) are dropped before signing; operation headers such as `X-Amz-Target` are kept.

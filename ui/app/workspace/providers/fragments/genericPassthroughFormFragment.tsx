@@ -210,6 +210,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	// Each run is numbered so a slow earlier run cannot overwrite a later result, and the result
 	// is cleared whenever the sample or the mapping changes, so it never describes stale inputs.
 	const previewRun = useRef(0);
+	const fileInputRef = useRef<HTMLInputElement>(null);
 	const [sampleState, setSampleState] = useState({
 		method: "POST",
 		path: "/",
@@ -614,15 +615,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 							"AWS service",
 							"textract",
 							"generic-aws-service-input",
-							"The service name AWS signs requests for, e.g. textract, translate, s3, comprehendmedical.",
-						)}
-					{authType === "aws_sigv4" &&
-						textField(
-							"auth.aws.region",
-							"AWS region",
-							"us-east-1",
-							"generic-aws-region-input",
-							"The region requests are signed for. Use the region in the base URL (textract.us-east-1.amazonaws.com → us-east-1). If empty, each key's region is used.",
+							"The service name AWS signs requests for, e.g. textract, translate, s3, comprehendmedical. The region comes from each key, so set it to the region in the base URL.",
 						)}
 				</section>
 
@@ -651,7 +644,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 							<Input
 								placeholder="https://api.example.com/openapi.json"
 								data-testid="generic-openapi-import-url-input"
-								disabled={disabled}
+								disabled={disabled || importing}
 								value={importUrl}
 								onChange={(e) => setImportUrl(e.target.value)}
 							/>
@@ -660,7 +653,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 								variant="outline"
 								size="sm"
 								isLoading={importing}
-								disabled={disabled || !importUrl.trim()}
+								disabled={disabled || importing || !importUrl.trim()}
 								data-testid="generic-openapi-import-url-btn"
 								onClick={importFromUrl}
 							>
@@ -670,7 +663,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 						<Textarea
 							placeholder="openapi: 3.0.0 …"
 							data-testid="generic-openapi-import-textarea"
-							disabled={disabled}
+							disabled={disabled || importing}
 							rows={5}
 							value={importText}
 							onChange={(e) => setImportText(e.target.value)}
@@ -681,23 +674,32 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 								variant="outline"
 								size="sm"
 								isLoading={importing}
-								disabled={disabled || !importText.trim()}
+								disabled={disabled || importing || !importText.trim()}
 								data-testid="generic-openapi-import-btn"
 								onClick={() => applyImport(importText)}
 							>
 								Import pasted document
 							</Button>
-							<label className="text-muted-foreground cursor-pointer text-sm underline">
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								disabled={disabled || importing}
+								data-testid="generic-openapi-import-file-btn"
+								onClick={() => fileInputRef.current?.click()}
+							>
 								Upload a file
-								<input
-									type="file"
-									accept=".json,.yaml,.yml,application/json"
-									className="hidden"
-									data-testid="generic-openapi-import-file"
-									disabled={disabled}
-									onChange={(e) => importFromFile(e.currentTarget)}
-								/>
-							</label>
+							</Button>
+							<input
+								ref={fileInputRef}
+								type="file"
+								accept=".json,.yaml,.yml,application/json"
+								className="hidden"
+								tabIndex={-1}
+								data-testid="generic-openapi-import-file"
+								disabled={disabled || importing}
+								onChange={(e) => importFromFile(e.currentTarget)}
+							/>
 							{imported && (
 								<p className="text-muted-foreground text-xs" data-testid="generic-openapi-import-summary">
 									{imported.title || "Document"} {imported.version ? `v${imported.version}` : ""}: {imported.routes.length} operations
