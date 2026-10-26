@@ -242,7 +242,10 @@ write_config() {
     { "client_id": "adm37-p", "name": "adm37_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm37/mcp", "auth_type": "oauth", "tools_to_execute": ["*"] },
     { "client_id": "adm43-p", "name": "adm43_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm43/mcp", "auth_type": "oauth", "needs_session_stickiness": true, "tools_to_execute": ["*"] },
     { "client_id": "adm45-h", "name": "adm45_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm45/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] },
-    { "client_id": "adm68-h", "name": "adm68_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm68/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] }
+    { "client_id": "adm68-h", "name": "adm68_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm68/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] },
+    { "client_id": "adm86-h", "name": "adm86_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
+    { "client_id": "adm86-o", "name": "adm86_o", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86o/mcp", "auth_type": "per_user_oauth", "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
+    { "client_id": "adm86-c", "name": "adm86_c", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "headers", "headers": { "x-key": "good" }, "tool_sync_interval": "5s", "tools_to_execute": ["*"] }
   ] },
   "providers": {
     "openai": { "keys": [{ "name": "openai-mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],
