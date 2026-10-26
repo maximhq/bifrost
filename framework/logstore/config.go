@@ -4,6 +4,7 @@ package logstore
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 
 	"github.com/maximhq/bifrost/framework/objectstore"
 )
@@ -20,7 +21,53 @@ type Config struct {
 	// should NOT be offloaded to object storage and instead remain in the database.
 	ObjectStorageExcludeFields []string `json:"object_storage_exclude_fields,omitempty"`
 	// ObjectStorageExcludeRequestTypes lists request types (log object_type values) whose logs stay fully in the database and are never offloaded.
-	ObjectStorageExcludeRequestTypes []string `json:"object_storage_exclude_request_types,omitempty"`
+	ObjectStorageExcludeRequestTypes []string             `json:"object_storage_exclude_request_types,omitempty"`
+	ObjectStorageRoutes              []ObjectStorageRoute `json:"object_storage_routes,omitempty"` // extra buckets that copy matching logs
+}
+
+// ObjectStorageRoute names a bucket that receives a copy of the complete
+// payload of each log its match selects, on top of the normal storage.
+// Bifrost only writes these copies: it never reads or deletes them, so the
+// bucket's own lifecycle policy owns their retention.
+type ObjectStorageRoute struct {
+	Name          string                  `json:"name"`
+	Match         ObjectStorageRouteMatch `json:"match"`
+	ObjectStorage *objectstore.Config     `json:"object_storage"`
+}
+
+// routeNamePattern keeps route names usable as log and metric labels.
+var routeNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// ValidateRoutes rejects unnamed, duplicate or malformed routes, and routes
+// without a bucket or a known store type, so a bad route fails startup
+// instead of silently mirroring nothing.
+func (c *Config) ValidateRoutes() error {
+	seen := make(map[string]struct{}, len(c.ObjectStorageRoutes))
+	for i, route := range c.ObjectStorageRoutes {
+		if !routeNamePattern.MatchString(route.Name) {
+			return fmt.Errorf("object_storage_routes[%d]: name %q must match %s", i, route.Name, routeNamePattern)
+		}
+		if _, dup := seen[route.Name]; dup {
+			return fmt.Errorf("object_storage_routes[%d]: duplicate name %q", i, route.Name)
+		}
+		seen[route.Name] = struct{}{}
+		if err := route.Match.Validate(); err != nil {
+			return fmt.Errorf("object_storage_routes %q: %w", route.Name, err)
+		}
+		if route.ObjectStorage == nil {
+			return fmt.Errorf("object_storage_routes %q: object_storage is required", route.Name)
+		}
+		if route.ObjectStorage.Type != objectstore.StoreTypeS3 && route.ObjectStorage.Type != objectstore.StoreTypeGCS {
+			return fmt.Errorf("object_storage_routes %q: object_storage type %q must be s3 or gcs", route.Name, route.ObjectStorage.Type)
+		}
+		if route.ObjectStorage.Bucket.GetValue() == "" {
+			return fmt.Errorf("object_storage_routes %q: object_storage bucket is required", route.Name)
+		}
+		if err := route.ObjectStorage.Validate(); err != nil {
+			return fmt.Errorf("object_storage_routes %q: %w", route.Name, err)
+		}
+	}
+	return nil
 }
 
 const (
@@ -68,14 +115,15 @@ func (c *WriterConfig) WithDefaults() WriterConfig {
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get the basic fields
 	type TempConfig struct {
-		Enabled                          bool                `json:"enabled"`
-		Type                             LogStoreType        `json:"type"`
-		Config                           json.RawMessage     `json:"config"` // Keep as raw JSON
-		RetentionDays                    int                 `json:"retention_days"`
-		Writer                           *WriterConfig       `json:"writer,omitempty"`
-		ObjectStorage                    *objectstore.Config `json:"object_storage,omitempty"`
-		ObjectStorageExcludeFields       []string            `json:"object_storage_exclude_fields,omitempty"`
-		ObjectStorageExcludeRequestTypes []string            `json:"object_storage_exclude_request_types,omitempty"`
+		Enabled                          bool                 `json:"enabled"`
+		Type                             LogStoreType         `json:"type"`
+		Config                           json.RawMessage      `json:"config"` // Keep as raw JSON
+		RetentionDays                    int                  `json:"retention_days"`
+		Writer                           *WriterConfig        `json:"writer,omitempty"`
+		ObjectStorage                    *objectstore.Config  `json:"object_storage,omitempty"`
+		ObjectStorageExcludeFields       []string             `json:"object_storage_exclude_fields,omitempty"`
+		ObjectStorageExcludeRequestTypes []string             `json:"object_storage_exclude_request_types,omitempty"`
+		ObjectStorageRoutes              []ObjectStorageRoute `json:"object_storage_routes,omitempty"`
 	}
 
 	var temp TempConfig
@@ -91,6 +139,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.ObjectStorage = temp.ObjectStorage
 	c.ObjectStorageExcludeFields = temp.ObjectStorageExcludeFields
 	c.ObjectStorageExcludeRequestTypes = temp.ObjectStorageExcludeRequestTypes
+	c.ObjectStorageRoutes = temp.ObjectStorageRoutes
 	if !temp.Enabled {
 		c.Config = nil
 		return nil

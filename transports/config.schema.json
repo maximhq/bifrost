@@ -4054,6 +4054,76 @@
             }
           }
         },
+        "object_storage_routes": {
+          "type": "array",
+          "description": "Extra buckets that each receive a full copy of every log their match selects, such as requests a guardrail blocked or redacted. Normal storage is unchanged and Bifrost never reads or deletes the copies, so each bucket's lifecycle policy owns their retention. A log matching several routes is copied to each.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]*$",
+                "description": "Unique route name, used in logs and status."
+              },
+              "match": {
+                "type": "object",
+                "description": "Which logs the route receives. Fields are AND-ed and the values within a field are OR-ed. Guardrail fields must all hold for the same recorded guardrail entry. At least one field is required.",
+                "properties": {
+                  "guardrail_outcomes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "blocked: a guardrail intervention (or a guardrail_intervention error). detected: any guardrail detection, enforced or monitor-only. redacted / transformed: an enforced detection whose action redacted or transformed content; a monitor-only one counts only as detected.",
+                    "items": { "type": "string", "enum": ["blocked", "detected", "redacted", "transformed"] }
+                  },
+                  "guardrail_phases": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Phase the guardrail entry was recorded in, e.g. input, output, mcp-input.",
+                    "items": { "type": "string" }
+                  },
+                  "guardrail_rules": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Guardrail rule names.",
+                    "items": { "type": "string" }
+                  },
+                  "guardrail_providers": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Guardrail provider types.",
+                    "items": { "type": "string" }
+                  },
+                  "error_types": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Error type of the log, top-level or error.type, e.g. guardrail_intervention.",
+                    "items": { "type": "string" }
+                  },
+                  "status_codes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "HTTP status code of the log's error.",
+                    "items": { "type": "integer", "minimum": 100, "maximum": 599 }
+                  },
+                  "request_types": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Log object types, the same values object_storage_exclude_request_types takes.",
+                    "items": { "type": "string" }
+                  }
+                },
+                "minProperties": 1,
+                "additionalProperties": false
+              },
+              "object_storage": {
+                "$ref": "#/properties/logs_store/properties/object_storage",
+                "description": "Bucket the copies are written to. Keys follow {prefix}/logs/YYYY/MM/DD/HH/{id} as for the main object storage."
+              }
+            },
+            "required": ["name", "match", "object_storage"],
+            "additionalProperties": false
+          }
+        },
         "object_storage_exclude_request_types": {
           "type": "array",
           "description": "Request types (log object type, e.g. list_models, embedding) whose logs are not offloaded to object storage. These logs are written to the logs database in full instead. Hidden logs (content logging disabled with client.retain_content_in_object_storage on) are still offloaded, so their content never lands in the database.",
