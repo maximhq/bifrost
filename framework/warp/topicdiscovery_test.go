@@ -1197,6 +1197,12 @@ type stallingTopicStore struct {
 	finished chan error
 }
 
+// ListWarpVectorDeletes reports nothing to retry, so a tick reaches the topic
+// read this store stalls on.
+func (s *stallingTopicStore) ListWarpVectorDeletes(context.Context, int) ([]logstore.WarpVectorDelete, error) {
+	return nil, nil
+}
+
 func (s *stallingTopicStore) ListWarpTopics(ctx context.Context, _ logstore.WarpTopicFilter) ([]logstore.WarpTopic, error) {
 	s.once.Do(func() { close(s.entered) })
 	<-ctx.Done()
