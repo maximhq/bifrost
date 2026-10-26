@@ -7,6 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels } from "@/lib/constants/logs";
+import { isGenericProvider } from "@/lib/types/config";
 import { Info } from "lucide-react";
 
 function formatCost(dollars: number) {
@@ -77,6 +78,7 @@ export default function ModelCatalogTable({
 					ariaLabel="Filter by provider"
 					className="w-[200px]"
 					allOption={ALL_PROVIDERS_OPTION}
+					filter={(p) => !isGenericProvider(p)}
 					value={providerFilter || ALL_PROVIDERS_VALUE}
 					onChange={(val: string) => onProviderFilterChange(val === ALL_PROVIDERS_VALUE ? "" : val)}
 				/>

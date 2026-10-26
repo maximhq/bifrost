@@ -544,8 +544,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						{/* Note about Token/Request Limits and Budget Configuration */}
 						<p className="text-muted-foreground text-xs">
 							Note: Ensure token limits, request limits, and budget are configured in{" "}
-							<strong>Model Providers → Configurations → {"{provider}"} → Governance</strong> (provider-level) or{" "}
-							<strong>Model Providers → Budgets & Limits</strong> section (model-level) before using them in routing rules.
+							<strong>Providers → Configurations → {"{provider}"} → Governance</strong> (provider-level) or{" "}
+							<strong>Providers → Budgets & Limits</strong> section (model-level) before using them in routing rules.
 						</p>
 
 						<Separator />

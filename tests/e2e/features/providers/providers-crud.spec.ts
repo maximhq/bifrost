@@ -688,6 +688,10 @@ test.describe("Providers", () => {
       // Test this mapping: a sample is run through the mapping as it stands in the form,
       // unsaved edits included. Enter in a sample input runs it instead of saving the form,
       // and editing the sample clears the stale result.
+      // The stream switches sit in the Advanced section, which opens itself only when it holds settings.
+      if (!(await page.getByTestId("generic-streaming-accept-switch").isVisible())) {
+        await page.getByTestId("generic-advanced-toggle").click();
+      }
       await page.getByTestId("generic-streaming-accept-switch").click();
       await page.getByTestId("generic-preview-path-input").fill("/search");
       await page
@@ -793,9 +797,15 @@ test.describe("Providers", () => {
       await page.reload();
       await providersPage.selectProvider(providerData.name);
       await providerSettingsPage.selectConfigTab("generic");
+      // The routes list starts collapsed under the import panel.
+      await page.getByTestId("generic-routes-toggle").click();
       await expect(page.getByTestId("generic-route-row-0")).toBeVisible();
       // Save is disabled on a pristine form; flip a harmless switch so the save
       // path really runs.
+      // The stream switches sit in the Advanced section, which opens itself only when it holds settings.
+      if (!(await page.getByTestId("generic-streaming-accept-switch").isVisible())) {
+        await page.getByTestId("generic-advanced-toggle").click();
+      }
       await page.getByTestId("generic-streaming-accept-switch").click();
       await expect(page.getByTestId("generic-passthrough-save-btn")).toBeEnabled();
       const usageSaved = page.waitForResponse(

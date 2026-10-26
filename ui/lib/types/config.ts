@@ -585,16 +585,21 @@ export type GenericUnitsSource = "response" | "request";
 export type GenericUnitsMeasure = "value" | "chars" | "body_bytes" | "body_chars";
 
 export const GenericUnitsSourceLabels: Record<GenericUnitsSource, string> = {
-	response: "Upstream response body",
-	request: "Request body (what the caller sent)",
+	response: "API response body",
+	request: "Caller request body",
 };
 
 export const GenericUnitsMeasureLabels: Record<GenericUnitsMeasure, string> = {
-	value: "Number at the path",
-	chars: "Characters of the string at the path",
-	body_bytes: "Bytes of the whole body",
-	body_chars: "Characters of the whole body (any content type)",
+	value: "Number in the JSON",
+	chars: "Text length (characters)",
+	body_bytes: "Whole body size (bytes)",
+	body_chars: "Whole body length (characters)",
 };
+
+// isGenericProvider reports whether a provider is a generic HTTP relay: it serves only passthrough calls and has no
+// models, so model views (the model catalog) leave it out.
+export const isGenericProvider = (p: { custom_provider_config?: { base_provider_type?: string } }): boolean =>
+	p.custom_provider_config?.base_provider_type === "generic";
 
 // genericUnitsMeasureReadsWholeBody reports whether a measure needs no units path.
 export const genericUnitsMeasureReadsWholeBody = (m: GenericUnitsMeasure | undefined): boolean => m === "body_bytes" || m === "body_chars";

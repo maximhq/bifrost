@@ -10,7 +10,7 @@ import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { ModelDetails, useGetModelDetailsQuery, useGetProvidersQuery } from "@/lib/store";
-import { KnownProvider } from "@/lib/types/config";
+import { isGenericProvider, KnownProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Edit, Search } from "lucide-react";
 import { useQueryStates } from "nuqs";
@@ -150,6 +150,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 						data-testid="model-catalog-provider-filter"
 						className="w-full sm:w-[200px]"
 						allOption={ALL_PROVIDERS_OPTION}
+						filter={(p) => !isGenericProvider(p)}
 						value={providerFilter || ALL_PROVIDERS_VALUE}
 						onChange={(v: string) => setUrlState({ provider: v === ALL_PROVIDERS_VALUE ? null : v })}
 					/>

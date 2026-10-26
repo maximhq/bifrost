@@ -59,7 +59,7 @@ const routeTitleOverrides: Record<string, string> = {
 	"/workspace/logs/connectors": "Log Connectors",
 	"/workspace/observability": "Observability Connectors",
 	"/workspace/prompt-repo": "Prompt Repository",
-	"/workspace/providers": "Model Providers",
+	"/workspace/providers": "Providers",
 	"/workspace/routing-rules/tree": "Routing Tree",
 	"/workspace/scim": "User Provisioning",
 };

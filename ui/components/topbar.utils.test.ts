@@ -34,7 +34,7 @@ describe("deriveTitleFromPathname", () => {
 	it("uses the override table for routes the slug mislabels", () => {
 		expect(deriveTitleFromPathname("/workspace/routing-rules/tree")).toBe("Routing Tree");
 		expect(deriveTitleFromPathname("/workspace/scim")).toBe("User Provisioning");
-		expect(deriveTitleFromPathname("/workspace/providers")).toBe("Model Providers");
+		expect(deriveTitleFromPathname("/workspace/providers")).toBe("Providers");
 		expect(deriveTitleFromPathname("/workspace/governance/rbac")).toBe("Roles & Permissions");
 	});
 

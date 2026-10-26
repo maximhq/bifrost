@@ -744,10 +744,10 @@ export default function AppSidebar() {
 						hasAccess: hasModelProvidersAccess,
 					},
 					{
-						title: "Model Providers",
+						title: "Providers",
 						url: "/workspace/providers",
 						icon: Boxes,
-						description: "Configure models",
+						description: "Configure LLM providers and API endpoints",
 						hasAccess: hasModelProvidersAccess,
 					},
 					{

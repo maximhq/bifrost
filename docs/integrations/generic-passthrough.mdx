@@ -37,7 +37,12 @@ POST /passthrough/azure-tts/cognitiveservices/v1 → https://eastus.tts.speech.m
 2. Set a name (this becomes the route segment), choose **generic** as the base format, and enter the API's base URL.
 3. Pick the **Auth type** and fill its fields (header name for `header`, query parameter for `query`, service and region for `aws_sigv4`).
 4. Save, then add a key. For `aws_sigv4` the key carries AWS credentials (access key, secret key, region, or a role ARN) instead of a value.
-5. Open the provider's **Passthrough** tab to set usage and cost mapping, streaming rules and per-route overrides, or import them from the API's OpenAPI document. **Test this mapping** at the bottom of the tab runs a sample request and response through the mapping as it stands in the form and shows the route matched, the quantity read, the tokens and the mapping's cost (fee, units and extracted cost), so a wrong path is caught before it bills zero in production.
+5. Open the provider's **Passthrough** tab. Every field has an info icon explaining what it does.
+   - **Routes**: import them from the API's OpenAPI spec (an import replaces the routes listed), then adjust them in the route list below it (collapsed by default), or use **Add route manually**. Each route can be priced, made non-billable, or matched on a header. **Only allow the routes above** is `strict_routes`.
+   - **What a call costs**: a **Flat fee per call** and **Charge by quantity** (where to count from, what to count, where to find it, price per unit, and optional blocks and minimum).
+   - **Advanced** (collapsed unless set): the fields usage is read from (model, reported cost, token counts) and the streaming rules.
+
+   **Test this mapping** at the bottom of the tab runs a sample request and response through the mapping as it stands in the form and shows the route matched, the quantity read, the tokens and the mapping's cost (fee, units and extracted cost), so a wrong path is caught before it bills zero in production.
 </Tab>
 <Tab title="API">
 ```bash

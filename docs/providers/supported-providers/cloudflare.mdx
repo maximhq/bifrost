@@ -44,7 +44,7 @@ You need a Cloudflare API token with **Workers AI** permission and your Cloudfla
 
 ![Cloudflare key with an API token, allowed models, and the Account ID field](../../media/ui-cloudflare-key.png)
 
-1. Navigate to **Models** > **Model Providers**. Click **Add New Provider** and select **Cloudflare**.
+1. Navigate to **Models** > **Providers**. Click **Add New Provider** and select **Cloudflare**.
 2. Click **Add Key**.
 3. Set a name for the key.
 4. Paste your API token, or use an environment variable such as `env.CLOUDFLARE_API_TOKEN`.
@@ -107,7 +107,7 @@ A key without an account ID fails with `no account ID configured: set cloudflare
 
 If you added Workers AI earlier as a custom provider named `cloudflare`, that name is now reserved: the custom provider can no longer be saved, and its `config.json` entry is skipped.
 
-Open it in **Model Providers** and the UI offers to migrate it to the built-in provider, as long as its base URL is a Workers AI URL (`https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai`, with or without `/v1`):
+Open it in **Providers** and the UI offers to migrate it to the built-in provider, as long as its base URL is a Workers AI URL (`https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai`, with or without `/v1`):
 
 1. Review the preview. The account ID is read from the base URL, and the token from the `Authorization` header if the old provider was keyless. Fill in either by hand if it could not be read.
 2. Re-enter any secret stored as a masked literal; `env.` references carry over.

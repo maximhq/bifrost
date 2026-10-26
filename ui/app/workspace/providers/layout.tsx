@@ -7,7 +7,7 @@ function RouteComponent() {
 	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const childMatches = useChildMatches();
 	if (!hasProvidersAccess) {
-		return <NoPermissionView entity="model providers" />;
+		return <NoPermissionView entity="providers" />;
 	}
 	return childMatches.length === 0 ? <Providers /> : <Outlet />;
 }

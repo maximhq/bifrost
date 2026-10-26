@@ -1,9 +1,11 @@
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useGetProviderKeysQuery, usePreviewGenericUsageMutation, useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
 import {
@@ -23,7 +25,7 @@ import { genericProviderFormSchema, genericUsagePreviewSampleSchema } from "@/li
 import { importOpenAPI, parseOpenAPIText, type OpenAPIImport } from "@/lib/utils/openapiImport";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Trash2 } from "lucide-react";
+import { ChevronRight, Info, Trash2 } from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -357,23 +359,18 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 		try {
 			const result = importOpenAPI(await parseOpenAPIText(text));
 			setImported(result);
-			const existing = form.getValues("routes") ?? [];
-			// Two operations can share a method and path and differ only by a header matcher (AWS
-			// X-Amz-Target), so the matcher is part of the identity.
-			const routeKey = (method: string, path: string, headers?: Record<string, string>) =>
-				`${method} ${path} ${JSON.stringify(Object.entries(headers ?? {}).sort())}`;
-			const seen = new Set(existing.map((r) => routeKey(r.method, r.path, pairsToHeaders(r.headers))));
-			for (const route of result.routes) {
-				if (seen.has(routeKey(route.method, route.path, route.headers))) continue;
-				routes.append({
+			// The document is the list: it replaces the routes there were, manual ones included. Routes
+			// added by hand afterwards are kept until the next import.
+			routes.replace(
+				result.routes.map((route) => ({
 					method: route.method,
 					path: route.path,
 					headers: headersToPairs(route.headers),
 					billable: undefined,
 					stream: undefined,
 					usage: { ...emptyRouteUsage },
-				});
-			}
+				})),
+			);
 			if (result.auth) {
 				form.setValue("auth.type", result.auth.type, { shouldDirty: true });
 				// The imported scheme replaces the auth fields together: a prefix from the old scheme
@@ -423,11 +420,41 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	};
 
 	const disabled = !hasUpdateProviderAccess;
+	// The routes list starts collapsed under the import panel; adding a route by hand opens it.
+	const [routesOpen, setRoutesOpen] = useState(false);
+	// Open the advanced section when it holds anything, so a configured path or stream rule is never hidden.
+	const [advancedOpen, setAdvancedOpen] = useState(() => advancedHasSettings(form.getValues()));
+	// The provider sheet reuses this tab when another provider is selected, so the sections are set
+	// again for that provider's settings; a save of the same provider leaves them as the operator had them.
+	useEffect(() => {
+		setAdvancedOpen(advancedHasSettings(form.getValues()));
+		setRoutesOpen(false);
+	}, [provider.name]);
+	const fieldLabel = (label: string, info?: string) => (
+		<div className="flex items-center gap-1.5">
+			<FormLabel>{label}</FormLabel>
+			{info && (
+				<TooltipProvider>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<span tabIndex={0} aria-label={`About ${label}`}>
+								<Info className="text-muted-foreground h-3 w-3" />
+							</span>
+						</TooltipTrigger>
+						<TooltipContent className="max-w-sm">
+							<p>{info}</p>
+						</TooltipContent>
+					</Tooltip>
+				</TooltipProvider>
+			)}
+		</div>
+	);
 	const textField = (
 		name: Parameters<typeof form.register>[0],
 		label: string,
 		placeholder: string,
 		testId: string,
+		info?: string,
 		description?: string,
 	) => (
 		<FormField
@@ -435,7 +462,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 			name={name}
 			render={({ field }) => (
 				<FormItem>
-					<FormLabel>{label}</FormLabel>
+					{fieldLabel(label, info)}
 					<FormControl>
 						<Input
 							placeholder={placeholder}
@@ -451,7 +478,38 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 			)}
 		/>
 	);
-	const switchField = (name: Parameters<typeof form.register>[0], label: string, description: string, testId: string) => (
+	const numberField = (
+		name: Parameters<typeof form.register>[0],
+		label: string,
+		placeholder: string,
+		testId: string,
+		info: string,
+		emptyAs: 0 | undefined,
+	) => (
+		<FormField
+			control={form.control}
+			name={name}
+			render={({ field }) => (
+				<FormItem>
+					{fieldLabel(label, info)}
+					<FormControl>
+						<Input
+							type="number"
+							step="any"
+							min={0}
+							placeholder={placeholder}
+							data-testid={testId}
+							disabled={disabled}
+							value={(field.value as number | undefined) ?? (emptyAs === 0 ? 0 : "")}
+							onChange={(e) => field.onChange(e.target.value === "" ? emptyAs : Number(e.target.value))}
+						/>
+					</FormControl>
+					<FormMessage />
+				</FormItem>
+			)}
+		/>
+	);
+	const switchField = (name: Parameters<typeof form.register>[0], label: string, description: string, testId: string, info?: string) => (
 		<FormField
 			control={form.control}
 			name={name}
@@ -459,7 +517,23 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 				<FormItem>
 					<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
 						<div className="space-y-0.5">
-							<p className="text-sm font-medium">{label}</p>
+							<div className="flex items-center gap-1.5">
+								<p className="text-sm font-medium">{label}</p>
+								{info && (
+									<TooltipProvider>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<span tabIndex={0} aria-label={`About ${label}`}>
+													<Info className="text-muted-foreground h-3 w-3" />
+												</span>
+											</TooltipTrigger>
+											<TooltipContent className="max-w-sm">
+												<p>{info}</p>
+											</TooltipContent>
+										</Tooltip>
+									</TooltipProvider>
+								)}
+							</div>
 							<p className="text-muted-foreground text-sm">{description}</p>
 						</div>
 						<Switch size="md" checked={!!field.value} onCheckedChange={field.onChange} disabled={disabled} data-testid={testId} />
@@ -468,26 +542,30 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 			)}
 		/>
 	);
+	const unitsMeasure = form.watch("usage.units_measure");
 
 	return (
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8 px-4 pb-6 md:px-6" data-testid="generic-passthrough-form">
 				<p className="text-muted-foreground text-sm">
-					Requests to <code className="font-mono text-xs">/passthrough/{provider.name}/&lt;path&gt;</code> are relayed to{" "}
-					<code className="font-mono text-xs">{provider.network_config?.base_url || "the configured base URL"}</code> with the selected key
-					injected. Every call is logged; calls on billable routes are counted and charged. Only POST is billable unless a route says
-					otherwise.
+					Requests to <code className="font-mono text-xs">/passthrough/{provider.name}/&lt;path&gt;</code> are sent on to{" "}
+					<code className="font-mono text-xs">{provider.network_config?.base_url || "the configured base URL"}</code> unchanged, with your
+					key added. Every call is logged; calls on billable routes are counted and charged. Only POST calls are billable unless a route
+					below says otherwise.
 				</p>
 
 				{/* Auth */}
 				<section className="space-y-4">
-					<h3 className="text-sm font-semibold">Upstream authentication</h3>
+					<h3 className="text-sm font-semibold">How Bifrost signs in to the API</h3>
 					<FormField
 						control={form.control}
 						name="auth.type"
 						render={({ field }) => (
 							<FormItem>
-								<FormLabel>Auth type</FormLabel>
+								{fieldLabel(
+									"Auth type",
+									"How the selected key is attached to every request. Any credential the caller sends is removed first, so only your key reaches the API.",
+								)}
 								<Select value={field.value} onValueChange={field.onChange} disabled={disabled}>
 									<FormControl>
 										<SelectTrigger data-testid="generic-auth-type-select">
@@ -506,78 +584,336 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 							</FormItem>
 						)}
 					/>
-					{authType === "header" && textField("auth.header_name", "Header name", "x-api-key", "generic-auth-header-name-input")}
-					{authType === "header" && textField("auth.value_prefix", "Value prefix (optional)", "Token ", "generic-auth-value-prefix-input")}
-					{authType === "query" && textField("auth.query_param", "Query parameter", "api_key", "generic-auth-query-param-input")}
+					{authType === "header" &&
+						textField(
+							"auth.header_name",
+							"Header name",
+							"x-api-key",
+							"generic-auth-header-name-input",
+							"The header the API reads its key from, e.g. x-api-key or Ocp-Apim-Subscription-Key.",
+						)}
+					{authType === "header" &&
+						textField(
+							"auth.value_prefix",
+							"Value prefix (optional)",
+							"Token ",
+							"generic-auth-value-prefix-input",
+							'Text put before the key in the header, e.g. "Token " sends Token <key>. Leave empty to send the key as is.',
+						)}
+					{authType === "query" &&
+						textField(
+							"auth.query_param",
+							"Query parameter",
+							"api_key",
+							"generic-auth-query-param-input",
+							"The query parameter the API reads its key from. A caller's own value for it is replaced.",
+						)}
 					{authType === "aws_sigv4" &&
 						textField(
 							"auth.aws.service",
 							"AWS service",
 							"textract",
 							"generic-aws-service-input",
-							"SigV4 signing name, e.g. textract or translate",
+							"The service name AWS signs requests for, e.g. textract, translate, s3, comprehendmedical.",
 						)}
 					{authType === "aws_sigv4" &&
 						textField(
 							"auth.aws.region",
-							"AWS region (optional)",
+							"AWS region",
 							"us-east-1",
 							"generic-aws-region-input",
-							"Falls back to the key's bedrock_key_config.region",
+							"The region requests are signed for. Use the region in the base URL (textract.us-east-1.amazonaws.com → us-east-1). If empty, each key's region is used.",
 						)}
 				</section>
 
-				{/* Usage mapping */}
+				{/* Routes */}
 				<section className="space-y-4">
-					<h3 className="text-sm font-semibold">Usage and cost mapping</h3>
-					<p className="text-muted-foreground text-sm">
-						gjson paths read from the request (model) and the JSON response (tokens, cost). Left empty, Bifrost reads the common shapes:
-						request <code className="font-mono text-xs">model</code>, response{" "}
-						<code className="font-mono text-xs">usage.prompt_tokens|input_tokens</code>,{" "}
-						<code className="font-mono text-xs">usage.completion_tokens|output_tokens</code>,{" "}
-						<code className="font-mono text-xs">usage.total_tokens</code>, <code className="font-mono text-xs">usage.cost</code>.
-					</p>
-					<div className="grid gap-4 md:grid-cols-2">
-						{textField("usage.model_path", "Model path", "model", "generic-usage-model-path-input")}
-						{textField("usage.cost_path", "Cost path", "usage.cost", "generic-usage-cost-path-input")}
-						{textField("usage.input_tokens_path", "Input tokens path", "usage.prompt_tokens", "generic-usage-input-tokens-path-input")}
-						{textField(
-							"usage.output_tokens_path",
-							"Output tokens path",
-							"usage.completion_tokens",
-							"generic-usage-output-tokens-path-input",
-						)}
-						{textField("usage.total_tokens_path", "Total tokens path", "usage.total_tokens", "generic-usage-total-tokens-path-input")}
-						<FormField
-							control={form.control}
-							name="usage.cost_per_request"
-							render={({ field }) => (
-								<FormItem>
-									<FormLabel>Cost per request (USD)</FormLabel>
-									<FormControl>
-										<Input
-											type="number"
-											step="any"
-											min={0}
-											placeholder="0"
-											data-testid="generic-usage-cost-per-request-input"
-											disabled={disabled}
-											value={field.value ?? 0}
-											onChange={(e) => field.onChange(e.target.value === "" ? 0 : Number(e.target.value))}
-										/>
-									</FormControl>
-									<FormDescription>Flat fee added to every billable call, on top of any extracted cost</FormDescription>
-									<FormMessage />
-								</FormItem>
-							)}
-						/>
+					<div>
+						<h3 className="text-sm font-semibold">Routes</h3>
+						<p className="text-muted-foreground text-sm">
+							The operations this API offers, by method and path (and header, for APIs like AWS that name the operation in one). Each route
+							can be priced or skipped; the first route that matches a call wins.
+						</p>
 					</div>
+					<div className="space-y-3 rounded-sm border p-3" data-testid="generic-openapi-import-section">
+						<p className="text-muted-foreground text-sm">
+							Import the API&apos;s OpenAPI or Swagger document (paste, upload or fetch it). Its operations become the routes below, its
+							security scheme sets the auth type, and &quot;Only allow the routes above&quot; is switched on. After a partial import (see
+							the warnings), add the missing routes and switch it on yourself. The document itself is not stored.
+							{routes.fields.length > 0 && (
+								<span className="text-foreground" data-testid="generic-openapi-import-replace-note">
+									{" "}
+									Importing replaces the {routes.fields.length} route{routes.fields.length === 1 ? "" : "s"} below.
+								</span>
+							)}
+						</p>
+						<div className="grid gap-3 md:grid-cols-[1fr_auto]">
+							<Input
+								placeholder="https://api.example.com/openapi.json"
+								data-testid="generic-openapi-import-url-input"
+								disabled={disabled}
+								value={importUrl}
+								onChange={(e) => setImportUrl(e.target.value)}
+							/>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								isLoading={importing}
+								disabled={disabled || !importUrl.trim()}
+								data-testid="generic-openapi-import-url-btn"
+								onClick={importFromUrl}
+							>
+								Fetch and import
+							</Button>
+						</div>
+						<Textarea
+							placeholder="openapi: 3.0.0 …"
+							data-testid="generic-openapi-import-textarea"
+							disabled={disabled}
+							rows={5}
+							value={importText}
+							onChange={(e) => setImportText(e.target.value)}
+						/>
+						<div className="flex flex-wrap items-center gap-3">
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								isLoading={importing}
+								disabled={disabled || !importText.trim()}
+								data-testid="generic-openapi-import-btn"
+								onClick={() => applyImport(importText)}
+							>
+								Import pasted document
+							</Button>
+							<label className="text-muted-foreground cursor-pointer text-sm underline">
+								Upload a file
+								<input
+									type="file"
+									accept=".json,.yaml,.yml,application/json"
+									className="hidden"
+									data-testid="generic-openapi-import-file"
+									disabled={disabled}
+									onChange={(e) => importFromFile(e.currentTarget)}
+								/>
+							</label>
+							{imported && (
+								<p className="text-muted-foreground text-xs" data-testid="generic-openapi-import-summary">
+									{imported.title || "Document"} {imported.version ? `v${imported.version}` : ""}: {imported.routes.length} operations
+									{imported.baseUrl ? `, server ${imported.baseUrl} (set it on the Network tab)` : ""}
+									{imported.warnings.length > 0 ? `. ${imported.warnings.join(". ")}` : ""}
+								</p>
+							)}
+						</div>
+					</div>
+					<Collapsible open={routesOpen} onOpenChange={setRoutesOpen} className="space-y-3">
+						<div className="flex items-center justify-between">
+							<CollapsibleTrigger
+								className="hover:text-foreground flex items-center gap-1 text-sm font-medium transition-colors"
+								data-testid="generic-routes-toggle"
+							>
+								<ChevronRight className={`h-4 w-4 transition-transform ${routesOpen ? "rotate-90" : ""}`} />
+								{routes.fields.length === 0 ? "No routes yet" : `${routes.fields.length} route${routes.fields.length === 1 ? "" : "s"}`}
+							</CollapsibleTrigger>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								disabled={disabled}
+								data-testid="generic-route-add-btn"
+								onClick={() => {
+									routes.append({
+										method: "POST",
+										path: "/",
+										headers: [],
+										billable: undefined,
+										stream: undefined,
+										usage: { ...emptyRouteUsage },
+									});
+									setRoutesOpen(true);
+								}}
+							>
+								Add route manually
+							</Button>
+						</div>
+						<CollapsibleContent className="space-y-3">
+							{routes.fields.map((route, index) => (
+								<div key={route.id} className="space-y-3 rounded-sm border p-3" data-testid={`generic-route-row-${index}`}>
+									<div className="grid gap-3 md:grid-cols-[120px_1fr_140px_auto]">
+										<FormField
+											control={form.control}
+											name={`routes.${index}.method`}
+											render={({ field }) => (
+												<FormItem>
+													<Select value={field.value} onValueChange={field.onChange} disabled={disabled}>
+														<FormControl>
+															<SelectTrigger data-testid={`generic-route-method-select-${index}`}>
+																<SelectValue />
+															</SelectTrigger>
+														</FormControl>
+														<SelectContent>
+															{GenericRouteMethods.map((m) => (
+																<SelectItem key={m} value={m}>
+																	{m}
+																</SelectItem>
+															))}
+														</SelectContent>
+													</Select>
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={form.control}
+											name={`routes.${index}.path`}
+											render={({ field }) => (
+												<FormItem>
+													<FormControl>
+														<Input placeholder="/search" data-testid={`generic-route-path-input-${index}`} disabled={disabled} {...field} />
+													</FormControl>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={form.control}
+											name={`routes.${index}.stream`}
+											render={({ field }) => (
+												<FormItem>
+													<div className="flex items-center gap-1.5">
+														<Select
+															value={streamChoice(field.value)}
+															onValueChange={(v) => field.onChange(streamFlag(v))}
+															disabled={disabled}
+														>
+															<FormControl>
+																<SelectTrigger data-testid={`generic-route-stream-select-${index}`}>
+																	<SelectValue />
+																</SelectTrigger>
+															</FormControl>
+															<SelectContent>
+																{STREAM_CHOICES.map((c) => (
+																	<SelectItem key={c.value} value={c.value}>
+																		{c.label}
+																	</SelectItem>
+																))}
+															</SelectContent>
+														</Select>
+														<InfoTip
+															label="Streaming"
+															text="Detect: streamed only when a streaming path or an enabled stream signal says so (Advanced). Always stream: for calls with large or live replies, e.g. audio or SSE. Never stream: read the reply whole so it can be billed."
+														/>
+													</div>
+												</FormItem>
+											)}
+										/>
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon"
+											disabled={disabled}
+											data-testid={`generic-route-remove-btn-${index}`}
+											aria-label={`Remove route ${index + 1}`}
+											onClick={() => routes.remove(index)}
+										>
+											<Trash2 className="h-4 w-4" />
+										</Button>
+									</div>
+									<div className="grid gap-3 md:grid-cols-2">
+										<FormField
+											control={form.control}
+											name={`routes.${index}.billable`}
+											render={({ field }) => (
+												<FormItem>
+													<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
+														<div className="flex items-center gap-1.5">
+															<p className="text-sm font-medium">Billable</p>
+															<InfoTip
+																label="Billable"
+																text="On: calls to this route are counted against rate limits and charged by the pricing below. Off: they are passed through and logged but neither counted nor charged, e.g. status polls and listings. Defaults to on for POST and off for other methods."
+															/>
+														</div>
+														<Switch
+															size="md"
+															checked={field.value ?? genericRouteBillableByDefault(form.watch(`routes.${index}.method`))}
+															onCheckedChange={field.onChange}
+															disabled={disabled}
+															data-testid={`generic-route-billable-switch-${index}`}
+														/>
+													</div>
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={form.control}
+											name={`routes.${index}.usage.cost_per_request`}
+											render={({ field }) => (
+												<FormItem>
+													<div className="flex items-center gap-1.5">
+														<FormLabel>Flat fee for this route (USD)</FormLabel>
+														<InfoTip
+															label="Flat fee for this route"
+															text="Replaces the flat fee per call for calls to this route. Leave empty to use the flat fee below; set 0 to charge this route only by quantity."
+														/>
+													</div>
+													<FormControl>
+														<Input
+															type="number"
+															step="any"
+															min={0}
+															placeholder="Same as the flat fee below"
+															data-testid={`generic-route-cost-per-request-input-${index}`}
+															disabled={disabled}
+															value={field.value ?? ""}
+															onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+														/>
+													</FormControl>
+												</FormItem>
+											)}
+										/>
+									</div>
+									<RouteHeaderMatchers control={form.control} index={index} disabled={disabled} />
+									{form.watch(`routes.${index}.job`) && (
+										<p className="text-muted-foreground text-xs" data-testid={`generic-route-job-note-${index}`}>
+											Starts an async job (settled by the job accounting sweeper); edit the job block through config.json or the API.
+										</p>
+									)}
+								</div>
+							))}
+						</CollapsibleContent>
+					</Collapsible>
+					{switchField(
+						"strict_routes",
+						"Only allow the routes above",
+						"Any other call is refused with 404 before it reaches the API",
+						"generic-strict-routes-switch",
+						"Turns the routes list into an allowlist, so your key cannot be used for operations you have not priced. Recommended once the routes are set up.",
+					)}
+				</section>
+
+				{/* Pricing */}
+				<section className="space-y-4">
+					<div>
+						<h3 className="text-sm font-semibold">What a call costs</h3>
+						<p className="text-muted-foreground text-sm">
+							Each billable call is charged a flat fee plus, if the API bills by quantity, a per-unit charge. Leave both at 0 to log calls
+							without a cost.
+						</p>
+					</div>
+					{numberField(
+						"usage.cost_per_request",
+						"Flat fee per call (USD)",
+						"0",
+						"generic-usage-cost-per-request-input",
+						"Charged on every successful billable call, whatever the response says. A route below can set its own fee, or 0 to waive it.",
+						0,
+					)}
+
 					<div className="space-y-3 rounded-sm border p-3" data-testid="generic-units-section">
 						<div>
-							<p className="text-sm font-medium">Per-unit pricing</p>
+							<p className="text-sm font-medium">Charge by quantity</p>
 							<p className="text-muted-foreground text-sm">
-								For APIs that bill by quantity: pages the response reports, characters of the text you sent, or the size of the request
-								body. Cost per call becomes units × rate, plus the flat fee and any extracted cost.
+								For APIs priced per page, credit, character or byte. Cost = quantity × price per unit.
 							</p>
 						</div>
 						<div className="grid gap-4 md:grid-cols-2">
@@ -586,10 +922,13 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 								name="usage.units_source"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Read the quantity from</FormLabel>
+										{fieldLabel(
+											"Count from",
+											"Where the quantity is read. The API response body suits counts the API reports (Textract pages, Tavily credits). The caller request body suits APIs priced by what you send (Translate characters); such a request must be JSON, or it is refused.",
+										)}
 										<Select value={field.value ?? "response"} onValueChange={field.onChange} disabled={disabled}>
 											<FormControl>
-												<SelectTrigger data-testid="generic-units-source-select">
+												<SelectTrigger className="w-full" data-testid="generic-units-source-select">
 													<SelectValue />
 												</SelectTrigger>
 											</FormControl>
@@ -609,10 +948,13 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 								name="usage.units_measure"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Measure</FormLabel>
+										{fieldLabel(
+											"What to count",
+											"Number in the JSON reads the value at the path below (pages, credits, seconds). Text length counts the characters of the text at that path. The whole-body options need no path and work for any content type (SSML, raw text, files).",
+										)}
 										<Select value={field.value ?? "value"} onValueChange={field.onChange} disabled={disabled}>
 											<FormControl>
-												<SelectTrigger data-testid="generic-units-measure-select">
+												<SelectTrigger className="w-full" data-testid="generic-units-measure-select">
 													<SelectValue />
 												</SelectTrigger>
 											</FormControl>
@@ -627,389 +969,189 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 									</FormItem>
 								)}
 							/>
-							{!genericUnitsMeasureReadsWholeBody(form.watch("usage.units_measure")) &&
+							{!genericUnitsMeasureReadsWholeBody(unitsMeasure) &&
 								textField(
 									"usage.units_path",
-									"Units path",
-									"DocumentMetadata.Pages",
+									"Where to find it",
+									"usage.credits",
 									"generic-units-path-input",
-									"e.g. DocumentMetadata.Pages (Textract), usage.credits (Tavily), Text (Translate)",
+									"A dot path into the JSON, e.g. usage.credits (Tavily), DocumentMetadata.Pages (Textract), Text (Translate). An array is added up.",
 								)}
-							<FormField
-								control={form.control}
-								name="usage.cost_per_unit"
-								render={({ field }) => (
-									<FormItem>
-										<FormLabel>Cost per unit (USD)</FormLabel>
-										<FormControl>
-											<Input
-												type="number"
-												step="any"
-												min={0}
-												placeholder="0"
-												data-testid="generic-units-cost-per-unit-input"
-												disabled={disabled}
-												value={field.value ?? 0}
-												onChange={(e) => field.onChange(e.target.value === "" ? 0 : Number(e.target.value))}
-											/>
-										</FormControl>
-										<FormDescription>e.g. 0.0015 per Textract page, 0.000015 per Translate character</FormDescription>
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
-							<FormField
-								control={form.control}
-								name="usage.units_block_size"
-								render={({ field }) => (
-									<FormItem>
-										<FormLabel>Block size (optional)</FormLabel>
-										<FormControl>
-											<Input
-												type="number"
-												step="any"
-												min={0}
-												placeholder="exact"
-												data-testid="generic-units-block-size-input"
-												disabled={disabled}
-												value={field.value ?? ""}
-												onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
-											/>
-										</FormControl>
-										<FormDescription>
-											Bill per started block of this many units, e.g. 100 for APIs priced per 100 characters
-										</FormDescription>
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
-							<FormField
-								control={form.control}
-								name="usage.units_minimum"
-								render={({ field }) => (
-									<FormItem>
-										<FormLabel>Minimum units (optional)</FormLabel>
-										<FormControl>
-											<Input
-												type="number"
-												step="any"
-												min={0}
-												placeholder="0"
-												data-testid="generic-units-minimum-input"
-												disabled={disabled}
-												value={field.value ?? ""}
-												onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
-											/>
-										</FormControl>
-										<FormDescription>Least number of billed units once a quantity was read</FormDescription>
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
-						</div>
-					</div>
-					{switchField(
-						"usage.disable_optimistic_parsing",
-						"Only read the configured paths",
-						"Turn off the common-shape fallbacks so nothing is inferred from a response you did not map",
-						"generic-usage-disable-optimistic-switch",
-					)}
-				</section>
-
-				{/* Streaming */}
-				<section className="space-y-4">
-					<h3 className="text-sm font-semibold">Streaming</h3>
-					<FormField
-						control={form.control}
-						name="streaming.paths"
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Streaming paths</FormLabel>
-								<FormControl>
-									<Textarea
-										placeholder={"/v1/stream/**\n/events/*"}
-										data-testid="generic-streaming-paths-textarea"
-										disabled={disabled}
-										value={streamingPathsText}
-										onChange={(e) => {
-											// Blank lines (a trailing newline while typing) are not globs; keep them out of the
-											// value so they can never fail validation, and keep the raw text so the caret stays put.
-											setStreamingPathsText(e.target.value);
-											field.onChange(
-												e.target.value
-													.split("\n")
-													.map((l) => l.trim())
-													.filter((l) => l !== ""),
-											);
-										}}
-										onBlur={field.onBlur}
-										rows={3}
-									/>
-								</FormControl>
-								<FormDescription>
-									One rooted glob per line; a trailing /** matches everything below. These routes are always served as streams.
-								</FormDescription>
-								<FormMessage />
-								{streamingPathError && (
-									<p className="text-destructive text-sm" data-testid="generic-streaming-paths-error">
-										{streamingPathError}
-									</p>
-								)}
-							</FormItem>
-						)}
-					/>
-					{switchField(
-						"streaming.detect_from_body",
-						"Stream on a caller's stream flag",
-						'Treat "stream": true in a JSON body (or ?stream=true on a GET) as a streaming request. Leave off unless the upstream is an LLM API: the streaming relay forwards a non-SSE reply unread, so a caller could otherwise skip response-side billing',
-						"generic-streaming-body-switch",
-					)}
-					{switchField(
-						"streaming.detect_from_accept_header",
-						"Stream on Accept: text/event-stream",
-						"Treat a request whose Accept header asks for SSE as a streaming request",
-						"generic-streaming-accept-switch",
-					)}
-				</section>
-
-				{/* Routes */}
-				<section className="space-y-4">
-					<div className="flex items-center justify-between">
-						<div>
-							<h3 className="text-sm font-semibold">Routes</h3>
-							<p className="text-muted-foreground text-sm">
-								Per-operation overrides; the first matching route wins. Non-billable routes are relayed but not counted.
-							</p>
-						</div>
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							disabled={disabled}
-							data-testid="generic-route-add-btn"
-							onClick={() =>
-								routes.append({
-									method: "POST",
-									path: "/",
-									headers: [],
-									billable: undefined,
-									stream: undefined,
-									usage: { ...emptyRouteUsage },
-								})
-							}
-						>
-							Add route
-						</Button>
-					</div>
-					{routes.fields.map((route, index) => (
-						<div key={route.id} className="space-y-3 rounded-sm border p-3" data-testid={`generic-route-row-${index}`}>
-							<div className="grid gap-3 md:grid-cols-[120px_1fr_140px_auto]">
-								<FormField
-									control={form.control}
-									name={`routes.${index}.method`}
-									render={({ field }) => (
-										<FormItem>
-											<Select value={field.value} onValueChange={field.onChange} disabled={disabled}>
-												<FormControl>
-													<SelectTrigger data-testid={`generic-route-method-select-${index}`}>
-														<SelectValue />
-													</SelectTrigger>
-												</FormControl>
-												<SelectContent>
-													{GenericRouteMethods.map((m) => (
-														<SelectItem key={m} value={m}>
-															{m}
-														</SelectItem>
-													))}
-												</SelectContent>
-											</Select>
-										</FormItem>
-									)}
-								/>
-								<FormField
-									control={form.control}
-									name={`routes.${index}.path`}
-									render={({ field }) => (
-										<FormItem>
-											<FormControl>
-												<Input placeholder="/search" data-testid={`generic-route-path-input-${index}`} disabled={disabled} {...field} />
-											</FormControl>
-											<FormMessage />
-										</FormItem>
-									)}
-								/>
-								<FormField
-									control={form.control}
-									name={`routes.${index}.stream`}
-									render={({ field }) => (
-										<FormItem>
-											<Select value={streamChoice(field.value)} onValueChange={(v) => field.onChange(streamFlag(v))} disabled={disabled}>
-												<FormControl>
-													<SelectTrigger data-testid={`generic-route-stream-select-${index}`}>
-														<SelectValue />
-													</SelectTrigger>
-												</FormControl>
-												<SelectContent>
-													{STREAM_CHOICES.map((c) => (
-														<SelectItem key={c.value} value={c.value}>
-															{c.label}
-														</SelectItem>
-													))}
-												</SelectContent>
-											</Select>
-										</FormItem>
-									)}
-								/>
-								<Button
-									type="button"
-									variant="ghost"
-									size="icon"
-									disabled={disabled}
-									data-testid={`generic-route-remove-btn-${index}`}
-									aria-label={`Remove route ${index + 1}`}
-									onClick={() => routes.remove(index)}
-								>
-									<Trash2 className="h-4 w-4" />
-								</Button>
-							</div>
-							<div className="grid gap-3 md:grid-cols-2">
-								<FormField
-									control={form.control}
-									name={`routes.${index}.billable`}
-									render={({ field }) => (
-										<FormItem>
-											<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
-												<p className="text-sm font-medium">Billable</p>
-												<Switch
-													size="md"
-													checked={field.value ?? genericRouteBillableByDefault(form.watch(`routes.${index}.method`))}
-													onCheckedChange={field.onChange}
-													disabled={disabled}
-													data-testid={`generic-route-billable-switch-${index}`}
-												/>
-											</div>
-										</FormItem>
-									)}
-								/>
-								<FormField
-									control={form.control}
-									name={`routes.${index}.usage.cost_per_request`}
-									render={({ field }) => (
-										<FormItem>
-											<FormControl>
-												<Input
-													type="number"
-													step="any"
-													min={0}
-													placeholder="Cost per request override (USD); empty inherits, 0 waives the fee"
-													data-testid={`generic-route-cost-per-request-input-${index}`}
-													disabled={disabled}
-													value={field.value ?? ""}
-													onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
-												/>
-											</FormControl>
-										</FormItem>
-									)}
-								/>
-							</div>
-							<RouteHeaderMatchers control={form.control} index={index} disabled={disabled} />
-							{form.watch(`routes.${index}.job`) && (
-								<p className="text-muted-foreground text-xs" data-testid={`generic-route-job-note-${index}`}>
-									Starts an async job (settled by the job accounting sweeper); edit the job block through config.json or the API.
-								</p>
+							{numberField(
+								"usage.cost_per_unit",
+								"Price per unit (USD)",
+								"0",
+								"generic-units-cost-per-unit-input",
+								"What one unit costs, e.g. 0.008 per Tavily credit, 0.0015 per Textract page, 0.000015 per Translate character.",
+								0,
+							)}
+							{numberField(
+								"usage.units_block_size",
+								"Bill in blocks of (optional)",
+								"exact",
+								"generic-units-block-size-input",
+								"Round the quantity up to whole blocks, e.g. 100 for APIs priced per started 100 characters. Empty bills the exact quantity.",
+								undefined,
+							)}
+							{numberField(
+								"usage.units_minimum",
+								"Minimum units per call (optional)",
+								"0",
+								"generic-units-minimum-input",
+								"The least number of units billed once a quantity was found, e.g. 1 for APIs with a one-unit minimum.",
+								undefined,
 							)}
 						</div>
-					))}
+					</div>
 				</section>
 
-				{/* Import from OpenAPI */}
-				<section className="space-y-4">
-					<h3 className="text-sm font-semibold">Import from an OpenAPI document</h3>
-					<p className="text-muted-foreground text-sm">
-						Paste, upload or fetch the API&apos;s OpenAPI or Swagger document. Its operations become routes, its security scheme becomes the
-						auth type, and strict routes is switched on so only those operations are relayed. The document itself is not stored.
-					</p>
-					<div className="grid gap-3 md:grid-cols-[1fr_auto]">
-						<Input
-							placeholder="https://api.example.com/openapi.json"
-							data-testid="generic-openapi-import-url-input"
-							disabled={disabled}
-							value={importUrl}
-							onChange={(e) => setImportUrl(e.target.value)}
-						/>
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							isLoading={importing}
-							disabled={disabled || !importUrl.trim()}
-							data-testid="generic-openapi-import-url-btn"
-							onClick={importFromUrl}
-						>
-							Fetch and import
-						</Button>
-					</div>
-					<Textarea
-						placeholder="openapi: 3.0.0 …"
-						data-testid="generic-openapi-import-textarea"
-						disabled={disabled}
-						rows={5}
-						value={importText}
-						onChange={(e) => setImportText(e.target.value)}
-					/>
-					<div className="flex flex-wrap items-center gap-3">
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							isLoading={importing}
-							disabled={disabled || !importText.trim()}
-							data-testid="generic-openapi-import-btn"
-							onClick={() => applyImport(importText)}
-						>
-							Import pasted document
-						</Button>
-						<label className="text-muted-foreground cursor-pointer text-sm underline">
-							Upload a file
-							<input
-								type="file"
-								accept=".json,.yaml,.yml,application/json"
-								className="hidden"
-								data-testid="generic-openapi-import-file"
-								disabled={disabled}
-								onChange={(e) => importFromFile(e.currentTarget)}
+				{/* Advanced: field paths and streaming */}
+				<Collapsible className="space-y-4" open={advancedOpen} onOpenChange={setAdvancedOpen}>
+					<CollapsibleTrigger
+						className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-sm font-medium transition-colors"
+						data-testid="generic-advanced-toggle"
+					>
+						<ChevronRight className={`h-4 w-4 transition-transform ${advancedOpen ? "rotate-90" : ""}`} />
+						Advanced: where usage is read from, and streaming
+					</CollapsibleTrigger>
+					<CollapsibleContent className="space-y-8">
+						<section className="space-y-4">
+							<div>
+								<h3 className="text-sm font-semibold">Where usage is read from</h3>
+								<p className="text-muted-foreground text-sm">
+									Bifrost already reads the fields most LLM-style APIs use (the request&apos;s model, the reply&apos;s token counts and any
+									cost it reports). Fill these in only when your API names them differently. Token counts are logged, not priced: for an LLM
+									API, add a custom provider with an LLM base format (e.g. OpenAI) instead, which prices tokens from the model catalog.
+								</p>
+							</div>
+							<div className="grid gap-4 md:grid-cols-2">
+								{textField(
+									"usage.model_path",
+									"Model field in the request",
+									"model",
+									"generic-usage-model-path-input",
+									"Where the model name sits in the caller's JSON request. It is logged and matched against virtual-key model limits. Default: model.",
+								)}
+								{textField(
+									"usage.cost_path",
+									"Cost the API reports",
+									"usage.cost",
+									"generic-usage-cost-path-input",
+									"A dollar amount the reply carries, added to the call's cost (an array is added up). Default: usage.cost. Turn on Ignore Provider-Reported Cost (Pricing tab) to drop it.",
+								)}
+								{textField(
+									"usage.input_tokens_path",
+									"Input tokens",
+									"usage.prompt_tokens",
+									"generic-usage-input-tokens-path-input",
+									"Default: usage.prompt_tokens, then usage.input_tokens.",
+								)}
+								{textField(
+									"usage.output_tokens_path",
+									"Output tokens",
+									"usage.completion_tokens",
+									"generic-usage-output-tokens-path-input",
+									"Default: usage.completion_tokens, then usage.output_tokens.",
+								)}
+								{textField(
+									"usage.total_tokens_path",
+									"Total tokens",
+									"usage.total_tokens",
+									"generic-usage-total-tokens-path-input",
+									"Default: usage.total_tokens.",
+								)}
+							</div>
+							{switchField(
+								"usage.disable_optimistic_parsing",
+								"Only read the fields set here",
+								"Stop reading the default fields above, so nothing is taken from a reply you did not map",
+								"generic-usage-disable-optimistic-switch",
+								"Use this when the API's replies happen to contain fields like usage.cost or usage.total_tokens that mean something else.",
+							)}
+						</section>
+
+						{/* Streaming */}
+						<section className="space-y-4">
+							<div>
+								<h3 className="text-sm font-semibold">Streaming</h3>
+								<p className="text-muted-foreground text-sm">
+									By default every call is read whole, so the reply can be billed. Streamed replies are passed through as they arrive; only
+									SSE streams are read for usage.
+								</p>
+							</div>
+							<FormField
+								control={form.control}
+								name="streaming.paths"
+								render={({ field }) => (
+									<FormItem>
+										{fieldLabel(
+											"Always stream these paths",
+											"One path per line; * matches one segment and a trailing /** everything below, e.g. /v1/stream/**. Calls to these paths are always streamed.",
+										)}
+										<FormControl>
+											<Textarea
+												placeholder={"/v1/stream/**\n/events/*"}
+												data-testid="generic-streaming-paths-textarea"
+												disabled={disabled}
+												value={streamingPathsText}
+												onChange={(e) => {
+													// Blank lines (a trailing newline while typing) are not globs; keep them out of the
+													// value so they can never fail validation, and keep the raw text so the caret stays put.
+													setStreamingPathsText(e.target.value);
+													field.onChange(
+														e.target.value
+															.split("\n")
+															.map((l) => l.trim())
+															.filter((l) => l !== ""),
+													);
+												}}
+												onBlur={field.onBlur}
+												rows={3}
+											/>
+										</FormControl>
+										<FormMessage />
+										{streamingPathError && (
+											<p className="text-destructive text-sm" data-testid="generic-streaming-paths-error">
+												{streamingPathError}
+											</p>
+										)}
+									</FormItem>
+								)}
 							/>
-						</label>
-						{imported && (
-							<p className="text-muted-foreground text-xs" data-testid="generic-openapi-import-summary">
-								{imported.title || "Document"} {imported.version ? `v${imported.version}` : ""}: {imported.routes.length} operations
-								{imported.baseUrl ? `, server ${imported.baseUrl} (set it on the Network tab)` : ""}
-								{imported.warnings.length > 0 ? `. ${imported.warnings.join(". ")}` : ""}
-							</p>
-						)}
-					</div>
-					{switchField(
-						"strict_routes",
-						"Strict routes",
-						"Refuse any request that matches no route above with 404, so the routes list is an allowlist",
-						"generic-strict-routes-switch",
-					)}
-				</section>
+							{switchField(
+								"streaming.detect_from_body",
+								'Stream when the request says "stream": true',
+								"Leave off unless the API is an LLM API",
+								"generic-streaming-body-switch",
+								'Treats "stream": true in a JSON body (or ?stream=true on a GET) as a streaming request. A streamed reply that is not SSE is passed through unread, so on an API billed from its reply a caller could add the flag and pay only the flat fee.',
+							)}
+							{switchField(
+								"streaming.detect_from_accept_header",
+								"Stream when the caller asks for SSE",
+								"Requests with Accept: text/event-stream are streamed",
+								"generic-streaming-accept-switch",
+								"Off by default for the same reason as the stream flag: only turn it on for an API that really streams SSE.",
+							)}
+						</section>
+					</CollapsibleContent>
+				</Collapsible>
 
 				{/* Requests */}
 				<section className="space-y-4">
 					<h3 className="text-sm font-semibold">Requests</h3>
 					{switchField(
 						"allowed.passthrough",
-						"Allow buffered requests",
-						"Relay calls whose reply is read whole; off refuses them",
+						"Allow normal requests",
+						"Calls whose reply is read whole; off refuses them",
 						"generic-allowed-passthrough-switch",
+						"Normal calls are read whole before being returned, which is what lets Bifrost bill from the reply.",
 					)}
 					{switchField(
 						"allowed.passthrough_stream",
 						"Allow streamed requests",
-						"Relay calls served as streams (streaming paths, Accept or body detection, stream routes); off refuses them",
+						"Calls served as streams; off refuses them",
 						"generic-allowed-passthrough-stream-switch",
+						"A call is streamed when a streaming path, a stream route, or an enabled stream signal (Advanced) says so. Turn this off for an API that never streams.",
 					)}
 				</section>
 
@@ -1201,6 +1343,41 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	);
 }
 
+// advancedHasSettings reports whether the Advanced section holds anything, so it opens itself then
+// and a configured path or stream rule is never hidden.
+function advancedHasSettings(v: FormValues): boolean {
+	const u = v.usage ?? {};
+	return Boolean(
+		u.model_path ||
+		u.cost_path ||
+		u.input_tokens_path ||
+		u.output_tokens_path ||
+		u.total_tokens_path ||
+		u.disable_optimistic_parsing ||
+		(v.streaming?.paths ?? []).length > 0 ||
+		v.streaming?.detect_from_body ||
+		v.streaming?.detect_from_accept_header,
+	);
+}
+
+// InfoTip is the info icon whose hover text explains the control next to it.
+function InfoTip({ label, text }: { label: string; text: string }) {
+	return (
+		<TooltipProvider>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<span tabIndex={0} aria-label={`About ${label}`} className="inline-flex">
+						<Info className="text-muted-foreground h-3 w-3" />
+					</span>
+				</TooltipTrigger>
+				<TooltipContent className="max-w-sm">
+					<p>{text}</p>
+				</TooltipContent>
+			</Tooltip>
+		</TooltipProvider>
+	);
+}
+
 // RouteHeaderMatchers edits a route's required request headers as name/value pairs. AWS JSON APIs
 // send every operation to POST / and name it in X-Amz-Target, so this is how one route per
 // operation is expressed; a route with no pairs matches on method and path alone.
@@ -1265,16 +1442,22 @@ function RouteHeaderMatchers({
 					</Button>
 				</div>
 			))}
-			<Button
-				type="button"
-				variant="outline"
-				size="sm"
-				disabled={disabled}
-				onClick={() => headers.append({ name: "", value: "" })}
-				data-testid={`generic-route-header-add-btn-${index}`}
-			>
-				Match a header
-			</Button>
+			<div className="flex items-center gap-1.5">
+				<Button
+					type="button"
+					variant="outline"
+					size="sm"
+					disabled={disabled}
+					onClick={() => headers.append({ name: "", value: "" })}
+					data-testid={`generic-route-header-add-btn-${index}`}
+				>
+					Match a header
+				</Button>
+				<InfoTip
+					label="Match a header"
+					text="Only match calls that carry this header. Some APIs send every operation to the same path and name it in a header instead (AWS: POST / with X-Amz-Target: Textract.AnalyzeDocument), so a header lets each operation have its own route and price. The value may use * as a wildcard, e.g. Textract.Get* for every Get call. Add several headers to require all of them."
+				/>
+			</div>
 		</div>
 	);
 }

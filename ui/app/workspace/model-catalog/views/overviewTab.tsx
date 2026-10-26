@@ -7,7 +7,7 @@ import {
 	useLazyGetLogsStatsQuery,
 	useLazyGetProviderKeysQuery,
 } from "@/lib/store";
-import { KnownProvider, ModelProviderKey } from "@/lib/types/config";
+import { isGenericProvider, KnownProvider, ModelProviderKey } from "@/lib/types/config";
 import { LogStats } from "@/lib/types/logs";
 import { useEffect, useMemo, useState } from "react";
 import { ModelCatalogEmptyState } from "./modelCatalogEmptyState";
@@ -55,11 +55,13 @@ export default function OverviewTab({ hasAccess }: OverviewTabProps) {
 	const [isLoadingModels, setIsLoadingModels] = useState(true);
 
 	const {
-		data: providers,
+		data: allProviders,
 		isLoading: isLoadingProviders,
 		error: providersError,
 		refetch: refetchProviders,
 	} = useGetProvidersQuery(undefined, { skip: !hasAccess });
+	// Generic HTTP relays have no models, so the catalog lists only model providers.
+	const providers = useMemo(() => allProviders?.filter((p) => !isGenericProvider(p)), [allProviders]);
 	const { data: modelsData } = useGetModelsQuery({ unfiltered: true }, { skip: !hasAccess });
 
 	const [triggerGlobalStats, { data: globalStats }] = useLazyGetLogsStatsQuery();

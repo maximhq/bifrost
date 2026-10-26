@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { isGenericProvider } from "./config";
 import { genericRouteFormSchema, genericUsagePreviewSampleSchema } from "./schemas";
 
 describe("generic route header matchers", () => {
@@ -62,5 +63,11 @@ describe("genericUsagePreviewSampleSchema path", () => {
 			expect(result.success, path).toBe(false);
 			expect(JSON.stringify(result.error?.issues), path).toContain(message);
 		}
+
+describe("isGenericProvider", () => {
+	it("is true only for a custom provider whose base format is generic", () => {
+		expect(isGenericProvider({ custom_provider_config: { base_provider_type: "generic" } })).toBe(true);
+		expect(isGenericProvider({ custom_provider_config: { base_provider_type: "openai" } })).toBe(false);
+		expect(isGenericProvider({})).toBe(false);
 	});
 });
