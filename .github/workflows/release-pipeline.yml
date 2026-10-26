@@ -3,7 +3,7 @@ name: Release Pipeline
 # Triggers automatically on push to main when any version file changes
 on:
   push:
-    branches: ["main", "v2.0.0"]
+    branches: "main"
   workflow_dispatch:
     inputs:
       skip_tests:
@@ -92,12 +92,39 @@ jobs:
             echo "skip-tests=false" >> $GITHUB_OUTPUT
           fi
 
+  # Phone gate. Parks the run on the release-run-approval environment, whose only
+  # protection rule is the bifrost-release-gate GitHub App. The service behind that
+  # App pushes an Approve/Reject prompt to the admin's phone and calls back GitHub
+  # with the answer. Nothing below runs - no provider quota, no runner minutes -
+  # until the tap arrives. Version-bump pushes carry --skip-ci and never reach this
+  # job. The job holds no secrets, checks out nothing and allows no egress: it is a
+  # named point in the graph for the environment rule to hold, nothing more.
+  approve-run:
+    needs: [check-skip]
+    if: needs.check-skip.outputs.should-skip != 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: release-run-approval
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    permissions: {}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >+
+
+      - name: Record the approved run
+        run: echo "Run ${GITHUB_RUN_ID} for ${GITHUB_SHA} was approved from the phone gate"
+
   # Detect what needs to be released
   detect-changes:
-    needs: [check-skip]
+    needs: [check-skip, approve-run]
     runs-on: ubuntu-latest
-    # Skip if first line of commit message contains --skip-ci
-    if: needs.check-skip.outputs.should-skip != 'true'
+    # Skip if first line of commit message contains --skip-ci, or if the phone
+    # gate above was rejected. Every other job needs this one, so this edge is
+    # what holds the whole graph behind the gate.
+    if: needs.check-skip.outputs.should-skip != 'true' && needs.approve-run.result == 'success'
     outputs:
       core-needs-release: ${{ steps.detect.outputs.core-needs-release }}
       framework-needs-release: ${{ steps.detect.outputs.framework-needs-release }}
@@ -3830,6 +3857,7 @@ jobs:
     needs:
       [
         check-skip,
+        approve-run,
         detect-changes,
         test-core,
         resolve-cli-versions,
@@ -3850,7 +3878,9 @@ jobs:
         docker-manifest,
         docker-manifest-ubi9,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true'"
+    # A run rejected at the phone gate ran nothing, so there is no release to
+    # report; without this clause Discord would get an all-skipped "complete".
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.approve-run.result == 'success'"
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
