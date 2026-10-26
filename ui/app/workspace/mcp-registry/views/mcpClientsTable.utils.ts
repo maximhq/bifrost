@@ -1,4 +1,43 @@
+import i18n from "@/lib/i18n";
 import { MCPClient } from "@/lib/types/mcp";
+import { perUserDiscoveryOn } from "@/lib/utils/mcpPerUserDiscovery";
+
+/**
+ * exchangeVerifyCopy is the text of the token_exchange "Verify as me" dialog
+ * for client, in the selected language. A server that discovers tools per
+ * caller keeps nothing from the exchange, so its text speaks of a
+ * verification only, never of a discovery credential.
+ */
+export function exchangeVerifyCopy(
+	client: { state: MCPClient["state"]; config: Pick<MCPClient["config"], "name" | "per_user_discovery"> } | null,
+): {
+	title: string;
+	description: string;
+	body: string;
+	detail: string;
+} {
+	const pending = client?.state === "pending_verification";
+	const name = client?.config.name;
+	const title = i18n.t(pending ? "registry.verify.verifyAsMe" : "registry.verify.reverifyAsMe", { ns: "mcp" });
+	if (perUserDiscoveryOn(client?.config)) {
+		return {
+			title,
+			description: i18n.t("registry.verify.perUserDiscoveryTitle", { ns: "mcp" }),
+			body: i18n.t("registry.verify.exchangeBodyPerUserDiscovery", { ns: "mcp", name }),
+			detail: i18n.t("registry.verify.perUserDiscoveryHint", { ns: "mcp" }),
+		};
+	}
+	return {
+		title,
+		description: i18n.t(pending ? "registry.verify.establishTitle" : "registry.verify.renewTitle", { ns: "mcp" }),
+		body: i18n.t("registry.verify.exchangeBody", {
+			ns: "mcp",
+			action: i18n.t(pending ? "registry.verify.establish" : "registry.verify.renew", { ns: "mcp" }),
+			name,
+		}),
+		detail: i18n.t(pending ? "registry.verify.pendingHint" : "registry.verify.renewHint", { ns: "mcp" }),
+	};
+}
 
 /**
  * canReconnectMCPClient reports whether the "Reconnect" action applies to
