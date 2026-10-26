@@ -6396,6 +6396,102 @@ const CONN16 = folder("CONN-16 Tool list changes", "Setup: alpha (echo_tool, add
   deleteClient("CONN-16", "conn16-c"),
 ]);
 
+// ================================================================ more Bifrost MCP endpoint tests
+
+const fullVK = (id) => vkHeader(id, "full");
+// gwTextAssert reads a tools/call result's first text block as `text` and runs lines on it.
+const gwText = (title, lines) => A.custom(title, ["var r = pm.response.json().result;", "pm.expect(r, 'body: ' + pm.response.text()).to.be.an('object');", "var text = (r.content && r.content[0] && r.content[0].text) || '';", ...lines]);
+
+const EP21 = folder("EP-21 Tool call timeout", `Setup: ${FLEET}; client alpha has tool_execution_timeout 2; alpha delays every tools/call by 5s (scoped to tools/call, so the per-call handshake is fast); the full-access VK (${VKS.full.text}).`, [
+  ...fleetSetup("EP-21"), createVK("EP-21", "full"),
+  request("EP-21", "setup: tool_execution_timeout 2 on alpha", "PUT", "/api/mcp/client/ep-21-alpha", { body: { tool_execution_timeout: 2 }, asserts: [A.status(200)] }),
+  mockPost("EP-21", "alpha", "faults", "setup: alpha delays tools/call by 5s", { faults: { latency: "5s", methods: ["tools/call"] } }),
+  gwCall("EP-21", "tools/call alpha-echo", "alpha-echo", [toolResultError(null, "MCP tool call timed out after 2s: alpha-echo"), responseTime(null, 4000)], [fullVK("EP-21")]),
+  mockPost("EP-21", "alpha", "faults/clear", "teardown: clear alpha's faults", {}),
+  deleteVK("EP-21", "full"), ...fleetTeardown("EP-21"),
+]);
+
+const EP22 = folder("EP-22 Non-text and empty results", `Setup: ${FLEET}, with alpha's echo replying (a) two text blocks "a" and "b", a PNG image block and structuredContent {"v": 1}, then (b) content []; the full-access VK. Passing the content blocks through is a known issue, so those checks are skipped.`, [
+  ...fleetSetup("EP-22"), createVK("EP-22", "full"),
+  mockPost("EP-22", "alpha", "tools/set", "setup: alpha's echo replies two text blocks, an image and structuredContent", { tools: [{ name: "echo", reply: { content: [{ type: "text", text: "a" }, { type: "text", text: "b" }, { type: "image", data: "QUJD", mimeType: "image/png" }], structuredContent: { v: 1 } } }, { name: "add" }] }),
+  request("EP-22", "setup: refresh alpha's tools", "POST", "/api/mcp/client/ep-22-alpha/refresh-tools", { asserts: [A.status(200)] }),
+  gwCall("EP-22", "tools/call alpha-echo, mixed content", "alpha-echo", [A.skip(A.custom("two text blocks, the image block and structuredContent pass through", [
+    "var r = pm.response.json().result;",
+    "pm.expect(r.content, 'body: ' + pm.response.text()).to.eql([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }, { type: 'image', data: 'QUJD', mimeType: 'image/png' }]);",
+    "pm.expect(r.structuredContent).to.eql({ v: 1 });",
+  ]))], [fullVK("EP-22")]),
+  mockPost("EP-22", "alpha", "tools/set", "setup: alpha's echo replies content []", { tools: [{ name: "echo", reply: { content: [] } }, { name: "add" }] }),
+  gwCall("EP-22", "tools/call alpha-echo, empty content", "alpha-echo", [gwText("the text is \"MCP tool 'alpha-echo' executed successfully\"", ["pm.expect(text, 'body: ' + pm.response.text()).to.equal(\"MCP tool 'alpha-echo' executed successfully\");"])], [fullVK("EP-22")]),
+  deleteVK("EP-22", "full"), ...fleetTeardown("EP-22"),
+]);
+
+const EP30 = folder("EP-30 Malformed JSON-RPC and batches", `Setup: ${FLEET}; no credential (enforce_auth_on_inference off). A batch of two tools/list requests gets -32700.`, [
+  ...fleetSetup("EP-30"),
+  rpc("EP-30", "body \"{\"", "{", { asserts: [A.status(200), rpcError(-32700, "Failed to parse message"), A.custom("id is null", ["pm.expect(pm.response.json().id, 'body: ' + pm.response.text()).to.equal(null);"])] }),
+  rpc("EP-30", "an empty body", "", { asserts: [A.status(200), rpcError(-32700, "Failed to parse message"), A.custom("id is null", ["pm.expect(pm.response.json().id, 'body: ' + pm.response.text()).to.equal(null);"])] }),
+  rpc("EP-30", "jsonrpc \"1.0\"", { jsonrpc: "1.0", id: 1, method: "tools/list" }, { asserts: [A.status(200), rpcError(-32600, "Invalid JSON-RPC version")] }),
+  rpc("EP-30", "a batch of two tools/list requests", JSON.stringify([listMsg, { ...listMsg, id: 2 }]), { asserts: [A.status(200), rpcError(-32700)] }),
+  ...fleetTeardown("EP-30"),
+]);
+
+const EP35 = folder("EP-35 `/mcp/{client slug}` serves one client", `Setup: ${FLEET}; plus client my_alpha on alpha, auth none, tools_to_execute ["*"]; no credential (enforce_auth_on_inference off).`, [
+  ...fleetSetup("EP-35"),
+  createClient("EP-35", httpClient("ep-35-my", "my_alpha", "alpha", { tools_to_execute: ["*"] }), "setup: register client my_alpha"),
+  rpc("EP-35", "/mcp/alpha tools/list", listMsg, { path: "/mcp/alpha", asserts: [A.status(200), toolNamesInList(["alpha-add", "alpha-echo"])] }),
+  rpc("EP-35", "/mcp/my-alpha tools/list", listMsg, { path: "/mcp/my-alpha", asserts: [A.status(200), toolNamesInList(["my_alpha-add", "my_alpha-echo"])] }),
+  rpc("EP-35", "beta-echo through /mcp/alpha", call("beta-echo", { text: "hi" }), { path: "/mcp/alpha", asserts: [A.status(200), toolResultError(null, "filtered by request context")] }),
+  mockGet("EP-35", "beta", "beta received no call", [A.custom("calls is empty", ["pm.expect(pm.response.json().counters.calls, 'body: ' + pm.response.text()).to.eql({});"])]),
+  deleteClient("EP-35", "ep-35-my"),
+  ...fleetTeardown("EP-35"),
+]);
+
+const EP50 = folder("EP-50 Switching `mcp_server_auth_mode` at runtime", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on, enforce_auth_on_inference off; a grant gives an access token for the full-access VK. The mode then switches to oauth, headers and back to both with no restart.`, [
+  ...fleetGrantSetup("EP-50"), oauthConfig("EP-50", "both"),
+  register("EP-50", "ep50_client", LOOPBACK_CB, undefined, REFRESHABLE),
+  ...vkGrant("EP-50", "ep50_client", "ep50_f", "the grant"),
+  authMode("EP-50", "O", false),
+  rpc("EP-50", "oauth: tools/list with x-bf-vk", listMsg, { headers: [MCP_ACCEPT, fullVK("EP-50")], asserts: [A.status(401)] }),
+  mcpWithToken("EP-50", "oauth: tools/list with the access token", "ep50_f_at", [A.status(200)]),
+  authMode("EP-50", "H", false),
+  mcpWithToken("EP-50", "headers: tools/list with the access token is anonymous", "ep50_f_at", [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  authMode("EP-50", "H", true),
+  mcpWithToken("EP-50", "headers, enforcement on: the access token is no credential", "ep50_f_at", [A.status(401), A.msgContains("virtual key required to access mcp server")]),
+  authMode("EP-50", "H", false),
+  request("EP-50", "headers: /.well-known/jwks.json", "GET", "/.well-known/jwks.json", { noAuth: true, asserts: [A.status(404)] }),
+  request("EP-50", "headers: /oauth2/register", "POST", "/oauth2/register", { noAuth: true, body: { redirect_uris: [LOOPBACK_CB] }, asserts: [A.status(404)] }),
+  request("EP-50", "headers: /oauth2/authorize", "GET", goodAuthorize("ep50_client"), { noAuth: true, noRedirect: true, asserts: [A.status(404)] }),
+  request("EP-50", "headers: /.well-known/oauth-authorization-server", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(404)] }),
+  request("EP-50", "headers: /.well-known/oauth-protected-resource/mcp", "GET", "/.well-known/oauth-protected-resource/mcp", { noAuth: true, asserts: [A.status(404)] }),
+  tokenReq("EP-50", "headers: /oauth2/token", refreshParams("ep50_f_rt", "ep50_client"), [A.status(404)]),
+  authMode("EP-50", "B", false),
+  mcpWithToken("EP-50", "both: tools/list with the access token", "ep50_f_at", [A.status(200)]),
+  ...fleetGrantTeardown("EP-50"),
+]);
+
+// EP51_AUTH_REQUIRED is the tool result EP-51 expects in every mode: the auth-required link for ph's headers.
+const EP51_AUTH_REQUIRED = [toolResultError("Authentication required for ph. Open this URL to submit the required headers: "), gwText("the URL has #t= and the fragment reminder follows it", [
+    "pm.expect(text, 'text: ' + text).to.include('#t=');",
+    "var notice = text.indexOf('IMPORTANT: this link includes a required fragment');",
+    "pm.expect(notice, 'text: ' + text).to.be.above(text.indexOf('#t='));",
+    `var rem = ${JSON.stringify(" IMPORTANT: this link includes a required fragment after the '#' character (a one-time auth token). Copy and share the ENTIRE URL exactly as given, including everything after the '#' — the link will not work without it.")};`,
+    "pm.expect(text.slice(-rem.length), 'text: ' + text).to.equal(rem);",
+  ])];
+const EP51 = folder("EP-51 Per-user headers tool through `/mcp`", `Setup: ${FLEET}; a fleet server ph (echo_tool, add_tool) that requires X-Token, and a per_user_headers client ph on it with per_user_header_keys ["x-token"], tools_to_execute ["*"]; a VK granted every tool of alpha, beta and ph; temp-token auth on. The caller has no X-Token credential.`, [
+  ...fleetSetup("EP-51"),
+  readConfig("EP-51"),
+  putConfig("EP-51", "setup: temp-token auth on", ["cc.mcp_enable_temp_token_auth = true;"], [A.status(200)]),
+  ...freshServer("EP-51", "ph", ["echo_tool", "add_tool"]),
+  mockAuth("EP-51", "ph", "setup: ph requires X-Token good", { require_headers: { "X-Token": "good" } }),
+  createClient("EP-51", HEADERS_BASE("ep-51-ph", "ph", { connection_string: `${CHAOS}/s/ph/mcp`, per_user_header_keys: ["x-token"], user_headers: { "x-token": "good" }, tools_to_execute: ["*"] }), "setup: create the per_user_headers client ph"),
+  vkCreate("EP-51", "setup: create the VK, granted alpha, beta and ph", { name: "EP-51 key", mcp_configs: [{ mcp_client_name: "alpha", tools_to_execute: ["*"] }, { mcp_client_name: "beta", tools_to_execute: ["*"] }, { mcp_client_name: "ph", tools_to_execute: ["*"] }] }, "ep51_vk"),
+  gwCall("EP-51", "tools/call ph-echo_tool with the VK", "ph-echo_tool", EP51_AUTH_REQUIRED, [{ key: "x-bf-vk", value: "{{ep51_vk}}" }]),
+  mockGet("EP-51", "ph", "ph received no call", [A.custom("calls is empty", ["pm.expect(pm.response.json().counters.calls, 'body: ' + pm.response.text()).to.eql({});"])]),
+  deleteClient("EP-51", "ep-51-ph"),
+  vkDelete("EP-51", "teardown: delete the VK", "ep51_vk"),
+  restoreConfig("EP-51"),
+  ...fleetTeardown("EP-51"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -6412,7 +6508,7 @@ const collection = {
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH48]),
     section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25]),
-    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
+    section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP50, EP51, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV15, GOV16, GOV17, GOV20, GOV21, GOV29, GOV31, GOV32, GOV33]),
