@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -243,6 +245,80 @@ func TestMCPSessionsRevoke_DropsTheRevokedCredentialsDiscovery(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMCPSessionsRevoke_HoldsAgainstASignInFinishingDuringIt revokes a caller's
+// credential while their sign-in to the same client is completing: the revoke
+// lands during the OAuth code exchange, or during the verification of submitted
+// headers. Revoke deletes the caller's flows before the credential, so the
+// completion that was under way must not store the credential it produced.
+func TestMCPSessionsRevoke_HoldsAgainstASignInFinishingDuringIt(t *testing.T) {
+	t.Run("oauth token", func(t *testing.T) {
+		cfg, store := newSignInConfig(t)
+		const existingID = "tok-alice"
+
+		// The token endpoint is where the code exchange waits on the provider:
+		// the revoke runs there, before the new token comes back.
+		revoke := NewMCPSessionsHandler(cfg, &evictionLog{}).revoke
+		var revokeStatus atomic.Int32
+		tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			revokeStatus.Store(int32(callRevoke(revoke, existingID)))
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "alice-token", "token_type": "bearer", "expires_in": 3600})
+		}))
+		t.Cleanup(tokens.Close)
+		require.NoError(t, store.CreateOauthConfig(context.Background(), &tables.TableOauthConfig{
+			ID:           "oauth-notes",
+			ClientID:     schemas.NewSecretVar("bifrost"),
+			TokenURL:     tokens.URL,
+			AuthorizeURL: "https://idp.example/authorize",
+			RedirectURI:  "http://localhost/api/oauth/callback",
+			Status:       "authorized",
+		}))
+		client := &schemas.MCPClientConfig{
+			ID:               "client-notes",
+			Name:             "notes",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"),
+			AuthType:         schemas.MCPAuthTypePerUserOauth,
+			OauthConfigID:    schemas.Ptr("oauth-notes"),
+			ToolsToExecute:   []string{"*"},
+		}
+		createSignInClient(t, store, client, false)
+		require.NoError(t, store.CreateOauthToken(context.Background(), &tables.TableMCPOauthToken{ID: existingID, MCPClientID: client.ID, AuthMode: "user", UserID: schemas.Ptr("alice"), Status: "active", AccessToken: "old", TokenType: "Bearer", OauthConfigID: "oauth-notes"}))
+		createUserOAuthFlow(t, store, client.ID, "alice", "state-1")
+
+		location := callOAuthCallback(t, NewOAuthHandler(cfg.OAuthProvider, nil, cfg, &signInMCPManager{}), "state-1")
+
+		require.Equal(t, int32(fasthttp.StatusNoContent), revokeStatus.Load())
+		token, err := store.GetOauthUserTokenByMode(context.Background(), schemas.MCPAuthModeUser, "alice", client.ID)
+		require.NoError(t, err)
+		assert.Nil(t, token, "the revoke holds: the sign-in that was finishing stores no token")
+		assert.NotContains(t, location, "auth-success")
+	})
+
+	t.Run("header credential", func(t *testing.T) {
+		cfg, store := newSignInConfig(t)
+		client := headersNotesClient()
+		createSignInClient(t, store, client, false)
+		existing := &tables.TableMCPPerUserHeaderCredential{MCPClientID: client.ID, AuthMode: "user", UserID: schemas.Ptr("alice"), Status: "active", HeadersJSON: `{"x-api-key":"old"}`}
+		require.NoError(t, store.UpsertMCPPerUserHeaderCredential(context.Background(), existing))
+		createHeadersFlow(t, store, &tables.TableMCPPerUserHeaderFlow{ID: "flow-1", MCPClientID: client.ID, FlowMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("alice")})
+
+		// Verification dials the upstream with the submitted values: the revoke
+		// runs while it does.
+		revoke := NewMCPSessionsHandler(cfg, &evictionLog{}).revoke
+		var revokeStatus int
+		manager := &signInMCPManager{duringVerify: func() { revokeStatus = callRevoke(revoke, existing.ID) }}
+
+		status, body := callSubmitHeaders(NewMCPPerUserHeadersHandler(manager, nil, cfg, nil), "flow-1", "alice")
+
+		require.Equal(t, fasthttp.StatusNoContent, revokeStatus)
+		assert.Equal(t, fasthttp.StatusNotFound, status, string(body))
+		cred, err := store.GetMCPPerUserHeaderCredentialByMode(context.Background(), schemas.MCPAuthModeUser, "alice", client.ID)
+		require.NoError(t, err)
+		assert.Nil(t, cred, "the revoke holds: the submit that was finishing stores no credential")
+	})
 }
 
 // countingDiscoverySummaries counts the per-user discovery summary reads made

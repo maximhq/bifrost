@@ -26,8 +26,8 @@ import (
 
 // signInMCPManager answers verification the way a client's upstream would, with
 // one tool, and records the credential each verification was handed. duringVerify,
-// when set, runs inside an OAuth verification, as something that happens while
-// discovery dials; verifyErr, when set, fails it, as an upstream that is down.
+// when set, runs inside a verification, as something that happens while it dials;
+// verifyErr, when set, fails an OAuth verification, as an upstream that is down.
 type signInMCPManager struct {
 	MCPManager
 	mu           sync.Mutex
@@ -54,7 +54,11 @@ func (m *signInMCPManager) VerifyPerUserOAuthConnection(_ context.Context, confi
 func (m *signInMCPManager) VerifyHeadersConnection(_ context.Context, config *schemas.MCPClientConfig, headers map[string]string) (*schemas.MCPDiscovery, error) {
 	m.mu.Lock()
 	m.headers = append(m.headers, headers)
+	hook := m.duringVerify
 	m.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	return signInDiscovery(config.Name), nil
 }
 
@@ -326,6 +330,16 @@ func headersNotesClient() *schemas.MCPClientConfig {
 // and returns the response body.
 func submitHeaders(t *testing.T, h *MCPPerUserHeadersHandler, flowID, dashboardUser string) map[string]any {
 	t.Helper()
+	status, raw := callSubmitHeaders(h, flowID, dashboardUser)
+	require.Equal(t, fasthttp.StatusOK, status, string(raw))
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(raw, &body))
+	return body
+}
+
+// callSubmitHeaders submits flow's headers as dashboardUser and returns the
+// status and the raw response body, whatever they are.
+func callSubmitHeaders(h *MCPPerUserHeadersHandler, flowID, dashboardUser string) (int, []byte) {
 	var req fasthttp.Request
 	req.Header.SetMethod(fasthttp.MethodPut)
 	req.SetBodyString(`{"headers":{"x-api-key":"key-1"}}`)
@@ -336,10 +350,7 @@ func submitHeaders(t *testing.T, h *MCPPerUserHeadersHandler, flowID, dashboardU
 		ctx.SetUserValue(schemas.BifrostContextKeyUserID, dashboardUser)
 	}
 	h.flowSubmit(&ctx)
-	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	var body map[string]any
-	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
-	return body
+	return ctx.Response.StatusCode(), append([]byte(nil), ctx.Response.Body()...)
 }
 
 func createHeadersFlow(t *testing.T, store configstore.ConfigStore, flow *tables.TableMCPPerUserHeaderFlow) {

@@ -763,6 +763,12 @@ type ConfigStore interface {
 	// state. The two claim methods partition the table by flow_mode, so a
 	// given state can only ever be claimed by one of them.
 	ClaimOauthFlowByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error)
+	// CompleteOauthUserSession consumes the claimed per-identity flow row
+	// sessionID and stores the token it produced, in one transaction. Returns
+	// ErrNotFound, storing nothing, when the row is gone: a revoke deletes the
+	// binding's flows before its token, so a completion that finishes after a
+	// revoke cannot bring the token back.
+	CompleteOauthUserSession(ctx context.Context, sessionID string, token *tables.TableMCPOauthToken) error
 	// GetOauthUserSessionByModeIdentityAndMCPClient returns the canonical flow
 	// row for an (identity, mcp_client) binding. Used at flow-init time as the
 	// single source of truth: reauth updates this row in place rather than
@@ -977,6 +983,11 @@ type ConfigStore interface {
 	// DeleteOauthUserSessionsByModeIdentityAndMCPClient.
 	DeleteMCPPerUserHeaderFlowsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
 	DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error
+	// CompleteMCPPerUserHeaderFlow consumes the submission flow row flowID and
+	// upserts the credential it produced, in one transaction. Returns
+	// ErrNotFound, storing nothing, when the row is gone: revoked, swept as
+	// expired, or already consumed by a concurrent submit.
+	CompleteMCPPerUserHeaderFlow(ctx context.Context, flowID string, cred *tables.TableMCPPerUserHeaderCredential) error
 	// ListPendingMCPPerUserHeaderFlows returns non-expired pending header
 	// submission flow rows matching the supplied filters. Mirrors
 	// ListPendingOauthUserSessions on the OAuth side. Always restricted to

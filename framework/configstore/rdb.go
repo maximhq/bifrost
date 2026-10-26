@@ -8703,6 +8703,28 @@ func (s *RDBConfigStore) claimOauthFlowByStateAndModes(ctx context.Context, stat
 	return &flow, nil
 }
 
+// CompleteOauthUserSession deletes the claimed per-identity flow row sessionID
+// and stores token, in one transaction, or stores nothing and returns
+// ErrNotFound when the row is already gone. The claim alone does not protect
+// the write: the code exchange runs between the claim and here, and a revoke
+// landing in that window deletes the flow and then the token, so the delete
+// below is what decides whether this completion still counts. Whichever of
+// the two commits first wins, and a revoke after this commit deletes the token
+// it finds.
+func (s *RDBConfigStore) CompleteOauthUserSession(ctx context.Context, sessionID string, token *tables.TableMCPOauthToken) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Where("id = ? AND status = ? AND flow_mode IN ?", sessionID, "claiming", perUserOauthFlowModes).
+			Delete(&tables.TableMCPOauthFlow{})
+		if result.Error != nil {
+			return fmt.Errorf("failed to consume oauth flow: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return s.CreateOauthToken(ctx, token, tx)
+	})
+}
+
 // GetOauthUserSessionByModeIdentityAndMCPClient returns the single flow row
 // bound to (mode, identity, mcp_client_id). This is the canonical lookup at
 // flow-init time: there's exactly one flow row per binding, and reauth always
@@ -9538,45 +9560,51 @@ func (s *RDBConfigStore) GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx cont
 // re-submit preserves CreatedAt.
 func (s *RDBConfigStore) UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error {
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing tables.TableMCPPerUserHeaderCredential
-		var lookupErr error
-		switch {
-		case cred.AuthMode == string(schemas.MCPAuthModeAdmin) && cred.MCPClientID != "":
-			lookupErr = dbForUpdate(tx).
-				Where("auth_mode = ? AND mcp_client_id = ?", "admin", cred.MCPClientID).
-				First(&existing).Error
-		case cred.UserID != nil && *cred.UserID != "":
-			lookupErr = dbForUpdate(tx).
-				Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeUser), *cred.UserID, cred.MCPClientID).
-				First(&existing).Error
-		case cred.VirtualKeyID != nil && *cred.VirtualKeyID != "":
-			lookupErr = dbForUpdate(tx).
-				Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeVK), *cred.VirtualKeyID, cred.MCPClientID).
-				First(&existing).Error
-		case cred.SessionID != "":
-			lookupErr = dbForUpdate(tx).
-				Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeSession), cred.SessionID, cred.MCPClientID).
-				First(&existing).Error
-		default:
-			lookupErr = gorm.ErrRecordNotFound
-		}
-
-		if lookupErr == nil {
-			cred.ID = existing.ID
-			cred.CreatedAt = existing.CreatedAt
-			return tx.Save(cred).Error
-		}
-		if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("failed to query mcp per-user header credential: %w", lookupErr)
-		}
-		if cred.ID == "" {
-			cred.ID = uuid.New().String()
-		}
-		if err := tx.Create(cred).Error; err != nil {
-			return fmt.Errorf("failed to create mcp per-user header credential: %w", err)
-		}
-		return nil
+		return upsertMCPPerUserHeaderCredential(tx, cred)
 	})
+}
+
+// upsertMCPPerUserHeaderCredential is UpsertMCPPerUserHeaderCredential's body,
+// run on tx so a caller can make it part of a larger write.
+func upsertMCPPerUserHeaderCredential(tx *gorm.DB, cred *tables.TableMCPPerUserHeaderCredential) error {
+	var existing tables.TableMCPPerUserHeaderCredential
+	var lookupErr error
+	switch {
+	case cred.AuthMode == string(schemas.MCPAuthModeAdmin) && cred.MCPClientID != "":
+		lookupErr = dbForUpdate(tx).
+			Where("auth_mode = ? AND mcp_client_id = ?", "admin", cred.MCPClientID).
+			First(&existing).Error
+	case cred.UserID != nil && *cred.UserID != "":
+		lookupErr = dbForUpdate(tx).
+			Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeUser), *cred.UserID, cred.MCPClientID).
+			First(&existing).Error
+	case cred.VirtualKeyID != nil && *cred.VirtualKeyID != "":
+		lookupErr = dbForUpdate(tx).
+			Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeVK), *cred.VirtualKeyID, cred.MCPClientID).
+			First(&existing).Error
+	case cred.SessionID != "":
+		lookupErr = dbForUpdate(tx).
+			Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeSession), cred.SessionID, cred.MCPClientID).
+			First(&existing).Error
+	default:
+		lookupErr = gorm.ErrRecordNotFound
+	}
+
+	if lookupErr == nil {
+		cred.ID = existing.ID
+		cred.CreatedAt = existing.CreatedAt
+		return tx.Save(cred).Error
+	}
+	if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("failed to query mcp per-user header credential: %w", lookupErr)
+	}
+	if cred.ID == "" {
+		cred.ID = uuid.New().String()
+	}
+	if err := tx.Create(cred).Error; err != nil {
+		return fmt.Errorf("failed to create mcp per-user header credential: %w", err)
+	}
+	return nil
 }
 
 // DeleteMCPPerUserHeaderCredential removes a credential row by its primary key,
@@ -9715,7 +9743,8 @@ func (s *RDBConfigStore) GetMCPPerUserHeaderFlowByID(ctx context.Context, id str
 }
 
 // DeleteMCPPerUserHeaderFlow hard-deletes a single flow row by primary key.
-// Called on submit-success and on revoke; no-op when the row is absent so
+// Called on revoke (a successful submit consumes its row through
+// CompleteMCPPerUserHeaderFlow); no-op when the row is absent so
 // terminal-state transitions are idempotent.
 func (s *RDBConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id string) error {
 	if id == "" {
@@ -9725,6 +9754,26 @@ func (s *RDBConfigStore) DeleteMCPPerUserHeaderFlow(ctx context.Context, id stri
 		return fmt.Errorf("failed to delete mcp per-user header flow %s: %w", id, err)
 	}
 	return nil
+}
+
+// CompleteMCPPerUserHeaderFlow deletes the submission flow row flowID and
+// upserts cred, in one transaction, or stores nothing and returns ErrNotFound
+// when the row is already gone. Submit verifies the values against the
+// upstream between loading the flow and here, and a revoke landing in that
+// window deletes the binding's flows and then its credential, so the delete
+// below is what decides whether this submit still counts. It also lets only
+// one of two concurrent submits of the same flow store its values.
+func (s *RDBConfigStore) CompleteMCPPerUserHeaderFlow(ctx context.Context, flowID string, cred *tables.TableMCPPerUserHeaderCredential) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Where("id = ?", flowID).Delete(&tables.TableMCPPerUserHeaderFlow{})
+		if result.Error != nil {
+			return fmt.Errorf("failed to consume mcp per-user header flow: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return upsertMCPPerUserHeaderCredential(tx, cred)
+	})
 }
 
 // GetMCPPerUserHeaderFlowByModeIdentityAndMCPClient returns the canonical
