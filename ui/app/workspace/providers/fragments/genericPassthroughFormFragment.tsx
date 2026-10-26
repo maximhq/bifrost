@@ -904,25 +904,6 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 					)}
 				</section>
 
-				{/* Requests */}
-				<section className="space-y-4">
-					<h3 className="text-sm font-medium">Requests</h3>
-					{switchField(
-						"allowed.passthrough",
-						"Allow normal requests",
-						"Calls whose reply is read whole; off refuses them",
-						"generic-allowed-passthrough-switch",
-						"Normal calls are read whole before being returned, which is what lets Bifrost bill from the reply.",
-					)}
-					{switchField(
-						"allowed.passthrough_stream",
-						"Allow streamed requests",
-						"Calls served as streams; off refuses them",
-						"generic-allowed-passthrough-stream-switch",
-						"A call is streamed when a streaming path, a stream route, or an enabled stream signal (Advanced) says so. Turn this off for an API that never streams.",
-					)}
-				</section>
-
 				{/* Model */}
 				<section className="space-y-4">
 					<div>
@@ -1195,7 +1176,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 					{preview && <PreviewResult preview={preview} routes={form.getValues("routes") ?? []} />}
 				</section>
 
-				{/* Advanced: field paths and streaming */}
+				{/* Advanced: allowed calls, field paths and streaming */}
 				<Accordion
 					type="single"
 					collapsible
@@ -1205,9 +1186,32 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 				>
 					<AccordionItem value="advanced" className="border-b-0">
 						<AccordionTrigger className="py-0" data-testid="generic-advanced-toggle">
-							<span className="text-sm font-medium">Advanced: reported cost, token counts and streaming</span>
+							<span className="text-sm font-medium">Advanced: allowed calls, reported cost, token counts and streaming</span>
 						</AccordionTrigger>
 						<AccordionContent className="space-y-8 pt-4 pb-0">
+							<section className="space-y-4">
+								<div>
+									<h3 className="text-sm font-medium">Allowed calls</h3>
+									<p className="text-muted-foreground text-sm">
+										Both are on by default. Turn one off to refuse that kind of call, e.g. streamed calls for an API that never streams.
+									</p>
+								</div>
+								{switchField(
+									"allowed.passthrough",
+									"Allow normal requests",
+									"Calls whose reply is read whole; off refuses them",
+									"generic-allowed-passthrough-switch",
+									"Normal calls are read whole before being returned, which is what lets Bifrost bill from the reply.",
+								)}
+								{switchField(
+									"allowed.passthrough_stream",
+									"Allow streamed requests",
+									"Calls served as streams; off refuses them",
+									"generic-allowed-passthrough-stream-switch",
+									"A call is streamed when a streaming path, a stream route, or an enabled stream signal (below) says so. Turn this off for an API that never streams.",
+								)}
+							</section>
+
 							<section className="space-y-4">
 								<div>
 									<h3 className="text-sm font-medium">Reported cost and token counts</h3>
@@ -1336,6 +1340,8 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 function advancedHasSettings(v: FormValues): boolean {
 	const u = v.usage ?? {};
 	return Boolean(
+		v.allowed?.passthrough === false ||
+		v.allowed?.passthrough_stream === false ||
 		u.cost_path ||
 		u.input_tokens_path ||
 		u.output_tokens_path ||

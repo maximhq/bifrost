@@ -38,13 +38,12 @@ POST /passthrough/azure-tts/cognitiveservices/v1 → https://eastus.tts.speech.m
 3. Pick the **Auth type** and fill its fields (header name for `header`, query parameter for `query`, service for `aws_sigv4`).
 4. Save, then add a key. For `aws_sigv4` the key carries AWS credentials (access key, secret key, region, or a role ARN) instead of a value. Requests are signed for the key's region, so use the region in the base URL.
 5. Open the provider's **Passthrough** tab. Every field has an info icon explaining what it does.
-   - **Routes**: import them from the API's OpenAPI spec (an import replaces the routes listed), then adjust them in the route list below it (collapsed by default), or use **Add route manually**. Each route can be priced, made non-billable, or matched on a header. **Only allow the routes above** is `strict_routes`.
-   - **Requests**: allow normal and streamed calls.
+   - **Routes**: import them from the API's OpenAPI spec (an import replaces the routes listed), then adjust them in the route list below it (collapsed by default), or use **Add route**. Each route can be priced, made non-billable, or matched on a header. **Only allow the routes above** is `strict_routes`.
    - **Model (optional)**: the request field (or query parameter) that names the model.
    - **What a call costs (optional)**: a **Flat fee per call**, plus a quantity charge (where to count from, what to count, where to find it, price per unit, and optional blocks and minimum).
-   - **Advanced** (collapsed unless set): the fields usage is read from (model, reported cost, token counts) and the streaming rules. Token counts are logged, not priced: for an LLM API, use a custom provider with an LLM base format instead.
+   - **Advanced** (collapsed unless set): which calls are allowed (normal and streamed, both on by default), the reported cost and token count fields, and the streaming rules. Token counts are logged, not priced: for an LLM API, use a custom provider with an LLM base format instead.
 
-   **Test this mapping** at the bottom of the tab runs a sample request and response through the mapping as it stands in the form and shows the route matched, the quantity read, the tokens and the mapping's cost (fee, units and extracted cost), so a wrong path is caught before it bills zero in production.
+   **Test this mapping**, just above Advanced, runs a sample request and response through the mapping as it stands in the form and shows the route matched, the quantity read, the tokens and the mapping's cost (fee, units and extracted cost), so a wrong path is caught before it bills zero in production.
 </Tab>
 <Tab title="API">
 ```bash

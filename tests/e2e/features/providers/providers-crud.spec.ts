@@ -669,7 +669,11 @@ test.describe("Providers", () => {
       expect(keyless.custom_provider_config?.generic_config?.auth?.type).toBe("none");
       expect(keyless.custom_provider_config?.is_key_less).toBe(true);
 
-      // The tab owns the two request switches the API Structure tab used to hold.
+      // The tab owns the two request switches the API Structure tab used to hold; they sit in the
+      // Advanced section, which opens itself only when it holds settings.
+      if (!(await page.getByTestId("generic-allowed-passthrough-stream-switch").isVisible())) {
+        await page.getByTestId("generic-advanced-toggle").click();
+      }
       await page.getByTestId("generic-allowed-passthrough-stream-switch").click();
       const streamOffSaved = page.waitForResponse(
         (r) =>
