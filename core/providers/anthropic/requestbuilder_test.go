@@ -1038,6 +1038,37 @@ func TestBuildAnthropicChatRequestBody_BedrockInvokeShape(t *testing.T) {
 	assertBedrockInvokeBodyShape(t, body)
 }
 
+// A client fallback-credit beta must reach the InvokeModel body with its own date:
+// Bedrock validates anthropic_beta and rejects the undocumented -06-09.
+func TestBuildAnthropicResponsesRequestBody_BedrockInvokeKeepsFallbackCreditDate(t *testing.T) {
+	for _, date := range []string{"fallback-credit-2026-06-01", "fallback-credit-2026-07-01"} {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{AnthropicBetaHeader: {date}})
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.anthropic.claude-sonnet-4-6",
+			Input:    makeSimpleInput("Hello!"),
+			Params: &schemas.ResponsesParameters{
+				ContextManagement: json.RawMessage(bedrockInvokeCompactionContextManagement),
+			},
+		}
+		body, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Bedrock,
+			Model:    "us.anthropic.claude-sonnet-4-6",
+		})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", date, err)
+		}
+		var betas []string
+		for _, b := range providerUtils.GetJSONField(body, "anthropic_beta").Array() {
+			betas = append(betas, b.String())
+		}
+		if !slices.Contains(betas, date) || slices.Contains(betas, "fallback-credit-2026-06-09") {
+			t.Errorf("anthropic_beta = %v, want %s unchanged", betas, date)
+		}
+	}
+}
+
 // Tool search is InvokeModel-only on Bedrock (see the routing tests in the
 // bedrock package). Once a request is routed there, the shared builder must keep
 // the tool_search tool, keep defer_loading on the deferred function tool, and
