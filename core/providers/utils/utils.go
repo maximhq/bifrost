@@ -5588,7 +5588,8 @@ type DecisionImageURLBody struct {
 // reaches the model as JSON text, so a message object next to an image skews the answer
 // (gpt-6-luna on OpenRouter reads a red image as 0.03 red that way, and as 1.0 with plain
 // strings). Each message contributes its text and images in their original order; roles are
-// dropped, since the format has no place for them.
+// dropped, since the format has no place for them. A tool call or output has no place in it
+// either, so it is sent as its JSON text, which keeps the call an output answers.
 //
 // It returns the input without images, which the Typesafe converter validates as usual
 // (rejecting any other part type), and the state to send. state is nil when the input
@@ -5604,8 +5605,15 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 	for _, message := range input.Messages {
 		if message.Content.Parts == nil {
 			messages = append(messages, message)
-			if message.Content.Text != nil {
+			switch {
+			case message.Content.Text != nil:
 				items = append(items, *message.Content.Text)
+			case message.Type != nil && *message.Type != schemas.DecisionInputItemTypeMessage:
+				item, err := schemas.Marshal(message)
+				if err != nil {
+					return schemas.DecisionInput{}, nil, InvalidRequestErrorf("decision input item could not be encoded as text: %v", err)
+				}
+				items = append(items, string(item))
 			}
 			continue
 		}
@@ -5621,9 +5629,17 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 					ImageURL: DecisionImageURLBody{URL: *part.ImageURL, Detail: part.Detail},
 				})
 				continue
-			case schemas.DecisionInputPartTypeText:
+			case schemas.DecisionInputPartTypeText, schemas.DecisionInputPartTypeOutputText:
 				if part.Text != nil {
 					items = append(items, *part.Text)
+				}
+			case schemas.DecisionInputPartTypeRefusal:
+				if part.Refusal != nil {
+					items = append(items, *part.Refusal)
+				}
+			case schemas.DecisionInputPartTypeJSON:
+				if part.Data.Structured != nil {
+					items = append(items, renderStructuredText(part.Data.Structured))
 				}
 			}
 			parts = append(parts, part)

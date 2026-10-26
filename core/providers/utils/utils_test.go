@@ -4197,6 +4197,34 @@ func TestExtractDecisionImages_SendsPlainTextAndImageItems(t *testing.T) {
 	}
 }
 
+// TestExtractDecisionImages_ConversationItems pins the conversation in the image layout: a
+// tool call or output is one JSON text item, which keeps the call an output answers, and an
+// assistant's output text and refusal and a JSON part are plain strings. Before, a tool call
+// added nothing to the state once any image was present. The payload is synthetic.
+func TestExtractDecisionImages_ConversationItems(t *testing.T) {
+	var input schemas.DecisionInput
+	if err := schemas.Unmarshal([]byte(`[
+		{"role":"user","content":[{"type":"input_text","text":"Is the receipt right?"},{"type":"input_json","data":{"total":49}},{"type":"input_image","image_url":"https://example.com/r.png"}]},
+		{"type":"function_call","call_id":"call_1","name":"render_receipt","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_1","output":"receipt total 49"},
+		{"role":"assistant","content":[{"type":"output_text","text":"Looks right."},{"type":"refusal","refusal":"Cannot verify tax."}]}
+	]`), &input); err != nil {
+		t.Fatal(err)
+	}
+	_, state, err := ExtractDecisionImages(input)
+	if err != nil {
+		t.Fatalf("unexpected error %v", err)
+	}
+	got, _ := json.Marshal(state)
+	want := `["Is the receipt right?","{\"total\":49}",{"type":"image_url","image_url":{"url":"https://example.com/r.png"}},` +
+		`"{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"render_receipt\",\"arguments\":\"{}\"}",` +
+		`"{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"receipt total 49\"}",` +
+		`"Looks right.","Cannot verify tax."]`
+	if string(got) != want {
+		t.Errorf("state =\n%s\nwant\n%s", got, want)
+	}
+}
+
 // TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge pins that only a missing
 // image_url is rejected locally; a remote URL is passed on for the provider to accept or not.
 func TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge(t *testing.T) {
