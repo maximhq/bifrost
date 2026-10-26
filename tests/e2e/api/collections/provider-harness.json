@@ -285477,7 +285477,12 @@
                   "pm.test('generic relay: openai stream relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
                   "var text = pm.response.text() || '';",
                   "pm.test('generic relay: upstream content type kept', function () { pm.expect(pm.response.headers.get('content-type') || '', 'content-type').to.include('text/event-stream'); });",
-                  "pm.test('generic relay: SSE bytes forwarded unchanged', function () { pm.expect(text, text.slice(0, 400)).to.include('data: ').and.to.include('[DONE]'); });"
+                  "pm.test('generic relay: SSE bytes forwarded unchanged', function () { pm.expect(text, text.slice(0, 400)).to.include('data: ').and.to.include('[DONE]'); });",
+                  "// Framing alone would also pass an error event followed by [DONE]: the happy path needs a completion chunk and no error event.",
+                  "var events = text.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) { return l.slice(6).trim(); }).filter(function (e) { return e && e !== '[DONE]'; });",
+                  "var chunks = events.map(function (e) { try { return JSON.parse(e); } catch (err) { return { parse_error: e }; } });",
+                  "pm.test('generic relay: a completion chunk streamed', function () { pm.expect(chunks.some(function (c) { return Array.isArray(c.choices); }), 'no choices chunk in: ' + text.slice(0, 400)).to.eql(true); });",
+                  "pm.test('generic relay: no error event in the stream', function () { pm.expect(chunks.filter(function (c) { return c.error || c.parse_error; }), text.slice(0, 400)).to.eql([]); });"
                 ]
               }
             }

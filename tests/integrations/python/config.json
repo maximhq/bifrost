@@ -228,7 +228,9 @@
               "path": "/stream/*",
               "stream": true,
               "billable": true,
-              "usage": { "units_source": "response", "units_measure": "body_bytes", "cost_per_unit": 0.001 },
+              "usage": { "units_source": "response", "units_measure": "body_bytes", "cost_per_unit": 0.001 }
+            },
+            {
               "method": "POST",
               "path": "/post",
               "headers": {
