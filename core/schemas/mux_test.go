@@ -813,6 +813,262 @@ func TestToBifrostResponsesResponse_MapsContentFilterToIncomplete(t *testing.T) 
 	}
 }
 
+// vLLM's DeepSeek tool parser splits one tool call across two entries of a
+// single chunk's delta.tool_calls: entry 0 carries the id and name with empty
+// arguments, entry 1 carries the arguments under the same index. Reading only
+// ToolCalls[0] never sees the arguments, so no function_call_arguments.delta is
+// emitted and /anthropic/v1/messages renders a tool_use whose input stays {}.
+// delta.tool_calls is an array on the OpenAI wire and consumers accumulate every
+// entry by index, so this shape is valid rather than malformed (#8898).
+func TestToBifrostResponsesStreamResponse_MultipleToolCallEntriesInOneChunk(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	funcName := "Read"
+	toolCallID := "call_de2e3dfd154947e799beb10d"
+	arguments := `{"file_path": "notes.txt"}`
+
+	emitted := (&BifrostChatResponse{
+		ID:    "chatcmpl-6cf079c4a84f4a08a7070f4fc308d86f-e085",
+		Model: "deepseek-via-vllm",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						ToolCalls: []ChatAssistantMessageToolCall{
+							{
+								Index:    0,
+								ID:       &toolCallID,
+								Function: ChatAssistantMessageToolCallFunction{Name: &funcName, Arguments: ""},
+							},
+							{
+								Index:    0,
+								Function: ChatAssistantMessageToolCallFunction{Arguments: arguments},
+							},
+						},
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)
+
+	var argsDeltas []string
+	sawItemAdded := false
+	for _, response := range emitted {
+		switch response.Type {
+		case ResponsesStreamResponseTypeOutputItemAdded:
+			sawItemAdded = true
+		case ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+			if response.Delta != nil {
+				argsDeltas = append(argsDeltas, *response.Delta)
+			}
+		}
+	}
+
+	// Asserted so the row cannot pass on a chunk that produced nothing at all.
+	if !sawItemAdded {
+		t.Fatalf("expected the tool call to open an output item, got %d events", len(emitted))
+	}
+	if len(argsDeltas) != 1 {
+		t.Fatalf("expected exactly one function_call_arguments.delta, got %d: %v", len(argsDeltas), argsDeltas)
+	}
+	if argsDeltas[0] != arguments {
+		t.Errorf("arguments delta = %q, want %q", argsDeltas[0], arguments)
+	}
+	// The buffer feeds response.completed, so a client that only reads the final
+	// item still needs it filled.
+	if got := state.ToolArgumentBuffers[toolCallID]; got != arguments {
+		t.Errorf("buffered arguments = %q, want %q", got, arguments)
+	}
+}
+
+// The same chunk shape must not lose a second, genuinely distinct tool call:
+// two entries with different indices are two calls, not one split across two.
+func TestToBifrostResponsesStreamResponse_TwoDistinctToolCallsInOneChunk(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	firstName, secondName := "Read", "Write"
+	firstID, secondID := "call_first", "call_second"
+
+	emitted := (&BifrostChatResponse{
+		ID:    "chatcmpl-two-calls",
+		Model: "deepseek-via-vllm",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						ToolCalls: []ChatAssistantMessageToolCall{
+							{
+								Index:    0,
+								ID:       &firstID,
+								Function: ChatAssistantMessageToolCallFunction{Name: &firstName, Arguments: `{"a":1}`},
+							},
+							{
+								Index:    1,
+								ID:       &secondID,
+								Function: ChatAssistantMessageToolCallFunction{Name: &secondName, Arguments: `{"b":2}`},
+							},
+						},
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)
+
+	var added []string
+	for _, response := range emitted {
+		if response.Type == ResponsesStreamResponseTypeOutputItemAdded && response.Item != nil && response.Item.ID != nil {
+			added = append(added, *response.Item.ID)
+		}
+	}
+	if len(added) != 2 {
+		t.Fatalf("expected both tool calls to open an item, got %d (%v)", len(added), added)
+	}
+	// item.added alone would still pass if the arguments went to one call or
+	// nowhere, so the delta each call emits is asserted by item_id too.
+	argsByItem := map[string]string{}
+	for _, response := range emitted {
+		if response.Type == ResponsesStreamResponseTypeFunctionCallArgumentsDelta && response.Delta != nil {
+			itemID := ""
+			if response.ItemID != nil {
+				itemID = *response.ItemID
+			}
+			argsByItem[itemID] += *response.Delta
+		}
+	}
+	wantArgs := map[string]string{firstID: `{"a":1}`, secondID: `{"b":2}`}
+	if !reflect.DeepEqual(argsByItem, wantArgs) {
+		t.Errorf("argument deltas by item = %v, want %v", argsByItem, wantArgs)
+	}
+	if state.ToolArgumentBuffers[firstID] != `{"a":1}` || state.ToolArgumentBuffers[secondID] != `{"b":2}` {
+		t.Errorf("arguments not buffered per call: %q / %q",
+			state.ToolArgumentBuffers[firstID], state.ToolArgumentBuffers[secondID])
+	}
+}
+
+// An arguments entry can precede the entry that carries its ID. Taking the
+// entries in order, the first one has no ID and no index mapping yet, so
+// skipping it drops the arguments: the later ID entry opens the call and its
+// buffer stays empty, which is the 	8898 symptom reached from the opposite
+// entry order. The fragment is held against its index and emitted once an ID
+// establishes the mapping.
+func TestToBifrostResponsesStreamResponse_ArgumentsBeforeToolCallID(t *testing.T) {
+	for _, sameChunk := range []bool{true, false} {
+		name := "one chunk"
+		if !sameChunk {
+			name = "arguments chunk first"
+		}
+		t.Run(name, func(t *testing.T) {
+			state := AcquireChatToResponsesStreamState()
+			defer ReleaseChatToResponsesStreamState(state)
+
+			funcName := "Read"
+			toolCallID := "call_args_first"
+			leading := `{"file_path": `
+			trailing := `"notes.txt"}`
+
+			argumentsEntry := ChatAssistantMessageToolCall{
+				Index:    0,
+				Function: ChatAssistantMessageToolCallFunction{Arguments: leading},
+			}
+			idEntry := ChatAssistantMessageToolCall{
+				Index:    0,
+				ID:       &toolCallID,
+				Function: ChatAssistantMessageToolCallFunction{Name: &funcName, Arguments: trailing},
+			}
+
+			chunk := func(entries ...ChatAssistantMessageToolCall) *BifrostChatResponse {
+				return &BifrostChatResponse{
+					ID:    "chatcmpl-args-before-id",
+					Model: "deepseek-via-vllm",
+					Choices: []BifrostResponseChoice{
+						{
+							ChatStreamResponseChoice: &ChatStreamResponseChoice{
+								Delta: &ChatStreamResponseChoiceDelta{ToolCalls: entries},
+							},
+						},
+					},
+				}
+			}
+
+			var emitted []*BifrostResponsesStreamResponse
+			if sameChunk {
+				emitted = chunk(argumentsEntry, idEntry).ToBifrostResponsesStreamResponse(state)
+			} else {
+				emitted = chunk(argumentsEntry).ToBifrostResponsesStreamResponse(state)
+				emitted = append(emitted, chunk(idEntry).ToBifrostResponsesStreamResponse(state)...)
+			}
+
+			// The delta must follow the item it belongs to, not precede it.
+			addedAt, deltas := -1, []string{}
+			for i, response := range emitted {
+				switch response.Type {
+				case ResponsesStreamResponseTypeOutputItemAdded:
+					if addedAt == -1 {
+						addedAt = i
+					}
+				case ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+					if response.Delta != nil {
+						deltas = append(deltas, *response.Delta)
+					}
+					if addedAt == -1 {
+						t.Errorf("function_call_arguments.delta emitted before output_item.added")
+					}
+				}
+			}
+			if addedAt == -1 {
+				t.Fatalf("expected the tool call to open an output item, got %d events", len(emitted))
+			}
+			if strings.Join(deltas, "") != leading+trailing {
+				t.Errorf("argument deltas = %q (joined %q), want %q", deltas, strings.Join(deltas, ""), leading+trailing)
+			}
+			// The buffer is what response.completed renders, so a client reading only the
+			// final item still needs the leading fragment in it.
+			if got := state.ToolArgumentBuffers[toolCallID]; got != leading+trailing {
+				t.Errorf("buffered arguments = %q, want %q", got, leading+trailing)
+			}
+			if len(state.PendingToolArguments) != 0 {
+				t.Errorf("pending fragments left behind: %v", state.PendingToolArguments)
+			}
+		})
+	}
+}
+
+// A fragment whose ID never arrives stays in the state. Pooled states are reused
+// across requests, so it must not survive into the next one and be emitted into
+// somebody else's stream.
+func TestChatToResponsesStreamStateReleaseClearsPendingToolArguments(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+
+	(&BifrostChatResponse{
+		ID:    "chatcmpl-orphan-arguments",
+		Model: "deepseek-via-vllm",
+		Choices: []BifrostResponseChoice{
+			{
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						ToolCalls: []ChatAssistantMessageToolCall{
+							{Index: 0, Function: ChatAssistantMessageToolCallFunction{Arguments: `{"orphan":true}`}},
+						},
+					},
+				},
+			},
+		},
+	}).ToBifrostResponsesStreamResponse(state)
+
+	// Asserted before the release, so the release check cannot pass on a state that
+	// never held the fragment in the first place.
+	if len(state.PendingToolArguments) == 0 {
+		t.Fatalf("expected the unmatched fragment to be held, got %v", state.PendingToolArguments)
+	}
+
+	ReleaseChatToResponsesStreamState(state)
+	if len(state.PendingToolArguments) != 0 {
+		t.Errorf("pending fragments survived release: %v", state.PendingToolArguments)
+	}
+}
+
 func TestToBifrostResponsesStreamResponse_IncludesFunctionCallsInCompletedOutput(t *testing.T) {
 	state := AcquireChatToResponsesStreamState()
 	defer ReleaseChatToResponsesStreamState(state)
@@ -2356,4 +2612,51 @@ func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
 	if got[0].Role != ChatMessageRoleUser {
 		t.Fatalf("expected the surviving message to be the user turn, got role %q", got[0].Role)
 	}
+}
+
+// BenchmarkToBifrostResponsesStreamResponse_ToolCallChunk measures the shape that
+// dominates the request path: one tool_calls entry per chunk, which is what every
+// provider except a splitting parser sends. The two-entry variant is the #8898
+// case, benchmarked alongside so the cost of handling it is visible rather than
+// assumed.
+func BenchmarkToBifrostResponsesStreamResponse_ToolCallChunk(b *testing.B) {
+	funcName := "Read"
+	toolCallID := "call_bench"
+
+	chunk := func(entries []ChatAssistantMessageToolCall) *BifrostChatResponse {
+		return &BifrostChatResponse{
+			ID:    "chatcmpl-bench",
+			Model: "bench-model",
+			Choices: []BifrostResponseChoice{
+				{ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{ToolCalls: entries},
+				}},
+			},
+		}
+	}
+
+	b.Run("one entry", func(b *testing.B) {
+		entries := []ChatAssistantMessageToolCall{
+			{Index: 0, ID: &toolCallID, Function: ChatAssistantMessageToolCallFunction{Name: &funcName, Arguments: `{"file_path":"notes.txt"}`}},
+		}
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			state := AcquireChatToResponsesStreamState()
+			_ = chunk(entries).ToBifrostResponsesStreamResponse(state)
+			ReleaseChatToResponsesStreamState(state)
+		}
+	})
+
+	b.Run("two entries one call", func(b *testing.B) {
+		entries := []ChatAssistantMessageToolCall{
+			{Index: 0, ID: &toolCallID, Function: ChatAssistantMessageToolCallFunction{Name: &funcName, Arguments: ""}},
+			{Index: 0, Function: ChatAssistantMessageToolCallFunction{Arguments: `{"file_path":"notes.txt"}`}},
+		}
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			state := AcquireChatToResponsesStreamState()
+			_ = chunk(entries).ToBifrostResponsesStreamResponse(state)
+			ReleaseChatToResponsesStreamState(state)
+		}
+	})
 }
