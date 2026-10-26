@@ -134352,6 +134352,76 @@
               }
             },
             "description": "Virtual key assignments for this MCP client"
+          },
+          "credential": {
+            "type": "object",
+            "description": "Read-only view of the credential the client holds on its own behalf, as\nopposed to the per-caller credentials listed under /api/mcp/sessions: the\nshared token of an `oauth` client, the retained admin token of a\n`per_user_oauth` or `token_exchange` client, or the retained admin header\nvalues of a `per_user_headers` client. Absent for auth types that hold no\nsuch credential (`none`, `headers`), while none has been issued yet (a\nclient still pending its one-time authorization), and for a client with\n`per_user_discovery` on, which keeps none. Secret material never appears:\na refresh token is reported as present or absent, and header values only\nby name.\n",
+            "required": [
+              "kind",
+              "status",
+              "has_refresh_token",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "oauth",
+                  "headers"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "orphaned",
+                  "needs_reauth",
+                  "needs_update"
+                ],
+                "description": "`oauth` credentials are `active`, `orphaned` or `needs_reauth`;\n`headers` credentials are `active`, `orphaned` or `needs_update`.\n"
+              },
+              "status_reason": {
+                "type": "string",
+                "description": "Why an `oauth` credential left `active`: the provider's rejection of\nthe last refresh (HTTP status plus the OAuth error and description), a\ncredential rotation, or a failed admin exchange. Absent while `active`\nand for `headers` credentials.\n"
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the access token of an `oauth` credential expires. Absent when\nthe provider did not report an expiry, and for `headers` credentials.\n"
+              },
+              "last_refreshed_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Set on an `oauth` credential once its access token has been refreshed\nor the credential re-authorized at least once.\n"
+              },
+              "has_refresh_token": {
+                "type": "boolean",
+                "description": "Whether the provider issued a refresh token, so the access token can\nbe renewed without another consent. Always false for `headers`\ncredentials.\n"
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The scopes the provider reported at consent time. Absent when it\nreported none.\n"
+              },
+              "header_keys": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The names of the headers the stored admin values of a `headers`\ncredential cover, sorted. Absent when the stored values hold no\nheaders or could not be read. A name in the client's\n`per_user_header_keys` that is missing from a present list is one the\nstored values predate.\n"
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
           }
         }
       },
