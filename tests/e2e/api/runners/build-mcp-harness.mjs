@@ -6266,6 +6266,136 @@ const ADM74 = folder("ADM-74 Sessions entry shapes and filters", `Setup: ${PU_TE
   restoreConfig("ADM-74"),
 ]);
 
+// ================================================================ more upstream auth and connection tests
+
+// TEST_CA_PEM is a throwaway self-signed certificate; tests only check that reads mask it.
+const TEST_CA_PEM = "-----BEGIN CERTIFICATE-----\nMIIBkTCCATegAwIBAgIUZROfp1FT/MGjiBFcTf3zhEaKgNMwCgYIKoZIzj0EAwIw\nHjEcMBoGA1UEAwwTbWNwLWhhcm5lc3MtdGVzdC1jYTAeFw0yNjEwMjUyMzA5MDJa\nFw0zNjEwMjIyMzA5MDJaMB4xHDAaBgNVBAMME21jcC1oYXJuZXNzLXRlc3QtY2Ew\nWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARbckzlpb3VR09T8jXCPvEDRctwmlBi\ngzkZWU2PqXcLKCMyMEr1s+ij+FfctsklaHvpxlYPhym9I+CQrLbFKhJSo1MwUTAd\nBgNVHQ4EFgQUJNqZG3I02VD1qGgtlL235Z7OGtQwHwYDVR0jBBgwFoAUJNqZG3I0\n2VD1qGgtlL235Z7OGtQwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBF\nAiEAkwBWmRIr8IrZTC+kDv/6BqiadwMu2RjKXQBRKz6VCnECIFPD3vap9hqdyfUT\nkAv7V2nFBQtLErA6WH/+5ADXZrHY\n-----END CERTIFICATE-----\n";
+
+// noRawSecrets asserts the response text contains none of the given raw secret values.
+const noRawSecrets = (secrets) => A.custom("no raw secret anywhere in the body", [`${lit(secrets)}.forEach(function (s) { pm.expect(pm.response.text().indexOf(s), 'raw secret in body: ' + s).to.equal(-1); });`]);
+const AUTH08_KEY = "abcdefghijklmnopqrstuvwxyz125678";
+const AUTH08_OAUTH_ID = "auth08-preregistered-client-id";
+const AUTH08_OAUTH_SECRET = "auth08-preregistered-client-secret";
+const AUTH08_OAS_SECRET = "auth08-openapi-credential-value";
+const AUTH08 = folder("AUTH-08 Secrets are masked on read", `Setup: admin credentials; a headers client on alpha with X-Api-Key ${AUTH08_KEY} (32 characters), X-Short abcde and a TLS CA certificate; ${ALLOWLIST_TEXT}; a fleet server auth08 as an OAuth protected resource whose authorization server knows client ${AUTH08_OAUTH_ID} with secret ${AUTH08_OAUTH_SECRET}, and a completed OAuth client on it with those credentials; an OpenAPI client from a Petstore document with an API key scheme and the credential ${AUTH08_OAS_SECRET}.`, [
+  ...freshServer("AUTH-08", "alpha", ["echo_tool", "add_tool"]),
+  createClient("AUTH-08", httpClient("auth08-h", "auth08_h", "alpha", { auth_type: "headers", headers: { "X-Api-Key": AUTH08_KEY, "X-Short": "abcde" }, tls_config: { ca_cert_pem: TEST_CA_PEM }, tools_to_execute: ["*"] }), "setup: create the headers client"),
+  ...allowlistOn("AUTH-08"),
+  ...asServer("AUTH-08", "auth08", { clients: [{ client_id: AUTH08_OAUTH_ID, client_secret: AUTH08_OAUTH_SECRET }] }),
+  ...connectOAuth("AUTH-08", oauthBody("auth08-o", "auth08_o", "auth08", { oauth_config: { client_id: AUTH08_OAUTH_ID, client_secret: AUTH08_OAUTH_SECRET, authorize_url: `${CHAOS}/s/auth08/as/authorize`, token_url: `${CHAOS}/s/auth08/as/token` } }), "auth08o", null, "the OAuth client"),
+  createClient("AUTH-08", oasClient("auth08-q", "auth08_q", "alpha", {}, { spec: PETS_KEY, security_credentials: { KeyAuth: { value: AUTH08_OAS_SECRET } } }), "setup: create the OpenAPI client"),
+  getClient("AUTH-08", "auth08-h", "header values are masked", [A.custom("X-Api-Key is abcd, 24 asterisks and 5678; X-Short is *****", [
+    "var h = pm.response.json().clients[0].config.headers;",
+    "pm.expect(h['X-Api-Key'].value, 'body: ' + pm.response.text()).to.equal('abcd' + new Array(25).join('*') + '5678');",
+    "pm.expect(h['X-Short'].value).to.equal('*****');",
+  ])]),
+  getClient("AUTH-08", "auth08-q", "no OpenAPI spec in the body; the credential is masked", [A.custom("openapi_config has no spec, and KeyAuth is abcd-style masked", ["var oc = pm.response.json().clients[0].config.openapi_config;", "pm.expect(oc, 'body: ' + pm.response.text()).to.not.have.property('spec');", "pm.expect(oc.security_credentials.KeyAuth.value.value).to.match(/^.{4}\\*{24}.{4}$/);"])]),
+  getClient("AUTH-08", "auth08-o", "the OAuth client id and secret are masked", [A.custom("oauth_client_id and oauth_client_secret are four characters, 24 asterisks and four characters", ["var c = pm.response.json().clients[0].config;", "pm.expect(c.oauth_client_id && c.oauth_client_id.value, 'body: ' + pm.response.text()).to.match(/^.{4}\\*{24}.{4}$/);", "pm.expect(c.oauth_client_secret && c.oauth_client_secret.value).to.match(/^.{4}\\*{24}.{4}$/);"])]),
+  listClients("AUTH-08", "the full client list", "search=auth08", [A.custom("three clients", ["pm.expect(pm.response.json().clients.length, 'body: ' + pm.response.text()).to.equal(3);"]), noRawSecrets([AUTH08_KEY, "abcde", AUTH08_OAUTH_ID, AUTH08_OAUTH_SECRET, AUTH08_OAS_SECRET, TEST_CA_PEM.split("\n")[1]])]),
+  deleteClient("AUTH-08", "auth08-q"),
+  deleteClient("AUTH-08", "auth08-o"),
+  deleteClient("AUTH-08", "auth08-h"),
+  restoreConfig("AUTH-08"),
+]);
+
+const AUTH10 = folder("AUTH-10 A wildcard lets the caller's credential through", `Setup: ${T1_TEXT("alpha")}, and maps bearer CALLER to identity caller; ${T1_CLIENT_TEXT}, per call, allowed_extra_headers ["*"], tools_to_execute ["*"]; the caller sends "Authorization: Bearer CALLER".`, [
+  ...freshServer("AUTH-10", "alpha", ["echo_tool", "add_tool"]),
+  mockAuth("AUTH-10", "alpha", "setup: alpha requires a bearer, mapping T1 to id1 and CALLER to caller", { bearer: { [T1]: "id1", CALLER: "caller" }, require: true }),
+  createClient("AUTH-10", t1Client("auth10-c", "auth10_c", { allowed_extra_headers: ["*"] }), "setup: create the client"),
+  execTool("AUTH-10", "execute with Authorization: Bearer CALLER", "auth10_c-echo_tool", [A.status(200)], { headers: [{ key: "Authorization", value: "Bearer CALLER" }] }),
+  mockGet("AUTH-10", "alpha", "the call is counted under the caller's identity", [identityCallsAre({ caller: 1 })]),
+  deleteClient("AUTH-10", "auth10-c"),
+]);
+
+const AUTH40 = folder("AUTH-40 Auth-required with extra fields in headers", `Setup: ${KEY_A_TEXT}; a per_user_headers client on alpha with per_user_header_keys ["x-api-key"], sample key-a, tools_to_execute ["*"]; extra_fields_placement "headers". The caller sends x-bf-mcp-session-id auth40-sess1 and has no credential.`, [
+  readConfig("AUTH-40"),
+  putConfig("AUTH-40", "setup: extra_fields_placement headers", ["cc.extra_fields_placement = 'headers';"], [A.status(200)]),
+  ...alphaKeyA("AUTH-40"),
+  createClient("AUTH-40", perUser("auth40-c", "auth40_c", PER_USER_KEY_A), "setup: create the per_user_headers client"),
+  execTool("AUTH-40", "execute as auth40-sess1", "auth40_c-echo_tool", [A.status(400), A.custom("no extra_fields in the body; error.message has the submission URL", [
+    "var b = pm.response.json();",
+    "pm.expect(b, 'body: ' + pm.response.text()).to.not.have.property('extra_fields');",
+    "pm.expect(b.error.message).to.include('/workspace/mcp-sessions/auth?flow=');",
+  ])], { session: "auth40-sess1" }),
+  deleteClient("AUTH-40", "auth40-c"),
+  restoreConfig("AUTH-40"),
+]);
+
+const credentialDelete = (id, title, v, asserts) => request(id, title, "DELETE", `/api/mcp/per-user-headers/credential/{{${v}}}`, { asserts });
+const AUTH44 = folder("AUTH-44 Isolation, revoke and a new required key", `Setup: alpha (echo_tool, add_tool) counts calls under the X-Api-Key value; a per_user_headers client on alpha with per_user_header_keys ["x-api-key"], tools_to_execute ["*"]; session auth44-sess1 submits key-1 and auth44-sess2 submits key-2.`, [
+  ...freshServer("AUTH-44", "alpha", ["echo_tool", "add_tool"]),
+  mockAuth("AUTH-44", "alpha", "setup: alpha counts calls under X-Api-Key", { identity_header: "X-Api-Key" }),
+  createClient("AUTH-44", perUser("auth44-c", "auth44_c", { per_user_header_keys: ["x-api-key"], user_headers: { "x-api-key": "sample" } }), "setup: create the per_user_headers client"),
+  execTool("AUTH-44", "setup: execute as auth44-sess1 opens a header flow", "auth44_c-echo_tool", [A.status(400), headersFlow({ saveAs: "auth44_fa" })], { session: "auth44-sess1" }),
+  request("AUTH-44", "setup: auth44-sess1 submits key-1", "PUT", "/api/mcp/per-user-headers/flows/{{auth44_fa}}", { body: { headers: { "x-api-key": "key-1" } }, asserts: [A.status(200)], extraTests: ["pm.collectionVariables.set('auth44_ca', pm.response.json().credential_id);"] }),
+  execTool("AUTH-44", "setup: execute as auth44-sess2 opens a header flow", "auth44_c-echo_tool", [A.status(400), headersFlow({ saveAs: "auth44_fb" })], { session: "auth44-sess2" }),
+  request("AUTH-44", "setup: auth44-sess2 submits key-2", "PUT", "/api/mcp/per-user-headers/flows/{{auth44_fb}}", { body: { headers: { "x-api-key": "key-2" } }, asserts: [A.status(200)] }),
+  execTool("AUTH-44", "execute as auth44-sess1", "auth44_c-echo_tool", [A.status(200)], { session: "auth44-sess1" }),
+  execTool("AUTH-44", "execute as auth44-sess2", "auth44_c-echo_tool", [A.status(200)], { session: "auth44-sess2" }),
+  mockGet("AUTH-44", "alpha", "each call is counted under its own key", [identityCallsAre({ "key-1": 1, "key-2": 1 })]),
+  credentialDelete("AUTH-44", "delete auth44-sess1's credential", "auth44_ca", [A.status(204)]),
+  execTool("AUTH-44", "execute as auth44-sess1 after the delete", "auth44_c-echo_tool", [A.status(400), headersFlow({})], { session: "auth44-sess1" }),
+  execTool("AUTH-44", "execute as auth44-sess2 after the delete", "auth44_c-echo_tool", [A.status(200)], { session: "auth44-sess2" }),
+  clientPut("AUTH-44", "add key x-org-id", "auth44-c", { per_user_header_keys: ["x-api-key", "x-org-id"] }, [A.status(200)]),
+  execTool("AUTH-44", "execute as auth44-sess2 after the new key", "auth44_c-echo_tool", [A.status(400), headersFlow({ saveAs: "auth44_fb2" })], { session: "auth44-sess2" }),
+  request("AUTH-44", "auth44-sess2's new flow", "GET", "/api/mcp/per-user-headers/flows/{{auth44_fb2}}", { asserts: [A.status(200), A.custom("submitted_keys [\"x-api-key\"]", ["pm.expect(pm.response.json().submitted_keys, 'body: ' + pm.response.text()).to.eql(['x-api-key']);"])] }),
+  deleteClient("AUTH-44", "auth44-c"),
+]);
+
+const execRaw = (id, title, body, asserts, query = "") => request(id, title, "POST", `/v1/mcp/tool/execute${query}`, { noAuth: true, noCookies: true, raw: typeof body === "string" ? body : JSON.stringify(body), asserts });
+const CONN05 = folder("CONN-05 Execute validation", "Setup: alpha (echo_tool, add_tool); a sticky client conn05_c on alpha, auth none, tools_to_execute [\"echo_tool\"].", [
+  ...freshServer("CONN-05", "alpha", ["echo_tool", "add_tool"]),
+  createClient("CONN-05", httpClient("conn05-c", "conn05_c", "alpha", { needs_session_stickiness: true, tools_to_execute: ["echo_tool"] }), "setup: create the sticky client"),
+  execRaw("CONN-05", "?format=xml", { id: "c1", type: "function", function: { name: "conn05_c-echo_tool", arguments: "{}" } }, [A.status(400)], "?format=xml"),
+  execRaw("CONN-05", "no function.name", { id: "c1", type: "function", function: { arguments: "{}" } }, [A.status(400), A.msgEquals("Tool function name is required")]),
+  execRaw("CONN-05", "arguments \"not json\"", { id: "c1", type: "function", function: { name: "conn05_c-echo_tool", arguments: "not json" } }, [A.status(400), A.msgContains("failed to parse tool arguments for")]),
+  execTool("CONN-05", "an unknown tool", "conn05_c-nope", [A.status(400)]),
+  execTool("CONN-05", "add_tool, outside tools_to_execute", "conn05_c-add_tool", [A.status(400), A.msgContains("not in client's ToolsToExecute allow-list")]),
+  deleteClient("CONN-05", "conn05-c"),
+]);
+
+const contentIs = (v) => A.custom(`content is ${lit(v)}`, [`pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.equal(${lit(v)});`]);
+const PNG_REPLY = { content: [{ type: "image", data: "QUJD", mimeType: "image/png" }] };
+const CONN07 = folder("CONN-07 Result content types on execute", "Setup: alpha serves texts (two text blocks \"a\" and \"b\"), image (a PNG), structured (structuredContent {\"v\": 1} and no content) and empty (content []); a client conn07_c on alpha, auth none, tools_to_execute [\"*\"]. Joining text blocks with a separator and returning structuredContent alone are a known issue, so those checks are skipped.", [
+  request("CONN-07", "setup: fresh mcpchaos server alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "alpha" }, asserts: [A.status(200)] }),
+  mockPost("CONN-07", "alpha", "tools/set", "setup: alpha serves texts, image, structured and empty", { tools: [
+    { name: "texts", reply: { content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] } },
+    { name: "image", reply: PNG_REPLY },
+    { name: "structured", reply: { content: [], structuredContent: { v: 1 } } },
+    { name: "empty", reply: { content: [] } },
+  ] }),
+  createClient("CONN-07", httpClient("conn07-c", "conn07_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  execTool("CONN-07", "texts", "conn07_c-texts", [A.status(200), A.skip(A.custom("the two blocks are joined with a separator", ["var c = pm.response.json().content;", "pm.expect(c, 'body: ' + pm.response.text()).to.match(/^a[\\s\\S]+b$/);"]))]),
+  execTool("CONN-07", "image", "conn07_c-image", [A.status(200), contentIs("[Image Response: QUJD, MIME: image/png]")]),
+  execTool("CONN-07", "structured", "conn07_c-structured", [A.status(200), A.skip(A.custom("the structuredContent comes back", ["pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.include('\"v\"');"]))]),
+  execTool("CONN-07", "empty", "conn07_c-empty", [A.status(200), contentIs("MCP tool 'conn07_c-empty' executed successfully")]),
+  deleteClient("CONN-07", "conn07-c"),
+]);
+
+const CONN11 = folder("CONN-11 Per-call handshake and the tool timeout", "Setup: alpha (echo_tool, add_tool); a per-call client conn11_c on alpha, auth none, tool_execution_timeout 2, tools_to_execute [\"*\"]; alpha then hangs on initialize only. Each initialize attempt has its own 30s bound and failed attempts are retried, so the call fails after 30s or more.", [
+  ...freshServer("CONN-11", "alpha", ["echo_tool", "add_tool"]),
+  createClient("CONN-11", httpClient("conn11-c", "conn11_c", "alpha", { tool_execution_timeout: 2, tools_to_execute: ["*"] }), "setup: create the per-call client"),
+  mockPost("CONN-11", "alpha", "faults", "setup: alpha hangs on initialize for 60s", { faults: { hang: "60s", methods: ["initialize"] } }),
+  execTool("CONN-11", "execute", "conn11_c-echo_tool", [A.status(400), A.msgContains("failed to establish ephemeral MCP connection"), responseTime(30000, 120000)]),
+  mockPost("CONN-11", "alpha", "faults/clear", "teardown: clear alpha's faults", {}),
+  deleteClient("CONN-11", "conn11-c"),
+]);
+
+const CONN16 = folder("CONN-16 Tool list changes", "Setup: alpha (echo_tool, add_tool); a sticky client conn16_c on alpha, auth none, tools_to_execute [\"*\"]. Then alpha adds new_tool and pushes list_changed; the client is refreshed; alpha removes echo_tool; the client is refreshed again.", [
+  ...freshServer("CONN-16", "alpha", ["echo_tool", "add_tool"]),
+  createClient("CONN-16", httpClient("conn16-c", "conn16_c", "alpha", { needs_session_stickiness: true, tools_to_execute: ["*"] }), "setup: create the sticky client"),
+  mockPost("CONN-16", "alpha", "tools/add", "alpha adds new_tool", { tool: { name: "new_tool" } }),
+  mockPost("CONN-16", "alpha", "notify/tools-changed", "alpha pushes list_changed", {}),
+  getClient("CONN-16", "conn16-c", "the client's tools are unchanged", [toolNamesAre(["add_tool", "echo_tool"])]),
+  mockGet("CONN-16", "alpha", "alpha has no open stream", [counterIs("open_streams", 0)]),
+  clientPost("CONN-16", "refresh-tools", "conn16-c", "refresh-tools", [A.status(200), A.jsonEquals("tool_count", 3)]),
+  execTool("CONN-16", "execute conn16_c-new_tool", "conn16_c-new_tool", [A.status(200)]),
+  mockPost("CONN-16", "alpha", "tools/remove", "alpha removes echo_tool", { name: "echo_tool" }),
+  clientPost("CONN-16", "refresh-tools again", "conn16-c", "refresh-tools", [A.status(200)]),
+  execTool("CONN-16", "execute conn16_c-echo_tool", "conn16_c-echo_tool", [A.status(400), A.msgContains("is not available or not permitted")]),
+  deleteClient("CONN-16", "conn16-c"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -6280,8 +6410,8 @@ const collection = {
   ],
   item: [
     section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83]),
-    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
-    section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN06, CONN09, CONN10, CONN12, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25]),
+    section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH48]),
+    section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
