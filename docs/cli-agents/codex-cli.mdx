@@ -104,6 +104,74 @@ Use a named `model_providers` entry. Setting only `OPENAI_BASE_URL` or
 OAuth and built-in transport behavior can take precedence.
 </Warning>
 
+## Sign in with ChatGPT through Bifrost
+
+Teams on a ChatGPT workspace can keep Codex signed in with ChatGPT
+and still send every model request through Bifrost. Codex keeps the ChatGPT
+token in `Authorization`, and the Bifrost virtual key travels in `x-bf-vk`.
+Bifrost checks the virtual key, drops it, and forwards the request to the
+ChatGPT Codex backend with the ChatGPT headers unchanged. The ChatGPT seat pays
+for the tokens. This follows OpenAI's
+[Sign in with ChatGPT through a gateway](https://learn.chatgpt.com/docs/enterprise/sign-in-with-chatgpt-through-a-gateway)
+guide, using its header option. It works the same in the Codex CLI and in
+Codex inside the ChatGPT desktop app, since both read the same Codex
+configuration.
+
+Add the provider to your workspace's cloud-managed `requirements.toml` in
+ChatGPT's [managed configuration](https://learn.chatgpt.com/docs/enterprise/managed-configuration),
+or to `~/.codex/config.toml` to try it on one machine:
+
+```toml
+model_provider = "bifrost"
+
+[model_providers.bifrost]
+name = "Bifrost"
+base_url = "https://gateway.example.com/chatgpt_passthrough/backend-api/codex"
+wire_api = "responses"
+requires_openai_auth = true
+supports_websockets = false
+env_http_headers = { "x-bf-vk" = "BIFROST_VIRTUAL_KEY" }
+```
+
+Export the virtual key in the environment Codex starts from, then sign in with
+ChatGPT inside Codex:
+
+```bash
+export BIFROST_VIRTUAL_KEY="sk-bf-..."
+unset OPENAI_API_KEY
+codex
+```
+
+Bifrost forwards two routes under this base URL, `GET /models` for the Codex
+model picker and `POST /responses` for each turn. Bifrost refuses every other
+path and method.
+
+<Note>
+Model names are the ones your ChatGPT plan offers, such as `gpt-5.5`, without
+a provider prefix. Requests go straight to ChatGPT, so Bifrost routing,
+fallbacks and non-OpenAI models do not apply on this path. Use the
+[virtual key setup](#configure-codex-manually-with-a-virtual-key) for those.
+</Note>
+
+The virtual key's governance still applies. Bifrost checks each turn's model
+against the key's allowed models, and budgets and rate limits count the usage
+ChatGPT reports. The model list request names no model, so a key that allows
+only some OpenAI models can still load the picker. Picking a model the key does
+not allow fails on the first turn.
+
+The ChatGPT token stands in for a Bifrost provider key, so no OpenAI key is
+picked for these requests. Limits set on a provider key, key weights and the
+key column in logs do not apply to them. Bifrost forwards only tokens that
+ChatGPT issued. Any other `Authorization` value on this route, such as an
+OpenAI API key or a token from your identity provider, never reaches ChatGPT,
+and Bifrost sends its stored OpenAI key in its place.
+
+<Warning>
+Codex reads `BIFROST_VIRTUAL_KEY` once at launch and never refreshes it. After
+you rotate the virtual key, restart Codex. The desktop app needs the variable
+set on the app process itself.
+</Warning>
+
 ## Select a model
 
 Pass the complete Bifrost model identifier when starting the session:
