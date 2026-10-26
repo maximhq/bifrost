@@ -6586,6 +6586,291 @@ const INF48 = folder("INF-48 listToolFiles, server binding", `Setup: ${CM_TEXT};
   cmTeardown("INF-48"),
 ]);
 
+// ================================================================ governance budgets, rate limits, pricing and virtual MCP edits
+
+// govKey creates a VK named "<id> key" granted mcp_configs, plus extra fields (budgets, rate_limit), kept in <v>_id and <v>.
+const govKey = (id, v, mcpConfigs, extra = {}, label = "the VK") => vkCreate(id, `setup: create ${label}`, { name: `${id} key`, mcp_configs: mcpConfigs, ...extra }, v);
+const ALPHA_ALL = [{ mcp_client_name: "alpha", tools_to_execute: ["*"] }];
+const vkUse = (v) => ({ headers: [{ key: "x-bf-vk", value: `{{${v}}}` }] });
+// vkMemory reads a VK from memory; asserts see it as `vk`.
+const vkMemory = (id, title, v, asserts, extraTests = []) => request(id, title, "GET", `/api/governance/virtual-keys/{{${v}_id}}?from_memory=true`, { asserts: [A.status(200), ...asserts], extraTests });
+const VK_READ = "var vk = pm.response.json().virtual_key;";
+const keepBudget = (v) => [VK_READ, `pm.collectionVariables.set(${lit(v)}, String(vk.budgets[0].current_usage));`];
+const keepRequests = (v) => [VK_READ, `pm.collectionVariables.set(${lit(v)}, String(vk.rate_limit.request_current_usage));`];
+const budgetPlus = (v, d) => A.custom(`budget current_usage is ${d} more than recorded`, [VK_READ, `pm.expect(vk.budgets[0].current_usage, 'body: ' + pm.response.text()).to.be.closeTo(Number(pm.collectionVariables.get(${lit(v)})) + ${d}, 1e-9);`]);
+const requestsPlus = (v, d) => A.custom(`request_current_usage is ${d} more than recorded`, [VK_READ, `pm.expect(vk.rate_limit.request_current_usage, 'body: ' + pm.response.text()).to.equal(Number(pm.collectionVariables.get(${lit(v)})) + ${d});`]);
+// logOf polls GET /api/mcp-logs/<R> until the write lands; asserts see the entry as `e`.
+const logOf = (id, title, R, asserts) => request(id, title, "GET", `/api/mcp-logs/${R}`, {
+  pre: ["var left = 30;", `function poll() { pm.sendRequest({ url: pm.variables.get('base_url') + '/api/mcp-logs/${R}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) { if ((!err && res.code === 200 && res.json().status !== 'processing') || --left <= 0) { return; } setTimeout(poll, 500); }); }`, "poll();"],
+  asserts: [A.status(200), ...asserts],
+});
+const entryCost = (v) => A.custom(v === null ? "the entry has no cost" : `the entry's cost is ${v}`, ["var e = pm.response.json();", v === null ? "pm.expect(e.cost == null, 'body: ' + pm.response.text()).to.equal(true);" : `pm.expect(e.cost, 'body: ' + pm.response.text()).to.be.closeTo(${v}, 1e-9);`]);
+const execR2 = (id, title, tool, R, asserts, opts = {}) => execTool(id, title, tool, asserts, { headers: [{ key: "x-request-id", value: R }, ...(opts.headers || [])] });
+const priceAlpha = (id, title, clientId, pricing) => request(id, title, "PUT", `/api/mcp/client/${clientId}`, { body: { tool_pricing: pricing }, asserts: [A.status(200)] });
+const deleteLogs = (id, ids) => request(id, "teardown: delete the log entries", "DELETE", "/api/mcp-logs", { body: { ids }, asserts: [A.status(200)] });
+// metaWith calls a code-mode meta tool through execute with extra request options (headers).
+const metaWith = (id, title, tool, args, asserts, opts) => execBody(id, title, toolCall(tool, args), asserts, opts);
+const ALPHA_EA = "alpha (echo, add) registered as client alpha, auth none, per call, tools_to_execute [\"*\"]";
+const alphaEA = (id, over = {}) => [...freshServer(id, "alpha", ["echo", "add"]), alphaClient(id, over)];
+
+const GOV19 = folder("GOV-19 Code mode scoped to the VK", `Setup: ${CM_TEXT}, code mode bound per server (the default); a VK with mcp_configs cm ["echo"]. listToolFiles is also called with code mode bound per tool, where it lists one file per tool.`, [
+  ...cmSetup("GOV-19"),
+  govKey("GOV-19", "gov19_vk", [{ mcp_client_name: "cm", tools_to_execute: ["echo"] }]),
+  metaWith("GOV-19", "listToolFiles with the VK", "listToolFiles", {}, [A.status(200), A.custom("lists cm.pyi", ["var c = pm.response.json().content;", "pm.expect(c, 'content: ' + c).to.include('cm.pyi');"])], vkUse("gov19_vk")),
+  readConfig("GOV-19"),
+  putConfig("GOV-19", "setup: bind code mode per tool", ["cc.mcp_code_mode_binding_level = 'tool';"], [A.status(200)]),
+  metaWith("GOV-19", "listToolFiles with the VK, bound per tool", "listToolFiles", {}, [A.status(200), A.custom("the only tool file is echo.pyi", ["var c = pm.response.json().content;", "pm.expect(c.split('\\n').filter(function (l) { return /\\.pyi$/.test(l); }), 'content: ' + c).to.eql(['    echo.pyi']);"])], vkUse("gov19_vk")),
+  restoreConfig("GOV-19"),
+  metaWith("GOV-19", "readToolFile servers/cm.pyi with the VK", "readToolFile", { fileName: "servers/cm.pyi" }, [A.status(200), A.custom("defines echo and not add", ["var c = pm.response.json().content;", "pm.expect(c, 'content: ' + c).to.match(/def echo\\(/);", "pm.expect(c).to.not.match(/def add\\(/);"])], vkUse("gov19_vk")),
+  metaWith("GOV-19", "executeToolCode calling cm.add with the VK", "executeToolCode", { code: "r = cm.add(text=\"x\")\nresult = r" }, [A.status(200), toolErrorFlag(true), A.custom("the error names no .add attribute", ["pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.include('no .add attribute');"])], vkUse("gov19_vk")),
+  mockGet("GOV-19", "cm", "cm never ran add", [callsIs("add", 0)]),
+  vkDelete("GOV-19", "teardown: delete the VK", "gov19_vk"),
+  cmTeardown("GOV-19"),
+]);
+
+const GOV22 = folder("GOV-22 Tool price recorded and charged", `Setup: ${ALPHA_EA}, echo priced 0.001; a VK with mcp_configs alpha ["*"] and a budget of 1 per 1h.`, [
+  ...alphaEA("GOV-22"),
+  priceAlpha("GOV-22", "setup: price echo at 0.001", "gov-22-alpha", { echo: 0.001 }),
+  govKey("GOV-22", "gov22_vk", ALPHA_ALL, { budgets: [{ max_limit: 1, reset_duration: "1h" }] }),
+  vkMemory("GOV-22", "setup: record the budget", "gov22_vk", [], keepBudget("gov22_b0")),
+  execR2("GOV-22", "execute alpha-echo with the VK", "alpha-echo", "gov22-r", [A.status(200)], vkUse("gov22_vk")),
+  logOf("GOV-22", "its log entry", "gov22-r", [entryCost(0.001), A.custom("virtual_key_id is the VK's", ["pm.expect(pm.response.json().virtual_key_id, 'body: ' + pm.response.text()).to.equal(pm.collectionVariables.get('gov22_vk_id'));"])]),
+  vkMemory("GOV-22", "the budget rose by 0.001", "gov22_vk", [budgetPlus("gov22_b0", 0.001)]),
+  deleteLogs("GOV-22", ["gov22-r"]),
+  vkDelete("GOV-22", "teardown: delete the VK", "gov22_vk"),
+  agentTeardown("GOV-22"),
+]);
+
+const GOV23 = folder("GOV-23 Budget exhausted by tool cost", `Setup: ${ALPHA_EA}, echo priced 0.001; a VK with mcp_configs alpha ["*"] and a budget of 0.002 per 1h.`, [
+  ...alphaEA("GOV-23"),
+  priceAlpha("GOV-23", "setup: price echo at 0.001", "gov-23-alpha", { echo: 0.001 }),
+  govKey("GOV-23", "gov23_vk", ALPHA_ALL, { budgets: [{ max_limit: 0.002, reset_duration: "1h" }] }),
+  execTool("GOV-23", "call 1", "alpha-echo", [A.status(200)], vkUse("gov23_vk")),
+  execTool("GOV-23", "call 2", "alpha-echo", [A.status(200)], vkUse("gov23_vk")),
+  execTool("GOV-23", "call 3", "alpha-echo", [A.status(402), A.custom("type budget_exceeded", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('budget_exceeded');"]), A.msgContains("budget exceeded: 0.0020 >= 0.0020 dollars")], { headers: [{ key: "x-bf-vk", value: "{{gov23_vk}}" }] }),
+  mockGet("GOV-23", "alpha", "alpha ran echo twice", [callsIs("echo", 2)]),
+  vkDelete("GOV-23", "teardown: delete the VK", "gov23_vk"),
+  agentTeardown("GOV-23"),
+]);
+
+const GOV24 = folder("GOV-24 Unpriced and failed calls cost nothing", `Setup: alpha (echo, add), with echo failing every call with a JSON-RPC error (err_kind protocol), registered as client alpha, auth none, per call, tools_to_execute ["*"], echo priced 0.001; a VK with mcp_configs alpha ["*"], a budget of 1 per 1h and a request limit of 100 per 1h.`, [
+  request("GOV-24", "setup: fresh mcpchaos server alpha", "POST", "/control", { base: CHAOS, noAuth: true, body: { add: "alpha" }, asserts: [A.status(200)] }),
+  mockPost("GOV-24", "alpha", "tools/set", "setup: alpha serves echo (failing with a JSON-RPC error) and add", { tools: [{ name: "echo", fault: { err_rate: 1, err_kind: "protocol" } }, { name: "add" }] }),
+  alphaClient("GOV-24"),
+  priceAlpha("GOV-24", "setup: price echo at 0.001", "gov-24-alpha", { echo: 0.001 }),
+  govKey("GOV-24", "gov24_vk", ALPHA_ALL, { budgets: [{ max_limit: 1, reset_duration: "1h" }], rate_limit: { request_max_limit: 100, request_reset_duration: "1h" } }),
+  vkMemory("GOV-24", "setup: record the budget and request count", "gov24_vk", [], [...keepBudget("gov24_b0"), ...keepRequests("gov24_r0")]),
+  ...[1, 2, 3, 4, 5].map((i) => execTool("GOV-24", `unpriced add call ${i}`, "alpha-add", [A.status(200)], vkUse("gov24_vk"))),
+  vkMemory("GOV-24", "the budget is unchanged after the add calls, which were counted", "gov24_vk", [budgetPlus("gov24_b0", 0), requestsPlus("gov24_r0", 5)], [...keepBudget("gov24_b1"), ...keepRequests("gov24_r1")]),
+  execTool("GOV-24", "a failed echo call", "alpha-echo", [A.status(400)], vkUse("gov24_vk")),
+  vkMemory("GOV-24", "budget and request count are unchanged after the failed echo", "gov24_vk", [budgetPlus("gov24_b1", 0), requestsPlus("gov24_r1", 0)]),
+  mockPost("GOV-24", "alpha", "tools/set", "control: echo stops failing", { tools: [{ name: "echo" }, { name: "add" }] }),
+  execR2("GOV-24", "control: a successful echo call", "alpha-echo", "gov24-ok", [A.status(200)], vkUse("gov24_vk")),
+  logOf("GOV-24", "control: its log entry", "gov24-ok", [entryCost(0.001)]),
+  vkMemory("GOV-24", "control: the priced echo is charged and counted", "gov24_vk", [budgetPlus("gov24_b1", 0.001), requestsPlus("gov24_r1", 1)]),
+  deleteLogs("GOV-24", ["gov24-ok"]),
+  vkDelete("GOV-24", "teardown: delete the VK", "gov24_vk"),
+  agentTeardown("GOV-24"),
+]);
+
+const GOV25 = folder("GOV-25 Request rate limit counts tool calls", `Setup: ${ALPHA_EA}; a VK with mcp_configs alpha ["*"] and a request limit of 1 per 1h.`, [
+  ...alphaEA("GOV-25"),
+  govKey("GOV-25", "gov25_vk", ALPHA_ALL, { rate_limit: { request_max_limit: 1, request_reset_duration: "1h" } }),
+  execTool("GOV-25", "call 1", "alpha-add", [A.status(200)], vkUse("gov25_vk")),
+  execTool("GOV-25", "call 2", "alpha-add", [A.status(429), A.custom("type request_limited", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('request_limited');"]), A.msgContains("request limit exceeded (1/1, resets every 1h)")], vkUse("gov25_vk")),
+  rpc("GOV-25", "/mcp tools/list with the VK", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{gov25_vk}}" }], asserts: [A.status(429)] }),
+  vkDelete("GOV-25", "teardown: delete the VK", "gov25_vk"),
+  agentTeardown("GOV-25"),
+]);
+
+const GOV26 = folder("GOV-26 Code mode bills nested calls, not the meta call", `Setup: ${CM_TEXT}, cm's echo priced 0.001; a VK with mcp_configs cm ["*"] and a budget of 1 per 1h; executeToolCode calls cm.echo twice.`, [
+  ...cmSetup("GOV-26"),
+  priceAlpha("GOV-26", "setup: price cm's echo at 0.001", "gov-26-cm", { echo: 0.001 }),
+  govKey("GOV-26", "gov26_vk", [{ mcp_client_name: "cm", tools_to_execute: ["*"] }], { budgets: [{ max_limit: 1, reset_duration: "1h" }] }),
+  vkMemory("GOV-26", "setup: record the budget", "gov26_vk", [], keepBudget("gov26_b0")),
+  metaWith("GOV-26", "executeToolCode calling cm.echo twice", "executeToolCode", { code: "a = cm.echo(text=\"gov26-a\")\nb = cm.echo(text=\"gov26-b\")\nresult = [a, b]" }, [A.status(200)], vkUse("gov26_vk")),
+  request("GOV-26", "two echo entries, each costing 0.001", "GET", "/api/mcp-logs?tool_names=echo&content_search=gov26-", { pre: pollLogCount("tool_names=echo&content_search=gov26-", 2), asserts: [A.status(200), A.custom("total_count 2, each cost 0.001", ["var b = pm.response.json();", "pm.expect(b.pagination.total_count, 'body: ' + pm.response.text()).to.equal(2);", "b.logs.forEach(function (l) { pm.expect(l.cost).to.be.closeTo(0.001, 1e-9); });"])] }),
+  vkMemory("GOV-26", "the budget rose by 0.002", "gov26_vk", [budgetPlus("gov26_b0", 0.002)]),
+  vkDelete("GOV-26", "teardown: delete the VK", "gov26_vk"),
+  cmTeardown("GOV-26"),
+]);
+
+const GOV28 = folder("GOV-28 Pricing edits apply live", `Setup: ${ALPHA_EA}, echo priced 0.001. Pricing is then set to 0.005, then to {}, and the client is renamed alpha2.`, [
+  ...alphaEA("GOV-28"),
+  priceAlpha("GOV-28", "setup: price echo at 0.001", "gov-28-alpha", { echo: 0.001 }),
+  priceAlpha("GOV-28", "price echo at 0.005", "gov-28-alpha", { echo: 0.005 }),
+  execR2("GOV-28", "execute alpha-echo", "alpha-echo", "gov28-r1", [A.status(200)]),
+  logOf("GOV-28", "it logs cost 0.005", "gov28-r1", [entryCost(0.005)]),
+  priceAlpha("GOV-28", "set pricing {}", "gov-28-alpha", {}),
+  execR2("GOV-28", "execute alpha-echo again", "alpha-echo", "gov28-r2", [A.status(200)]),
+  logOf("GOV-28", "it logs no cost", "gov28-r2", [entryCost(null)]),
+  request("GOV-28", "rename the client to alpha2", "PUT", "/api/mcp/client/gov-28-alpha", { body: { name: "alpha2" }, asserts: [A.status(200)] }),
+  execR2("GOV-28", "execute alpha2-echo", "alpha2-echo", "gov28-r3", [A.status(200)]),
+  logOf("GOV-28", "it logs under alpha2", "gov28-r3", [A.jsonEquals("server_label", "alpha2")]),
+  deleteLogs("GOV-28", ["gov28-r1", "gov28-r2", "gov28-r3"]),
+  agentTeardown("GOV-28"),
+]);
+
+const GOV38 = folder("GOV-38 Budget enforced on `/mcp`", `Setup: ${ALPHA_EA}, echo priced 0.001; a VK with mcp_configs alpha ["*"] and a budget of 0.001 per 1h.`, [
+  ...alphaEA("GOV-38"),
+  priceAlpha("GOV-38", "setup: price echo at 0.001", "gov-38-alpha", { echo: 0.001 }),
+  govKey("GOV-38", "gov38_vk", ALPHA_ALL, { budgets: [{ max_limit: 0.001, reset_duration: "1h" }] }),
+  gwCall("GOV-38", "first tools/call alpha-echo", "alpha-echo", [A.custom("isError is not set", ["pm.expect(pm.response.json().result.isError || false, 'body: ' + pm.response.text()).to.equal(false);"])], [{ key: "x-bf-vk", value: "{{gov38_vk}}" }]),
+  rpc("GOV-38", "the next /mcp request", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{gov38_vk}}" }], asserts: [A.status(402), A.msgContains("Budget exceeded:")] }),
+  vkDelete("GOV-38", "teardown: delete the VK", "gov38_vk"),
+  agentTeardown("GOV-38"),
+]);
+
+// vmcp is the virtual MCP "Tools A" (slug tools-a) over alpha's echo, kept in gov<n>_vmcp.
+const vmcpCreate = (id, v, tools = ["echo"]) => request(id, "setup: create the virtual MCP Tools A over alpha's echo", "POST", "/api/mcp/virtual-mcps", { body: { name: "Tools A", tools: [{ mcp_client_id: `${id.toLowerCase()}-alpha`, tool_names: tools }] }, asserts: [A.status(201)], extraTests: [`pm.collectionVariables.set(${lit(v)}, pm.response.json().virtual_mcp.id);`] });
+const vmcpAttach = (id, title, v, vk) => request(id, title, "POST", `/api/mcp/virtual-mcps/{{${v}}}/virtual-keys/{{${vk}_id}}`, { asserts: [A.status(200)] });
+const vmcpPut = (id, title, v, body) => request(id, title, "PUT", `/api/mcp/virtual-mcps/{{${v}}}`, { body, asserts: [A.status(200)] });
+const slugList = (id, title, vk, asserts) => rpc(id, title, listMsg, { path: "/mcp/tools-a", headers: [MCP_ACCEPT, ...(vk ? [{ key: "x-bf-vk", value: `{{${vk}}}` }] : [])], asserts });
+const GOV35 = folder("GOV-35 Virtual MCP tool edits apply live", `Setup: alpha (echo, add, greet) registered as client alpha, auth none, per call, tools_to_execute ["*"]; a VK with no mcp_configs, attached to the virtual MCP Tools A over alpha's echo. Each edit is read through /mcp tools/list with the VK.`, [
+  ...freshServer("GOV-35", "alpha", ["echo", "add", "greet"]),
+  alphaClient("GOV-35"),
+  govKey("GOV-35", "gov35_vk", undefined),
+  vmcpCreate("GOV-35", "gov35_vmcp"),
+  vmcpAttach("GOV-35", "setup: attach the VK", "gov35_vmcp", "gov35_vk"),
+  vmcpPut("GOV-35", "tools [\"add\"]", "gov35_vmcp", { tools: [{ mcp_client_id: "gov-35-alpha", tool_names: ["add"] }] }),
+  govList("GOV-35", "/mcp tools/list with the VK", ["alpha-add"]),
+  vmcpPut("GOV-35", "tools [\"*\"]", "gov35_vmcp", { tools: [{ mcp_client_id: "gov-35-alpha", tool_names: ["*"] }] }),
+  govList("GOV-35", "/mcp tools/list with the VK", ["alpha-add", "alpha-echo", "alpha-greet"]),
+  request("GOV-35", "tools [\"nosuch\"] is accepted", "PUT", "/api/mcp/virtual-mcps/{{gov35_vmcp}}", { body: { tools: [{ mcp_client_id: "gov-35-alpha", tool_names: ["nosuch"] }] }, asserts: [A.status(200), A.custom("the stored tools are [nosuch] on alpha", ["pm.expect(pm.response.json().virtual_mcp.tools, 'body: ' + pm.response.text()).to.eql([{ mcp_client_id: 'gov-35-alpha', tool_names: ['nosuch'] }]);"])] }),
+  govList("GOV-35", "/mcp tools/list with the VK", []),
+  vmcpPut("GOV-35", "setup: tools [\"*\"] again", "gov35_vmcp", { tools: [{ mcp_client_id: "gov-35-alpha", tool_names: ["*"] }] }),
+  govList("GOV-35", "control: /mcp tools/list with the VK lists every tool again", ["alpha-add", "alpha-echo", "alpha-greet"]),
+  vmcpPut("GOV-35", "tools []", "gov35_vmcp", { tools: [{ mcp_client_id: "gov-35-alpha", tool_names: [] }] }),
+  govList("GOV-35", "/mcp tools/list with the VK", []),
+  request("GOV-35", "teardown: delete the virtual MCP", "DELETE", "/api/mcp/virtual-mcps/{{gov35_vmcp}}", { asserts: [A.status(200)] }),
+  vkDelete("GOV-35", "teardown: delete the VK", "gov35_vk"),
+  deleteClient("GOV-35", "gov-35-alpha"),
+]);
+
+// gov34Check asserts, after a step, that /mcp/tools-a refuses the VK and that a chat with the VK no longer injects alpha-echo.
+const gov34Check = (step, key) => [
+  slugList("GOV-34", `after ${step}: /mcp/tools-a with the VK`, "gov34_vk", [A.status(403)]),
+  llmScript("GOV-34", key, TEXT_OK),
+  infPost("GOV-34", `after ${step}: chat with the VK`, "/v1/chat/completions", chatBody(key), [A.status(200)], { headers: [{ key: "x-bf-vk", value: "{{gov34_vk}}" }] }),
+  llmCaptured("GOV-34", `after ${step}: alpha-echo is not injected`, key, [reqCount(1), toolsAre(0, [])]),
+];
+const GOV34 = folder("GOV-34 Disabling or deleting a virtual MCP", `Setup: ${LLM_TEXT}; alpha (echo, add, greet) registered as client alpha, auth none, per call, tools_to_execute ["*"]; a VK allowed openai with any model and key and no mcp_configs, attached to the virtual MCP Tools A over alpha's echo. Anonymous callers of the slug get 403. Each step is undone before the next: detach, enabled false, then delete.`, [
+  ...freshServer("GOV-34", "alpha", ["echo", "add", "greet"]),
+  alphaClient("GOV-34"),
+  govKey("GOV-34", "gov34_vk", undefined, { provider_configs: OPENAI_GRANT }),
+  vmcpCreate("GOV-34", "gov34_vmcp"),
+  vmcpAttach("GOV-34", "setup: attach the VK", "gov34_vmcp", "gov34_vk"),
+  slugList("GOV-34", "control: /mcp/tools-a with the VK", "gov34_vk", [A.status(200), toolNamesInList(["alpha-echo"])]),
+  slugList("GOV-34", "/mcp/tools-a with no credential", null, [A.status(403)]),
+  llmScript("GOV-34", "gov34-on", TEXT_OK),
+  infPost("GOV-34", "control: chat with the VK", "/v1/chat/completions", chatBody("gov34-on"), [A.status(200)], { headers: [{ key: "x-bf-vk", value: "{{gov34_vk}}" }] }),
+  llmCaptured("GOV-34", "control: alpha-echo is injected", "gov34-on", [reqCount(1), toolsAre(0, ["alpha-echo"])]),
+  request("GOV-34", "detach the VK", "DELETE", "/api/mcp/virtual-mcps/{{gov34_vmcp}}/virtual-keys/{{gov34_vk_id}}", { asserts: [A.status(200)] }),
+  ...gov34Check("the detach", "gov34-detach"),
+  vmcpAttach("GOV-34", "setup: attach the VK again", "gov34_vmcp", "gov34_vk"),
+  slugList("GOV-34", "control: after attaching again, /mcp/tools-a with the VK", "gov34_vk", [A.status(200), toolNamesInList(["alpha-echo"])]),
+  vmcpPut("GOV-34", "set enabled false", "gov34_vmcp", { enabled: false }),
+  ...gov34Check("enabled false", "gov34-disabled"),
+  vmcpPut("GOV-34", "setup: set enabled true", "gov34_vmcp", { enabled: true }),
+  slugList("GOV-34", "control: after enabling, /mcp/tools-a with the VK", "gov34_vk", [A.status(200), toolNamesInList(["alpha-echo"])]),
+  request("GOV-34", "delete the virtual MCP", "DELETE", "/api/mcp/virtual-mcps/{{gov34_vmcp}}", { asserts: [A.status(200)] }),
+  ...gov34Check("the delete", "gov34-deleted"),
+  vkDelete("GOV-34", "teardown: delete the VK", "gov34_vk"),
+  deleteClient("GOV-34", "gov-34-alpha"),
+]);
+
+// ================================================================ log list paging, stats and histograms, scoped to one client
+
+// Every test shares one logs store, so these queries add server_labels=<this test's client name>, a name no other
+// test uses, to make the totals the test's own.
+const logClient = (id, name, over = {}) => [
+  ...freshServer(id, "alpha", ["echo_tool", "add_tool"]),
+  createClient(id, httpClient(`${name}-c`, name, "alpha", { tools_to_execute: ["*"], ...over }), `setup: create client ${name} on alpha`),
+];
+const LOG_CLIENT_TEXT = (name, extra = "") => `alpha (echo_tool, add_tool); a client named ${name} on alpha, auth none, per call, tools_to_execute ["*"]${extra}. Every query adds server_labels=${name}, because all tests share one logs store`;
+const logPrice = (id, name, pricing, title) => request(id, title, "PUT", `/api/mcp/client/${name}-c`, { body: { tool_pricing: pricing }, asserts: [A.status(200)] });
+const logsBody = "var b = pm.response.json();";
+
+const LOG26_LATENCY = ["120ms", "40ms", "80ms"];
+const LOG26 = folder("LOG-26 Pagination and sort", `Setup: ${LOG_CLIENT_TEXT("log26")}; four echo_tool calls, the first three delayed upstream by 120ms, 40ms and 80ms, and one call to an unknown tool, 5 entries.`, [
+  ...logClient("LOG-26", "log26"),
+  ...[1, 2, 3, 4].flatMap((i) => [
+    i <= 3
+      ? mockPost("LOG-26", "alpha", "faults", `setup: alpha delays tools/call by ${LOG26_LATENCY[i - 1]}`, { faults: { latency: LOG26_LATENCY[i - 1], methods: ["tools/call"] } })
+      : mockPost("LOG-26", "alpha", "faults/clear", "setup: clear alpha's faults", {}),
+    execR("LOG-26", `setup: call ${i}`, `log26-${i}`, "log26-echo_tool", { text: `log26-${i}` }, [A.status(200)]),
+  ]),
+  execR("LOG-26", "setup: a call to an unknown tool", "log26-5", "log26-nope", { text: "x" }, [A.status(400)]),
+  request("LOG-26", "defaults", "GET", "/api/mcp-logs?server_labels=log26", { pre: pollLogCount("server_labels=log26", 5), asserts: [A.status(200), A.custom("total_count 5, limit 50, timestamp desc", [logsBody,
+    "pm.expect(b.pagination.total_count, 'body: ' + pm.response.text()).to.equal(5);",
+    "pm.expect(b.pagination.limit).to.equal(50);",
+    "pm.expect(b.pagination.sort_by).to.equal('timestamp');",
+    "pm.expect(b.pagination.order).to.equal('desc');",
+    "for (var i = 1; i < b.logs.length; i++) { pm.expect(new Date(b.logs[i - 1].timestamp).getTime()).to.be.at.least(new Date(b.logs[i].timestamp).getTime()); }",
+  ])], extraTests: [logsBody, "pm.collectionVariables.set('log26_ids', JSON.stringify(b.logs.map(function (l) { return l.id; })));"] }),
+  request("LOG-26", "limit=2&offset=2", "GET", "/api/mcp-logs?server_labels=log26&limit=2&offset=2", { asserts: [A.status(200), A.custom("the third and fourth entries of the default order, offset 2", [logsBody,
+    "pm.expect(b.logs.map(function (l) { return l.id; }), 'body: ' + pm.response.text()).to.eql(JSON.parse(pm.collectionVariables.get('log26_ids')).slice(2, 4));",
+    "pm.expect(b.pagination.offset).to.equal(2);",
+  ])] }),
+  request("LOG-26", "latency ascending", "GET", "/api/mcp-logs?server_labels=log26&sort_by=latency&order=asc", { asserts: [A.status(200), A.custom("ids by latency 4, 2, 3, 1, then the entry with no latency", [logsBody,
+    "pm.expect(b.logs.map(function (l) { return l.id; }), 'body: ' + pm.response.text()).to.eql(['log26-4', 'log26-2', 'log26-3', 'log26-1', 'log26-5']);",
+    "for (var i = 1; i < 4; i++) { pm.expect(b.logs[i].latency).to.be.above(b.logs[i - 1].latency); }",
+    "pm.expect(b.logs[4].latency == null).to.equal(true);",
+  ])] }),
+  mockPost("LOG-26", "alpha", "faults/clear", "teardown: clear alpha's faults", {}),
+  deleteLogs("LOG-26", ["log26-1", "log26-2", "log26-3", "log26-4", "log26-5"]),
+  deleteClient("LOG-26", "log26-c"),
+]);
+
+const LOG30_LATENCY = ["60ms", "120ms", "180ms"];
+const LOG30 = folder("LOG-30 Stats", `Setup: ${LOG_CLIENT_TEXT("log30", ", echo_tool priced 0.25")}; three successful echo_tool calls, delayed upstream by 60ms, 120ms and 180ms, and one call to an unknown tool.`, [
+  ...logClient("LOG-30", "log30"),
+  logPrice("LOG-30", "log30", { echo_tool: 0.25 }, "setup: price echo_tool at 0.25"),
+  ...[1, 2, 3].flatMap((i) => [
+    mockPost("LOG-30", "alpha", "faults", `setup: alpha delays tools/call by ${LOG30_LATENCY[i - 1]}`, { faults: { latency: LOG30_LATENCY[i - 1], methods: ["tools/call"] } }),
+    execR("LOG-30", `setup: call ${i}`, `log30-${i}`, "log30-echo_tool", { text: `log30-${i}` }, [A.status(200)]),
+  ]),
+  mockPost("LOG-30", "alpha", "faults/clear", "setup: clear alpha's faults", {}),
+  execR("LOG-30", "setup: a call to an unknown tool", "log30-4", "log30-nope", { text: "x" }, [A.status(400)]),
+  request("LOG-30", "setup: the four entries", "GET", "/api/mcp-logs?server_labels=log30", { pre: pollLogCount("server_labels=log30", 4), asserts: [A.status(200)], extraTests: [logsBody, "var lat = b.logs.filter(function (l) { return l.latency != null; }).map(function (l) { return l.latency; }); pm.collectionVariables.set('log30_avg', String(lat.reduce(function (a, x) { return a + x; }, 0) / lat.length));"] }),
+  request("LOG-30", "stats", "GET", "/api/mcp-logs/stats?server_labels=log30", { asserts: [A.status(200), A.custom("total_executions 4, success_rate 75, total_cost 0.75, average_latency over entries with latency", [logsBody,
+    "pm.expect(b.total_executions, 'body: ' + pm.response.text()).to.equal(4);",
+    "pm.expect(b.success_rate).to.equal(75);",
+    "pm.expect(b.total_cost).to.be.closeTo(0.75, 1e-9);",
+    "pm.expect(b.average_latency).to.be.above(0);",
+    "pm.expect(b.average_latency).to.be.closeTo(Number(pm.collectionVariables.get('log30_avg')), 1e-6);",
+  ])] }),
+  deleteLogs("LOG-30", ["log30-1", "log30-2", "log30-3", "log30-4"]),
+  deleteClient("LOG-30", "log30-c"),
+]);
+
+const bucketSum = (field) => `b.buckets.reduce(function (a, x) { return a + (x[${lit(field)}] || 0); }, 0)`;
+const LOG34 = folder("LOG-34 Histogram", `Setup: ${LOG_CLIENT_TEXT("log34")}; two successful echo_tool calls and one call to an unknown tool; period=1h.`, [
+  ...logClient("LOG-34", "log34"),
+  ...[1, 2].map((i) => execR("LOG-34", `setup: call ${i}`, `log34-${i}`, "log34-echo_tool", { text: `log34-${i}` }, [A.status(200)])),
+  execR("LOG-34", "setup: a call to an unknown tool", "log34-3", "log34-nope", { text: "x" }, [A.status(400)]),
+  request("LOG-34", "histogram", "GET", "/api/mcp-logs/histogram?period=1h&server_labels=log34", { pre: pollLogCount("server_labels=log34", 3), asserts: [A.status(200), A.custom("bucket_size_seconds 60; counts sum to 3, success 2, error 1", [logsBody,
+    "pm.expect(b.bucket_size_seconds, 'body: ' + pm.response.text()).to.equal(60);",
+    `pm.expect(${bucketSum("count")}).to.equal(3);`,
+    `pm.expect(${bucketSum("success")}).to.equal(2);`,
+    `pm.expect(${bucketSum("error")}).to.equal(1);`,
+  ])] }),
+  deleteLogs("LOG-34", ["log34-1", "log34-2", "log34-3"]),
+  deleteClient("LOG-34", "log34-c"),
+]);
+
+const LOG35 = folder("LOG-35 Cost histogram", `Setup: ${LOG_CLIENT_TEXT("log35", ", echo_tool priced 0.25")}; two successful echo_tool calls; period=24h.`, [
+  ...logClient("LOG-35", "log35"),
+  logPrice("LOG-35", "log35", { echo_tool: 0.25 }, "setup: price echo_tool at 0.25"),
+  ...[1, 2].map((i) => execR("LOG-35", `setup: call ${i}`, `log35-${i}`, "log35-echo_tool", { text: `log35-${i}` }, [A.status(200)])),
+  request("LOG-35", "cost histogram", "GET", "/api/mcp-logs/histogram/cost?period=24h&server_labels=log35", { pre: pollLogCount("server_labels=log35", 2), asserts: [A.status(200), A.custom("bucket_size_seconds 3600; total_cost sums to 0.5", [logsBody,
+    "pm.expect(b.bucket_size_seconds, 'body: ' + pm.response.text()).to.equal(3600);",
+    `pm.expect(${bucketSum("total_cost")}).to.be.closeTo(0.5, 1e-9);`,
+  ])] }),
+  deleteLogs("LOG-35", ["log35-1", "log35-2"]),
+  deleteClient("LOG-35", "log35-c"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -6605,10 +6890,10 @@ const collection = {
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP50, EP51, EP53]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET19, SET20, SET21, SET22]),
-    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV15, GOV16, GOV17, GOV20, GOV21, GOV29, GOV31, GOV32, GOV33]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV15, GOV16, GOV17, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV31, GOV32, GOV33, GOV34, GOV35, GOV38]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
-    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG27, LOG28, LOG29, LOG31, LOG33, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
+    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19]),
   ],
 };
