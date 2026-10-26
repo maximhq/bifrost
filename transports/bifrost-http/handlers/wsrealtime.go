@@ -559,19 +559,63 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 }
 
 // runRealtimeRelays runs the two relays of a realtime session, each on its own goroutine, and
-// ends the session when the first one returns: closeBoth tears down both connections, which
-// releases the other relay from its blocking read, and its error is collected before returning.
+// ends the session when the first one returns: closeBoth tears down both connections. When the
+// client side ends first, both relays' errors count; when the upstream ends first, the client is
+// released (releaseRealtimeClient) and its read's error is not reported.
 // A panic inside a relay ends the session the same way (see runWebSocketRelay). The result is
 // the error worth logging, if any (see selectRealtimeRelayError).
 func runRealtimeRelays(conn *ws.Conn, toProvider, toClient func() error, closeBoth func()) error {
-	errCh := make(chan error, 2)
-	go func() { errCh <- runWebSocketRelay(conn, toProvider) }()
-	go func() { errCh <- runWebSocketRelay(conn, toClient) }()
+	clientDone := make(chan error, 1) // the relay reading the client
+	upstreamDone := make(chan error, 1)
+	go func() { clientDone <- runWebSocketRelay(conn, toProvider) }()
+	go func() { upstreamDone <- runWebSocketRelay(conn, toClient) }()
 
-	firstErr := <-errCh
-	closeBoth()
-	secondErr := <-errCh
-	return selectRealtimeRelayError(firstErr, secondErr)
+	select {
+	case clientErr := <-clientDone:
+		closeBoth() // closing the upstream releases its relay
+		sendRealtimeSessionEnded(conn)
+		return selectRealtimeRelayError(clientErr, <-upstreamDone)
+	case upstreamErr := <-upstreamDone:
+		closeBoth()
+		return selectRealtimeRelayError(upstreamErr, releaseRealtimeClient(conn, clientDone))
+	}
+}
+
+// realtimeCloseHandshakeGrace bounds the wait for the client's close reply before its read is cut off.
+const realtimeCloseHandshakeGrace = time.Second
+
+// sendRealtimeSessionEnded sends the client a normal close frame
+func sendRealtimeSessionEnded(conn *ws.Conn) {
+	if conn != nil {
+		_ = conn.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "realtime session ended"), time.Now().Add(realtimeCloseHandshakeGrace))
+	}
+}
+
+// releaseRealtimeClient sends the client a close frame and, if it does not answer in time, forces its
+// pending read to return (Close cannot interrupt it on a hijacked connection). It returns how the
+// client relay ended, except for the timeout that forced read produces.
+func releaseRealtimeClient(conn *ws.Conn, clientDone <-chan error) error {
+	if conn == nil {
+		return <-clientDone
+	}
+	sendRealtimeSessionEnded(conn)
+	select {
+	case err := <-clientDone:
+		return err
+	case <-time.After(realtimeCloseHandshakeGrace):
+	}
+	for {
+		_ = conn.SetReadDeadline(time.Now())
+		select {
+		case err := <-clientDone:
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				return nil
+			}
+			return err
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // relayClientToRealtimeProvider forwards client frames through the realtime turn pipeline.
