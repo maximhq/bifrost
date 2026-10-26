@@ -54,7 +54,7 @@ const availableTabs = (
 		// A generic relay has no typed API structure to configure; its relay settings take that slot.
 		tabs.push({
 			id: "generic",
-			label: "Passthrough",
+			label: "Configure",
 		});
 	} else if (hasCustomProviderConfig) {
 		tabs.push({
@@ -98,7 +98,7 @@ const availableTabs = (
 		id: "tools",
 		label: "Tools",
 	});
-	// A generic relay's own Passthrough tab (above) is its relay config; the standard providers'
+	// A generic relay's own Configure tab (above) is its relay config; the standard providers'
 	// passthrough policy tab does not apply to it.
 	if (hasPassthrough && !isGeneric) {
 		tabs.push({

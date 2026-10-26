@@ -190,7 +190,7 @@ function toConfig(values: FormValues): GenericProviderConfig {
 	return cfg;
 }
 
-// GenericPassthroughFormFragment is the "Passthrough" tab of a generic relay provider: upstream
+// GenericPassthroughFormFragment is the "Configure" tab of a generic relay provider: upstream
 // auth, usage/cost mapping, stream detection and per-route overrides. An OpenAPI document can be
 // imported into those fields in the browser; nothing about the document is stored.
 export function GenericPassthroughFormFragment({ provider }: Props) {

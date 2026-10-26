@@ -1294,7 +1294,7 @@ export const genericRouteHeaderSchema = z
 	});
 
 // A route's async job block is set through config.json or the API; the form carries it through
-// untouched so a save from the Passthrough tab never drops it.
+// untouched so a save from the generic Configure tab never drops it.
 export const genericJobConfigSchema = z.object({
 	id_path: z.string(),
 	poll: z.object({
@@ -1322,7 +1322,7 @@ export const genericRouteConfigSchema = z.object({
 	job: genericJobConfigSchema.optional(),
 });
 
-// The Passthrough tab edits a route's header matchers as pairs; the config keeps the record.
+// The generic Configure tab edits a route's header matchers as pairs; the config keeps the record.
 // Names match case-insensitively and the config keeps one value per name, so a repeated name
 // would silently keep only its last row; it is flagged on the repeat instead.
 export const genericRouteFormSchema = genericRouteConfigSchema.omit({ headers: true }).extend({
@@ -1360,7 +1360,7 @@ export const genericProviderFormSchema = genericProviderConfigSchema.extend({
 	routes: z.array(genericRouteFormSchema).optional(),
 });
 
-// Sample call for the Passthrough tab's "Test this mapping" box, checked before it is sent so the
+// Sample call for the generic Configure tab's "Test this mapping" box, checked before it is sent so the
 // field errors show inline rather than as a failed request.
 // relayPathError mirrors the relay's path guard (ValidatePassthroughPath) on the raw and the
 // percent-decoded path, so a sample the preview endpoint would refuse with 400 fails inline instead.
