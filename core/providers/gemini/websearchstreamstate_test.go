@@ -376,6 +376,156 @@ func TestGeminiImageGroundingRoundTrip(t *testing.T) {
 		"a segment citing both a web and an image chunk must keep both")
 }
 
+func mapsGroundingMetadata() *GroundingMetadata {
+	return &GroundingMetadata{
+		GoogleMapsWidgetContextToken: "maps-widget-context-token",
+		GroundingChunks: []*GroundingChunk{{Maps: &GroundingChunkMaps{
+			URI:     "https://maps.google.com/?cid=123",
+			Title:   "Blue Bottle Coffee",
+			PlaceID: "places/abc123",
+			PlaceAnswerSources: &GroundingChunkMapsPlaceAnswerSources{
+				FlagContentURI: "https://maps.google.com/flag/place/abc123",
+				ReviewSnippets: []*GroundingChunkMapsPlaceAnswerSourcesReviewSnippet{{
+					Title:         "Great coffee",
+					Review:        "Excellent espresso and friendly service.",
+					GoogleMapsURI: "https://maps.google.com/review/xyz",
+				}},
+			},
+		}}},
+		GroundingSupports: []*GroundingSupport{{
+			Segment:               &Segment{StartIndex: 0, EndIndex: 18, Text: "Blue Bottle Coffee"},
+			GroundingChunkIndices: []int32{0},
+		}},
+	}
+}
+
+func TestGeminiMapsGroundingRoundTrip(t *testing.T) {
+	want := mapsGroundingMetadata()
+	response := &GenerateContentResponse{
+		ModelVersion: "gemini-3.8-flash",
+		Candidates: []*Candidate{{
+			Content:           &Content{Role: "model", Parts: []*Part{{Text: "Blue Bottle Coffee"}}},
+			FinishReason:      FinishReasonStop,
+			GroundingMetadata: want,
+		}},
+	}
+
+	bifrostResp := response.ToResponsesBifrostResponsesResponse()
+	var searchCall *schemas.ResponsesMessage
+	for i := range bifrostResp.Output {
+		if bifrostResp.Output[i].Type != nil && *bifrostResp.Output[i].Type == schemas.ResponsesMessageTypeWebSearchCall {
+			searchCall = &bifrostResp.Output[i]
+			break
+		}
+	}
+	require.NotNil(t, searchCall, "Maps grounding should become a web_search_call")
+	require.NotNil(t, searchCall.ResponsesToolMessage)
+	require.NotNil(t, searchCall.ResponsesToolMessage.Action)
+	action := searchCall.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+	require.NotNil(t, action)
+	require.Len(t, action.Sources, 1, "Maps places should be represented as search sources")
+	assert.Equal(t, "https://maps.google.com/?cid=123", action.Sources[0].URL)
+	require.NotNil(t, action.Sources[0].Title)
+	assert.Equal(t, "Blue Bottle Coffee", *action.Sources[0].Title)
+
+	got := ToGeminiResponsesResponse(bifrostResp).Candidates[0].GroundingMetadata
+	require.NotNil(t, got, "Maps-only grounding metadata should survive the non-streaming round trip")
+	assert.Equal(t, want, got, "Maps fields, grounding support, and widget token must be preserved")
+
+	extraFieldsJSON, err := json.Marshal(bifrostResp.ProviderExtraFields)
+	require.NoError(t, err)
+	var decodedExtraFields map[string]interface{}
+	require.NoError(t, json.Unmarshal(extraFieldsJSON, &decodedExtraFields))
+	bifrostResp.ProviderExtraFields = decodedExtraFields
+	got = ToGeminiResponsesResponse(bifrostResp).Candidates[0].GroundingMetadata
+	require.NotNil(t, got, "Maps metadata should survive JSON-decoded ProviderExtraFields")
+	assert.Equal(t, want, got)
+}
+
+func TestBuildGroundingMetadataFromMapsSource(t *testing.T) {
+	mapsURI := "https://www.google.com/maps/place/Blue+Bottle+Coffee"
+	title := "Blue Bottle Coffee"
+	call := &schemas.ResponsesMessage{
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			Action: &schemas.ResponsesToolMessageActionStruct{
+				ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
+					Type: "search",
+					Sources: []schemas.ResponsesWebSearchToolCallActionSearchSource{{
+						Type:  "url",
+						URL:   mapsURI,
+						Title: &title,
+					}},
+				},
+			},
+		},
+	}
+
+	got := buildGroundingMetadataFromWebSearch(call, nil, nil)
+	require.NotNil(t, got, "a Maps source without queries is meaningful grounding metadata")
+	require.Len(t, got.GroundingChunks, 1)
+	require.NotNil(t, got.GroundingChunks[0].Maps)
+	assert.Equal(t, mapsURI, got.GroundingChunks[0].Maps.URI)
+	assert.Equal(t, title, got.GroundingChunks[0].Maps.Title)
+}
+
+func TestGeminiMapsGroundingStreamRoundTrip(t *testing.T) {
+	want := mapsGroundingMetadata()
+	chunks := []*GenerateContentResponse{
+		{
+			ResponseID:   "resp-maps",
+			ModelVersion: "gemini-3.8-flash",
+			Candidates: []*Candidate{{Content: &Content{
+				Role:  "model",
+				Parts: []*Part{{Text: "Blue Bottle Coffee"}},
+			}}},
+		},
+		{
+			ResponseID:    "resp-maps",
+			ModelVersion:  "gemini-3.8-flash",
+			Candidates:    []*Candidate{{FinishReason: FinishReasonStop, GroundingMetadata: want}},
+			UsageMetadata: &GenerateContentResponseUsageMetadata{PromptTokenCount: 5, CandidatesTokenCount: 3, TotalTokenCount: 8},
+		},
+	}
+
+	forward := &GeminiResponsesStreamState{}
+	forward.flush()
+	reverse := NewBifrostToGeminiStreamState()
+	var searchCall *schemas.ResponsesMessage
+	var grounded []*GroundingMetadata
+	seq := 0
+	for _, chunk := range chunks {
+		events, bifrostErr := chunk.ToBifrostResponsesStream(seq, forward)
+		require.Nil(t, bifrostErr, "unexpected forward conversion error")
+		seq += len(events)
+		for _, event := range events {
+			if event.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && event.Item != nil && event.Item.Type != nil &&
+				*event.Item.Type == schemas.ResponsesMessageTypeWebSearchCall {
+				searchCall = event.Item
+			}
+			out := ToGeminiResponsesStreamResponse(event, reverse)
+			if out == nil {
+				continue
+			}
+			for _, candidate := range out.Candidates {
+				if candidate.GroundingMetadata != nil {
+					grounded = append(grounded, candidate.GroundingMetadata)
+				}
+			}
+		}
+	}
+
+	require.NotNil(t, searchCall, "Maps-only metadata should emit a streamed web_search_call")
+	require.NotNil(t, searchCall.ResponsesToolMessage)
+	require.NotNil(t, searchCall.ResponsesToolMessage.Action)
+	action := searchCall.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+	require.NotNil(t, action)
+	require.Len(t, action.Sources, 1, "streamed Maps places should be represented as search sources")
+	assert.Equal(t, "https://maps.google.com/?cid=123", action.Sources[0].URL)
+
+	require.Len(t, grounded, 1, "Maps grounding metadata should be restored exactly once")
+	assert.Equal(t, want, grounded[0], "streaming must retain Maps fields, grounding support, and widget token")
+}
+
 // multiSourceGroundedResponse mirrors a real gemini-3.6-flash grounded answer: four
 // supports over four chunks, three of them citing two sources at once.
 func multiSourceGroundedResponse() *GenerateContentResponse {
@@ -385,7 +535,7 @@ func multiSourceGroundedResponse() *GenerateContentResponse {
 		Candidates: []*Candidate{{
 			FinishReason: FinishReasonStop,
 			Content: &Content{
-				Role: "model",
+				Role:  "model",
 				Parts: []*Part{{Text: "**Spain** won UEFA Euro 2024. \n\nThey defeated **England 2-1** in the final on July 14, 2024, at the Olympiastadion in Berlin. Nico Williams scored first for Spain, followed by an equalizer from England's Cole Palmer, before Mikel Oyarzabal scored the winning goal in the 86th minute. \n\nWith this victory, Spain secured a record-breaking fourth UEFA European Championship title (having previously won in 1964, 2008, and 2012)."}},
 			},
 			GroundingMetadata: &GroundingMetadata{
