@@ -143,6 +143,8 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 							...(auth.type === "query" ? { query_param: auth.query_param } : {}),
 							...(auth.type === "aws_sigv4" ? { aws: { service: auth.aws?.service ?? "" } } : {}),
 						},
+						// Only the routes set up on the Passthrough tab are relayed until the operator opens it up.
+						strict_routes: true,
 					},
 				}
 			: {

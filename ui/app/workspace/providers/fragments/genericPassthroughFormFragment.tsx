@@ -1,4 +1,5 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -25,7 +26,7 @@ import { genericProviderFormSchema, genericUsagePreviewSampleSchema } from "@/li
 import { importOpenAPI, parseOpenAPIText, type OpenAPIImport } from "@/lib/utils/openapiImport";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Info, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Info, Plus, Trash2 } from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { type FieldErrors, useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -522,6 +523,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 		/>
 	);
 	const unitsMeasure = form.watch("usage.units_measure");
+	const strictRoutes = form.watch("strict_routes");
 
 	return (
 		<Form {...form}>
@@ -806,14 +808,14 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 												name={`routes.${index}.billable`}
 												render={({ field }) => (
 													<FormItem>
-														<div className="bg-muted/50 flex items-center justify-between space-x-2 rounded-sm border p-3">
-															<div className="flex items-center gap-1.5">
-																<p className="text-sm font-medium">Billable</p>
-																<InfoTip
-																	label="Billable"
-																	text="On: calls to this route are counted against rate limits and charged by the pricing below. Off: they are passed through and logged but neither counted nor charged, e.g. status polls and listings. Defaults to on for POST and off for other methods."
-																/>
-															</div>
+														<div className="flex items-center gap-1.5">
+															<FormLabel>Billable</FormLabel>
+															<InfoTip
+																label="Billable"
+																text="On: calls to this route are counted against rate limits and charged by the pricing below. Off: they are passed through and logged but neither counted nor charged, e.g. status polls and listings. Defaults to on for POST and off for other methods."
+															/>
+														</div>
+														<div className="flex h-9 items-center gap-3">
 															<Switch
 																size="md"
 																checked={field.value ?? genericRouteBillableByDefault(form.watch(`routes.${index}.method`))}
@@ -821,6 +823,11 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 																disabled={disabled}
 																data-testid={`generic-route-billable-switch-${index}`}
 															/>
+															<span className="text-muted-foreground text-sm">
+																{(field.value ?? genericRouteBillableByDefault(form.watch(`routes.${index}.method`)))
+																	? "Counted and charged"
+																	: "Logged, not charged"}
+															</span>
 														</div>
 													</FormItem>
 												)}
@@ -900,7 +907,17 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 						"Only allow the routes above",
 						"On: any other call is refused with 404 before it reaches the API. Off: other calls go through and are charged with the pricing below; only POST calls are billable unless a route says otherwise",
 						"generic-strict-routes-switch",
-						"Turns the routes list into an allowlist, so your key cannot be used for operations you have not priced. With it off, a call that matches no route still reaches the API: a POST is counted and charged with the main pricing, and GET, PUT, PATCH, DELETE and HEAD calls are logged but not charged. Recommended once the routes are set up.",
+						"Turns the routes list into an allowlist, so your key cannot be used for operations you have not priced. With it off, a call that matches no route still reaches the API: a POST is counted and charged with the main pricing, and GET, PUT, PATCH, DELETE and HEAD calls are logged but not charged. On by default; with no routes yet, every call is refused until you add one.",
+					)}
+					{!strictRoutes && (
+						<Alert variant="warning" data-testid="generic-all-routes-warning">
+							<AlertTriangle />
+							<AlertDescription>
+								Every path on this API is reachable with your key, including operations you have not priced or reviewed (deletes, admin and
+								account endpoints). Only GET, PUT, PATCH, DELETE and HEAD calls outside the routes are free. Switch on &quot;Only allow the
+								routes above&quot; unless every caller is trusted.
+							</AlertDescription>
+						</Alert>
 					)}
 				</section>
 

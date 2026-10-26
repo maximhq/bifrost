@@ -585,7 +585,7 @@ test.describe("Providers", () => {
             passthrough_stream?: boolean;
             chat_completion?: boolean;
           };
-          generic_config?: { auth?: { type?: string; header_name?: string } };
+          generic_config?: { auth?: { type?: string; header_name?: string }; strict_routes?: boolean };
         };
       };
       expect(saved.custom_provider_config?.base_provider_type).toBe("generic");
@@ -604,12 +604,22 @@ test.describe("Providers", () => {
       expect(
         saved.custom_provider_config?.generic_config?.auth?.header_name,
       ).toBe("x-api-key");
+      // A provider created from the dashboard relays only its configured routes.
+      expect(saved.custom_provider_config?.generic_config?.strict_routes).toBe(true);
 
       // The config sheet offers the Passthrough tab in place of API Structure.
       await providersPage.selectProvider(providerData.name);
       await providerSettingsPage.selectConfigTab("generic");
       await expect(page.getByTestId("generic-passthrough-form")).toBeVisible();
       await expect(page.getByTestId("provider-tab-api-structure")).toHaveCount(0);
+
+      // Opening the API to every path is allowed, but warned about.
+      await expect(page.getByTestId("generic-strict-routes-switch")).toBeChecked();
+      await expect(page.getByTestId("generic-all-routes-warning")).toHaveCount(0);
+      await page.getByTestId("generic-strict-routes-switch").click();
+      await expect(page.getByTestId("generic-all-routes-warning")).toBeVisible();
+      await page.getByTestId("generic-strict-routes-switch").click();
+      await expect(page.getByTestId("generic-all-routes-warning")).toHaveCount(0);
 
       // Adding a route and saving round-trips through the update API.
       await page.getByTestId("generic-route-add-btn").click();
