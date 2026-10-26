@@ -3,12 +3,15 @@ package azure
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/xml"
 	"errors"
 	"io"
 	"maps"
 	"math"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,8 +27,8 @@ import (
 
 // Azure AI Speech serves keys and aliases with use_speech_endpoints. For text to speech the model
 // is "neural" (the voice is sent by name) or a voice suffix such as "DragonHDLatestNeural" or
-// "MAI-Voice-2.1-Flash". For speech to text it is "fast-transcription", "llm-speech" or a
-// MAI-Transcribe model such as "MAI-Transcribe-2".
+// "MAI-Voice-2.1-Flash". For speech to text it is "fast-transcription", "llm-speech", a
+// MAI-Transcribe model such as "MAI-Transcribe-2", or "short-audio" for the short audio endpoint.
 const (
 	azureSpeechNeuralModel         = "neural"
 	azureSpeechFastModel           = "fast-transcription"
@@ -36,6 +39,16 @@ const (
 	azureSpeechDefaultOutputFormat = "audio-24khz-48kbitrate-mono-mp3"
 	azureSpeechDefaultLanguage     = "en-US"
 )
+
+// The short audio endpoint takes the recognition mode as a path segment and reports offsets in 100ns ticks.
+const (
+	azureSpeechShortAudioModel        = "short-audio"
+	azureSpeechDefaultRecognitionMode = "conversation"
+	azureSpeechTicksPerSecond         = 10_000_000
+)
+
+// azureSpeechRecognitionModes are the short audio endpoints. The mode is a path segment, so no other value is sent.
+var azureSpeechRecognitionModes = map[string]bool{"conversation": true, "interactive": true, "dictation": true}
 
 // azureSpeechOutputFormats maps OpenAI response formats to Azure output formats. aac and flac
 // have no Azure equivalent and fall back to mp3; any other value is sent as an Azure format name.
@@ -171,6 +184,10 @@ func ToAzureSpeechTranscriptionDefinition(model string, params *schemas.Transcri
 	// The classic model rejects a bare language code such as "en", so it is left to language identification.
 	if params.Language != nil && *params.Language != "" && (definition.EnhancedMode != nil || strings.Contains(*params.Language, "-")) {
 		definition.Locales = []string{*params.Language}
+	}
+	// Several candidate locales let Azure identify the language.
+	if locales := azureSpeechExtraList(params.ExtraParams["locales"]); len(locales) > 0 {
+		definition.Locales = locales
 	}
 	if model == azureSpeechLLMModel {
 		if params.Prompt != nil && *params.Prompt != "" {
@@ -712,4 +729,402 @@ func writeAzureSpeechTranscriptionMultipart(writer *multipart.Writer, input *sch
 		return err
 	}
 	return writer.Close()
+}
+
+// ToBifrostSpeechRequest converts an Azure REST text to speech call. The SSML goes to Azure as is;
+// the model is the first voice's suffix ("en-US-Ava:DragonHDLatestNeural" is DragonHDLatestNeural),
+// else "neural", so the price follows the voice. Routing picks the provider.
+func (r *AzureSpeechSynthesisRequest) ToBifrostSpeechRequest() *schemas.BifrostSpeechRequest {
+	request := &schemas.BifrostSpeechRequest{
+		Model:  azureSpeechNeuralModel,
+		Input:  &schemas.SpeechInput{Input: r.SSML},
+		Params: &schemas.SpeechParameters{ResponseFormat: r.OutputFormat},
+	}
+	language, voice := azureSSMLLanguageAndVoice(r.SSML)
+	if voice != "" {
+		request.Params.VoiceConfig = &schemas.SpeechVoiceInput{Voice: new(voice)}
+		if _, suffix, ok := strings.Cut(voice, ":"); ok && suffix != "" {
+			request.Model = suffix
+		}
+	}
+	if language != "" {
+		request.Params.LanguageCode = new(language)
+	}
+	return request
+}
+
+// azureSSMLLanguageAndVoice reads the xml:lang of <speak> and the name of the first <voice>.
+func azureSSMLLanguageAndVoice(ssml string) (string, string) {
+	decoder := xml.NewDecoder(strings.NewReader(ssml))
+	language := ""
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return language, ""
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		for _, attr := range start.Attr {
+			switch {
+			case start.Name.Local == "speak" && attr.Name.Local == "lang":
+				language = attr.Value
+			case start.Name.Local == "voice" && attr.Name.Local == "name":
+				return language, attr.Value
+			}
+		}
+	}
+}
+
+// AzureSpeechContentType returns the Content-Type Azure sends for a text to speech output format.
+func AzureSpeechContentType(responseFormat string) string {
+	format := azureSpeechOutputFormat(responseFormat)
+	switch {
+	case strings.HasPrefix(format, "riff-"):
+		return "audio/x-wav"
+	case strings.HasPrefix(format, "ogg-"):
+		return "audio/ogg"
+	case strings.HasPrefix(format, "webm-"):
+		return "audio/webm"
+	case strings.HasPrefix(format, "raw-"):
+		return "audio/basic"
+	case strings.HasSuffix(format, "-mp3"):
+		return "audio/mpeg"
+	case strings.HasSuffix(format, "-opus"):
+		return "audio/opus"
+	case strings.HasPrefix(format, "amr-wb-"):
+		return "audio/x-amr-wb-sh"
+	case strings.HasPrefix(format, "g722-"):
+		return "audio/g722"
+	}
+	return "application/octet-stream"
+}
+
+// ToBifrostTranscriptionRequest converts a fast transcription call. The model follows enhancedMode
+// (its model, else "llm-speech") or is "fast-transcription", and the definition fields go to the
+// params ToAzureSpeechTranscriptionDefinition reads, so Azure receives the definition as sent.
+// Only the first prompt is kept, and timestamps other than "word" are left to the model default.
+// Routing picks the provider.
+func (r *AzureSpeechFastTranscriptionRequest) ToBifrostTranscriptionRequest() *schemas.BifrostTranscriptionRequest {
+	definition := r.Definition
+	params := &schemas.TranscriptionParameters{ExtraParams: map[string]interface{}{}}
+	model := azureSpeechFastModel
+	if mode := definition.EnhancedMode; mode != nil && mode.Enabled {
+		model = azureSpeechLLMModel
+		if mode.Model != nil && *mode.Model != "" {
+			model = *mode.Model
+		}
+		if len(mode.Prompt) > 0 {
+			params.Prompt = new(mode.Prompt[0])
+		}
+		if mode.Task != nil && *mode.Task == "translate" && mode.TargetLanguage != nil {
+			params.ExtraParams["target_language"] = *mode.TargetLanguage
+		}
+		if options := mode.ModelOptions; options != nil {
+			if options.Timestamps != nil && *options.Timestamps == "word" {
+				params.ResponseFormat = new("verbose_json")
+			}
+			if options.TranscribeStyle != nil {
+				params.ExtraParams["transcribe_style"] = *options.TranscribeStyle
+			}
+		}
+	}
+	switch len(definition.Locales) {
+	case 0:
+	case 1:
+		params.Language = new(definition.Locales[0])
+	default:
+		params.ExtraParams["locales"] = definition.Locales
+	}
+	if len(definition.Channels) > 0 {
+		params.ExtraParams["channels"] = definition.Channels
+	}
+	if diarization := definition.Diarization; diarization != nil && diarization.Enabled {
+		params.ExtraParams["diarization"] = true
+		if diarization.MaxSpeakers != nil {
+			params.ExtraParams["max_speakers"] = *diarization.MaxSpeakers
+		}
+	}
+	if definition.ProfanityFilterMode != nil {
+		params.ExtraParams["profanity_filter_mode"] = *definition.ProfanityFilterMode
+	}
+	if definition.PhraseList != nil && len(definition.PhraseList.Phrases) > 0 {
+		params.ExtraParams["phrases"] = definition.PhraseList.Phrases
+	}
+	return &schemas.BifrostTranscriptionRequest{
+		Model:  model,
+		Input:  &schemas.TranscriptionInput{File: r.Audio, Filename: r.Filename},
+		Params: params,
+	}
+}
+
+// ToBifrostTranscriptionRequest converts a short audio recognition call to the "short-audio" model;
+// the mode, format, profanity option, custom endpoint and pronunciation assessment go as extra params.
+// Routing picks the provider.
+func (r *AzureSpeechShortAudioRequest) ToBifrostTranscriptionRequest() *schemas.BifrostTranscriptionRequest {
+	params := &schemas.TranscriptionParameters{ExtraParams: map[string]interface{}{"recognition_mode": r.Mode}}
+	if r.Language != "" {
+		params.Language = new(r.Language)
+	}
+	if r.Format != "" {
+		params.ExtraParams["format"] = r.Format
+	}
+	if r.Profanity != "" {
+		params.ExtraParams["profanity"] = r.Profanity
+	}
+	if r.EndpointID != "" {
+		params.ExtraParams["cid"] = r.EndpointID
+	}
+	if r.PronunciationAssessment != "" {
+		params.ExtraParams["pronunciation_assessment"] = r.PronunciationAssessment
+	}
+	return &schemas.BifrostTranscriptionRequest{
+		Model:  azureSpeechShortAudioModel,
+		Input:  &schemas.TranscriptionInput{File: r.Audio},
+		Params: params,
+	}
+}
+
+// ToBifrostShortAudioTranscriptionResponse converts a short audio result. audioSeconds is the length
+// of the audio sent, which is what Azure meters, rounded up to the second.
+func ToBifrostShortAudioTranscriptionResponse(response *AzureSpeechShortAudioResponse, audioSeconds float64) *schemas.BifrostTranscriptionResponse {
+	text := response.DisplayText
+	if text == "" && len(response.NBest) > 0 {
+		text = response.NBest[0].Display
+	}
+	billedSeconds := math.Ceil(audioSeconds)
+	result := &schemas.BifrostTranscriptionResponse{
+		Text:     text,
+		Duration: &audioSeconds,
+		Usage:    &schemas.TranscriptionUsage{Type: "duration", Seconds: &billedSeconds},
+	}
+	if text != "" {
+		result.Segments = []schemas.TranscriptionSegment{{
+			Start: float64(response.Offset) / azureSpeechTicksPerSecond,
+			End:   float64(response.Offset+response.Duration) / azureSpeechTicksPerSecond,
+			Text:  text,
+		}}
+	}
+	return result
+}
+
+// azureSpeechAudioSeconds reads the length of a WAV (PCM) or Ogg Opus clip, the two containers the
+// short audio endpoint accepts.
+func azureSpeechAudioSeconds(audio []byte) (float64, bool) {
+	switch {
+	case len(audio) >= 12 && string(audio[:4]) == "RIFF" && string(audio[8:12]) == "WAVE":
+		byteRate := 0
+		for offset := 12; offset+8 <= len(audio); {
+			size := int(binary.LittleEndian.Uint32(audio[offset+4 : offset+8]))
+			body := offset + 8
+			switch string(audio[offset : offset+4]) {
+			case "fmt ":
+				if body+12 <= len(audio) {
+					byteRate = int(binary.LittleEndian.Uint32(audio[body+8 : body+12]))
+				}
+			case "data":
+				if byteRate == 0 {
+					return 0, false
+				}
+				// A streamed WAV leaves the data size unset, so the rest of the file is the audio.
+				if size == 0 || body+size > len(audio) {
+					size = len(audio) - body
+				}
+				return float64(size) / float64(byteRate), true
+			}
+			offset = body + size + size%2
+		}
+	case len(audio) >= 4 && string(audio[:4]) == "OggS":
+		// The last page's granule position counts 48 kHz samples for Opus.
+		if last := bytes.LastIndex(audio, []byte("OggS")); last+14 <= len(audio) {
+			return float64(binary.LittleEndian.Uint64(audio[last+6:last+14])) / 48000, true
+		}
+	}
+	return 0, false
+}
+
+// speechShortAudioTranscription serves the "short-audio" model on the Azure AI Speech short audio
+// endpoint: the audio is the body and the options go in the query string.
+func (provider *AzureProvider) speechShortAudioTranscription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+	if request.Input == nil || len(request.Input.File) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("transcription file is not provided", nil)
+	}
+	authHeader, bifrostErr := provider.getAzureSpeechAuthHeaders(ctx, key)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	var params schemas.TranscriptionParameters
+	if request.Params != nil {
+		params = *request.Params
+	}
+	mode := azureSpeechDefaultRecognitionMode
+	if value, ok := schemas.SafeExtractString(params.ExtraParams["recognition_mode"]); ok && value != "" {
+		if !azureSpeechRecognitionModes[value] {
+			return nil, providerUtils.NewBifrostBadRequestError("recognition_mode must be conversation, interactive or dictation")
+		}
+		mode = value
+	}
+	language := azureSpeechDefaultLanguage
+	if params.Language != nil && *params.Language != "" {
+		language = *params.Language
+	}
+	query := url.Values{"language": {language}}
+	for _, name := range []string{"format", "profanity", "cid"} {
+		if value, ok := schemas.SafeExtractString(params.ExtraParams[name]); ok && value != "" {
+			query.Set(name, value)
+		}
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(endpoint + providerUtils.GetPathFromContext(ctx, "/stt/speech/recognition/"+mode+"/cognitiveservices/v1") + "?" + query.Encode())
+	req.Header.SetMethod(http.MethodPost)
+	// Azure reads the format from the audio itself; these name the two containers it accepts.
+	if bytes.HasPrefix(request.Input.File, []byte("OggS")) {
+		req.Header.SetContentType("audio/ogg; codecs=opus")
+	} else {
+		req.Header.SetContentType("audio/wav; codecs=audio/pcm")
+	}
+	if assessment, ok := schemas.SafeExtractString(params.ExtraParams["pronunciation_assessment"]); ok && assessment != "" {
+		req.Header.Set("Pronunciation-Assessment", assessment)
+	}
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	for k, v := range authHeader {
+		req.Header.Set(k, v)
+	}
+	req.SetBody(request.Input.File)
+
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, false, provider.sendBackRawResponse, latency)
+	}
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(ctx, parseAzureSpeechError(resp), nil, nil, false, provider.sendBackRawResponse, latency)
+	}
+
+	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), latency)
+	}
+	var azureResponse AzureSpeechShortAudioResponse
+	if err := sonic.Unmarshal(responseBody, &azureResponse); err != nil {
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), latency)
+	}
+
+	// Azure sends no billing header for short audio, so an unreadable clip falls back to where speech ended.
+	audioSeconds, ok := azureSpeechAudioSeconds(request.Input.File)
+	if !ok {
+		audioSeconds = float64(azureResponse.Offset+azureResponse.Duration) / azureSpeechTicksPerSecond
+	}
+	response := ToBifrostShortAudioTranscriptionResponse(&azureResponse, audioSeconds)
+	response.Language = new(language)
+	response.ExtraFields = schemas.BifrostResponseExtraFields{
+		Latency:                 latency.Milliseconds(),
+		ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
+	}
+	if sendBackRawResponse {
+		var rawResponse interface{}
+		if err := sonic.Unmarshal(responseBody, &rawResponse); err == nil {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+	}
+	return response, nil
+}
+
+// ToAzureSpeechTranscriptionResponse renders a transcription in the fast transcription shape, for a
+// result that Azure AI Speech did not produce.
+func ToAzureSpeechTranscriptionResponse(response *schemas.BifrostTranscriptionResponse) *AzureSpeechTranscriptionResponse {
+	result := &AzureSpeechTranscriptionResponse{
+		CombinedPhrases: []AzureSpeechCombinedPhrase{{Text: response.Text}},
+		Phrases:         []AzureSpeechPhrase{},
+	}
+	if response.Duration != nil {
+		result.DurationMilliseconds = azureSpeechMilliseconds(*response.Duration)
+	}
+	locale := ""
+	if response.Language != nil {
+		locale = *response.Language
+	}
+	addPhrase := func(start, end float64, text string, speaker *int) {
+		phrase := AzureSpeechPhrase{
+			Speaker:              speaker,
+			OffsetMilliseconds:   azureSpeechMilliseconds(start),
+			DurationMilliseconds: azureSpeechMilliseconds(end - start),
+			Text:                 text,
+			Locale:               locale,
+		}
+		for _, word := range response.Words {
+			if word.Start >= start && word.Start < end {
+				phrase.Words = append(phrase.Words, AzureSpeechWord{
+					Text:                 word.Word,
+					OffsetMilliseconds:   azureSpeechMilliseconds(word.Start),
+					DurationMilliseconds: azureSpeechMilliseconds(word.End - word.Start),
+				})
+			}
+		}
+		result.Phrases = append(result.Phrases, phrase)
+	}
+	for _, segment := range response.Segments {
+		addPhrase(segment.Start, segment.End, segment.Text, nil)
+	}
+	for _, segment := range response.DiarizedSegments {
+		var speaker *int
+		if n, err := strconv.Atoi(segment.Speaker); err == nil {
+			speaker = &n
+		}
+		addPhrase(segment.Start, segment.End, segment.Text, speaker)
+	}
+	return result
+}
+
+func azureSpeechMilliseconds(seconds float64) int64 {
+	return int64(math.Round(seconds * 1000))
+}
+
+// ToAzureSpeechShortAudioResponse renders a transcription in the short audio shape, for a result that
+// Azure AI Speech did not produce. NBest carries only the display text.
+func ToAzureSpeechShortAudioResponse(response *schemas.BifrostTranscriptionResponse) *AzureSpeechShortAudioResponse {
+	result := &AzureSpeechShortAudioResponse{
+		RecognitionStatus: "Success",
+		DisplayText:       response.Text,
+		NBest:             []AzureSpeechShortAudioNBest{{Display: response.Text}},
+	}
+	switch {
+	case len(response.Segments) > 0:
+		first, last := response.Segments[0], response.Segments[len(response.Segments)-1]
+		result.Offset = int64(math.Round(first.Start * azureSpeechTicksPerSecond))
+		result.Duration = int64(math.Round((last.End - first.Start) * azureSpeechTicksPerSecond))
+	case response.Duration != nil:
+		result.Duration = int64(math.Round(*response.Duration * azureSpeechTicksPerSecond))
+	}
+	return result
+}
+
+// ToAzureSpeechError renders an error in the {code, message} shape fast transcription answers with.
+func ToAzureSpeechError(bifrostErr *schemas.BifrostError) *AzureSpeechError {
+	if bifrostErr == nil {
+		return nil
+	}
+	result := &AzureSpeechError{}
+	if bifrostErr.Error != nil {
+		result.Message = bifrostErr.Error.Message
+		if bifrostErr.Error.Code != nil {
+			result.Code = *bifrostErr.Error.Code
+		} else if bifrostErr.Error.Type != nil {
+			result.Code = *bifrostErr.Error.Type
+		}
+	}
+	return result
 }

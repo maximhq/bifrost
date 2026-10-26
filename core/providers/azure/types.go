@@ -117,3 +117,45 @@ type AzureSpeechErrorBody struct {
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 }
+
+// AzureSpeechSynthesisRequest is a text to speech call in Azure's REST shape: an SSML body and the
+// X-Microsoft-OutputFormat header.
+type AzureSpeechSynthesisRequest struct {
+	SSML         string
+	OutputFormat string
+}
+
+// AzureSpeechFastTranscriptionRequest is a fast transcription call: the "audio" and "definition" form parts.
+type AzureSpeechFastTranscriptionRequest struct {
+	Audio      []byte
+	Filename   string
+	Definition AzureSpeechTranscriptionDefinition
+}
+
+// AzureSpeechShortAudioRequest is a short audio recognition call: the audio body plus the URL and header options.
+type AzureSpeechShortAudioRequest struct {
+	Audio                   []byte
+	Mode                    string // conversation, interactive or dictation
+	Language                string
+	Format                  string // simple or detailed
+	Profanity               string // masked, removed or raw
+	EndpointID              string // cid, a custom speech endpoint
+	PronunciationAssessment string // Pronunciation-Assessment header, base64 JSON
+}
+
+// AzureSpeechShortAudioResponse is a short audio recognition result; Offset and Duration are in 100ns ticks.
+type AzureSpeechShortAudioResponse struct {
+	RecognitionStatus string                       `json:"RecognitionStatus"`
+	Offset            int64                        `json:"Offset"`
+	Duration          int64                        `json:"Duration"`
+	DisplayText       string                       `json:"DisplayText"`
+	NBest             []AzureSpeechShortAudioNBest `json:"NBest,omitempty"`
+}
+
+type AzureSpeechShortAudioNBest struct {
+	Confidence float64 `json:"Confidence,omitempty"`
+	Lexical    string  `json:"Lexical,omitempty"`
+	ITN        string  `json:"ITN,omitempty"`
+	MaskedITN  string  `json:"MaskedITN,omitempty"`
+	Display    string  `json:"Display"`
+}

@@ -60,11 +60,15 @@ func NewWSRealtimeHandler(client *bifrost.Bifrost, config *lib.Config, pool *bfw
 	}
 }
 
-// RegisterRoutes registers the Realtime WebSocket endpoint at the base path and OpenAI integration paths.
+// RegisterRoutes registers the Realtime WebSocket endpoint at the base path and the OpenAI and Azure integration paths.
 func (h *WSRealtimeHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	handler := lib.ChainMiddlewares(h.handleUpgrade, middlewares...)
 	r.GET("/v1/realtime", handler)
 	for _, path := range integrations.OpenAIRealtimePaths("/openai") {
+		r.GET(path, handler)
+	}
+	// The JavaScript Voice Live SDK replaces the endpoint's path with /voice-live/realtime, so it is also served at the root.
+	for _, path := range append(integrations.AzureRealtimePaths("/azure"), azureVoiceLiveRootPath) {
 		r.GET(path, handler)
 	}
 }
@@ -95,6 +99,11 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 			auth.authorization = "Bearer " + token
 		}
 	}
+	if auth.authorization == "" {
+		if key := extractRealtimeAzureAPIKey(ctx, path); key != "" {
+			auth.authorization = "Bearer " + key
+		}
+	}
 
 	// The pre-request context is built first because the admission gate below reads the
 	// credentials it records. Realtime bypasses handleRequest (per-turn pipelines instead), so
@@ -118,8 +127,8 @@ func (h *WSRealtimeHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	preReqCtx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.RealtimeRequest)
-	if realtimeDefaultProviderForPath(path) == schemas.OpenAI {
-		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, "openai")
+	if integrationType := realtimeIntegrationTypeForPath(path); integrationType != "" {
+		preReqCtx.SetValue(schemas.BifrostContextKeyIntegrationType, integrationType)
 	}
 
 	// Admission check, before the upgrade, before any routing work, and before the target is
@@ -1061,6 +1070,18 @@ func resolveRealtimeTarget(_ *fasthttp.RequestCtx, _ *lib.Config, path, modelPar
 func realtimeDefaultProviderForPath(path string) schemas.ModelProvider {
 	if strings.HasPrefix(path, "/openai/") {
 		return schemas.OpenAI
+	}
+	return ""
+}
+
+// realtimeIntegrationTypeForPath names the integration a realtime path belongs to, which the model catalog
+// uses to prefer that integration's provider for a model named without one.
+func realtimeIntegrationTypeForPath(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/openai/"):
+		return "openai"
+	case strings.HasPrefix(path, "/azure/") || path == azureVoiceLiveRootPath:
+		return "azure"
 	}
 	return ""
 }
