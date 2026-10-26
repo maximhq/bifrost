@@ -11240,7 +11240,8 @@ func migrationDropAzureAPIVersionColumn(ctx context.Context, db *gorm.DB, logger
 // inline `oauth_config` block declared in config.json for shared-OAuth MCP
 // clients (auth_type='oauth') that have not yet been authorized by an admin.
 // The column is read at admin-click time by the initiate-verification
-// endpoint and cleared by the OAuth callback on status='authorized'.
+// endpoint and cleared by the complete-oauth endpoint once authorization
+// succeeds.
 func migrationAddMCPClientPendingOAuthConfigJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_mcp_client_pending_oauth_config_json_column"
 	logger.Info("[configstore] starting migration %s", migrationName)
