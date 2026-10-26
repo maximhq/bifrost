@@ -9869,7 +9869,7 @@ func ValidateGenericKeys(cfg configstore.ProviderConfig) error {
 	}
 	for _, key := range cfg.Keys {
 		if !key.Value.IsSet() {
-			return fmt.Errorf("key %q has no value, which generic auth type %q injects on every request", key.Name, cfg.CustomProviderConfig.GenericConfig.Auth.Type)
+			return fmt.Errorf("key %q has no value, which generic auth type %q injects on every request", key.Name, genericAuthType(cfg.CustomProviderConfig))
 		}
 	}
 	return nil
@@ -9881,11 +9881,16 @@ func GenericKeyValueRequired(cpc *schemas.CustomProviderConfig) bool {
 	if cpc == nil || cpc.BaseProviderType != schemas.Generic {
 		return false
 	}
-	authType := schemas.GenericAuthBearer
-	if cpc.GenericConfig != nil && cpc.GenericConfig.Auth.Type != "" {
-		authType = cpc.GenericConfig.Auth.Type
+	return genericAuthType(cpc) != schemas.GenericAuthNone
+}
+
+// genericAuthType is the auth type a generic provider runs with: the configured one, or bearer
+// when generic_config or its auth type is absent (the relay's own default).
+func genericAuthType(cpc *schemas.CustomProviderConfig) schemas.GenericAuthType {
+	if cpc != nil && cpc.GenericConfig != nil && cpc.GenericConfig.Auth.Type != "" {
+		return cpc.GenericConfig.Auth.Type
 	}
-	return authType != schemas.GenericAuthNone
+	return schemas.GenericAuthBearer
 }
 
 // PromptCacheTTLExtended is the only explicit prompt-cache TTL the gateway accepts.

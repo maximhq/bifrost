@@ -26004,6 +26004,10 @@ func TestValidateGenericKeys(t *testing.T) {
 	err := ValidateGenericKeys(generic(schemas.GenericAuthBearer, schemas.Key{Name: "k1"}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `key "k1" has no value`)
+	// No generic_config at all means bearer, and the refusal must say so rather than panic.
+	err = ValidateGenericKeys(configstore.ProviderConfig{Keys: []schemas.Key{{Name: "k1"}}, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `auth type "bearer"`)
 	require.Error(t, ValidateGenericKeys(generic(schemas.GenericAuthHeader, schemas.Key{Name: "k1", Value: *schemas.NewSecretVar("")})))
 	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthBearer, schemas.Key{Name: "k1", Value: *schemas.NewSecretVar("env.TAVILY_KEY")})), "an env reference is a value")
 	require.NoError(t, ValidateGenericKeys(generic(schemas.GenericAuthBearer, schemas.Key{Name: "k1", Value: *schemas.NewSecretVar("tvly-x")})))
