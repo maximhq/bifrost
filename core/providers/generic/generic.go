@@ -77,6 +77,10 @@ var _ schemas.Provider = (*GenericProvider)(nil)
 // NewGenericProvider builds a relay for config. base_url is required: it is the only thing that
 // says where requests go. Routes and globs are compiled here, once per provider (re)build.
 func NewGenericProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*GenericProvider, error) {
+	// generic is a base type for custom providers, never a provider of its own.
+	if config.CustomProviderConfig == nil || config.CustomProviderConfig.BaseProviderType != schemas.Generic {
+		return nil, errors.New("generic is a base type for custom providers; set custom_provider_config.base_provider_type")
+	}
 	config.CheckAndSetDefaults()
 	if strings.TrimSpace(config.NetworkConfig.BaseURL) == "" {
 		return nil, errors.New("generic provider requires network_config.base_url")

@@ -536,6 +536,19 @@ func TestNewGenericProviderRequiresBaseURL(t *testing.T) {
 	require.Error(t, err, "an invalid relay config is refused at construction")
 }
 
+// generic is a base type only: a provider config that does not name it as the custom provider's
+// base type is refused by the constructor, like every provider validates its own config.
+func TestNewGenericProviderRequiresGenericBaseType(t *testing.T) {
+	network := schemas.NetworkConfig{BaseURL: "https://api.example.com"}
+	_, err := NewGenericProvider(&schemas.ProviderConfig{NetworkConfig: network}, &testLogger{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "base type")
+
+	_, err = NewGenericProvider(&schemas.ProviderConfig{NetworkConfig: network, CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}}, &testLogger{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "base type")
+}
+
 // An operator's extra header is the operator's: a caller sending the same name does not replace
 // it, while any other caller header is forwarded.
 func TestGenericOperatorHeadersWinOverCaller(t *testing.T) {
