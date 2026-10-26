@@ -158,6 +158,10 @@ func TestGetConnectTools_OnlyCallersWhoCanReachTheClientSeeIt(t *testing.T) {
 		{name: "session-only caller", ctx: func() context.Context { return callerContext(schemas.BifrostContextKeyMCPSessionID, "sess-1") }},
 		{name: "anonymous caller", ctx: func() context.Context { return context.Background() }},
 		{name: "disabled client", ctx: func() context.Context { return userContext("alice") }, edit: func(s *schemas.MCPClientState) { s.State = schemas.MCPConnectionStateDisabled }},
+		{name: "client awaiting admin verification", ctx: func() context.Context { return userContext("alice") }, edit: func(s *schemas.MCPClientState) {
+			s.State = schemas.MCPConnectionStatePendingVerification
+			s.ExecutionConfig.PendingVerification = true
+		}},
 		{name: "client executing no tool", ctx: func() context.Context { return userContext("alice") }, edit: func(s *schemas.MCPClientState) { s.ExecutionConfig.ToolsToExecute = []string{} }},
 		{name: "client left out of the request's clients", ctx: func() context.Context {
 			ctx := userContext("alice")
@@ -403,6 +407,79 @@ func TestConnect_IsBifrostsWhenAPolicyPluginNamesACallerWithoutADiscovery(t *tes
 	assert.Equal(t, "Connected to notes: 1 tools are available from your next turn.", *result.Content.ContentStr)
 	assert.True(t, pipeline.marked["notes-connect"])
 	assert.NotNil(t, perUser.GetDiscovery(userContext("alice"), notes))
+}
+
+// awaitVerification puts the notes client back to awaiting its admin verification, as turning
+// per_user_discovery off and on again does.
+func awaitVerification(m *MCPManager, notes *schemas.MCPClientConfig, awaiting bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	notes.PendingVerification = awaiting
+	if awaiting {
+		m.clientMap[notes.ID].State = schemas.MCPConnectionStatePendingVerification
+	} else {
+		m.clientMap[notes.ID].State = schemas.MCPConnectionStateHealthy
+	}
+}
+
+func TestConnect_WaitsForTheClientsAdminVerification(t *testing.T) {
+	upstream, rec := buildConnectUpstream(t, "search")
+	creds := &connectCredStore{tokens: map[string]string{"alice": "alice-token"}}
+	m, perUser, notes := newConnectTestManager(t, creds, upstream.URL, schemas.MCPConfig{})
+	awaitVerification(m, notes, true)
+
+	assert.Empty(t, m.GetConnectTools(userContext("alice")), "connect is not offered")
+	_, bErr := m.ExecuteChatTool(userContext("alice"), connectToolCall("notes-connect"))
+	require.NotNil(t, bErr, "nor can it be called")
+	assert.Nil(t, perUser.GetDiscovery(userContext("alice"), notes))
+	assert.Empty(t, rec.headerValues("Authorization"), "nothing is dialed with the caller's credential")
+
+	awaitVerification(m, notes, false)
+	assert.Equal(t, []string{"notes-connect"}, toolNames(m.GetConnectTools(userContext("alice"))), "verified again, connect is back")
+}
+
+func TestPerUserTools_WaitForTheClientsAdminVerification(t *testing.T) {
+	upstream, _ := buildConnectUpstream(t, "search")
+	creds := &connectCredStore{tokens: map[string]string{"alice": "alice-token"}}
+	m, perUser, notes := newConnectTestManager(t, creds, upstream.URL, schemas.MCPConfig{})
+	require.NoError(t, perUser.SetDiscovery(userContext("alice"), notes, discoveryOf("notes", "search")))
+	awaitVerification(m, notes, true)
+
+	assert.NotContains(t, toolNames(m.GetAvailableTools(userContext("alice"))), "notes-search", "a discovery the caller already holds is not offered")
+	assert.NotContains(t, m.GetToolPerClient(userContext("alice")), "notes")
+	_, bErr := m.ExecuteChatTool(userContext("alice"), connectToolCall("notes-search"))
+	require.NotNil(t, bErr, "nor called")
+	assert.Contains(t, bErr.GetErrorString(), "admin verification")
+
+	awaitVerification(m, notes, false)
+	assert.Contains(t, toolNames(m.GetAvailableTools(userContext("alice"))), "notes-search")
+	result, bErr := m.ExecuteChatTool(userContext("alice"), connectToolCall("notes-search"))
+	require.Nil(t, bErr)
+	assert.Equal(t, "upstream search", *result.Content.ContentStr)
+}
+
+func TestPerUserResourcesAndPrompts_WaitForTheClientsAdminVerification(t *testing.T) {
+	m, perUser, notes := newConnectTestManager(t, &connectCredStore{}, "http://upstream.invalid", schemas.MCPConfig{})
+	discovery := discoveryOf("notes", "search")
+	discovery.Prompts = []mcpgo.Prompt{mcpgo.NewPrompt("notes-review")}
+	discovery.Resources = []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")}
+	discovery.ResourceTemplates = []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("notes://{id}", "note")}
+	require.NoError(t, perUser.SetDiscovery(userContext("alice"), notes, discovery))
+	awaitVerification(m, notes, true)
+
+	ctx := userContext("alice")
+	assert.Empty(t, m.GetAvailablePrompts(ctx), "a discovery the caller already holds is not listed")
+	assert.Empty(t, m.GetAvailableResources(ctx))
+	assert.Empty(t, m.GetAvailableResourceTemplates(ctx))
+	_, bErr := m.GetPrompt(ctx, "notes-review", nil)
+	assert.NotNil(t, bErr, "nor read")
+	_, bErr = m.ReadResource(ctx, "file:///handbook.md")
+	assert.NotNil(t, bErr)
+
+	awaitVerification(m, notes, false)
+	assert.Len(t, m.GetAvailablePrompts(ctx), 1)
+	assert.Len(t, m.GetAvailableResources(ctx), 1)
+	assert.Len(t, m.GetAvailableResourceTemplates(ctx), 1)
 }
 
 func TestConnect_RetargetedByAPluginDoesNotRun(t *testing.T) {

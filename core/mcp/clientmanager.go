@@ -1914,6 +1914,14 @@ func awaitsAdminVerification(config *schemas.MCPClientConfig) bool {
 	return config != nil && config.PendingVerification
 }
 
+// withheldFromCallers reports whether no caller may see or call a client's
+// tools or its connect tool: the client is disabled, or it keeps discoveries
+// per caller and awaits its admin verification. A caller's own credential and
+// discovery do not stand in for that verification, so they wait for it too.
+func withheldFromCallers(state schemas.MCPConnectionState, config *schemas.MCPClientConfig) bool {
+	return state == schemas.MCPConnectionStateDisabled || (perUserDiscoveryOn(config) && awaitsAdminVerification(config))
+}
+
 // startPerCallChecker starts the periodic checker that keeps a per-call
 // client's tools current by discovering with its admin credential. A client
 // with per_user_discovery on keeps no admin credential and gets none: each
@@ -2199,7 +2207,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 	// released; connectToMCPClient acquires m.mu itself, so calling it while
 	// still holding the lock here would deadlock.
 	var newConfig *schemas.MCPClientConfig
-	var becamePerCall, becameSticky, rebuildOpenAPI, wasDisabled, renegotiate bool
+	var becamePerCall, becameSticky, rebuildOpenAPI, wasDisabled, renegotiate, perUserDiscoveryChanged bool
 	var fireDiscovery func()
 	var clientName string
 	startPerCallChecker := false
@@ -2261,10 +2269,31 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		// the same request re-ran verification) and they have to be carried forward.
 		// They are what a per-call client's tools are restored from, hence the rebinding: carried
 		// forward under the old name, a rename followed by a restore would reinstall
-		// tools the rebound ToolMap below no longer has. The resources, templates and
-		// prompts belong to the same discovery and travel with it.
+		// tools the rebound ToolMap below no longer has.
+		//
+		// Turning per_user_discovery on or off is the exception: the store cleared
+		// the stored tools and reset the record of the admin step along with it,
+		// so the update carries both, read back from the store, and nothing is
+		// carried forward. An update that leaves the flag unset keeps the stored
+		// value, the same rule the store applies.
+		perUserDiscovery := updatedConfig.PerUserDiscovery
+		if perUserDiscovery == nil {
+			perUserDiscovery = client.ExecutionConfig.PerUserDiscovery
+		}
+		// Held to AddClient's rule on the config the update leaves, whose auth
+		// and connection types are the client's own.
+		if err := ValidatePerUserDiscovery(&schemas.MCPClientConfig{Name: updatedConfig.Name, AuthType: oldAuthType, ConnectionType: client.ExecutionConfig.ConnectionType, PerUserDiscovery: perUserDiscovery}); err != nil {
+			return fmt.Errorf("invalid MCP client configuration: %w", err)
+		}
+		wasPerUserDiscovery := perUserDiscoveryOn(client.ExecutionConfig)
+		perUserDiscoveryChanged = wasPerUserDiscovery != (perUserDiscovery != nil && *perUserDiscovery)
+		pendingVerification := client.ExecutionConfig.PendingVerification
+		if perUserDiscoveryChanged {
+			pendingVerification = updatedConfig.PendingVerification
+		}
+		// The resources, templates and prompts belong to the same discovery and travel with it.
 		discovered := updatedConfig
-		if updatedConfig.DiscoveredTools == nil {
+		if updatedConfig.DiscoveredTools == nil && !perUserDiscoveryChanged {
 			discovered = client.ExecutionConfig
 		}
 		discoveredTools := discovered.DiscoveredTools
@@ -2294,13 +2323,6 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			if openAPIConfigChanged(client.ExecutionConfig.OpenAPIConfig, openAPIConfig) || updatedConfig.Name != client.ExecutionConfig.Name {
 				rebuildOpenAPI = true
 			}
-		}
-
-		// An update that leaves per_user_discovery unset keeps the stored value,
-		// the same rule the store applies.
-		perUserDiscovery := updatedConfig.PerUserDiscovery
-		if perUserDiscovery == nil {
-			perUserDiscovery = client.ExecutionConfig.PerUserDiscovery
 		}
 
 		// Create a new config struct (immutable pattern) to avoid race conditions
@@ -2337,10 +2359,11 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			IsPingAvailable:        updatedConfig.IsPingAvailable,
 			NeedsSessionStickiness: updatedConfig.NeedsSessionStickiness,
 			PerUserDiscovery:       perUserDiscovery,
-			// Changed only by the admin step itself, never by an update: an edit
-			// arrives without it, and taking that as "verified" un-parked a client
-			// still waiting for its step.
-			PendingVerification:   client.ExecutionConfig.PendingVerification,
+			// Changed by the admin step itself and by turning per_user_discovery
+			// on or off (see above), never by an ordinary edit: an edit arrives
+			// without it, and taking that as "verified" un-parked a client still
+			// waiting for its step.
+			PendingVerification:   pendingVerification,
 			ToolSyncInterval:      updatedConfig.ToolSyncInterval,
 			MaxProtocolVersion:    updatedConfig.MaxProtocolVersion,
 			ToolExecutionTimeout:  updatedConfig.ToolExecutionTimeout,
@@ -2361,6 +2384,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 			rebuildOpenAPI = true
 		}
 		wasDisabled = client.State == schemas.MCPConnectionStateDisabled
+		oldConfig := client.ExecutionConfig
 
 		// A changed protocol cap renegotiates: per-call clients forget their cached version, a
 		// shared connection the change affects is redialed below.
@@ -2372,6 +2396,28 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		// Atomically replace the config pointer
 		client.ExecutionConfig = newConfig
 		clientName = updatedConfig.Name
+		client.Name = updatedConfig.Name
+
+		if perUserDiscoveryChanged {
+			// The shared tools were discovered with the admin credential, which a
+			// client with the flag on does not keep, and a client turning it off
+			// has none yet. A check already in flight belongs to the old setting:
+			// bumping ConnGeneration drops its result.
+			if !wasPerUserDiscovery {
+				m.discoveryStore.DeleteDiscovery(m.ctx, oldConfig)
+			}
+			client.ConnGeneration++
+			if client.State != schemas.MCPConnectionStateDisabled {
+				if newConfig.PendingVerification {
+					client.State = schemas.MCPConnectionStatePendingVerification
+				} else {
+					markClientHealthy(client)
+				}
+			}
+			// Turning the flag on withdraws the shared tools the client had published.
+			fireDiscovery = m.discoveryChanged(client, id)
+			return nil
+		}
 
 		// Rebind ToolMap keys (and inner Function.Name) to the current client name.
 		oldDiscovery := m.discoveryStore.GetDiscovery(m.ctx, newConfig)
@@ -2392,10 +2438,8 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		newDiscovery.Prompts = rebindPromptsToClientName(newDiscovery.Prompts, updatedConfig.Name)
 		m.discoveryStore.SetDiscovery(m.ctx, newConfig, newDiscovery)
 
-		// Also update the client Name field
-		client.Name = updatedConfig.Name
-		// Republish only a discovery that exists: persisting an empty one would mark an unverified
-		// per_user_headers or token_exchange client as verified.
+		// Re-sync only a discovery that exists: a per_user_headers or token_exchange client never
+		// verified has none to publish.
 		if client.LastDiscoveryHash != "" {
 			fireDiscovery = m.discoveryChanged(client, id)
 		}
@@ -2458,7 +2502,14 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		fireDiscovery()
 	}
 
-	if becamePerCall {
+	if perUserDiscoveryChanged {
+		// A client with the flag on keeps no admin credential to check with, and
+		// one parked for its admin step has nothing to check until it passes.
+		m.checkerManager.StopChecking(id)
+		if !wasDisabled && !newConfig.PendingVerification {
+			m.startPerCallChecker(newConfig)
+		}
+	} else if becamePerCall {
 		if startPerCallChecker {
 			// The persistent connection is gone, but discovery must keep
 			// running: a per-call client relies on the checker's ephemeral
