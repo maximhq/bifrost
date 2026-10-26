@@ -317,10 +317,11 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 	// glob is written; the form value only ever holds the non-empty lines.
 	const [streamingPathsText, setStreamingPathsText] = useState(() => (genericConfig?.streaming?.paths ?? []).join("\n"));
 
-	// A refused save must show its reason: the routes list is collapsed by default, so a route
-	// error inside it opens the list instead of failing silently.
+	// A refused save must show its reason: the routes list and the advanced section are collapsed
+	// by default, so an error inside either opens it instead of failing silently.
 	const onInvalid = (errors: FieldErrors<FormValues>) => {
 		if (errors.routes) setRoutesOpen(true);
+		if (errors.streaming) setAdvancedOpen(true);
 	};
 
 	const onSubmit = (values: FormValues) => {
@@ -561,8 +562,8 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 				<p className="text-muted-foreground text-sm">
 					Requests to <code className="font-mono text-xs">/passthrough/{provider.name}/&lt;path&gt;</code> are sent on to{" "}
 					<code className="font-mono text-xs">{provider.network_config?.base_url || "the configured base URL"}</code> unchanged, with your
-					key added. Every call is logged; calls on billable routes are counted and charged. Only POST calls are billable unless a route
-					below says otherwise.
+					key added (unless the auth type is none). Every call is logged; calls on billable routes are counted and charged. Only POST calls
+					are billable unless a route below says otherwise.
 				</p>
 
 				{/* Auth */}
@@ -575,7 +576,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 							<FormItem>
 								{fieldLabel(
 									"Auth type",
-									"How the selected key is attached to every request. Any credential the caller sends is removed first, so only your key reaches the API.",
+									"How the selected key is attached to every request. The caller's Authorization header, and its copy of this header or parameter, are dropped so only your key reaches the API.",
 								)}
 								<Select value={field.value} onValueChange={field.onChange} disabled={disabled}>
 									<FormControl>
