@@ -5908,6 +5908,364 @@ const INF05 = folder("INF-05 Bedrock route", `Setup: ${ALPHA_GREET_LLM}; the bed
   alphaGreetTeardown("INF-05"),
 ]);
 
+// ================================================================ client admin refusals, validation and lifecycle
+
+// BOOT_TEXT names a client the runner's config.json declares; auth types that need an admin step boot it pending verification.
+const BOOT_TEXT = (clientId, kind, server) => `client ${clientId}, declared in config.json as ${kind} client on fleet server ${server} and still pending verification`;
+const clientPost = (id, title, clientId, verb, asserts, opts = {}) => request(id, title, "POST", `/api/mcp/client/${clientId}/${verb}`, { asserts, ...opts });
+const clientPut = (id, title, clientId, body, asserts) => request(id, title, "PUT", `/api/mcp/client/${clientId}`, { body, asserts });
+const listClients = (id, title, query, asserts) => request(id, title, "GET", `/api/mcp/clients?${query}`, { asserts: [A.status(200), ...asserts] });
+// clientIdsAre asserts the listed client ids, in any order.
+const clientIdsAre = (ids) => A.custom(`client ids are ${lit(ids)}`, [`pm.expect((pm.response.json().clients || []).map(function (c) { return c.config.client_id; }).sort(), 'body: ' + pm.response.text()).to.eql(${lit([...ids].sort())});`]);
+const configField = (field, v) => A.custom(`${field} is ${lit(v)}`, [`pm.expect(pm.response.json().clients[0].config[${lit(field)}], 'body: ' + pm.response.text()).to.eql(${lit(v)});`]);
+
+const ADM30 = folder("ADM-30 reauthorize and reregister refusals", `Setup: admin credentials; client adm30-n, auth none, per call on alpha; ${BOOT_TEXT("adm30-p", "an oauth", "adm30")}.`, [
+  ...freshServer("ADM-30", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-30", httpClient("adm30-n", "adm30_n", "alpha"), "setup: create the none client"),
+  ...["reauthorize", "reregister"].flatMap((verb) => [
+    clientPost("ADM-30", `${verb} the none client`, "adm30-n", verb, [A.status(400), A.msgEquals("reauthorize only applies to OAuth-based clients (oauth, per_user_oauth), got \"none\"")]),
+    clientPost("ADM-30", `${verb} the pending client`, "adm30-p", verb, [A.status(400), A.msgContains("has not completed initial OAuth authorization yet; use initiate-verification instead")]),
+    clientPost("ADM-30", `${verb} an unknown id`, "adm30-nosuch", verb, [A.status(404), A.msgEquals("MCP client 'adm30-nosuch' not found")]),
+  ]),
+  deleteClient("ADM-30", "adm30-n"),
+]);
+
+// initiateSaves keeps the oauth_config_id an initiate-verification answer carries in v.
+const initiateSaves = (v) => A.custom("status pending_oauth, an oauth_config_id and no flow_id", [
+  "var b = pm.response.json();",
+  "pm.expect(b.status, 'body: ' + pm.response.text()).to.equal('pending_oauth');",
+  "pm.expect(b.oauth_config_id).to.be.a('string').and.not.equal('');",
+  "pm.expect(b).to.not.have.property('flow_id');",
+  ...(v ? [`pm.collectionVariables.set(${lit(v)}, b.oauth_config_id);`] : []),
+]);
+const ADM35 = folder("ADM-35 initiate-verification for a config.json OAuth client", `Setup: admin credentials; ${OAUTH_SERVER_TEXT} (adm35); ${BOOT_TEXT("adm35-p", "an oauth", "adm35")}; client adm35-n, auth none on alpha; an OAuth client adm35-o created through the API on adm35 and completed.`, [
+  ...allowlistOn("ADM-35"),
+  ...asServer("ADM-35", "adm35"),
+  clientPost("ADM-35", "initiate-verification on the config.json client", "adm35-p", "initiate-verification", [A.status(200), initiateSaves("adm35_oc1")]),
+  getClient("ADM-35", "adm35-p", "it holds that oauth_config_id and is still pending_verification", [clientState("pending_verification"), A.custom("oauth_config_id is the one returned", ["pm.expect(pm.response.json().clients[0].config.oauth_config_id).to.equal(pm.collectionVariables.get('adm35_oc1'));"])]),
+  clientPost("ADM-35", "initiate-verification again", "adm35-p", "initiate-verification", [A.status(200), initiateSaves(), A.custom("a new oauth_config_id", ["pm.expect(pm.response.json().oauth_config_id).to.not.equal(pm.collectionVariables.get('adm35_oc1'));"])]),
+  ...freshServer("ADM-35", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-35", httpClient("adm35-n", "adm35_n", "alpha"), "setup: create the none client"),
+  clientPost("ADM-35", "initiate-verification on the none client", "adm35-n", "initiate-verification", [A.status(400)]),
+  ...connectOAuth("ADM-35", oauthBody("adm35-o", "adm35_o", "adm35"), "adm35o", null, "the API-created OAuth client"),
+  clientPost("ADM-35", "initiate-verification on the API-created OAuth client", "adm35-o", "initiate-verification", [A.status(400), A.msgEquals("MCP client has no pending OAuth bootstrap config to initiate from")]),
+  deleteClient("ADM-35", "adm35-o"),
+  deleteClient("ADM-35", "adm35-n"),
+  deleteClient("ADM-35", "adm35-p"),
+  restoreConfig("ADM-35"),
+]);
+
+const ADM37 = folder("ADM-37 oauth_config rotation guards", `Setup: admin credentials; ${OAUTH_SERVER_TEXT} (adm37); a shared OAuth client adm37-o on adm37, completed; client adm37-n, auth none on alpha; ${BOOT_TEXT("adm37-p", "an oauth", "adm37")}.`, [
+  ...allowlistOn("ADM-37"),
+  ...asServer("ADM-37", "adm37"),
+  ...connectOAuth("ADM-37", oauthBody("adm37-o", "adm37_o", "adm37"), "adm37o", null, "the shared OAuth client"),
+  ...freshServer("ADM-37", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-37", httpClient("adm37-n", "adm37_n", "alpha"), "setup: create the none client"),
+  clientPut("ADM-37", "oauth_config on the none client", "adm37-n", { oauth_config: { client_id: "adm37-new" } }, [A.status(400), A.msgEquals("oauth_config can only be updated for MCP clients using auth_type 'oauth' or 'per_user_oauth'")]),
+  clientPut("ADM-37", "oauth_config on the pending client", "adm37-p", { oauth_config: { client_id: "adm37-new" } }, [A.status(409), A.msgContains("cannot be updated before this MCP client's OAuth verification is completed")]),
+  clientPut("ADM-37", "token_url change without client_secret", "adm37-o", { oauth_config: { token_url: "http://127.0.0.1:9/adm37/token" } }, [A.status(400), A.msgContains("client_secret must be resent explicitly")]),
+  clientPut("ADM-37", "rotation plus disabled true", "adm37-o", { oauth_config: { client_id: "adm37-new" }, disabled: true }, [A.status(400), A.msgContains("cannot be rotated while disabling")]),
+  deleteClient("ADM-37", "adm37-o"),
+  deleteClient("ADM-37", "adm37-n"),
+  restoreConfig("ADM-37"),
+]);
+
+const locationHas = (s) => A.custom(`Location contains ${lit(s)}`, ["var loc = pm.response.headers.get('Location') || '';", `pm.expect(loc, 'Location: ' + loc).to.include(${lit(s)});`]);
+const callback = (id, title, query, asserts) => request(id, title, "GET", `/api/oauth/callback?${query}`, { noAuth: true, noRedirect: true, noCookies: true, asserts });
+const ADM41 = folder("ADM-41 Callback edge cases", `Setup: no credential on the callbacks; ${OAUTH_SERVER_TEXT} (adm41) and a shared OAuth client on it taken through consent and its callback.`, [
+  callback("ADM-41", "bogus state and code", "state=adm41-bogus&code=adm41-bogus", [A.status(302), locationEnds("oauth-callback?status=failed&error=OAuth+authentication+failed.")]),
+  callback("ADM-41", "an error with no state", "error=access_denied", [A.status(302), locationHas("/workspace/mcp-sessions/auth-failed?")]),
+  ...allowlistOn("ADM-41"),
+  ...asServer("ADM-41", "adm41"),
+  createOAuth("ADM-41", "setup: create the shared OAuth client", oauthBody("adm41-o", "adm41_o", "adm41"), "adm41o"),
+  consentAs("ADM-41", "setup: consent", "adm41o", null),
+  followCallback("ADM-41", "setup: follow the callback", "adm41o", callbackSuccess()),
+  followCallback("ADM-41", "replay the same callback", "adm41o", [A.status(302), locationHas("status=failed")]),
+  completeOAuth("ADM-41", "teardown: complete the client", "adm41o", [A.status(200)]),
+  deleteClient("ADM-41", "adm41-o"),
+  restoreConfig("ADM-41"),
+]);
+
+const ADM43 = folder("ADM-43 Reconnect refusals", `Setup: admin credentials; client adm43-c, auth none, per call on alpha; client adm43-s, sticky on alpha, disabled; ${BOOT_TEXT("adm43-p", "a sticky oauth", "adm43")}.`, [
+  ...freshServer("ADM-43", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-43", httpClient("adm43-c", "adm43_c", "alpha"), "setup: create the per-call client"),
+  createClient("ADM-43", httpClient("adm43-s", "adm43_s", "alpha", { needs_session_stickiness: true }), "setup: create the sticky client"),
+  clientPut("ADM-43", "setup: disable the sticky client", "adm43-s", { disabled: true }, [A.status(200)]),
+  clientPost("ADM-43", "reconnect the per-call client", "adm43-c", "reconnect", [A.status(400), A.msgContains("client uses per-call connections; there is no persistent connection to reconnect")]),
+  clientPost("ADM-43", "reconnect the disabled client", "adm43-s", "reconnect", [A.status(400), A.msgEquals("cannot reconnect a disabled MCP client: enable the client first")]),
+  clientPost("ADM-43", "reconnect the pending client", "adm43-p", "reconnect", [A.status(400), A.msgContains("awaiting admin OAuth authorization")]),
+  deleteClient("ADM-43", "adm43-s"),
+  deleteClient("ADM-43", "adm43-c"),
+]);
+
+const ADM45 = folder("ADM-45 refresh-tools refusals and failure", `Setup: admin credentials; client adm45-c, auth none, per call on alpha; ${BOOT_TEXT("adm45-h", "a per_user_headers", "adm45")}; then alpha fails every tools/list.`, [
+  ...freshServer("ADM-45", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-45", httpClient("adm45-c", "adm45_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  clientPost("ADM-45", "refresh-tools on an unknown id", "adm45-nosuch", "refresh-tools", [A.status(404), A.msgContains("mcp client not found")]),
+  clientPut("ADM-45", "setup: disable the client", "adm45-c", { disabled: true }, [A.status(200)]),
+  clientPost("ADM-45", "refresh-tools on the disabled client", "adm45-c", "refresh-tools", [A.status(400), A.msgContains("cannot refresh tools for a disabled MCP client")]),
+  clientPut("ADM-45", "setup: enable the client", "adm45-c", { disabled: false }, [A.status(200)]),
+  clientPost("ADM-45", "refresh-tools on the pending per_user_headers client", "adm45-h", "refresh-tools", [A.status(400), A.msgContains("awaiting admin verification")]),
+  mockPost("ADM-45", "alpha", "faults", "setup: alpha fails every tools/list", { faults: { list_fail: true } }),
+  clientPost("ADM-45", "refresh-tools while tools/list fails", "adm45-c", "refresh-tools", [A.status(500), A.msgContains("Failed to refresh MCP client tools")]),
+  mockPost("ADM-45", "alpha", "faults/clear", "teardown: clear alpha's faults", {}),
+  deleteClient("ADM-45", "adm45-c"),
+]);
+
+const ADM50 = folder("ADM-50 Header edits on a shared HTTP client are verified first", "Setup: admin credentials; client adm50-k, auth headers with X-Key old, per call on alpha, which counts calls under X-Key; alpha then requires X-Key new.", [
+  ...freshServer("ADM-50", "alpha", ["echo_tool", "add_tool"]),
+  mockAuth("ADM-50", "alpha", "setup: alpha requires X-Key old", { identity_header: "X-Key", require_headers: { "X-Key": "old" } }),
+  createClient("ADM-50", httpClient("adm50-k", "adm50_k", "alpha", { auth_type: "headers", headers: { "X-Key": "old" }, tools_to_execute: ["*"] }), "setup: create the headers client"),
+  mockAuth("ADM-50", "alpha", "setup: alpha now requires X-Key new", { identity_header: "X-Key", require_headers: { "X-Key": "new" } }),
+  clientPut("ADM-50", "headers X-Key bad", "adm50-k", { headers: { "X-Key": "bad" } }, [A.status(422), A.msgStartsWith("The new headers were rejected by the MCP server, so nothing was changed")]),
+  mockAuth("ADM-50", "alpha", "setup: alpha accepts X-Key old again", { identity_header: "X-Key", require_headers: { "X-Key": "old" } }),
+  execTool("ADM-50", "control: a call still sends the old value", "adm50_k-echo_tool", [A.status(200)]),
+  mockGet("ADM-50", "alpha", "the call carried X-Key old", [identityCalls("old", 1)]),
+  mockAuth("ADM-50", "alpha", "setup: alpha requires X-Key new", { identity_header: "X-Key", require_headers: { "X-Key": "new" } }),
+  clientPut("ADM-50", "headers X-Key new", "adm50-k", { headers: { "X-Key": "new" } }, [A.status(200)]),
+  execTool("ADM-50", "a call after the edit", "adm50_k-echo_tool", [A.status(200)]),
+  mockGet("ADM-50", "alpha", "alpha's next request carried X-Key new", [identityCalls("new", 1)]),
+  getClient("ADM-50", "adm50-k", "setup: read the masked headers", [], { extraTests: ["pm.collectionVariables.set('adm50_masked', JSON.stringify({ headers: pm.response.json().clients[0].config.headers }));"] }),
+  saveSessions("ADM-50", "alpha", "adm50_sessions"),
+  request("ADM-50", "PUT the masked headers back", "PUT", "/api/mcp/client/adm50-k", { raw: "{{adm50_masked}}", asserts: [A.status(200)] }),
+  mockGet("ADM-50", "alpha", "no new alpha session", [sessionsPlus("adm50_sessions", 0)]),
+  deleteClient("ADM-50", "adm50-k"),
+]);
+
+const ADM56 = folder("ADM-56 allow_by_default and its legacy alias", "Setup: admin credentials; clients adm56-a (allow_on_all_virtual_keys true) and adm56-b (allow_on_all_virtual_keys true, allow_by_default false), auth none on alpha; then the same two cases as updates on adm56-b.", [
+  ...freshServer("ADM-56", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-56", httpClient("adm56-a", "adm56_a", "alpha", { allow_on_all_virtual_keys: true }), "create with allow_on_all_virtual_keys true"),
+  getClient("ADM-56", "adm56-a", "both fields are true", [configField("allow_by_default", true), configField("allow_on_all_virtual_keys", true)]),
+  createClient("ADM-56", httpClient("adm56-b", "adm56_b", "alpha", { allow_on_all_virtual_keys: true, allow_by_default: false }), "create with both fields"),
+  getClient("ADM-56", "adm56-b", "allow_by_default false wins", [configField("allow_by_default", false), configField("allow_on_all_virtual_keys", false)]),
+  listClients("ADM-56", "?allowed_by_default=true", "allowed_by_default=true&search=adm56", [clientIdsAre(["adm56-a"])]),
+  listClients("ADM-56", "?all_virtual_keys=true", "all_virtual_keys=true&search=adm56", [clientIdsAre(["adm56-a"])]),
+  request("ADM-56", "?allowed_by_default=x", "GET", "/api/mcp/clients?allowed_by_default=x", { asserts: [A.status(400)] }),
+  request("ADM-56", "?all_virtual_keys=x", "GET", "/api/mcp/clients?all_virtual_keys=x", { asserts: [A.status(400)] }),
+  clientPut("ADM-56", "update adm56-b with allow_on_all_virtual_keys true", "adm56-b", { allow_on_all_virtual_keys: true }, [A.status(200)]),
+  getClient("ADM-56", "adm56-b", "after the update both fields are true", [configField("allow_by_default", true), configField("allow_on_all_virtual_keys", true)]),
+  clientPut("ADM-56", "update adm56-b with both fields", "adm56-b", { allow_on_all_virtual_keys: true, allow_by_default: false }, [A.status(200)]),
+  getClient("ADM-56", "adm56-b", "after the update allow_by_default false wins", [configField("allow_by_default", false), configField("allow_on_all_virtual_keys", false)]),
+  deleteClient("ADM-56", "adm56-b"),
+  deleteClient("ADM-56", "adm56-a"),
+]);
+
+const ADM58 = folder("ADM-58 Delete removes the client everywhere", "Setup: admin credentials; client adm58-c, auth none, per call on alpha, tools_to_execute [\"*\"]; a VK granted every tool of it.", [
+  ...freshServer("ADM-58", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-58", httpClient("adm58-c", "adm58_c", "alpha", { tools_to_execute: ["*"] }), "setup: create the client"),
+  vkCreate("ADM-58", "setup: create the VK, granted every tool of adm58_c", { name: "ADM-58 key", mcp_configs: [{ mcp_client_name: "adm58_c", tools_to_execute: ["*"] }] }, "adm58_vk"),
+  rpc("ADM-58", "control: /mcp tools/list with the VK", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{adm58_vk}}" }], asserts: [A.status(200), toolNamesInList(["adm58_c-add_tool", "adm58_c-echo_tool"])] }),
+  rpc("ADM-58", "control: /mcp/adm58-c with the VK", listMsg, { path: "/mcp/adm58-c", headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{adm58_vk}}" }], asserts: [A.status(200), toolNamesInList(["adm58_c-add_tool", "adm58_c-echo_tool"])] }),
+  execTool("ADM-58", "control: execute its tool", "adm58_c-echo_tool", [A.status(200)]),
+  request("ADM-58", "delete the client", "DELETE", "/api/mcp/client/adm58-c", { asserts: [A.status(200), A.jsonMessage("MCP client removed successfully")] }),
+  listClients("ADM-58", "it is not listed", "server=adm58-c", [clientIdsAre([])]),
+  rpc("ADM-58", "/mcp tools/list with the VK lacks its tools", listMsg, { headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{adm58_vk}}" }], asserts: [A.status(200), toolNamesInList([])] }),
+  rpc("ADM-58", "/mcp/adm58-c with the VK", listMsg, { path: "/mcp/adm58-c", headers: [MCP_ACCEPT, { key: "x-bf-vk", value: "{{adm58_vk}}" }], asserts: [A.status(403)] }),
+  execTool("ADM-58", "execute its tool", "adm58_c-echo_tool", [A.status(400), A.msgContains("is not available or not permitted")]),
+  createClient("ADM-58", httpClient("adm58-c", "adm58_c", "alpha"), "the name can be used again"),
+  deleteClient("ADM-58", "adm58-c"),
+  vkDelete("ADM-58", "teardown: delete the VK", "adm58_vk"),
+]);
+
+const ADM63 = folder("ADM-63 List filters", "Setup: admin credentials; on alpha: adm63_c (http, auth none), adm63_e (sse), adm63_h (per_user_headers), adm63_d (disabled) and adm63_m (code mode). Each filter is combined with search adm63.", [
+  ...freshServer("ADM-63", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-63", httpClient("adm63-c", "adm63_c", "alpha"), "setup: create adm63_c"),
+  createClient("ADM-63", { client_id: "adm63-e", name: "adm63_e", connection_type: "sse", connection_string: `${CHAOS}/s/alpha/sse`, auth_type: "none" }, "setup: create adm63_e"),
+  createClient("ADM-63", HEADERS_BASE("adm63-h", "adm63_h", { per_user_header_keys: ["x-key"], user_headers: { "x-key": "good" } }), "setup: create adm63_h"),
+  createClient("ADM-63", httpClient("adm63-d", "adm63_d", "alpha"), "setup: create adm63_d"),
+  clientPut("ADM-63", "setup: disable adm63_d", "adm63-d", { disabled: true }, [A.status(200)]),
+  createClient("ADM-63", httpClient("adm63-m", "adm63_m", "alpha", { is_code_mode_client: true }), "setup: create adm63_m"),
+  listClients("ADM-63", "search is case-insensitive", "search=ADM63_C", [clientIdsAre(["adm63-c"])]),
+  listClients("ADM-63", "server", "server=adm63-e", [clientIdsAre(["adm63-e"])]),
+  listClients("ADM-63", "connection_type sse", "connection_type=sse&search=adm63", [clientIdsAre(["adm63-e"])]),
+  listClients("ADM-63", "auth_type per_user_headers", "auth_type=per_user_headers&search=adm63", [clientIdsAre(["adm63-h"])]),
+  listClients("ADM-63", "disabled true", "disabled=true&search=adm63", [clientIdsAre(["adm63-d"])]),
+  listClients("ADM-63", "code_mode true", "code_mode=true&search=adm63", [clientIdsAre(["adm63-m"])]),
+  listClients("ADM-63", "state unstable includes the disabled client", "state=unstable&search=adm63", [A.custom("adm63-d is listed and the healthy adm63-c is not", ["var ids = pm.response.json().clients.map(function (c) { return c.config.client_id; });", "pm.expect(ids, 'body: ' + pm.response.text()).to.include('adm63-d');", "pm.expect(ids).to.not.include('adm63-c');"])]),
+  listClients("ADM-63", "total_count ignores limit", "search=adm63&limit=1", [A.custom("one client, total_count 5", ["var b = pm.response.json();", "pm.expect(b.clients.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(b.total_count).to.equal(5);"])]),
+  ...["adm63-m", "adm63-d", "adm63-h", "adm63-e", "adm63-c"].map((c) => deleteClient("ADM-63", c)),
+]);
+
+const ADM67 = folder("ADM-67 verify-headers refusals", "Setup: admin credentials; alpha (echo_tool, add_tool) requires x-key: good; adm67_h, per_user_headers on alpha with per_user_header_keys [\"x-key\"]; adm67_n, auth none on alpha (created before alpha requires the header); adm67_q, an OpenAPI per_user_headers client from an inline Petstore document.", [
+  ...freshServer("ADM-67", "alpha", ["echo_tool", "add_tool"]),
+  createClient("ADM-67", httpClient("adm67-n", "adm67_n", "alpha"), "setup: create the none client"),
+  mockAuth("ADM-67", "alpha", "setup: alpha requires x-key: good", { require_headers: { "x-key": "good" } }),
+  createClient("ADM-67", HEADERS_BASE("adm67-h", "adm67_h", { per_user_header_keys: ["x-key"], user_headers: { "x-key": "good" } }), "setup: create the per_user_headers client"),
+  createClient("ADM-67", { client_id: "adm67-q", name: "adm67_q", connection_type: "openapi", auth_type: "per_user_headers", per_user_header_keys: ["x-key"], tools_to_execute: ["*"], openapi_config: { spec: PETSTORE } }, "setup: create the OpenAPI per_user_headers client"),
+  verifyHeaders("ADM-67", "an unknown id", "adm67-nosuch", { "x-key": "good" }, [A.status(404)]),
+  request("ADM-67", "body \"{\"", "POST", "/api/mcp/client/adm67-h/verify-headers", { raw: "{", asserts: [A.status(400), A.msgContains("Invalid request body")] }),
+  verifyHeaders("ADM-67", "the none client", "adm67-n", { "x-key": "good" }, [A.status(400), A.msgContains("verify-headers only applies to auth_type='per_user_headers' clients")]),
+  verifyHeaders("ADM-67", "the OpenAPI client", "adm67-q", { "x-key": "good" }, [A.status(400), A.msgContains("verify-headers does not apply to openapi clients")]),
+  request("ADM-67", "{}", "POST", "/api/mcp/client/adm67-h/verify-headers", { body: {}, asserts: [A.status(400), A.msgContains("missing values for required keys: x-key")] }),
+  verifyHeaders("ADM-67", "a bad value", "adm67-h", { "x-key": "bad" }, [A.status(422)]),
+  deleteClient("ADM-67", "adm67-q"),
+  deleteClient("ADM-67", "adm67-n"),
+  deleteClient("ADM-67", "adm67-h"),
+]);
+
+const ADM68 = folder("ADM-68 verify-headers activates the admin credential", `Setup: admin credentials; fleet server adm68 (echo_tool, add_tool) requires x-key: good; ${BOOT_TEXT("adm68-h", "a per_user_headers", "adm68")}, per_user_header_keys ["x-key"].`, [
+  ...freshServer("ADM-68", "adm68", ["echo_tool", "add_tool"]),
+  mockAuth("ADM-68", "adm68", "setup: adm68 requires x-key: good", { require_headers: { "x-key": "good" } }),
+  getClient("ADM-68", "adm68-h", "control: pending_verification with no credential", [clientState("pending_verification"), A.custom("there is no credential", ["pm.expect(pm.response.json().clients[0].credential == null, 'body: ' + pm.response.text()).to.equal(true);"])]),
+  clientPost("ADM-68", "control: refresh-tools before verification", "adm68-h", "refresh-tools", [A.status(400), A.msgContains("awaiting admin verification")]),
+  verifyHeaders("ADM-68", "verify-headers with x-key good", "adm68-h", { "x-key": "good" }, [A.status(200), A.jsonEquals("status", "success"), A.jsonEquals("tools_count", 2), messageStarts("MCP client verified. 2 tools discovered.")]),
+  getClient("ADM-68", "adm68-h", "healthy, with an active headers credential", [clientState("healthy"), credKind("headers"), credStatus("active")]),
+  clientPost("ADM-68", "refresh-tools", "adm68-h", "refresh-tools", [A.status(200)]),
+  deleteClient("ADM-68", "adm68-h"),
+]);
+
+// ================================================================ per-user header credentials, flows and the sessions list
+
+const HDR_FLOWS = "/api/mcp/per-user-headers/flows/";
+// hdrSetup re-adds fleet server p requiring x-key: good, creates per_user_headers client <p>-h on it (keys as given,
+// sample x-key good, plus extra sample values), and a VK granted every tool of it, kept in <p>_vk1.
+const hdrSetup = (id, p, keys = ["x-key"], sample = {}) => [
+  ...freshServer(id, p, ["echo_tool", "add_tool"]),
+  mockAuth(id, p, `setup: ${p} requires x-key: good`, { require_headers: { "x-key": "good" } }),
+  createClient(id, HEADERS_BASE(`${p}-h`, `${p}_h`, { connection_string: `${CHAOS}/s/${p}/mcp`, per_user_header_keys: keys, user_headers: { "x-key": "good", ...sample }, tools_to_execute: ["*"] }), "setup: create the per_user_headers client"),
+  vkCreate(id, "setup: create vk1, granted every tool of it", { name: `${id} ${p} vk1`, mcp_configs: [{ mcp_client_name: `${p}_h`, tools_to_execute: ["*"] }] }, `${p}_vk1`),
+];
+const HDR_TEXT = (p, keys = ["x-key"]) => `admin credentials; fleet server ${p} (echo_tool, add_tool) requires x-key: good; ${p}_h, a per_user_headers client on it with per_user_header_keys ${lit(keys)}, tools_to_execute ["*"]; vk1, a VK granted every tool of ${p}_h`;
+const hdrTeardown = (id, p) => [deleteClient(id, `${p}-h`), vkDelete(id, "teardown: delete vk1", `${p}_vk1`)];
+// hdrFlow calls <p>_h's echo_tool with vk1 and keeps the header flow it opens in v.
+const hdrFlow = (id, title, p, v) => execTool(id, title, `${p}_h-echo_tool`, [A.status(400), headersFlow({ saveAs: v })], vkExec(`${p}_vk1`));
+const hdrSubmit = (id, title, v, headers, asserts, extraTests = []) => request(id, title, "PUT", `${HDR_FLOWS}{{${v}}}`, { body: { headers }, asserts, extraTests });
+const keepCredential = (v) => `pm.collectionVariables.set(${lit(v)}, pm.response.json().credential_id);`;
+const sessionsNone = (id, title, clientId) => request(id, title, "GET", SESSIONS, { asserts: [A.status(200), A.custom(`no entry for ${clientId}`, [sessionRows(clientId, "true"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(0);"])] });
+
+const ADM57 = folder("ADM-57 Adding a header key forces resubmission", `Setup: ${HDR_TEXT("adm57")}, verified with verify-headers; vk1 holds a header credential. A second client adm57k_h (keys ["x-key", "x-other"], verified with both) with its own VK credential has a key removed.`, [
+  ...hdrSetup("ADM-57", "adm57"),
+  verifyHeaders("ADM-57", "setup: verify-headers", "adm57-h", { "x-key": "good" }, [A.status(200)]),
+  hdrFlow("ADM-57", "setup: a call with vk1 opens a header flow", "adm57", "adm57_f"),
+  hdrSubmit("ADM-57", "setup: submit x-key good", "adm57_f", { "x-key": "good" }, [A.status(200)]),
+  clientPut("ADM-57", "add key x-extra", "adm57-h", { per_user_header_keys: ["x-key", "x-extra"] }, [A.status(200)]),
+  getClient("ADM-57", "adm57-h", "the client needs reauth and its credential needs an update", [clientState("needs_reauth"), credStatus("needs_update")]),
+  sessionsHas("ADM-57", "vk1's sessions entry needs an update", "adm57-h", "s.kind === 'header' && s.status === 'needs_update'", "one header entry, needs_update"),
+  ...hdrSetup("ADM-57", "adm57k", ["x-key", "x-other"], { "x-other": "o1" }),
+  verifyHeaders("ADM-57", "setup: verify-headers on adm57k_h", "adm57k-h", { "x-key": "good", "x-other": "o1" }, [A.status(200)]),
+  hdrFlow("ADM-57", "setup: a call with adm57k's vk1 opens a header flow", "adm57k", "adm57k_f"),
+  hdrSubmit("ADM-57", "setup: submit both keys", "adm57k_f", { "x-key": "good", "x-other": "o1" }, [A.status(200)]),
+  clientPut("ADM-57", "remove key x-other only", "adm57k-h", { per_user_header_keys: ["x-key"] }, [A.status(200)]),
+  getClient("ADM-57", "adm57k-h", "its credential stays active", [credStatus("active")]),
+  sessionsHas("ADM-57", "its sessions entry stays active", "adm57k-h", "s.kind === 'header' && s.status === 'active'", "one header entry, active"),
+  ...hdrTeardown("ADM-57", "adm57k"),
+  ...hdrTeardown("ADM-57", "adm57"),
+]);
+
+const ADM69 = folder("ADM-69 Per-user header flow detail", `Setup: ${HDR_TEXT("adm69")}, verified with verify-headers; a call with vk1 opens a header flow.`, [
+  ...hdrSetup("ADM-69", "adm69"),
+  verifyHeaders("ADM-69", "setup: verify-headers", "adm69-h", { "x-key": "good" }, [A.status(200)]),
+  hdrFlow("ADM-69", "setup: a call with vk1 opens a header flow", "adm69", "adm69_f"),
+  request("ADM-69", "flow detail", "GET", `${HDR_FLOWS}{{adm69_f}}`, { asserts: [A.status(200), A.custom("flow_mode vk, pending, client adm69-h, virtual key vk1, required_header_keys [\"x-key\"], no active credential", [
+    "var b = pm.response.json();",
+    "pm.expect(b.flow_mode, 'body: ' + pm.response.text()).to.equal('vk');",
+    "pm.expect(b.status).to.equal('pending');",
+    "pm.expect(b.mcp_client && b.mcp_client.client_id).to.equal('adm69-h');",
+    "pm.expect(b.virtual_key && b.virtual_key.id).to.equal(pm.collectionVariables.get('adm69_vk1_id'));",
+    "pm.expect(b.required_header_keys).to.eql(['x-key']);",
+    "pm.expect(b.has_active_credential).to.equal(false);",
+  ])] }),
+  request("ADM-69", "an unknown flow", "GET", `${HDR_FLOWS}adm69-nosuch`, { asserts: [A.status(404), A.msgEquals("Headers submission flow not found")] }),
+  ...hdrTeardown("ADM-69", "adm69"),
+]);
+
+const ADM70 = folder("ADM-70 Per-user header flow submit", `Setup: ${HDR_TEXT("adm70")}, verified with verify-headers; a call with vk1 opens a header flow.`, [
+  ...hdrSetup("ADM-70", "adm70"),
+  verifyHeaders("ADM-70", "setup: verify-headers", "adm70-h", { "x-key": "good" }, [A.status(200)]),
+  hdrFlow("ADM-70", "setup: a call with vk1 opens a header flow", "adm70", "adm70_f"),
+  hdrSubmit("ADM-70", "submit no values", "adm70_f", {}, [A.status(400), A.msgEquals("missing values for required keys: x-key")]),
+  hdrSubmit("ADM-70", "submit x-key bad", "adm70_f", { "x-key": "bad" }, [A.status(422)]),
+  hdrSubmit("ADM-70", "submit x-key good plus x-other", "adm70_f", { "x-key": "good", "x-other": "o1" }, [A.status(200), A.custom("credential_id is a non-empty string", ["pm.expect(pm.response.json().credential_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.equal('');"])]),
+  request("ADM-70", "the flow is gone", "GET", `${HDR_FLOWS}{{adm70_f}}`, { asserts: [A.status(404)] }),
+  sessionsHas("ADM-70", "vk1's sessions entry is active", "adm70-h", "s.kind === 'header' && s.status === 'active' && s.virtual_key && s.virtual_key.id === pm.collectionVariables.get('adm70_vk1_id')", "one header entry for vk1, active"),
+  ...hdrTeardown("ADM-70", "adm70"),
+]);
+
+const ADM71 = folder("ADM-71 Resubmission merges stored values", `Setup: ${HDR_TEXT("adm71")}, verified with verify-headers; vk1 submits x-key good plus x-other, as in ADM-70; key x-extra is then added and a call with vk1 opens a second flow.`, [
+  ...hdrSetup("ADM-71", "adm71"),
+  verifyHeaders("ADM-71", "setup: verify-headers", "adm71-h", { "x-key": "good" }, [A.status(200)]),
+  hdrFlow("ADM-71", "setup: a call with vk1 opens a header flow", "adm71", "adm71_f"),
+  hdrSubmit("ADM-71", "setup: submit x-key good plus x-other", "adm71_f", { "x-key": "good", "x-other": "o1" }, [A.status(200)]),
+  clientPut("ADM-71", "setup: add key x-extra", "adm71-h", { per_user_header_keys: ["x-key", "x-extra"] }, [A.status(200)]),
+  hdrFlow("ADM-71", "setup: a call with vk1 opens a second flow", "adm71", "adm71_f2"),
+  hdrSubmit("ADM-71", "submit only x-extra", "adm71_f2", { "x-extra": "e1" }, [A.status(200)]),
+  sessionsHas("ADM-71", "the sessions entry is active", "adm71-h", "s.kind === 'header' && s.status === 'active'", "one header entry, active"),
+  mockPost("ADM-71", "adm71", "counters/reset", "setup: reset adm71's counters", {}),
+  execTool("ADM-71", "a call with vk1", "adm71_h-echo_tool", [A.status(200)], vkExec("adm71_vk1")),
+  mockGet("ADM-71", "adm71", "adm71 ran echo_tool once", [callsIs("echo_tool", 1)]),
+  ...hdrTeardown("ADM-71", "adm71"),
+]);
+
+const ADM72 = folder("ADM-72 Revoke a header credential", `Setup: ${HDR_TEXT("adm72")}, verified with verify-headers; vk1 submits x-key good plus x-other, as in ADM-70; key x-extra is then added and a call with vk1 opens a second flow, left pending.`, [
+  ...hdrSetup("ADM-72", "adm72"),
+  verifyHeaders("ADM-72", "setup: verify-headers", "adm72-h", { "x-key": "good" }, [A.status(200)]),
+  hdrFlow("ADM-72", "setup: a call with vk1 opens a header flow", "adm72", "adm72_f"),
+  hdrSubmit("ADM-72", "setup: submit x-key good plus x-other", "adm72_f", { "x-key": "good", "x-other": "o1" }, [A.status(200), A.custom("credential_id is set", ["pm.expect(pm.response.json().credential_id, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;"])], [keepCredential("adm72_cred")]),
+  clientPut("ADM-72", "setup: add key x-extra", "adm72-h", { per_user_header_keys: ["x-key", "x-extra"] }, [A.status(200)]),
+  hdrFlow("ADM-72", "setup: a call with vk1 opens a second flow", "adm72", "adm72_f2"),
+  sessionsHas("ADM-72", "control: the header entry needs an update", "adm72-h", "s.kind === 'header' && s.status === 'needs_update'", "one header entry, needs_update"),
+  request("ADM-72", "control: the second flow is open", "GET", `${HDR_FLOWS}{{adm72_f2}}`, { asserts: [A.status(200)] }),
+  request("ADM-72", "revoke the credential", "DELETE", "/api/mcp/per-user-headers/credential/{{adm72_cred}}", { asserts: [A.status(204), A.custom("the body is empty", ["pm.expect(pm.response.text()).to.equal('');"])] }),
+  sessionsNone("ADM-72", "no sessions entry for the client", "adm72-h"),
+  request("ADM-72", "the pending second flow is gone", "GET", `${HDR_FLOWS}{{adm72_f2}}`, { asserts: [A.status(404)] }),
+  request("ADM-72", "revoke again", "DELETE", "/api/mcp/per-user-headers/credential/{{adm72_cred}}", { asserts: [A.status(404), A.msgEquals("credential not found")] }),
+  ...hdrTeardown("ADM-72", "adm72"),
+]);
+
+const ADM60 = folder("ADM-60 Delete cascades credentials, flows and OAuth config", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("adm60")}, verified as admin; adm60-sess1 completes a flow as alice and adm60-sess2 leaves one pending. ${HDR_TEXT("adm60h")}; vk1 holds a header credential and session adm60-hsess2 leaves a header flow pending.`, [
+  ...puConfig("ADM-60", false),
+  ...puConnect("ADM-60", "adm60"),
+  execTool("ADM-60", "setup: execute as adm60-sess1 opens the first flow", "adm60-echo_tool", [A.status(400), keepFlow("adm60_fa")], { session: "adm60-sess1" }),
+  ...puFinish("ADM-60", "adm60_fa", "alice", "the first flow"),
+  execTool("ADM-60", "setup: execute as adm60-sess2 opens a second flow, left pending", "adm60-echo_tool", [A.status(400), keepFlow("adm60_fb")], { session: "adm60-sess2" }),
+  ...hdrSetup("ADM-60", "adm60h"),
+  hdrFlow("ADM-60", "setup: a call with vk1 opens a header flow", "adm60h", "adm60h_f"),
+  hdrSubmit("ADM-60", "setup: submit x-key good", "adm60h_f", { "x-key": "good" }, [A.status(200)]),
+  execTool("ADM-60", "setup: a call as session adm60-hsess2 opens a header flow, left pending", "adm60h_h-echo_tool", [A.status(400), headersFlow({ saveAs: "adm60h_fb" })], { session: "adm60-hsess2" }),
+  oauthStatus("ADM-60", "control: the per_user_oauth client's OAuth config exists", "adm60", "", []),
+  flowDetail("ADM-60", "control: the second flow is open", "adm60_fb", [A.status(200)]),
+  request("ADM-60", "control: the pending header flow is open", "GET", `${HDR_FLOWS}{{adm60h_fb}}`, { asserts: [A.status(200)] }),
+  request("ADM-60", "control: both clients have sessions entries", "GET", SESSIONS, { asserts: [A.status(200), A.custom("entries for adm60-u and adm60h-h", [sessionRows("adm60-u", "true"), "pm.expect(found.length, 'body: ' + pm.response.text()).to.be.above(0);", sessionRows("adm60h-h", "true").replace("var found", "var foundH"), "pm.expect(foundH.length).to.be.above(0);"])] }),
+  request("ADM-60", "delete the per_user_oauth client", "DELETE", "/api/mcp/client/adm60-u", { asserts: [A.status(200)] }),
+  request("ADM-60", "delete the per_user_headers client", "DELETE", "/api/mcp/client/adm60h-h", { asserts: [A.status(200)] }),
+  sessionsNone("ADM-60", "no sessions entry for the per_user_oauth client", "adm60-u"),
+  sessionsNone("ADM-60", "no sessions entry for the per_user_headers client", "adm60h-h"),
+  request("ADM-60", "its OAuth config status", "GET", "/api/oauth/config/{{adm60_oc}}/status", { asserts: [A.status(404)] }),
+  flowDetail("ADM-60", "the completed first flow", "adm60_fa", [A.status(404)]),
+  flowDetail("ADM-60", "the second flow", "adm60_fb", [A.status(404)]),
+  request("ADM-60", "the pending header flow", "GET", `${HDR_FLOWS}{{adm60h_fb}}`, { asserts: [A.status(404)] }),
+  vkDelete("ADM-60", "teardown: delete vk1", "adm60h_vk1"),
+  restoreConfig("ADM-60"),
+]);
+
+// sessionsOfClients keeps the sessions entries of the given clients as `found`.
+const sessionsOfClients = (clientIds) => `var found = (pm.response.json().sessions || []).filter(function (s) { return s.mcp_client && ${lit(clientIds)}.indexOf(s.mcp_client.client_id) !== -1; });`;
+const ADM74 = folder("ADM-74 Sessions entry shapes and filters", `Setup: ${PU_TEXT(false)}; ${PU_SERVER_TEXT("adm74")}, verified as admin; a VK granted every tool of adm74 completes a flow as alice; session adm74-sessp leaves a flow pending. ${HDR_TEXT("adm74h")}, verified with verify-headers; vk1 holds a header credential.`, [
+  ...puConfig("ADM-74", false),
+  ...puConnect("ADM-74", "adm74"),
+  puVK("ADM-74", "token", "adm74", "adm74_vk"),
+  execTool("ADM-74", "setup: a call with the VK opens the token flow", "adm74-echo_tool", [A.status(400), keepFlow("adm74_ft")], vkExec("adm74_vk")),
+  ...puFinish("ADM-74", "adm74_ft", "alice", "the token flow"),
+  execTool("ADM-74", "setup: execute as adm74-sessp opens the pending flow", "adm74-echo_tool", [A.status(400), keepFlow("adm74_fp")], { session: "adm74-sessp" }),
+  ...hdrSetup("ADM-74", "adm74h"),
+  verifyHeaders("ADM-74", "setup: verify-headers", "adm74h-h", { "x-key": "good" }, [A.status(200)]),
+  hdrFlow("ADM-74", "setup: a call with vk1 opens a header flow", "adm74h", "adm74h_f"),
+  hdrSubmit("ADM-74", "setup: submit x-key good", "adm74h_f", { "x-key": "good" }, [A.status(200)]),
+  request("ADM-74", "the sessions list", "GET", SESSIONS, { asserts: [A.status(200),
+    A.custom("the VK's token entry: kind token, auth_kind oauth, can_reauth true", [sessionsOfClients(["adm74-u"]), "var t = found.filter(function (s) { return s.kind === 'token'; });", "pm.expect(t.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(t[0].auth_kind).to.equal('oauth');", "pm.expect(t[0].can_reauth).to.equal(true);", "pm.expect(t[0].virtual_key && t[0].virtual_key.id).to.equal(pm.collectionVariables.get('adm74_vk_id'));"]),
+    A.custom("the header credential's entry: kind header", [sessionsOfClients(["adm74h-h"]), "pm.expect(found.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(found[0].kind).to.equal('header');"]),
+    A.custom("the pending flow's entry: kind flow, can_reauth false", [sessionsOfClients(["adm74-u"]), "var f = found.filter(function (s) { return s.kind === 'flow'; });", "pm.expect(f.length, 'body: ' + pm.response.text()).to.equal(1);", "pm.expect(f[0].id).to.equal(pm.collectionVariables.get('adm74_fp'));", "pm.expect(f[0].can_reauth).to.equal(false);"]),
+    A.custom("no admin entries", [sessionsOfClients(["adm74-u", "adm74h-h"]), "pm.expect(found.filter(function (s) { return s.auth_mode === 'admin'; }), 'body: ' + pm.response.text()).to.eql([]);", "pm.expect(found.length).to.equal(3);"]),
+  ] }),
+  request("ADM-74", "?kind=token", "GET", `${SESSIONS}&kind=token`, { asserts: [A.status(200), A.custom("only OAuth entries: the VK's token and the pending flow, no header entry", ["var s = pm.response.json().sessions || [];", "pm.expect(s.filter(function (x) { return x.auth_kind !== 'oauth'; }), 'body: ' + pm.response.text()).to.eql([]);", sessionsOfClients(["adm74-u", "adm74h-h"]), "pm.expect(found.map(function (x) { return x.kind; }).sort()).to.eql(['flow', 'token']);"])] }),
+  request("ADM-74", "?kind=header", "GET", `${SESSIONS}&kind=header`, { asserts: [A.status(200), A.custom("only header entries, including the header credential", ["var s = pm.response.json().sessions || [];", "pm.expect(s.filter(function (x) { return x.auth_kind !== 'headers'; }), 'body: ' + pm.response.text()).to.eql([]);", sessionsOfClients(["adm74-u", "adm74h-h"]), "pm.expect(found.map(function (x) { return x.mcp_client.client_id + ':' + x.kind; })).to.eql(['adm74h-h:header']);"])] }),
+  request("ADM-74", "?status=pending", "GET", `${SESSIONS}&status=pending`, { asserts: [A.status(200), A.custom("only pending entries, including the pending flow", ["var s = pm.response.json().sessions || [];", "pm.expect(s.filter(function (x) { return x.status !== 'pending'; }), 'body: ' + pm.response.text()).to.eql([]);", "pm.expect(s.map(function (x) { return x.id; })).to.include(pm.collectionVariables.get('adm74_fp'));"])] }),
+  ...hdrTeardown("ADM-74", "adm74h"),
+  deleteClient("ADM-74", "adm74-u"),
+  vkDelete("ADM-74", "teardown: delete the VK", "adm74_vk"),
+  restoreConfig("ADM-74"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -5921,7 +6279,7 @@ const collection = {
     { key: "admin_auth_header", value: "" },
   ],
   item: [
-    section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM31, ADM32, ADM33, ADM34, ADM38, ADM39, ADM40, ADM42, ADM44, ADM46, ADM47, ADM51, ADM52, ADM53, ADM54, ADM55, ADM59, ADM62, ADM65, ADM66, ADM73, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83]),
+    section("ADM Client admin", "Client admin tests.", [ADM01, ADM03, ADM04, ADM05, ADM06, ADM07, ADM08, ADM10, ADM11, ADM12, ADM13, ADM14, ADM16, ADM17, ADM18, ADM19, ADM20, ADM21, ADM22, ADM23, ADM24, ADM25, ADM27, ADM28, ADM29, ADM30, ADM31, ADM32, ADM33, ADM34, ADM35, ADM37, ADM38, ADM39, ADM40, ADM41, ADM42, ADM43, ADM44, ADM45, ADM46, ADM47, ADM50, ADM51, ADM52, ADM53, ADM54, ADM55, ADM56, ADM57, ADM58, ADM59, ADM60, ADM62, ADM63, ADM65, ADM66, ADM67, ADM68, ADM69, ADM70, ADM71, ADM72, ADM73, ADM74, ADM75, ADM76, ADM77, ADM78, ADM80, ADM81, ADM82, ADM83]),
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH09, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH41, AUTH42, AUTH43, AUTH45, AUTH48]),
     section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN06, CONN09, CONN10, CONN12, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP31, EP32, EP33, EP34, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP53]),
