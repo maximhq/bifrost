@@ -32,6 +32,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeySkipKeySelection:        {},
 	BifrostContextKeyPassthroughHeaders:      {},
 	BifrostContextKeySkipBudgetAndRateLimits: {},
+	BifrostContextKeyInternalJobPoll:         {},
 	BifrostContextKeySkipProviderCheck:       {},
 	BifrostContextKeySkipModelCheck:          {},
 	BifrostContextKeyAdmitUngrantedUser:      {},

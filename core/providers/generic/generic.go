@@ -222,10 +222,10 @@ func (provider *GenericProvider) strictRouteError(ctx *schemas.BifrostContext, r
 	if !provider.cfg.StrictRoutes || route != nil {
 		return nil
 	}
-	// An internal request (a job accounting poll, which runs with the plugin pipeline skipped) is
-	// the operator's own configured request, not a caller's: an operator who allowlists the start
-	// operation must not have to list the poll too, or the job would come back 404 and never be billed.
-	if internal, _ := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); internal {
+	// A job accounting poll is the operator's own configured request, not a caller's: an operator
+	// who allowlists the start operation must not have to list the poll too, or the job would come
+	// back 404 and never be billed.
+	if internal, _ := ctx.Value(schemas.BifrostContextKeyInternalJobPoll).(bool); internal {
 		return nil
 	}
 	bifrostErr := providerUtils.NewBifrostOperationError(fmt.Sprintf("no route for %s %s (strict_routes)", req.Method, req.Path), nil)
@@ -279,10 +279,10 @@ func (provider *GenericProvider) buildRequest(ctx *schemas.BifrostContext, key s
 	providerUtils.SetExtraHeadersHTTP(context.Background(), httpReq, provider.networkConfig.ExtraHeaders, nil)
 	providerUtils.StripCallerAuthForInsecureURL(requestURL, req.SafeHeaders)
 	authHeader := provider.authHeader()
-	// A job poll carries the internal marker: its headers are the operator's own poll config, not a
-	// caller's, so they are applied over extra_headers and keep their x-amz-* names. The configured
-	// key stays the only credential either way.
-	internal, _ := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool)
+	// A job poll's headers are the operator's own poll config, not a caller's, so they are applied
+	// over extra_headers and keep their x-amz-* names. The configured key stays the only credential
+	// either way.
+	internal, _ := ctx.Value(schemas.BifrostContextKeyInternalJobPoll).(bool)
 	for k, v := range req.SafeHeaders {
 		if strings.EqualFold(k, "authorization") || strings.EqualFold(k, "content-length") || (authHeader != "" && strings.EqualFold(k, authHeader)) {
 			continue
@@ -327,9 +327,9 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 	if bifrostErr := provider.strictRouteError(ctx, route, req); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	// A job accounting poll (internal, plugin pipeline skipped) is the operator's own request and
-	// is not billed, so the caller-facing body checks do not apply to it.
-	internal, _ := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool)
+	// A job accounting poll is the operator's own request and is not billed, so the caller-facing
+	// body checks do not apply to it.
+	internal, _ := ctx.Value(schemas.BifrostContextKeyInternalJobPoll).(bool)
 	if billable && !internal {
 		if err := usageMapping.requestBodyError(req.Body); err != nil {
 			return nil, providerUtils.NewBifrostBadRequestError(err.Error())
@@ -424,9 +424,9 @@ func (provider *GenericProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 	if route != nil && route.job != nil {
 		return nil, providerUtils.NewBifrostBadRequestError("a route that starts a job is served by the buffered relay; call Passthrough")
 	}
-	// A job accounting poll (internal, plugin pipeline skipped) is the operator's own request and
-	// is not billed, so the caller-facing body checks do not apply to it.
-	internal, _ := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool)
+	// A job accounting poll is the operator's own request and is not billed, so the caller-facing
+	// body checks do not apply to it.
+	internal, _ := ctx.Value(schemas.BifrostContextKeyInternalJobPoll).(bool)
 	if billable && !internal {
 		if err := usageMapping.requestBodyError(req.Body); err != nil {
 			return nil, providerUtils.NewBifrostBadRequestError(err.Error())

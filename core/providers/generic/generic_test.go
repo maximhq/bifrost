@@ -884,7 +884,7 @@ func TestGenericInternalPollBypassesStrictRoutes(t *testing.T) {
 	require.NotNil(t, bifrostErr, "a caller's unlisted operation is still refused")
 	assert.Equal(t, http.StatusNotFound, *bifrostErr.StatusCode)
 	ctx := testCtx(t)
-	ctx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+	ctx.SetValue(schemas.BifrostContextKeyInternalJobPoll, true)
 	resp, bifrostErr := provider.Passthrough(ctx, bearerKey("k"), poll)
 	require.Nil(t, bifrostErr)
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "the sweeper's poll is relayed")
@@ -1192,7 +1192,7 @@ func TestGenericJobPollHeadersOverrideExtraHeaders(t *testing.T) {
 	poll := map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis", "authorization": "Bearer poll-should-not-pass"}
 
 	internal := testCtx(t)
-	internal.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+	internal.SetValue(schemas.BifrostContextKeyInternalJobPoll, true)
 	_, bifrostErr := provider.Passthrough(internal, bearerKey("k"), relayRequest(http.MethodPost, "/", "", `{}`, poll))
 	require.Nil(t, bifrostErr)
 	_, bifrostErr = provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/", "", `{}`, poll))

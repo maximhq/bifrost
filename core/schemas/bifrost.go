@@ -379,6 +379,7 @@ const (
 	BifrostContextKeyTransportPluginLogs                 BifrostContextKey = "bifrost-transport-plugin-logs"                    // []PluginLogEntry (transport-layer plugin logs accumulated during HTTP transport hooks)
 	BifrostContextKeyTransportPostHookCompleter          BifrostContextKey = "bifrost-transport-posthook-completer"             // func() (callback to run HTTPTransportPostHook after streaming - set by transport interceptor middleware)
 	BifrostContextKeySkipPluginPipeline                  BifrostContextKey = "bifrost-skip-plugin-pipeline"                     // bool - skip plugin pipeline for the request
+	BifrostContextKeyInternalJobPoll                     BifrostContextKey = "bifrost-internal-job-poll"                        // bool - set by job accounting on its own status polls; the request is operator config, not a caller's
 	BifrostContextKeyParentRequestID                     BifrostContextKey = "bifrost-parent-request-id"                        // string (parent linkage for grouped request logs like realtime turns)
 	BifrostContextKeyRealtimeSessionID                   BifrostContextKey = "bifrost-realtime-session-id"                      // string
 	BifrostContextKeyRealtimeProviderSessionID           BifrostContextKey = "bifrost-realtime-provider-session-id"             // string

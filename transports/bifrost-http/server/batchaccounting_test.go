@@ -53,6 +53,9 @@ func TestInternalJobContextKeepsSweeperInvariants(t *testing.T) {
 	if skip, ok := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); !ok || !skip {
 		t.Fatal("the sweeper must not re-enter the plugin pipeline")
 	}
+	if poll, ok := ctx.Value(schemas.BifrostContextKeyInternalJobPoll).(bool); !ok || !poll {
+		t.Fatal("internalJobContext must mark the request as a job poll")
+	}
 	if requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok || requestID == "" {
 		t.Fatal("every sweeper call needs its own request id")
 	}

@@ -82,6 +82,10 @@ func internalJobContext(parent context.Context, selectedKeyID string) *schemas.B
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.NewString())
 	ctx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 	ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+	// The poll is operator config, not a caller's request: the generic relay reads this to let the
+	// poll past its caller-facing route, header and body checks. Skipping plugins is a separate
+	// concern and other internal flows set that flag too, so it is never read as this marker.
+	ctx.SetValue(schemas.BifrostContextKeyInternalJobPoll, true)
 	if selectedKeyID = strings.TrimSpace(selectedKeyID); selectedKeyID != "" {
 		ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, selectedKeyID)
 	}

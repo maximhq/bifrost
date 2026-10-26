@@ -8026,11 +8026,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		bifrost.endCoreSpan(workerSetupSpan)
 
-		// Before key acquisition, so a refused route never touches a key or the upstream. An internal
-		// request (a job accounting poll, run with the plugin pipeline skipped) is the operator's own
-		// configured request, not a caller's, so the caller-facing route policy does not apply to it.
-		internalRequest, _ := req.Context.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool)
-		if config.Passthrough != nil && !internalRequest && (req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest) &&
+		// Before key acquisition, so a refused route never touches a key or the upstream.
+		if config.Passthrough != nil && (req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest) &&
 			!passthroughRouteAllowed(config.Passthrough, req.BifrostRequest.PassthroughRequest) {
 			bifrost.sendWorkerError(req, newPassthroughRouteNotAllowedError(provider.GetProviderKey(), req.RequestType, req.BifrostRequest.PassthroughRequest))
 			continue
