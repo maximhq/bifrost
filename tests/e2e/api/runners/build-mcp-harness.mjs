@@ -6468,6 +6468,124 @@ const EP51 = folder("EP-51 Per-user headers tool through `/mcp`", `Setup: ${FLEE
   ...fleetTeardown("EP-51"),
 ]);
 
+// ================================================================ the setup lock, Host spoofing and per-client settings
+
+// ADMIN_PAIR reads the admin username and password back out of admin_auth_header (Basic) as `user` and `pass`.
+const ADMIN_PAIR = "var C = require('crypto-js'); var pair = C.enc.Base64.parse(pm.variables.get('admin_auth_header').replace(/^Basic /, '')).toString(C.enc.Utf8); var user = pair.slice(0, pair.indexOf(':')), pass = pair.slice(pair.indexOf(':') + 1);";
+// authBody reads the live config (with the given header) and keeps a PUT body that sets auth_config to authFields,
+// coercing log_retention_days to at least 1 as a save requires.
+const authBody = (header, authFields) => [
+  ADMIN_PAIR,
+  `pm.sendRequest({ url: pm.variables.get('base_url') + '/api/config', method: 'GET', header: ${header} }, function (err, res) { var cc = res.json().client_config; if (!(cc.log_retention_days >= 1)) { cc.log_retention_days = 1; } pm.variables.set('auth_body', JSON.stringify({ client_config: cc, auth_config: ${authFields} })); });`,
+];
+// authOff turns dashboard auth off, which puts every /api route behind the setup token.
+const authOff = (id) => request(id, "setup: turn dashboard auth off, so the setup lock applies", "PUT", "/api/config", {
+  raw: "{{auth_body}}", asserts: [A.status(200)],
+  pre: authBody("{ Authorization: pm.variables.get('admin_auth_header') }", "{ is_enabled: false, admin_username: user, admin_password: '<redacted>' }"),
+});
+// authOn turns dashboard auth back on under the setup lock, proving control with the stored admin password.
+const authOn = (id) => request(id, "teardown: turn dashboard auth back on", "PUT", "/api/config", {
+  noAuth: true, raw: "{{auth_body}}", headers: [{ key: "X-Bifrost-Setup-Token", value: "{{setup_token}}" }], asserts: [A.status(200)],
+  pre: authBody("{ 'X-Bifrost-Setup-Token': pm.variables.get('setup_token') }", "{ is_enabled: true, admin_username: user, admin_password: pass, current_password: pass }"),
+});
+const SETUP_TOKEN = { key: "X-Bifrost-Setup-Token", value: "{{setup_token}}" };
+const WRONG_TOKEN = { key: "X-Bifrost-Setup-Token", value: "mcp-harness-wrong-token" };
+const LOCK_TEXT = "dashboard auth turned off for the test, with the runner's setup token configured, and turned back on at the end";
+
+const OAS17 = folder("OAS-17 Consent under the setup lock", `Setup: ${FLEET}; the full-access VK; ${BOTH}, temp-token auth on, enforce_auth_on_inference off; a registered OAuth client authorizes, giving a consent flow and its temp token; then ${LOCK_TEXT}.`, [
+  ...fleetGrantSetup("OAS-17"), oauthConfig("OAS-17", "both", ["cc.enforce_auth_on_inference = false;"], "setup: mcp_server_auth_mode both, issuer_url set to the base URL, temp-token auth on, enforce_auth_on_inference off"),
+  register("OAS-17", "oas17_client"),
+  authorize("OAS-17", "oas17_client", "oas17_f", "setup: authorize"),
+  authOff("OAS-17"),
+  request("OAS-17", "the flow with only its temp token", "GET", flowPath("oas17_f"), { noAuth: true, headers: [{ key: "X-Bifrost-Temp-Token", value: "{{oas17_f_tt}}" }], asserts: [A.status(401), A.msgEquals("dashboard auth is not configured; send the setup token in the X-Bifrost-Setup-Token header")] }),
+  request("OAS-17", "the flow with a wrong setup token", "GET", flowPath("oas17_f"), { noAuth: true, headers: [{ key: "X-Bifrost-Temp-Token", value: "{{oas17_f_tt}}" }, WRONG_TOKEN], asserts: [A.status(403)] }),
+  request("OAS-17", "the flow with the setup token", "GET", flowPath("oas17_f"), { noAuth: true, headers: [{ key: "X-Bifrost-Temp-Token", value: "{{oas17_f_tt}}" }, SETUP_TOKEN], asserts: [A.status(200), A.custom("available_modes [\"vk\",\"session\"]", ["pm.expect(pm.response.json().available_modes, 'body: ' + pm.response.text()).to.eql(['vk', 'session']);"])] }),
+  authOn("OAS-17"),
+  ...fleetGrantTeardown("OAS-17"),
+]);
+
+const OAS33 = folder("OAS-33 Sessions API needs admin", `Setup: dashboard auth on and no credential; then ${LOCK_TEXT}.`, [
+  request("OAS-33", "GET /api/oauth2/sessions with no credential", "GET", "/api/oauth2/sessions", { noAuth: true, noCookies: true, asserts: [A.status(401)] }),
+  authOff("OAS-33"),
+  request("OAS-33", "GET /api/oauth2/sessions under the setup lock with no token", "GET", "/api/oauth2/sessions", { noAuth: true, noCookies: true, asserts: [A.status(401), A.msgContains("send the setup token in the X-Bifrost-Setup-Token header")] }),
+  authOn("OAS-33"),
+]);
+
+// hostIs sends a request with Host evil.example; noEvil asserts nothing in the response names it.
+const EVIL = { key: "Host", value: "evil.example" };
+const noEvil = () => A.custom("no body field, Location or WWW-Authenticate contains evil.example", [
+  "pm.expect(pm.response.text(), 'body').to.not.include('evil.example');",
+  "pm.expect(pm.response.headers.get('Location') || '').to.not.include('evil.example');",
+  "pm.expect(pm.response.headers.get('WWW-Authenticate') || '').to.not.include('evil.example');",
+]);
+const OAS05 = folder("OAS-05 Spoofed Host", `Setup: ${FLEET}; ${BOTH}, temp-token auth on, enforce_auth_on_inference on (so /mcp answers 401 with WWW-Authenticate); a registered OAuth client. Requests send Host evil.example.`, [
+  readConfig("OAS-05"), ...fleetSetup("OAS-05"),
+  authMode("OAS-05", "B", true),
+  register("OAS-05", "oas05_client"),
+  request("OAS-05", "authorization server metadata", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, headers: [EVIL], asserts: [A.status(200), noEvil(), A.custom("issuer is the base URL", ["pm.expect(pm.response.json().issuer, 'body: ' + pm.response.text()).to.equal(pm.variables.get('base_url'));"])] }),
+  request("OAS-05", "protected resource metadata", "GET", "/.well-known/oauth-protected-resource/mcp", { noAuth: true, headers: [EVIL], asserts: [A.status(200), noEvil(), A.custom("resource is the base URL plus /mcp", ["pm.expect(pm.response.json().resource, 'body: ' + pm.response.text()).to.equal(pm.variables.get('base_url') + '/mcp');"])] }),
+  request("OAS-05", "authorize", "GET", goodAuthorize("oas05_client"), { noAuth: true, noRedirect: true, headers: [EVIL], asserts: [A.status(302), noEvil(), A.custom("the consent Location starts with the issuer", ["pm.expect((pm.response.headers.get('Location') || '').indexOf(pm.variables.get('base_url')), 'Location: ' + pm.response.headers.get('Location')).to.equal(0);"])] }),
+  rpc("OAS-05", "/mcp tools/list with no credential", listMsg, { headers: [MCP_ACCEPT, EVIL], asserts: [A.status(401), noEvil(), A.custom("WWW-Authenticate points at the base URL's resource metadata", ["pm.expect(pm.response.headers.get('WWW-Authenticate'), 'headers').to.equal('Bearer resource_metadata=\"' + pm.variables.get('base_url') + '/.well-known/oauth-protected-resource/mcp\"');"])] }),
+  restoreConfig("OAS-05"), ...fleetTeardown("OAS-05"),
+]);
+
+const SET19 = folder("SET-19 Disabling a per-call client", "Setup: admin credentials; alpha (echo_tool, add_tool) registered as client alpha, auth none, per call, tools_to_execute [\"*\"], then disabled.", [
+  ...setClient("SET-19", {}),
+  request("SET-19", "setup: disable client alpha", "PUT", "/api/mcp/client/set-19-a", { body: { disabled: true }, asserts: [A.status(200)] }),
+  getClient("SET-19", "set-19-a", "its tools are still listed and it is disabled", [toolNamesAre(["add_tool", "echo_tool"]), clientState("disabled")]),
+  execTool("SET-19", "execute alpha-echo_tool", "alpha-echo_tool", [A.status(400), A.msgContains("is not permitted (client alpha is disabled)")]),
+  request("SET-19", "refresh-tools", "POST", "/api/mcp/client/set-19-a/refresh-tools", { asserts: [A.status(400)] }),
+  request("SET-19", "reconnect", "POST", "/api/mcp/client/set-19-a/reconnect", { asserts: [A.status(400), A.msgContains("cannot reconnect a disabled MCP client")] }),
+  deleteClient("SET-19", "set-19-a"),
+]);
+
+const SET20 = folder("SET-20 `disabled: true` on create", "Setup: admin credentials; alpha (echo_tool, add_tool); a sticky client on alpha created with disabled true. Honouring disabled on create is a known issue, so those checks are skipped.", [
+  ...freshServer("SET-20", "alpha", ["echo_tool", "add_tool"]),
+  saveSessions("SET-20", "alpha", "set20_sessions"),
+  createClient("SET-20", httpClient("set20-a", "set20_a", "alpha", { needs_session_stickiness: true, disabled: true, tools_to_execute: ["*"] }), "create the sticky client with disabled true"),
+  getClient("SET-20", "set20-a", "it is stored and reported disabled", [A.skip(configField("disabled", true)), A.skip(clientState("disabled"))]),
+  mockGet("SET-20", "alpha", "no session was opened", [A.skip(sessionsPlus("set20_sessions", 0))]),
+  deleteClient("SET-20", "set20-a"),
+]);
+
+const LIB17_ROUTES = [
+  ["GET", "/api/mcp/library", undefined],
+  ["GET", "/api/mcp/library/filterdata", undefined],
+  ["POST", "/api/mcp/library", {}],
+  ["DELETE", "/api/mcp/library/1", undefined],
+  ["POST", "/api/mcp/library/force-sync", undefined],
+];
+const LIB17 = folder("LIB-17 Library routes without credentials", `Setup: dashboard auth on and no credential; then ${LOCK_TEXT}. Every library route is called: list, filterdata, publish, delete and force-sync.`, [
+  ...LIB17_ROUTES.map(([method, path, body]) => request("LIB-17", `${method} ${path} with no credential`, method, path, { body, noAuth: true, noCookies: true, asserts: [A.status(401), A.msgEquals("Unauthorized")] })),
+  authOff("LIB-17"),
+  ...LIB17_ROUTES.map(([method, path, body]) => request("LIB-17", `${method} ${path} under the setup lock with no token`, method, path, { body, noAuth: true, noCookies: true, asserts: [A.status(401), A.msgContains("X-Bifrost-Setup-Token")] })),
+  request("LIB-17", "GET /api/mcp/library with a wrong setup token", "GET", "/api/mcp/library", { noAuth: true, noCookies: true, headers: [WRONG_TOKEN], asserts: [A.status(403), A.msgEquals("invalid setup token")] }),
+  authOn("LIB-17"),
+]);
+
+const LOG39 = folder("LOG-39 Delete without valid auth", `Setup: ${LOCK_TEXT}; then dashboard auth on with no credential. Each delete names an id that does not exist.`, [
+  authOff("LOG-39"),
+  request("LOG-39", "DELETE /api/mcp-logs under the setup lock with no token", "DELETE", "/api/mcp-logs", { noAuth: true, noCookies: true, body: { ids: ["log39-none"] }, asserts: [A.status(401), A.msgContains("X-Bifrost-Setup-Token")] }),
+  request("LOG-39", "DELETE /api/mcp-logs with a wrong setup token", "DELETE", "/api/mcp-logs", { noAuth: true, noCookies: true, body: { ids: ["log39-none"] }, headers: [WRONG_TOKEN], asserts: [A.status(403)] }),
+  authOn("LOG-39"),
+  request("LOG-39", "DELETE /api/mcp-logs with auth on and no credential", "DELETE", "/api/mcp-logs", { noAuth: true, noCookies: true, body: { ids: ["log39-none"] }, asserts: [A.status(401), A.msgEquals("Unauthorized")] }),
+]);
+
+const INF48 = folder("INF-48 listToolFiles, server binding", `Setup: ${CM_TEXT}; plus alpha (echo_tool, add_tool) registered as client alpha, auth none, per call, which is not a code-mode client. cm is then disabled.`, [
+  ...cmSetup("INF-48"),
+  ...setClient("INF-48", {}),
+  meta("INF-48", "listToolFiles", "listToolFiles", {}, [A.status(200), A.custom("starts \"# Workflow: listToolFiles -> readToolFile\" and lists servers/ with cm.pyi only", [
+    "var c = pm.response.json().content;",
+    "pm.expect(c.indexOf('# Workflow: listToolFiles -> readToolFile'), 'content: ' + c).to.equal(0);",
+    "pm.expect(c).to.include('servers/');",
+    "pm.expect(c.match(/[\\w.-]+\\.pyi/g)).to.eql(['cm.pyi']);",
+  ])]),
+  request("INF-48", "setup: disable cm", "PUT", "/api/mcp/client/inf-48-cm", { body: { disabled: true }, asserts: [A.status(200)] }),
+  meta("INF-48", "listToolFiles with cm disabled", "listToolFiles", {}, [A.status(200), A.custom("says servers are connected but none are configured for code mode", ["pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.include('Servers are connected but none are configured for code mode.');"])]),
+  deleteClient("INF-48", "inf-48-a"),
+  cmTeardown("INF-48"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -6485,12 +6603,12 @@ const collection = {
     section("AUTH Upstream auth", "Upstream auth tests.", [AUTH01, AUTH02, AUTH03, AUTH05, AUTH06, AUTH08, AUTH09, AUTH10, AUTH11, AUTH12, AUTH14, AUTH15, AUTH16, AUTH17, AUTH18, AUTH19, AUTH20, AUTH21, AUTH23, AUTH24, AUTH25, AUTH27, AUTH28, AUTH29, AUTH30, AUTH31, AUTH32, AUTH33, AUTH34, AUTH35, AUTH36, AUTH39, AUTH40, AUTH41, AUTH42, AUTH43, AUTH44, AUTH45, AUTH48]),
     section("CONN Connection types", "Connection type tests.", [CONN02, CONN03, CONN04, CONN05, CONN06, CONN07, CONN09, CONN10, CONN11, CONN12, CONN16, CONN17, CONN18, CONN20, CONN22, CONN23, CONN24, CONN25]),
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP17, EP18, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP49, EP50, EP51, EP53]),
-    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS34, OAS36, OAS38]),
-    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET21, SET22]),
+    section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38]),
+    section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET19, SET20, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV15, GOV16, GOV17, GOV20, GOV21, GOV29, GOV31, GOV32, GOV33]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
-    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
-    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG27, LOG28, LOG29, LOG31, LOG33, LOG37, LOG38, LOG40, LOG41, LOG43]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
+    section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
+    section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG27, LOG28, LOG29, LOG31, LOG33, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19]),
   ],
 };
