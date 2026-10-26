@@ -117,6 +117,33 @@ func TestChatGPTPassthroughRouterRegistersCodexResponsesPost(t *testing.T) {
 	require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
 }
 
+func TestChatGPTPassthroughRouterRegistersCodexModelsGet(t *testing.T) {
+	r := router.New()
+	passthroughRouter := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+	passthroughRouter.RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetStatusCode(fasthttp.StatusNoContent)
+		}
+	})
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+	ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/models?client_version=0.164.0")
+
+	r.Handler(&ctx)
+
+	require.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
+
+	// The router stays limited to Codex's endpoints: other ChatGPT backend paths are not proxied.
+	var other fasthttp.RequestCtx
+	other.Request.Header.SetMethod(fasthttp.MethodGet)
+	other.Request.SetRequestURI("/chatgpt_passthrough/backend-api/me")
+
+	r.Handler(&other)
+
+	require.Equal(t, fasthttp.StatusNotFound, other.Response.StatusCode())
+}
+
 func TestRunwarePassthroughRouterRegistersCatchAll(t *testing.T) {
 	r := router.New()
 	passthroughRouter := NewRunwarePassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
