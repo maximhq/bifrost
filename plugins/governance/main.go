@@ -1205,7 +1205,9 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if isPassthrough || len(toolModels) > 0 {
 		var bodyModels []string
 		if isPassthrough {
-			bodyModels = passthroughBodyModels(req)
+			if p.bodyNamesModels(provider) {
+				bodyModels = passthroughBodyModels(req)
+			}
 			evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
 		}
 		for _, toolModel := range toolModels {
@@ -1481,6 +1483,12 @@ func passthroughBodyModels(req *schemas.BifrostRequest) []string {
 		})
 	}
 	return models
+}
+
+// bodyNamesModels reports whether a passthrough body's "model" is a Bifrost model. SageMaker's is the
+// container's own served name: the endpoint in the path is the model, and the router already set it.
+func (p *GovernancePlugin) bodyNamesModels(provider schemas.ModelProvider) bool {
+	return configuredBaseProvider(p.inMemoryStore, provider) != schemas.SageMaker
 }
 
 // namesModelsAsResources reports whether a provider name reaches Gemini or Vertex, whose bodies

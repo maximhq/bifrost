@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	openai "github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/utils/tokencache"
@@ -14,13 +15,14 @@ import (
 
 // SageMakerProvider implements the Provider interface for SageMaker real-time endpoints.
 type SageMakerProvider struct {
-	logger              schemas.Logger            // Logger for provider operations
-	client              *fasthttp.Client          // fasthttp client for unary requests
-	streamingClient     *fasthttp.Client          // fasthttp client for streaming requests
-	networkConfig       schemas.NetworkConfig     // Network configuration including extra headers
-	sendBackRawRequest  bool                      // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                      // Whether to include raw response in BifrostResponse
-	tokens              *tokencache.Cache[string] // Minted bearer tokens ("Bearer ..."), one slot per credential tuple and region
+	logger              schemas.Logger                     // Logger for provider operations
+	client              *fasthttp.Client                   // fasthttp client for unary requests
+	streamingClient     *fasthttp.Client                   // fasthttp client for streaming requests
+	networkConfig       schemas.NetworkConfig              // Network configuration including extra headers
+	sendBackRawRequest  bool                               // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                               // Whether to include raw response in BifrostResponse
+	tokens              *tokencache.Cache[string]          // Minted bearer tokens ("Bearer ..."), one slot per credential tuple and region
+	creds               *tokencache.Cache[aws.Credentials] // Resolved AWS credentials for SigV4 calls, one slot per credential tuple and region
 }
 
 // NewSageMakerProvider creates a SageMaker provider with its unary and streaming clients.
@@ -49,6 +51,7 @@ func NewSageMakerProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 		tokens:              tokencache.New[string](tokencache.Options{}),
+		creds:               tokencache.New[aws.Credentials](tokencache.Options{}),
 	}, nil
 }
 
@@ -438,14 +441,4 @@ func (provider *SageMakerProvider) ContainerFileContent(_ *schemas.BifrostContex
 // ContainerFileDelete is not supported by the SageMaker provider.
 func (provider *SageMakerProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
-}
-
-// Passthrough is not supported by the SageMaker provider.
-func (provider *SageMakerProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
-}
-
-// PassthroughStream is not supported by the SageMaker provider.
-func (provider *SageMakerProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }

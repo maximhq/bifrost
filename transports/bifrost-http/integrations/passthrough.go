@@ -9,6 +9,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/sagemaker"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -196,6 +197,20 @@ func NewBedrockPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 		},
 		// InvokeAgent answers with an event stream; nothing in its path or body says so.
 		StreamingPath: bedrock.IsPassthroughStreamPath,
+	})
+}
+
+// NewSageMakerPassthroughRouter creates a passthrough router for /sagemaker_passthrough. It forwards only
+// InvokeEndpoint and InvokeEndpointWithResponseStream, for containers Bifrost has no native route for
+// (TEI, LMI's own format, custom images); the endpoint in the path is the model keys and virtual keys allow.
+func NewSageMakerPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+		Provider: schemas.SageMaker,
+		StripPrefix: []string{
+			"/sagemaker_passthrough",
+		},
+		StreamingPath: sagemaker.IsPassthroughStreamPath,
+		PathModel:     sagemaker.PassthroughModel,
 	})
 }
 
