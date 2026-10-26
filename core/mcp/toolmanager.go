@@ -36,19 +36,21 @@ type ClientManager interface {
 	// ctx should see for one client, from the same discovery its tools come
 	// from; "" when it has none.
 	GetInstructionsForClient(ctx context.Context, clientID string) string
+	// GetToolPerClient returns the tools the caller on ctx may call, per client:
+	// the tools part of GetCallerDiscovery, for a caller that wants nothing else.
 	GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool
-	// GetConnectTools returns the connect tools the caller on ctx is offered in
-	// place of the clients with per_user_discovery on they have not connected to.
-	GetConnectTools(ctx context.Context) []schemas.ChatTool
+	// GetCallerDiscovery returns what the caller on ctx sees of the clients for a
+	// request, from one read of each client's discovery: the tools per client,
+	// the connect tools offered in place of the clients with per_user_discovery
+	// on it has not connected to, and, when withInstructions is set, the
+	// upstream `instructions` of the clients it can reach (see CallerDiscovery).
+	GetCallerDiscovery(ctx context.Context, withInstructions bool) CallerDiscovery
 	// ConnectToolClient returns the client whose connect tool toolName is for
 	// the caller on ctx, or nil.
 	ConnectToolClient(ctx context.Context, toolName string) *schemas.MCPClientState
 	// InstructionCaps returns the configured instruction byte caps, zero meaning unset.
 	InstructionCaps() InstructionCaps
 
-	// GetServerInstructions returns the upstream `instructions` of the clients visible to
-	// ctx, scoped by the same rules GetToolPerClient applies.
-	GetServerInstructions(ctx context.Context) []schemas.MCPServerInstructions
 	GetPluginPipeline() PluginPipeline
 	ReleasePluginPipeline(pipeline PluginPipeline)
 	// AcquireClientConn returns a live upstream MCP client connection for the
@@ -82,6 +84,18 @@ type ClientManager interface {
 	// an MCP tool/list/ping outside the gateway path — e.g. nested tool calls
 	// from the Starlark codemode sandbox — to stay in sync with the gateway.
 	RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError)
+}
+
+// CallerDiscovery is the caller's discovery of every MCP client with the
+// visibility rules applied, for a request on its context: the tools of each
+// client it may call, the connect tools it is offered in place of clients with
+// per_user_discovery on it has not connected to, and, when asked for, the
+// instructions of the clients it can reach. Building it reads each client's
+// discovery for the caller once.
+type CallerDiscovery struct {
+	ToolsPerClient map[string][]schemas.ChatTool
+	ConnectTools   []schemas.ChatTool
+	Instructions   []schemas.MCPServerInstructions
 }
 
 // MCPToolExecutor is the per-call executor signature used by the agent loop.
@@ -270,14 +284,14 @@ func precomputeToolSerialization(tools map[string]schemas.ChatTool) {
 }
 
 func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
-	tools, _ := m.availableTools(ctx)
+	tools, _ := m.availableTools(ctx, m.clientManager.GetCallerDiscovery(ctx, false))
 	return tools
 }
 
-// availableTools is GetAvailableTools that also names which of the tools are
-// connect tools; nil when none is.
-func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext) ([]schemas.ChatTool, map[string]struct{}) {
-	availableToolsPerClient := m.clientManager.GetToolPerClient(ctx)
+// availableTools is GetAvailableTools over the caller's discovery, also naming which
+// of the tools are connect tools; nil when none is.
+func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext, callerDiscovery CallerDiscovery) ([]schemas.ChatTool, map[string]struct{}) {
+	availableToolsPerClient := callerDiscovery.ToolsPerClient
 	// Flatten tools from all clients into a single slice, avoiding duplicates
 	var availableTools []schemas.ChatTool
 	var includeCodeModeTools bool
@@ -319,7 +333,7 @@ func (m *ToolsManager) availableTools(ctx *schemas.BifrostContext) ([]schemas.Ch
 	// tool against the caller's grant, and connect is not one of the client's
 	// tools. Its call is checked against the client when it runs.
 	var connectNames map[string]struct{}
-	for _, tool := range m.clientManager.GetConnectTools(ctx) {
+	for _, tool := range callerDiscovery.ConnectTools {
 		name := tool.Function.Name
 		if seenToolNames[name] {
 			continue
@@ -540,7 +554,10 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 		}
 	}
 
-	availableTools, connectNames := m.availableTools(ctx)
+	// One CallerDiscovery gives the request its tools, its connect tools and, on the turn
+	// that has not added them yet, its server instructions.
+	callerDiscovery := m.clientManager.GetCallerDiscovery(ctx, !serverInstructionsInjected(ctx))
+	availableTools, connectNames := m.availableTools(ctx, callerDiscovery)
 	dropStaleConnectTools(ctx, req, connectNames)
 	// A connect tool counts as added only once it is in the request, so a
 	// caller's own tool of the same name is never taken back.
@@ -642,7 +659,7 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 		}
 	}
 
-	m.addServerInstructionsToRequest(ctx, req)
+	m.addServerInstructionsToRequest(ctx, req, callerDiscovery.Instructions)
 	return req
 }
 
@@ -687,6 +704,13 @@ func dropStaleConnectTools(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 	}
 }
 
+// serverInstructionsInjected reports whether an earlier turn of this request already
+// added the server instructions to its prompt.
+func serverInstructionsInjected(ctx *schemas.BifrostContext) bool {
+	injected, ok := ctx.Value(schemas.BifrostContextKeyMCPInstructionsInjected).(bool)
+	return ok && injected
+}
+
 // addServerInstructionsToRequest carries the upstream servers' own usage guidance into the
 // prompt, so a policy set on the MCP server ("always update the doc on a relevant change")
 // reaches the model instead of having to be duplicated into every client's system prompt.
@@ -694,15 +718,17 @@ func dropStaleConnectTools(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 // Unconditional, and it costs tokens plus a changed prompt prefix on every MCP-bearing request.
 // Only mcp_disable_auto_tool_inject suppresses it, and that drops the tools too; the caps are not
 // an off switch, since InstructionCaps clamps a non-positive value back to the default.
-func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+//
+// parts are the instructions of the request's CallerDiscovery, read with its tools.
+func (m *ToolsManager) addServerInstructionsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, parts []schemas.MCPServerInstructions) {
 	// The agent loop re-enters this path once per turn against the same context. Without
 	// this guard the block would be prepended again on every turn, growing the prompt
 	// without bound over a long tool-calling conversation.
-	if injected, ok := ctx.Value(schemas.BifrostContextKeyMCPInstructionsInjected).(bool); ok && injected {
+	if serverInstructionsInjected(ctx) {
 		return
 	}
 
-	instructions := AggregateServerInstructions(m.clientManager.GetServerInstructions(ctx), m.instructionCaps())
+	instructions := AggregateServerInstructions(parts, m.instructionCaps())
 	if instructions == "" {
 		return
 	}

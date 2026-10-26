@@ -65,8 +65,9 @@ func (m *testClientManager) GetToolPerClient(ctx context.Context) map[string][]s
 	return m.tools
 }
 
-func (m *testClientManager) GetConnectTools(context.Context) []schemas.ChatTool {
-	return nil
+// GetCallerDiscovery serves the fake's tools, with no connect tools or instructions.
+func (m *testClientManager) GetCallerDiscovery(ctx context.Context, _ bool) codemcp.CallerDiscovery {
+	return codemcp.CallerDiscovery{ToolsPerClient: m.GetToolPerClient(ctx)}
 }
 
 func (m *testClientManager) ConnectToolClient(context.Context, string) *schemas.MCPClientState {
@@ -75,10 +76,6 @@ func (m *testClientManager) ConnectToolClient(context.Context, string) *schemas.
 
 func (m *testClientManager) InstructionCaps() codemcp.InstructionCaps {
 	return codemcp.InstructionCaps{PerClient: m.perClientCap}
-}
-
-func (m *testClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
-	return nil
 }
 
 func (m *testClientManager) GetPluginPipeline() codemcp.PluginPipeline {

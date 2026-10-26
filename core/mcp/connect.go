@@ -106,37 +106,11 @@ func connectAccessible(ctx context.Context, state *schemas.MCPClientState, logge
 	return true
 }
 
-// GetConnectTools returns the connect tools the caller on ctx is offered: one
-// per client with per_user_discovery on that they can reach and have no
-// discovery for, sorted by client name. A caller with no user or virtual-key
-// identity is offered none, so such a client stays out of their sight.
-func (m *MCPManager) GetConnectTools(ctx context.Context) []schemas.ChatTool {
-	// Snapshot the candidates under the lock and read the store outside it (see
-	// GetToolPerClient). A manager with no such client allocates nothing.
-	var candidates []*schemas.MCPClientState
-	m.mu.RLock()
-	for _, client := range m.clientMap {
-		if perUserDiscoveryOn(client.ExecutionConfig) {
-			snapshot := *client
-			candidates = append(candidates, &snapshot)
-		}
-	}
-	m.mu.RUnlock()
-	if len(candidates) == 0 || !connectCaller(ctx) {
-		return nil
-	}
-	slices.SortFunc(candidates, func(a, b *schemas.MCPClientState) int {
-		return strings.Compare(a.ExecutionConfig.Name, b.ExecutionConfig.Name)
-	})
-	var tools []schemas.ChatTool
-	for _, client := range candidates {
-		if !connectAccessible(ctx, client, m.logger) || m.discoveryStore.GetDiscovery(ctx, client.ExecutionConfig) != nil {
-			continue
-		}
-		tools = append(tools, connectTool(client.ExecutionConfig))
-	}
-	return tools
-}
+// The connect tools a caller is offered are part of its CallerDiscovery: one per
+// client with per_user_discovery on that they can reach (connectAccessible) and
+// have no discovery for, in client-name order. A caller with no user or
+// virtual-key identity (connectCaller) is offered none, so such a client stays
+// out of their sight.
 
 // ConnectToolClient returns the client whose connect tool toolName is for the
 // caller on ctx, or nil. A client's upstream may itself list a tool named
