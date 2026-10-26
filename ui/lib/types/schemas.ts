@@ -1823,6 +1823,7 @@ export const mcpClientUpdateSchema = z
 		is_code_mode_client: z.boolean().optional(),
 		is_ping_available: z.boolean().optional(),
 		needs_session_stickiness: z.boolean().optional(),
+		per_user_discovery: z.boolean().optional(),
 		allow_by_default: z.boolean().optional(),
 		disabled: z.boolean().optional(),
 		// openapi clients only; undefined = leave the stored document alone.
