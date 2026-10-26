@@ -169,7 +169,7 @@ func TestGeneric(t *testing.T) {
 // ignore_provider_cost drops what the upstream reports and nothing else: the operator's flat fee
 // and unit pricing are not provider-reported and keep applying, on both relay paths.
 func testIgnoreProviderCostKeepsOperatorFees(t *testing.T) {
-	cfg := &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{
+	cfg := &schemas.GenericProviderConfig{SkipRouteCheck: true, Usage: &schemas.GenericUsageConfig{
 		CostPath: "usage.cost", CostPerRequest: schemas.Ptr(0.01), UnitsPath: "pages", CostPerUnit: schemas.Ptr(0.002),
 	}}
 	build := func(up *upstream) *GenericProvider {
@@ -218,7 +218,7 @@ func testIgnoreProviderCostKeepsOperatorFees(t *testing.T) {
 func testUnitPricingEndToEnd(t *testing.T) {
 	t.Run("response pages", func(t *testing.T) {
 		up := jsonUpstream(t, http.StatusOK, `{"Blocks":[],"DocumentMetadata":{"Pages":3}}`)
-		provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: schemas.Ptr(0.0015)}})
+		provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Usage: &schemas.GenericUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: schemas.Ptr(0.0015)}})
 		resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/", "", `{"Document":{"Bytes":"aGk="}}`, nil))
 		require.Nil(t, bifrostErr)
 		require.NotNil(t, resp.PassthroughUsage)
@@ -227,7 +227,7 @@ func testUnitPricingEndToEnd(t *testing.T) {
 	})
 	t.Run("request characters", func(t *testing.T) {
 		up := jsonUpstream(t, http.StatusOK, `{"TranslatedText":"hallo"}`)
-		provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{UnitsPath: "Text", UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsChars, CostPerUnit: schemas.Ptr(0.001)}})
+		provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Usage: &schemas.GenericUsageConfig{UnitsPath: "Text", UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsChars, CostPerUnit: schemas.Ptr(0.001)}})
 		resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/", "", `{"Text":"hello","SourceLanguageCode":"en","TargetLanguageCode":"de"}`, map[string]string{"content-type": "application/x-amz-json-1.1"}))
 		require.Nil(t, bifrostErr)
 		require.NotNil(t, resp.PassthroughUsage.Cost)
@@ -239,7 +239,7 @@ func testUnitPricingEndToEnd(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ID3\x00binary"))
 		})
-		provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsBodyBytes, CostPerUnit: schemas.Ptr(0.01)}})
+		provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Usage: &schemas.GenericUsageConfig{UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsBodyBytes, CostPerUnit: schemas.Ptr(0.01)}})
 		ssml := "<speak>Hi</speak>"
 		ch, bifrostErr := provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("k"), relayRequest(http.MethodPost, "/cognitiveservices/v1", "", ssml, map[string]string{"content-type": "application/ssml+xml"}))
 		require.Nil(t, bifrostErr)
@@ -272,8 +272,8 @@ func testRedirectsAreReturnedNotFollowed(t *testing.T) {
 		name string
 		cfg  *schemas.GenericProviderConfig
 	}{
-		{"header auth", &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "Ocp-Apim-Subscription-Key"}}},
-		{"query auth", &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "api_key"}}},
+		{"header auth", &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "Ocp-Apim-Subscription-Key"}}},
+		{"query auth", &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "api_key"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			provider := newProvider(t, origin, tc.cfg)
@@ -313,7 +313,7 @@ func testTransportErrorRedactsQueryCredential(t *testing.T) {
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			CustomProviderKey: "dead",
 			BaseProviderType:  schemas.Generic,
-			GenericConfig:     &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "api_key"}},
+			GenericConfig:     &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "api_key"}},
 		},
 	}, &testLogger{})
 	require.NoError(t, err)
@@ -352,7 +352,7 @@ func sigv4Key(region string) schemas.Key {
 // for the configured service: this is what puts Textract and Translate behind Bifrost.
 func testSigV4SignsRequest(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{"Blocks":[]}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}}})
 
 	body := `{"Document":{"Bytes":"aGk="}}`
 	resp, bifrostErr := provider.Passthrough(testCtx(t), sigv4Key("us-east-1"), relayRequest(http.MethodPost, "/", "", body, map[string]string{"x-amz-target": "Textract.DetectDocumentText", "content-type": "application/x-amz-json-1.1"}))
@@ -371,7 +371,7 @@ func testSigV4SignsRequest(t *testing.T) {
 
 	t.Run("region falls back to the key", func(t *testing.T) {
 		up := jsonUpstream(t, http.StatusOK, `{}`)
-		provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "translate"}}})
+		provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "translate"}}})
 		_, bifrostErr := provider.Passthrough(testCtx(t), sigv4Key("eu-west-1"), relayRequest(http.MethodPost, "/", "", `{}`, nil))
 		require.Nil(t, bifrostErr)
 		got := up.requests()
@@ -381,7 +381,7 @@ func testSigV4SignsRequest(t *testing.T) {
 
 	t.Run("a region in the provider config is not read", func(t *testing.T) {
 		var cfg schemas.GenericProviderConfig
-		require.NoError(t, json.Unmarshal([]byte(`{"auth":{"type":"aws_sigv4","aws":{"service":"translate","region":"eu-west-1"}}}`), &cfg))
+		require.NoError(t, json.Unmarshal([]byte(`{"skip_route_check":true,"auth":{"type":"aws_sigv4","aws":{"service":"translate","region":"eu-west-1"}}}`), &cfg))
 		up := jsonUpstream(t, http.StatusOK, `{}`)
 		provider := newProvider(t, up, &cfg)
 		_, bifrostErr := provider.Passthrough(testCtx(t), sigv4Key("us-east-1"), relayRequest(http.MethodPost, "/", "", `{}`, nil))
@@ -394,7 +394,7 @@ func testSigV4SignsRequest(t *testing.T) {
 
 func testSigV4MissingRegion(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}}})
 	_, bifrostErr := provider.Passthrough(testCtx(t), sigv4Key(""), relayRequest(http.MethodPost, "/", "", `{}`, nil))
 	require.NotNil(t, bifrostErr)
 	assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
@@ -406,7 +406,7 @@ func testSigV4MissingRegion(t *testing.T) {
 // signing so a stale caller signature can never be forwarded or folded into ours.
 func testSigV4DropsCallerSignatureHeaders(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}}})
 	_, bifrostErr := provider.Passthrough(testCtx(t), sigv4Key("us-east-1"), relayRequest(http.MethodPost, "/", "", `{}`, map[string]string{
 		"x-amz-date": "20200101T000000Z", "x-amz-security-token": "caller-token", "x-amz-content-sha256": "deadbeef", "authorization": "AWS4-HMAC-SHA256 Credential=CALLER/...",
 		"x-amz-target": "Textract.AnalyzeDocument", "x-amz-copy-source": "/other-bucket/secret.csv", "x-amz-acl": "public-read",
@@ -426,7 +426,8 @@ func testSigV4DropsCallerSignatureHeaders(t *testing.T) {
 	operator, err := NewGenericProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{BaseURL: up.server.URL, DefaultRequestTimeoutInSeconds: 5, ExtraHeaders: map[string]schemas.SecretVar{"X-Amz-Server-Side-Encryption": *schemas.NewSecretVar("aws:kms")}},
 		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "s3", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{
-			Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "s3"}},
+			SkipRouteCheck: true,
+			Auth:           schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "s3"}},
 		}},
 	}, &testLogger{})
 	require.NoError(t, err)
@@ -442,7 +443,7 @@ func testSigV4DropsCallerSignatureHeaders(t *testing.T) {
 
 func testRelayPOSTBearer(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{"results":[1,2],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{InputTokensPath: "usage.prompt_tokens", OutputTokensPath: "usage.completion_tokens", TotalTokensPath: "usage.total_tokens"}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Usage: &schemas.GenericUsageConfig{InputTokensPath: "usage.prompt_tokens", OutputTokensPath: "usage.completion_tokens", TotalTokensPath: "usage.total_tokens"}})
 
 	resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("sk-upstream"), relayRequest(http.MethodPost, "/search", "", `{"query":"bifrost"}`, map[string]string{"x-trace": "abc"}))
 	require.Nil(t, bifrostErr)
@@ -467,7 +468,7 @@ func testRelayPOSTBearer(t *testing.T) {
 
 func testRelayGETQueryAuth(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{"ok":true}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "api_key"}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "api_key"}})
 
 	resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("q-secret"), relayRequest(http.MethodGet, "/v1/weather", "city=Paris", "", nil))
 	require.Nil(t, bifrostErr)
@@ -482,7 +483,7 @@ func testRelayGETQueryAuth(t *testing.T) {
 
 func testHeaderAuthWithPrefix(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "Ocp-Apim-Subscription-Key", ValuePrefix: "key-"}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "Ocp-Apim-Subscription-Key", ValuePrefix: "key-"}})
 
 	_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("abc"), relayRequest(http.MethodPost, "/cognitiveservices/v1", "", `<speak/>`, nil))
 	require.Nil(t, bifrostErr)
@@ -494,7 +495,7 @@ func testHeaderAuthWithPrefix(t *testing.T) {
 
 func testBasicAuth(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthBasic}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthBasic}})
 
 	_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("user:pass"), relayRequest(http.MethodGet, "/me", "", "", nil))
 	require.Nil(t, bifrostErr)
@@ -505,7 +506,7 @@ func testBasicAuth(t *testing.T) {
 
 func testNoneAuthKeyless(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthNone}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthNone}})
 
 	_, bifrostErr := provider.Passthrough(testCtx(t), schemas.Key{}, relayRequest(http.MethodGet, "/public", "", "", nil))
 	require.Nil(t, bifrostErr)
@@ -519,7 +520,7 @@ func testNoneAuthKeyless(t *testing.T) {
 func testCallerCredentialsStripped(t *testing.T) {
 	t.Run("header", func(t *testing.T) {
 		up := jsonUpstream(t, http.StatusOK, `{}`)
-		provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "x-api-key"}})
+		provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "x-api-key"}})
 		_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("real"), relayRequest(http.MethodPost, "/post", "", `{}`, map[string]string{"X-Api-Key": "caller-key", "authorization": "Bearer caller"}))
 		require.Nil(t, bifrostErr)
 		got := up.requests()
@@ -529,7 +530,7 @@ func testCallerCredentialsStripped(t *testing.T) {
 	})
 	t.Run("query", func(t *testing.T) {
 		up := jsonUpstream(t, http.StatusOK, `{}`)
-		provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "key"}})
+		provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "key"}})
 		_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("real"), relayRequest(http.MethodGet, "/get", "key=caller&q=1", "", nil))
 		require.Nil(t, bifrostErr)
 		got := up.requests()
@@ -551,7 +552,7 @@ func testCallerCredentialsStripped(t *testing.T) {
 
 func testHostPinning(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
-	provider := newProvider(t, up, nil)
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true})
 	for _, path := range []string{"//evil.example/x", "@evil.example/x", "https://evil.example/x"} {
 		_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodGet, path, "", "", nil))
 		require.NotNil(t, bifrostErr, "path %q must be refused", path)
@@ -562,7 +563,7 @@ func testHostPinning(t *testing.T) {
 
 func testNon2xxReturnsNilUsage(t *testing.T) {
 	up := jsonUpstream(t, http.StatusTooManyRequests, `{"error":"slow down","usage":{"total_tokens":5}}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)}})
 
 	resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/search", "", `{}`, nil))
 	require.Nil(t, bifrostErr, "upstream errors are relayed, not converted")
@@ -573,8 +574,9 @@ func testNon2xxReturnsNilUsage(t *testing.T) {
 func testNonBillableRoute(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{"status":"done"}`)
 	provider := newProvider(t, up, &schemas.GenericProviderConfig{
-		Usage:  &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)},
-		Routes: []schemas.GenericRouteConfig{{Method: "GET", Path: "/jobs/*", Billable: schemas.Ptr(false)}},
+		SkipRouteCheck: true,
+		Usage:          &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)},
+		Routes:         []schemas.GenericRouteConfig{{Method: "GET", Path: "/jobs/*", Billable: schemas.Ptr(false)}},
 	})
 
 	resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodGet, "/jobs/123", "", "", nil))
@@ -598,7 +600,7 @@ func testResponseTooLarge(t *testing.T) {
 	t.Cleanup(func() { genericPassthroughMaxResponseBytes = orig })
 
 	up := jsonUpstream(t, http.StatusOK, strings.Repeat("x", 64))
-	provider := newProvider(t, up, nil)
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true})
 	_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodGet, "/big", "", "", nil))
 	require.NotNil(t, bifrostErr)
 	assert.Equal(t, http.StatusBadGateway, *bifrostErr.StatusCode)
@@ -613,7 +615,7 @@ func testStreamSSEObservesUsage(t *testing.T) {
 		_, _ = w.Write([]byte("data: {\"delta\":\"lo\",\"usage\":{\"input_tokens\":2,\"output_tokens\":5}}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	})
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{InputTokensPath: "usage.input_tokens", OutputTokensPath: "usage.output_tokens", CostPerRequest: schemas.Ptr(0.002)}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Usage: &schemas.GenericUsageConfig{InputTokensPath: "usage.input_tokens", OutputTokensPath: "usage.output_tokens", CostPerRequest: schemas.Ptr(0.002)}})
 
 	ch, bifrostErr := provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("k"), relayRequest(http.MethodPost, "/chat/stream", "", `{"stream":true}`, nil))
 	require.Nil(t, bifrostErr)
@@ -634,7 +636,7 @@ func testStreamNonSSEUsesDefaultUsage(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ID3\x00\x00binary"))
 	})
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.5)}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.5)}})
 
 	ch, bifrostErr := provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("k"), relayRequest(http.MethodPost, "/tts/stream", "", `{"text":"hi"}`, nil))
 	require.Nil(t, bifrostErr)
@@ -698,7 +700,7 @@ func testStreamSSEBilledByBodyChars(t *testing.T) {
 
 func testUnsupportedOperations(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
-	provider := newProvider(t, up, nil)
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true})
 	assert.Equal(t, schemas.ModelProvider("echo"), provider.GetProviderKey())
 
 	_, bifrostErr := provider.ChatCompletion(testCtx(t), bearerKey("k"), &schemas.BifrostChatRequest{Model: "x"})
@@ -720,6 +722,7 @@ func testAllowedRequestsGate(t *testing.T) {
 			CustomProviderKey: "gated",
 			BaseProviderType:  schemas.Generic,
 			AllowedRequests:   &schemas.AllowedRequests{Passthrough: true},
+			GenericConfig:     &schemas.GenericProviderConfig{SkipRouteCheck: true},
 		},
 	}, &testLogger{})
 	require.NoError(t, err)
@@ -736,7 +739,7 @@ func testAllowedRequestsGate(t *testing.T) {
 // still measured.
 func TestGenericRequestBilledBodyMustBeUnambiguous(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Routes: []schemas.GenericRouteConfig{{
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Routes: []schemas.GenericRouteConfig{{
 		Method: "POST", Path: "/translate",
 		Usage: &schemas.GenericUsageConfig{UnitsPath: "Text", UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsChars, CostPerUnit: schemas.Ptr(0.001)},
 	}}})
@@ -762,7 +765,7 @@ func TestNewGenericProviderRequiresBaseURL(t *testing.T) {
 
 	_, err = NewGenericProvider(&schemas.ProviderConfig{
 		NetworkConfig:        schemas.NetworkConfig{BaseURL: "https://api.example.com"},
-		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: "magic"}}},
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: "magic"}}},
 	}, &testLogger{})
 	require.Error(t, err, "an invalid relay config is refused at construction")
 }
@@ -789,7 +792,7 @@ func TestGenericOperatorHeadersWinOverCaller(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
 	provider, err := NewGenericProvider(&schemas.ProviderConfig{
 		NetworkConfig:        schemas.NetworkConfig{BaseURL: up.server.URL, DefaultRequestTimeoutInSeconds: 5, ExtraHeaders: map[string]schemas.SecretVar{"X-Tenant": *schemas.NewSecretVar("ops")}},
-		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{}},
+		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{SkipRouteCheck: true}},
 	}, &testLogger{})
 	require.NoError(t, err)
 	_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/search", "", `{}`, map[string]string{"x-tenant": "evil", "x-trace": "abc"}))
@@ -808,8 +811,7 @@ func TestGenericIgnoresContextExtraHeaders(t *testing.T) {
 	provider, err := NewGenericProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{BaseURL: up.server.URL, DefaultRequestTimeoutInSeconds: 5, ExtraHeaders: map[string]schemas.SecretVar{"X-Tenant": *schemas.NewSecretVar("ops")}},
 		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{
-			StrictRoutes: true,
-			Routes:       []schemas.GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}}},
+			Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}}},
 		}},
 	}, &testLogger{})
 	require.NoError(t, err)
@@ -831,8 +833,7 @@ func TestGenericRefusesHeaderUnderTwoSpellings(t *testing.T) {
 	provider, err := NewGenericProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{BaseURL: up.server.URL, DefaultRequestTimeoutInSeconds: 5},
 		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{
-			StrictRoutes: true,
-			Routes:       []schemas.GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}}},
+			Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}}},
 		}},
 	}, &testLogger{})
 	require.NoError(t, err)
@@ -853,28 +854,29 @@ func TestNewGenericProviderRefusesExtraHeaderSpellings(t *testing.T) {
 			"X-Amz-Target": *schemas.NewSecretVar("Textract.GetDocumentAnalysis"),
 			"x-amz-target": *schemas.NewSecretVar("Textract.AnalyzeDocument"),
 		}},
-		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{}},
+		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{SkipRouteCheck: true}},
 	}, &testLogger{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "two spellings")
 }
 
-// strict_routes holds on the Go SDK path too: the provider refuses an unlisted operation with 404
+// The route check holds on the Go SDK path too: the provider refuses an unlisted operation with 404
 // before anything is sent, the same way the HTTP transport does.
-func TestGenericStrictRoutesRefusedBeforeAuth(t *testing.T) {
+func TestGenericRouteCheckRefusedBeforeAuth(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
 	provider := newProvider(t, up, &schemas.GenericProviderConfig{
-		Auth:         schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}},
-		StrictRoutes: true, Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/listed"}},
+		Auth:   schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}},
+		Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/listed"}},
 	})
 	_, bifrostErr := provider.Passthrough(testCtx(t), sigv4Key(""), relayRequest(http.MethodPost, "/other", "", `{}`, nil))
 	require.NotNil(t, bifrostErr)
 	assert.Equal(t, http.StatusNotFound, *bifrostErr.StatusCode, "an unlisted route is a 404 even when the key has no region to sign with")
 }
 
-func TestGenericStrictRoutesOnProvider(t *testing.T) {
+// The routes list is an allowlist by default: an unlisted operation is a 404 and never sent.
+func TestGenericRouteCheckOnProvider(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{StrictRoutes: true, Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/search"}}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/search"}}})
 	_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/other", "", `{}`, nil))
 	require.NotNil(t, bifrostErr)
 	assert.Equal(t, http.StatusNotFound, *bifrostErr.StatusCode)
@@ -885,14 +887,23 @@ func TestGenericStrictRoutesOnProvider(t *testing.T) {
 	resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/search", "", `{}`, nil))
 	require.Nil(t, bifrostErr)
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "a listed operation is relayed")
+
+	t.Run("skip_route_check relays an unlisted operation", func(t *testing.T) {
+		up := jsonUpstream(t, http.StatusOK, `{}`)
+		provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/search"}}})
+		resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/other", "", `{}`, nil))
+		require.Nil(t, bifrostErr)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Len(t, up.requests(), 1)
+	})
 }
 
 // A job accounting poll (an internal request, run with the plugin pipeline skipped) reaches the
-// upstream under strict_routes even when the poll operation is not a listed route: the allowlist
+// upstream even when the poll operation is not a listed route: the allowlist
 // is for callers, and the poll is the operator's own request.
-func TestGenericInternalPollBypassesStrictRoutes(t *testing.T) {
+func TestGenericInternalPollBypassesRouteCheck(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{"JobStatus":"SUCCEEDED"}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{StrictRoutes: true, Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/start"}}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/start"}}})
 	poll := relayRequest(http.MethodGet, "/jobs/42", "", "", nil)
 	_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("k"), poll)
 	require.NotNil(t, bifrostErr, "a caller's unlisted operation is still refused")
@@ -906,7 +917,7 @@ func TestGenericInternalPollBypassesStrictRoutes(t *testing.T) {
 
 	// Nor do the caller billing checks: a bodyless poll on a provider billed per request character
 	// would otherwise be refused with 400 and the job parked unpriced.
-	billed := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{UnitsPath: "Text", UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsChars, CostPerUnit: schemas.Ptr(0.001)}})
+	billed := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Usage: &schemas.GenericUsageConfig{UnitsPath: "Text", UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsChars, CostPerUnit: schemas.Ptr(0.001)}})
 	_, bifrostErr = billed.Passthrough(testCtx(t), bearerKey("k"), relayRequest(http.MethodPost, "/poll", "", "", nil))
 	require.NotNil(t, bifrostErr, "a caller's unmeasurable body is refused")
 	resp, bifrostErr = billed.Passthrough(ctx, bearerKey("k"), relayRequest(http.MethodPost, "/poll", "", "", nil))
@@ -917,7 +928,8 @@ func TestGenericInternalPollBypassesStrictRoutes(t *testing.T) {
 func TestGenericJobStartHandle(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{"JobId":"job-42"}`)
 	provider := newProvider(t, up, &schemas.GenericProviderConfig{
-		Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01), UnitsPath: "DocumentMetadata.Pages", CostPerUnit: schemas.Ptr(0.0015)},
+		SkipRouteCheck: true,
+		Usage:          &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01), UnitsPath: "DocumentMetadata.Pages", CostPerUnit: schemas.Ptr(0.0015)},
 		Routes: []schemas.GenericRouteConfig{{
 			Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Start*"},
 			Usage: &schemas.GenericUsageConfig{CostPerUnit: schemas.Ptr(0.0)},
@@ -991,7 +1003,8 @@ func TestGenericJobStartHandle(t *testing.T) {
 func TestGenericStreams(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
 	provider := newProvider(t, up, &schemas.GenericProviderConfig{
-		Streaming: &schemas.GenericStreamingConfig{Paths: []string{"/v1/live/**"}, DetectFromAcceptHeader: true},
+		SkipRouteCheck: true,
+		Streaming:      &schemas.GenericStreamingConfig{Paths: []string{"/v1/live/**"}, DetectFromAcceptHeader: true},
 		Routes: []schemas.GenericRouteConfig{
 			{Method: "POST", Path: "/v1/stream-but-not", Stream: schemas.Ptr(false)},
 			{Method: "POST", Path: "/v1/events", Stream: schemas.Ptr(true)},
@@ -1002,7 +1015,7 @@ func TestGenericStreams(t *testing.T) {
 	assert.True(t, provider.Plan("GET", "/v1/live/room/1", "", false, nil).Streams, "streaming.paths glob")
 	assert.True(t, provider.Plan("POST", "/v1/chat", "text/event-stream", false, nil).Streams, "Accept header when enabled")
 	assert.False(t, provider.Plan("POST", "/v1/chat", "", true, nil).Streams, "a caller's stream flag is not a signal unless the operator opted in: the streaming relay skips response-side billing")
-	optIn := newProvider(t, up, &schemas.GenericProviderConfig{Streaming: &schemas.GenericStreamingConfig{DetectFromBody: true}})
+	optIn := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Streaming: &schemas.GenericStreamingConfig{DetectFromBody: true}})
 	assert.True(t, optIn.Plan("POST", "/v1/chat", "", true, nil).Streams, "body stream flag when enabled")
 	assert.False(t, optIn.Plan("POST", "/v1/chat", "", false, nil).Streams)
 	assert.False(t, provider.Plan("POST", "/v1/chat/stream", "", false, nil).Streams, "the path's wording is not a signal: a non-SSE reply would be forwarded unread and under-billed")
@@ -1049,7 +1062,8 @@ func BenchmarkGenericPassthroughSigV4(b *testing.B) {
 	provider, err := NewGenericProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 5},
 		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "bench", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{
-			Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}},
+			SkipRouteCheck: true,
+			Auth:           schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}},
 		}},
 	}, &testLogger{})
 	if err != nil {
@@ -1072,7 +1086,7 @@ func BenchmarkGenericPassthroughSigV4(b *testing.B) {
 // an OpenAPI import produces. Plan runs once per request in the transport and the relay reuses it
 // through the context, so this is the whole per-request matching cost.
 func BenchmarkGenericRoutePlan(b *testing.B) {
-	cfg := &schemas.GenericProviderConfig{StrictRoutes: true}
+	cfg := &schemas.GenericProviderConfig{}
 	for i := 0; i < 200; i++ {
 		cfg.Routes = append(cfg.Routes, schemas.GenericRouteConfig{Method: "POST", Path: fmt.Sprintf("/v1/resource%d/*/action", i)})
 	}
@@ -1114,7 +1128,7 @@ func TestGenericSkipsContextExtraHeaders(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
 	provider, err := NewGenericProvider(&schemas.ProviderConfig{
 		NetworkConfig:        schemas.NetworkConfig{BaseURL: up.server.URL, DefaultRequestTimeoutInSeconds: 5, ExtraHeaders: map[string]schemas.SecretVar{"X-Tenant": *schemas.NewSecretVar("ops")}},
-		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{}},
+		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{SkipRouteCheck: true}},
 	}, &testLogger{})
 	require.NoError(t, err)
 	ctx := testCtx(t)
@@ -1147,7 +1161,7 @@ func TestGenericDecodesCompressedReplies(t *testing.T) {
 	})
 	provider, err := NewGenericProvider(&schemas.ProviderConfig{
 		NetworkConfig:        schemas.NetworkConfig{BaseURL: up.server.URL, DefaultRequestTimeoutInSeconds: 5, ExtraHeaders: map[string]schemas.SecretVar{"Accept-Encoding": *schemas.NewSecretVar("gzip")}},
-		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{TotalTokensPath: "usage.total_tokens"}}},
+		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{SkipRouteCheck: true, Usage: &schemas.GenericUsageConfig{TotalTokensPath: "usage.total_tokens"}}},
 	}, &testLogger{})
 	require.NoError(t, err)
 
@@ -1168,7 +1182,7 @@ func TestGenericDecodesCompressedReplies(t *testing.T) {
 // credential is added, so the error the caller sees never carries the key.
 func TestGenericURLErrorsNeverCarryTheQueryKey(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "api_key"}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{SkipRouteCheck: true, Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthQuery, QueryParam: "api_key"}})
 	_, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("SECRET"), relayRequest(http.MethodPost, "/bad\npath", "q=x", `{}`, nil))
 	require.NotNil(t, bifrostErr)
 	require.NotNil(t, bifrostErr.Error)
@@ -1200,7 +1214,7 @@ func TestGenericJobPollHeadersOverrideExtraHeaders(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{}`)
 	provider, err := NewGenericProvider(&schemas.ProviderConfig{
 		NetworkConfig:        schemas.NetworkConfig{BaseURL: up.server.URL, DefaultRequestTimeoutInSeconds: 5, ExtraHeaders: map[string]schemas.SecretVar{"X-Amz-Target": *schemas.NewSecretVar("Textract.StartDocumentAnalysis")}},
-		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{}},
+		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{SkipRouteCheck: true}},
 	}, &testLogger{})
 	require.NoError(t, err)
 	poll := map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis", "authorization": "Bearer poll-should-not-pass"}

@@ -126,7 +126,7 @@ function toFormValues(cfg: GenericProviderConfig | undefined, allowed?: AllowedR
 			billable: r.billable,
 			usage: { ...emptyRouteUsage, ...(r.usage ?? {}) },
 		})),
-		strict_routes: cfg?.strict_routes ?? false,
+		skip_route_check: cfg?.skip_route_check ?? false,
 	};
 }
 
@@ -186,7 +186,7 @@ function toConfig(values: FormValues): GenericProviderConfig {
 			usage: cleanUsage(r.usage, true),
 		}));
 	}
-	if (values.strict_routes) cfg.strict_routes = true;
+	if (values.skip_route_check) cfg.skip_route_check = true;
 	return cfg;
 }
 
@@ -388,7 +388,6 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 				if (result.auth.header_name) form.setValue("auth.header_name", result.auth.header_name, { shouldDirty: true });
 				if (result.auth.query_param) form.setValue("auth.query_param", result.auth.query_param, { shouldDirty: true });
 			}
-			if (result.routes.length > 0 && !result.partial) form.setValue("strict_routes", true, { shouldDirty: true });
 			toast.success(`Imported ${result.routes.length} operations from ${result.title || "the document"}`);
 		} catch (err) {
 			setImported(null);
@@ -523,7 +522,7 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 		/>
 	);
 	const unitsMeasure = form.watch("usage.units_measure");
-	const strictRoutes = form.watch("strict_routes");
+	const skipRouteCheck = form.watch("skip_route_check");
 
 	return (
 		<Form {...form}>
@@ -620,8 +619,8 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 							<AccordionContent className="space-y-3 pt-4 pb-0" data-testid="generic-openapi-import-section">
 								<p className="text-muted-foreground text-sm">
 									Import the API&apos;s OpenAPI or Swagger document (paste, upload or fetch it). Its operations become the routes below, its
-									security scheme sets the auth type, and &quot;Only allow the routes above&quot; is switched on. After a partial import
-									(see the warnings), add the missing routes and switch it on yourself. The document itself is not stored.
+									security scheme sets the auth type. Only the routes listed are relayed, so after a partial import (see the warnings) calls
+									to the missing operations are refused until you add them. The document itself is not stored.
 									{routes.fields.length > 0 && (
 										<span className="text-foreground" data-testid="generic-openapi-import-replace-note">
 											{" "}
@@ -903,19 +902,19 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 						</Button>
 					</div>
 					{switchField(
-						"strict_routes",
-						"Only allow the routes above",
-						"On: any other call is refused with 404 before it reaches the API. Off: other calls go through and are charged with the pricing below; only POST calls are billable unless a route says otherwise",
-						"generic-strict-routes-switch",
-						"Turns the routes list into an allowlist, so your key cannot be used for operations you have not priced. With it off, a call that matches no route still reaches the API: a POST is counted and charged with the main pricing, and GET, PUT, PATCH, DELETE and HEAD calls are logged but not charged. On by default; with no routes yet, every call is refused until you add one.",
+						"skip_route_check",
+						"Skip the route check",
+						"Off: only the routes above are relayed; any other call is refused with 404. On: calls that match no route also go through and are charged with the pricing below; only POST calls are billable unless a route says otherwise.",
+						"generic-skip-route-check-switch",
+						"Off by default, so the routes list is an allowlist and your key cannot be used for operations you have not priced; with no routes yet, every call is refused until you add one. Turned on, a call that matches no route still reaches the API: a POST is counted and charged with the main pricing, and GET, PUT, PATCH, DELETE and HEAD calls are logged but not charged.",
 					)}
-					{!strictRoutes && (
+					{skipRouteCheck && (
 						<Alert variant="warning" data-testid="generic-all-routes-warning">
 							<AlertTriangle />
 							<AlertDescription>
 								Every path on this API is reachable with your key, including operations you have not priced or reviewed (deletes, admin and
-								account endpoints). Only GET, PUT, PATCH, DELETE and HEAD calls outside the routes are free. Switch on &quot;Only allow the
-								routes above&quot; unless every caller is trusted.
+								account endpoints). Only GET, PUT, PATCH, DELETE and HEAD calls outside the routes are free. Leave the route check on unless
+								every caller is trusted.
 							</AlertDescription>
 						</Alert>
 					)}

@@ -285515,14 +285515,14 @@
           }
         },
         {
-          "name": "280.23 POST /passthrough/generic_echo_strict/post - a listed route is relayed under strict_routes (generic passthrough) - #8784",
+          "name": "280.23 POST /passthrough/generic_echo_strict/post - a listed route is relayed by the default route check (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// generic_echo_strict lists POST /post and GET /get with strict_routes on: the list is an allowlist.",
+                  "// generic_echo_strict lists POST /post and GET /get and no skip_route_check: the list is an allowlist by default.",
                   "pm.test('generic relay: listed route relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
                   "var j = pm.response.json();",
                   "pm.test('generic relay: body relayed', function () { pm.expect(j.json, JSON.stringify(j.json)).to.eql({q: 'hi'}); });",
@@ -285557,7 +285557,7 @@
           }
         },
         {
-          "name": "[EXPECT-404] 280.24 DELETE /passthrough/generic_echo_strict/delete - an unlisted operation is refused under strict_routes (generic passthrough) - #8784",
+          "name": "[EXPECT-404] 280.24 DELETE /passthrough/generic_echo_strict/delete - an unlisted operation is refused by the default route check (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -285566,7 +285566,7 @@
                 "exec": [
                   "pm.test('generic relay: unlisted operation is a 404', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
-                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('strict_routes');",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('skip_route_check');",
                   "});",
                   "pm.test('generic relay: refused before dispatch', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'no provider header on a router refusal').to.be.undefined; });"
                 ]

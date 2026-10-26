@@ -13,7 +13,7 @@ What Bifrost still does on every call:
 - Selects a key from the provider's key pool and injects it the way the API expects (bearer, custom header, query parameter, HTTP basic, or AWS Signature V4). Caller credentials are stripped.
 - Pins the upstream host to the provider's `network_config.base_url`.
 - On every call it dispatches, runs the plugin pipeline, writes a log row with the raw request and response bodies, and reports usage so governance counts the request against rate limits and charges budgets.
-- Optionally confines the provider to the operations you listed (`strict_routes`), a list you can import from the API's OpenAPI document in the UI.
+- Relays only the operations you listed as routes (an allowlist you can import from the API's OpenAPI document in the UI), unless you set `skip_route_check`.
 
 Each API is its own provider. The first segment after `/passthrough/` selects it:
 
@@ -38,7 +38,7 @@ POST /passthrough/azure-tts/cognitiveservices/v1 → https://eastus.tts.speech.m
 3. Pick the **Auth type** and fill its fields (header name for `header`, query parameter for `query`, service for `aws_sigv4`).
 4. Save, then add a key. For `aws_sigv4` the key carries AWS credentials (access key, secret key, region, or a role ARN) instead of a value. Requests are signed for the key's region, so use the region in the base URL.
 5. Open the provider's **Configure** tab. Every field has an info icon explaining what it does.
-   - **Routes**: import them from the API's OpenAPI spec (an import replaces the routes listed), then adjust them in the route list below it (collapsed by default), or use **Add route**. Each route can be priced, made non-billable, or matched on a header. **Only allow the routes above** is `strict_routes`: a provider created from the dashboard starts with it on, so nothing outside the routes is relayed (and with no routes, every call is refused until you add one). Switching it off shows a warning, since every path on the API then becomes reachable with your key.
+   - **Routes**: import them from the API's OpenAPI spec (an import replaces the routes listed), then adjust them in the route list below it (collapsed by default), or use **Add route**. Each route can be priced, made non-billable, or matched on a header. Only the routes listed are relayed, so a provider with no routes refuses every call until you add one. **Skip the route check** is `skip_route_check`: turning it on shows a warning, since every path on the API then becomes reachable with your key.
    - **Model (optional)**: the request field (or query parameter) that names the model.
    - **What a call costs (optional)**: a **Flat fee per call**, plus a quantity charge (where to count from, what to count, where to find it, price per unit, and optional blocks and minimum).
    - **Advanced** (collapsed unless set): which calls are allowed (normal and streamed, both on by default), the reported cost and token count fields, and the streaming rules. Token counts are logged, not priced: for an LLM API, use a custom provider with an LLM base format instead.
@@ -56,7 +56,11 @@ curl -X POST http://localhost:8080/api/providers \
       "base_provider_type": "generic",
       "generic_config": {
         "auth": { "type": "bearer" },
-        "usage": { "units_path": "usage.credits", "cost_per_unit": 0.008 }
+        "usage": { "units_path": "usage.credits", "cost_per_unit": 0.008 },
+        "routes": [
+          { "method": "POST", "path": "/search", "billable": true },
+          { "method": "GET", "path": "/usage", "billable": false }
+        ]
       }
     }
   }'
@@ -99,7 +103,6 @@ curl -X POST http://localhost:8080/api/providers/tavily/keys \
         "generic_config": {
           "auth": { "type": "aws_sigv4", "aws": { "service": "textract" } },
           "usage": { "units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.0015 },
-          "strict_routes": true,
           "routes": [
             { "method": "POST", "path": "/", "headers": { "X-Amz-Target": "Textract.AnalyzeDocument" }, "usage": { "cost_per_unit": 0.05 } },
             { "method": "POST", "path": "/", "headers": { "X-Amz-Target": "Textract.Get*" }, "billable": false },
@@ -122,7 +125,10 @@ curl -X POST http://localhost:8080/api/providers/tavily/keys \
         "base_provider_type": "generic",
         "generic_config": {
           "auth": { "type": "aws_sigv4", "aws": { "service": "translate" } },
-          "usage": { "units_source": "request", "units_measure": "chars", "units_path": "Text", "cost_per_unit": 0.000015 }
+          "usage": { "units_source": "request", "units_measure": "chars", "units_path": "Text", "cost_per_unit": 0.000015 },
+          "routes": [
+            { "method": "POST", "path": "/", "headers": { "X-Amz-Target": "AWSShineFrontendService_20170701.TranslateText" } }
+          ]
         }
       }
     }
@@ -215,7 +221,7 @@ Detection order: the matching route's `stream` flag, then `streaming.paths`, the
 | `usage` | Field-by-field override of the provider `usage` mapping: a field the route leaves empty inherits the provider's value (so a route cannot switch off a provider `cost_path` by leaving it blank); a field reads nothing only when it is still empty after inheritance |
 | `job` | Makes the route the start of a provider-side job that is billed once it completes; see below |
 
-The first matching route wins, so list the specific operation before its catch-all. A request matching no route uses the provider defaults and the method default for billing, so listing every operation of an API as routes (for example from an OpenAPI import) does not start charging its polls and listings.
+The first matching route wins, so list the specific operation before its catch-all. A request matching no route is refused with `404` unless `skip_route_check` is set; with it set, such a request uses the provider defaults and the method default for billing. Listing every operation of an API as routes (for example from an OpenAPI import) does not start charging its polls and listings, since a route takes its method's billing default unless it sets `billable`.
 
 **One path, many operations.** AWS JSON-protocol APIs (Textract, Translate, Comprehend) send every operation to `POST /` and name it in the `X-Amz-Target` header, so a route on method and path alone cannot tell them apart. Add `headers` to the route, as the Textract example above does: `AnalyzeDocument` at its own rate, result polls (`Get*`) free, job starts (`Start*`) at a flat fee, everything else at the base rate. The OpenAPI importer turns AWS path keys of the form `/#X-Amz-Target=Service.Operation` into these routes.
 
@@ -250,13 +256,13 @@ Some operations start a job and return only an id; the billable quantity appears
 
 How it settles: the mapping, status words and poll request are captured on the job row when the job starts, so editing the provider later does not change how a running job is billed. A terminal `succeeded` response is priced like a buffered reply (`units × cost_per_unit + cost_per_request + extracted cost`, with rounding) and written as a cost row nested under the start call's log row, with the job id, status, units and rates in its `params.job_accounting`. A `failed` status settles at zero. A poll the upstream answers with 404 or 410 parks the job as gone, a 401 or 403 as access denied, a 4xx the upstream will never accept as rejected; a 5xx or a transport error is retried. A job the caller starts and never reads is still billed, because Bifrost does the reading. Settlement is at least once with a per-job dedupe, the same guarantee batches and video jobs have. A start the upstream answers with a job it already has (an idempotent retry, such as Textract's `ClientRequestToken`) is billed once while that job is still open for the same key; an id an API lets callers reuse after the old job is gone (Azure batch synthesis) is billed again, since the earlier job has settled by then.
 
-### `strict_routes`
+### `skip_route_check`
 
-With `strict_routes: true`, a request that matches no `routes[]` entry is refused with `404` before anything is forwarded, so the routes list doubles as an allowlist. Like the path guard and an unknown provider name, this refusal is answered before dispatch, so it runs no plugins and writes no log row. Without it, routes are overrides and every operation is relayed. A provider created from the dashboard sets it; one written in `config.json` or through the API without it relays every path.
+The routes list is an allowlist: a request that matches no `routes[]` entry is refused with `404` before anything is forwarded, so a provider with no routes refuses every call. Like the path guard and an unknown provider name, this refusal is answered before dispatch, so it runs no plugins and writes no log row. With `skip_route_check: true`, routes become overrides and every operation is relayed with your key, including ones you have not priced or reviewed (deletes, admin and account endpoints); the Configure tab shows a warning while it is on. Leave it off unless every caller is trusted.
 
 ### Importing from an OpenAPI document
 
-On the Configure tab, **Import from an OpenAPI document** accepts a pasted document, an uploaded file, or a URL fetched by your browser. Its operations become routes (a path parameter becomes `*` wherever it sits, so `/files/{id}.json` becomes `/files/*.json`, and glob characters in literal text are escaped), the auth type and header name come from the document's top-level security requirement (the first alternative that names a single supported scheme, or the only scheme when the document declares just one), and `strict_routes` is switched on. An operation that sets its own `security` is read under that requirement instead, and a public operation (`security: []`) is left out of the auth choice. Public operations are still imported as routes, so remove any you do not want allowed under `strict_routes`. Three cases leave fields as they were, with a warning in the import summary: operations that require different schemes leave the auth unchanged, since one provider applies one auth; a document with several schemes and no top-level requirement that picks one leaves the auth unchanged; and a document whose path items sit behind `$ref` imports only the inline ones and leaves `strict_routes` unchanged. In those cases set the auth yourself, add the skipped routes, and switch `strict_routes` on once the list is complete, or calls to the skipped operations are relayed without an allowlist. The server URL is shown as a hint for the Network tab. The document is parsed in the browser and never sent to or stored by Bifrost; review the fields it filled in and save them like any others. The URL option works only when the vendor allows cross-origin reads of the file; otherwise paste or upload it.
+On the Configure tab, **Import from an OpenAPI document** accepts a pasted document, an uploaded file, or a URL fetched by your browser. Its operations become routes (a path parameter becomes `*` wherever it sits, so `/files/{id}.json` becomes `/files/*.json`, and glob characters in literal text are escaped), the auth type and header name come from the document's top-level security requirement (the first alternative that names a single supported scheme, or the only scheme when the document declares just one). An operation that sets its own `security` is read under that requirement instead, and a public operation (`security: []`) is left out of the auth choice. Public operations are still imported as routes, so remove any you do not want relayed. Three cases leave fields as they were, with a warning in the import summary: operations that require different schemes leave the auth unchanged, since one provider applies one auth; a document with several schemes and no top-level requirement that picks one leaves the auth unchanged; and a document whose path items sit behind `$ref` imports only the inline ones. In those cases set the auth yourself and add the skipped routes; until then, calls to the skipped operations are refused with `404`. The server URL is shown as a hint for the Network tab. The document is parsed in the browser and never sent to or stored by Bifrost; review the fields it filled in and save them like any others. The URL option works only when the vendor allows cross-origin reads of the file; otherwise paste or upload it.
 
 ---
 

@@ -4468,7 +4468,7 @@ func TestValidateConfigSchema_GenericProviderConfig(t *testing.T) {
 			"usage": {"model_path": "model", "cost_path": "usage.cost", "cost_per_request": 0.008},
 			"streaming": {"paths": ["/v1/stream/**"], "detect_from_accept_header": true},
 			"routes": [{"method": "POST", "path": "/search", "billable": true, "stream": false, "usage": {"cost_per_request": 0.01}}],
-			"strict_routes": true
+			"skip_route_check": true
 		}
 	}`)
 	if err := ValidateConfigSchema([]byte(full), loadLocalSchema(t)); err != nil {

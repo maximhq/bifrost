@@ -669,7 +669,7 @@ export interface GenericProviderConfig {
 	usage?: GenericUsageConfig;
 	streaming?: GenericStreamingConfig;
 	routes?: GenericRouteConfig[];
-	strict_routes?: boolean;
+	skip_route_check?: boolean;
 }
 
 // GenericUsagePreviewRequest matching Go's generic.UsagePreviewInput plus the unsaved relay

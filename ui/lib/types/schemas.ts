@@ -1352,7 +1352,7 @@ export const genericProviderConfigSchema = z.object({
 		})
 		.optional(),
 	routes: z.array(genericRouteConfigSchema).optional(),
-	strict_routes: z.boolean().optional(),
+	skip_route_check: z.boolean().optional(),
 });
 
 // Form variant of the generic provider config: routes carry header matchers as name/value pairs.

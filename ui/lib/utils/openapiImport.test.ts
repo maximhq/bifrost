@@ -169,7 +169,7 @@ describe("openapiImport", () => {
 		expect(mixed.auth, "the operation that requires the key still sets it").toEqual({ type: "header", header_name: "X-Api-Key" });
 	});
 
-	it("flags path items behind $ref so strict routes are not switched on", () => {
+	it("flags path items behind $ref so they can be added by hand", () => {
 		const result = importOpenAPI({ paths: { "/a": { get: {} }, "/b": { $ref: "#/components/pathItems/B" } } });
 		expect(result.routes.map((r) => r.path)).toEqual(["/a"]);
 		expect(result.partial).toBe(true);

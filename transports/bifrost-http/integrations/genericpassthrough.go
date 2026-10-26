@@ -107,10 +107,10 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 	bodyStream := gp.DetectsStreamFlag() && (genericBodyStreams(body, contentType) || passthroughQueryStreams(method, rawQuery))
 	plan := gp.Plan(method, path, string(ctx.Request.Header.Peek("Accept")), bodyStream, safeHeaders)
 
-	// With strict_routes, an operation the operator did not list is refused before anything else
+	// Unless skip_route_check is set, an operation the operator did not list is refused before anything else
 	// is looked at, the same way the path guard refuses a malformed path.
 	if !plan.Allowed {
-		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "no route for "+method+" "+path+" on provider "+name+" (strict_routes)", fasthttp.StatusNotFound))
+		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "no route for "+method+" "+path+" on provider "+name+" (add a route, or set skip_route_check)", fasthttp.StatusNotFound))
 		return
 	}
 

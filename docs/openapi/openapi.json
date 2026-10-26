@@ -28648,7 +28648,7 @@
       "post": {
         "operationId": "genericPassthroughPost",
         "summary": "Relay a request to a generic (non-LLM) provider",
-        "description": "Relays the request byte for byte to the generic provider named in the path. Bifrost strips\ncaller credentials, injects the key it selects from the provider's key pool per the provider's\n`generic_config.auth`, pins the upstream host to the provider's base URL, and returns the\nupstream status and body unchanged with the upstream headers, except hop-by-hop headers,\n`Set-Cookie`, `Proxy-Authenticate`, `WWW-Authenticate` and the headers the gateway sets\nitself, which are not relayed. The `400` and `404` responses below are Bifrost's own\nrefusals (path guard, unknown provider, strict routes, a provider mismatch, a duplicate model\nkey, an unmeasurable billed body) and carry\na Bifrost error; an upstream `400` or `404` is relayed with the upstream's own body, as\nevery other upstream status is (see `default`). Every dispatched call runs the plugin pipeline and is logged. The path guard, an unknown\nprovider, a strict-routes miss, a provider mismatch and a duplicate model key are refused\nbefore dispatch with no log row; an unmeasurable billed body is refused inside the relay and\nlogged as an error. With content\nlogging on, JSON request bodies and text response bodies are stored, multipart requests are\nsummarized and binary responses become size placeholders. A `2xx` on a billable route (`POST` by default, or any route with\n`billable: true`) reports usage so governance counts it as one request and charges\n`cost_per_request`, any unit price and any cost the usage mapping extracts; non-2xx responses\nand non-billable routes report none.\n\n`GET`, `PUT`, `PATCH`, `DELETE` and `HEAD` are relayed the same way. A request is served by the\nstreaming relay when the matching route says so, a `generic_config.streaming.paths` glob\nmatches, `Accept: text/event-stream` is sent (when `detect_from_accept_header` is on), or the\nJSON body carries `\"stream\": true` or a `GET` query carries `stream=true` (both when\n`detect_from_body` is on). The path's wording is never a signal.\n\nWith `strict_routes` on, an operation that matches no `routes[]` entry is refused with `404`\nbefore anything is forwarded.\n",
+        "description": "Relays the request byte for byte to the generic provider named in the path. Bifrost strips\ncaller credentials, injects the key it selects from the provider's key pool per the provider's\n`generic_config.auth`, pins the upstream host to the provider's base URL, and returns the\nupstream status and body unchanged with the upstream headers, except hop-by-hop headers,\n`Set-Cookie`, `Proxy-Authenticate`, `WWW-Authenticate` and the headers the gateway sets\nitself, which are not relayed. The `400` and `404` responses below are Bifrost's own\nrefusals (path guard, unknown provider, strict routes, a provider mismatch, a duplicate model\nkey, an unmeasurable billed body) and carry\na Bifrost error; an upstream `400` or `404` is relayed with the upstream's own body, as\nevery other upstream status is (see `default`). Every dispatched call runs the plugin pipeline and is logged. The path guard, an unknown\nprovider, a strict-routes miss, a provider mismatch and a duplicate model key are refused\nbefore dispatch with no log row; an unmeasurable billed body is refused inside the relay and\nlogged as an error. With content\nlogging on, JSON request bodies and text response bodies are stored, multipart requests are\nsummarized and binary responses become size placeholders. A `2xx` on a billable route (`POST` by default, or any route with\n`billable: true`) reports usage so governance counts it as one request and charges\n`cost_per_request`, any unit price and any cost the usage mapping extracts; non-2xx responses\nand non-billable routes report none.\n\n`GET`, `PUT`, `PATCH`, `DELETE` and `HEAD` are relayed the same way. A request is served by the\nstreaming relay when the matching route says so, a `generic_config.streaming.paths` glob\nmatches, `Accept: text/event-stream` is sent (when `detect_from_accept_header` is on), or the\nJSON body carries `\"stream\": true` or a `GET` query carries `stream=true` (both when\n`detect_from_body` is on). The path's wording is never a signal.\n\nAn operation that matches no `routes[]` entry is refused with `404` before anything is\nforwarded, unless the provider sets `skip_route_check`.\n",
         "tags": [
           "Generic Passthrough Integration"
         ],
@@ -28706,7 +28706,7 @@
             }
           },
           "404": {
-            "description": "Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
+            "description": "Either Bifrost's own refusal (unknown provider, no route matched and skip_route_check is off), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -28788,7 +28788,7 @@
             }
           },
           "404": {
-            "description": "Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
+            "description": "Either Bifrost's own refusal (unknown provider, no route matched and skip_route_check is off), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -28882,7 +28882,7 @@
             }
           },
           "404": {
-            "description": "Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
+            "description": "Either Bifrost's own refusal (unknown provider, no route matched and skip_route_check is off), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -28976,7 +28976,7 @@
             }
           },
           "404": {
-            "description": "Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
+            "description": "Either Bifrost's own refusal (unknown provider, no route matched and skip_route_check is off), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -29070,7 +29070,7 @@
             }
           },
           "404": {
-            "description": "Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
+            "description": "Either Bifrost's own refusal (unknown provider, no route matched and skip_route_check is off), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -29152,7 +29152,7 @@
             }
           },
           "404": {
-            "description": "Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
+            "description": "Either Bifrost's own refusal (unknown provider, no route matched and skip_route_check is off), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.",
             "content": {
               "application/json": {
                 "schema": {
@@ -128663,9 +128663,9 @@
                       }
                     }
                   },
-                  "strict_routes": {
+                  "skip_route_check": {
                     "type": "boolean",
-                    "description": "Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist"
+                    "description": "Relay requests that match no routes[] entry. Off by default, so the routes list is an allowlist and anything else is refused with 404 (a provider with no routes refuses every call); on makes every path on the API reachable with the provider's key"
                   }
                 }
               }
@@ -129392,9 +129392,9 @@
                       }
                     }
                   },
-                  "strict_routes": {
+                  "skip_route_check": {
                     "type": "boolean",
-                    "description": "Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist"
+                    "description": "Relay requests that match no routes[] entry. Off by default, so the routes list is an allowlist and anything else is refused with 404 (a provider with no routes refuses every call); on makes every path on the API reachable with the provider's key"
                   }
                 }
               }
@@ -130079,9 +130079,9 @@
                       }
                     }
                   },
-                  "strict_routes": {
+                  "skip_route_check": {
                     "type": "boolean",
-                    "description": "Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist"
+                    "description": "Relay requests that match no routes[] entry. Off by default, so the routes list is an allowlist and anything else is refused with 404 (a provider with no routes refuses every call); on makes every path on the API reachable with the provider's key"
                   }
                 }
               }

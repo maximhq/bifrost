@@ -34,7 +34,8 @@ func TestRouteGlobMatch(t *testing.T) {
 
 func TestMatchRouteFirstWins(t *testing.T) {
 	cfg := &schemas.GenericProviderConfig{
-		Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)},
+		SkipRouteCheck: true,
+		Usage:          &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)},
 		Routes: []schemas.GenericRouteConfig{
 			{Method: "post", Path: "/search", Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.02)}},
 			{Method: "POST", Path: "/**", Billable: schemas.Ptr(false)},
@@ -82,7 +83,6 @@ func TestMatchRouteFirstWins(t *testing.T) {
 // transport lower-cases them), values with the single-segment glob, "/" as an ordinary character.
 func TestMatchRouteHeaders(t *testing.T) {
 	cfg := &schemas.GenericProviderConfig{
-		StrictRoutes: true,
 		Routes: []schemas.GenericRouteConfig{
 			{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.AnalyzeDocument"}, Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.05)}},
 			{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}, Billable: schemas.Ptr(false)},
@@ -117,7 +117,7 @@ func TestMatchRouteHeaders(t *testing.T) {
 	assert.True(t, plan.Allowed)
 	require.NotNil(t, plan.route)
 	assert.False(t, plan.route.billable)
-	assert.False(t, provider.Plan("POST", "/", "", false, hdr("Translate.TranslateText")).Allowed, "strict routes refuse an unlisted operation")
+	assert.False(t, provider.Plan("POST", "/", "", false, hdr("Translate.TranslateText")).Allowed, "the route check refuses an unlisted operation")
 
 	ctx := testCtx(t)
 	_, billable, matched := provider.resolve(ctx, "POST", "/", hdr("Textract.GetDocumentAnalysis"))
@@ -129,7 +129,7 @@ func TestMatchRouteHeaders(t *testing.T) {
 // provider instance; a plan from another instance (the provider was rebuilt in between) or no
 // plan at all falls back to matching the routes.
 func TestResolveUsesPlanFromContext(t *testing.T) {
-	cfg := &schemas.GenericProviderConfig{Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/search", Billable: schemas.Ptr(false)}}}
+	cfg := &schemas.GenericProviderConfig{SkipRouteCheck: true, Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/search", Billable: schemas.Ptr(false)}}}
 	provider := &GenericProvider{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(cfg.Usage, nil)}
 	other := &GenericProvider{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(cfg.Usage, nil)}
 
@@ -155,6 +155,7 @@ func TestResolveUsesPlanFromContext(t *testing.T) {
 // charged calls, while an explicit true on a GET still counts it.
 func TestRouteBillableInheritsMethodDefault(t *testing.T) {
 	cfg := &schemas.GenericProviderConfig{
+		SkipRouteCheck: true,
 		Routes: []schemas.GenericRouteConfig{
 			{Method: "GET", Path: "/jobs/*"},
 			{Method: "HEAD", Path: "/jobs/*"},
@@ -190,7 +191,8 @@ func TestRouteBillableInheritsMethodDefault(t *testing.T) {
 // own model path.
 func TestRouteOverridesZeroFeeAndModelPath(t *testing.T) {
 	cfg := &schemas.GenericProviderConfig{
-		Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.05), ModelPath: "engine"},
+		SkipRouteCheck: true,
+		Usage:          &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.05), ModelPath: "engine"},
 		Routes: []schemas.GenericRouteConfig{
 			{Method: "POST", Path: "/free", Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.0)}},
 			{Method: "POST", Path: "/named", Usage: &schemas.GenericUsageConfig{ModelPath: "name"}},
@@ -203,16 +205,16 @@ func TestRouteOverridesZeroFeeAndModelPath(t *testing.T) {
 	assert.Nil(t, usage.defaultUsage(usageFields{}).Cost)
 	assert.Equal(t, "name", provider.Plan("POST", "/named", "", false, nil).ModelPath)
 	assert.Equal(t, "engine", provider.Plan("POST", "/other", "", false, nil).ModelPath, "unrouted operations use the provider mapping")
-	assert.Equal(t, "", (&GenericProvider{cfg: &schemas.GenericProviderConfig{}, usage: resolveUsage(nil, nil)}).Plan("POST", "/x", "", false, nil).ModelPath, "no model is read unless mapped")
+	assert.Equal(t, "", (&GenericProvider{cfg: &schemas.GenericProviderConfig{SkipRouteCheck: true}, usage: resolveUsage(nil, nil)}).Plan("POST", "/x", "", false, nil).ModelPath, "no model is read unless mapped")
 }
 
-// strict_routes turns the routes list into an allowlist: anything it does not name is refused.
-func TestStrictRoutesAllowlist(t *testing.T) {
-	cfg := &schemas.GenericProviderConfig{Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/search"}, {Method: "GET", Path: "/jobs/*"}}}
+// The routes list is an allowlist: anything it does not name is refused unless skip_route_check is set.
+func TestRouteCheckAllowlist(t *testing.T) {
+	cfg := &schemas.GenericProviderConfig{SkipRouteCheck: true, Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/search"}, {Method: "GET", Path: "/jobs/*"}}}
 	open := &GenericProvider{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(cfg.Usage, nil)}
-	assert.True(t, open.Plan("DELETE", "/anything", "", false, nil).Allowed, "without strict_routes every operation is relayed")
+	assert.True(t, open.Plan("DELETE", "/anything", "", false, nil).Allowed, "with skip_route_check every operation is relayed")
 
-	strictCfg := &schemas.GenericProviderConfig{StrictRoutes: true, Routes: cfg.Routes}
+	strictCfg := &schemas.GenericProviderConfig{Routes: cfg.Routes}
 	strict := &GenericProvider{cfg: strictCfg, routes: compileRoutes(strictCfg), usage: resolveUsage(nil, nil)}
 	allowed := func(method, path string) bool { return strict.Plan(method, path, "", false, nil).Allowed }
 	assert.True(t, allowed("POST", "/search"))
@@ -226,7 +228,7 @@ func TestStrictRoutesAllowlist(t *testing.T) {
 // replaces the caller's, so a caller cannot select a cheaper route by naming another operation;
 // and a Go SDK caller's header names match whatever their casing.
 func TestMatchRouteSeesSentHeaders(t *testing.T) {
-	cfg := &schemas.GenericProviderConfig{Routes: []schemas.GenericRouteConfig{
+	cfg := &schemas.GenericProviderConfig{SkipRouteCheck: true, Routes: []schemas.GenericRouteConfig{
 		{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}, Billable: schemas.Ptr(false)},
 		{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.AnalyzeDocument"}},
 	}}

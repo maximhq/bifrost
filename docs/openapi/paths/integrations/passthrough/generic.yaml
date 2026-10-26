@@ -49,8 +49,8 @@ generic:
       JSON body carries `"stream": true` or a `GET` query carries `stream=true` (both when
       `detect_from_body` is on). The path's wording is never a signal.
 
-      With `strict_routes` on, an operation that matches no `routes[]` entry is refused with `404`
-      before anything is forwarded.
+      An operation that matches no `routes[]` entry is refused with `404` before anything is
+      forwarded, unless the provider sets `skip_route_check`.
     tags:
       - Generic Passthrough Integration
     security:
@@ -85,7 +85,7 @@ generic:
               type: string
               format: binary
       '404':
-        description: Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
+        description: Either Bifrost's own refusal (unknown provider, no route matched and skip_route_check is off), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
         content:
           application/json:
             schema:
@@ -136,7 +136,7 @@ generic:
               type: string
               format: binary
       '404':
-        description: Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
+        description: Either Bifrost's own refusal (unknown provider, no route matched and skip_route_check is off), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
         content:
           application/json:
             schema:
@@ -192,7 +192,7 @@ generic:
               type: string
               format: binary
       '404':
-        description: Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
+        description: Either Bifrost's own refusal (unknown provider, no route matched and skip_route_check is off), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
         content:
           application/json:
             schema:
@@ -248,7 +248,7 @@ generic:
               type: string
               format: binary
       '404':
-        description: Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
+        description: Either Bifrost's own refusal (unknown provider, no route matched and skip_route_check is off), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
         content:
           application/json:
             schema:
@@ -304,7 +304,7 @@ generic:
               type: string
               format: binary
       '404':
-        description: Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
+        description: Either Bifrost's own refusal (unknown provider, no route matched and skip_route_check is off), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
         content:
           application/json:
             schema:
@@ -352,7 +352,7 @@ generic:
               type: string
               format: binary
       '404':
-        description: Either Bifrost's own refusal (unknown provider, no route under strict_routes), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
+        description: Either Bifrost's own refusal (unknown provider, no route matched and skip_route_check is off), a JSON Bifrost error, or an upstream 404 relayed unchanged in whatever format the upstream sent.
         content:
           application/json:
             schema:

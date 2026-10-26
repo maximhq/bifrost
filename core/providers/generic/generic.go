@@ -31,7 +31,7 @@ func (provider *GenericProvider) DetectsStreamFlag() bool {
 
 // RoutePlan is the outcome of matching one request against a provider's routes.
 type RoutePlan struct {
-	Allowed     bool                       // false only under strict_routes when no route matched
+	Allowed     bool                       // false when no route matched and skip_route_check is off
 	ModelPath   string                     // where the model is read from, "" for none
 	ModelSource schemas.GenericModelSource // body (default) or query
 	Streams     bool                       // serve with the streaming relay
@@ -58,7 +58,7 @@ func (provider *GenericProvider) Plan(method, path, accept string, bodyStream bo
 		usage = route.usage
 	}
 	return RoutePlan{
-		Allowed:     !provider.cfg.StrictRoutes || route != nil,
+		Allowed:     provider.cfg.SkipRouteCheck || route != nil,
 		ModelPath:   usage.effectiveModelPath(),
 		ModelSource: usage.modelSource,
 		Streams:     provider.streams(route, path, accept, bodyStream),
@@ -217,11 +217,11 @@ func (provider *GenericProvider) resolve(ctx *schemas.BifrostContext, method, pa
 	return provider.usage, billableByDefault(method, nil), nil
 }
 
-// strictRouteError refuses an operation that matches no route under strict_routes. The HTTP
+// strictRouteError refuses an operation that matches no route unless skip_route_check is set. The HTTP
 // transport refuses it before dispatch; this is the same guard for the Go SDK path, which reaches
 // the provider directly.
 func (provider *GenericProvider) strictRouteError(ctx *schemas.BifrostContext, route *compiledRoute, req *schemas.BifrostPassthroughRequest) *schemas.BifrostError {
-	if !provider.cfg.StrictRoutes || route != nil {
+	if provider.cfg.SkipRouteCheck || route != nil {
 		return nil
 	}
 	// A job accounting poll is the operator's own configured request, not a caller's: an operator
@@ -230,7 +230,7 @@ func (provider *GenericProvider) strictRouteError(ctx *schemas.BifrostContext, r
 	if internal, _ := ctx.Value(schemas.BifrostContextKeyInternalJobPoll).(bool); internal {
 		return nil
 	}
-	bifrostErr := providerUtils.NewBifrostOperationError(fmt.Sprintf("no route for %s %s (strict_routes)", req.Method, req.Path), nil)
+	bifrostErr := providerUtils.NewBifrostOperationError(fmt.Sprintf("no route for %s %s (add a route, or set skip_route_check)", req.Method, req.Path), nil)
 	bifrostErr.StatusCode = schemas.Ptr(http.StatusNotFound)
 	return bifrostErr
 }
@@ -338,7 +338,7 @@ func (provider *GenericProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 		}
 	}
 	// The request is built (key, auth, signature) only once the route and body are accepted, so a
-	// strict-route refusal is a 404 whatever the auth setup would have said.
+	// route-check refusal is a 404 whatever the auth setup would have said.
 	httpReq, bifrostErr := provider.buildRequest(ctx, key, req)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -435,7 +435,7 @@ func (provider *GenericProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 		}
 	}
 	// The request is built (key, auth, signature) only once the route and body are accepted, so a
-	// strict-route refusal is a 404 whatever the auth setup would have said.
+	// route-check refusal is a 404 whatever the auth setup would have said.
 	httpReq, bifrostErr := provider.buildRequest(ctx, key, req)
 	if bifrostErr != nil {
 		return nil, bifrostErr

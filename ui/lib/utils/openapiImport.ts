@@ -11,8 +11,7 @@ export interface OpenAPIImport {
 	auth?: GenericAuthConfig;
 	routes: GenericRouteConfig[];
 	warnings: string[];
-	// Some operations could not be read (a path item behind $ref); strict routes must not be
-	// switched on from this import, or those operations would be refused.
+	// Some operations could not be read (a path item behind $ref); they are refused until added by hand.
 	partial?: boolean;
 }
 
@@ -196,7 +195,7 @@ export function importOpenAPI(doc: Doc): OpenAPIImport {
 		if (referenced.length > 0) {
 			result.partial = true;
 			result.warnings.push(
-				`${referenced.join(", ")} ${referenced.length === 1 ? "is" : "are"} defined by $ref, which the import does not resolve; add those routes by hand. Strict routes were left as they were.`,
+				`${referenced.join(", ")} ${referenced.length === 1 ? "is" : "are"} defined by $ref, which the import does not resolve; add those routes by hand, or calls to them are refused.`,
 			);
 		}
 		if (result.routes.length === 0 && referenced.length === 0)

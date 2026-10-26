@@ -2546,18 +2546,18 @@ func (a genericPassthroughTestAccount) GetConfigForProvider(p schemas.ModelProvi
 		cfg.CustomProviderConfig = &schemas.CustomProviderConfig{
 			BaseProviderType: schemas.Generic,
 			GenericConfig: &schemas.GenericProviderConfig{
-				Auth:      schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "x-api-key"},
-				Usage:     &schemas.GenericUsageConfig{ModelPath: "engine"},
-				Streaming: &schemas.GenericStreamingConfig{Paths: []string{"/live/**"}},
-				Routes:    []schemas.GenericRouteConfig{{Method: "POST", Path: "/named", Usage: &schemas.GenericUsageConfig{ModelPath: "name"}}},
+				Auth:           schemas.GenericAuthConfig{Type: schemas.GenericAuthHeader, HeaderName: "x-api-key"},
+				SkipRouteCheck: true,
+				Usage:          &schemas.GenericUsageConfig{ModelPath: "engine"},
+				Streaming:      &schemas.GenericStreamingConfig{Paths: []string{"/live/**"}},
+				Routes:         []schemas.GenericRouteConfig{{Method: "POST", Path: "/named", Usage: &schemas.GenericUsageConfig{ModelPath: "name"}}},
 			},
 		}
 	case "strict":
 		cfg.CustomProviderConfig = &schemas.CustomProviderConfig{
 			BaseProviderType: schemas.Generic,
 			GenericConfig: &schemas.GenericProviderConfig{
-				Auth:         schemas.GenericAuthConfig{Type: schemas.GenericAuthBearer},
-				StrictRoutes: true,
+				Auth: schemas.GenericAuthConfig{Type: schemas.GenericAuthBearer},
 				Routes: []schemas.GenericRouteConfig{
 					{Method: "POST", Path: "/post"},
 					{Method: "DELETE", Path: "/items/*"},
@@ -2696,9 +2696,9 @@ func TestGenericPassthroughRoute(t *testing.T) {
 	}
 }
 
-// With strict_routes the routes list is an allowlist: an unlisted operation is a 404 before anything
-// is forwarded; a provider without the flag is untouched.
-func TestGenericPassthroughStrictRoutes(t *testing.T) {
+// The routes list is an allowlist by default: an unlisted operation is a 404 before anything is
+// forwarded; a provider with skip_route_check relays it.
+func TestGenericPassthroughRouteCheck(t *testing.T) {
 	r, takeHits := newGenericPassthroughFixture(t)
 	tests := []struct {
 		name, method, uri, header string
@@ -2707,12 +2707,12 @@ func TestGenericPassthroughStrictRoutes(t *testing.T) {
 	}{
 		{name: "listed op relayed", method: fasthttp.MethodPost, uri: "/passthrough/strict/post", wantStatus: fasthttp.StatusOK, wantUpstream: "/post"},
 		{name: "glob route relayed", method: fasthttp.MethodDelete, uri: "/passthrough/strict/items/42", wantStatus: fasthttp.StatusOK, wantUpstream: "/items/42"},
-		{name: "unlisted method is a 404", method: fasthttp.MethodDelete, uri: "/passthrough/strict/post", wantStatus: fasthttp.StatusNotFound, wantBody: "strict_routes"},
+		{name: "unlisted method is a 404", method: fasthttp.MethodDelete, uri: "/passthrough/strict/post", wantStatus: fasthttp.StatusNotFound, wantBody: "skip_route_check"},
 		{name: "unlisted path is a 404", method: fasthttp.MethodPost, uri: "/passthrough/strict/other", wantStatus: fasthttp.StatusNotFound, wantBody: "no route for POST /other"},
-		{name: "provider without the flag relays anything", method: fasthttp.MethodDelete, uri: "/passthrough/echo/anything", wantStatus: fasthttp.StatusOK, wantUpstream: "/anything"},
+		{name: "provider with skip_route_check relays anything", method: fasthttp.MethodDelete, uri: "/passthrough/echo/anything", wantStatus: fasthttp.StatusOK, wantUpstream: "/anything"},
 		{name: "header-routed operation is relayed", method: fasthttp.MethodPost, uri: "/passthrough/strict/", header: "Svc.AllowedOp", wantStatus: fasthttp.StatusOK, wantUpstream: "/"},
 		{name: "unlisted operation on the same path is a 404", method: fasthttp.MethodPost, uri: "/passthrough/strict/", header: "Svc.Other", wantStatus: fasthttp.StatusNotFound, wantBody: "no route for POST /"},
-		{name: "same path without the header is a 404", method: fasthttp.MethodPost, uri: "/passthrough/strict/", wantStatus: fasthttp.StatusNotFound, wantBody: "strict_routes"},
+		{name: "same path without the header is a 404", method: fasthttp.MethodPost, uri: "/passthrough/strict/", wantStatus: fasthttp.StatusNotFound, wantBody: "skip_route_check"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

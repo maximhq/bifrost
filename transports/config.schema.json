@@ -13508,9 +13508,9 @@
             "$ref": "#/$defs/generic_route_config"
           }
         },
-        "strict_routes": {
+        "skip_route_check": {
           "type": "boolean",
-          "description": "Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist (for example one imported from the API's OpenAPI document)"
+          "description": "Relay requests that match no routes[] entry. Off by default: the routes list is an allowlist and anything else is refused with 404 (a provider with no routes refuses every call). Turning it on makes every path on the API reachable with the provider's key"
         }
       },
       "additionalProperties": false

@@ -3731,8 +3731,9 @@ func TestPreviewGenericUsage(t *testing.T) {
 	stored := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://textract.us-east-1.amazonaws.com"},
 		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{
-			Auth:  schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}},
-			Usage: &schemas.GenericUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: schemas.Ptr(0.0015)},
+			Auth:           schemas.GenericAuthConfig{Type: schemas.GenericAuthAWSSigV4, AWS: &schemas.GenericAWSAuthConfig{Service: "textract"}},
+			Usage:          &schemas.GenericUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: schemas.Ptr(0.0015)},
+			SkipRouteCheck: true,
 		}},
 	}
 	h := &ProviderHandler{
@@ -3767,7 +3768,7 @@ func TestPreviewGenericUsage(t *testing.T) {
 		t.Fatalf("an unrouted GET must preview as not counted: %d %v", ctx.Response.StatusCode(), out)
 	}
 
-	ctx, out = call("textract", `{"generic_config":{"auth":{"type":"bearer"},"usage":{"cost_per_request":0.02}},"method":"POST","path":"/search","response_body":"{\"ok\":true}"}`)
+	ctx, out = call("textract", `{"generic_config":{"auth":{"type":"bearer"},"usage":{"cost_per_request":0.02},"skip_route_check":true},"method":"POST","path":"/search","response_body":"{\"ok\":true}"}`)
 	if ctx.Response.StatusCode() != fasthttp.StatusOK || out["cost"] != 0.02 {
 		t.Fatalf("the unsaved config in the payload must be used: %d %v", ctx.Response.StatusCode(), out)
 	}

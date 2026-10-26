@@ -608,9 +608,9 @@ GenericProviderConfig:
                 minimum: 0
               usage:
                 $ref: '#/GenericUsageConfig'
-    strict_routes:
+    skip_route_check:
       type: boolean
-      description: Refuse requests that match no routes[] entry with 404, so the routes list doubles as an allowlist
+      description: Relay requests that match no routes[] entry. Off by default, so the routes list is an allowlist and anything else is refused with 404 (a provider with no routes refuses every call); on makes every path on the API reachable with the provider's key
 
 GenericUsageConfig:
   type: object

@@ -196,11 +196,11 @@ type GenericRouteConfig struct {
 // GenericProviderConfig configures a custom provider whose base type is Generic: a raw HTTP relay
 // to a non-LLM API that still carries key injection, logging, governance and plugins.
 type GenericProviderConfig struct {
-	Auth         GenericAuthConfig       `json:"auth"`
-	Usage        *GenericUsageConfig     `json:"usage,omitempty"`
-	Streaming    *GenericStreamingConfig `json:"streaming,omitempty"`
-	Routes       []GenericRouteConfig    `json:"routes,omitempty"`
-	StrictRoutes bool                    `json:"strict_routes,omitempty"` // refuse requests matching no routes[] entry with 404
+	Auth           GenericAuthConfig       `json:"auth"`
+	Usage          *GenericUsageConfig     `json:"usage,omitempty"`
+	Streaming      *GenericStreamingConfig `json:"streaming,omitempty"`
+	Routes         []GenericRouteConfig    `json:"routes,omitempty"`
+	SkipRouteCheck bool                    `json:"skip_route_check,omitempty"` // relay requests matching no routes[] entry instead of refusing them with 404
 }
 
 // Validate checks the config is internally consistent. It runs when a provider is created or

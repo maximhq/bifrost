@@ -30,7 +30,7 @@ type UsagePreviewInput struct {
 // counts, what it read from each body, and the cost those numbers add up to.
 type UsagePreview struct {
 	RouteIndex     *int                        `json:"route_index"`   // index into routes[], null when none matched
-	RouteAllowed   bool                        `json:"route_allowed"` // false under strict_routes with no match
+	RouteAllowed   bool                        `json:"route_allowed"` // false when no route matches and skip_route_check is off
 	Billable       bool                        `json:"billable"`      // the route's or the method default
 	Streams        bool                        `json:"streams"`       // served by the streaming relay
 	Counted        bool                        `json:"counted"`       // reports usage: billable and a 2xx status
@@ -118,7 +118,7 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, extraHeaders map[string]sc
 	contentType := headers["content-type"]
 	route := provider.matchRoute(method, path, headers)
 	usage, billable := provider.usage, billableByDefault(method, nil)
-	out := &UsagePreview{RouteAllowed: !cfg.StrictRoutes || route != nil}
+	out := &UsagePreview{RouteAllowed: cfg.SkipRouteCheck || route != nil}
 	if route != nil {
 		usage, billable = route.usage, route.billable
 		for i := range provider.routes {
@@ -145,7 +145,7 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, extraHeaders map[string]sc
 	out.Notes = []string{}
 
 	if !out.RouteAllowed {
-		out.Notes = append(out.Notes, "strict_routes is on and no route matches: the call is refused with 404")
+		out.Notes = append(out.Notes, "no route matches and skip_route_check is off: the call is refused with 404")
 		return out, nil
 	}
 	// The model is read the way the transport reads it, so a body the relay refuses is reported.

@@ -86,6 +86,7 @@
           "passthrough_stream": true
         },
         "generic_config": {
+          "skip_route_check": true,
           "auth": {
             "type": "header",
             "header_name": "x-api-key"
@@ -119,6 +120,7 @@
         "base_provider_type": "generic",
         "is_key_less": true,
         "generic_config": {
+          "skip_route_check": true,
           "auth": {
             "type": "none"
           },
@@ -141,6 +143,7 @@
         "base_provider_type": "generic",
         "is_key_less": true,
         "generic_config": {
+          "skip_route_check": true,
           "auth": {
             "type": "none"
           },
@@ -173,6 +176,7 @@
       "custom_provider_config": {
         "base_provider_type": "generic",
         "generic_config": {
+          "skip_route_check": true,
           "auth": {
             "type": "aws_sigv4",
             "aws": {
@@ -204,7 +208,6 @@
             "type": "header",
             "header_name": "x-api-key"
           },
-          "strict_routes": true,
           "routes": [
             {
               "method": "POST",
@@ -236,6 +239,7 @@
       "custom_provider_config": {
         "base_provider_type": "generic",
         "generic_config": {
+          "skip_route_check": true,
           "auth": {
             "type": "header",
             "header_name": "x-api-key"
@@ -353,6 +357,7 @@
           "passthrough_stream": true
         },
         "generic_config": {
+          "skip_route_check": true,
           "auth": {
             "type": "query",
             "query_param": "api_key"
@@ -378,6 +383,7 @@
       "custom_provider_config": {
         "base_provider_type": "generic",
         "generic_config": {
+          "skip_route_check": true,
           "auth": {
             "type": "bearer"
           },
