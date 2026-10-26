@@ -31,6 +31,7 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | Video Generation | ✅            | -         | `/openai/v1/videos`             |
 | Context Compaction | ✅          | -         | `/openai/v1/responses/compact`  |
 | Decisions        | ✅            | -         | `/openai/v1/decisions` (`gpt-6-luna`), `/providers/microsoft/v1/systemone` (`Microsoft-Decision-1`) |
+| GPT Live         | -             | ✅        | `/openai/v1/live/sessions`      |
 | Image Variation  | ❌            | ❌        | -                               |
 | Batch            | ❌            | ❌        | -                               |
 | Text Completions | ❌            | ❌        | -                               |
@@ -1182,6 +1183,28 @@ The model ID is a Voice Live model such as `gpt-realtime`, `gpt-4.1` or `phi4-mm
 - WebRTC (`/v1/realtime/calls`) and client secrets (`/v1/realtime/client_secrets`) answer `400`: Voice Live signals WebRTC over its own WebSocket and reports usage on the browser's data channel.
 - A realtime `intent` answers `400`.
 - Turns are priced at the Azure OpenAI rates for the same model name until the model catalog lists Voice Live rates.
+
+---
+
+# 13. GPT Live
+
+Azure serves [GPT-Live](https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/gpt-live) on OpenAI's wire protocol, so a session's events, delegation, billing and log row are the same as on OpenAI. Open the session on `/v1/live/sessions` (a WebSocket, or a `POST` with an SDP offer for WebRTC) with the `azure/` prefix on the voice model:
+
+```json
+{
+  "type": "session.start",
+  "session": {
+    "model": "azure/gpt-live-1",
+    "delegation": { "type": "responses", "responses": { "model": "gpt-5.5" } }
+  }
+}
+```
+
+Bifrost connects to `{endpoint}/openai/v1/live/sessions` with the key's API key or Entra ID token. Both `session.model` and `delegation.responses.model` are deployment names on Azure, and Bifrost maps each through the key's aliases. Azure runs the backend on the voice deployment's resource, so one key must serve both models, and the key's `endpoint` is used even when an alias sets its own.
+
+- **Sidebands**: `/v1/live/sessions/{session_id}/attach` takes `?provider=azure` or the `x-model-provider: azure` header. Without either, the route uses OpenAI when OpenAI is configured.
+- **Recordings**: `/v1/live/sessions/{session_id}/content` answers `400 unsupported_operation`. Azure does not store GPT-Live sessions yet and rejects `session.store`.
+- **Pricing overrides** match the deployment name Bifrost sends, not the alias.
 
 ---
 
