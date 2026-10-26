@@ -22,15 +22,21 @@ const (
 	listenRetryMax     = 30 * time.Second
 )
 
-// toolsListChanges reports whether the upstream said it will notify tool list changes.
-func toolsListChanges(result *mcp.InitializeResult) bool {
-	return result != nil && result.Capabilities.Tools != nil && result.Capabilities.Tools.ListChanged
+// listChanges reports whether the upstream will notify a change to its tools, resources or prompts.
+func listChanges(result *mcp.InitializeResult) bool {
+	if result == nil {
+		return false
+	}
+	caps := result.Capabilities
+	return (caps.Tools != nil && caps.Tools.ListChanged) ||
+		(caps.Resources != nil && caps.Resources.ListChanged) ||
+		(caps.Prompts != nil && caps.Prompts.ListChanged)
 }
 
 // needsLegacyListenStream reports whether a connection on version needs the 2025-era GET stream to
 // hear tools/list_changed.
 func needsLegacyListenStream(version string, result *mcp.InitializeResult) bool {
-	return version != "" && !mcp.IsModernProtocol(version) && toolsListChanges(result)
+	return version != "" && !mcp.IsModernProtocol(version) && listChanges(result)
 }
 
 // withLegacyListenStream returns the HTTP client a connection should keep. A 2025-era upstream only
@@ -94,7 +100,8 @@ func (m *MCPManager) newToolChangeListener(clientID string, conn *client.Client)
 	l := &toolChangeListener{m: m, clientID: clientID, conn: conn}
 	conn.OnNotification(func(n mcp.JSONRPCNotification) {
 		switch n.Method {
-		case string(mcp.MethodNotificationToolsListChanged), mcp.MethodNotificationSubscriptionsAcknowledged:
+		case string(mcp.MethodNotificationToolsListChanged), string(mcp.MethodNotificationResourcesListChanged),
+			string(mcp.MethodNotificationPromptsListChanged), mcp.MethodNotificationSubscriptionsAcknowledged:
 			l.missed.Store(true)
 			l.flush()
 		}
@@ -123,7 +130,12 @@ func (l *toolChangeListener) flush() {
 // listenForToolChanges keeps a subscriptions/listen stream open on conn until conn is replaced or
 // closed, reopening it with backoff when it drops.
 func (m *MCPManager) listenForToolChanges(clientID, clientName string, conn *client.Client, generation uint64) {
-	filter := mcp.SubscriptionFilter{ToolsListChanged: true}
+	caps := conn.GetServerCapabilities()
+	filter := mcp.SubscriptionFilter{
+		ToolsListChanged:     caps.Tools != nil && caps.Tools.ListChanged,
+		ResourcesListChanged: caps.Resources != nil && caps.Resources.ListChanged,
+		PromptsListChanged:   caps.Prompts != nil && caps.Prompts.ListChanged,
+	}
 	wait := listenRetryInitial
 	for m.isCurrentConn(clientID, conn, generation) {
 		opened := time.Now()

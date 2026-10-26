@@ -123,38 +123,39 @@ func (m *ChannelMessage) abandonDelivery() bool {
 // Bifrost manages providers and maintains specified open channels for concurrent processing.
 // It handles request routing, provider management, and response processing.
 type Bifrost struct {
-	ctx                       *schemas.BifrostContext
-	cancel                    context.CancelFunc
-	account                   schemas.Account                     // account interface
-	llmPlugins                atomic.Pointer[[]schemas.LLMPlugin] // list of llm plugins
-	mcpPlugins                atomic.Pointer[[]schemas.MCPPlugin] // list of mcp plugins
-	a2aPlugins                atomic.Pointer[[]schemas.A2APlugin] // list of a2a (agent gateway) plugins
-	providers                 atomic.Pointer[[]schemas.Provider]  // list of providers
-	requestQueues             sync.Map                            // provider request queues (thread-safe), stores *ProviderQueue
-	waitGroups                sync.Map                            // wait groups for each provider (thread-safe)
-	oldWorkerCleanups         sync.WaitGroup                      // tracks async cleanup of old workers after provider updates
-	retiredWorkerWaits        sync.Map                            // provider old-worker cleanup wait groups (thread-safe), stores *sync.WaitGroup
-	providerLifecycleMu       sync.RWMutex                        // prevents provider updates from racing with shutdown cleanup waits
-	providerMutexes           sync.Map                            // mutexes for each provider to prevent concurrent updates (thread-safe)
-	channelMessagePool        sync.Pool                           // Pool for ChannelMessage objects, initial pool size is set in Init
-	responseChannelPool       sync.Pool                           // Pool for response channels, initial pool size is set in Init
-	errorChannelPool          sync.Pool                           // Pool for error channels, initial pool size is set in Init
-	responseStreamPool        sync.Pool                           // Pool for response stream channels, initial pool size is set in Init
-	pluginPipelinePool        sync.Pool                           // Pool for PluginPipeline objects
-	bifrostRequestPool        sync.Pool                           // Pool for BifrostRequest objects
-	logger                    schemas.Logger                      // logger instance, default logger is used if not provided
-	tracer                    atomic.Value                        // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
-	modelCatalog              schemas.ModelInfoProvider           // model pricing/capability catalog exposed to plugins via ctx.GetModelInfo (nil if not configured); set once from BifrostConfig at Init
-	MCPManager                mcp.MCPManagerInterface             // MCP integration manager (nil if MCP not configured)
-	mcpCredStore              schemas.MCPCredentialStore          // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
-	mcpInProcessServerFactory schemas.InProcessServerFactory      // Carried from MCPConfig so a lazily created manager still synthesizes openapi servers
-	mcpInitOnce               sync.Once                           // Ensures MCP manager is initialized only once
-	mcpFactoryMu              sync.Mutex                          // Orders factory registration against lazy MCP manager creation
-	dropExcessRequests        atomic.Bool                         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	keySelector               schemas.KeySelector                 // Custom key selector function
-	keyPoolFilter             schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
-	kvStore                   schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
-	sessionAffinity           schemas.SessionAffinity             // decides which key a session stays on; never nil after Init
+	ctx                        *schemas.BifrostContext
+	cancel                     context.CancelFunc
+	account                    schemas.Account                     // account interface
+	llmPlugins                 atomic.Pointer[[]schemas.LLMPlugin] // list of llm plugins
+	mcpPlugins                 atomic.Pointer[[]schemas.MCPPlugin] // list of mcp plugins
+	a2aPlugins                 atomic.Pointer[[]schemas.A2APlugin] // list of a2a (agent gateway) plugins
+	providers                  atomic.Pointer[[]schemas.Provider]  // list of providers
+	requestQueues              sync.Map                            // provider request queues (thread-safe), stores *ProviderQueue
+	waitGroups                 sync.Map                            // wait groups for each provider (thread-safe)
+	oldWorkerCleanups          sync.WaitGroup                      // tracks async cleanup of old workers after provider updates
+	retiredWorkerWaits         sync.Map                            // provider old-worker cleanup wait groups (thread-safe), stores *sync.WaitGroup
+	providerLifecycleMu        sync.RWMutex                        // prevents provider updates from racing with shutdown cleanup waits
+	providerMutexes            sync.Map                            // mutexes for each provider to prevent concurrent updates (thread-safe)
+	channelMessagePool         sync.Pool                           // Pool for ChannelMessage objects, initial pool size is set in Init
+	responseChannelPool        sync.Pool                           // Pool for response channels, initial pool size is set in Init
+	errorChannelPool           sync.Pool                           // Pool for error channels, initial pool size is set in Init
+	responseStreamPool         sync.Pool                           // Pool for response stream channels, initial pool size is set in Init
+	pluginPipelinePool         sync.Pool                           // Pool for PluginPipeline objects
+	bifrostRequestPool         sync.Pool                           // Pool for BifrostRequest objects
+	logger                     schemas.Logger                      // logger instance, default logger is used if not provided
+	tracer                     atomic.Value                        // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
+	modelCatalog               schemas.ModelInfoProvider           // model pricing/capability catalog exposed to plugins via ctx.GetModelInfo (nil if not configured); set once from BifrostConfig at Init
+	MCPManager                 mcp.MCPManagerInterface             // MCP integration manager (nil if MCP not configured)
+	mcpCredStore               schemas.MCPCredentialStore          // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
+	mcpInProcessServerFactory  schemas.InProcessServerFactory      // Carried from MCPConfig so a lazily created manager still synthesizes openapi servers
+	mcpInitOnce                sync.Once                           // Ensures MCP manager is initialized only once
+	mcpFactoryMu               sync.Mutex                          // Orders factory registration against lazy MCP manager creation
+	mcpDiscoveryChangeCallback mcpDiscoveryChangeFunc              // Installed on a lazily created or injected manager; guarded by mcpFactoryMu
+	dropExcessRequests         atomic.Bool                         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	keySelector                schemas.KeySelector                 // Custom key selector function
+	keyPoolFilter              schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
+	kvStore                    schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
+	sessionAffinity            schemas.SessionAffinity             // decides which key a session stays on; never nil after Init
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -4554,16 +4555,18 @@ func (bifrost *Bifrost) SetMCPStateChangeCallback(cb func(clientID, name string,
 	bifrost.MCPManager.SetStateChangeCallback(cb)
 }
 
-// SetMCPToolsChangeCallback registers cb to be invoked whenever an MCP
-// client's tool map is freshly (re)discovered — connect/reconnect, per-call
-// discovery, and the periodic checker's own refresh. core/mcp has no DB
-// access; this is the seam the transport layer persists through. Pass nil to
-// clear a previously registered callback. A no-op if MCP is not configured.
-func (bifrost *Bifrost) SetMCPToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)) {
-	if bifrost.MCPManager == nil {
-		return
+// mcpDiscoveryChangeFunc is the MCP manager's discovery-change callback.
+type mcpDiscoveryChangeFunc = func(clientID, name string, discovery *schemas.MCPDiscovery)
+
+// SetMCPDiscoveryChangeCallback registers cb to run whenever an MCP client's discovery changes; the
+// transport persists through it. nil clears it. Kept for a manager created later, like the factory.
+func (bifrost *Bifrost) SetMCPDiscoveryChangeCallback(cb func(clientID, name string, discovery *schemas.MCPDiscovery)) {
+	bifrost.mcpFactoryMu.Lock()
+	defer bifrost.mcpFactoryMu.Unlock()
+	bifrost.mcpDiscoveryChangeCallback = cb
+	if bifrost.MCPManager != nil {
+		bifrost.MCPManager.SetDiscoveryChangeCallback(cb)
 	}
-	bifrost.MCPManager.SetToolsChangeCallback(cb)
 }
 
 // GetMCPClients returns all MCP clients managed by the Bifrost instance.
@@ -4600,10 +4603,13 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 		})
 
 		clientsInConfig = append(clientsInConfig, schemas.MCPClient{
-			Config:      client.ExecutionConfig,
-			Tools:       tools,
-			State:       client.State,
-			LastFailure: client.LastFailure,
+			Config:            client.ExecutionConfig,
+			Tools:             tools,
+			State:             client.State,
+			LastFailure:       client.LastFailure,
+			Resources:         client.Resources,
+			ResourceTemplates: client.ResourceTemplates,
+			Prompts:           client.Prompts,
 		})
 	}
 
@@ -4707,6 +4713,9 @@ func (bifrost *Bifrost) ensureLazyMCPManager() {
 			return
 		}
 		bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, bifrost.lazyMCPConfig(), bifrost.mcpCredStore, bifrost.logger, starlark.NewStarlarkCodeMode(nil, bifrost.logger))
+		if bifrost.mcpDiscoveryChangeCallback != nil {
+			bifrost.MCPManager.SetDiscoveryChangeCallback(bifrost.mcpDiscoveryChangeCallback)
+		}
 	})
 }
 
@@ -4761,6 +4770,9 @@ func (bifrost *Bifrost) SetMCPManager(manager mcp.MCPManagerInterface) {
 	bifrost.MCPManager = manager
 	if manager != nil && bifrost.mcpInProcessServerFactory != nil {
 		manager.SetInProcessServerFactory(bifrost.mcpInProcessServerFactory)
+	}
+	if manager != nil && bifrost.mcpDiscoveryChangeCallback != nil {
+		manager.SetDiscoveryChangeCallback(bifrost.mcpDiscoveryChangeCallback)
 	}
 	bifrost.mcpFactoryMu.Unlock()
 	// Inject Bifrost's plugin pipeline into the manager's CodeMode so that
@@ -4889,11 +4901,11 @@ func (bifrost *Bifrost) EnableMCPClient(id string) error {
 // server using a temporary access token and discover available tools. The
 // connection is closed after verification. If the MCP manager is not yet
 // initialized, it is lazily created (same as AddMCPClient).
-func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (*schemas.MCPDiscovery, error) {
 	// Ensure MCP manager is initialized (lazy init, same pattern as AddMCPClient)
 	bifrost.ensureLazyMCPManager()
 	if bifrost.MCPManager == nil {
-		return nil, nil, "", fmt.Errorf("MCP manager is not initialized")
+		return nil, fmt.Errorf("MCP manager is not initialized")
 	}
 	return bifrost.MCPManager.VerifyPerUserOAuthConnection(ctx, config, accessToken)
 }
@@ -4902,19 +4914,18 @@ func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config
 // server using caller-supplied header values (admin sample or user-submitted)
 // and discover available tools. Mirrors VerifyPerUserOAuthConnection's lazy
 // MCP-manager init.
-func (bifrost *Bifrost) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+func (bifrost *Bifrost) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (*schemas.MCPDiscovery, error) {
 	bifrost.ensureLazyMCPManager()
 	if bifrost.MCPManager == nil {
-		return nil, nil, "", fmt.Errorf("MCP manager is not initialized")
+		return nil, fmt.Errorf("MCP manager is not initialized")
 	}
 	return bifrost.MCPManager.VerifyHeadersConnection(ctx, config, userHeaders)
 }
 
-// SetClientTools delegates to the MCP manager to update the tool map for an
-// existing MCP client.
-func (bifrost *Bifrost) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) {
+// SetClientDiscovery installs discovery on an existing MCP client.
+func (bifrost *Bifrost) SetClientDiscovery(clientID string, discovery *schemas.MCPDiscovery) {
 	if bifrost.MCPManager != nil {
-		bifrost.MCPManager.SetClientTools(clientID, tools, toolNameMapping, instructions)
+		bifrost.MCPManager.SetClientDiscovery(clientID, discovery)
 	}
 }
 

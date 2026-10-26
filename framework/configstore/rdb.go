@@ -1827,6 +1827,10 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					// empty hash reads as "changed" and re-syncs every client
 					// on every boot, clobbering server-side auth state.
 					ConfigHash: dbClient.ConfigHash,
+
+					DiscoveredResources:         dbClient.DiscoveredResources,
+					DiscoveredResourceTemplates: dbClient.DiscoveredResourceTemplates,
+					DiscoveredPrompts:           dbClient.DiscoveredPrompts,
 				}
 			}
 			return &schemas.MCPConfig{
@@ -1888,6 +1892,10 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			// reads as "changed" and re-syncs every client on every boot,
 			// clobbering server-side auth state.
 			ConfigHash: dbClient.ConfigHash,
+
+			DiscoveredResources:         dbClient.DiscoveredResources,
+			DiscoveredResourceTemplates: dbClient.DiscoveredResourceTemplates,
+			DiscoveredPrompts:           dbClient.DiscoveredPrompts,
 		}
 	}
 	return &schemas.MCPConfig{
@@ -2327,6 +2335,10 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		TokenExchange:             dbClient.TokenExchange,
 		PendingOAuthConfig:        dbClient.PendingOAuthConfig,
 		OpenAPIConfig:             dbClient.OpenAPIConfig,
+
+		DiscoveredResources:         dbClient.DiscoveredResources,
+		DiscoveredResourceTemplates: dbClient.DiscoveredResourceTemplates,
+		DiscoveredPrompts:           dbClient.DiscoveredPrompts,
 	}, nil
 }
 
@@ -2378,21 +2390,28 @@ func (s *RDBConfigStore) UpdateMCPClientOAuthConfigID(ctx context.Context, clien
 	return nil
 }
 
-// UpdateMCPClientTools persists an MCP client's discovered tools, tool name
-// mapping and server instructions as a targeted column update — unlike
-// UpdateMCPClientConfig's full-row overwrite, this never touches any other
-// column, so it's safe to call from a periodic background refresh without
-// racing a concurrent config edit. An empty (non-nil) map is a legitimate
-// "server has zero tools" result and is written as-is, same as a populated
-// one; an empty instructions string likewise means the server advertises none.
-func (s *RDBConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error {
-	toolsJSON, err := json.Marshal(tools)
+// UpdateMCPClientDiscovery writes only the discovery columns, so a background refresh never races a
+// full UpdateMCPClientConfig. Empty tools, empty instructions and nil lists are written as-is.
+func (s *RDBConfigStore) UpdateMCPClientDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) error {
+	if discovery == nil {
+		discovery = &schemas.MCPDiscovery{}
+	}
+	toolsJSON, err := json.Marshal(discovery.Tools)
 	if err != nil {
 		return fmt.Errorf("failed to marshal discovered_tools: %w", err)
 	}
-	mappingJSON, err := json.Marshal(toolNameMapping)
+	mappingJSON, err := json.Marshal(discovery.ToolNameMapping)
 	if err != nil {
 		return fmt.Errorf("failed to marshal tool_name_mapping: %w", err)
+	}
+	// Same encoding the row's BeforeSave uses, so a nil list stays "" either way.
+	listed := &tables.TableMCPClient{
+		DiscoveredResources:         discovery.Resources,
+		DiscoveredResourceTemplates: discovery.ResourceTemplates,
+		DiscoveredPrompts:           discovery.Prompts,
+	}
+	if err := listed.EncodeDiscoveredLists(); err != nil {
+		return fmt.Errorf("failed to marshal discovered resources and prompts: %w", err)
 	}
 	res := s.DB().WithContext(ctx).
 		Model(&tables.TableMCPClient{}).
@@ -2400,8 +2419,12 @@ func (s *RDBConfigStore) UpdateMCPClientTools(ctx context.Context, clientID stri
 		Updates(map[string]interface{}{
 			"discovered_tools_json":   string(toolsJSON),
 			"tool_name_mapping_json":  string(mappingJSON),
-			"discovered_instructions": instructions,
+			"discovered_instructions": discovery.Instructions,
 			"updated_at":              time.Now(),
+
+			"discovered_resources_json":          listed.DiscoveredResourcesJSON,
+			"discovered_resource_templates_json": listed.DiscoveredResourceTemplatesJSON,
+			"discovered_prompts_json":            listed.DiscoveredPromptsJSON,
 		})
 	if res.Error != nil {
 		return res.Error
@@ -2510,6 +2533,10 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			// config-file clients so the next boot's reconciliation sees
 			// the row as in-sync instead of re-writing it.
 			ConfigHash: clientConfig.ConfigHash,
+
+			DiscoveredResources:         clientConfig.DiscoveredResources,
+			DiscoveredResourceTemplates: clientConfig.DiscoveredResourceTemplates,
+			DiscoveredPrompts:           clientConfig.DiscoveredPrompts,
 		}
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
 			return s.parseGormError(err)

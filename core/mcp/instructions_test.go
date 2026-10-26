@@ -309,7 +309,8 @@ func TestWriteBackInstructionsReplacesAndFiresCallback(t *testing.T) {
 	m.mu.Unlock()
 
 	var seen []string
-	m.SetToolsChangeCallback(func(_, _ string, _ map[string]schemas.ChatTool, _ map[string]string, instructions string) {
+	m.SetDiscoveryChangeCallback(func(_, _ string, discovery *schemas.MCPDiscovery) {
+		instructions := discovery.Instructions
 		seen = append(seen, instructions)
 	})
 
@@ -334,7 +335,7 @@ func TestWriteBackInstructionsNoOpWhenUnchanged(t *testing.T) {
 	m.mu.Unlock()
 
 	fired := false
-	m.SetToolsChangeCallback(func(_, _ string, _ map[string]schemas.ChatTool, _ map[string]string, _ string) { fired = true })
+	m.SetDiscoveryChangeCallback(func(_, _ string, _ *schemas.MCPDiscovery) { fired = true })
 
 	m.writeBackInstructions(config.ID, 0, "same")
 

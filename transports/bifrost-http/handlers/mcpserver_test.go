@@ -370,6 +370,95 @@ func TestMCPGateway_TransportRules(t *testing.T) {
 	}
 }
 
+// Browser requests to /mcp are refused with 403 when their Origin may not reach it (Streamable
+// HTTP "Security Warning"). While /mcp accepts unauthenticated calls the bare "*" does not count and
+// same-origin is not exempt; with auth enforced allowed_origins applies as configured. Requests
+// without an Origin are never affected.
+func TestMCPGateway_OriginValidation(t *testing.T) {
+	const list = `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	cases := []struct {
+		name       string
+		enforce    bool
+		allowed    []string
+		origin     string
+		method     string
+		wantStatus int
+	}{
+		{"no origin, open", false, []string{"*"}, "", http.MethodPost, http.StatusOK},
+		{"localhost origin, open", false, []string{"*"}, "http://localhost:5173", http.MethodPost, http.StatusOK},
+		{"unlisted origin, open, wildcard does not count", false, []string{"*"}, "https://evil.example", http.MethodPost, http.StatusForbidden},
+		{"unlisted origin, open, GET", false, []string{"*"}, "https://evil.example", http.MethodGet, http.StatusForbidden},
+		{"unlisted origin, open, DELETE", false, []string{"*"}, "https://evil.example", http.MethodDelete, http.StatusForbidden},
+		{"rebound page is same-origin, open", false, []string{"*"}, "http://rebound.example", http.MethodPost, http.StatusForbidden},
+		{"listed origin, open", false, []string{"*", "https://app.example.com"}, "https://app.example.com", http.MethodPost, http.StatusOK},
+		{"pattern-listed origin, open", false, []string{"https://*.example.com"}, "https://tools.example.com", http.MethodPost, http.StatusOK},
+		{"unlisted origin, auth enforced, wildcard allows", true, []string{"*"}, "https://app.example.com", http.MethodPost, http.StatusUnauthorized},
+		{"unlisted origin, auth enforced, not in list", true, []string{"https://app.example.com"}, "https://evil.example", http.MethodPost, http.StatusForbidden},
+		{"no origin, auth enforced", true, []string{"https://app.example.com"}, "", http.MethodPost, http.StatusUnauthorized},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tm := &echoToolManager{fakeInstructionsToolManager{instructions: "gateway instructions"}}
+			cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: tc.enforce, AllowedOrigins: tc.allowed}}
+			h, err := NewMCPServerHandler(context.Background(), cfg, tm, nil, nil, nil)
+			require.NoError(t, err)
+			baseURL := startGateway(t, h)
+
+			var body io.Reader
+			if tc.method == http.MethodPost {
+				body = strings.NewReader(list)
+			}
+			req, err := http.NewRequest(tc.method, baseURL+"/mcp", body)
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("MCP-Protocol-Version", "2025-06-18")
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+				// A DNS-rebound page reaches the gateway under its own name, so Origin and Host agree.
+				if tc.origin == "http://rebound.example" {
+					req.Host = "rebound.example"
+				}
+			}
+			resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			respBody, _ := io.ReadAll(resp.Body)
+			if tc.wantStatus == http.StatusForbidden {
+				require.Equal(t, tc.wantStatus, resp.StatusCode, string(respBody))
+				assert.Contains(t, string(respBody), "allowed_origins")
+				return
+			}
+			assert.NotEqual(t, http.StatusForbidden, resp.StatusCode, string(respBody))
+			if tc.method == http.MethodPost {
+				assert.Equal(t, tc.wantStatus, resp.StatusCode, string(respBody))
+			}
+		})
+	}
+}
+
+// BenchmarkMCPGateway_RefuseOrigin measures the Origin check every /mcp request pays.
+func BenchmarkMCPGateway_RefuseOrigin(b *testing.B) {
+	for _, tc := range []struct{ name, origin string }{
+		{"no origin", ""},
+		{"localhost origin", "http://localhost:5173"},
+		{"listed origin", "https://app.example.com"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			h := &MCPServerHandler{config: &lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"*", "https://app.example.com"}}}}
+			ctx := &fasthttp.RequestCtx{}
+			if tc.origin != "" {
+				ctx.Request.Header.Set("Origin", tc.origin)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if h.refuseOrigin(ctx) {
+					b.Fatal("refused")
+				}
+			}
+		})
+	}
+}
+
 // A registry change reaches clients holding a notification stream, on every protocol revision.
 func TestMCPGateway_ToolsListChangedReachesListeners(t *testing.T) {
 	h := newGatewayHandler(t)

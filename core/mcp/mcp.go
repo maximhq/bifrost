@@ -86,22 +86,10 @@ type MCPManager struct {
 	// (the only kind of consumer this exists for today) is unaffected.
 	stateChangeCallback func(clientID, name string, oldState, newState schemas.MCPConnectionState)
 
-	// toolsChangeCallback, if set, is invoked whenever a client's tool
-	// map/name mapping is freshly (re)discovered — connectToMCPClient's
-	// initial dial or reconnect, SetClientTools (per-call clients' own
-	// discovery, called both internally and by admin-verify HTTP handlers),
-	// and the periodic connection checker's writeBackTools (both the sticky
-	// and per-call variants). Deliberately NOT fired when AddClient restores
-	// an already-known tool set from a config that was just read back out of
-	// the DB (clientmanager.go's per-call restore branch) — nothing changed
-	// in that case, so there is nothing new to persist.
-	//
-	// core/mcp has no DB access of its own; this is the seam a caller (the
-	// transport layer) uses to persist the fresh result, mirroring
-	// stateChangeCallback's own role for state transitions. Fired outside
-	// m.mu for the same reason: a registered callback may do arbitrary work,
-	// including I/O.
-	toolsChangeCallback func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)
+	// discoveryChangeCallback, if set, runs when a fresh discovery of a client differs from the installed one:
+	// connect/reconnect, SetClientDiscovery and the connection checker. Not on a restore from config
+	// (nothing changed). It is how the transport persists; fired outside m.mu since it may do I/O.
+	discoveryChangeCallback func(clientID, name string, discovery *schemas.MCPDiscovery)
 }
 
 // SetStateChangeCallback registers cb to be invoked on every reactive
@@ -115,39 +103,49 @@ func (m *MCPManager) SetStateChangeCallback(cb func(clientID, name string, oldSt
 	m.stateChangeCallback = cb
 }
 
-// SetToolsChangeCallback registers cb to be invoked whenever a client's tool
-// map is freshly (re)discovered — see the toolsChangeCallback field doc for
-// exactly which paths that covers. Pass nil to clear a previously registered
-// callback. Safe to call at any time; takes effect on the next discovery.
-func (m *MCPManager) SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)) {
+// SetDiscoveryChangeCallback registers cb to run when a client's discovery changes (see
+// discoveryChangeCallback for the paths). nil clears it.
+func (m *MCPManager) SetDiscoveryChangeCallback(cb func(clientID, name string, discovery *schemas.MCPDiscovery)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.toolsChangeCallback = cb
+	m.discoveryChangeCallback = cb
 }
 
-// toolsChangedCallback compares tools/toolNameMapping's content hash against
-// clientState.LastToolsHash — gating the funnel to genuine changes only, so
-// a rediscovery that returns byte-identical tools (the common case on most
-// periodic ticks and reconnects) doesn't re-trigger a registered callback's
-// work (DB persist, external MCP server resync). On a genuine change,
-// updates the stored hash and returns a closure that invokes the callback;
-// returns nil if nothing changed or no callback is registered.
-//
-// Must be called with m.mu (or the checker's c.manager.mu — the same
-// mutex) already held; the returned closure must be invoked AFTER releasing
-// the lock, per toolsChangeCallback's own field doc.
-func (m *MCPManager) toolsChangedCallback(clientState *schemas.MCPClientState, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) func() {
-	hash := computeToolsHash(tools, toolNameMapping, instructions)
-	if clientState.LastToolsHash == hash {
+// discoveryChanged updates LastDiscoveryHash from clientState and, on a change, returns a closure that
+// runs the callback with the discovery installed when it fires; nil when nothing changed or no
+// callback is set. Call with m.mu held and run the closure after releasing it.
+func (m *MCPManager) discoveryChanged(clientState *schemas.MCPClientState, clientID string) func() {
+	discovery := installedDiscovery(clientState)
+	hash := computeDiscoveryHash(discovery)
+	if clientState.LastDiscoveryHash == hash {
 		return nil
 	}
-	clientState.LastToolsHash = hash
-	cb := m.toolsChangeCallback
+	clientState.LastDiscoveryHash = hash
+	cb := m.discoveryChangeCallback
 	if cb == nil {
 		return nil
 	}
-	name := clientState.Name
-	return func() { cb(clientID, name, tools, toolNameMapping, instructions) }
+	// Read again when it fires: callbacks run unlocked and can fire out of order, so a late one must
+	// deliver the discovery installed now, not the one it was created with.
+	return func() {
+		m.mu.RLock()
+		current, name := installedDiscovery(clientState), clientState.Name
+		m.mu.RUnlock()
+		cb(clientID, name, current)
+	}
+}
+
+// installedDiscovery is clientState's current discovery. Callers hold m.mu.
+func installedDiscovery(clientState *schemas.MCPClientState) *schemas.MCPDiscovery {
+	return &schemas.MCPDiscovery{
+		Tools:           clientState.ToolMap,
+		ToolNameMapping: clientState.ToolNameMapping,
+		Instructions:    clientState.ServerInstructions,
+
+		Resources:         clientState.Resources,
+		ResourceTemplates: clientState.ResourceTemplates,
+		Prompts:           clientState.Prompts,
+	}
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.

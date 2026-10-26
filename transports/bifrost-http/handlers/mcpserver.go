@@ -195,6 +195,9 @@ func (h *MCPServerHandler) RegisterRoutes(r *router.Router, middlewares ...schem
 // applies the rules of whichever protocol revision the client speaks. Requests that cannot open a
 // stream are answered inline; GET and subscriptions/listen are served as SSE streams.
 func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
+	if h.refuseOrigin(ctx) {
+		return
+	}
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
 
@@ -641,6 +644,29 @@ func stampToolAccess(bifrostCtx *schemas.BifrostContext, access schemas.Access) 
 		tools = access.NarrowMCPToolIncludeList(requestedList)
 	}
 	bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, tools)
+}
+
+// refuseOrigin answers 403 for a browser request whose Origin may not reach /mcp. Requests without
+// an Origin (non-browser clients) pass. Returns true if the request was refused.
+func (h *MCPServerHandler) refuseOrigin(ctx *fasthttp.RequestCtx) bool {
+	origin := ctx.Request.Header.Peek("Origin")
+	if len(origin) == 0 || h.originAllowed(string(origin)) {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Requests to /mcp from origin %q are refused; list the origin in client_config.allowed_origins (localhost origins are always allowed).", origin))
+	return true
+}
+
+// originAllowed guards /mcp against DNS rebinding. Without auth, "*" and same-origin do not count
+// (a rebound page is same-origin); with auth, allowed_origins applies as configured.
+func (h *MCPServerHandler) originAllowed(origin string) bool {
+	h.config.Mu.RLock()
+	enforceAuth, allowed := h.config.ClientConfig.EnforceAuthOnInference, h.config.ClientConfig.AllowedOrigins
+	h.config.Mu.RUnlock()
+	if enforceAuth {
+		return IsOriginAllowed(origin, allowed)
+	}
+	return originExplicitlyAllowed(origin, allowed)
 }
 
 // authSettings reads the two settings admission depends on under the config lock.
