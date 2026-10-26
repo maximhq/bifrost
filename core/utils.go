@@ -278,12 +278,20 @@ func newBifrostErrorFromMsg(message string) *schemas.BifrostError {
 
 // newBifrostCtxDoneError creates a BifrostError from a cancelled/expired context.
 // It distinguishes DeadlineExceeded (504 RequestTimedOut) from Canceled (499 RequestCancelled).
+//
+// armRequestTimeout's timer calls ctx.Cancel() directly, not WithDeadline, so
+// ctx.Err() reports context.Canceled for a fired x-bf-request-timeout deadline
+// too -- indistinguishable from an arbitrary caller cancellation by ctx.Err()
+// alone. Check BifrostContextKeyRequestTimeoutFired first, the same sentinel
+// armRequestTimeout sets before cancelling, so a server-declared deadline is
+// never reported as a caller cancellation on this path.
 func newBifrostCtxDoneError(ctx *schemas.BifrostContext, stage string) *schemas.BifrostError {
 	var statusCode int
 	var errorType string
 	var message string
 
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	fired, _ := ctx.Value(schemas.BifrostContextKeyRequestTimeoutFired).(bool)
+	if fired || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		statusCode = 504
 		errorType = schemas.RequestTimedOut
 		message = fmt.Sprintf("request timed out %s: %v", stage, ctx.Err())
