@@ -9,8 +9,12 @@ import (
 // resolveRequestContext resolves the context handleRequest/handleStreamRequest
 // runs on when the caller passed nil, and reports which context (if any) this
 // call owns and must therefore release once the request completes. A
-// caller-supplied context distinct from root is never owned and must never be
-// cancelled here.
+// caller-supplied context distinct from root is never owned, so it is never
+// released here; it is cancelled only if the deadline the caller declared on it
+// fires, as with context.WithTimeout. It is not swapped for a derived child,
+// because core writes per-request values (response headers, routing info)
+// with SetValue, which a child keeps to itself, and the caller reads them back
+// from its own context.
 //
 // ctx == root is treated the same as ctx == nil: every public entry point
 // (ChatCompletionRequest and its siblings) already substitutes bifrost.ctx for

@@ -814,6 +814,9 @@ func TestNewBifrostCtxDoneError_RequestTimeoutFiredReportsTimedOut(t *testing.T)
 	assert.Equal(t, 504, *err.StatusCode)
 	require.NotNil(t, err.Error.Type)
 	assert.Equal(t, schemas.RequestTimedOut, *err.Error.Type)
+	assert.ErrorIs(t, err.Error.Error, context.DeadlineExceeded)
+	assert.NotErrorIs(t, err.Error.Error, context.Canceled)
+	assert.NotContains(t, err.Error.Message, "context canceled")
 }
 
 // TestNewBifrostCtxDoneError_PlainCancellationStillReportsCancelled is the
@@ -829,4 +832,5 @@ func TestNewBifrostCtxDoneError_PlainCancellationStillReportsCancelled(t *testin
 	assert.Equal(t, 499, *err.StatusCode)
 	require.NotNil(t, err.Error.Type)
 	assert.Equal(t, schemas.RequestCancelled, *err.Error.Type)
+	assert.ErrorIs(t, err.Error.Error, context.Canceled)
 }
