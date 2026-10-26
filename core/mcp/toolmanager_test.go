@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -60,8 +61,13 @@ func (m *mockToolClientManager) GetToolPerClient(ctx context.Context) map[string
 	}
 }
 
-func (m *mockToolClientManager) GetConnectTools(context.Context) []schemas.ChatTool {
-	return nil
+// GetCallerDiscovery serves the fake's tools and, when asked for, its instructions.
+func (m *mockToolClientManager) GetCallerDiscovery(ctx context.Context, withInstructions bool) CallerDiscovery {
+	result := CallerDiscovery{ToolsPerClient: m.GetToolPerClient(ctx)}
+	if withInstructions {
+		result.Instructions = m.instructions
+	}
+	return result
 }
 
 func (m *mockToolClientManager) ConnectToolClient(context.Context, string) *schemas.MCPClientState {
@@ -69,10 +75,6 @@ func (m *mockToolClientManager) ConnectToolClient(context.Context, string) *sche
 }
 
 func (m *mockToolClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
-
-func (m *mockToolClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
-	return m.instructions
-}
 
 func (m *mockToolClientManager) GetPluginPipeline() PluginPipeline             { return nil }
 func (m *mockToolClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {}
@@ -1404,6 +1406,69 @@ func TestExecuteTool_UpstreamNeedsUserInput_ExplainsWhy(t *testing.T) {
 	}
 }
 
+// countingDiscoveryStore serves the discoveries it was given and counts how many
+// times each client's was read.
+type countingDiscoveryStore struct {
+	mu    sync.Mutex
+	byID  map[string]*schemas.MCPDiscovery
+	reads map[string]int
+}
+
+func newCountingDiscoveryStore() *countingDiscoveryStore {
+	return &countingDiscoveryStore{byID: map[string]*schemas.MCPDiscovery{}, reads: map[string]int{}}
+}
+
+func (s *countingDiscoveryStore) GetDiscovery(_ context.Context, client *schemas.MCPClientConfig) *schemas.MCPDiscovery {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reads[client.ID]++
+	return s.byID[client.ID]
+}
+
+func (s *countingDiscoveryStore) SetDiscovery(_ context.Context, client *schemas.MCPClientConfig, discovery *schemas.MCPDiscovery) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byID[client.ID] = discovery
+	return nil
+}
+
+func (s *countingDiscoveryStore) DeleteDiscovery(_ context.Context, client *schemas.MCPClientConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.byID, client.ID)
+	return nil
+}
+
+// TestParseAndAddToolsToRequest_ReadsEachClientsDiscoveryOnce: adding a request's
+// tools, connect tools and server instructions reads each client's discovery for
+// the caller once, whichever store it lives in.
+func TestParseAndAddToolsToRequest_ReadsEachClientsDiscoveryOnce(t *testing.T) {
+	shared, perUser := newCountingDiscoveryStore(), newCountingDiscoveryStore()
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{SharedDiscoveryStore: shared, PerUserDiscoveryStore: perUser}, nil, &MockLogger{}, nil)
+	wiki := &schemas.MCPClientConfig{ID: "wiki-id", Name: "wiki", ToolsToExecute: []string{"*"}}
+	notes := &schemas.MCPClientConfig{ID: "notes-id", Name: "notes", ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true)}
+	jira := &schemas.MCPClientConfig{ID: "jira-id", Name: "jira", ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true)}
+	for _, config := range []*schemas.MCPClientConfig{wiki, notes, jira} {
+		m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy}
+	}
+	wikiDiscovery := discoveryOf("wiki", "read")
+	wikiDiscovery.Instructions = "Cite the page."
+	shared.byID[wiki.ID] = wikiDiscovery
+	// The caller has connected to notes and not to jira, which offers its connect tool.
+	notesDiscovery := discoveryOf("notes", "search")
+	notesDiscovery.Instructions = "Search before you write."
+	perUser.byID[notes.ID] = notesDiscovery
+
+	req := m.toolsManager.ParseAndAddToolsToRequest(userContext("alice"), buildChatRequest())
+
+	assert.ElementsMatch(t, []string{"wiki-read", "notes-search", "jira-connect"}, toolNamesFromChatRequest(req))
+	require.NotEmpty(t, req.ChatRequest.Input)
+	assert.Contains(t, *req.ChatRequest.Input[0].Content.ContentStr, "Cite the page.")
+	assert.Contains(t, *req.ChatRequest.Input[0].Content.ContentStr, "Search before you write.")
+	assert.Equal(t, map[string]int{wiki.ID: 1}, shared.reads)
+	assert.Equal(t, map[string]int{notes.ID: 1, jira.ID: 1}, perUser.reads)
+}
+
 // The tools injected into a request when every client is shared: the path every
 // request without per_user_discovery takes, which connect tools must not slow.
 func BenchmarkParseAndAddToolsToRequest(b *testing.B) {
@@ -1412,6 +1477,36 @@ func BenchmarkParseAndAddToolsToRequest(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
+		_ = m.toolsManager.ParseAndAddToolsToRequest(ctx, req)
+	}
+}
+
+// BenchmarkParseAndAddToolsToRequest with every server giving instructions, which a
+// request's first turn adds to its prompt.
+func BenchmarkParseAndAddToolsToRequest_WithInstructions(b *testing.B) {
+	m, _ := benchmarkSharedManager(10, 20)
+	for _, client := range m.clientMap {
+		m.discoveryStore.GetDiscovery(context.Background(), client.ExecutionConfig).Instructions = client.Name + " rule: check permissions first."
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
+		_ = m.toolsManager.ParseAndAddToolsToRequest(ctx, req)
+	}
+}
+
+// BenchmarkParseAndAddToolsToRequest with every client on per_user_discovery, for a
+// virtual-key caller whose discoveries are cached.
+func BenchmarkParseAndAddToolsToRequest_PerUserClients(b *testing.B) {
+	m, _ := benchmarkPerUserManager(10, 20)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-bench")
 		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
 		_ = m.toolsManager.ParseAndAddToolsToRequest(ctx, req)
 	}

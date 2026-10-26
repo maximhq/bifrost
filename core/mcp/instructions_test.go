@@ -39,10 +39,10 @@ func newManagerWithInstructions(t *testing.T) *MCPManager {
 	return m
 }
 
-func TestGetServerInstructionsReturnsEveryVisibleClientSorted(t *testing.T) {
+func TestCallerDiscoveryInstructionsReturnsEveryVisibleClientSorted(t *testing.T) {
 	m := newManagerWithInstructions(t)
 
-	got := m.GetServerInstructions(context.Background())
+	got := m.GetCallerDiscovery(context.Background(), true).Instructions
 
 	require.Len(t, got, 2)
 	assert.Equal(t, "alpha", got[0].ClientName)
@@ -52,11 +52,11 @@ func TestGetServerInstructionsReturnsEveryVisibleClientSorted(t *testing.T) {
 // The security-relevant case: a caller narrowed to one client must not be handed the other
 // client's instructions. Scoping rides entirely on GetToolPerClient, so this pins that it
 // actually does.
-func TestGetServerInstructionsWithheldForClientsTheCallerCannotSee(t *testing.T) {
+func TestCallerDiscoveryInstructionsWithheldForClientsTheCallerCannotSee(t *testing.T) {
 	m := newManagerWithInstructions(t)
 	ctx := context.WithValue(context.Background(), schemas.MCPContextKeyIncludeClients, []string{"alpha"})
 
-	got := m.GetServerInstructions(ctx)
+	got := m.GetCallerDiscovery(ctx, true).Instructions
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "alpha", got[0].ClientName)
@@ -65,24 +65,24 @@ func TestGetServerInstructionsWithheldForClientsTheCallerCannotSee(t *testing.T)
 
 // A client with no visible tool is a client this caller cannot reach at all, so it
 // contributes nothing — not even a bare heading.
-func TestGetServerInstructionsSkipsClientsWithNoVisibleTools(t *testing.T) {
+func TestCallerDiscoveryInstructionsSkipsClientsWithNoVisibleTools(t *testing.T) {
 	m := newManagerWithInstructions(t)
 	m.mu.Lock()
 	m.clientMap["beta-id"].ExecutionConfig.ToolsToExecute = []string{}
 	m.mu.Unlock()
 
-	got := m.GetServerInstructions(context.Background())
+	got := m.GetCallerDiscovery(context.Background(), true).Instructions
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "alpha", got[0].ClientName)
 }
 
-func TestGetServerInstructionsSkipsClientsThatAdvertiseNone(t *testing.T) {
+func TestCallerDiscoveryInstructionsSkipsClientsThatAdvertiseNone(t *testing.T) {
 	m := newManagerWithInstructions(t)
 	alpha := m.discoveryStore.GetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: "alpha-id"})
 	m.discoveryStore.SetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: "alpha-id"}, &schemas.MCPDiscovery{Tools: alpha.Tools})
 
-	got := m.GetServerInstructions(context.Background())
+	got := m.GetCallerDiscovery(context.Background(), true).Instructions
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "beta", got[0].ClientName)
@@ -382,7 +382,7 @@ func TestWriteBackInstructionsKeepsTheToolsItWasDiscoveredWith(t *testing.T) {
 // Instructions ride the caller's own discovery: a client with per_user_discovery on serves
 // each caller the instructions that came with its own tools, and a caller with no discovery
 // of it gets none, while a shared client gives everyone the shared text.
-func TestGetServerInstructionsComesFromTheCallersDiscovery(t *testing.T) {
+func TestCallerDiscoveryInstructionsComesFromTheCallersDiscovery(t *testing.T) {
 	store := newFakePerUserDiscoveryStore()
 	m, shared, perUser := newPerUserTestManager(t, store)
 	sharedDiscovery := discoveryOf("wiki", "read")
@@ -395,9 +395,9 @@ func TestGetServerInstructionsComesFromTheCallersDiscovery(t *testing.T) {
 	assert.Equal(t, []schemas.MCPServerInstructions{
 		{ClientName: "notes", Instructions: "Alice's rule."},
 		{ClientName: "wiki", Instructions: "Shared rule."},
-	}, m.GetServerInstructions(userContext("alice")))
+	}, m.GetCallerDiscovery(userContext("alice"), true).Instructions)
 	assert.Equal(t, []schemas.MCPServerInstructions{{ClientName: "wiki", Instructions: "Shared rule."}},
-		m.GetServerInstructions(userContext("bob")))
+		m.GetCallerDiscovery(userContext("bob"), true).Instructions)
 }
 
 // A second STDIO subprocess would read the current config, not the running one's.
@@ -499,11 +499,11 @@ func addCodeModeClient(t *testing.T, m *MCPManager, name string) {
 	})
 }
 
-func TestGetServerInstructionsExcludesCodeModeClients(t *testing.T) {
+func TestCallerDiscoveryInstructionsExcludesCodeModeClients(t *testing.T) {
 	m := newManagerWithInstructions(t)
 	addCodeModeClient(t, m, "codey")
 
-	got := m.GetServerInstructions(context.Background())
+	got := m.GetCallerDiscovery(context.Background(), true).Instructions
 
 	names := make([]string, 0, len(got))
 	for _, p := range got {
@@ -514,29 +514,30 @@ func TestGetServerInstructionsExcludesCodeModeClients(t *testing.T) {
 }
 
 // Code-mode-only: the aggregate is empty, which callers must render as an absent field.
-func TestGetServerInstructionsEmptyWhenEveryClientIsCodeMode(t *testing.T) {
+func TestCallerDiscoveryInstructionsEmptyWhenEveryClientIsCodeMode(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	addCodeModeClient(t, m, "codey")
 	addCodeModeClient(t, m, "scripty")
 
-	assert.Empty(t, m.GetServerInstructions(context.Background()))
-	assert.Empty(t, AggregateServerInstructions(m.GetServerInstructions(context.Background()), InstructionCaps{}))
+	assert.Empty(t, m.GetCallerDiscovery(context.Background(), true).Instructions)
+	assert.Empty(t, AggregateServerInstructions(m.GetCallerDiscovery(context.Background(), true).Instructions, InstructionCaps{}))
 }
 
 // The exclusion is about code mode, not instructions: a mixed deployment is not silenced.
-func TestGetServerInstructionsKeepsNonCodeModeClientsAlongsideCodeMode(t *testing.T) {
+func TestCallerDiscoveryInstructionsKeepsNonCodeModeClientsAlongsideCodeMode(t *testing.T) {
 	m := newManagerWithInstructions(t)
 	addCodeModeClient(t, m, "codey")
 
-	aggregate := AggregateServerInstructions(m.GetServerInstructions(context.Background()), InstructionCaps{})
+	aggregate := AggregateServerInstructions(m.GetCallerDiscovery(context.Background(), true).Instructions, InstructionCaps{})
 
 	assert.Contains(t, aggregate, `<mcp_server name="alpha">`)
 	assert.NotContains(t, aggregate, "codey", "code mode guidance leaked into the aggregate:\n%s", aggregate)
 }
 
-// BenchmarkGetServerInstructions measures the per-request cost on the inference path: 20 visible
-// clients, half with instructions.
-func BenchmarkGetServerInstructions(b *testing.B) {
+// BenchmarkGetCallerDiscovery_WithInstructions measures the per-request cost of reading the
+// caller's discovery with the instructions the request-injection path
+// (addServerInstructionsToRequest) adds: 20 visible clients, half with instructions.
+func BenchmarkGetCallerDiscovery_WithInstructions(b *testing.B) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 	for i := range 20 {
 		name, tool := fmt.Sprintf("client%02d", i), fmt.Sprintf("client%02d-echo", i)
@@ -554,6 +555,6 @@ func BenchmarkGetServerInstructions(b *testing.B) {
 	ctx := context.Background()
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = m.GetServerInstructions(ctx)
+		_ = m.GetCallerDiscovery(ctx, true).Instructions
 	}
 }

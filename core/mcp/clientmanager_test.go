@@ -111,7 +111,7 @@ func TestAcquireClientConn_DropsTheDiscoveryOfACallerWhoMustSignInAgain(t *testi
 		require.NotNil(t, bErr, "the call still asks alice to sign in")
 
 		assert.Nil(t, perUser.GetDiscovery(userContext("alice"), notes))
-		assert.Equal(t, []string{"notes-connect"}, toolNames(m.GetConnectTools(userContext("alice"))))
+		assert.Equal(t, []string{"notes-connect"}, toolNames(m.GetCallerDiscovery(userContext("alice"), false).ConnectTools))
 	})
 
 	t.Run("caller without one", func(t *testing.T) {
@@ -1124,7 +1124,7 @@ func TestAddClient_DisabledPerCallRestore_ServesPersistedInstructionsOnEnable(t 
 
 	require.NoError(t, m.EnableClient(config.ID))
 	assert.Equal(t, []schemas.MCPServerInstructions{{ClientName: config.Name, Instructions: "Restored rule."}},
-		m.GetServerInstructions(context.Background()))
+		m.GetCallerDiscovery(context.Background(), true).Instructions)
 }
 
 // The pending_verification restore in UpdateClientCredentials installs the persisted
