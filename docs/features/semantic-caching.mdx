@@ -716,7 +716,8 @@ err := plugin.ClearCacheForKey("support-session-456")
 
 ### Lifecycle & Cleanup
 
-- **TTL expiration** — every entry is stored with an `expires_at` timestamp. Expired entries are no longer served and are swept out over time.
+- **TTL expiration** — every entry has an absolute Unix-second `expires_at` deadline. Redis/Valkey also applies it as native hash-key expiry, so entries disappear without another cache request. Other vector stores enforce logical expiry on reads and delete expired matches best-effort; there is no periodic sweep of their stored entries. Streaming deadlines start at the first chunk, not the final storage write.
+- **Upgrading Redis/Valkey** — native expiry applies to new writes and rewrites. Older hashes without a native TTL require the [one-time expiry repair](/integrations/vector-databases/redis#repairing-existing-cache-entries); upgrading alone does not reclaim them.
 - **Entries persist across restarts** — cache data lives in your vector store and is **not** purged when Bifrost shuts down. A restart resumes serving the existing (unexpired) cache. To wipe entries, use the [cache-clear APIs](#cache-management) or clear the namespace in your vector store directly.
 - **Namespace isolation** — each `vector_store_namespace` is an independent cache pool. Use distinct namespaces to keep separate caches from colliding.
 

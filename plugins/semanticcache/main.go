@@ -990,11 +990,8 @@ func (plugin *Plugin) WaitForPendingOperations() {
 	plugin.writersWg.Wait()
 }
 
-// Cleanup signals the background loops to stop and waits for in-flight cache
-// writes to drain before returning. When CleanUpOnShutdown is true, it then
-// deletes every entry tagged from_bifrost_semantic_cache_plugin and drops
-// the namespace — useful for ephemeral test environments. The default is to
-// leave entries in place so they can serve subsequent process restarts.
+// Cleanup stops the background loops and drains in-flight cache writes. It
+// leaves persisted entries in place so unexpired entries survive restarts.
 func (plugin *Plugin) Cleanup() error {
 	plugin.cleanupOnce.Do(func() {
 		close(plugin.stopCh)
