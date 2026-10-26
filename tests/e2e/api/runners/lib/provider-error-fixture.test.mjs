@@ -79,3 +79,13 @@ test("filtered Live create checks accounting events and unchanged command permis
   assert.equal(complete.status, 201);
   assert.equal((await complete.json()).transport.sdp, "invalid SDP answer");
 });
+
+test("upstream-520-once answers a model's first hit with a plain-text 520 and its next with a response", async (t) => {
+  const post = await startFixture(t);
+  const first = await post({ model: "upstream-520-once~t", input: "hi" }, "/v1/responses");
+  assert.equal(first.status, 520);
+  assert.equal(await first.text(), "error code: 520");
+  const second = await post({ model: "upstream-520-once~t", input: "hi" }, "/v1/responses");
+  assert.equal(second.status, 200);
+  assert.equal((await second.json()).status, "completed");
+});
