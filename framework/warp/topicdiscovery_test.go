@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -1020,10 +1022,13 @@ func TestWarpDiscoveryClustersAPoolAtTheConfiguredSize(t *testing.T) {
 	require.Contains(t, final.Message, "Clustered 20 pooled request(s)")
 }
 
-// Upkeep rewrites topic rows whole, as the runs and discoveries that write
-// topics do, so it stands aside while one of those is in flight - and when it
-// cannot tell, rather than guess.
-func TestWarpUpkeepWaitsForTopicJobs(t *testing.T) {
+// Every node that shares a job store keeps topics through its queue, so no
+// two passes ever overlap. A node that can see the job store but has no runner
+// to queue on does not keep them inline instead: inline upkeep holds no lock,
+// and another node could start a queued pass the moment after it looked. Only
+// a node with no job store at all - nothing to coordinate through - keeps
+// them in this process.
+func TestWarpUpkeepRunsInlineOnlyWithoutAJobStore(t *testing.T) {
 	service, reader := discoveryTestService(t, topicTestNaming)
 	store := reader.topics
 	ctx := context.Background()
@@ -1032,19 +1037,145 @@ func TestWarpUpkeepWaitsForTopicJobs(t *testing.T) {
 		ID: "silent", Label: "Silent", Centroid: logstore.EncodeWarpVector([]float32{0, 1, 0}),
 		EmbeddingSignature: embeddingConfigSignature(configFromRow(assignTestRow())), CreatedAt: old,
 	}}))
+	require.Nil(t, service.topicJobs, "no runner to queue on")
 
-	for _, kind := range []string{TopicsJobKind, TopicDiscoveryJobKind} {
-		service.backfillJobs = discoveryJobs{inFlight: map[string]*tables.TableSidekiqJob{kind: {ID: kind}}}
-		service.topicUpkeepTick(ctx)
-		require.Contains(t, activeTopics(t, store), "Silent", "upkeep waits while a %s job is in flight", kind)
-	}
-	service.backfillJobs = failingJobs{}
-	service.topicUpkeepTick(ctx)
-	require.Contains(t, activeTopics(t, store), "Silent", "upkeep waits when it cannot tell whether a job is in flight")
-
+	// Nothing in flight, so an inline pass would run and retire the topic.
 	service.backfillJobs = discoveryJobs{inFlight: map[string]*tables.TableSidekiqJob{}}
 	service.topicUpkeepTick(ctx)
-	require.NotContains(t, activeTopics(t, store), "Silent", "with nothing in flight, upkeep runs")
+	require.Contains(t, activeTopics(t, store), "Silent", "a node that shares a job store never keeps topics inline")
+
+	service.backfillJobs = nil
+	service.topicUpkeepTick(ctx)
+	require.NotContains(t, activeTopics(t, store), "Silent", "with no job store, upkeep runs in this process")
+}
+
+// upkeepQueue records what was queued, and refuses ids it has seen as a
+// shared job store refuses a duplicate primary key.
+type upkeepQueue struct {
+	ids, kinds, keys []string
+}
+
+func (q *upkeepQueue) EnqueuePartitioned(_ context.Context, id, kind, key, _, _ string) error {
+	if slices.Contains(q.ids, id) {
+		return errors.New(`ERROR: duplicate key value violates unique constraint "sidekiq_pkey"`)
+	}
+	q.ids, q.kinds, q.keys = append(q.ids, id), append(q.kinds, kind), append(q.keys, key)
+	return nil
+}
+
+// With a job runner, the timer queues upkeep in the topics partition rather
+// than running it: that partition runs one topics job at a time across every
+// instance, which is what keeps two instances from rewriting a topic at once.
+// Instances queuing in the same hour make one job, and none is queued while
+// one waits.
+func TestWarpUpkeepIsQueuedInTheTopicsPartition(t *testing.T) {
+	service, reader := discoveryTestService(t, topicTestNaming)
+	store := reader.topics
+	ctx := context.Background()
+	old := time.Now().UTC().Add(-2 * topicsRetireAfter)
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{{
+		ID: "silent", Label: "Silent", Centroid: logstore.EncodeWarpVector([]float32{0, 1, 0}),
+		EmbeddingSignature: embeddingConfigSignature(configFromRow(assignTestRow())), CreatedAt: old,
+	}}))
+	queue := &upkeepQueue{}
+	service.topicJobs, service.backfillJobs = queue, discoveryJobs{inFlight: map[string]*tables.TableSidekiqJob{}}
+
+	service.topicUpkeepTick(ctx)
+	require.Equal(t, []string{TopicUpkeepJobKind}, queue.kinds)
+	require.Equal(t, []string{TopicsJobPartition}, queue.keys)
+	require.Contains(t, activeTopics(t, store), "Silent", "queued, not run in this process")
+
+	// The ids, at fixed times: the timer's own call above reads the clock,
+	// and a test that compared it with a second reading would fail whenever
+	// the two fell either side of an hour.
+	queue = &upkeepQueue{}
+	hour := time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC)
+	require.NoError(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(5*time.Minute)))
+	require.NoError(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(55*time.Minute)), "a duplicate is another instance's job, not a failure")
+	require.Len(t, queue.ids, 1, "instances queuing in the same hour make one job")
+	require.NoError(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(topicsDiscoveryInterval)))
+	require.Len(t, queue.ids, 2, "the next hour is a new job")
+
+	service.backfillJobs = discoveryJobs{inFlight: map[string]*tables.TableSidekiqJob{TopicUpkeepJobKind: {ID: "waiting"}}}
+	require.NoError(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(2*topicsDiscoveryInterval)))
+	require.Len(t, queue.ids, 2, "none is queued while one waits")
+
+	service.backfillJobs = failingJobs{}
+	require.Error(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(3*topicsDiscoveryInterval)), "a job store that cannot be read is reported")
+	require.Len(t, queue.ids, 2)
+
+	// With no job store to ask, upkeep is still queued, or it would never run:
+	// a service with a queue does not run it inline. The hourly id keeps it
+	// to one job an hour.
+	service.backfillJobs = nil
+	require.NoError(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(4*topicsDiscoveryInterval)))
+	require.NoError(t, service.enqueueTopicUpkeep(ctx, queue, hour.Add(4*topicsDiscoveryInterval+time.Minute)))
+	require.Len(t, queue.ids, 3, "queued once for the hour without a job store")
+}
+
+// The upkeep job is one pass of MaintainTopics, and reports what it did.
+// Warp being off is nothing to keep, not a failed job.
+func TestWarpUpkeepJobMaintainsTopics(t *testing.T) {
+	service, reader := discoveryTestService(t, topicTestNaming)
+	store := reader.topics
+	ctx := context.Background()
+	old := time.Now().UTC().Add(-2 * topicsRetireAfter)
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{{
+		ID: "silent", Label: "Silent", Centroid: logstore.EncodeWarpVector([]float32{0, 1, 0}),
+		EmbeddingSignature: embeddingConfigSignature(configFromRow(assignTestRow())), CreatedAt: old,
+	}}))
+	final, err := service.RunTopicUpkeepJob(ctx, tables.TableSidekiqJob{ID: "upkeep", Metadata: "{}"}, func(string) error { return nil })
+	require.NoError(t, err)
+	require.NotContains(t, activeTopics(t, store), "Silent")
+	var meta topicUpkeepJobMeta
+	require.NoError(t, sonic.UnmarshalString(final, &meta))
+	require.Equal(t, 1, meta.Retired)
+	require.Equal(t, meta.Message, SummarizeTopicUpkeepMeta(final).Message)
+	require.Contains(t, meta.Message, "Retired 1 topic(s)")
+
+	off := NewService(nil, WithConfigStore(&recordingStore{row: assignTestRow()}))
+	t.Cleanup(off.Shutdown)
+	final, err = off.RunTopicUpkeepJob(ctx, tables.TableSidekiqJob{ID: "upkeep", Metadata: "{}"}, func(string) error { return nil })
+	require.NoError(t, err, "no topic store is nothing to keep")
+	require.Contains(t, SummarizeTopicUpkeepMeta(final).Message, "not available")
+}
+
+// RegisterTopics binds the upkeep job beside discovery, and marks it routine
+// so its completed runs stay out of the jobs listing.
+func TestRegisterTopicsBindsTheUpkeepJob(t *testing.T) {
+	service, _ := discoveryTestService(t, topicTestNaming)
+	runner := sidekiq.New(nil, nil, 1, "")
+	t.Cleanup(runner.Shutdown)
+	service.RegisterTopics(runner)
+	_, summarized := runner.Summarize(TopicUpkeepJobKind, "{}")
+	require.True(t, summarized)
+	require.Equal(t, []string{TopicUpkeepJobKind}, runner.QuietOnSuccessKinds())
+	require.NotContains(t, TopicsJobKinds, TopicUpkeepJobKind, "a waiting upkeep must not refuse a seed run")
+}
+
+// A deployment that turns logging on after startup gets its log reader late.
+// The topic jobs must already be bound by then, or the node has a job store
+// and no queue, and upkeep is skipped on it until restart. Bound before the
+// reader arrives, they find no topic store and do nothing, and the timer queues
+// nothing while there is none.
+func TestRegisterTopicsBindsTheJobsBeforeTheLogReader(t *testing.T) {
+	service := NewService(nil, WithConfigStore(&recordingStore{row: assignTestRow()}))
+	t.Cleanup(service.Shutdown)
+	runner := sidekiq.New(nil, nil, 1, "")
+	t.Cleanup(runner.Shutdown)
+	service.RegisterTopics(runner)
+	require.NotNil(t, service.topicJobs, "the queue is bound with no log reader yet")
+	_, summarized := runner.Summarize(TopicUpkeepJobKind, "{}")
+	require.True(t, summarized)
+
+	queue := &upkeepQueue{}
+	service.topicJobs, service.backfillJobs = queue, discoveryJobs{inFlight: map[string]*tables.TableSidekiqJob{}}
+	service.topicUpkeepTick(context.Background())
+	require.Empty(t, queue.ids, "nothing is queued while there is no topic store")
+
+	service.SetLogReader(topicTestReader(t, map[string]logstore.Log{}))
+	service.topicUpkeepTick(context.Background())
+	require.Equal(t, []string{TopicUpkeepJobKind}, queue.kinds, "once logging is on, upkeep is queued")
 }
 
 // failingJobs is a job store that cannot be read.
