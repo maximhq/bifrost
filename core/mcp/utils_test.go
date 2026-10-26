@@ -573,11 +573,9 @@ func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
 	}
 }
 
-// TestValidateMCPClientConfig_PerUserDiscovery pins the flag's two validation
-// gates: it is permanently invalid for auth types with no per-caller
-// credential, and temporarily rejected even for per-user auth types until the
-// per-user discovery lifecycle (direct-approve, per-caller discovery, manual
-// refresh) is wired up.
+// TestValidateMCPClientConfig_PerUserDiscovery pins where the flag is valid: on
+// a per-user auth type, which has a credential per caller to discover with,
+// and not on an openapi client, whose tools come from its document.
 func TestValidateMCPClientConfig_PerUserDiscovery(t *testing.T) {
 	base := func(authType schemas.MCPAuthType) *schemas.MCPClientConfig {
 		config := &schemas.MCPClientConfig{
@@ -607,19 +605,24 @@ func TestValidateMCPClientConfig_PerUserDiscovery(t *testing.T) {
 		}
 	})
 
-	// Lifted when the per-user discovery lifecycle lands; until then the flag
-	// must not be accepted anywhere, or it would persist while the runtime
-	// still serves the admin's discovery to everyone.
-	t.Run("rejected_as_unsupported_for_per_user_auth_types", func(t *testing.T) {
+	t.Run("rejected_for_openapi", func(t *testing.T) {
+		config := base(schemas.MCPAuthTypePerUserHeaders)
+		config.ConnectionType = schemas.MCPConnectionTypeOpenAPI
+		config.OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{}}`}
+		assert.ErrorContains(t, ValidatePerUserDiscovery(config), "openapi")
+	})
+
+	t.Run("accepted_for_per_user_auth_types", func(t *testing.T) {
 		for _, authType := range []schemas.MCPAuthType{
 			schemas.MCPAuthTypePerUserOauth,
 			schemas.MCPAuthTypePerUserHeaders,
 			schemas.MCPAuthTypeTokenExchange,
 		} {
-			err := validateMCPClientConfig(base(authType))
-			if err == nil {
-				t.Errorf("per_user_discovery with auth type %q must be rejected until the lifecycle is implemented", authType)
+			config := base(authType)
+			if authType == schemas.MCPAuthTypeTokenExchange {
+				config.TokenExchange = &schemas.MCPTokenExchangeConfig{Audience: "api://pudtest", ClientID: schemas.NewSecretVar("exchange-app")}
 			}
+			assert.NoError(t, validateMCPClientConfig(config), "auth type %q", authType)
 		}
 	})
 

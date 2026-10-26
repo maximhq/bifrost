@@ -6585,6 +6585,130 @@ func TestMCPClientPendingVerification_ReadFromTheOldSignalsWithoutTheFlag(t *tes
 	assert.False(t, pending("per_user"), "verified with no tools stored")
 }
 
+// TestUpdateMCPClientConfig_TurningPerUserDiscoveryOnOrOff: turning the flag on
+// deletes the client's admin credential and its stored tools and keeps its
+// callers' credentials; turning it off deletes its callers' discoveries and its
+// stored tools. Either way the record of the admin step is taken from what that
+// step leaves behind, and an update that keeps the flag changes none of it.
+func TestUpdateMCPClientConfig_TurningPerUserDiscoveryOnOrOff(t *testing.T) {
+	ctx := context.Background()
+	alice := "alice"
+	for _, tc := range []struct {
+		name            string
+		authType        schemas.MCPAuthType
+		from, to        bool
+		tools, record   bool
+		wantCredentials []string
+		wantDiscoveries []string
+		wantPending     bool
+		wantTools       bool
+	}{
+		{
+			name: "on, a verified per_user_oauth client", authType: schemas.MCPAuthTypePerUserOauth, from: false, to: true, tools: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"},
+		},
+		{
+			// Verified by a node that does not keep the record, which is still set.
+			name: "on, a per_user_headers client verified elsewhere", authType: schemas.MCPAuthTypePerUserHeaders, from: false, to: true, tools: true, record: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"},
+		},
+		{
+			name: "on, a client still pending", authType: schemas.MCPAuthTypePerUserHeaders, from: false, to: true, record: true,
+			wantCredentials: []string{"tok-alice", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"}, wantPending: true,
+		},
+		{
+			name: "off, a per_user_headers client goes back to its admin step", authType: schemas.MCPAuthTypePerUserHeaders, from: true, to: false,
+			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"}, wantPending: true,
+		},
+		{
+			name: "off, a per_user_oauth client stays verified", authType: schemas.MCPAuthTypePerUserOauth, from: true, to: false,
+			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/wiki"},
+		},
+		{
+			name: "kept, an ordinary edit", authType: schemas.MCPAuthTypePerUserHeaders, from: false, to: false, tools: true,
+			wantCredentials: []string{"tok-admin", "tok-alice", "cred-admin", "cred-alice"}, wantDiscoveries: []string{"user/alice/notes", "user/alice/wiki"}, wantTools: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := setupMCPSessionsTestStore(t)
+			require.NoError(t, store.DB().AutoMigrate(&tables.TableMCPPerUserDiscovery{}))
+			for _, client := range []*schemas.MCPClientConfig{
+				{ID: "notes", Name: "notes", AuthType: tc.authType, PerUserDiscovery: schemas.Ptr(tc.from), PendingVerification: tc.record},
+				{ID: "wiki", Name: "wiki", AuthType: schemas.MCPAuthTypePerUserOauth, PerUserDiscovery: schemas.Ptr(true)},
+			} {
+				client.ConnectionType = schemas.MCPConnectionTypeHTTP
+				client.ConnectionString = schemas.NewSecretVar("https://example.invalid/mcp")
+				if client.AuthType == schemas.MCPAuthTypePerUserHeaders {
+					client.PerUserHeaderKeys = []string{"x-api-key"}
+				}
+				require.NoError(t, store.CreateMCPClientConfig(ctx, client))
+			}
+			if tc.tools {
+				tools := map[string]schemas.ChatTool{"notes-search": {
+					Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "notes-search"},
+					Annotations: &schemas.MCPToolAnnotations{Title: "Search"},
+				}}
+				require.NoError(t, store.UpdateMCPClientDiscovery(ctx, "notes", &schemas.MCPDiscovery{
+					Tools: tools, ToolNameMapping: map[string]string{"search": "search"}, Instructions: "Rules.",
+					Resources:         []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
+					ResourceTemplates: []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("notes://{id}", "note")},
+					Prompts:           []mcpgo.Prompt{mcpgo.NewPrompt("notes-review")},
+				}))
+			}
+			for _, token := range []*tables.TableMCPOauthToken{
+				{ID: "tok-admin", MCPClientID: "notes", AuthMode: "admin", Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-notes"},
+				{ID: "tok-alice", MCPClientID: "notes", UserID: &alice, AuthMode: "user", Status: "active", AccessToken: "x", TokenType: "Bearer", OauthConfigID: "cfg-notes"},
+			} {
+				require.NoError(t, store.DB().WithContext(ctx).Create(token).Error)
+			}
+			for _, cred := range []*tables.TableMCPPerUserHeaderCredential{
+				{ID: "cred-admin", MCPClientID: "notes", AuthMode: "admin", Status: "active", HeadersJSON: "{}"},
+				{ID: "cred-alice", MCPClientID: "notes", UserID: &alice, AuthMode: "user", Status: "active", HeadersJSON: "{}"},
+			} {
+				require.NoError(t, store.DB().WithContext(ctx).Create(cred).Error)
+			}
+			require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "notes", "search")))
+			require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, "alice", "wiki", "read")))
+
+			// The row as read, tools included, the way an edit hands it back.
+			row, err := store.GetMCPClientByID(ctx, "notes")
+			require.NoError(t, err)
+			row.PerUserDiscovery = schemas.Ptr(tc.to)
+			require.NoError(t, store.UpdateMCPClientConfig(ctx, "notes", row))
+
+			var tokens []tables.TableMCPOauthToken
+			require.NoError(t, store.DB().Find(&tokens).Error)
+			var creds []tables.TableMCPPerUserHeaderCredential
+			require.NoError(t, store.DB().Find(&creds).Error)
+			credentials := make([]string, 0, len(tokens)+len(creds))
+			for _, token := range tokens {
+				credentials = append(credentials, token.ID)
+			}
+			for _, cred := range creds {
+				credentials = append(credentials, cred.ID)
+			}
+			assert.ElementsMatch(t, tc.wantCredentials, credentials)
+			assert.ElementsMatch(t, tc.wantDiscoveries, storedDiscoveries(t, store))
+			config, err := store.GetMCPClientConfigByID(ctx, "notes")
+			require.NoError(t, err)
+			assert.Equal(t, schemas.Ptr(tc.to), config.PerUserDiscovery)
+			assert.Equal(t, tc.wantPending, config.PendingVerification, "record of the admin step")
+			assert.Equal(t, tc.wantTools, config.DiscoveredTools != nil, "stored tools")
+			// The resources, templates and prompts came from the same discovery and go with it.
+			assert.Equal(t, tc.wantTools, config.DiscoveredResources != nil, "stored resources")
+			assert.Equal(t, tc.wantTools, config.DiscoveredResourceTemplates != nil, "stored resource templates")
+			assert.Equal(t, tc.wantTools, config.DiscoveredPrompts != nil, "stored prompts")
+			if !tc.wantTools {
+				assert.Nil(t, config.DiscoveredToolNameMapping)
+				assert.Empty(t, config.DiscoveredInstructions)
+				var details string
+				require.NoError(t, store.DB().Model(&tables.TableMCPClient{}).Where("client_id = ?", "notes").Pluck("discovered_tool_details_json", &details).Error)
+				assert.Empty(t, details, "stored tool details")
+			}
+		})
+	}
+}
+
 // TestUpdateMCPClientConfig_KeepsPerUserDiscoveryWhenUnset: the update writes
 // per_user_discovery only when the row it is handed sets it, the same rule as
 // needs_session_stickiness, so a row that leaves it unset (a config.json

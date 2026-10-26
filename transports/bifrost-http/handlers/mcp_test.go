@@ -1591,6 +1591,198 @@ func TestUpdateMCPClient_DropsCallersCachedDiscoveriesOfAPerUserDiscoveryClient(
 	}
 }
 
+// TestUpdateMCPClient_TurningPerUserDiscoveryOnOrOff: an update turns
+// per_user_discovery on or off. The store applies what the change deletes,
+// every node drops its cached copies, and the runtime is handed the record of
+// the admin step the store reset. The flag is refused where it cannot apply.
+func TestUpdateMCPClient_TurningPerUserDiscoveryOnOrOff(t *testing.T) {
+	ctx := context.Background()
+	setup := func(t *testing.T, client *schemas.MCPClientConfig, perUser bool) (*MCPHandler, *openAPIRecordingManager, *evictionLog) {
+		h, mgr := newOpenAPITestHandler(t)
+		log := &evictionLog{}
+		h.mcpCredentialCacheManager = log
+		createSignInClient(t, h.store.ConfigStore, client, perUser)
+		h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{client}
+		return h, mgr, log
+	}
+
+	t.Run("on", func(t *testing.T) {
+		client := headersNotesClient()
+		h, mgr, log := setup(t, client, false)
+		tools := map[string]schemas.ChatTool{"notes-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "notes-search"}}}
+		require.NoError(t, h.store.ConfigStore.UpdateMCPClientDiscovery(ctx, client.ID, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: map[string]string{"search": "search"}}))
+		require.NoError(t, h.store.ConfigStore.UpsertMCPPerUserHeaderCredential(ctx, &configtables.TableMCPPerUserHeaderCredential{MCPClientID: client.ID, AuthMode: "admin", Status: "active", HeadersJSON: `{"x-api-key":"sample"}`}))
+
+		status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_discovery":true}`, client.ID, false)
+		require.Equal(t, fasthttp.StatusOK, status, body)
+
+		stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.Ptr(true), stored.PerUserDiscovery)
+		assert.Nil(t, stored.DiscoveredTools, "the admin's tools are not kept")
+		admin, err := h.store.ConfigStore.GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx, []string{client.ID})
+		require.NoError(t, err)
+		assert.Empty(t, admin, "nor is the admin's credential")
+		require.Len(t, mgr.updated, 1)
+		assert.Equal(t, schemas.Ptr(true), mgr.updated[0].PerUserDiscovery)
+		assert.False(t, mgr.updated[0].PendingVerification, "still verified")
+		assert.Contains(t, log.logged(), "tokens of "+client.ID)
+		assert.Contains(t, log.logged(), "header credentials of "+client.ID)
+	})
+
+	t.Run("off", func(t *testing.T) {
+		client := headersNotesClient()
+		h, mgr, log := setup(t, client, true)
+		seedDiscovery(t, h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID)
+
+		status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_discovery":false}`, client.ID, false)
+		require.Equal(t, fasthttp.StatusOK, status, body)
+
+		assert.Nil(t, storedDiscovery(h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID))
+		require.Len(t, mgr.updated, 1)
+		assert.Equal(t, schemas.Ptr(false), mgr.updated[0].PerUserDiscovery)
+		assert.True(t, mgr.updated[0].PendingVerification, "back to its admin step: it stored no tools while the flag was on")
+		assert.Contains(t, log.logged(), "discoveries of "+client.ID)
+	})
+
+	t.Run("refused for a shared auth type", func(t *testing.T) {
+		client := headersNotesClient()
+		client.AuthType = schemas.MCPAuthTypeHeaders
+		client.PerUserHeaderKeys = nil
+		h, mgr, _ := setup(t, client, false)
+
+		status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_discovery":true}`, client.ID, false)
+		assert.Equal(t, fasthttp.StatusBadRequest, status, body)
+		assert.Contains(t, body, "per_user_discovery is only valid for per-user auth types")
+		stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.Ptr(false), stored.PerUserDiscovery)
+		assert.Empty(t, mgr.updated)
+	})
+
+	// failures are the steps after a flip commits that can fail.
+	failures := []struct {
+		name   string
+		breaks func(h *MCPHandler, mgr *openAPIRecordingManager) (repair func())
+	}{
+		{name: "reading it back", breaks: func(h *MCPHandler, _ *openAPIRecordingManager) func() {
+			store := &readBackFailingStore{ConfigStore: h.store.ConfigStore}
+			h.store.ConfigStore = store
+			return func() { h.store.ConfigStore = store.ConfigStore }
+		}},
+		{name: "the runtime update", breaks: func(h *MCPHandler, mgr *openAPIRecordingManager) func() {
+			mgr.updateErr = errors.New("reconnect already in progress for this client")
+			return func() { mgr.updateErr = nil }
+		}},
+	}
+	// failAFlipOn turns the flag on with one of those steps broken, so the store
+	// holds the flip while the runtime still has the flag off.
+	failAFlipOn := func(t *testing.T, breaks func(h *MCPHandler, mgr *openAPIRecordingManager) func()) (*schemas.MCPClientConfig, *MCPHandler, *openAPIRecordingManager, *evictionLog) {
+		client := headersNotesClient()
+		h, mgr, log := setup(t, client, false)
+		tools := map[string]schemas.ChatTool{"notes-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "notes-search"}}}
+		require.NoError(t, h.store.ConfigStore.UpdateMCPClientDiscovery(ctx, client.ID, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: map[string]string{"search": "search"}}))
+		require.NoError(t, h.store.ConfigStore.UpsertMCPPerUserHeaderCredential(ctx, &configtables.TableMCPPerUserHeaderCredential{MCPClientID: client.ID, AuthMode: "admin", Status: "active", HeadersJSON: `{"x-api-key":"sample"}`}))
+		repair := breaks(h, mgr)
+
+		status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_discovery":true}`, client.ID, false)
+		require.Equal(t, fasthttp.StatusInternalServerError, status, body)
+		repair()
+		stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.Ptr(true), stored.PerUserDiscovery, "the flip that deleted the admin's credential stands")
+		return client, h, mgr, log
+	}
+
+	// A flip that committed has deleted what the client kept, which no rollback
+	// brings back: a failure after it keeps the flip, and the same request sent
+	// again finds the store already flipped and brings the runtime up to it.
+	t.Run("a failure after the flip commits keeps it", func(t *testing.T) {
+		for _, tc := range failures {
+			t.Run(tc.name, func(t *testing.T) {
+				client, h, mgr, _ := failAFlipOn(t, tc.breaks)
+
+				status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_discovery":true}`, client.ID, false)
+				require.Equal(t, fasthttp.StatusOK, status, body)
+				require.NotEmpty(t, mgr.updated)
+				last := mgr.updated[len(mgr.updated)-1]
+				assert.Equal(t, schemas.Ptr(true), last.PerUserDiscovery, "sending it again brings the runtime up to the store")
+				assert.False(t, last.PendingVerification, "still verified: no second flip ran over the first")
+			})
+		}
+	})
+
+	// Undoing that flip instead of resending it is a flip too, though the runtime
+	// already has the value asked for: the store holds the other one, so it runs
+	// the reverse flip, and the runtime takes the admin step it reset from the
+	// read-back, with every node's cached discoveries dropped.
+	t.Run("undoing a flip whose runtime update failed runs the reverse flip", func(t *testing.T) {
+		for _, tc := range failures {
+			t.Run(tc.name, func(t *testing.T) {
+				client, h, mgr, log := failAFlipOn(t, tc.breaks)
+
+				status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_discovery":false}`, client.ID, false)
+				require.Equal(t, fasthttp.StatusOK, status, body)
+				stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+				require.NoError(t, err)
+				assert.Equal(t, schemas.Ptr(false), stored.PerUserDiscovery)
+				assert.True(t, stored.PendingVerification, "the reverse flip reset the admin step")
+				require.NotEmpty(t, mgr.updated)
+				last := mgr.updated[len(mgr.updated)-1]
+				assert.Equal(t, schemas.Ptr(false), last.PerUserDiscovery)
+				assert.True(t, last.PendingVerification, "the runtime awaits verification like the store")
+				assert.Contains(t, log.logged(), "discoveries of "+client.ID)
+			})
+		}
+	})
+}
+
+// An update that leaves per_user_discovery out writes nothing for it. A runtime
+// that missed a committed flip (its read-back or its own update failed) would
+// otherwise hand its stale value to the store, which runs the reverse flip and
+// deletes what callers hold, while the runtime never learns of it.
+func TestUpdateMCPClient_AnUpdateWithoutTheFlagLeavesAStoredFlipAlone(t *testing.T) {
+	ctx := context.Background()
+	h, _ := newOpenAPITestHandler(t)
+	h.mcpCredentialCacheManager = &evictionLog{}
+	client := headersNotesClient()
+	createSignInClient(t, h.store.ConfigStore, client, true)
+	seedDiscovery(t, h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID)
+	missed := *client
+	missed.PerUserDiscovery = schemas.Ptr(false)
+	h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{&missed}
+
+	status, body := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tools_to_execute":["*"]}`, client.ID, false)
+	require.Equal(t, fasthttp.StatusOK, status, body)
+
+	stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
+	require.NoError(t, err)
+	assert.Equal(t, schemas.Ptr(true), stored.PerUserDiscovery, "the stored flip stands")
+	assert.NotNil(t, storedDiscovery(h.store.ConfigStore, schemas.MCPAuthModeUser, "alice", client.ID), "and the caller keeps their discovery")
+}
+
+// readBackFailingStore fails every read of an MCP client's config once the
+// client has been written, as a database that drops out right after a commit.
+type readBackFailingStore struct {
+	configstore.ConfigStore
+	written bool
+}
+
+func (s *readBackFailingStore) UpdateMCPClientConfig(ctx context.Context, id string, client *configtables.TableMCPClient) error {
+	if err := s.ConfigStore.UpdateMCPClientConfig(ctx, id, client); err != nil {
+		return err
+	}
+	s.written = true
+	return nil
+}
+
+func (s *readBackFailingStore) GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error) {
+	if s.written {
+		return nil, errors.New("connection reset by peer")
+	}
+	return s.ConfigStore.GetMCPClientConfigByID(ctx, id)
+}
+
 // verificationRecorder stands in for the runtime on the admin verification
 // routes: verification finds one tool, and it records whether the result was
 // handed over as tools or as a config recording the verification.
@@ -1738,18 +1930,9 @@ func TestAdminVerification_RecordsTheStepAndKeepsOnlyWhatTheClientUses(t *testin
 			client := &schemas.MCPClientConfig{
 				ID: "client-notes", Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP,
 				ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders,
-				PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: []string{"*"}, PendingVerification: true,
+				PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: []string{"*"}, PendingVerification: true, PerUserDiscovery: schemas.Ptr(perUser),
 			}
-			// The engine refuses per_user_discovery until it is lifted, so only a
-			// client without it is registered there.
-			var runtime *bifrost.Bifrost
-			if perUser {
-				runtime = newVerificationRuntime(t)
-			} else {
-				runtime = newVerificationRuntime(t, client)
-			}
-			h, recorder := newVerificationHandler(t, runtime)
-			client.PerUserDiscovery = schemas.Ptr(perUser)
+			h, recorder := newVerificationHandler(t, newVerificationRuntime(t, client))
 			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
 
 			status, body := doMCPRequest(t, h.verifyMCPClientHeaders, fasthttp.MethodPost, `{"user_headers":{"x-api-key":"sample"}}`, client.ID, false)
@@ -1932,16 +2115,9 @@ func TestVerifyMCPClientHeaders_AFailedRecordFailsOnlyAClientReadFromIt(t *testi
 			client := &schemas.MCPClientConfig{
 				ID: "client-notes", Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP,
 				ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders,
-				PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: []string{"*"}, PendingVerification: true,
+				PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: []string{"*"}, PendingVerification: true, PerUserDiscovery: schemas.Ptr(perUser),
 			}
-			var runtime *bifrost.Bifrost
-			if perUser {
-				runtime = newVerificationRuntime(t)
-			} else {
-				runtime = newVerificationRuntime(t, client)
-			}
-			h, recorder := newVerificationHandler(t, runtime)
-			client.PerUserDiscovery = schemas.Ptr(perUser)
+			h, recorder := newVerificationHandler(t, newVerificationRuntime(t, client))
 			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
 			h.store.ConfigStore = recordFailingStore{h.store.ConfigStore}
 
@@ -1960,4 +2136,189 @@ func TestVerifyMCPClientHeaders_AFailedRecordFailsOnlyAClientReadFromIt(t *testi
 			}
 		})
 	}
+}
+
+// TestAdminCredentialRoutes_RefuseAVerifiedPerUserDiscoveryClient: a verified
+// client with per_user_discovery on keeps no admin credential, so the routes that
+// refresh one refuse it: reauthorize, and verify-headers or verify-exchange once
+// the client is verified. Reregister still runs, since callers need the new
+// client registration it makes.
+func TestAdminCredentialRoutes_RefuseAVerifiedPerUserDiscoveryClient(t *testing.T) {
+	ctx := context.Background()
+	t.Run("reauthorize", func(t *testing.T) {
+		f := newReregisterFixture(t)
+		row, err := f.store.GetMCPClientByID(ctx, reregisterMCPClientID)
+		require.NoError(t, err)
+		require.NoError(t, f.store.DB().Model(row).Updates(map[string]any{"auth_type": string(schemas.MCPAuthTypePerUserOauth), "per_user_discovery": true}).Error)
+
+		status, _, raw := f.call(t, f.handler.reauthorizeMCPClient)
+		assert.Equal(t, fasthttp.StatusBadRequest, status, raw)
+		assert.Contains(t, raw, "keeps no admin credential")
+
+		status, _, raw = f.call(t, f.handler.reregisterMCPClient)
+		assert.Equal(t, fasthttp.StatusOK, status, raw)
+	})
+
+	t.Run("verify-headers", func(t *testing.T) {
+		h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+		client := headersNotesClient()
+		createSignInClient(t, h.store.ConfigStore, client, true)
+
+		status, body := doMCPRequest(t, h.verifyMCPClientHeaders, fasthttp.MethodPost, `{"user_headers":{"x-api-key":"sample"}}`, client.ID, false)
+		assert.Equal(t, fasthttp.StatusBadRequest, status, body)
+		assert.Contains(t, body, "keeps no admin credential")
+		assert.Empty(t, recorder.verified)
+	})
+
+	t.Run("verify-exchange", func(t *testing.T) {
+		h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+		client := &schemas.MCPClientConfig{
+			ID: "client-jira", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypeTokenExchange,
+			TokenExchange:  &schemas.MCPTokenExchangeConfig{Audience: "api://jira", ClientID: schemas.NewSecretVar("exchange-app")},
+			ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
+		}
+		require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
+
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodPost)
+		rctx := initCtx(&req)
+		rctx.SetUserValue("id", client.ID)
+		withInboundBearer(t, rctx, "admin-idp-token")
+		h.verifyMCPClientExchange(rctx)
+		assert.Equal(t, fasthttp.StatusBadRequest, rctx.Response.StatusCode(), string(rctx.Response.Body()))
+		assert.Contains(t, string(rctx.Response.Body()), "keeps no admin credential")
+		assert.Empty(t, recorder.verified)
+	})
+}
+
+// TestCompleteMCPClientOAuth_ARepairSignInOfAPerUserDiscoveryClientKeepsNothing:
+// an admin sign-in completing for a verified client with per_user_discovery on
+// (after a new client registration, say) only verifies it: the sign-in is
+// deleted and nothing found with it is kept.
+func TestCompleteMCPClientOAuth_ARepairSignInOfAPerUserDiscoveryClientKeepsNothing(t *testing.T) {
+	ctx := context.Background()
+	h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+	require.NoError(t, h.store.ConfigStore.CreateOauthConfig(ctx, &configtables.TableOauthConfig{
+		ID: "oauth-wiki", ClientID: schemas.NewSecretVar("bifrost"), TokenURL: "https://idp.invalid/token",
+		AuthorizeURL: "https://idp.invalid/authorize", RedirectURI: "http://localhost/api/oauth/callback", Status: "authorized",
+	}))
+	require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-wiki", Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserOauth,
+		OauthConfigID: schemas.Ptr("oauth-wiki"), ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true),
+	}))
+	require.NoError(t, h.store.ConfigStore.CreateOauthToken(ctx, &configtables.TableMCPOauthToken{
+		ID: "token-admin", AuthMode: "shared", OauthConfigID: "oauth-wiki", Status: "active", AccessToken: "admin-token", TokenType: "Bearer",
+	}))
+
+	status, body := doMCPRequest(t, h.completeMCPClientOAuth, fasthttp.MethodPost, "", "oauth-wiki", false)
+	require.Equal(t, fasthttp.StatusOK, status, body)
+
+	staging, err := h.store.ConfigStore.GetSharedOauthTokenByConfigID(ctx, "oauth-wiki")
+	require.NoError(t, err)
+	assert.Nil(t, staging, "the sign-in is deleted")
+	admin, err := h.store.ConfigStore.GetAdminOauthTokenByMCPClientID(ctx, "client-wiki")
+	require.NoError(t, err)
+	assert.Nil(t, admin, "and not kept as the admin credential")
+	stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, "client-wiki")
+	require.NoError(t, err)
+	assert.Nil(t, stored.DiscoveredTools)
+	assert.Empty(t, recorder.toolsSet)
+}
+
+// assertKeepsNoDiscovery checks config keeps nothing the admin's verification found: no tools,
+// instructions, resources or prompts.
+func assertKeepsNoDiscovery(t *testing.T, config *schemas.MCPClientConfig) {
+	t.Helper()
+	assert.Nil(t, config.DiscoveredTools)
+	assert.Empty(t, config.DiscoveredInstructions)
+	assert.Nil(t, config.DiscoveredResources)
+	assert.Nil(t, config.DiscoveredResourceTemplates)
+	assert.Nil(t, config.DiscoveredPrompts)
+}
+
+// TestAddMCPClient_WithPerUserDiscoveryKeepsNothingFromVerification: a client
+// created with per_user_discovery on is verified the same way, and keeps neither
+// the tools found nor the admin's credential. The flag is refused where it
+// cannot apply.
+func TestAddMCPClient_WithPerUserDiscoveryKeepsNothingFromVerification(t *testing.T) {
+	ctx := context.Background()
+	create := func(t *testing.T, h *MCPHandler, body string, values map[schemas.BifrostContextKey]any) (int, string) {
+		t.Helper()
+		bctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		for key, value := range values {
+			bctx.SetValue(key, value)
+		}
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.Header.SetContentType("application/json")
+		req.SetBodyString(body)
+		rctx := initCtx(&req)
+		rctx.SetUserValue(lib.FastHTTPUserValueBifrostContext, bctx)
+		rctx.SetUserValue(lib.FastHTTPUserValueBifrostCancel, context.CancelFunc(func() {}))
+		h.addMCPClient(rctx)
+		return rctx.Response.StatusCode(), string(rctx.Response.Body())
+	}
+
+	t.Run("per_user_headers", func(t *testing.T) {
+		h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+		status, body := create(t, h, `{"name":"notes","connection_type":"http","connection_string":"http://upstream.invalid/mcp","auth_type":"per_user_headers",`+
+			`"per_user_header_keys":["x-api-key"],"user_headers":{"x-api-key":"sample"},"tools_to_execute":["*"],"per_user_discovery":true}`, nil)
+		require.Equal(t, fasthttp.StatusOK, status, body)
+
+		require.Len(t, recorder.added, 1)
+		assert.Equal(t, schemas.Ptr(true), recorder.added[0].PerUserDiscovery)
+		assertKeepsNoDiscovery(t, recorder.added[0])
+		stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, recorder.added[0].ID)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.Ptr(true), stored.PerUserDiscovery)
+		assertKeepsNoDiscovery(t, stored)
+		assert.False(t, stored.PendingVerification, "verified")
+	})
+
+	t.Run("token_exchange", func(t *testing.T) {
+		h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+		status, body := create(t, h, `{"name":"jira","connection_type":"http","connection_string":"http://upstream.invalid/mcp","auth_type":"token_exchange",`+
+			`"token_exchange":{"audience":"api://jira","client_id":"exchange-app"},"tools_to_execute":["*"],"per_user_discovery":true}`,
+			map[schemas.BifrostContextKey]any{schemas.BifrostContextKeyIsEnterprise: true, schemas.BifrostContextKeyMCPInboundBearer: "admin-idp-token"})
+		require.Equal(t, fasthttp.StatusOK, status, body)
+
+		require.Len(t, recorder.added, 1)
+		assertKeepsNoDiscovery(t, recorder.added[0])
+		stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, recorder.added[0].ID)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.Ptr(true), stored.PerUserDiscovery)
+		assertKeepsNoDiscovery(t, stored)
+		assert.False(t, stored.PendingVerification, "verified")
+		admin, err := h.store.ConfigStore.GetAdminOauthTokenByMCPClientID(ctx, recorder.added[0].ID)
+		require.NoError(t, err)
+		assert.Nil(t, admin, "the admin's exchanged token is not kept")
+	})
+
+	t.Run("per_user_oauth", func(t *testing.T) {
+		h, _ := newVerificationHandler(t, newVerificationRuntime(t))
+		status, body := create(t, h, `{"name":"wiki","connection_type":"http","connection_string":"http://upstream.invalid/mcp","auth_type":"per_user_oauth",`+
+			`"oauth_config":{"client_id":"bifrost","authorize_url":"https://idp.invalid/authorize","token_url":"https://idp.invalid/token"},"tools_to_execute":["*"],"per_user_discovery":true}`, nil)
+		require.Equal(t, fasthttp.StatusOK, status, body)
+
+		// Created once the admin's sign-in completes, from the config kept until then.
+		var started struct {
+			OauthConfigID string `json:"oauth_config_id"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(body), &started))
+		pending, err := h.oauthHandler.GetPendingMCPClient(started.OauthConfigID)
+		require.NoError(t, err)
+		require.NotNil(t, pending)
+		assert.Equal(t, schemas.Ptr(true), pending.PerUserDiscovery)
+	})
+
+	t.Run("refused for a shared auth type", func(t *testing.T) {
+		h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+		status, body := create(t, h, `{"name":"notes","connection_type":"http","connection_string":"http://upstream.invalid/mcp","auth_type":"headers",`+
+			`"tools_to_execute":["*"],"per_user_discovery":true}`, nil)
+		assert.Equal(t, fasthttp.StatusBadRequest, status, body)
+		assert.Contains(t, body, "per_user_discovery is only valid for per-user auth types")
+		assert.Empty(t, recorder.added)
+	})
 }

@@ -247,6 +247,9 @@ func checkToolExecutionPermitted(ctx *schemas.BifrostContext, state *schemas.MCP
 	if state.State == schemas.MCPConnectionStateDisabled {
 		return fmt.Errorf("tool '%s' is not permitted (client %s is disabled)", toolName, clientName)
 	}
+	if withheldFromCallers(state.State, state.ExecutionConfig) {
+		return fmt.Errorf("tool '%s' is not permitted (client %s awaits admin verification)", toolName, clientName)
+	}
 	if mcpvouch.Kind(ctx, clientName, toolName) == schemas.MCPToolCallKindInjected {
 		return nil
 	}

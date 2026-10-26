@@ -52,6 +52,7 @@ type openAPIRecordingManager struct {
 	added     []*schemas.MCPClientConfig
 	updated   []*schemas.MCPClientConfig
 	refreshed []string
+	updateErr error // when set, UpdateMCPClient fails with it and records nothing
 }
 
 func (m *openAPIRecordingManager) RefreshMCPClientTools(_ context.Context, id string) (int, error) {
@@ -65,6 +66,9 @@ func (m *openAPIRecordingManager) AddMCPClient(_ context.Context, c *schemas.MCP
 }
 
 func (m *openAPIRecordingManager) UpdateMCPClient(_ context.Context, _ string, c *schemas.MCPClientConfig) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
 	m.updated = append(m.updated, c)
 	return nil
 }

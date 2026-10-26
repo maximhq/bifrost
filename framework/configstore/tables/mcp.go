@@ -432,17 +432,13 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	return nil
 }
 
-// AfterFind is a GORM hook that decrypts the connection string and headers (if encrypted)
-// and deserializes JSON columns back into runtime structs after reading from the database.
 // AwaitsAdminVerification reports whether the stored client still needs its
 // one-time admin step. Call it on a row that has been found, so the decoded
 // fields are set.
 //
 // Only a client with per_user_discovery on is read from PendingVerification.
-// Every other client is read from what its admin step changes: an OAuth client
-// is pending while its bootstrap stash is kept, and a per_user_headers or
-// token_exchange client (not openapi, which has nothing upstream to verify)
-// while it has stored no tools. That is a deliberate transition measure: nodes
+// Every other client is read from what its admin step changes (see
+// AdminStepSignalsPending). That is a deliberate transition measure: nodes
 // running a version from before this column keep maintaining only those
 // signals, so in a deployment where such nodes share this database (a rolling
 // upgrade, for one), a client whose step one of them completed, or one it
@@ -453,6 +449,20 @@ func (c *TableMCPClient) AwaitsAdminVerification() bool {
 	if c.PerUserDiscovery != nil && *c.PerUserDiscovery {
 		return c.PendingVerification
 	}
+	return c.AdminStepSignalsPending()
+}
+
+// AdminStepSignalsPending reports whether what the client's admin step changes
+// still says the step has not run: an OAuth client keeps its bootstrap stash,
+// or a per_user_headers or token_exchange client (not openapi, which has
+// nothing upstream to verify) has stored no tools.
+//
+// Turning per_user_discovery on or off records this in PendingVerification. On,
+// the client stays as verified as these say. Off, a per_user_headers or
+// token_exchange client goes back to its admin step, having stored no tools
+// while the flag was on, and an OAuth client stays verified, to get its admin
+// credential back through reauthorization.
+func (c *TableMCPClient) AdminStepSignalsPending() bool {
 	switch schemas.MCPAuthType(c.AuthType) {
 	case schemas.MCPAuthTypeOauth, schemas.MCPAuthTypePerUserOauth:
 		return c.PendingOAuthConfig != nil
@@ -462,6 +472,8 @@ func (c *TableMCPClient) AwaitsAdminVerification() bool {
 	return false
 }
 
+// AfterFind is a GORM hook that decrypts the connection string and headers (if encrypted)
+// and deserializes JSON columns back into runtime structs after reading from the database.
 func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 	if c.EncryptionStatus == EncryptionStatusEncrypted {
 		if c.HeadersJSON != "" && c.HeadersJSON != "{}" {

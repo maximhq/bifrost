@@ -9858,7 +9858,7 @@
         },
         "per_user_discovery": {
           "type": "boolean",
-          "description": "Only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange): when true, each caller's discovery (its tool list and the server's instructions) is made with its own credential and kept per (auth mode, identity, client), and the client stores no admin credential and does no admin discovery. When false, every caller is served the discovery made with the admin credential. Not supported yet — reserved; setting it is currently rejected.",
+          "description": "Only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), and not for openapi clients: when true, each caller's discovery (its tool list and the server's instructions) is made with its own credential and kept per (auth mode, identity, client), and the client stores no admin credential and does no admin discovery. When false, every caller is served the discovery made with the admin credential. Turning it on deletes the stored admin credential and tools; turning it off deletes every caller's discovery, and the client needs an admin credential again.",
           "default": false
         },
         "tool_pricing": {
