@@ -395,6 +395,62 @@ func TestWrapStreamForRequestTimeout_UnfiredCancellationForwardsNoError(t *testi
 	}
 }
 
+// TestWrapStreamForRequestTimeout_FiredDeadlineDeliversToBusyConsumer
+// verifies the terminal error chunk is still delivered when the consumer is
+// briefly busy (e.g. mid-write to the client socket) rather than already
+// waiting on a receive -- out is unbuffered, so a bare non-blocking send
+// would drop the chunk in that common case. The consumer here only starts
+// reading after the deadline has already fired and forwardTimeoutChunkIfFired
+// has started its bounded wait, mirroring a slow write that outlasts the
+// instant the deadline fires.
+func TestWrapStreamForRequestTimeout_FiredDeadlineDeliversToBusyConsumer(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+	cancel()
+
+	in := make(chan *schemas.BifrostStreamChunk)
+	close(in)
+	out := wrapStreamForRequestTimeout(ctx, in, func() {}, true)
+
+	// Give forwardTimeoutChunkIfFired time to start its send attempt before
+	// this goroutine reads out -- without a grace period the earlier
+	// non-blocking send would already have hit its default branch by now.
+	time.Sleep(50 * time.Millisecond)
+
+	select {
+	case chunk, ok := <-out:
+		if !ok {
+			t.Fatal("expected a terminal error chunk, got out closed with nothing forwarded")
+		}
+		if chunk.BifrostError == nil || chunk.BifrostError.Error == nil || chunk.BifrostError.Error.Type == nil || *chunk.BifrostError.Error.Type != schemas.RequestTimedOut {
+			t.Fatalf("expected a RequestTimedOut terminal chunk, got %+v", chunk)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("terminal error chunk was not delivered to the delayed consumer")
+	}
+}
+
+// TestResolveRequestContext_RootPassedExplicitlyIsTreatedAsShared verifies
+// the fix for the case where a caller never actually passes nil: every
+// public entry point (e.g. ChatCompletionRequest) substitutes bifrost.ctx for
+// a nil ctx itself before handleRequest/handleStreamRequest runs, so
+// resolveRequestContext must treat ctx == root the same as ctx == nil --
+// otherwise arming the timer directly on root would let one such request's
+// deadline cancel every other request sharing that root.
+func TestResolveRequestContext_RootPassedExplicitlyIsTreatedAsShared(t *testing.T) {
+	root, cancelRoot := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancelRoot()
+	root.SetValue(schemas.BifrostContextKeyRequestTimeout, time.Minute)
+
+	resolved, owned := resolveRequestContext(root, root)
+	if owned == nil {
+		t.Fatal("passing root explicitly must still derive an owned context, exactly like passing nil")
+	}
+	if resolved == root {
+		t.Fatal("the resolved context must not be root itself")
+	}
+}
+
 // TestResolveRequestContext_CallerSuppliedContextIsNotOwned verifies a
 // caller-supplied context is returned untouched and never reported as owned --
 // cancelling it would cancel a context whose lifetime the caller controls.

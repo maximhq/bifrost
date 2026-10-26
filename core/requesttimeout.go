@@ -9,7 +9,17 @@ import (
 // resolveRequestContext resolves the context handleRequest/handleStreamRequest
 // runs on when the caller passed nil, and reports which context (if any) this
 // call owns and must therefore release once the request completes. A
-// caller-supplied context is never owned and must never be cancelled here.
+// caller-supplied context distinct from root is never owned and must never be
+// cancelled here.
+//
+// ctx == root is treated the same as ctx == nil: every public entry point
+// (ChatCompletionRequest and its siblings) already substitutes bifrost.ctx for
+// a nil ctx before handleRequest/handleStreamRequest ever runs, so by the time
+// this function sees ctx it already equals root for every nil-ctx caller --
+// nil itself no longer reaches here in practice. Treating only literal nil as
+// shared would make the derivation below dead code: root would be returned
+// unchanged, and arming the timer directly on root would let one slow
+// request's deadline cancel every other nil-ctx request sharing it.
 //
 // A child is derived only when root actually declares a request timeout. The
 // derivation exists solely so armRequestTimeout's ctx.Cancel() on expiry cannot
@@ -23,7 +33,7 @@ import (
 // timer channel, and its own done channel -- so nothing releases it until the
 // child is cancelled.
 func resolveRequestContext(ctx *schemas.BifrostContext, root *schemas.BifrostContext) (resolved *schemas.BifrostContext, owned *schemas.BifrostContext) {
-	if ctx != nil {
+	if ctx != nil && ctx != root {
 		return ctx, nil
 	}
 	if d, _ := root.Value(schemas.BifrostContextKeyRequestTimeout).(time.Duration); d > 0 {
@@ -152,14 +162,29 @@ func requestTimeoutStreamChunk() *schemas.BifrostStreamChunk {
 	}
 }
 
-// forwardTimeoutChunkIfFired makes a best-effort, non-blocking send of
+// forwardTimeoutChunkSendGrace bounds how long forwardTimeoutChunkIfFired
+// blocks trying to deliver the terminal chunk. out is unbuffered, so a plain
+// non-blocking send only succeeds if the consumer happens to already be
+// waiting on a receive -- the common HTTP transport consumer is instead
+// mid-write to the client socket for the previous chunk at the exact moment
+// the deadline fires, so a bare `select { default: }` would drop the error
+// almost every time. The grace period gives a merely-busy consumer -- which
+// always loops back to receive again, see handleStreaming's `for chunk :=
+// range streamChan` -- time to come back, while still bounding how long this
+// goroutine waits for a consumer that is never coming back (the SDK-caller
+// abandonment case). 5s comfortably covers one slow chunk write without
+// meaningfully extending how long a truly abandoned goroutine lingers.
+const forwardTimeoutChunkSendGrace = 5 * time.Second
+
+// forwardTimeoutChunkIfFired makes a best-effort, bounded-blocking send of
 // requestTimeoutStreamChunk on out, but only when ctx was cancelled because
 // the request-timeout deadline actually fired (BifrostContextKeyRequestTimeoutFired) --
 // never for an arbitrary cancellation such as a client disconnect, where there
 // is no caller left to report the error to and no declared deadline to blame.
-// Non-blocking: an abandoned consumer (nobody reading out any more, see
-// TestWrapStreamForRequestTimeout_CancelUnblocksAbandonedConsumer) must never
-// re-block this goroutine on out <- chunk.
+// Bounded: an abandoned consumer (nobody reading out any more, see
+// TestWrapStreamForRequestTimeout_CancelUnblocksAbandonedConsumer) must not
+// re-block this goroutine on out <- chunk forever, just long enough to give a
+// merely-busy consumer a real chance to receive it.
 func forwardTimeoutChunkIfFired(ctx *schemas.BifrostContext, out chan<- *schemas.BifrostStreamChunk) {
 	fired, _ := ctx.Value(schemas.BifrostContextKeyRequestTimeoutFired).(bool)
 	if !fired {
@@ -167,6 +192,6 @@ func forwardTimeoutChunkIfFired(ctx *schemas.BifrostContext, out chan<- *schemas
 	}
 	select {
 	case out <- requestTimeoutStreamChunk():
-	default:
+	case <-time.After(forwardTimeoutChunkSendGrace):
 	}
 }
