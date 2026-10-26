@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
@@ -87,7 +88,7 @@ func (s *fakeBatchStore) UpsertProviderJob(ctx context.Context, job *cstables.Ta
 func (s *fakeBatchStore) GetProviderJob(ctx context.Context, jobID string) (*cstables.TableProviderJob, error) {
 	job, ok := s.jobs[jobID]
 	if !ok {
-		return nil, errors.New("missing batch job")
+		return nil, fmt.Errorf("missing batch job: %w", configstore.ErrNotFound)
 	}
 	copied := *job
 	return &copied, nil
@@ -5247,4 +5248,110 @@ func TestA2ARawCaptureContentPolicy(t *testing.T) {
 			require.Equal(t, "cmVzcG9uc2U=", *entry.RawResponse)
 		}
 	}
+}
+
+// A start the upstream answers with a job it already has (an idempotent retry) must not open a
+// second row and bill the same work twice; an id reused after the old job settled (Azure batch
+// synthesis) must still be billed again; and two keys' jobs never merge.
+func TestRecordGenericJobLifecycle_DedupesOpenJobsOnly(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+	start := func(logID, keyID string) {
+		plugin.recordGenericJobLifecycle(&logstore.Log{ID: logID, Provider: "textract", SelectedKeyID: keyID}, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: &schemas.BifrostPassthroughUsage{
+				ProviderJob: &schemas.PassthroughProviderJob{ID: "arn:aws:textract:job/42", Params: `{"job":{}}`},
+			}},
+		})
+	}
+	genericRows := func() []*cstables.TableProviderJob {
+		var rows []*cstables.TableProviderJob
+		for _, j := range bs.jobs {
+			if j.Kind == cstables.ProviderJobKindGenericPassthrough {
+				rows = append(rows, j)
+			}
+		}
+		return rows
+	}
+
+	start("req-1", "key-a")
+	start("req-2", "key-a")
+	require.Len(t, genericRows(), 1, "a retry of a job still open adds no second row")
+	require.Equal(t, "arn:aws:textract:job/42", schemas.GenericUpstreamJobID(genericRows()[0].JobID), "the row still polls the upstream id")
+
+	start("req-3", "key-b")
+	require.Len(t, genericRows(), 2, "another key's job with the same id is its own job")
+
+	for _, j := range genericRows() {
+		if j.SelectedKeyID == "key-a" {
+			j.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
+		}
+	}
+	start("req-4", "key-a")
+	require.Len(t, genericRows(), 3, "an id reused after the old job settled is billed again")
+	start("req-5", "key-a")
+	require.Len(t, genericRows(), 3, "a retry of the reused job while it is open adds no row")
+
+	for _, j := range genericRows() {
+		j.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
+	}
+	start("req-6", "key-a")
+	require.Len(t, genericRows(), 4, "a third use of the id after the second job settled is billed again")
+}
+
+// The reuse slot lives in the scope, so an upstream id that looks like a slot ("…#2") is its own
+// job, not a retry of another job's second slot.
+func TestRecordGenericJobLifecycle_SlotsNeverCollideWithUpstreamIDs(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+	start := func(logID, upstreamID string) {
+		plugin.recordGenericJobLifecycle(&logstore.Log{ID: logID, Provider: "azure", SelectedKeyID: "key-a"}, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: &schemas.BifrostPassthroughUsage{
+				ProviderJob: &schemas.PassthroughProviderJob{ID: upstreamID, Params: `{"job":{}}`},
+			}},
+		})
+	}
+	start("req-1", "job")
+	for _, j := range bs.jobs {
+		j.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
+	}
+	start("req-2", "job")   // reuse: second slot, open
+	start("req-3", "job#2") // a different upstream job whose id ends in #2
+	require.Len(t, bs.jobs, 3, "job#2 is its own job, not a retry of job's second slot")
+}
+
+// Two job routes whose jobs are polled in different places are separate job spaces: an id both
+// hand out (/imports/42, /exports/42) names two jobs, each billed, while a retry of either route
+// still finds its own open row.
+func TestRecordGenericJobLifecycle_RoutesNeverShareARow(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+	start := func(logID, pollPath string) {
+		plugin.recordGenericJobLifecycle(&logstore.Log{ID: logID, Provider: "acme", SelectedKeyID: "key-a"}, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: &schemas.BifrostPassthroughUsage{
+				ProviderJob: &schemas.PassthroughProviderJob{ID: "42", Params: `{"job":{"id_path":"id","poll":{"method":"GET","path":"` + pollPath + `"}}}`},
+			}},
+		})
+	}
+	start("req-1", "/imports/{{job.id}}")
+	start("req-2", "/exports/{{job.id}}")
+	require.Len(t, bs.jobs, 2, "an export job is not a retry of the import job with the same id")
+	start("req-3", "/imports/{{job.id}}")
+	start("req-4", "/exports/{{job.id}}")
+	require.Len(t, bs.jobs, 2, "a retry of each route still finds its own open row")
+	for _, j := range bs.jobs {
+		require.Equal(t, "42", schemas.GenericUpstreamJobID(j.JobID), "each row still polls the upstream id")
+	}
+}
+
+// Spelling out a poll setting's default (method POST, a JSON body's content type) is the same
+// poll, so a retry after such an edit still finds the open row instead of billing the job twice.
+func TestRecordGenericJobLifecycle_EquivalentPollEditsKeepTheRow(t *testing.T) {
+	plugin, bs := newVideoLifecyclePlugin(t)
+	start := func(logID, poll string) {
+		plugin.recordGenericJobLifecycle(&logstore.Log{ID: logID, Provider: "textract", SelectedKeyID: "key-a"}, &schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: &schemas.BifrostPassthroughUsage{
+				ProviderJob: &schemas.PassthroughProviderJob{ID: "job-1", Params: `{"job":{"id_path":"JobId","poll":` + poll + `}}`},
+			}},
+		})
+	}
+	start("req-1", `{"path":"/","body":"{\"JobId\":\"{{job.id}}\"}"}`)
+	start("req-2", `{"method":" post ","path":"/","body":"{\"JobId\":\"{{job.id}}\"}","content_type":"application/json"}`)
+	require.Len(t, bs.jobs, 1, "the defaults spelled out poll the same place, so the retry adds no row")
 }

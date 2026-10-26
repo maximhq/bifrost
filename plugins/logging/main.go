@@ -7,9 +7,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"hash/fnv"
+	"maps"
 	"mime"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +25,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -913,7 +918,7 @@ func (p *LoggerPlugin) recordGenericJobLifecycle(entry *logstore.Log, result *sc
 	job := &tables.TableProviderJob{
 		Kind:             tables.ProviderJobKindGenericPassthrough,
 		Provider:         entry.Provider,
-		JobID:            schemas.GenericScopedJobID(entry.ID, handle.ID),
+		JobID:            p.genericJobRowID(ctx, entry, handle.ID, genericJobSpace(handle.Params)),
 		Model:            entry.Model,
 		Params:           &params,
 		ProviderStatus:   "started",
@@ -925,6 +930,10 @@ func (p *LoggerPlugin) recordGenericJobLifecycle(entry *logstore.Log, result *sc
 		CustomerID:       entry.CustomerID,
 		BudgetIDs:        stringSlicePtr(entry.BudgetIDsParsed),
 		RateLimitIDs:     stringSlicePtr(entry.RateLimitIDsParsed),
+	}
+	if job.JobID == "" {
+		// An idempotent retry of a job this key already has open: the open row bills it once.
+		return
 	}
 	job.ID = tables.ProviderJobID(tables.ProviderJobKindGenericPassthrough, job.Provider, job.JobID)
 	if entry.ID != "" {
@@ -940,6 +949,81 @@ func (p *LoggerPlugin) recordGenericJobLifecycle(entry *logstore.Log, result *sc
 	if err := p.batchStore.UpsertProviderJob(ctx, job); err != nil {
 		p.logger.Warn("failed to record generic passthrough job for provider=%s job_id=%s: %v", job.Provider, job.JobID, err)
 	}
+}
+
+// genericJobRowID picks the job row a generic start call records, or "" when it must record none.
+// An upstream answers an idempotent retry (Textract's ClientRequestToken) with the job it already
+// has, which must not be billed twice; but some APIs let a caller reuse an id once the old job is
+// gone (Azure batch synthesis), and that new job must still be billed. The first start of a job
+// takes the row keyed by provider, key and upstream id. A later start finds it: still open, it is
+// a retry and records nothing; settled, the id was reused and gets a row scoped to this start
+// call. Two keys never share a row, since a job id is unique only within one upstream account.
+// When the lookup itself fails, the per-call row is used: double-billing a retry is the safer
+// failure than leaving a new job unbilled. Each reuse of an id takes the next numbered slot
+// (key:<key>, then key2:<key>, key3:<key>, ...), so a retry of a reused job finds its own slot
+// open. The slot number sits in the escaped scope before its first ':', which no key id or
+// upstream id can reach, so an upstream id such as "X#2" never lands on another job's slot. The
+// job space (genericJobSpace) sits there too, so two routes whose jobs are polled in different
+// places never share a row when their ids collide.
+func (p *LoggerPlugin) genericJobRowID(ctx context.Context, entry *logstore.Log, upstreamID, space string) string {
+	for slot := 1; slot <= maxGenericJobSlots; slot++ {
+		scope := "key@" + space + ":" + entry.SelectedKeyID
+		if slot > 1 {
+			scope = "key" + strconv.Itoa(slot) + "@" + space + ":" + entry.SelectedKeyID
+		}
+		keyed := schemas.GenericScopedJobID(scope, upstreamID)
+		existing, err := p.batchStore.GetProviderJob(ctx, tables.ProviderJobID(tables.ProviderJobKindGenericPassthrough, entry.Provider, keyed))
+		switch {
+		case err != nil && errors.Is(err, configstore.ErrNotFound):
+			return keyed
+		case err != nil || existing == nil:
+			return schemas.GenericScopedJobID(entry.ID, upstreamID)
+		case existing.AccountingStatus == tables.ProviderJobAccountingStatusAccounted || existing.AccountingStatus == tables.ProviderJobAccountingStatusUnpriceable:
+			continue // that job is done: a later start with its id is a new job
+		default:
+			return "" // still open: a retry of it
+		}
+	}
+	// An id reused more times than there are slots falls back to a row of its own per start.
+	return schemas.GenericScopedJobID(entry.ID, upstreamID)
+}
+
+// maxGenericJobSlots bounds how many reuses of one upstream id are told apart from retries.
+const maxGenericJobSlots = 64
+
+// genericJobSpace names the set of jobs an upstream id is unique within: the poll request the
+// start's route sends (method, path, headers, body), hashed so the row id stays short. Two routes
+// polled at different places (/imports/{{job.id}}, /exports/{{job.id}}) are different spaces even
+// when their ids collide; two routes polled at the same place share one, as their ids do; and a
+// retry of a route always lands in its own space. A snapshot that does not parse is hashed whole.
+func genericJobSpace(params string) string {
+	var snap struct {
+		Job struct {
+			Poll schemas.GenericJobPoll `json:"poll"`
+		} `json:"job"`
+	}
+	h := fnv.New64a()
+	if err := sonic.UnmarshalString(params, &snap); err != nil {
+		_, _ = h.Write([]byte(params))
+		return strconv.FormatUint(h.Sum64(), 16)
+	}
+	// Defaults are filled in as the poll request applies them, so spelling one out is the same space.
+	poll := snap.Job.Poll
+	method := strings.ToUpper(strings.TrimSpace(poll.Method))
+	if method == "" {
+		method = "POST"
+	}
+	contentType := poll.ContentType
+	if poll.Body == "" {
+		contentType = ""
+	} else if contentType == "" {
+		contentType = "application/json"
+	}
+	_, _ = h.Write([]byte(method + "\n" + poll.Path + "\n" + contentType + "\n" + poll.Body))
+	for _, name := range slices.Sorted(maps.Keys(poll.Headers)) {
+		_, _ = h.Write([]byte("\n" + strings.ToLower(name) + ":" + poll.Headers[name]))
+	}
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 // videoDimensionsFromEntryParams reads the pricing-relevant request parameters off
