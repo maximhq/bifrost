@@ -307,6 +307,94 @@ func TestWrapStreamForRequestTimeout_NoForwardAfterCancellation(t *testing.T) {
 	}
 }
 
+// TestWrapStreamForRequestTimeout_FiredDeadlineEmitsTerminalError verifies
+// that when ctx is cancelled because the declared deadline actually fired
+// (BifrostContextKeyRequestTimeoutFired set, exactly as armRequestTimeout's
+// timer sets it), the wrapper forwards a terminal 504 RequestTimedOut chunk
+// before closing out -- a deadline-truncated stream must read to the HTTP
+// transport as an error, not as a normal completion that gets a [DONE].
+func TestWrapStreamForRequestTimeout_FiredDeadlineEmitsTerminalError(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	in := make(chan *schemas.BifrostStreamChunk)
+	out := wrapStreamForRequestTimeout(ctx, in, func() {}, true)
+
+	in <- &schemas.BifrostStreamChunk{}
+	<-out
+
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+	cancel()
+	close(in)
+
+	chunk, ok := <-out
+	if !ok {
+		t.Fatal("expected a terminal error chunk, got out closed with nothing forwarded")
+	}
+	if chunk.BifrostError == nil {
+		t.Fatalf("expected a terminal chunk carrying BifrostError, got %+v", chunk)
+	}
+	if chunk.BifrostError.StatusCode == nil || *chunk.BifrostError.StatusCode != 504 {
+		t.Fatalf("expected StatusCode 504, got %v", chunk.BifrostError.StatusCode)
+	}
+	if chunk.BifrostError.Error == nil || chunk.BifrostError.Error.Type == nil || *chunk.BifrostError.Error.Type != schemas.RequestTimedOut {
+		t.Fatalf("expected Error.Type RequestTimedOut, got %+v", chunk.BifrostError.Error)
+	}
+
+	if _, ok := <-out; ok {
+		t.Fatal("expected out to close after the terminal error chunk")
+	}
+}
+
+// TestWrapStreamForRequestTimeout_FiredAfterNaturalCloseStillEmitsError
+// covers the race where the producer closes ch on its own in the same
+// instant the deadline fires, so neither ctx.Done() branch inside the loop
+// ever runs -- the post-loop check must still catch BifrostContextKeyRequestTimeoutFired
+// and emit the terminal error instead of treating the natural close as success.
+func TestWrapStreamForRequestTimeout_FiredAfterNaturalCloseStillEmitsError(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
+	cancel()
+
+	in := make(chan *schemas.BifrostStreamChunk)
+	close(in)
+
+	out := wrapStreamForRequestTimeout(ctx, in, func() {}, true)
+
+	chunk, ok := <-out
+	if !ok {
+		t.Fatal("expected a terminal error chunk even though ch closed naturally")
+	}
+	if chunk.BifrostError == nil || chunk.BifrostError.Error == nil || chunk.BifrostError.Error.Type == nil || *chunk.BifrostError.Error.Type != schemas.RequestTimedOut {
+		t.Fatalf("expected a RequestTimedOut terminal chunk, got %+v", chunk)
+	}
+
+	if _, ok := <-out; ok {
+		t.Fatal("expected out to close after the terminal error chunk")
+	}
+}
+
+// TestWrapStreamForRequestTimeout_UnfiredCancellationForwardsNoError verifies
+// the negative case: an ordinary cancellation that never set
+// BifrostContextKeyRequestTimeoutFired (e.g. a client disconnect) must not
+// manufacture a RequestTimedOut error -- there is no declared deadline to
+// blame, and the existing drop-on-cancellation behavior
+// (TestWrapStreamForRequestTimeout_NoForwardAfterCancellation) must hold.
+func TestWrapStreamForRequestTimeout_UnfiredCancellationForwardsNoError(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	cancel()
+
+	in := make(chan *schemas.BifrostStreamChunk, 1)
+	in <- &schemas.BifrostStreamChunk{}
+	close(in)
+
+	out := wrapStreamForRequestTimeout(ctx, in, func() {}, true)
+
+	if chunk, ok := <-out; ok {
+		t.Fatalf("expected out to close with nothing forwarded, got %+v", chunk)
+	}
+}
+
 // TestResolveRequestContext_CallerSuppliedContextIsNotOwned verifies a
 // caller-supplied context is returned untouched and never reported as owned --
 // cancelling it would cancel a context whose lifetime the caller controls.

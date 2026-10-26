@@ -105,6 +105,7 @@ func wrapStreamForRequestTimeout(ctx *schemas.BifrostContext, ch chan *schemas.B
 		for chunk := range ch {
 			select {
 			case <-ctx.Done():
+				forwardTimeoutChunkIfFired(ctx, out)
 				for range ch {
 				}
 				return
@@ -113,11 +114,59 @@ func wrapStreamForRequestTimeout(ctx *schemas.BifrostContext, ch chan *schemas.B
 			select {
 			case out <- chunk:
 			case <-ctx.Done():
+				forwardTimeoutChunkIfFired(ctx, out)
 				for range ch {
 				}
 				return
 			}
 		}
+		// ch closed naturally without either select above ever observing
+		// ctx.Done(): the deadline can still have fired in the same instant
+		// the producer finished and closed ch on its own, before the loop got
+		// a chance to check again. Catch that race too, or the caller sees a
+		// truncated response close like any successful stream.
+		forwardTimeoutChunkIfFired(ctx, out)
 	}()
 	return out
+}
+
+// requestTimeoutStreamChunk is the terminal chunk forwardTimeoutChunkIfFired
+// sends when the declared x-bf-request-timeout deadline actually expired.
+// Shaped like providerUtils.NewBifrostTimeoutError (StatusCode 504,
+// Error.Type RequestTimedOut) so the HTTP transport's handleStreaming routes
+// it through the route's error converter and ends the stream, instead of
+// treating ch's close as normal completion and sending the client a
+// successful [DONE].
+func requestTimeoutStreamChunk() *schemas.BifrostStreamChunk {
+	statusCode := 504
+	errorType := schemas.RequestTimedOut
+	return &schemas.BifrostStreamChunk{
+		BifrostError: &schemas.BifrostError{
+			IsBifrostError: true,
+			StatusCode:     &statusCode,
+			Error: &schemas.ErrorField{
+				Type:    &errorType,
+				Message: "request timed out: the x-bf-request-timeout deadline was reached before the stream finished",
+			},
+		},
+	}
+}
+
+// forwardTimeoutChunkIfFired makes a best-effort, non-blocking send of
+// requestTimeoutStreamChunk on out, but only when ctx was cancelled because
+// the request-timeout deadline actually fired (BifrostContextKeyRequestTimeoutFired) --
+// never for an arbitrary cancellation such as a client disconnect, where there
+// is no caller left to report the error to and no declared deadline to blame.
+// Non-blocking: an abandoned consumer (nobody reading out any more, see
+// TestWrapStreamForRequestTimeout_CancelUnblocksAbandonedConsumer) must never
+// re-block this goroutine on out <- chunk.
+func forwardTimeoutChunkIfFired(ctx *schemas.BifrostContext, out chan<- *schemas.BifrostStreamChunk) {
+	fired, _ := ctx.Value(schemas.BifrostContextKeyRequestTimeoutFired).(bool)
+	if !fired {
+		return
+	}
+	select {
+	case out <- requestTimeoutStreamChunk():
+	default:
+	}
 }
