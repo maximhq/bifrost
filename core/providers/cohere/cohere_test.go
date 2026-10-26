@@ -207,6 +207,27 @@ func TestCohereChatStreamMessageEndCarriesCachedTokens(t *testing.T) {
 	assert.Equal(t, nonStream.Usage, streamResp.Usage)
 }
 
+func TestCohereChatStreamMessageEndCachedTokensWithoutTokens(t *testing.T) {
+	// cached_tokens and tokens are independent optional fields in the Cohere usage schema.
+	event := cohere.CohereStreamEvent{
+		Type: cohere.StreamEventMessageEnd,
+		Delta: &cohere.CohereStreamDelta{
+			FinishReason: schemas.Ptr(cohere.FinishReasonComplete),
+			Usage:        &cohere.CohereUsage{CachedTokens: schemas.Ptr(96)},
+		},
+	}
+
+	streamResp, bifrostErr, done := event.ToBifrostChatCompletionStream()
+	require.Nil(t, bifrostErr)
+	require.True(t, done)
+	require.NotNil(t, streamResp)
+	require.NotNil(t, streamResp.Usage)
+
+	require.NotNil(t, streamResp.Usage.PromptTokensDetails)
+	assert.Equal(t, 96, streamResp.Usage.PromptTokensDetails.CachedReadTokens)
+	assert.Equal(t, 0, streamResp.Usage.TotalTokens)
+}
+
 func BenchmarkCohereChatStreamMessageEnd(b *testing.B) {
 	event := cohere.CohereStreamEvent{
 		Type: cohere.StreamEventMessageEnd,

@@ -709,12 +709,12 @@ func (chunk *CohereStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifros
 					if chunk.Delta.Usage.Tokens.OutputTokens != nil {
 						usage.CompletionTokens = *chunk.Delta.Usage.Tokens.OutputTokens
 					}
-					if chunk.Delta.Usage.CachedTokens != nil {
-						usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-							CachedReadTokens: *chunk.Delta.Usage.CachedTokens,
-						}
-					}
 					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				}
+				if chunk.Delta.Usage.CachedTokens != nil {
+					usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+						CachedReadTokens: *chunk.Delta.Usage.CachedTokens,
+					}
 				}
 			}
 
