@@ -819,13 +819,15 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 															/>
 														</div>
 														<div className="flex h-9 items-center gap-3">
-															<Switch
-																size="md"
-																checked={field.value ?? genericRouteBillableByDefault(form.watch(`routes.${index}.method`))}
-																onCheckedChange={field.onChange}
-																disabled={disabled}
-																data-testid={`generic-route-billable-switch-${index}`}
-															/>
+															<FormControl>
+																<Switch
+																	size="md"
+																	checked={field.value ?? genericRouteBillableByDefault(form.watch(`routes.${index}.method`))}
+																	onCheckedChange={field.onChange}
+																	disabled={disabled}
+																	data-testid={`generic-route-billable-switch-${index}`}
+																/>
+															</FormControl>
 															<span className="text-muted-foreground text-sm">
 																{(field.value ?? genericRouteBillableByDefault(form.watch(`routes.${index}.method`)))
 																	? "Counted and charged"
