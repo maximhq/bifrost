@@ -285104,14 +285104,13 @@
           "response": []
         }
       ]
-    }
-,
+    },
     {
-      "name": "276. Gemini Maps grounding is preserved through GenAI routing (#9031 / PR #9031) (gemini-maps-grounding)",
-      "description": "Regression for PR #9031. The /genai generateContent and streamGenerateContent routes convert Gemini-native requests through Bifrost Responses and back. Both cases assert Maps grounding sources, place identifiers/answer details, and the Maps widget context token survive the round trip; the streaming case inspects the terminal metadata so earlier grounding chunks must remain accumulated.",
+      "name": "278. Gemini Maps grounding is preserved through GenAI routing (#9031 / PR #9031) (gemini-maps-grounding)",
+      "description": "Regression for PR #9031. The /genai generateContent and streamGenerateContent routes convert Gemini-native requests through Bifrost Responses and back. Both cases assert Maps grounding sources survive the round trip; Go regression tests cover optional place details and widget context tokens when present, while the streaming case checks accumulated sources across chunks.",
       "item": [
         {
-          "name": "gemini/gemini-2.5-pro /genai generateContent preserves Maps sources, place details, and widget token - gemini-maps-grounding",
+          "name": "gemini/gemini-2.5-pro /genai generateContent preserves Maps sources - #9031",
           "event": [
             {
               "listen": "test",
@@ -285137,16 +285136,6 @@
                   "    pm.expect(chunk.maps.uri || '', 'Maps source has no URI: ' + JSON.stringify(chunk)).to.be.a('string').and.not.empty;",
                   "    pm.expect(chunk.maps.title || '', 'Maps source has no title: ' + JSON.stringify(chunk)).to.be.a('string').and.not.empty;",
                   "  });",
-                  "});",
-                  "var detailedPlaces = maps.filter(function (chunk) { return !!chunk.maps.placeId && !!chunk.maps.placeAnswerSources; });",
-                  "pm.test('Gemini Maps grounding restores place id and answer sources', function () {",
-                  "  pm.expect(detailedPlaces.length, 'Maps place details missing: ' + JSON.stringify(maps).slice(0, 1000)).to.be.above(0);",
-                  "  var sources = detailedPlaces[0].maps.placeAnswerSources;",
-                  "  var hasAnswerDetail = !!sources.flagContentUri || ((sources.reviewSnippets || []).length > 0);",
-                  "  pm.expect(hasAnswerDetail, 'Maps place answer sources contain no flag URI or review snippets: ' + JSON.stringify(sources)).to.eql(true);",
-                  "});",
-                  "pm.test('Gemini Maps grounding restores the widget context token', function () {",
-                  "  pm.expect((grounding || {}).googleMapsWidgetContextToken || '', 'Maps widget context token missing: ' + JSON.stringify(grounding).slice(0, 800)).to.be.a('string').and.not.empty;",
                   "});"
                 ]
               }
@@ -285162,7 +285151,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Find a well-reviewed coffee shop near Googleplex in Mountain View, California. Give its name and location, and include a review detail if available.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleMaps\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"retrievalConfig\": {\n      \"latLng\": {\n        \"latitude\": 37.422,\n        \"longitude\": -122.084\n      }\n    }\n  },\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256\n  }\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Find a well-reviewed coffee shop near Googleplex in Mountain View, California. Give its name and location, and include a review detail if available.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleMaps\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"retrievalConfig\": {\n      \"latLng\": {\n        \"latitude\": 37.422,\n        \"longitude\": -122.084\n      }\n    }\n  },\n  \"generationConfig\": {\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 512\n    },\n    \"maxOutputTokens\": 2048\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-pro:generateContent",
@@ -285180,7 +285169,7 @@
           }
         },
         {
-          "name": "gemini/gemini-2.5-pro /genai streamGenerateContent preserves accumulated Maps sources, place details, and widget token - gemini-maps-grounding",
+          "name": "gemini/gemini-2.5-pro /genai streamGenerateContent preserves accumulated Maps sources - #9031",
           "event": [
             {
               "listen": "test",
@@ -285218,16 +285207,6 @@
                   "    pm.expect(chunk.maps.uri || '', 'Maps source has no URI: ' + JSON.stringify(chunk)).to.be.a('string').and.not.empty;",
                   "    pm.expect(chunk.maps.title || '', 'Maps source has no title: ' + JSON.stringify(chunk)).to.be.a('string').and.not.empty;",
                   "  });",
-                  "});",
-                  "var detailedPlaces = maps.filter(function (chunk) { return !!chunk.maps.placeId && !!chunk.maps.placeAnswerSources; });",
-                  "pm.test('Gemini Maps grounding stream restores place id and answer sources', function () {",
-                  "  pm.expect(detailedPlaces.length, 'Maps place details missing: ' + JSON.stringify(maps).slice(0, 1000)).to.be.above(0);",
-                  "  var sources = detailedPlaces[0].maps.placeAnswerSources;",
-                  "  var hasAnswerDetail = !!sources.flagContentUri || ((sources.reviewSnippets || []).length > 0);",
-                  "  pm.expect(hasAnswerDetail, 'Maps place answer sources contain no flag URI or review snippets: ' + JSON.stringify(sources)).to.eql(true);",
-                  "});",
-                  "pm.test('Gemini Maps grounding stream restores the widget context token', function () {",
-                  "  pm.expect((grounding || {}).googleMapsWidgetContextToken || '', 'Maps widget context token missing: ' + JSON.stringify(grounding).slice(0, 800)).to.be.a('string').and.not.empty;",
                   "});"
                 ]
               }
@@ -285243,7 +285222,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Find a well-reviewed coffee shop near Googleplex in Mountain View, California. Give its name and location, and include a review detail if available.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleMaps\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"retrievalConfig\": {\n      \"latLng\": {\n        \"latitude\": 37.422,\n        \"longitude\": -122.084\n      }\n    }\n  },\n  \"generationConfig\": {\n    \"maxOutputTokens\": 256\n  }\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Find a well-reviewed coffee shop near Googleplex in Mountain View, California. Give its name and location, and include a review detail if available.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleMaps\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"retrievalConfig\": {\n      \"latLng\": {\n        \"latitude\": 37.422,\n        \"longitude\": -122.084\n      }\n    }\n  },\n  \"generationConfig\": {\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 512\n    },\n    \"maxOutputTokens\": 2048\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-pro:streamGenerateContent?alt=sse",
