@@ -121,7 +121,7 @@ func (g *GenericPassthroughRouter) handleGenericPassthrough(ctx *fasthttp.Reques
 	}
 
 	stripCallerCredentialHeaders(safeHeaders)
-	model, err := generic.ReadModel(body, contentType, plan.ModelPath)
+	model, err := generic.ReadRequestModel(plan.ModelSource, body, contentType, rawQuery, plan.ModelPath)
 	if err != nil {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
 		return

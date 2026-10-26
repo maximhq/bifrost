@@ -44,6 +44,8 @@ func TestGenericProviderConfigValidate(t *testing.T) {
 		{"header names differing only by case", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "A*", "x-amz-target": "B*"}}}}, "differs only by case"},
 		{"block size above zero", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsBlockSize: Ptr(0.0)}}, "units_block_size must be above zero"},
 		{"minimum not negative", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsMinimum: Ptr(-1.0)}}, "units_minimum must not be negative"},
+		{"model from the query ok", &GenericProviderConfig{Usage: &GenericUsageConfig{ModelPath: "model", ModelSource: GenericModelFromQuery}}, ""},
+		{"unknown model source", &GenericProviderConfig{Usage: &GenericUsageConfig{ModelSource: "header"}}, "model_source: unsupported value"},
 		{"rounding ok", &GenericProviderConfig{Usage: &GenericUsageConfig{UnitsPath: "Text", UnitsSource: GenericUnitsFromRequest, UnitsMeasure: GenericUnitsChars, UnitsBlockSize: Ptr(100.0), UnitsMinimum: Ptr(1.0), CostPerUnit: Ptr(0.01)}}, ""},
 		{"job ok", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{IDPath: "JobId", Poll: GenericJobPoll{Path: "/", Body: `{"JobId":"{{job.id}}"}`}, StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"}, Usage: &GenericUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: Ptr(0.0015)}}}}}, ""},
 		{"job needs id path", &GenericProviderConfig{Routes: []GenericRouteConfig{{Method: "POST", Path: "/", Job: &GenericJobConfig{Poll: GenericJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "routes[0].job.id_path"},

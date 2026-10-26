@@ -203,7 +203,7 @@ func TestRouteOverridesZeroFeeAndModelPath(t *testing.T) {
 	assert.Nil(t, usage.defaultUsage(usageFields{}).Cost)
 	assert.Equal(t, "name", provider.Plan("POST", "/named", "", false, nil).ModelPath)
 	assert.Equal(t, "engine", provider.Plan("POST", "/other", "", false, nil).ModelPath, "unrouted operations use the provider mapping")
-	assert.Equal(t, "model", (&GenericProvider{cfg: &schemas.GenericProviderConfig{}, usage: resolveUsage(nil, nil)}).Plan("POST", "/x", "", false, nil).ModelPath)
+	assert.Equal(t, "", (&GenericProvider{cfg: &schemas.GenericProviderConfig{}, usage: resolveUsage(nil, nil)}).Plan("POST", "/x", "", false, nil).ModelPath, "no model is read unless mapped")
 }
 
 // strict_routes turns the routes list into an allowlist: anything it does not name is refused.

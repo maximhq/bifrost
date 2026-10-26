@@ -1209,6 +1209,7 @@ const gjsonPath = z.string().trim().optional();
 // Generic relay usage mapping (gjson paths, flat per-request fee)
 const genericUsageConfigBaseSchema = z.object({
 	model_path: gjsonPath,
+	model_source: z.enum(["body", "query"]).optional(),
 	input_tokens_path: gjsonPath,
 	output_tokens_path: gjsonPath,
 	total_tokens_path: gjsonPath,
@@ -1220,7 +1221,6 @@ const genericUsageConfigBaseSchema = z.object({
 	cost_per_unit: z.number().min(0, "Cost per unit must not be negative").optional(),
 	units_block_size: z.number().positive("Block size must be above zero").optional(),
 	units_minimum: z.number().min(0, "Minimum units must not be negative").optional(),
-	disable_optimistic_parsing: z.boolean().optional(),
 });
 
 // The provider-level mapping must name a path for a positive rate. A route's mapping may inherit

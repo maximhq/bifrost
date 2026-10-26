@@ -128,7 +128,7 @@ func TestPreviewUsage(t *testing.T) {
 		assert.False(t, out.Streams, "the sample's Accept header is what the relay would see")
 	})
 	t.Run("an SSE response is read per event as the relay reads it", func(t *testing.T) {
-		llm := &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)}, Streaming: &schemas.GenericStreamingConfig{DetectFromAcceptHeader: true}}
+		llm := &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{InputTokensPath: "usage.input_tokens", OutputTokensPath: "usage.output_tokens", CostPath: "usage.cost", CostPerRequest: schemas.Ptr(0.01)}, Streaming: &schemas.GenericStreamingConfig{DetectFromAcceptHeader: true}}
 		body := "data: {\"usage\":{\"input_tokens\":12}}\n\ndata: {\"delta\":\"hi\"}\n\ndata: {\"usage\":{\"output_tokens\":5,\"cost\":0.5}}\n\ndata: [DONE]\n\n"
 		out, err := PreviewUsage(llm, nil, UsagePreviewInput{Method: "POST", Path: "/chat", Accept: "text/event-stream", ResponseContentType: "text/event-stream", ResponseBody: body}, false)
 		require.NoError(t, err)
@@ -162,8 +162,20 @@ func TestPreviewUsage(t *testing.T) {
 		require.NotNil(t, out.Units)
 		assert.InDelta(t, 5, *out.Units, 0, "measured as JSON whatever the declared content type, as the relay does")
 	})
+	t.Run("a model read from the query", func(t *testing.T) {
+		cfg := &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{ModelPath: "model", ModelSource: schemas.GenericModelFromQuery}}
+		out, err := PreviewUsage(cfg, nil, UsagePreviewInput{Method: "POST", Path: "/v1/listen?model=nova-3"}, false)
+		require.NoError(t, err)
+		assert.Equal(t, "nova-3", out.Model)
+		assert.Equal(t, schemas.GenericModelFromQuery, out.ModelSource)
+		out, err = PreviewUsage(cfg, nil, UsagePreviewInput{Method: "POST", Path: "/v1/listen?model=a&model=b"}, false)
+		require.NoError(t, err)
+		assert.False(t, out.Counted)
+		assert.Contains(t, notes(out), "refuses this request with 400")
+	})
 	t.Run("the preview refuses what the relay refuses, in the relay's order", func(t *testing.T) {
-		plain := &schemas.GenericProviderConfig{}
+		// A model named twice is refused wherever the model is read: here a mapped model field.
+		plain := &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{ModelPath: "model"}}
 		out, err := PreviewUsage(plain, nil, UsagePreviewInput{Method: "POST", Path: "/x", RequestBody: `{"model":"a","Model":"b"}`}, false)
 		require.NoError(t, err)
 		assert.False(t, out.Counted)

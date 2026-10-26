@@ -128323,10 +128323,19 @@
                   "usage": {
                     "type": "object",
                     "additionalProperties": false,
-                    "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                    "description": "gjson paths that map a relayed request/response onto usage and cost. Only the fields set are read: a field left empty reads nothing.",
                     "properties": {
                       "model_path": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Unset reads no model."
+                      },
+                      "model_source": {
+                        "type": "string",
+                        "enum": [
+                          "body",
+                          "query"
+                        ],
+                        "description": "Where model_path points, body (default) or query (a query parameter such as Deepgram's ?model=nova-3)."
                       },
                       "input_tokens_path": {
                         "type": "string"
@@ -128378,9 +128387,6 @@
                         "type": "number",
                         "minimum": 0,
                         "description": "Least number of billed units once a quantity was read; default 0"
-                      },
-                      "disable_optimistic_parsing": {
-                        "type": "boolean"
                       }
                     }
                   },
@@ -128447,10 +128453,19 @@
                         "usage": {
                           "type": "object",
                           "additionalProperties": false,
-                          "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                          "description": "gjson paths that map a relayed request/response onto usage and cost. Only the fields set are read: a field left empty reads nothing.",
                           "properties": {
                             "model_path": {
-                              "type": "string"
+                              "type": "string",
+                              "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Unset reads no model."
+                            },
+                            "model_source": {
+                              "type": "string",
+                              "enum": [
+                                "body",
+                                "query"
+                              ],
+                              "description": "Where model_path points, body (default) or query (a query parameter such as Deepgram's ?model=nova-3)."
                             },
                             "input_tokens_path": {
                               "type": "string"
@@ -128502,9 +128517,6 @@
                               "type": "number",
                               "minimum": 0,
                               "description": "Least number of billed units once a quantity was read; default 0"
-                            },
-                            "disable_optimistic_parsing": {
-                              "type": "boolean"
                             }
                           }
                         },
@@ -128579,10 +128591,19 @@
                             "usage": {
                               "type": "object",
                               "additionalProperties": false,
-                              "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                              "description": "gjson paths that map a relayed request/response onto usage and cost. Only the fields set are read: a field left empty reads nothing.",
                               "properties": {
                                 "model_path": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Unset reads no model."
+                                },
+                                "model_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "body",
+                                    "query"
+                                  ],
+                                  "description": "Where model_path points, body (default) or query (a query parameter such as Deepgram's ?model=nova-3)."
                                 },
                                 "input_tokens_path": {
                                   "type": "string"
@@ -128634,9 +128655,6 @@
                                   "type": "number",
                                   "minimum": 0,
                                   "description": "Least number of billed units once a quantity was read; default 0"
-                                },
-                                "disable_optimistic_parsing": {
-                                  "type": "boolean"
                                 }
                               }
                             }
@@ -129034,10 +129052,19 @@
                   "usage": {
                     "type": "object",
                     "additionalProperties": false,
-                    "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                    "description": "gjson paths that map a relayed request/response onto usage and cost. Only the fields set are read: a field left empty reads nothing.",
                     "properties": {
                       "model_path": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Unset reads no model."
+                      },
+                      "model_source": {
+                        "type": "string",
+                        "enum": [
+                          "body",
+                          "query"
+                        ],
+                        "description": "Where model_path points, body (default) or query (a query parameter such as Deepgram's ?model=nova-3)."
                       },
                       "input_tokens_path": {
                         "type": "string"
@@ -129089,9 +129116,6 @@
                         "type": "number",
                         "minimum": 0,
                         "description": "Least number of billed units once a quantity was read; default 0"
-                      },
-                      "disable_optimistic_parsing": {
-                        "type": "boolean"
                       }
                     }
                   },
@@ -129158,10 +129182,19 @@
                         "usage": {
                           "type": "object",
                           "additionalProperties": false,
-                          "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                          "description": "gjson paths that map a relayed request/response onto usage and cost. Only the fields set are read: a field left empty reads nothing.",
                           "properties": {
                             "model_path": {
-                              "type": "string"
+                              "type": "string",
+                              "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Unset reads no model."
+                            },
+                            "model_source": {
+                              "type": "string",
+                              "enum": [
+                                "body",
+                                "query"
+                              ],
+                              "description": "Where model_path points, body (default) or query (a query parameter such as Deepgram's ?model=nova-3)."
                             },
                             "input_tokens_path": {
                               "type": "string"
@@ -129213,9 +129246,6 @@
                               "type": "number",
                               "minimum": 0,
                               "description": "Least number of billed units once a quantity was read; default 0"
-                            },
-                            "disable_optimistic_parsing": {
-                              "type": "boolean"
                             }
                           }
                         },
@@ -129290,10 +129320,19 @@
                             "usage": {
                               "type": "object",
                               "additionalProperties": false,
-                              "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                              "description": "gjson paths that map a relayed request/response onto usage and cost. Only the fields set are read: a field left empty reads nothing.",
                               "properties": {
                                 "model_path": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Unset reads no model."
+                                },
+                                "model_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "body",
+                                    "query"
+                                  ],
+                                  "description": "Where model_path points, body (default) or query (a query parameter such as Deepgram's ?model=nova-3)."
                                 },
                                 "input_tokens_path": {
                                   "type": "string"
@@ -129345,9 +129384,6 @@
                                   "type": "number",
                                   "minimum": 0,
                                   "description": "Least number of billed units once a quantity was read; default 0"
-                                },
-                                "disable_optimistic_parsing": {
-                                  "type": "boolean"
                                 }
                               }
                             }
@@ -129703,10 +129739,19 @@
                   "usage": {
                     "type": "object",
                     "additionalProperties": false,
-                    "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                    "description": "gjson paths that map a relayed request/response onto usage and cost. Only the fields set are read: a field left empty reads nothing.",
                     "properties": {
                       "model_path": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Unset reads no model."
+                      },
+                      "model_source": {
+                        "type": "string",
+                        "enum": [
+                          "body",
+                          "query"
+                        ],
+                        "description": "Where model_path points, body (default) or query (a query parameter such as Deepgram's ?model=nova-3)."
                       },
                       "input_tokens_path": {
                         "type": "string"
@@ -129758,9 +129803,6 @@
                         "type": "number",
                         "minimum": 0,
                         "description": "Least number of billed units once a quantity was read; default 0"
-                      },
-                      "disable_optimistic_parsing": {
-                        "type": "boolean"
                       }
                     }
                   },
@@ -129827,10 +129869,19 @@
                         "usage": {
                           "type": "object",
                           "additionalProperties": false,
-                          "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                          "description": "gjson paths that map a relayed request/response onto usage and cost. Only the fields set are read: a field left empty reads nothing.",
                           "properties": {
                             "model_path": {
-                              "type": "string"
+                              "type": "string",
+                              "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Unset reads no model."
+                            },
+                            "model_source": {
+                              "type": "string",
+                              "enum": [
+                                "body",
+                                "query"
+                              ],
+                              "description": "Where model_path points, body (default) or query (a query parameter such as Deepgram's ?model=nova-3)."
                             },
                             "input_tokens_path": {
                               "type": "string"
@@ -129882,9 +129933,6 @@
                               "type": "number",
                               "minimum": 0,
                               "description": "Least number of billed units once a quantity was read; default 0"
-                            },
-                            "disable_optimistic_parsing": {
-                              "type": "boolean"
                             }
                           }
                         },
@@ -129959,10 +130007,19 @@
                             "usage": {
                               "type": "object",
                               "additionalProperties": false,
-                              "description": "gjson paths that map a relayed request/response onto usage and cost. Empty fields keep the optimistic defaults; naming any token path turns the optimistic token lookup off.",
+                              "description": "gjson paths that map a relayed request/response onto usage and cost. Only the fields set are read: a field left empty reads nothing.",
                               "properties": {
                                 "model_path": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Unset reads no model."
+                                },
+                                "model_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "body",
+                                    "query"
+                                  ],
+                                  "description": "Where model_path points, body (default) or query (a query parameter such as Deepgram's ?model=nova-3)."
                                 },
                                 "input_tokens_path": {
                                   "type": "string"
@@ -130014,9 +130071,6 @@
                                   "type": "number",
                                   "minimum": 0,
                                   "description": "Least number of billed units once a quantity was read; default 0"
-                                },
-                                "disable_optimistic_parsing": {
-                                  "type": "boolean"
                                 }
                               }
                             }

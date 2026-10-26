@@ -31,11 +31,12 @@ func (provider *GenericProvider) DetectsStreamFlag() bool {
 
 // RoutePlan is the outcome of matching one request against a provider's routes.
 type RoutePlan struct {
-	Allowed   bool   // false only under strict_routes when no route matched
-	ModelPath string // request body path the model is read from, "" for none
-	Streams   bool   // serve with the streaming relay
-	provider  *GenericProvider
-	route     *compiledRoute // nil when no route matched
+	Allowed     bool                       // false only under strict_routes when no route matched
+	ModelPath   string                     // where the model is read from, "" for none
+	ModelSource schemas.GenericModelSource // body (default) or query
+	Streams     bool                       // serve with the streaming relay
+	provider    *GenericProvider
+	route       *compiledRoute // nil when no route matched
 }
 
 type routePlanContextKey struct{}
@@ -57,11 +58,12 @@ func (provider *GenericProvider) Plan(method, path, accept string, bodyStream bo
 		usage = route.usage
 	}
 	return RoutePlan{
-		Allowed:   !provider.cfg.StrictRoutes || route != nil,
-		ModelPath: usage.effectiveModelPath(),
-		Streams:   provider.streams(route, path, accept, bodyStream),
-		provider:  provider,
-		route:     route,
+		Allowed:     !provider.cfg.StrictRoutes || route != nil,
+		ModelPath:   usage.effectiveModelPath(),
+		ModelSource: usage.modelSource,
+		Streams:     provider.streams(route, path, accept, bodyStream),
+		provider:    provider,
+		route:       route,
 	}
 }
 

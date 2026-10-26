@@ -607,6 +607,7 @@ export const genericUnitsMeasureReadsWholeBody = (m: GenericUnitsMeasure | undef
 // GenericUsageConfig matching Go's schemas.GenericUsageConfig (gjson paths)
 export interface GenericUsageConfig {
 	model_path?: string;
+	model_source?: "body" | "query";
 	input_tokens_path?: string;
 	output_tokens_path?: string;
 	total_tokens_path?: string;
@@ -618,7 +619,6 @@ export interface GenericUsageConfig {
 	cost_per_unit?: number;
 	units_block_size?: number;
 	units_minimum?: number;
-	disable_optimistic_parsing?: boolean;
 }
 
 // GenericStreamingConfig matching Go's schemas.GenericStreamingConfig
@@ -695,6 +695,7 @@ export interface GenericUsagePreview {
 	streams: boolean;
 	counted: boolean;
 	model_path: string;
+	model_source: "body" | "query";
 	model: string;
 	units_source: GenericUnitsSource;
 	units_measure: GenericUnitsMeasure;

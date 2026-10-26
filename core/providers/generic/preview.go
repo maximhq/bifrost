@@ -35,6 +35,7 @@ type UsagePreview struct {
 	Streams        bool                        `json:"streams"`       // served by the streaming relay
 	Counted        bool                        `json:"counted"`       // reports usage: billable and a 2xx status
 	ModelPath      string                      `json:"model_path"`    // where the model is read from, "" for none
+	ModelSource    schemas.GenericModelSource  `json:"model_source"`  // body or query
 	Model          string                      `json:"model"`         // what that path yielded from the request body
 	UnitsSource    schemas.GenericUnitsSource  `json:"units_source"`
 	UnitsMeasure   schemas.GenericUnitsMeasure `json:"units_measure"`
@@ -134,6 +135,10 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, extraHeaders map[string]sc
 	accept := headers["accept"]
 	out.Streams = provider.streams(route, path, accept, bodyStream)
 	out.ModelPath = usage.effectiveModelPath()
+	out.ModelSource = usage.modelSource
+	if out.ModelSource == "" {
+		out.ModelSource = schemas.GenericModelFromBody
+	}
 	out.UnitsSource, out.UnitsMeasure, out.UnitsPath = usage.unitsSource, usage.unitsMeasure, usage.unitsPath
 	out.CostPerUnit, out.CostPerRequest = usage.costPerUnit, usage.costPerRequest
 	out.UnitsBlockSize, out.UnitsMinimum = usage.unitsBlockSize, usage.unitsMinimum
@@ -144,7 +149,18 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, extraHeaders map[string]sc
 		return out, nil
 	}
 	// The model is read the way the transport reads it, so a body the relay refuses is reported.
-	if out.ModelPath != "" && len(reqBody) > 0 {
+	if out.ModelPath != "" && out.ModelSource == schemas.GenericModelFromQuery {
+		model, err := ReadRequestModel(out.ModelSource, reqBody, contentType, rawQuery, out.ModelPath)
+		switch {
+		case err != nil:
+			out.Notes = append(out.Notes, "the relay refuses this request with 400: "+err.Error())
+			return out, nil
+		case model != "":
+			out.Model = model
+		default:
+			out.Notes = append(out.Notes, "no "+out.ModelPath+" parameter in the request query")
+		}
+	} else if out.ModelPath != "" && len(reqBody) > 0 {
 		model, err := ReadModel(reqBody, contentType, out.ModelPath)
 		switch {
 		case err != nil:
@@ -219,7 +235,7 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, extraHeaders map[string]sc
 		if len(respBody) > 0 && !looksJSON(in.ResponseContentType, respBody) && usage.unitsMeasure != schemas.GenericUnitsBodyBytes && usage.unitsMeasure != schemas.GenericUnitsBodyChars {
 			out.Notes = append(out.Notes, "the response body is not JSON, so token and cost paths are not read")
 		}
-		if !parsed.hasInput && !parsed.hasOutput && !parsed.hasTotal && len(respBody) > 0 && (usage.tokensConfigured() || usage.optimistic) {
+		if !parsed.hasInput && !parsed.hasOutput && !parsed.hasTotal && len(respBody) > 0 && usage.tokensConfigured() {
 			out.Notes = append(out.Notes, "no token counts found in the response body")
 		}
 		switch {
@@ -243,9 +259,8 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, extraHeaders map[string]sc
 	}
 	switch {
 	case built.LLMUsage != nil:
-		// The logging path also prices tokens through the model catalog; the preview has no model
-		// pricing in hand, so it reports the mapping's share only.
-		out.Notes = append(out.Notes, "tokens are priced by the model catalog on the log row; this cost covers the mapping only (fee, units, extracted cost)")
+		// Token counts are logged on the row, never priced: a generic call costs its mapping alone.
+		out.Notes = append(out.Notes, "token counts are logged, not priced; the cost is the mapping's (fee, units, reported cost)")
 	case out.Cost == 0:
 		out.Notes = append(out.Notes, "cost is 0: the call counts one request against rate limits but charges no budget")
 	}

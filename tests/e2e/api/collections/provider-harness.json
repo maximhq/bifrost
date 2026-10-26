@@ -284571,7 +284571,7 @@
           }
         },
         {
-          "name": "280.4 POST /passthrough/generic_openai/v1/chat/completions - openai gpt-4o-mini usage parsed optimistically (generic passthrough) - #8784",
+          "name": "280.4 POST /passthrough/generic_openai/v1/chat/completions - openai gpt-4o-mini usage read from the mapped token paths (generic passthrough) - #8784",
           "event": [
             {
               "listen": "test",
@@ -285948,6 +285948,118 @@
                 "passthrough",
                 "generic_echo",
                 "post"
+              ]
+            }
+          }
+        },
+        {
+          "name": "280.32 POST /passthrough/generic_echo_model_query/post?model=nova-3 - model_source query: the model is read from a query parameter onto the log row (generic passthrough) - #9038",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// generic_echo_model_query maps model_path model with model_source query, as Deepgram names its model in ?model=. The row",
+                  "// carries that model; the body's own \"model\" field is not read.",
+                  "pm.test('generic relay: request relayed', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('generic relay: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (err || (res.code !== 200 && res.code !== 404)) { pm.test('generic relay: log read', function () { pm.expect.fail('GET /api/logs/' + reqId + ': ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); }); return; }",
+                  "    var row = res.code === 200 ? res.json() : null;",
+                  "    if (row && row.cost !== undefined && row.cost !== null) {",
+                  "      pm.test('generic relay: the query model is on the log row', function () { pm.expect(row.model, JSON.stringify({ model: row.model })).to.eql('nova-3'); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('generic relay: log row appeared', function () { pm.expect.fail('log ' + reqId + ' has no cost after 10 reads'); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"not-this-one\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_model_query/post?model=nova-3",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_model_query",
+                "post"
+              ],
+              "query": [
+                {
+                  "key": "model",
+                  "value": "nova-3"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] 280.33 POST /passthrough/generic_echo_model_query/post?model=a&model=b - model_source query: a query naming the model twice is refused before the upstream is called (generic passthrough) - #9038",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Governance and the upstream could read different values from a repeated parameter, so the relay refuses it, as it",
+                  "// refuses a body naming the model key twice (280.9).",
+                  "pm.test('generic relay: repeated query model refused', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "pm.test('generic relay: the refusal names the model parameter', function () { pm.expect(pm.response.text()).to.include('model parameter at most once'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"q\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/passthrough/generic_echo_model_query/post?model=a&model=b",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "passthrough",
+                "generic_echo_model_query",
+                "post"
+              ],
+              "query": [
+                {
+                  "key": "model",
+                  "value": "a"
+                },
+                {
+                  "key": "model",
+                  "value": "b"
+                }
               ]
             }
           }

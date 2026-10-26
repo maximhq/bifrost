@@ -151,6 +151,9 @@ func mergeUsageConfig(base, override *schemas.GenericUsageConfig) *schemas.Gener
 		if u.ModelPath != "" {
 			out.ModelPath = u.ModelPath
 		}
+		if u.ModelSource != "" {
+			out.ModelSource = u.ModelSource
+		}
 		if u.InputTokensPath != "" {
 			out.InputTokensPath = u.InputTokensPath
 		}
@@ -183,9 +186,6 @@ func mergeUsageConfig(base, override *schemas.GenericUsageConfig) *schemas.Gener
 		}
 		if u.UnitsMinimum != nil {
 			out.UnitsMinimum = schemas.Ptr(*u.UnitsMinimum)
-		}
-		if u.DisableOptimisticParsing {
-			out.DisableOptimisticParsing = true
 		}
 	}
 	apply(base)

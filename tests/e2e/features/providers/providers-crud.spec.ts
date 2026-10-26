@@ -693,6 +693,8 @@ test.describe("Providers", () => {
         await page.getByTestId("generic-advanced-toggle").click();
       }
       await page.getByTestId("generic-streaming-accept-switch").click();
+      // A reported cost is read only from a mapped field.
+      await page.getByTestId("generic-usage-cost-path-input").fill("usage.cost");
       await page.getByTestId("generic-preview-path-input").fill("/search");
       await page
         .getByTestId("generic-preview-response-body-textarea")
@@ -845,7 +847,6 @@ test.describe("Providers", () => {
           units_path: "query",
           cost_per_unit: 0,
           // The server always reports this switch; false is its default.
-          disable_optimistic_parsing: false,
         });
       const afterSave = await page.request.get(
         `/api/providers/${providerData.name}`,

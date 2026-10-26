@@ -11,6 +11,7 @@ import (
 // resolvedUsage is a usage mapping with the provider defaults and a route's overrides merged.
 type resolvedUsage struct {
 	modelPath        string
+	modelSource      schemas.GenericModelSource // body (default) or query
 	inputTokensPath  string
 	outputTokensPath string
 	totalTokensPath  string
@@ -22,8 +23,7 @@ type resolvedUsage struct {
 	costPerUnit      float64
 	unitsBlockSize   float64 // bill per started block of this many raw units; 0 means exact
 	unitsMinimum     float64 // least number of billed units once a quantity was read
-	optimistic       bool
-	// ignoreUpstreamCost drops the cost_path (and the optimistic usage.cost) while the flat fee and
+	// ignoreUpstreamCost drops the cost_path while the flat fee and
 	// unit pricing, which the operator configured, still apply. Set from ignore_provider_cost.
 	ignoreUpstreamCost bool
 	eventPaths         []string // every response path worth a look per SSE event; built once, see collectEventPaths
@@ -150,13 +150,16 @@ func (g routeGlob) matchSegments(segments []string) bool {
 }
 
 func resolveUsage(base *schemas.GenericUsageConfig, override *schemas.GenericUsageConfig) resolvedUsage {
-	out := resolvedUsage{optimistic: true, unitsSource: schemas.GenericUnitsFromResponse, unitsMeasure: schemas.GenericUnitsValue}
+	out := resolvedUsage{unitsSource: schemas.GenericUnitsFromResponse, unitsMeasure: schemas.GenericUnitsValue}
 	apply := func(u *schemas.GenericUsageConfig) {
 		if u == nil {
 			return
 		}
 		if u.ModelPath != "" {
 			out.modelPath = u.ModelPath
+		}
+		if u.ModelSource != "" {
+			out.modelSource = u.ModelSource
 		}
 		if u.InputTokensPath != "" {
 			out.inputTokensPath = u.InputTokensPath
@@ -190,9 +193,6 @@ func resolveUsage(base *schemas.GenericUsageConfig, override *schemas.GenericUsa
 		}
 		if u.UnitsMinimum != nil {
 			out.unitsMinimum = *u.UnitsMinimum
-		}
-		if u.DisableOptimisticParsing {
-			out.optimistic = false
 		}
 	}
 	apply(base)

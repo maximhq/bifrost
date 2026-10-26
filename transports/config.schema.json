@@ -13563,11 +13563,16 @@
     },
     "generic_usage_config": {
       "type": "object",
-      "description": "Maps a relayed request/response onto usage and cost with gjson paths. Fields left empty keep the optimistic defaults (request model, response usage.prompt_tokens|input_tokens, usage.completion_tokens|output_tokens, usage.total_tokens, usage.cost). Naming any token path turns the optimistic token lookup off. Negative numbers are ignored",
+      "description": "Maps a relayed request/response onto usage and cost with gjson paths. Only the fields set are read: a field left empty reads nothing. Negative numbers are ignored",
       "properties": {
         "model_path": {
           "type": "string",
-          "description": "Request body path for the model name (default model)"
+          "description": "Where the model name is read from the caller's request: a JSON body path (model, model_id), or the query parameter name with model_source query. Stored on the log row and checked against virtual-key model restrictions. Unset reads no model"
+        },
+        "model_source": {
+          "type": "string",
+          "enum": ["body", "query"],
+          "description": "Where model_path points: body (default), a JSON field of the request body; or query, a query parameter (Deepgram's ?model=nova-3)"
         },
         "input_tokens_path": {
           "type": "string",
@@ -13626,10 +13631,6 @@
           "type": "number",
           "minimum": 0,
           "description": "Least number of billed units once a quantity was read. Default 0"
-        },
-        "disable_optimistic_parsing": {
-          "type": "boolean",
-          "description": "Read only the configured paths"
         }
       },
       "additionalProperties": false

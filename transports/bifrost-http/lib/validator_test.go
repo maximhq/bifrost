@@ -4465,7 +4465,7 @@ func TestValidateConfigSchema_GenericProviderConfig(t *testing.T) {
 		"allowed_requests": {"passthrough": true, "passthrough_stream": true},
 		"generic_config": {
 			"auth": {"type": "header", "header_name": "x-api-key", "value_prefix": "Key "},
-			"usage": {"model_path": "model", "cost_path": "usage.cost", "cost_per_request": 0.008, "disable_optimistic_parsing": false},
+			"usage": {"model_path": "model", "cost_path": "usage.cost", "cost_per_request": 0.008},
 			"streaming": {"paths": ["/v1/stream/**"], "detect_from_accept_header": true},
 			"routes": [{"method": "POST", "path": "/search", "billable": true, "stream": false, "usage": {"cost_per_request": 0.01}}],
 			"strict_routes": true

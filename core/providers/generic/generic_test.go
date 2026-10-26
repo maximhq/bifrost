@@ -442,7 +442,7 @@ func testSigV4DropsCallerSignatureHeaders(t *testing.T) {
 
 func testRelayPOSTBearer(t *testing.T) {
 	up := jsonUpstream(t, http.StatusOK, `{"results":[1,2],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`)
-	provider := newProvider(t, up, nil)
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{InputTokensPath: "usage.prompt_tokens", OutputTokensPath: "usage.completion_tokens", TotalTokensPath: "usage.total_tokens"}})
 
 	resp, bifrostErr := provider.Passthrough(testCtx(t), bearerKey("sk-upstream"), relayRequest(http.MethodPost, "/search", "", `{"query":"bifrost"}`, map[string]string{"x-trace": "abc"}))
 	require.Nil(t, bifrostErr)
@@ -451,7 +451,7 @@ func testRelayPOSTBearer(t *testing.T) {
 	assert.Equal(t, "up-1", resp.Headers["X-Upstream-Id"], "upstream headers reach the caller")
 	assert.Equal(t, "/search", resp.ExtraFields.PassthroughPath)
 	require.NotNil(t, resp.PassthroughUsage, "a billable 2xx always reports usage")
-	require.NotNil(t, resp.PassthroughUsage.LLMUsage, "optimistic parsing reads the OpenAI usage shape")
+	require.NotNil(t, resp.PassthroughUsage.LLMUsage, "the mapped token paths read the OpenAI usage shape")
 	assert.Equal(t, 7, resp.PassthroughUsage.LLMUsage.TotalTokens)
 	assert.Nil(t, resp.PassthroughUsage.Cost, "no cost mapping and no fee means no cost")
 
@@ -613,7 +613,7 @@ func testStreamSSEObservesUsage(t *testing.T) {
 		_, _ = w.Write([]byte("data: {\"delta\":\"lo\",\"usage\":{\"input_tokens\":2,\"output_tokens\":5}}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	})
-	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.002)}})
+	provider := newProvider(t, up, &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{InputTokensPath: "usage.input_tokens", OutputTokensPath: "usage.output_tokens", CostPerRequest: schemas.Ptr(0.002)}})
 
 	ch, bifrostErr := provider.PassthroughStream(testCtx(t), noHooks, nil, bearerKey("k"), relayRequest(http.MethodPost, "/chat/stream", "", `{"stream":true}`, nil))
 	require.Nil(t, bifrostErr)
@@ -1146,7 +1146,7 @@ func TestGenericDecodesCompressedReplies(t *testing.T) {
 	})
 	provider, err := NewGenericProvider(&schemas.ProviderConfig{
 		NetworkConfig:        schemas.NetworkConfig{BaseURL: up.server.URL, DefaultRequestTimeoutInSeconds: 5, ExtraHeaders: map[string]schemas.SecretVar{"Accept-Encoding": *schemas.NewSecretVar("gzip")}},
-		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{}},
+		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "echo", BaseProviderType: schemas.Generic, GenericConfig: &schemas.GenericProviderConfig{Usage: &schemas.GenericUsageConfig{TotalTokensPath: "usage.total_tokens"}}},
 	}, &testLogger{})
 	require.NoError(t, err)
 

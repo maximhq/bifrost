@@ -91,6 +91,7 @@
             "header_name": "x-api-key"
           },
           "usage": {
+            "model_path": "model",
             "cost_per_request": 0.001
           },
           "routes": [
@@ -104,6 +105,28 @@
               "path": "/headers"
             }
           ]
+        }
+      },
+      "network_config": {
+        "base_url": "https://postman-echo.com",
+        "default_request_timeout_in_seconds": 60
+      }
+    },
+    "generic_echo_model_query": {
+      "store_raw_request_response": true,
+      "keys": [],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "is_key_less": true,
+        "generic_config": {
+          "auth": {
+            "type": "none"
+          },
+          "usage": {
+            "model_path": "model",
+            "model_source": "query",
+            "cost_per_request": 0.001
+          }
         }
       },
       "network_config": {
@@ -357,6 +380,12 @@
         "generic_config": {
           "auth": {
             "type": "bearer"
+          },
+          "usage": {
+            "model_path": "model",
+            "input_tokens_path": "usage.prompt_tokens",
+            "output_tokens_path": "usage.completion_tokens",
+            "total_tokens_path": "usage.total_tokens"
           },
           "streaming": {
             "detect_from_body": true

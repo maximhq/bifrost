@@ -10,8 +10,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestExtractUsageOptimisticDefaults(t *testing.T) {
+// With nothing mapped, a generic usage reads no LLM-style field: no tokens, no usage.cost and no
+// model. A non-LLM API's reply can carry those names with other meanings.
+func TestExtractUsageReadsNothingUnmapped(t *testing.T) {
 	u := resolveUsage(nil, nil)
+	usage := extractUsage(u, "application/json", []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"cost":0.25}}`), usageFields{})
+	assert.Nil(t, usage.LLMUsage)
+	assert.Nil(t, usage.Cost)
+	assert.Equal(t, "", u.effectiveModelPath())
+}
+
+// Token and cost fields are read at the paths a mapping names, whichever shape the API uses.
+func TestExtractUsageMappedShapes(t *testing.T) {
+	u := resolveUsage(&schemas.GenericUsageConfig{InputTokensPath: "usage.prompt_tokens", OutputTokensPath: "usage.completion_tokens", TotalTokensPath: "usage.total_tokens", CostPath: "usage.cost"}, nil)
+	anthropic := resolveUsage(&schemas.GenericUsageConfig{InputTokensPath: "usage.input_tokens", OutputTokensPath: "usage.output_tokens"}, nil)
 
 	t.Run("openai shape", func(t *testing.T) {
 		usage := extractUsage(u, "application/json", []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`), usageFields{})
@@ -22,7 +34,7 @@ func TestExtractUsageOptimisticDefaults(t *testing.T) {
 		assert.Nil(t, usage.Cost)
 	})
 	t.Run("anthropic shape sums input and output", func(t *testing.T) {
-		usage := extractUsage(u, "application/json; charset=utf-8", []byte(`{"usage":{"input_tokens":3,"output_tokens":4}}`), usageFields{})
+		usage := extractUsage(anthropic, "application/json; charset=utf-8", []byte(`{"usage":{"input_tokens":3,"output_tokens":4}}`), usageFields{})
 		require.NotNil(t, usage.LLMUsage)
 		assert.Equal(t, 7, usage.LLMUsage.TotalTokens)
 	})
@@ -31,7 +43,7 @@ func TestExtractUsageOptimisticDefaults(t *testing.T) {
 		require.NotNil(t, usage.Cost)
 		assert.InDelta(t, 0.25, usage.Cost.TotalCost, 1e-9)
 		usage = extractUsage(u, "application/json", []byte(`{"cost":1499.99}`), usageFields{})
-		assert.Nil(t, usage.Cost, "a root cost is as likely a product price as a bill; it is never read by default")
+		assert.Nil(t, usage.Cost, "a root cost is not read when the mapping names usage.cost")
 	})
 	t.Run("negative numbers are not measurements", func(t *testing.T) {
 		usage := extractUsage(u, "application/json", []byte(`{"usage":{"prompt_tokens":-1000000,"completion_tokens":4,"cost":-5}}`), usageFields{})
@@ -39,7 +51,7 @@ func TestExtractUsageOptimisticDefaults(t *testing.T) {
 		assert.Equal(t, 0, usage.LLMUsage.PromptTokens)
 		assert.Equal(t, 4, usage.LLMUsage.TotalTokens)
 		assert.Nil(t, usage.Cost)
-		fee := resolveUsage(&schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)}, nil)
+		fee := resolveUsage(&schemas.GenericUsageConfig{CostPath: "usage.cost", CostPerRequest: schemas.Ptr(0.01)}, nil)
 		usage = extractUsage(fee, "application/json", []byte(`{"usage":{"cost":-5}}`), usageFields{})
 		require.NotNil(t, usage.Cost)
 		assert.InDelta(t, 0.01, usage.Cost.TotalCost, 1e-9, "a negative upstream cost cannot cancel the flat fee")
@@ -83,18 +95,18 @@ func TestExtractUsageConfiguredPaths(t *testing.T) {
 	require.NotNil(t, usage.Cost)
 	assert.InDelta(t, 0.31, usage.Cost.TotalCost, 1e-9, "array costs are summed and the per-request fee is added")
 
-	t.Run("configured path overrides optimistic even when absent", func(t *testing.T) {
+	t.Run("only the configured paths are read", func(t *testing.T) {
 		usage := extractUsage(u, "application/json", []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`), usageFields{})
-		assert.Nil(t, usage.LLMUsage, "the optimistic usage block is not read for a field with a configured path")
+		assert.Nil(t, usage.LLMUsage, "a usage block the mapping does not name is not read")
 	})
 }
 
-func TestExtractUsageDisableOptimistic(t *testing.T) {
-	u := resolveUsage(&schemas.GenericUsageConfig{DisableOptimisticParsing: true, CostPerRequest: schemas.Ptr(0.004)}, nil)
-	usage := extractUsage(u, "application/json", []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"cost":5}`), usageFields{})
+func TestExtractUsageFeeOnly(t *testing.T) {
+	u := resolveUsage(&schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.004)}, nil)
+	usage := extractUsage(u, "application/json", []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"cost":9},"cost":5}`), usageFields{})
 	assert.Nil(t, usage.LLMUsage)
 	require.NotNil(t, usage.Cost)
-	assert.InDelta(t, 0.004, usage.Cost.TotalCost, 1e-9, "only the flat fee remains")
+	assert.InDelta(t, 0.004, usage.Cost.TotalCost, 1e-9, "only the flat fee: nothing unmapped is read")
 }
 
 func TestResolveUsageRouteOverride(t *testing.T) {
@@ -105,11 +117,10 @@ func TestResolveUsageRouteOverride(t *testing.T) {
 	assert.Equal(t, "cost", u.costPath)
 	assert.Equal(t, "tokens", u.totalTokensPath)
 	assert.InDelta(t, 0.05, u.costPerRequest, 1e-9, "the route's fee replaces the provider's")
-	assert.True(t, u.optimistic)
 }
 
 func TestStreamUsageObservers(t *testing.T) {
-	u := resolveUsage(&schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)}, nil)
+	u := resolveUsage(&schemas.GenericUsageConfig{InputTokensPath: "usage.input_tokens", OutputTokensPath: "usage.output_tokens", TotalTokensPath: "usage.total_tokens", CostPath: "usage.cost", CostPerRequest: schemas.Ptr(0.01)}, nil)
 	assert.False(t, u.hasUsageEvent([]byte(`{"delta":"x"}`)))
 	assert.True(t, u.hasUsageEvent([]byte(`{"usage":{"total_tokens":1}}`)))
 	assert.True(t, u.hasUsageEvent([]byte(`{"usage":{"output_tokens":5}}`)), "an output-only event is worth parsing")
@@ -144,10 +155,9 @@ func TestStreamUsageObservers(t *testing.T) {
 }
 
 func TestEffectiveModelPath(t *testing.T) {
-	assert.Equal(t, "model", resolveUsage(nil, nil).effectiveModelPath())
+	assert.Equal(t, "", resolveUsage(nil, nil).effectiveModelPath(), "no model is read unless mapped")
 	assert.Equal(t, "engine", resolveUsage(&schemas.GenericUsageConfig{ModelPath: "engine"}, nil).effectiveModelPath())
-	assert.Equal(t, "", resolveUsage(&schemas.GenericUsageConfig{DisableOptimisticParsing: true}, nil).effectiveModelPath(), "no optimistic parsing means no default model lookup")
-	assert.Equal(t, "name", resolveUsage(&schemas.GenericUsageConfig{DisableOptimisticParsing: true}, &schemas.GenericUsageConfig{ModelPath: "name"}).effectiveModelPath())
+	assert.Equal(t, "name", resolveUsage(nil, &schemas.GenericUsageConfig{ModelPath: "name"}).effectiveModelPath())
 }
 
 func TestUnitsPricing(t *testing.T) {
@@ -236,7 +246,7 @@ func TestUnitsPricing(t *testing.T) {
 		require.NotNil(t, got)
 		assert.InDelta(t, 1.0, got.Cost.TotalCost, 1e-9)
 
-		req := resolveUsage(&schemas.GenericUsageConfig{UnitsPath: "text", UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsChars, CostPerUnit: schemas.Ptr(0.1)}, nil)
+		req := resolveUsage(&schemas.GenericUsageConfig{TotalTokensPath: "usage.total_tokens", UnitsPath: "text", UnitsSource: schemas.GenericUnitsFromRequest, UnitsMeasure: schemas.GenericUnitsChars, CostPerUnit: schemas.Ptr(0.1)}, nil)
 		initial := req.requestUnits([]byte(`{"text":"abcd"}`))
 		observe = req.streamObserver(initial)
 		got = observe([]byte(`{"usage":{"total_tokens":3}}`))
@@ -245,7 +255,7 @@ func TestUnitsPricing(t *testing.T) {
 		assert.Equal(t, 3, got.LLMUsage.TotalTokens)
 	})
 	t.Run("streams never measure a whole-body response quantity per event", func(t *testing.T) {
-		u := resolveUsage(&schemas.GenericUsageConfig{UnitsMeasure: schemas.GenericUnitsBodyChars, CostPerUnit: schemas.Ptr(1.0), CostPerRequest: schemas.Ptr(0.01)}, nil)
+		u := resolveUsage(&schemas.GenericUsageConfig{TotalTokensPath: "usage.total_tokens", UnitsMeasure: schemas.GenericUnitsBodyChars, CostPerUnit: schemas.Ptr(1.0), CostPerRequest: schemas.Ptr(0.01)}, nil)
 		observe := u.streamObserver(usageFields{})
 		got := observe([]byte(`{"usage":{"total_tokens":3}}`))
 		require.NotNil(t, got)
@@ -388,4 +398,32 @@ func TestBuildReportsMappingCharge(t *testing.T) {
 	free := resolveUsage(&schemas.GenericUsageConfig{}, nil).build(usageFields{})
 	require.NotNil(t, free.MappingCharge, "a zero charge is still reported")
 	assert.Zero(t, *free.MappingCharge)
+}
+
+// The model is read where the mapping says: a body field by default, or a query parameter
+// (Deepgram's ?model=nova-3). A parameter named twice is refused like a key named twice.
+func TestReadRequestModel(t *testing.T) {
+	body := []byte(`{"model_id":"eleven_multilingual_v2"}`)
+	got, err := ReadRequestModel("", body, "application/json", "model=nova-3", "model_id")
+	require.NoError(t, err)
+	assert.Equal(t, "eleven_multilingual_v2", got, "body is the default source")
+
+	got, err = ReadRequestModel(schemas.GenericModelFromQuery, body, "application/json", "model=nova-3&language=en", "model")
+	require.NoError(t, err)
+	assert.Equal(t, "nova-3", got)
+
+	got, err = ReadRequestModel(schemas.GenericModelFromQuery, nil, "", "model=nova%2D3", "model")
+	require.NoError(t, err)
+	assert.Equal(t, "nova-3", got, "the value is unescaped")
+
+	got, err = ReadRequestModel(schemas.GenericModelFromQuery, nil, "", "language=en", "model")
+	require.NoError(t, err)
+	assert.Empty(t, got)
+
+	_, err = ReadRequestModel(schemas.GenericModelFromQuery, nil, "", "model=a&model=b", "model")
+	require.Error(t, err, "a model named twice in the query is refused")
+
+	got, err = ReadRequestModel(schemas.GenericModelFromQuery, nil, "", "model=nova-3", "")
+	require.NoError(t, err)
+	assert.Empty(t, got, "no path reads nothing")
 }

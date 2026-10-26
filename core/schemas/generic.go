@@ -67,6 +67,14 @@ type GenericAWSAuthConfig struct {
 	Service string `json:"service"` // SigV4 signing name, e.g. textract, translate
 }
 
+// GenericModelSource names where in the caller's request the model is read.
+type GenericModelSource string
+
+const (
+	GenericModelFromBody  GenericModelSource = "body"  // default: a JSON field of the request body (model, model_id)
+	GenericModelFromQuery GenericModelSource = "query" // a query parameter (Deepgram's ?model=nova-3)
+)
+
 // GenericUnitsSource names the body a billable quantity is read from.
 type GenericUnitsSource string
 
@@ -86,21 +94,21 @@ const (
 )
 
 // GenericUsageConfig maps a relayed request/response onto usage and cost. Paths are gjson paths;
-// an empty path keeps the optimistic default for that field.
+// an empty path reads nothing: only the fields a mapping names are read.
 type GenericUsageConfig struct {
-	ModelPath                string              `json:"model_path,omitempty"`         // request body path for the model (default "model")
-	InputTokensPath          string              `json:"input_tokens_path,omitempty"`  // response body path for input tokens
-	OutputTokensPath         string              `json:"output_tokens_path,omitempty"` // response body path for output tokens
-	TotalTokensPath          string              `json:"total_tokens_path,omitempty"`  // response body path for total tokens
-	CostPath                 string              `json:"cost_path,omitempty"`          // response body path for a provider-reported cost (arrays are summed)
-	CostPerRequest           *float64            `json:"cost_per_request,omitempty"`   // flat USD fee added to every billable call; a route may set 0 to waive the provider fee
-	UnitsPath                string              `json:"units_path,omitempty"`         // path of the billable quantity (pages, credits, text)
-	UnitsSource              GenericUnitsSource  `json:"units_source,omitempty"`       // response (default) or request
-	UnitsMeasure             GenericUnitsMeasure `json:"units_measure,omitempty"`      // value (default), chars, body_bytes or body_chars
-	CostPerUnit              *float64            `json:"cost_per_unit,omitempty"`      // USD per unit; cost += units * cost_per_unit
-	UnitsBlockSize           *float64            `json:"units_block_size,omitempty"`   // bill per started block of this many raw units (100 characters); default 1, exact
-	UnitsMinimum             *float64            `json:"units_minimum,omitempty"`      // least number of billed units once a quantity was read; default 0
-	DisableOptimisticParsing bool                `json:"disable_optimistic_parsing"`   // only the configured paths are read
+	ModelPath        string              `json:"model_path,omitempty"`         // where the model is read: a request body path, or a query parameter with model_source query
+	ModelSource      GenericModelSource  `json:"model_source,omitempty"`       // body (default) or query
+	InputTokensPath  string              `json:"input_tokens_path,omitempty"`  // response body path for input tokens
+	OutputTokensPath string              `json:"output_tokens_path,omitempty"` // response body path for output tokens
+	TotalTokensPath  string              `json:"total_tokens_path,omitempty"`  // response body path for total tokens
+	CostPath         string              `json:"cost_path,omitempty"`          // response body path for a provider-reported cost (arrays are summed)
+	CostPerRequest   *float64            `json:"cost_per_request,omitempty"`   // flat USD fee added to every billable call; a route may set 0 to waive the provider fee
+	UnitsPath        string              `json:"units_path,omitempty"`         // path of the billable quantity (pages, credits, text)
+	UnitsSource      GenericUnitsSource  `json:"units_source,omitempty"`       // response (default) or request
+	UnitsMeasure     GenericUnitsMeasure `json:"units_measure,omitempty"`      // value (default), chars, body_bytes or body_chars
+	CostPerUnit      *float64            `json:"cost_per_unit,omitempty"`      // USD per unit; cost += units * cost_per_unit
+	UnitsBlockSize   *float64            `json:"units_block_size,omitempty"`   // bill per started block of this many raw units (100 characters); default 1, exact
+	UnitsMinimum     *float64            `json:"units_minimum,omitempty"`      // least number of billed units once a quantity was read; default 0
 }
 
 // GenericStreamingConfig decides which relayed requests are served as streams.
@@ -382,6 +390,11 @@ func (u *GenericUsageConfig) validate(field string, base *GenericUsageConfig) er
 	}
 	if u.UnitsMinimum != nil && *u.UnitsMinimum < 0 {
 		return fmt.Errorf("%s.units_minimum must not be negative", field)
+	}
+	switch u.ModelSource {
+	case "", GenericModelFromBody, GenericModelFromQuery:
+	default:
+		return fmt.Errorf("%s.model_source: unsupported value %q", field, u.ModelSource)
 	}
 	switch u.UnitsSource {
 	case "", GenericUnitsFromResponse, GenericUnitsFromRequest:

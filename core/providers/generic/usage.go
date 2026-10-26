@@ -3,22 +3,13 @@ package generic
 import (
 	"errors"
 	"math"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
-)
-
-// Optimistic paths tried, in order, when the mapping leaves a field unset. They cover the
-// OpenAI and Anthropic shapes most APIs borrow. Cost is only read from a usage block: a root
-// "cost" is as likely to be a product price as a bill.
-var (
-	optimisticInputTokenPaths  = []string{"usage.prompt_tokens", "usage.input_tokens"}
-	optimisticOutputTokenPaths = []string{"usage.completion_tokens", "usage.output_tokens"}
-	optimisticTotalTokenPaths  = []string{"usage.total_tokens"}
-	optimisticCostPaths        = []string{"usage.cost"}
 )
 
 // isJSONContentType reports whether a body is worth scanning for usage. Any JSON-derived media
@@ -44,43 +35,27 @@ func (u resolvedUsage) tokensConfigured() bool {
 	return u.inputTokensPath != "" || u.outputTokensPath != "" || u.totalTokensPath != ""
 }
 
-// tokenPaths returns the configured path for a token field, or the optimistic candidates when the
-// mapping names no token path at all.
-func (u resolvedUsage) tokenPaths(configured string, optimistic []string) []string {
+// tokenPaths returns the configured path for a token field, or nothing: only mapped fields are
+// read, since a non-LLM API's reply can carry token-like names that mean something else.
+func (u resolvedUsage) tokenPaths(configured string) []string {
 	if configured != "" {
 		return []string{configured}
 	}
-	if u.optimistic && !u.tokensConfigured() {
-		return optimistic
-	}
 	return nil
 }
 
-// costPaths returns the configured cost path or the optimistic candidates, or nothing when the
-// provider ignores upstream-reported cost.
+// costPaths returns the configured cost path, or nothing when none is set or the provider ignores
+// upstream-reported cost.
 func (u resolvedUsage) costPaths() []string {
-	if u.ignoreUpstreamCost {
+	if u.ignoreUpstreamCost || u.costPath == "" {
 		return nil
 	}
-	if u.costPath != "" {
-		return []string{u.costPath}
-	}
-	if u.optimistic {
-		return optimisticCostPaths
-	}
-	return nil
+	return []string{u.costPath}
 }
 
-// effectiveModelPath is the request body path the model is read from: the mapping's, else the
-// optimistic default, else nothing when optimistic parsing is off.
+// effectiveModelPath is where the model is read from: the mapping's path, or nothing when unset.
 func (u resolvedUsage) effectiveModelPath() string {
-	if u.modelPath != "" {
-		return u.modelPath
-	}
-	if u.optimistic {
-		return "model"
-	}
-	return ""
+	return u.modelPath
 }
 
 // firstNumber reads the first non-negative number found at paths. Negative values are treated
@@ -295,9 +270,9 @@ func (u resolvedUsage) parse(contentType string, body []byte) usageFields {
 	if len(body) == 0 || !looksJSON(contentType, body) {
 		return f
 	}
-	f.input, f.hasInput = firstNumber(body, u.tokenPaths(u.inputTokensPath, optimisticInputTokenPaths))
-	f.output, f.hasOutput = firstNumber(body, u.tokenPaths(u.outputTokensPath, optimisticOutputTokenPaths))
-	f.total, f.hasTotal = firstNumber(body, u.tokenPaths(u.totalTokensPath, optimisticTotalTokenPaths))
+	f.input, f.hasInput = firstNumber(body, u.tokenPaths(u.inputTokensPath))
+	f.output, f.hasOutput = firstNumber(body, u.tokenPaths(u.outputTokensPath))
+	f.total, f.hasTotal = firstNumber(body, u.tokenPaths(u.totalTokensPath))
 	f.cost, f.hasCost = firstCost(body, u.costPaths())
 	return f
 }
@@ -361,8 +336,8 @@ func extractUsage(u resolvedUsage, contentType string, body []byte, initial usag
 	return u.build(f)
 }
 
-// hasUsageEvent is the cheap gate for streams: only events that carry one of the mapped (or
-// optimistic) fields are fully parsed.
+// hasUsageEvent is the cheap gate for streams: only events that carry one of the mapped fields are
+// fully parsed.
 func (u resolvedUsage) hasUsageEvent(event []byte) bool {
 	for _, p := range u.eventPaths {
 		if providerUtils.GetJSONField(event, p).Exists() {
@@ -377,9 +352,9 @@ func (u resolvedUsage) hasUsageEvent(event []byte) bool {
 // rather than per SSE event.
 func (u resolvedUsage) collectEventPaths() []string {
 	var paths []string
-	paths = append(paths, u.tokenPaths(u.totalTokensPath, optimisticTotalTokenPaths)...)
-	paths = append(paths, u.tokenPaths(u.inputTokensPath, optimisticInputTokenPaths)...)
-	paths = append(paths, u.tokenPaths(u.outputTokensPath, optimisticOutputTokenPaths)...)
+	paths = append(paths, u.tokenPaths(u.totalTokensPath)...)
+	paths = append(paths, u.tokenPaths(u.inputTokensPath)...)
+	paths = append(paths, u.tokenPaths(u.outputTokensPath)...)
 	paths = append(paths, u.costPaths()...)
 	if u.billsUnits() && u.unitsSource == schemas.GenericUnitsFromResponse && u.unitsPath != "" {
 		paths = append(paths, u.unitsPath)
@@ -458,6 +433,31 @@ func (u resolvedUsage) defaultUsage(initial usageFields) *schemas.BifrostPassthr
 // upstream run another. Every object along a plain dotted path is checked; a path using gjson
 // escapes, wildcards or modifiers is checked at no level. A lone case variant ("Model") is no
 // model, which a model-restricted virtual key refuses anyway, so PascalCase APIs keep working.
+// ReadRequestModel reads the model where the mapping says it is: a query parameter of the raw query
+// with source query, else a field of the JSON body (ReadModel). A query naming the parameter twice
+// is refused like a body naming the key twice: governance and the upstream could read different
+// values.
+func ReadRequestModel(source schemas.GenericModelSource, body []byte, contentType, rawQuery, modelPath string) (string, error) {
+	if source != schemas.GenericModelFromQuery {
+		return ReadModel(body, contentType, modelPath)
+	}
+	if modelPath == "" || rawQuery == "" {
+		return "", nil
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return "", nil
+	}
+	switch got := values[modelPath]; len(got) {
+	case 0:
+		return "", nil
+	case 1:
+		return strings.TrimSpace(got[0]), nil
+	default:
+		return "", errors.New("passthrough request query must carry the model parameter at most once (" + modelPath + ")")
+	}
+}
+
 func ReadModel(body []byte, contentType, modelPath string) (string, error) {
 	if modelPath == "" || len(body) == 0 || !looksJSON(contentType, body) {
 		return "", nil
