@@ -282474,6 +282474,517 @@
           }
         }
       ]
+    },
+    {
+      "name": "275. Developer role and mid-conversation system message placement (PR #8884)",
+      "description": "PR #8884 makes the OpenAI-compatible request converters honor two datasheet capabilities on both /v1/chat/completions and /v1/responses. supports_developer_role=false sends developer messages as system: Cerebras qwen-3.8-27b fails a developer turn with 'Unexpected message role' from its chat template, and Mistral's API rejects the role outright with a 422. supports_mid_conversation_system_messages=false turns every system/developer message after the leading run into a user turn wrapped in <system-reminder>: Fireworks qwen3p8-max fails with 'System message must be at the beginning.' otherwise, which is what breaks Codex when it injects developer turns mid-session. The /v1/responses path for Mistral and Cerebras already sends developer as system through the Responses-to-Chat conversion, so the developer-role cases pin the chat path. Each case asserts the body Bifrost sent upstream (extra_fields.raw_request). Guards use models whose datasheet rows set neither flag (cerebras gpt-oss-120b, fireworks kimi-k3) and pin that nothing is rewritten for them. Prerequisite: the datasheet rows cerebras/qwen-3.8-27b and mistral/mistral-small-latest (supports_developer_role=false) and fireworks_ai/accounts/fireworks/models/qwen3p8-max (supports_mid_conversation_system_messages=false); without them the 275.1-275.3 and 275.5-275.7 cases stay red even with the fix.",
+      "item": [
+        {
+          "name": "275.1 cerebras/qwen-3.8-27b /v1/chat/completions developer message is sent as system (developer-role-system)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest() {",
+                  "  var body = pm.response.json();",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  return rr;",
+                  "}",
+                  "pm.test('developer-role request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('developer reaches Cerebras as system', function () {",
+                  "  var rr = rawRequest();",
+                  "  pm.expect(rr.messages[0].role, 'upstream messages: ' + JSON.stringify(rr.messages)).to.equal('system');",
+                  "  pm.expect(rr.messages[1].role).to.equal('user');",
+                  "});",
+                  "pm.test('reply carries text', function () {",
+                  "  var c = pm.response.json().choices;",
+                  "  pm.expect(c, 'choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cerebras/qwen-3.8-27b\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"Reply with exactly the word OK.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.2 mistral/mistral-small-latest /v1/chat/completions developer message is sent as system (developer-role-system)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest() {",
+                  "  var body = pm.response.json();",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  return rr;",
+                  "}",
+                  "pm.test('developer-role request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('developer reaches Mistral as system', function () {",
+                  "  var rr = rawRequest();",
+                  "  pm.expect(rr.messages[0].role, 'upstream messages: ' + JSON.stringify(rr.messages)).to.equal('system');",
+                  "  pm.expect(rr.messages[1].role).to.equal('user');",
+                  "});",
+                  "pm.test('reply carries text', function () {",
+                  "  var c = pm.response.json().choices;",
+                  "  pm.expect(c, 'choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"mistral/mistral-small-latest\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"Reply with exactly the word OK.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.3 mistral/mistral-small-latest /v1/chat/completions stream developer message is accepted (developer-role-system)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('developer-role stream succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('stream completes without an error event', function () {",
+                  "  pm.expect(text, 'stream: ' + text).to.include('[DONE]');",
+                  "  pm.expect(text, 'stream: ' + text).to.include('\"delta\"');",
+                  "  pm.expect(text, 'stream carried an error: ' + text).to.not.match(/\"error\"\\s*:\\s*\\{/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"mistral/mistral-small-latest\",\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"Reply with exactly the word OK.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.4 cerebras/gpt-oss-120b /v1/chat/completions developer message is forwarded unchanged when the datasheet is silent (developer-role-system)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest() {",
+                  "  var body = pm.response.json();",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  return rr;",
+                  "}",
+                  "pm.test('developer-role request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('developer is not rewritten for a model without the flag', function () {",
+                  "  var rr = rawRequest();",
+                  "  pm.expect(rr.messages[0].role, 'upstream messages: ' + JSON.stringify(rr.messages)).to.equal('developer');",
+                  "  pm.expect(rr.messages[1].role).to.equal('user');",
+                  "});",
+                  "pm.test('reply carries text', function () {",
+                  "  var c = pm.response.json().choices;",
+                  "  pm.expect(c, 'choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cerebras/gpt-oss-120b\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"Reply with exactly the word OK.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.5 fireworks/qwen3p8-max /v1/chat/completions mid-conversation developer is inlined as a system-reminder user turn (mid-conversation inline)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest() {",
+                  "  var body = pm.response.json();",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  return rr;",
+                  "}",
+                  "pm.test('mid-conversation request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('upstream keeps the leading system and inlines the mid-conversation developer', function () {",
+                  "  var items = rawRequest().messages;",
+                  "  var dump = JSON.stringify(items);",
+                  "  pm.expect(items, 'upstream messages: ' + dump).to.be.an('array').with.lengthOf(5);",
+                  "  pm.expect(items[0].role, 'leading system kept: ' + dump).to.equal('system');",
+                  "  pm.expect(items[3].role, 'mid-conversation developer inlined as user: ' + dump).to.equal('user');",
+                  "  pm.expect(JSON.stringify(items[3].content), dump).to.include('<system-reminder>').and.to.include('Answer in French.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"fireworks/accounts/fireworks/models/qwen3p8-max\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are terse.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"developer\",\n      \"content\": \"Answer in French.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"how are you?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.6 fireworks/qwen3p8-max /v1/responses mid-conversation developer is inlined as a system-reminder user turn (mid-conversation inline)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest() {",
+                  "  var body = pm.response.json();",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  return rr;",
+                  "}",
+                  "pm.test('mid-conversation request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('upstream keeps the leading system and inlines the mid-conversation developer', function () {",
+                  "  var items = rawRequest().input;",
+                  "  var dump = JSON.stringify(items);",
+                  "  pm.expect(items, 'upstream input: ' + dump).to.be.an('array').with.lengthOf(5);",
+                  "  pm.expect(items[0].role, 'leading system kept: ' + dump).to.equal('system');",
+                  "  pm.expect(items[3].role, 'mid-conversation developer inlined as user: ' + dump).to.equal('user');",
+                  "  pm.expect(JSON.stringify(items[3].content), dump).to.include('<system-reminder>').and.to.include('Answer in French.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"fireworks/accounts/fireworks/models/qwen3p8-max\",\n  \"max_output_tokens\": 32,\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are terse.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"developer\",\n      \"content\": \"Answer in French.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"how are you?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.7 fireworks/qwen3p8-max /openai/v1/responses stream Codex-style mid-conversation developer completes (mid-conversation inline)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('mid-conversation stream succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('stream completes instead of failing on the chat template', function () {",
+                  "  var events = text.split('\\n').filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) {",
+                  "    try { return JSON.parse(l.slice(5).trim()); } catch (e) { return null; }",
+                  "  }).filter(function (e) { return e && e.type; });",
+                  "  var errors = events.filter(function (e) { return e.type === 'error' || e.type === 'response.failed'; });",
+                  "  pm.expect(errors.length, 'stream error event: ' + text).to.equal(0);",
+                  "  var terminal = events.filter(function (e) { return e.type === 'response.completed' || e.type === 'response.incomplete'; }).pop();",
+                  "  pm.expect(terminal, 'no terminal event: ' + text).to.be.an('object');",
+                  "  if (terminal.type === 'response.incomplete') {",
+                  "    var reason = terminal.response && terminal.response.incomplete_details && terminal.response.incomplete_details.reason;",
+                  "    pm.expect(reason, 'incomplete for a reason other than the output budget: ' + text).to.equal('max_output_tokens');",
+                  "  }",
+                  "  pm.expect(text, 'template error leaked: ' + text).to.not.include('System message must be at the beginning');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"fireworks/accounts/fireworks/models/qwen3p8-max\",\n  \"max_output_tokens\": 32,\n  \"stream\": true,\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are terse.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"developer\",\n      \"content\": \"Answer in French.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"how are you?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "275.8 fireworks/kimi-k3 /v1/chat/completions mid-conversation developer is forwarded unchanged when the datasheet is silent (mid-conversation inline)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function rawRequest() {",
+                  "  var body = pm.response.json();",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  return rr;",
+                  "}",
+                  "pm.test('mid-conversation request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('mid-conversation developer is not inlined for a model without the flag', function () {",
+                  "  var items = rawRequest().messages;",
+                  "  var dump = JSON.stringify(items);",
+                  "  pm.expect(items, 'upstream messages: ' + dump).to.be.an('array').with.lengthOf(5);",
+                  "  pm.expect(items[0].role, 'leading system kept: ' + dump).to.equal('system');",
+                  "  pm.expect(items[3].role, 'mid-conversation developer forwarded unchanged: ' + dump).to.equal('developer');",
+                  "  pm.expect(JSON.stringify(items[3].content), dump).to.not.include('<system-reminder>');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"fireworks/accounts/fireworks/models/kimi-k3\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are terse.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"OK\"\n    },\n    {\n      \"role\": \"developer\",\n      \"content\": \"Answer in French.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"how are you?\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
