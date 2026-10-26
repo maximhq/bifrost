@@ -42,6 +42,7 @@ var genericAWSServiceRe = regexp.MustCompile(`^[a-z0-9-]+$`)
 // IsSensitiveHeader they are the names whose caller value never reaches the upstream.
 var genericUnmatchableHeaders = map[string]struct{}{
 	"host": {}, "connection": {}, "transfer-encoding": {}, "accept-encoding": {}, "x-goog-api-key": {},
+	"keep-alive": {}, "te": {}, "trailer": {}, "upgrade": {}, "proxy-connection": {}, "proxy-authenticate": {}, // hop-by-hop: the transport drops them before the routes are consulted
 	"ocp-apim-subscription-key": {}, "subscription-key": {}, "x-functions-key": {},
 	"content-length": {}, // the relay sends the body's real length, never the caller's
 }
