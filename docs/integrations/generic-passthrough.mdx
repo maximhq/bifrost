@@ -96,7 +96,7 @@ curl -X POST http://localhost:8080/api/providers/tavily/keys \
       "custom_provider_config": {
         "base_provider_type": "generic",
         "generic_config": {
-          "auth": { "type": "aws_sigv4", "aws": { "service": "textract", "region": "us-east-1" } },
+          "auth": { "type": "aws_sigv4", "aws": { "service": "textract" } },
           "usage": { "units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.0015 },
           "strict_routes": true,
           "routes": [
@@ -148,7 +148,6 @@ Key names are unique across all providers, so give each provider's key its own n
 | `value_prefix` | `header` | Literal prefix placed before the key value, e.g. `Token ` |
 | `query_param` | `query` | Query parameter that carries the key, e.g. `api_key` |
 | `aws.service` | `aws_sigv4` | SigV4 signing name, e.g. `textract`, `translate`, `execute-api` |
-| `aws.region` | `aws_sigv4` | AWS region; config.json only, the dashboard leaves it empty. When empty, each key's `bedrock_key_config.region` is used |
 
 - `bearer` sends `Authorization: Bearer <key>`; `basic` sends `Authorization: Basic base64(<key>)` where the key value is `user:password`.
 - `aws_sigv4` signs the request with the key's `bedrock_key_config` credentials (static keys, an assumed role, or the default AWS credential chain when the key holds none). Caller signature headers (`x-amz-date`, `x-amz-security-token`, `x-amz-content-sha256`, ...) are dropped before signing; operation headers such as `X-Amz-Target` are kept.

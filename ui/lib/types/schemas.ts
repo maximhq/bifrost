@@ -1257,7 +1257,6 @@ export const genericAuthConfigSchema = z
 		aws: z
 			.object({
 				service: z.string().trim().optional(),
-				region: z.string().trim().optional(),
 			})
 			.optional(),
 	})

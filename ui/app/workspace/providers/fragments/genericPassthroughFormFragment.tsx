@@ -105,7 +105,7 @@ function toFormValues(cfg: GenericProviderConfig | undefined, allowed?: AllowedR
 			header_name: cfg?.auth?.header_name ?? "",
 			query_param: cfg?.auth?.query_param ?? "",
 			value_prefix: cfg?.auth?.value_prefix ?? "",
-			aws: { service: cfg?.auth?.aws?.service ?? "", region: cfg?.auth?.aws?.region ?? "" },
+			aws: { service: cfg?.auth?.aws?.service ?? "" },
 		},
 		usage: { ...emptyUsage, ...(cfg?.usage ?? {}) },
 		streaming: {
@@ -160,7 +160,7 @@ function toConfig(values: FormValues): GenericProviderConfig {
 			type: auth.type,
 			...(auth.type === "header" ? { header_name: auth.header_name, value_prefix: auth.value_prefix || undefined } : {}),
 			...(auth.type === "query" ? { query_param: auth.query_param } : {}),
-			...(auth.type === "aws_sigv4" ? { aws: { service: auth.aws?.service ?? "", region: auth.aws?.region || undefined } } : {}),
+			...(auth.type === "aws_sigv4" ? { aws: { service: auth.aws?.service ?? "" } } : {}),
 		},
 	};
 	const usage = cleanUsage(values.usage);

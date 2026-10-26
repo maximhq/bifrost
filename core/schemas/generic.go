@@ -61,10 +61,10 @@ type GenericAuthConfig struct {
 	AWS         *GenericAWSAuthConfig `json:"aws,omitempty"`          // aws_sigv4 settings
 }
 
-// GenericAWSAuthConfig names the AWS service a SigV4-signed relay targets.
+// GenericAWSAuthConfig names the AWS service a SigV4-signed relay targets. The signing region
+// is the key's bedrock_key_config.region.
 type GenericAWSAuthConfig struct {
-	Service string `json:"service"`          // SigV4 signing name, e.g. textract, translate
-	Region  string `json:"region,omitempty"` // falls back to the key's bedrock_key_config.region
+	Service string `json:"service"` // SigV4 signing name, e.g. textract, translate
 }
 
 // GenericUnitsSource names the body a billable quantity is read from.

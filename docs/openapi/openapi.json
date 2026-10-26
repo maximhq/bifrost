@@ -128314,11 +128314,7 @@
                         "properties": {
                           "service": {
                             "type": "string",
-                            "description": "SigV4 signing name, e.g. textract"
-                          },
-                          "region": {
-                            "type": "string",
-                            "description": "Falls back to the key's bedrock_key_config.region"
+                            "description": "SigV4 signing name, e.g. textract. Requests are signed for the key's bedrock_key_config.region"
                           }
                         }
                       }
@@ -129029,11 +129025,7 @@
                         "properties": {
                           "service": {
                             "type": "string",
-                            "description": "SigV4 signing name, e.g. textract"
-                          },
-                          "region": {
-                            "type": "string",
-                            "description": "Falls back to the key's bedrock_key_config.region"
+                            "description": "SigV4 signing name, e.g. textract. Requests are signed for the key's bedrock_key_config.region"
                           }
                         }
                       }
@@ -129702,11 +129694,7 @@
                         "properties": {
                           "service": {
                             "type": "string",
-                            "description": "SigV4 signing name, e.g. textract"
-                          },
-                          "region": {
-                            "type": "string",
-                            "description": "Falls back to the key's bedrock_key_config.region"
+                            "description": "SigV4 signing name, e.g. textract. Requests are signed for the key's bedrock_key_config.region"
                           }
                         }
                       }

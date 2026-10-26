@@ -112,17 +112,14 @@ func (provider *GenericProvider) applyAuth(ctx *schemas.BifrostContext, httpReq 
 var sigv4CallerHeaders = []string{"X-Amz-Date", "X-Amz-Security-Token", "X-Amz-Content-Sha256", "X-Amz-Credential", "X-Amz-Signature", "X-Amz-Algorithm", "X-Amz-Signedheaders", "X-Amz-Expires"}
 
 // signAWSRequest SigV4-signs the request with the key's bedrock_key_config credentials for the
-// configured service. The region comes from auth.aws.region, else the key's region.
+// configured service, for the key's region.
 func (provider *GenericProvider) signAWSRequest(ctx *schemas.BifrostContext, httpReq *http.Request, key schemas.Key) *schemas.BifrostError {
 	region := ""
-	if provider.cfg.Auth.AWS != nil {
-		region = provider.cfg.Auth.AWS.Region
-	}
-	if region == "" && key.BedrockKeyConfig != nil && key.BedrockKeyConfig.Region != nil {
+	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.Region != nil {
 		region = key.BedrockKeyConfig.Region.GetValue()
 	}
 	if region == "" {
-		return providerUtils.NewBifrostBadRequestError("aws_sigv4 auth needs a region: set generic_config.auth.aws.region or the key's bedrock_key_config.region")
+		return providerUtils.NewBifrostBadRequestError("aws_sigv4 auth needs a region: set the key's bedrock_key_config.region")
 	}
 	for _, name := range sigv4CallerHeaders {
 		httpReq.Header.Del(name)

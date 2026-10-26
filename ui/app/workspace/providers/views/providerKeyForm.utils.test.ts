@@ -1,14 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { modelProviderKeySchema } from "@/lib/types/schemas";
-
-import {
-	applyAuthMethod,
-	keepKeyRegion,
-	stripDatabricksAuthDiscriminator,
-	stripOAuthAuthDiscriminator,
-	withProviderRegion,
-} from "./providerKeyForm.utils";
+import { applyAuthMethod, stripDatabricksAuthDiscriminator, stripOAuthAuthDiscriminator } from "./providerKeyForm.utils";
 
 const pair = { client_id: { value: "sp-id" }, client_secret: { value: "sp-secret" } };
 const workspace_url = { value: "https://dbc-1234abcd-5678.cloud.databricks.com" };
@@ -190,34 +182,5 @@ describe("applyAuthMethod clears the static key for the other providers' tabs", 
 	it("leaves the value alone when no method was chosen", () => {
 		const out = applyAuthMethod({ name: "k", value: undefined, azure_key_config: { endpoint } }, true);
 		expect(out.value).toBeUndefined();
-	});
-});
-describe("generic SigV4 keys and the provider's region", () => {
-	const key = {
-		id: "k1",
-		name: "aws",
-		models: ["*"],
-		weight: 1,
-		enabled: true,
-		bedrock_key_config: {
-			_auth_type: "explicit" as const,
-			access_key: { value: "AKIA" },
-			secret_key: { value: "s" },
-			region: undefined as { value?: string } | undefined,
-		},
-	};
-
-	it("validates a key without its own region against the provider's, and saves it without one", () => {
-		expect(modelProviderKeySchema.safeParse(key).success, "a Bedrock key needs a region").toBe(false);
-		const checked = withProviderRegion({ key }, "us-east-1");
-		const parsed = modelProviderKeySchema.safeParse(checked.key);
-		expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
-		const saved = keepKeyRegion({ key: parsed.data as typeof key }, { key });
-		expect(saved.key.bedrock_key_config.region, "the borrowed region is not saved onto the key").toBeUndefined();
-	});
-
-	it("leaves a key that has its own region alone", () => {
-		const own = { key: { ...key, bedrock_key_config: { ...key.bedrock_key_config, region: { value: "eu-west-1" } } } };
-		expect(withProviderRegion(own, "us-east-1")).toBe(own);
 	});
 });

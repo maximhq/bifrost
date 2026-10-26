@@ -13550,11 +13550,7 @@
             "service": {
               "type": "string",
               "pattern": "^[a-z0-9-]+$",
-              "description": "SigV4 signing name, e.g. textract or translate"
-            },
-            "region": {
-              "type": "string",
-              "description": "AWS region; falls back to the key's bedrock_key_config.region"
+              "description": "SigV4 signing name, e.g. textract or translate. Requests are signed for the key's bedrock_key_config.region"
             }
           },
           "required": [

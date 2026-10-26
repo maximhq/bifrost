@@ -578,7 +578,7 @@ export interface GenericAuthConfig {
 	header_name?: string;
 	query_param?: string;
 	value_prefix?: string;
-	aws?: { service: string; region?: string };
+	aws?: { service: string };
 }
 
 export type GenericUnitsSource = "response" | "request";

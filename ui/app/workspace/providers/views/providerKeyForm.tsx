@@ -9,13 +9,13 @@ import { modelProviderKeySchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Save } from "lucide-react";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
 import { ApiKeyFormFragment } from "../fragments";
-import { applyAuthMethod, keepKeyRegion, withProviderRegion } from "./providerKeyForm.utils";
+import { applyAuthMethod } from "./providerKeyForm.utils";
 // keyFormBaseProviderType picks the credential UI for a key. A generic relay that signs with
 // AWS SigV4 holds its credentials in bedrock_key_config, so it borrows the Bedrock credential
 // fields; every other generic auth type carries a plain key value.
@@ -50,21 +50,7 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 	const isEditing = keyId !== null;
 	const currentKey = keyId ? keys.find((k) => k.id === keyId) : undefined;
 
-	// A generic SigV4 provider that names its own region signs with it when a key has none, so such
-	// a key is valid without a region of its own; it is validated with the provider's and saved as
-	// entered.
-	const cpc = provider.custom_provider_config;
-	const providerRegion = cpc?.base_provider_type === "generic" ? cpc.generic_config?.auth?.aws?.region?.trim() : undefined;
-	const resolver = useMemo(() => {
-		const base = zodResolver(providerKeyFormSchema);
-		if (!providerRegion) return base;
-		const withFallback: typeof base = async (values, context, options) => {
-			const result = await base(withProviderRegion(values, providerRegion), context, options);
-			if (Object.keys(result.errors).length > 0) return result;
-			return { ...result, values: keepKeyRegion(result.values, values) };
-		};
-		return withFallback;
-	}, [providerRegion]);
+	const resolver = zodResolver(providerKeyFormSchema);
 
 	const form = useForm({
 		resolver,

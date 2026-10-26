@@ -64,7 +64,7 @@ const DEFAULT_GENERIC_AUTH = {
 	header_name: "",
 	query_param: "",
 	value_prefix: "",
-	aws: { service: "", region: "" },
+	aws: { service: "" },
 };
 
 const formSchema = z
@@ -141,7 +141,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 							type: auth.type,
 							...(auth.type === "header" ? { header_name: auth.header_name, value_prefix: auth.value_prefix || undefined } : {}),
 							...(auth.type === "query" ? { query_param: auth.query_param } : {}),
-							...(auth.type === "aws_sigv4" ? { aws: { service: auth.aws?.service ?? "", region: auth.aws?.region || undefined } } : {}),
+							...(auth.type === "aws_sigv4" ? { aws: { service: auth.aws?.service ?? "" } } : {}),
 						},
 					},
 				}
