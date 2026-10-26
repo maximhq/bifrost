@@ -50,6 +50,18 @@ folder_selected() {
     return 1
 }
 
+cache_checks_selected() {
+    [ ${#FOLDERS[@]} -eq 0 ] && return 0
+    local f
+    for f in "${FOLDERS[@]}"; do
+        case "$f" in
+            "Setup: clear providers"|"P: preconditions and providers"|"Teardown") ;;
+            *) return 0 ;;
+        esac
+    done
+    return 1
+}
+
 # Every provider the collection creates a key for. A missing one fails the run up front rather
 # than letting the rows that need it fail one by one.
 REQUIRED_ENV=(OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY COHERE_API_KEY OPENROUTER_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION)
@@ -98,6 +110,11 @@ case "$STORE" in
     both) STORES=(redis weaviate) ;;
     *) echo -e "${RED}Error: --store must be redis, weaviate or both${NC}"; exit 1 ;;
 esac
+
+if [[ " ${STORES[*]} " == *" redis "* ]] && cache_checks_selected && ! command -v redis-cli &>/dev/null; then
+    echo -e "${RED}Error: redis-cli is required to verify native cache expiry${NC}"
+    exit 1
+fi
 
 if ! command -v newman &>/dev/null; then
     echo -e "${RED}Error: Newman is not installed${NC}"
@@ -271,6 +288,30 @@ for i in "${!STORES[@]}"; do
     echo ""
     echo -e "${YELLOW}========== $store ==========${NC}"
     cat "$report_dir/newman.log"
+    if [ $rc -eq 0 ] && [ "$store" = redis ] && cache_checks_selected; then
+        # Scope SCAN to this invocation's namespaces, never other tenants' data.
+        # Existing H/S TTL requests alone cannot detect persistent expired hashes.
+        require_expired_probe=false
+        if [ ${#FOLDERS[@]} -eq 0 ] || folder_selected "H: per-request headers"; then
+            require_expired_probe=true
+        fi
+        if ! node --input-type=module - "$REDIS_ADDR" "$RUN_SEED" "$report_dir/newman.log" "$require_expired_probe" > "$report_dir/redis-expiry.log" 2>&1 <<'JS'
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { verifyRedisExpiry } from "./runners/lib/semantic-cache-wiring.mjs";
+const [addr, seed, logPath, requireProbe] = process.argv.slice(2);
+const expiredKeys = [...readFileSync(logPath, "utf8").matchAll(/SCW_EXPIRED_CACHE_KEY=(Scw[A-Za-z0-9]+:[A-Za-z0-9-]+)/g)].map(match => match[1]);
+if (requireProbe === "true" && !expiredKeys.length) throw new Error("no H1 physical-expiry probe recorded");
+if (expiredKeys.some(key => !key.includes(seed))) throw new Error("expiry probe is outside this run's namespaces");
+const runRedis = (...args) => execFileSync("redis-cli", ["-u", `redis://${addr}`, "--raw", ...args], { encoding: "utf8", timeout: 10000 });
+const checked = verifyRedisExpiry(runRedis, `Scw*${seed}*:*`, expiredKeys);
+console.log(`Verified ${checked} matching native deadlines and ${expiredKeys.length} expired hashes without cache lookups.`);
+JS
+        then
+            rc=1
+        fi
+        cat "$report_dir/redis-expiry.log"
+    fi
     if [ $rc -eq 0 ]; then
         echo -e "${GREEN}✓ [$store] all semantic cache checks passed${NC}"
     else

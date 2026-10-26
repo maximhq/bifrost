@@ -874,7 +874,17 @@ docker compose -f ../../docker-compose.yml up -d redis-stack weaviate
 ```
 
 Reports land in `newman-reports/semantic-cache-wiring-<store>/`, with the server
-log next to a failed run's report. To change a scenario, edit
+log next to a failed run's report. Redis runs also require `redis-cli` and inspect
+only that run's cache namespaces for native key expiry after the HTTP checks;
+`redis-expiry.log` records the result. This catches hashes that have `expires_at`
+metadata but no native TTL, which hit-before/miss-after HTTP checks cannot detect.
+The H1 case observes a hit, waits beyond TTL, then calls only `/health`: the
+runner verifies its recorded key is gone without a matching cache lookup. It also
+checks surviving keys' `EXPIRETIME` agrees with `expires_at` and fails rather than
+reporting success if no retained entry was verified. Use a narrower cache scope
+if a very long run has let all its entries expire. Setup/P/Teardown-only runs do
+not perform the storage check.
+To change a scenario, edit
 `runners/build-semantic-cache-wiring.mjs` and regenerate:
 
 ```bash
