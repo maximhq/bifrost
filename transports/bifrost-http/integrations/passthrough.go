@@ -145,8 +145,8 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 }
 
 // NewChatGPTPassthroughRouter creates a passthrough router for /chatgpt_passthrough.
-// Restricted to the Codex responses endpoint only — this is not a general-purpose
-// ChatGPT backend proxy.
+// Restricted to the Codex responses endpoint and the model list Codex fetches at
+// startup — this is not a general-purpose ChatGPT backend proxy.
 func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider:    schemas.OpenAI,
@@ -161,6 +161,7 @@ func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 		},
 		AllowedRoutes: []PassthroughRoute{
 			{Method: fasthttp.MethodPost, Path: "/chatgpt_passthrough/backend-api/codex/responses"},
+			{Method: fasthttp.MethodGet, Path: "/chatgpt_passthrough/backend-api/codex/models"},
 		},
 	})
 }
