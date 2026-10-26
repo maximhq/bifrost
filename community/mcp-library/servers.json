@@ -2358,7 +2358,7 @@
     },
     {
       "name": "deed.page",
-      "description": "Static web hosting for agents, hosted remotely by deed.page. Publishes HTML or a folder of files to a public HTTPS URL (one subdomain per site), then updates, rolls back to an earlier version, or deletes it. No account or API key is needed: the first publish returns an owner token, which later calls pass as a tool argument or as an Authorization: Bearer <token> header. Everything published is public on the web.",
+      "description": "Static web hosting for agents, hosted remotely by deed.page. Publishes HTML or a folder of files to a public HTTPS URL (one subdomain per site), then updates, rolls back to an earlier version, or deletes it. No account or API key is needed: the first publish returns an owner token, which later calls pass as a tool argument or as an Authorization: Bearer <token> header. Published content is public by default; password protection is available.",
       "category": "Developer Tools",
       "connection_type": "http",
       "connection_url": "https://deed.page/mcp",
