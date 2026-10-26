@@ -92,6 +92,13 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 	errorParam := string(ctx.QueryArgs().Peek("error"))
 	errorDescription := string(ctx.QueryArgs().Peek("error_description"))
 
+	// RFC 9207: an error response is checked too, and on a mismatch nothing it says is acted on.
+	if err := h.oauthProvider.CheckAuthorizationResponseIssuer(ctx, state, string(ctx.QueryArgs().Peek("iss")), ctx.QueryArgs().Has("iss")); err != nil {
+		logger.Warn("[oauth] refused an authorization response: %v", err)
+		h.redirectCallbackFailure(ctx, state, "Authentication failed: the response did not come from this MCP server's authorization server.")
+		return
+	}
+
 	if errorParam != "" {
 		h.handleCallbackError(ctx, state, errorParam, errorDescription)
 		return
@@ -126,25 +133,17 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 	ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=success", fasthttp.StatusFound)
 }
 
-// handleCallbackError handles ?error= responses from upstream providers.
-// Marks the admin-mode flow row as failed (for admin UI's pending-setup
-// display), then redirects to the route that matches the originating flow:
-//   - admin-test popup flow → /workspace/mcp-registry/oauth-callback (posts a
-//     message to window.opener and closes itself)
-//   - per-user runtime flow → /workspace/mcp-sessions (full-page, no opener)
-//
-// Every flow — admin and per-user alike — shares one state-token namespace on
-// mcp_oauth_flows, so classifying by FlowMode on a single lookup replaces the
-// old two-step "does a row exist in oauth_configs, else assume per-user"
-// inference (oauth_configs no longer carries a state column at all). Only
-// the admin-mode row's status is written here: a per-user flow row is
-// deliberately left 'pending' on an upstream error/deny so the same link can
-// still be retried within its TTL, matching today's behavior for that path
-// (CompleteUserOAuthFlow's own expiry/failure handling covers the cases that
-// do need a per-user row mutated or removed). The upstream-supplied error
-// code/description is logged server-side; only a generic message reaches
-// the URL so provider error text doesn't leak into history / Referer.
+// handleCallbackError handles ?error= responses. The upstream error is only logged, so provider text
+// never reaches browser history or Referer.
 func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, errorParam, errorDescription string) {
+	// Don't log state (CSRF token, replayable while flow is alive).
+	logger.Warn("[oauth] upstream callback error: error=%s description=%s", errorParam, errorDescription)
+	h.redirectCallbackFailure(ctx, state, "Authentication was denied or failed. Please try again.")
+}
+
+// redirectCallbackFailure redirects to the failure page of the flow's origin, the admin popup or the
+// per-user sessions page. An admin flow is marked failed; a per-user one stays pending for a retry.
+func (h *OAuthHandler) redirectCallbackFailure(ctx *fasthttp.RequestCtx, state, userMsg string) {
 	isAdminTestFlow := false
 	if state != "" {
 		flow, err := h.store.ConfigStore.GetOauthUserSessionByState(ctx, state)
@@ -166,9 +165,6 @@ func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, erro
 			}
 		}
 	}
-	// Don't log state (CSRF token, replayable while flow is alive).
-	logger.Warn("[oauth] upstream callback error: error=%s description=%s", errorParam, errorDescription)
-	const userMsg = "Authentication was denied or failed. Please try again."
 	if isAdminTestFlow {
 		ctx.Redirect("/workspace/mcp-registry/oauth-callback?status=failed&error="+url.QueryEscape(userMsg), fasthttp.StatusFound)
 		return

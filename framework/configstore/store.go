@@ -751,6 +751,9 @@ type ConfigStore interface {
 	GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthFlow, error)
 	CreateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error
 	UpdateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error
+	// RecordOAuthFlowIssuer writes only a flow's expected issuer, while the flow is still pending with
+	// state; it reports whether the row matched.
+	RecordOAuthFlowIssuer(ctx context.Context, id, state, issuer string, issParameterSupported bool) (bool, error)
 
 	// Per-user OAuth token CRUD. These operate on the same TableMCPOauthToken /
 	// oauth_tokens rows as the shared-token methods above, scoped to
@@ -819,6 +822,9 @@ type ConfigStore interface {
 	// config changes behave identically from both entry points. Returns
 	// whether a rotation actually happened.
 	RotateMCPOAuthConfig(ctx context.Context, existingOauthConfig *tables.TableOauthConfig, fields MCPOAuthConfigFields) (bool, error)
+	// BindOAuthConfigIssuer writes only an oauth config's issuer binding, while its stored issuer and
+	// token_url are still the expected ones; it reports whether the row matched.
+	BindOAuthConfigIssuer(ctx context.Context, id, expectedIssuer, expectedTokenURL, issuer string, issParameterSupported bool) (bool, error)
 	// GetOauthUserTokenByID looks up a single per-user token row by primary
 	// key. Returns nil, nil when not found. Unlike GetOauthTokenByID above,
 	// this DOES filter to auth_mode IN ('user','vk','session'): the sessions

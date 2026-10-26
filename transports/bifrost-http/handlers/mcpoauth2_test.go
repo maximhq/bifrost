@@ -2,10 +2,15 @@ package handlers
 
 import (
 	"encoding/json"
+	"net/url"
 	"testing"
+	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,6 +80,56 @@ func BenchmarkClientMetadataDocument(b *testing.B) {
 				ctx.Response.Reset()
 				h.handleClientMetadataDocument(ctx)
 			}
+		})
+	}
+}
+
+// RFC 9207: the callback checks iss against the issuer the flow recorded before it acts on the
+// code or on an error, and on a mismatch acts on neither.
+func TestHandleOAuthCallback_ChecksIssuer(t *testing.T) {
+	const issuer = "https://auth.example.com"
+	const (
+		refused  = "did not come from"
+		denied   = "denied or failed"
+		redeemed = "OAuth authentication failed." // the code reached the (unreachable) token endpoint
+	)
+	for _, tc := range []struct {
+		name   string
+		query  string
+		wanted string
+	}{
+		{"matching iss", "code=c&iss=" + url.QueryEscape(issuer), redeemed},
+		{"another issuer", "code=c&iss=" + url.QueryEscape("https://attacker.example"), refused},
+		{"missing iss the server advertises", "code=c", refused},
+		{"error from the expected issuer", "error=access_denied&iss=" + url.QueryEscape(issuer), denied},
+		{"error from another issuer", "error=access_denied&iss=" + url.QueryEscape("https://attacker.example"), refused},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := newRealOAuth2Store(t)
+			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			h := NewOAuthHandler(provider, nil, &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider})
+			ctx := bgCtx()
+			require.NoError(t, store.CreateOauthConfig(ctx, &tables.TableOauthConfig{
+				ID: "cfg-1", ClientID: schemas.NewSecretVar("client"), AuthorizeURL: issuer + "/authorize", TokenURL: "http://127.0.0.1:1/token",
+				RedirectURI: "http://localhost:8080/api/oauth/callback", Status: "pending", Issuer: issuer, IssParameterSupported: true,
+			}))
+			require.NoError(t, store.CreateOauthUserSession(ctx, &tables.TableMCPOauthFlow{
+				ID: "flow-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1", State: "state-1", CodeVerifier: "verifier",
+				RedirectURI: "http://localhost:8080/api/oauth/callback", FlowMode: "admin", Status: "pending", ExpiresAt: time.Now().Add(time.Minute),
+				Issuer: issuer, IssParameterSupported: true,
+			}))
+
+			var req fasthttp.Request
+			req.SetRequestURI("/api/oauth/callback?state=state-1&" + tc.query)
+			callback := initCtx(&req)
+			h.handleOAuthCallback(callback)
+
+			require.Equal(t, fasthttp.StatusFound, callback.Response.StatusCode())
+			location, err := url.QueryUnescape(string(callback.Response.Header.Peek("Location")))
+			require.NoError(t, err)
+			assert.Contains(t, location, "/workspace/mcp-registry/oauth-callback?status=failed")
+			assert.Contains(t, location, tc.wanted)
 		})
 	}
 }

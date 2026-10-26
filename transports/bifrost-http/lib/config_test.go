@@ -26091,3 +26091,28 @@ func TestRotateMCPTokenExchangeConfigFromFile_IDJAGFields(t *testing.T) {
 		}
 	}
 }
+
+// A config.json edit that changes only the scopes keeps the authorization-server binding: the issuer
+// and the dynamic-registration flag describe credentials the file did not touch.
+func TestRotateMCPOauthConfigFromFile_KeepsBinding(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	require.NoError(t, store.CreateOauthConfig(ctx, &configstoreTables.TableOauthConfig{
+		ID: "cfg-binding", ClientID: schemas.NewSecretVar("registered"), ClientSecret: schemas.NewSecretVar("secret"),
+		AuthorizeURL: "https://auth.example.com/authorize", TokenURL: "https://auth.example.com/token",
+		RedirectURI: "http://127.0.0.1/cb", Scopes: `["read"]`, Status: "authorized",
+		Issuer: "https://auth.example.com", IssParameterSupported: true, DynamicallyRegistered: true,
+	}))
+	stored, err := store.GetOauthConfigByID(ctx, "cfg-binding")
+	require.NoError(t, err)
+
+	incomplete := rotateMCPOauthConfigFromFile(ctx, store, "docs", &schemas.OAuth2Config{Scopes: []string{"read", "write"}}, stored)
+	require.False(t, incomplete)
+	stored, err = store.GetOauthConfigByID(ctx, "cfg-binding")
+	require.NoError(t, err)
+	assert.Equal(t, `["read","write"]`, stored.Scopes, "fixture check: the scopes rotated")
+	assert.Equal(t, "https://auth.example.com", stored.Issuer)
+	assert.True(t, stored.IssParameterSupported)
+	assert.True(t, stored.DynamicallyRegistered)
+}

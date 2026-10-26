@@ -3437,6 +3437,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, "client_secret must be resent explicitly when authorize_url or token_url changes")
 			return
 		}
+		resolvedOauthFields.KeepBinding(existingOauthConfig)
 		if !resolvedOauthFields.DiffersFrom(existingOauthConfig) {
 			// Every field resolved to what's already stored — either the
 			// caller left everything unset, or resent the same real values

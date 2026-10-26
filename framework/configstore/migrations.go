@@ -580,6 +580,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_max_protocol_version_columns"}, run: migrationAddMCPMaxProtocolVersionColumns},
 	{IDs: []string{"add_mcp_client_discovered_resources_prompts_columns"}, run: migrationAddMCPClientDiscoveredResourcesPromptsColumns},
 	{IDs: []string{"add_mcp_client_expose_lists_columns"}, run: migrationAddMCPClientExposeListsColumns},
+	{IDs: []string{"add_oauth_issuer_binding_columns"}, run: migrationAddOAuthIssuerBindingColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16729,4 +16730,50 @@ func mcpClientExposeListsColumnsMigration(ctx context.Context, migrationName str
 			return fmt.Errorf("%s is non-rollbackable: dropping the allow-lists would expose every prompt and resource they restrict", migrationName)
 		},
 	}
+}
+
+// migrationAddOAuthIssuerBindingColumns adds the issuer columns to oauth configs and flows. Existing
+// rows stay unbound until their next sign-in.
+func migrationAddOAuthIssuerBindingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_oauth_issuer_binding_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []struct {
+		model   any
+		columns []string
+	}{
+		{&tables.TableOauthConfig{}, []string{"issuer", "iss_parameter_supported", "dynamically_registered"}},
+		{&tables.TableMCPOauthFlow{}, []string{"issuer", "iss_parameter_supported"}},
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, table := range columns {
+				for _, column := range table.columns {
+					if err := addColumnIfNotExists(tx, logger, table.model, column); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			for _, table := range columns {
+				for _, column := range table.columns {
+					if err := dropColumnIfExists(tx.WithContext(ctx), logger, table.model, column); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
 }
