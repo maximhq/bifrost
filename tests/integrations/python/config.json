@@ -403,6 +403,553 @@
         "default_request_timeout_in_seconds": 120
       }
     },
+    "generic_tavily": {
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Generic Tavily Key",
+          "value": "env.TAVILY_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": {
+            "type": "bearer"
+          },
+          "usage": {
+            "units_path": "usage.credits",
+            "cost_per_unit": 0.008
+          },
+          "routes": [
+            {
+              "method": "POST",
+              "path": "/search"
+            },
+            {
+              "method": "POST",
+              "path": "/extract"
+            },
+            {
+              "method": "POST",
+              "path": "/crawl"
+            },
+            {
+              "method": "POST",
+              "path": "/map"
+            },
+            {
+              "method": "POST",
+              "path": "/research",
+              "job": {
+                "id_path": "request_id",
+                "poll": {
+                  "method": "GET",
+                  "path": "/research/{{job.id}}"
+                },
+                "status_path": "status",
+                "succeeded": [
+                  "completed"
+                ],
+                "failed": [
+                  "failed"
+                ],
+                "interval_seconds": 15,
+                "timeout_seconds": 900
+              }
+            },
+            {
+              "method": "GET",
+              "path": "/research/*",
+              "billable": false
+            },
+            {
+              "method": "GET",
+              "path": "/usage",
+              "billable": false
+            }
+          ],
+          "strict_routes": true
+        }
+      },
+      "network_config": {
+        "base_url": "https://api.tavily.com",
+        "default_request_timeout_in_seconds": 120
+      }
+    },
+    "generic_textract": {
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Generic AWS Textract Key",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": {
+            "type": "aws_sigv4",
+            "aws": {
+              "service": "textract",
+              "region": "us-east-1"
+            }
+          },
+          "usage": {
+            "units_path": "DocumentMetadata.Pages"
+          },
+          "routes": [
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "Textract.DetectDocumentText"
+              },
+              "usage": {
+                "cost_per_unit": 0.0015
+              }
+            },
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "Textract.AnalyzeDocument"
+              },
+              "usage": {
+                "cost_per_unit": 0.015
+              }
+            },
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "Textract.AnalyzeExpense"
+              },
+              "usage": {
+                "cost_per_unit": 0.01
+              }
+            },
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "Textract.AnalyzeID"
+              },
+              "usage": {
+                "cost_per_unit": 0.025
+              }
+            },
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "Textract.StartDocumentTextDetection"
+              },
+              "usage": {
+                "cost_per_unit": 0
+              },
+              "job": {
+                "id_path": "JobId",
+                "poll": {
+                  "method": "POST",
+                  "path": "/",
+                  "headers": {
+                    "X-Amz-Target": "Textract.GetDocumentTextDetection",
+                    "Content-Type": "application/x-amz-json-1.1"
+                  },
+                  "body": "{\"JobId\":\"{{job.id}}\"}",
+                  "content_type": "application/x-amz-json-1.1"
+                },
+                "status_path": "JobStatus",
+                "succeeded": [
+                  "SUCCEEDED",
+                  "PARTIAL_SUCCESS"
+                ],
+                "failed": [
+                  "FAILED"
+                ],
+                "interval_seconds": 10,
+                "timeout_seconds": 900,
+                "usage": {
+                  "units_path": "DocumentMetadata.Pages",
+                  "cost_per_unit": 0.0015
+                }
+              }
+            },
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "Textract.Get*"
+              },
+              "billable": false
+            }
+          ],
+          "strict_routes": true
+        }
+      },
+      "network_config": {
+        "base_url": "https://textract.us-east-1.amazonaws.com",
+        "default_request_timeout_in_seconds": 120
+      }
+    },
+    "generic_translate": {
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Generic AWS Translate Key",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": {
+            "type": "aws_sigv4",
+            "aws": {
+              "service": "translate",
+              "region": "us-east-1"
+            }
+          },
+          "routes": [
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "AWSShineFrontendService_20170701.TranslateText"
+              },
+              "usage": {
+                "units_source": "request",
+                "units_measure": "chars",
+                "units_path": "Text",
+                "cost_per_unit": 1.5e-05
+              }
+            },
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "AWSShineFrontendService_20170701.TranslateDocument"
+              },
+              "usage": {
+                "units_source": "request",
+                "units_measure": "chars",
+                "units_path": "Document.Content",
+                "cost_per_unit": 1.125e-05
+              }
+            },
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "AWSShineFrontendService_20170701.ListLanguages"
+              },
+              "billable": false
+            }
+          ],
+          "strict_routes": true
+        }
+      },
+      "network_config": {
+        "base_url": "https://translate.us-east-1.amazonaws.com",
+        "default_request_timeout_in_seconds": 120
+      }
+    },
+    "generic_comprehend_medical": {
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Generic AWS Comprehend Medical Key",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": {
+            "type": "aws_sigv4",
+            "aws": {
+              "service": "comprehendmedical",
+              "region": "us-east-1"
+            }
+          },
+          "usage": {
+            "units_source": "request",
+            "units_measure": "chars",
+            "units_path": "Text",
+            "units_block_size": 100,
+            "units_minimum": 1
+          },
+          "routes": [
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "ComprehendMedical_20181030.DetectEntitiesV2"
+              },
+              "usage": {
+                "cost_per_unit": 0.01
+              }
+            },
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "ComprehendMedical_20181030.DetectPHI"
+              },
+              "usage": {
+                "cost_per_unit": 0.0014
+              }
+            },
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "ComprehendMedical_20181030.InferICD10CM"
+              },
+              "usage": {
+                "cost_per_unit": 0.0007
+              }
+            },
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "ComprehendMedical_20181030.InferRxNorm"
+              },
+              "usage": {
+                "cost_per_unit": 0.00035
+              }
+            },
+            {
+              "method": "POST",
+              "path": "/",
+              "headers": {
+                "X-Amz-Target": "ComprehendMedical_20181030.InferSNOMEDCT"
+              },
+              "usage": {
+                "cost_per_unit": 0.00035
+              }
+            }
+          ],
+          "strict_routes": true
+        }
+      },
+      "network_config": {
+        "base_url": "https://comprehendmedical.us-east-1.amazonaws.com",
+        "default_request_timeout_in_seconds": 120
+      }
+    },
+    "generic_s3": {
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Generic AWS S3 Key",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": {
+            "type": "aws_sigv4",
+            "aws": {
+              "service": "s3",
+              "region": "us-east-1"
+            }
+          },
+          "routes": [
+            {
+              "method": "GET",
+              "path": "/*",
+              "billable": true,
+              "usage": {
+                "cost_per_request": 5e-06
+              }
+            },
+            {
+              "method": "PUT",
+              "path": "/**",
+              "billable": true,
+              "usage": {
+                "cost_per_request": 5e-06
+              }
+            },
+            {
+              "method": "POST",
+              "path": "/**",
+              "usage": {
+                "cost_per_request": 5e-06
+              }
+            },
+            {
+              "method": "GET",
+              "path": "/**",
+              "billable": true,
+              "usage": {
+                "cost_per_request": 4e-07,
+                "units_measure": "body_bytes",
+                "cost_per_unit": 9e-11
+              }
+            },
+            {
+              "method": "HEAD",
+              "path": "/**",
+              "billable": true,
+              "usage": {
+                "cost_per_request": 4e-07
+              }
+            },
+            {
+              "method": "DELETE",
+              "path": "/**",
+              "billable": false
+            }
+          ],
+          "strict_routes": true
+        }
+      },
+      "network_config": {
+        "base_url": "https://s3.us-east-1.amazonaws.com",
+        "default_request_timeout_in_seconds": 120
+      }
+    },
+    "generic_azure_tts": {
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Generic Azure Speech TTS Key",
+          "value": "env.AZURE_SPEECH_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": {
+            "type": "header",
+            "header_name": "Ocp-Apim-Subscription-Key"
+          },
+          "routes": [
+            {
+              "method": "POST",
+              "path": "/cognitiveservices/v1",
+              "usage": {
+                "units_source": "request",
+                "units_measure": "body_chars",
+                "cost_per_unit": 1.5e-05
+              }
+            },
+            {
+              "method": "GET",
+              "path": "/cognitiveservices/voices/list",
+              "billable": false
+            }
+          ],
+          "strict_routes": true
+        }
+      },
+      "network_config": {
+        "base_url": "https://eastus.tts.speech.microsoft.com",
+        "default_request_timeout_in_seconds": 120
+      }
+    },
+    "generic_azure_tts_batch": {
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Generic Azure Speech Batch Key",
+          "value": "env.AZURE_SPEECH_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "generic",
+        "generic_config": {
+          "auth": {
+            "type": "header",
+            "header_name": "Ocp-Apim-Subscription-Key"
+          },
+          "routes": [
+            {
+              "method": "PUT",
+              "path": "/texttospeech/batchsyntheses/*",
+              "billable": true,
+              "job": {
+                "id_path": "id",
+                "poll": {
+                  "method": "GET",
+                  "path": "/texttospeech/batchsyntheses/{{job.id}}?api-version=2024-04-01"
+                },
+                "status_path": "status",
+                "succeeded": [
+                  "Succeeded"
+                ],
+                "failed": [
+                  "Failed"
+                ],
+                "interval_seconds": 15,
+                "timeout_seconds": 1800,
+                "usage": {
+                  "units_path": "properties.billingDetails.neuralCharacters",
+                  "cost_per_unit": 1.5e-05
+                }
+              }
+            },
+            {
+              "method": "GET",
+              "path": "/texttospeech/batchsyntheses/**",
+              "billable": false
+            },
+            {
+              "method": "DELETE",
+              "path": "/texttospeech/batchsyntheses/*",
+              "billable": false
+            }
+          ],
+          "strict_routes": true
+        }
+      },
+      "network_config": {
+        "base_url": "https://eastus.api.cognitive.microsoft.com",
+        "default_request_timeout_in_seconds": 120
+      }
+    },
     "typesafe_custom": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
