@@ -776,3 +776,60 @@ func TestToBedrockChatCompletionRequest_ToolResultCacheControlBecomesSiblingCach
 		t.Fatalf("block 2 must be the unmarked berlin toolResult with no cachePoint after it, got %+v", blocks[2])
 	}
 }
+
+// TestToBedrockChatCompletionRequest_MessageLevelCacheControlBecomesCachePoint — the
+// AI SDK openai-compatible provider sets cache_control on the message object. Each
+// one must still produce a cachePoint: after the system text and inside the tool result.
+func TestToBedrockChatCompletionRequest_MessageLevelCacheControlBecomesCachePoint(t *testing.T) {
+	var input []schemas.ChatMessage
+	if err := schemas.Unmarshal([]byte(`[
+	  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
+	  {"role":"user","content":"Create notes.txt"},
+	  {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{}"}}]},
+	  {"role":"tool","tool_call_id":"call_1","content":"Wrote notes.txt","cache_control":{"type":"ephemeral"}}
+	]`), &input); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "amazon.nova-pro-v1:0",
+		Input:    input,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	systemPoints := 0
+	for _, s := range result.System {
+		if s.CachePoint != nil {
+			systemPoints++
+		}
+	}
+	if systemPoints != 1 {
+		t.Fatalf("expected one cachePoint after the system text, got %d: %+v", systemPoints, result.System)
+	}
+
+	var count func(blocks []BedrockContentBlock) int
+	count = func(blocks []BedrockContentBlock) int {
+		n := 0
+		for _, b := range blocks {
+			if b.CachePoint != nil {
+				n++
+			}
+			if b.ToolResult != nil {
+				n += count(b.ToolResult.Content)
+			}
+		}
+		return n
+	}
+	messagePoints := 0
+	for _, m := range result.Messages {
+		messagePoints += count(m.Content)
+	}
+	if messagePoints != 1 {
+		t.Fatalf("expected one cachePoint for the tool result, got %d: %+v", messagePoints, result.Messages)
+	}
+}

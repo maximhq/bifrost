@@ -287,3 +287,102 @@ func BenchmarkBifrostLLMUsageUnmarshal(b *testing.B) {
 		})
 	}
 }
+
+// OpenAI-compatible clients such as the AI SDK's openai-compatible provider put
+// cache_control on the message object rather than on a content block. The marker
+// must survive decoding as the same breakpoint on the message's last block, or no
+// provider ever sees it and the prompt is never cached.
+func TestChatMessageUnmarshalMessageLevelCacheControl(t *testing.T) {
+	decode := func(t *testing.T, raw string) ChatMessage {
+		t.Helper()
+		var msg ChatMessage
+		if err := Unmarshal([]byte(raw), &msg); err != nil {
+			t.Fatalf("decode %s: %v", raw, err)
+		}
+		return msg
+	}
+
+	t.Run("string content becomes one marked text block", func(t *testing.T) {
+		msg := decode(t, `{"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}}`)
+		if msg.Content == nil || msg.Content.ContentStr != nil || len(msg.Content.ContentBlocks) != 1 {
+			t.Fatalf("expected one content block, got %+v", msg.Content)
+		}
+		block := msg.Content.ContentBlocks[0]
+		if block.Type != ChatContentBlockTypeText || block.Text == nil || *block.Text != "You are a coding agent." {
+			t.Fatalf("block should carry the original text, got %+v", block)
+		}
+		if block.CacheControl == nil || block.CacheControl.Type != CacheControlTypeEphemeral {
+			t.Fatalf("block should carry the marker, got %+v", block.CacheControl)
+		}
+	})
+
+	t.Run("marker lands on the last block and ttl is kept", func(t *testing.T) {
+		msg := decode(t, `{"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}],"cache_control":{"type":"ephemeral","ttl":"1h"}}`)
+		blocks := msg.Content.ContentBlocks
+		if blocks[0].CacheControl != nil {
+			t.Fatalf("first block should stay unmarked, got %+v", blocks[0].CacheControl)
+		}
+		if blocks[1].CacheControl == nil || blocks[1].CacheControl.TTL == nil || *blocks[1].CacheControl.TTL != "1h" {
+			t.Fatalf("last block should carry the marker with its ttl, got %+v", blocks[1].CacheControl)
+		}
+	})
+
+	t.Run("a block marker the client set wins", func(t *testing.T) {
+		msg := decode(t, `{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral","ttl":"1h"}}],"cache_control":{"type":"ephemeral"}}`)
+		got := msg.Content.ContentBlocks[0].CacheControl
+		if got == nil || got.TTL == nil || *got.TTL != "1h" {
+			t.Fatalf("block marker should be kept as sent, got %+v", got)
+		}
+	})
+
+	t.Run("tool result string content is marked", func(t *testing.T) {
+		msg := decode(t, `{"role":"tool","tool_call_id":"call_1","content":"2 notes.txt","cache_control":{"type":"ephemeral"}}`)
+		if msg.ChatToolMessage == nil || msg.ChatToolMessage.ToolCallID == nil || *msg.ChatToolMessage.ToolCallID != "call_1" {
+			t.Fatalf("tool fields should decode, got %+v", msg.ChatToolMessage)
+		}
+		if len(msg.Content.ContentBlocks) != 1 || msg.Content.ContentBlocks[0].CacheControl == nil {
+			t.Fatalf("tool content should carry the marker, got %+v", msg.Content)
+		}
+	})
+
+	t.Run("assistant tool call without content takes the marker", func(t *testing.T) {
+		msg := decode(t, `{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}},{"id":"call_2","type":"function","function":{"name":"bash","arguments":"{}"}}],"cache_control":{"type":"ephemeral"}}`)
+		calls := msg.ChatAssistantMessage.ToolCalls
+		if calls[0].CacheControl != nil || calls[1].CacheControl == nil {
+			t.Fatalf("only the last tool call should carry the marker, got %+v / %+v", calls[0].CacheControl, calls[1].CacheControl)
+		}
+	})
+
+	t.Run("nowhere to put it is not an error", func(t *testing.T) {
+		msg := decode(t, `{"role":"assistant","content":null,"cache_control":{"type":"ephemeral"}}`)
+		if msg.Content != nil && len(msg.Content.ContentBlocks) > 0 {
+			t.Fatalf("no block should be invented, got %+v", msg.Content)
+		}
+	})
+
+	t.Run("empty string content is not promoted", func(t *testing.T) {
+		msg := decode(t, `{"role":"user","content":"","cache_control":{"type":"ephemeral"}}`)
+		if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != "" || msg.Content.ContentBlocks != nil {
+			t.Fatalf("empty content should stay an empty string, got %+v", msg.Content)
+		}
+	})
+
+	t.Run("messages without a marker decode unchanged", func(t *testing.T) {
+		msg := decode(t, `{"role":"user","content":"hi"}`)
+		if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != "hi" || msg.Content.ContentBlocks != nil {
+			t.Fatalf("string content should stay a string, got %+v", msg.Content)
+		}
+	})
+
+	t.Run("re-encoding carries the marker on the block only", func(t *testing.T) {
+		msg := decode(t, `{"role":"user","content":"hi","cache_control":{"type":"ephemeral"}}`)
+		out, err := MarshalSorted(msg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		want := `{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]}`
+		if string(out) != want {
+			t.Fatalf("re-encoded message\n got: %s\nwant: %s", out, want)
+		}
+	})
+}

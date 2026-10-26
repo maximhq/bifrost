@@ -3035,3 +3035,67 @@ func BenchmarkOpenAIChatRequestUnknownFields(b *testing.B) {
 		_ = OpenAIChatRequestUnknownFields(body)
 	}
 }
+
+// TestToOpenAIChatRequest_MessageLevelCacheControl_OpenRouter — a cache_control the
+// client set on the message object reaches OpenRouter as a block marker, and is still
+// stripped for a provider that does not take one.
+func TestToOpenAIChatRequest_MessageLevelCacheControl_OpenRouter(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+	  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
+	  {"role":"user","content":"Create notes.txt","cache_control":{"type":"ephemeral"}}
+	]`), &input))
+
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		want     int
+	}{
+		{name: "openrouter keeps both breakpoints", provider: schemas.OpenRouter, model: "google/gemini-2.5-flash", want: 2},
+		{name: "openai drops them as before", provider: schemas.OpenAI, model: "gpt-4o", want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			req := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{Provider: tc.provider, Model: tc.model, Input: input})
+			body, err := sonic.Marshal(req)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, strings.Count(string(body), `"cache_control"`), "%s", body)
+		})
+	}
+}
+
+// TestOpenAIChatRequest_MessageLevelCacheControlIngress — the /openai chat route
+// decodes into OpenAIChatRequest. A cache_control the client set on the message
+// object must reach the Bifrost request as a block marker, without changing the
+// decoded request it came from.
+func TestOpenAIChatRequest_MessageLevelCacheControlIngress(t *testing.T) {
+	var req OpenAIChatRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"model":"openrouter/google/gemini-2.5-flash","messages":[
+	  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
+	  {"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}],"cache_control":{"type":"ephemeral"}},
+	  {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{}"}}],"cache_control":{"type":"ephemeral"}},
+	  {"role":"tool","tool_call_id":"call_1","content":"Wrote notes.txt"}
+	]}`), &req))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	bifrostReq := req.ToBifrostChatRequest(ctx)
+	in := bifrostReq.Input
+
+	require.Len(t, in[0].Content.ContentBlocks, 1)
+	require.NotNil(t, in[0].Content.ContentBlocks[0].CacheControl, "system string must become a marked block")
+	require.Nil(t, in[1].Content.ContentBlocks[0].CacheControl)
+	require.NotNil(t, in[1].Content.ContentBlocks[1].CacheControl, "marker belongs on the last block")
+	require.NotNil(t, in[2].ChatAssistantMessage.ToolCalls[0].CacheControl, "content-less assistant marks its last tool call")
+	require.NotNil(t, in[3].Content.ContentStr, "unmarked messages are untouched")
+
+	require.NotNil(t, req.Messages[0].Content.ContentStr, "the decoded request must not be mutated")
+	require.Nil(t, req.Messages[1].Content.ContentBlocks[1].CacheControl, "the decoded request must not be mutated")
+	require.Nil(t, req.Messages[2].OpenAIChatAssistantMessage.ToolCalls[0].CacheControl, "the decoded request must not be mutated")
+
+	body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
+	require.NoError(t, err)
+	require.Equal(t, 3, strings.Count(string(body), `"cache_control"`), "all three breakpoints must reach OpenRouter: %s", body)
+}

@@ -478,6 +478,11 @@ type OpenAIMessage struct {
 	Role    schemas.ChatMessageRole     `json:"role,omitempty"`
 	Content *schemas.ChatMessageContent `json:"content,omitempty"`
 
+	// CacheControl is a breakpoint set on the message object itself, the shape
+	// OpenAI-compatible SDKs send. Read on ingress only; outgoing messages carry
+	// their markers on content blocks.
+	CacheControl *schemas.CacheControl `json:"cache_control,omitempty"`
+
 	// Embedded pointer structs - when non-nil, their exported fields are flattened into the top-level JSON object
 	// IMPORTANT: Only one of the following can be non-nil at a time, otherwise the JSON marshalling will override the common fields
 	*schemas.ChatToolMessage
