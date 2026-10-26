@@ -3238,12 +3238,19 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 		if existing != nil && existing.ID != "" {
 			keepIDs[existing.ID] = true
 		}
-		if fileClient.ID == "" {
-			if existing != nil && existing.ID != "" {
-				fileClient.ID = existing.ID
-			} else {
-				fileClient.ID = uuid.NewString()
+		// A matched client keeps its stored ID, as under split. A different
+		// declared ID can only have come from another client's block, and the
+		// runtime client must never carry it: credentials are keyed by client
+		// ID, so it would send that client's per-user credentials to this
+		// client's URL.
+		switch {
+		case existing != nil && existing.ID != "":
+			if fileClient.ID != "" && fileClient.ID != existing.ID {
+				logger.Warn("MCP client %q in config.json declares id %q, but the stored client of that name has id %q; keeping the stored id", fileClient.Name, fileClient.ID, existing.ID)
 			}
+			fileClient.ID = existing.ID
+		case fileClient.ID == "":
+			fileClient.ID = uuid.NewString()
 		}
 		if existing != nil {
 			if err := pinnedPerUserDiscoveryError(fileClient, existing); err != nil {
