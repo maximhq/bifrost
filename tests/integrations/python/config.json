@@ -488,7 +488,7 @@
           "bedrock_key_config": {
             "access_key": "env.AWS_ACCESS_KEY_ID",
             "secret_key": "env.AWS_SECRET_ACCESS_KEY",
-            "region": "env.AWS_REGION"
+            "region": "us-east-1"
           },
           "weight": 1,
           "models": ["*"],
@@ -501,8 +501,7 @@
           "auth": {
             "type": "aws_sigv4",
             "aws": {
-              "service": "textract",
-              "region": "us-east-1"
+              "service": "textract"
             }
           },
           "usage": {
@@ -611,7 +610,7 @@
           "bedrock_key_config": {
             "access_key": "env.AWS_ACCESS_KEY_ID",
             "secret_key": "env.AWS_SECRET_ACCESS_KEY",
-            "region": "env.AWS_REGION"
+            "region": "us-east-1"
           },
           "weight": 1,
           "models": ["*"],
@@ -624,8 +623,7 @@
           "auth": {
             "type": "aws_sigv4",
             "aws": {
-              "service": "translate",
-              "region": "us-east-1"
+              "service": "translate"
             }
           },
           "routes": [
@@ -680,7 +678,7 @@
           "bedrock_key_config": {
             "access_key": "env.AWS_ACCESS_KEY_ID",
             "secret_key": "env.AWS_SECRET_ACCESS_KEY",
-            "region": "env.AWS_REGION"
+            "region": "us-east-1"
           },
           "weight": 1,
           "models": ["*"],
@@ -693,8 +691,7 @@
           "auth": {
             "type": "aws_sigv4",
             "aws": {
-              "service": "comprehendmedical",
-              "region": "us-east-1"
+              "service": "comprehendmedical"
             }
           },
           "usage": {
@@ -772,7 +769,7 @@
           "bedrock_key_config": {
             "access_key": "env.AWS_ACCESS_KEY_ID",
             "secret_key": "env.AWS_SECRET_ACCESS_KEY",
-            "region": "env.AWS_REGION"
+            "region": "us-east-1"
           },
           "weight": 1,
           "models": ["*"],
@@ -785,8 +782,7 @@
           "auth": {
             "type": "aws_sigv4",
             "aws": {
-              "service": "s3",
-              "region": "us-east-1"
+              "service": "s3"
             }
           },
           "routes": [
