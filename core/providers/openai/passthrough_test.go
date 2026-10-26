@@ -1,7 +1,10 @@
 package openai
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -57,6 +60,62 @@ func TestBuildPassthroughURLDefaultsToOpenAIV1(t *testing.T) {
 	want := "https://api.openai.com/v1/responses?stream=true"
 	if got != want {
 		t.Fatalf("buildPassthroughURL = %q, want %q", got, want)
+	}
+}
+
+// Codex stops reading at response.completed instead of waiting for the body to close, and its
+// hang-up cancels the stream. The final chunk, carrying usage, must arrive on the terminal event
+// itself rather than at upstream EOF, or the request is logged as cancelled without usage.
+func TestPassthroughStreamFinalizesOnResponsesTerminalEvent(t *testing.T) {
+	upstreamDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("event: response.output_text.delta\n" +
+			`data: {"type":"response.output_text.delta","delta":"pong"}` + "\n\n" +
+			"event: response.completed\n" +
+			`data: {"type":"response.completed","response":{"usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15}}}` + "\n\n"))
+		w.(http.Flusher).Flush()
+		// Hold the body open so only the terminal event can end the stream.
+		select {
+		case <-upstreamDone:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(upstreamDone) })
+
+	stream, bifrostErr := newStreamTestProvider(server.URL).PassthroughStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost,
+		Path:   "/v1/responses",
+		Body:   []byte(`{"model":"gpt-5.5","input":"ping","stream":true}`),
+	})
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	timeout := time.NewTimer(3 * time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				t.Fatal("stream closed without a final chunk carrying usage")
+			}
+			if chunk.BifrostError != nil {
+				t.Fatalf("unexpected stream error: %+v", chunk.BifrostError)
+			}
+			if chunk.BifrostPassthroughResponse == nil || chunk.BifrostPassthroughResponse.PassthroughUsage == nil {
+				continue
+			}
+			usage := chunk.BifrostPassthroughResponse.PassthroughUsage.LLMUsage
+			if usage == nil || usage.PromptTokens != 12 || usage.CompletionTokens != 3 || usage.TotalTokens != 15 {
+				t.Fatalf("final chunk usage = %+v, want 12 prompt, 3 completion, 15 total", usage)
+			}
+			return
+		case <-timeout.C:
+			t.Fatal("the stream did not finalize on response.completed while the upstream stayed open")
+		}
 	}
 }
 
