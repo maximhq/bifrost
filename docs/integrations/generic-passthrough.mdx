@@ -163,7 +163,7 @@ Paths are [gjson](https://github.com/tidwall/gjson) paths. Tokens and cost are r
 | Field | Description |
 | --- | --- |
 | `model_path` | Where the model name is read from the caller's request, e.g. `model` (Tavily research, Exa) or `model_id` (ElevenLabs). Stored on the log row and checked against virtual-key model restrictions. Unset reads no model |
-| `model_source` | `body` (default): `model_path` is a JSON field of the request body. `query`: it is a query parameter, as in Deepgram's `?model=nova-3`. A body naming the key twice, or a query naming the parameter twice, is refused with `400` |
+| `model_source` | `body` (default): `model_path` is a JSON field of the request body. `query`: it is a query parameter, as in Deepgram's `?model=nova-3`. A body naming the key twice along a plain dotted `model_path` (gjson escapes, wildcards and modifiers are not checked), or a query naming the parameter twice, is refused with `400` |
 | `input_tokens_path`, `output_tokens_path`, `total_tokens_path` | Response body paths for tokens |
 | `cost_path` | Response body path for a provider-reported USD cost; an array of numbers is summed |
 | `cost_per_request` | Flat USD fee added to every billable call. A route may set `0` to waive the provider fee |
