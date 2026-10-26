@@ -45618,6 +45618,38 @@
                               },
                               "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "per_user_discovery"
+                              ],
+                              "properties": {
+                                "per_user_discovery": {
+                                  "const": true
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "enum": [
+                                    "per_user_oauth",
+                                    "per_user_headers",
+                                    "token_exchange"
+                                  ]
+                                },
+                                "connection_type": {
+                                  "not": {
+                                    "const": "openapi"
+                                  }
+                                }
+                              },
+                              "description": "`per_user_discovery` discovers each caller's tools with their own\ncredential, so it only applies to the per-user auth types, and not to\nan openapi client, whose tools come from its document.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -45829,6 +45861,11 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
+                          },
+                          "per_user_discovery": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. When false or omitted, every caller is served what\nwas discovered with the admin credential.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -45935,6 +45972,38 @@
                               },
                               "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "per_user_discovery"
+                              ],
+                              "properties": {
+                                "per_user_discovery": {
+                                  "const": true
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "enum": [
+                                    "per_user_oauth",
+                                    "per_user_headers",
+                                    "token_exchange"
+                                  ]
+                                },
+                                "connection_type": {
+                                  "not": {
+                                    "const": "openapi"
+                                  }
+                                }
+                              },
+                              "description": "`per_user_discovery` discovers each caller's tools with their own\ncredential, so it only applies to the per-user auth types, and not to\nan openapi client, whose tools come from its document.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -46146,6 +46215,11 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
+                          },
+                          "per_user_discovery": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. When false or omitted, every caller is served what\nwas discovered with the admin credential.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -46252,6 +46326,38 @@
                               },
                               "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "per_user_discovery"
+                              ],
+                              "properties": {
+                                "per_user_discovery": {
+                                  "const": true
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "enum": [
+                                    "per_user_oauth",
+                                    "per_user_headers",
+                                    "token_exchange"
+                                  ]
+                                },
+                                "connection_type": {
+                                  "not": {
+                                    "const": "openapi"
+                                  }
+                                }
+                              },
+                              "description": "`per_user_discovery` discovers each caller's tools with their own\ncredential, so it only applies to the per-user auth types, and not to\nan openapi client, whose tools come from its document.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -46463,6 +46569,11 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
+                          },
+                          "per_user_discovery": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. When false or omitted, every caller is served what\nwas discovered with the admin credential.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -46589,6 +46700,38 @@
                               },
                               "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "per_user_discovery"
+                              ],
+                              "properties": {
+                                "per_user_discovery": {
+                                  "const": true
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "enum": [
+                                    "per_user_oauth",
+                                    "per_user_headers",
+                                    "token_exchange"
+                                  ]
+                                },
+                                "connection_type": {
+                                  "not": {
+                                    "const": "openapi"
+                                  }
+                                }
+                              },
+                              "description": "`per_user_discovery` discovers each caller's tools with their own\ncredential, so it only applies to the per-user auth types, and not to\nan openapi client, whose tools come from its document.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -46800,6 +46943,11 @@
                             ],
                             "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin, exchanging the\nidentity-provider token on the request or, when it carries none, the\naccess token from the admin's own Bifrost sign-in (see\nPOST /api/mcp/client/{id}/verify-exchange). A request with neither,\nsuch as one made with an API key, creates the client in\npending_verification. There is no sample-token field on this request.\n"
+                          },
+                          "per_user_discovery": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Per-user auth types only (`per_user_oauth`, `per_user_headers`,\n`token_exchange`), and not for connection_type \"openapi\". When true,\neach caller's tools, prompts and resources are discovered with their\nown credential when they connect, and the client keeps no admin\ncredential or discovery of its own: the admin's verification only\nchecks the server. When false or omitted, every caller is served what\nwas discovered with the admin credential.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -47065,6 +47213,10 @@
                       "type": "string"
                     },
                     "description": "For `per_user_headers` clients only. Cannot be set to an empty list.\nUpdating this list flips every existing active per-user credential row\nto `needs_update`; callers will be sent back to the submission form on\ntheir next tool call to satisfy the new schema. The retained admin\ndiscovery credential is flipped the same way; repair it by calling\nPOST /api/mcp/client/{id}/verify-headers with fresh sample values.\n"
+                  },
+                  "per_user_discovery": {
+                    "type": "boolean",
+                    "description": "Per-user auth types only, and not for openapi clients. Omitted\npreserves the stored value. Turning it on deletes the admin credential\nand the discovery the client keeps; each caller's tools, prompts and\nresources are then discovered with their own credential. Turning it\noff deletes every caller's discovery: a `per_user_headers` or\n`token_exchange` client goes back to pending_verification, and a\n`per_user_oauth` client needs its admin credential again through\nPOST /api/mcp/client/{id}/reauthorize.\nWhile it is on, POST /api/mcp/client/{id}/refresh-tools and\nPOST /api/mcp/client/{id}/reauthorize return 400, as do\nPOST /api/mcp/client/{id}/verify-headers and\nPOST /api/mcp/client/{id}/verify-exchange on a verified client.\n"
                   },
                   "token_exchange": {
                     "type": "object",
@@ -134145,6 +134297,14 @@
               }
             }
           },
+          "callers_by_tool": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Set for a client with `per_user_discovery` on, whose `tools` are the\nnames seen in its callers' discoveries, names only, since descriptions\nand schemas can differ from one caller to another: how many callers'\ndiscoveries include each. Absent until a caller holds one.\n"
+          },
           "state": {
             "type": "string",
             "enum": [
@@ -134401,6 +134561,11 @@
             ],
             "additionalProperties": false,
             "description": "For `token_exchange` clients only. `client_id` and `client_secret` are\nredacted in this response.\n"
+          },
+          "per_user_discovery": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, each caller's tools, prompts and resources are discovered\nwith their own credential, and the client keeps no admin credential or\ndiscovery of its own. The list response's `tools` are then the names\nseen in callers' discoveries (see `callers_by_tool`).\n"
           },
           "disabled": {
             "type": "boolean",

@@ -9858,7 +9858,7 @@
         },
         "per_user_discovery": {
           "type": "boolean",
-          "description": "Only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), and not for openapi clients: when true, each caller's discovery (its tool list and the server's instructions) is made with its own credential and kept per (auth mode, identity, client), and the client stores no admin credential and does no admin discovery. When false, every caller is served the discovery made with the admin credential. Turning it on deletes the stored admin credential and tools; turning it off deletes every caller's discovery, and the client needs an admin credential again.",
+          "description": "Only valid for per-user auth types (per_user_oauth, per_user_headers, token_exchange), and not for openapi clients: when true, each caller's discovery (its tools, prompts, resources and the server's instructions) is made with its own credential and kept per (auth mode, identity, client), and the client stores no admin credential and does no admin discovery. When false, every caller is served the discovery made with the admin credential. Turning it on deletes the stored admin credential and discovery; turning it off deletes every caller's discovery, and the client needs an admin credential again.",
           "default": false
         },
         "tool_pricing": {
@@ -10039,6 +10039,38 @@
                   "headers",
                   "per_user_headers"
                 ]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "per_user_discovery discovers each caller's tools with their own credential, so it only applies to the per-user auth types, and not to an openapi client, whose tools come from its document.",
+          "if": {
+            "properties": {
+              "per_user_discovery": {
+                "const": true
+              }
+            },
+            "required": [
+              "per_user_discovery"
+            ]
+          },
+          "then": {
+            "required": [
+              "auth_type"
+            ],
+            "properties": {
+              "auth_type": {
+                "enum": [
+                  "per_user_oauth",
+                  "per_user_headers",
+                  "token_exchange"
+                ]
+              },
+              "connection_type": {
+                "not": {
+                  "const": "openapi"
+                }
               }
             }
           }
