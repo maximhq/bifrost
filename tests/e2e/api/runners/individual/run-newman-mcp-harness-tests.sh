@@ -25,6 +25,11 @@
 # records what it was sent, and the pricing and model-parameter datasheets come
 # from routes on that server, so a run calls nothing outside this machine.
 #
+# config.json also declares a few MCP clients, because a client that boots pending
+# verification (an OAuth or per-user headers client nobody has verified yet) can
+# only come from config.json. Each belongs to one test, which its id names, and
+# points at a fleet server of the same name that the test sets up.
+#
 # The upstream MCP servers are an mcpchaos fleet (tests/cmd/mcpconsole), built
 # and started here. Tests reach it through two collection variables: chaos_url,
 # the fleet's base URL for both its MCP endpoints and its control API, and
@@ -217,6 +222,14 @@ write_config() {
   },
   "config_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/config.db" } },
   "logs_store": { "enabled": true, "type": "sqlite", "config": { "path": "$dir/logs.db" } },
+  "mcp": { "client_configs": [
+    { "client_id": "adm30-p", "name": "adm30_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm30/mcp", "auth_type": "oauth", "tools_to_execute": ["*"] },
+    { "client_id": "adm35-p", "name": "adm35_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm35/mcp", "auth_type": "oauth", "tools_to_execute": ["*"] },
+    { "client_id": "adm37-p", "name": "adm37_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm37/mcp", "auth_type": "oauth", "tools_to_execute": ["*"] },
+    { "client_id": "adm43-p", "name": "adm43_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm43/mcp", "auth_type": "oauth", "needs_session_stickiness": true, "tools_to_execute": ["*"] },
+    { "client_id": "adm45-h", "name": "adm45_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm45/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] },
+    { "client_id": "adm68-h", "name": "adm68_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm68/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] }
+  ] },
   "providers": {
     "openai": { "keys": [{ "name": "openai-mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],
       "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/openai", "max_retries": 0, "default_request_timeout_in_seconds": 30 } },
