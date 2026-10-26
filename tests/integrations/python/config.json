@@ -471,8 +471,7 @@
               "path": "/usage",
               "billable": false
             }
-          ],
-          "strict_routes": true
+          ]
         }
       },
       "network_config": {
@@ -593,8 +592,7 @@
               },
               "billable": false
             }
-          ],
-          "strict_routes": true
+          ]
         }
       },
       "network_config": {
@@ -661,8 +659,7 @@
               },
               "billable": false
             }
-          ],
-          "strict_routes": true
+          ]
         }
       },
       "network_config": {
@@ -752,8 +749,7 @@
                 "cost_per_unit": 0.00035
               }
             }
-          ],
-          "strict_routes": true
+          ]
         }
       },
       "network_config": {
@@ -832,8 +828,7 @@
               "path": "/**",
               "billable": false
             }
-          ],
-          "strict_routes": true
+          ]
         }
       },
       "network_config": {
@@ -874,8 +869,7 @@
               "path": "/cognitiveservices/voices/list",
               "billable": false
             }
-          ],
-          "strict_routes": true
+          ]
         }
       },
       "network_config": {
@@ -937,8 +931,7 @@
               "path": "/texttospeech/batchsyntheses/*",
               "billable": false
             }
-          ],
-          "strict_routes": true
+          ]
         }
       },
       "network_config": {
