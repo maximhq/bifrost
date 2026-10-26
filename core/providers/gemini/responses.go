@@ -1658,6 +1658,33 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 	return responses, bifrostErr
 }
 
+// mergeGeminiGroundingMetadata accumulates metadata whose grounding chunks arrive incrementally during streaming.
+func mergeGeminiGroundingMetadata(accumulated, incoming *GroundingMetadata) *GroundingMetadata {
+	if accumulated == nil {
+		return incoming
+	}
+	if incoming == nil || accumulated == incoming {
+		return accumulated
+	}
+
+	accumulated.GroundingChunks = append(accumulated.GroundingChunks, incoming.GroundingChunks...)
+	accumulated.GroundingSupports = append(accumulated.GroundingSupports, incoming.GroundingSupports...)
+	accumulated.RetrievalQueries = append(accumulated.RetrievalQueries, incoming.RetrievalQueries...)
+	accumulated.SourceFlaggingUris = append(accumulated.SourceFlaggingUris, incoming.SourceFlaggingUris...)
+	accumulated.WebSearchQueries = append(accumulated.WebSearchQueries, incoming.WebSearchQueries...)
+	accumulated.ImageSearchQueries = append(accumulated.ImageSearchQueries, incoming.ImageSearchQueries...)
+	if incoming.GoogleMapsWidgetContextToken != "" {
+		accumulated.GoogleMapsWidgetContextToken = incoming.GoogleMapsWidgetContextToken
+	}
+	if incoming.RetrievalMetadata != nil {
+		accumulated.RetrievalMetadata = incoming.RetrievalMetadata
+	}
+	if incoming.SearchEntryPoint != nil {
+		accumulated.SearchEntryPoint = incoming.SearchEntryPoint
+	}
+	return accumulated
+}
+
 func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber int, state *GeminiResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError) {
 	var responses []*schemas.BifrostResponsesStreamResponse
 
@@ -1709,7 +1736,7 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 			state.ContinuationToken = candidate.ContinuationToken
 		}
 		if candidate.GroundingMetadata != nil {
-			state.GroundingMetadata = candidate.GroundingMetadata
+			state.GroundingMetadata = mergeGeminiGroundingMetadata(state.GroundingMetadata, candidate.GroundingMetadata)
 		}
 
 		// Check for finish reason (indicates end of generation)
@@ -5651,7 +5678,7 @@ func isGoogleMapsGroundingURI(raw string) bool {
 		return false
 	}
 	host := strings.ToLower(parsed.Hostname())
-	if host == "maps.google.com" || host == "maps.app.goo.gl" || host == "goo.gl" {
+	if host == "maps.google.com" || host == "maps.app.goo.gl" {
 		return true
 	}
 	return (host == "google.com" || strings.HasSuffix(host, ".google.com") || strings.HasSuffix(host, ".google.co.uk")) &&
