@@ -207,6 +207,26 @@ func (m *objectMirror) process(work *mirrorWork) {
 	work.route.written.Add(1)
 }
 
+// ObjectStorageRouteStats counts the copies one route has written and
+// dropped since startup.
+type ObjectStorageRouteStats struct {
+	Name    string `json:"name"`
+	Written int64  `json:"written"`
+	Dropped int64  `json:"dropped"`
+}
+
+// stats returns every route's counters in configuration order.
+func (m *objectMirror) stats() []ObjectStorageRouteStats {
+	if m == nil {
+		return nil
+	}
+	out := make([]ObjectStorageRouteStats, 0, len(m.routes))
+	for _, route := range m.routes {
+		out = append(out, ObjectStorageRouteStats{Name: route.name, Written: route.written.Load(), Dropped: route.dropped.Load()})
+	}
+	return out
+}
+
 // close drains the queued copies, waiting even past ctx so no store is
 // closed under an in-flight write, then closes every route's store.
 func (m *objectMirror) close(ctx context.Context) {
@@ -228,6 +248,9 @@ func (m *objectMirror) close(ctx context.Context) {
 		<-done
 	}
 	for _, route := range m.routes {
+		if dropped := route.dropped.Load(); dropped > 0 {
+			m.logger.Warn("objectstore mirror: route %s dropped %d of %d copies since startup", route.name, dropped, dropped+route.written.Load())
+		}
 		if err := route.store.Close(); err != nil {
 			m.logger.Warn("objectstore mirror: error closing store for route %s: %v", route.name, err)
 		}

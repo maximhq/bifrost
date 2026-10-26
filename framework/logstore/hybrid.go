@@ -1171,6 +1171,12 @@ func (h *HybridLogStore) Close(ctx context.Context) error {
 	return h.inner.Close(ctx)
 }
 
+// ObjectStorageRouteStats returns each object storage route's written and
+// dropped copy counts, or nil when no routes are configured.
+func (h *HybridLogStore) ObjectStorageRouteStats() []ObjectStorageRouteStats {
+	return h.mirror.stats()
+}
+
 // DroppedUploads returns the number of S3 uploads that were dropped.
 func (h *HybridLogStore) DroppedUploads() int64 {
 	return h.droppedUploads.Load()
