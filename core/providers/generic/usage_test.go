@@ -373,3 +373,19 @@ func TestRequestBodyError(t *testing.T) {
 	assert.NoError(t, pages.requestBodyError([]byte(`not json`)), "response-side units do not constrain the request")
 	assert.NoError(t, resolveUsage(nil, nil).requestBodyError([]byte(`{"a":1,"a":2}`)), "no unit pricing, no check")
 }
+
+// A generic usage always reports its mapping charge (fee, units and any upstream-reported cost), which
+// marks the row as a generic relay's and is what cost recalculation keeps.
+func TestBuildReportsMappingCharge(t *testing.T) {
+	u := resolveUsage(&schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.01)}, nil)
+	usage := u.build(usageFields{input: 10, output: 5, hasInput: true, hasOutput: true})
+	require.NotNil(t, usage.Cost)
+	assert.InDelta(t, 0.01, usage.Cost.TotalCost, 1e-12)
+	assert.InDelta(t, 0.01, usage.Cost.AdditionalCost, 1e-12, "filed as additional cost so the cost columns add up")
+	require.NotNil(t, usage.MappingCharge)
+	assert.InDelta(t, 0.01, *usage.MappingCharge, 1e-12)
+
+	free := resolveUsage(&schemas.GenericUsageConfig{}, nil).build(usageFields{})
+	require.NotNil(t, free.MappingCharge, "a zero charge is still reported")
+	assert.Zero(t, *free.MappingCharge)
+}

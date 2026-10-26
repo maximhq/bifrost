@@ -219,6 +219,37 @@ func TestGenericJobSettle(t *testing.T) {
 	})
 }
 
+// The settlement row carries the job's mapping charge on its own column, as a relayed call's row
+// does, so cost recalculation keeps it (billing reads never load params). A failed job's is zero.
+func TestGenericJobSettlementRowCarriesMappingCharge(t *testing.T) {
+	snap := generic.JobSnapshot{
+		Job:   schemas.GenericJobConfig{IDPath: "id", Poll: schemas.GenericJobPoll{Path: "/jobs/{{job.id}}"}, StatusPath: "status", Succeeded: []string{"done"}},
+		Usage: &schemas.GenericUsageConfig{UnitsPath: "pages", CostPerUnit: schemas.Ptr(0.002), CostPerRequest: schemas.Ptr(0.01)},
+	}
+	data, err := sonic.Marshal(snap)
+	require.NoError(t, err)
+	job := genericJob(t, string(data))
+	settlement, err := NewGenericJobSettler(nil).Settle(context.Background(), fakePricing{}, JobRequest{
+		Provider: "textract", ProviderJobID: "job-1", Job: job,
+		Payload: GenericJobPayload{Status: "done", ContentType: "application/json", Body: []byte(`{"status":"done","pages":5}`)},
+	})
+	require.NoError(t, err)
+	assert.InDelta(t, 5*0.002+0.01, settlement.Cost, 1e-9)
+	entry := &logstore.Log{}
+	settlement.ApplyDebug(entry)
+	require.NotNil(t, entry.MappingCharge)
+	assert.InDelta(t, 5*0.002+0.01, *entry.MappingCharge, 1e-12)
+
+	failed, err := NewGenericJobSettler(nil).Settle(context.Background(), fakePricing{}, JobRequest{
+		Provider: "textract", ProviderJobID: "job-1", Job: job,
+		Payload: GenericJobPayload{Status: "failed", Failed: true},
+	})
+	require.NoError(t, err)
+	failedEntry := &logstore.Log{}
+	failed.ApplyDebug(failedEntry)
+	require.NotNil(t, failedEntry.MappingCharge)
+	assert.Zero(t, *failedEntry.MappingCharge)
+}
 func TestGenericJobRepriceAndHydrate(t *testing.T) {
 	settler := NewGenericJobSettler(nil)
 	cost := 0.0205
@@ -233,6 +264,14 @@ func TestGenericJobRepriceAndHydrate(t *testing.T) {
 		var out Outcome
 		settler.HydrateFromLog(entry, &out)
 		assert.Equal(t, "SUCCEEDED", out.Status)
+	})
+	t.Run("a settlement row with a mapping charge is re-priced like a relayed call", func(t *testing.T) {
+		charge := 0.01
+		entry := &logstore.Log{ID: logID, Provider: "textract", Cost: &cost, MappingCharge: &charge,
+			ParamsParsed: &schemas.PassthroughLogParams{JobAccounting: &schemas.PassthroughJobAccounting{JobID: "job-1", Status: "SUCCEEDED"}}}
+		repriced, err := settler.RepriceFromLog(entry, fakePricing{})
+		require.NoError(t, err)
+		assert.Nil(t, repriced, "the row's mapping_charge column re-prices it, so this kind does not answer with the saved cost")
 	})
 	t.Run("a rehydrated row is read from its params column", func(t *testing.T) {
 		entry := &logstore.Log{ID: logID, Provider: "textract", Cost: &cost, Params: `{"method":"POST","path":"/","job_accounting":{"job_id":"job-1","status":"SUCCEEDED"}}`}

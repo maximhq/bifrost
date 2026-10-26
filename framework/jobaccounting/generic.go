@@ -149,7 +149,8 @@ func (s *GenericJobSettler) Settle(ctx context.Context, pricing PricingManager, 
 	settlement := &Settlement{Model: req.FallbackModel, Object: schemas.PassthroughRequest, Priced: true, Complete: true}
 	poll := snap.PollRequest(schemas.GenericUpstreamJobID(req.ProviderJobID))
 	if load.Failed {
-		settlement.ApplyDebug = genericJobDebugFor(poll, &schemas.PassthroughJobAccounting{JobID: req.ProviderJobID, Status: load.Status, Failed: true})
+		zero := 0.0
+		settlement.ApplyDebug = genericJobDebugFor(poll, &schemas.PassthroughJobAccounting{JobID: req.ProviderJobID, Status: load.Status, Failed: true}, &schemas.BifrostPassthroughUsage{MappingCharge: &zero})
 		return settlement, nil
 	}
 	usage, detail := snap.Price(req.ProviderJobID, load.Status, load.ContentType, load.Body)
@@ -159,15 +160,22 @@ func (s *GenericJobSettler) Settle(ctx context.Context, pricing PricingManager, 
 	if usage.LLMUsage != nil {
 		settlement.Usage = *usage.LLMUsage
 	}
-	settlement.ApplyDebug = genericJobDebugFor(poll, detail)
+	settlement.ApplyDebug = genericJobDebugFor(poll, detail, usage)
 	return settlement, nil
 }
 
 // genericJobDebugFor attaches the settlement detail to the aggregate row as passthrough params,
-// the same column a relayed call's row uses, with job_accounting set to mark the settlement.
-func genericJobDebugFor(poll generic.JobPollRequest, detail *schemas.PassthroughJobAccounting) func(*logstore.Log) {
+// the same column a relayed call's row uses, with job_accounting set to mark the settlement. It
+// also fills the mapping_charge column a relayed call's row carries, which cost recalculation keeps:
+// billing reads never load params.
+func genericJobDebugFor(poll generic.JobPollRequest, detail *schemas.PassthroughJobAccounting, usage *schemas.BifrostPassthroughUsage) func(*logstore.Log) {
 	return func(entry *logstore.Log) {
 		entry.ParamsParsed = &schemas.PassthroughLogParams{Method: poll.Method, Path: poll.Path, StatusCode: 200, JobAccounting: detail}
+		if usage == nil || usage.MappingCharge == nil {
+			return
+		}
+		charge := *usage.MappingCharge
+		entry.MappingCharge = &charge
 	}
 }
 
@@ -179,11 +187,14 @@ func (s *GenericJobSettler) HydrateFromLog(entry *logstore.Log, out *Outcome) {
 	}
 }
 
-// RepriceFromLog answers for a generic job's settlement row with the cost it already carries:
-// the rates were the operator's own, captured at start, so there is nothing in the catalog to
-// recompute from. Returning the row keeps the generic recalculation path from pricing it to
-// nothing.
+// RepriceFromLog answers for a generic job's settlement row written before it carried the
+// mapping_charge column, with the cost it already carries, which keeps the generic recalculation
+// path from pricing it to nothing. A row with a mapping charge is left to that path, which keeps
+// the charge, as for a relayed call's row.
 func (s *GenericJobSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManager) (*RepricedCost, error) {
+	if entry != nil && entry.MappingCharge != nil {
+		return nil, nil
+	}
 	detail := genericJobDetail(entry)
 	if !detail.Exists() {
 		return nil, nil

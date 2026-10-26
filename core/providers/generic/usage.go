@@ -328,9 +328,14 @@ func (u resolvedUsage) build(f usageFields) *schemas.BifrostPassthroughUsage {
 	if charge := u.unitCharge(f); finiteNonNegative(charge) {
 		cost += charge
 	}
+	// The mapping's charge is not a token cost, so it is filed as additional cost, as guardrail and
+	// routing charges are; the cost columns then add up to the total. MappingCharge repeats it
+	// without any catalog token pricing, which marks the usage as a generic relay's: the log row
+	// keeps it so a cost recalculation can re-price the tokens and keep this part as it was.
 	if cost > 0 {
-		usage.Cost = &schemas.BifrostCost{TotalCost: cost}
+		usage.Cost = &schemas.BifrostCost{TotalCost: cost, AdditionalCost: cost}
 	}
+	usage.MappingCharge = &cost
 	return usage
 }
 

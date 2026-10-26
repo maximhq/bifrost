@@ -2684,6 +2684,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				params.StatusCode = result.PassthroughResponse.StatusCode
 			}
 			applyServedTierToEntry(entry, result, nil)
+			applyGenericPricingToEntry(entry, result.PassthroughResponse)
 			if contentLoggingEnabled && len(result.PassthroughResponse.Body) > 0 {
 				entry.PassthroughResponseBody = string(result.PassthroughResponse.Body)
 			}

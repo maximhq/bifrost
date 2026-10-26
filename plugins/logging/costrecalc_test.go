@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 )
 
@@ -769,5 +770,85 @@ func TestCostRecalcProgress(t *testing.T) {
 	done, total, msg = CostRecalcProgress(`{not json`)
 	if done != 0 || total != 0 || msg != "" {
 		t.Fatalf("malformed metadata should yield zero values, got %d %d %q", done, total, msg)
+	}
+}
+
+// A generic relay's row costs its mapping charge (fee, units, upstream-reported cost) on
+// recalculation, read from its own column: its tokens are logged, never priced, and its provider
+// name has no catalog row to price them from anyway.
+func TestCalculateCostForLog_GenericPassthroughKeepsMappingCharge(t *testing.T) {
+	p := newRecalcPlugin(t, newFakeRecalcStore(nil))
+	charge := 0.02
+	row := logstore.Log{
+		ID: "generic-1", Object: string(schemas.PassthroughRequest), Provider: "my-llm-gateway", Model: "gpt-4o",
+		TokenUsageParsed: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+		ParamsParsed:     &schemas.PassthroughLogParams{Path: "/v1/chat/completions"},
+		MappingCharge:    &charge,
+	}
+	cost, err := p.calculateCostForLog(&row)
+	if err != nil || cost != charge {
+		t.Fatalf("cost=%v err=%v, want the mapping charge %v (tokens are not priced)", cost, err, charge)
+	}
+
+	// The cost columns add up: the mapping charge is additional cost.
+	breakdown, err := p.calculateCostBreakdownForLog(&row)
+	if err != nil || breakdown == nil {
+		t.Fatalf("breakdown error = %v", err)
+	}
+	if breakdown.AdditionalCost != charge || breakdown.TotalCost != charge {
+		t.Fatalf("breakdown = %+v, want total and additional %v", breakdown, charge)
+	}
+
+	// Content hidden: no params and no usage; the column alone is enough.
+	hidden := logstore.Log{ID: "generic-2", Object: string(schemas.PassthroughRequest), Provider: "my-llm-gateway", MappingCharge: &charge}
+	if cost, err := p.calculateCostForLog(&hidden); err != nil || cost != charge {
+		t.Fatalf("content-hidden cost=%v err=%v, want %v", cost, err, charge)
+	}
+
+	// Usage rebuilt from the denormalized columns is degraded, but a charge needs no usage.
+	degraded := logstore.Log{
+		ID: "generic-degraded", Object: string(schemas.PassthroughRequest), Provider: "my-llm-gateway", Model: "gpt-4o",
+		PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, MappingCharge: &charge,
+	}
+	if err := degraded.DeserializeFields(); err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+	if cost, err := p.calculateCostForLog(&degraded); err != nil || cost != charge {
+		t.Fatalf("degraded row: cost=%v err=%v, want the saved charge", cost, err)
+	}
+}
+
+// A generic job's settlement row, as a billing read delivers it (no params), costs its mapping
+// charge through the recalculation batch loop, rather than the cost it settled at or nothing.
+func TestRecalcGenericJobSettlementRowKeepsMappingCharge(t *testing.T) {
+	charge, saved := 0.015, 0.5
+	batch := []logstore.Log{{
+		ID: jobaccounting.AccountingLogID(jobaccounting.ProviderJobKindGenericPassthrough, "textract", "job-1"), Object: string(schemas.PassthroughRequest),
+		Provider: "textract", Status: "success", Cost: &saved, MappingCharge: &charge,
+	}}
+	plugin := newRecalcPlugin(t, newFakeRecalcStore(batch))
+	outcomes, err := plugin.priceLogsInChunks(context.Background(), batch)
+	if err != nil || len(outcomes) != 1 || outcomes[0].err != nil {
+		t.Fatalf("priceLogsInChunks: err=%v outcomes=%+v", err, outcomes)
+	}
+	if outcomes[0].cost != charge {
+		t.Fatalf("settlement row cost = %v, want the mapping charge %v", outcomes[0].cost, charge)
+	}
+}
+
+// The row records the mapping charge only for a generic relay's usage, which carries one; a
+// native passthrough's row is left as it was.
+func TestApplyGenericPricingToEntry(t *testing.T) {
+	charge := 0.01
+	entry := &logstore.Log{}
+	applyGenericPricingToEntry(entry, &schemas.BifrostPassthroughResponse{PassthroughUsage: &schemas.BifrostPassthroughUsage{MappingCharge: &charge}})
+	if entry.MappingCharge == nil || *entry.MappingCharge != charge {
+		t.Fatalf("generic usage not recorded: charge=%v", entry.MappingCharge)
+	}
+
+	native := &logstore.Log{}
+	applyGenericPricingToEntry(native, &schemas.BifrostPassthroughResponse{PassthroughUsage: &schemas.BifrostPassthroughUsage{Cost: &schemas.BifrostCost{TotalCost: 0.5}}})
+	if native.MappingCharge != nil {
+		t.Fatalf("native passthrough row changed: %+v", native)
 	}
 }

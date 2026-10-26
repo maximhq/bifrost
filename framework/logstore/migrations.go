@@ -345,6 +345,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_is_passthrough_column"}, run: migrationAddIsPassthroughColumn},
 	{IDs: []string{"logs_add_warp_topic_tables"}, run: migrationAddWarpTopicTables},
 	{IDs: []string{"logs_add_warp_vector_deletes_table"}, run: migrationAddWarpVectorDeletesTable},
+	{IDs: []string{"logs_add_generic_pricing_columns"}, run: migrationAddGenericPricingColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -5203,6 +5204,54 @@ func migrationAddBillingFidelityColumns(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding billing fidelity columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddGenericPricingColumns adds mapping_charge, a generic passthrough row's own charge
+// (fee, units, upstream-reported cost), which cost recomputation keeps: the generic provider's name
+// has no catalog row to re-price from. It is a real column, outside the payload set, so it survives
+// content-hidden rows and object-storage offload, as the served-tier columns do. No backfill: rows
+// written before carry none and re-price through the generic path. The column is nullable with no
+// default, so on PostgreSQL and SQLite the add is a catalog-only change, whatever the table's size;
+// the lock wait is bounded like the other logs DDL so a long read cannot queue every log write
+// behind it.
+func migrationAddGenericPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_generic_pricing_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	columns := []string{"mapping_charge"}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for _, column := range columns {
+				if err := addColumnIfNotExists(tx, logger, &Log{}, column); err != nil {
+					return fmt.Errorf("failed to add %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for _, column := range columns {
+				if err := dropColumnIfExists(tx, logger, &Log{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding generic pricing columns: %s", err.Error())
 	}
 	return nil
 }

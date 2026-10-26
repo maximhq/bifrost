@@ -211,6 +211,29 @@ func TestBillingProjectionDeliversModalityOutputsEndToEnd(t *testing.T) {
 	require.NotNil(t, ocr.OCROutputParsed.DocumentAnnotation, "the annotation surcharge is keyed off this field")
 }
 
+// TestBillingProjectionDeliversGenericPricingColumns pins the generic relay's mapping charge: a
+// billing read returns mapping_charge, so cost recalculation keeps a generic row's charge even when
+// its params were never stored.
+func TestBillingProjectionDeliversGenericPricingColumns(t *testing.T) {
+	store := newProjectionTestStore(t)
+	ctx := context.Background()
+	charge := 0.01
+	row := &Log{
+		ID: "generic-1", Object: "passthrough", Provider: "my-llm-gateway", Model: "gpt-4o",
+		Timestamp: time.Now().UTC(), Status: "success",
+		MappingCharge: &charge,
+	}
+	require.NoError(t, row.SerializeFields())
+	require.NoError(t, store.Create(ctx, row))
+
+	billing, err := store.SearchLogsForBilling(ctx, SearchFilters{}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, billing.Logs, 1)
+	got := billing.Logs[0]
+	require.NotNil(t, got.MappingCharge)
+	assert.InDelta(t, 0.01, *got.MappingCharge, 1e-12)
+}
+
 // TestBillingProjectionStripsGeneratedImageBytes pins the OOM guard. Pricing needs the
 // image count, never the images: extractCostInput passes len(Data) to
 // populateOutputImageCount and nothing reads B64JSON, which can be megabytes per image.

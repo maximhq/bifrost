@@ -184,6 +184,8 @@ type BifrostPassthroughUsage struct {
 	// Used by providers whose responses include their own cost, e.g. Runware's per-task `cost`.
 	Cost *BifrostCost
 
+	MappingCharge *float64 // generic relay only: its own charge (fee, units, upstream-reported cost), kept for cost recalculation
+
 	// ProviderJob is set when the call started a provider-side job that is billed once it
 	// completes (a generic route with a job block). The logging plugin records it for the job
 	// accounting sweeper; the call itself is counted and charged as usual.

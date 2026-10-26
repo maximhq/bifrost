@@ -1344,3 +1344,33 @@ func TestIsPassthroughMigrationRollbackKeepsMarker(t *testing.T) {
 	require.NoError(t, db.First(&row, "id = ?", "typed-passthrough").Error)
 	require.True(t, row.IsPassthrough)
 }
+
+// TestGenericPricingColumnsMigrationBoundsLockWait pins that adding mapping_charge cannot park at the head of the logs lock queue behind a long-running read: with
+// a read holding the table, the migration fails fast on its own lock timeout, and succeeds once
+// the read ends.
+func TestGenericPricingColumnsMigrationBoundsLockWait(t *testing.T) {
+	_, db := setupPerfTestDB(t)
+	dropMatViewsForColumnDDL(t, db)
+	for _, column := range []string{"mapping_charge"} {
+		require.NoError(t, db.Exec("ALTER TABLE logs DROP COLUMN IF EXISTS "+column).Error)
+	}
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "logs_add_generic_pricing_columns").Error)
+
+	holder := db.Begin()
+	require.NoError(t, holder.Error)
+	require.NoError(t, holder.Exec("SELECT 1 FROM logs LIMIT 1").Error)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	started := time.Now()
+	err := migrationAddGenericPricingColumns(ctx, db, testLogger{})
+	elapsed := time.Since(started)
+	require.NoError(t, holder.Rollback().Error)
+
+	require.Error(t, err, "the migration must not wait out a held table lock")
+	require.Contains(t, err.Error(), "lock timeout", "it must fail on its own lock_timeout, not the caller's deadline")
+	require.Less(t, elapsed, 15*time.Second)
+
+	require.NoError(t, migrationAddGenericPricingColumns(context.Background(), db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&Log{}, "mapping_charge"))
+}

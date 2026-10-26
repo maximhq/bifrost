@@ -731,6 +731,7 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
 			params.StatusCode = result.PassthroughResponse.StatusCode
 		}
+		applyGenericPricingToEntry(entry, result.PassthroughResponse)
 	}
 
 	// Tool calls - names are always persisted, the full payload follows content policy
@@ -1920,6 +1921,18 @@ func (p *LoggerPlugin) dropIgnoredProviderCost(entry *logstore.Log) {
 	}
 }
 
+// applyGenericPricingToEntry records a generic relay's mapping charge (fee, units, upstream-reported
+// cost) on the row's own column, so a later cost recalculation keeps it rather than pricing the
+// row to nothing. It is a column, not params, so it survives content-hidden rows and object-storage
+// offload and is read by billing queries. Native passthroughs set none.
+func applyGenericPricingToEntry(entry *logstore.Log, response *schemas.BifrostPassthroughResponse) {
+	if entry == nil || response == nil || response.PassthroughUsage == nil || response.PassthroughUsage.MappingCharge == nil {
+		return
+	}
+	charge := *response.PassthroughUsage.MappingCharge
+	entry.MappingCharge = &charge
+}
+
 // calculateCostForLog reprices a stored log row and returns the total. Thin
 // wrapper over calculateCostBreakdownForLog for callers that only need the scalar.
 func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, error) {
@@ -1951,8 +1964,14 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 	cacheMetadata := logEntry.CacheDebugParsed
 	guardrailMetadata := logEntry.GuardrailDebugParsed
 
+	// A generic relay's row records its mapping charge (fee, units, upstream-reported cost), which
+	// is its whole price: the catalog has nothing to recompute, so it needs no token usage and is
+	// never refused as degraded.
+	mappingCharge := logEntry.MappingCharge
+	genericChargeOnly := mappingCharge != nil
+
 	// If no cache hit, guardrail call, or usage, we can't calculate cost.
-	if usage == nil && (cacheMetadata == nil || !cacheMetadata.CacheHit) && guardrailMetadata == nil {
+	if usage == nil && (cacheMetadata == nil || !cacheMetadata.CacheHit) && guardrailMetadata == nil && !genericChargeOnly {
 		return nil, fmt.Errorf("%w: token usage not available for log %s", errPricingInputsUnavailable, logEntry.ID)
 	}
 
@@ -1974,7 +1993,7 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 	// still degraded here is genuinely unpriceable (for example, the object fetch
 	// failed). Erroring makes the recalc job count it as skipped instead of
 	// writing a number that is wrong by multiples.
-	if logEntry.IsUsageDegraded() {
+	if logEntry.IsUsageDegraded() && !genericChargeOnly {
 		return nil, fmt.Errorf("%w: log %s", errPricingInputsUnavailable, logEntry.ID)
 	}
 
@@ -2028,6 +2047,23 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 			extraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{ModelID: logEntry.Model}
 		}
 		extraFields.RoutingInfo.ResolvedKeyAlias.ModelName = &canonical
+	}
+
+	// A generic relay's row is rebuilt as the passthrough response it was, its mapping charge as the
+	// cost the relay reported, so guardrail and cache costs apply as for any row. Its own provider
+	// name has no catalog row, so the generic rebuild below would price it to nothing.
+	if mappingCharge != nil {
+		extraFields.RequestType = schemas.PassthroughRequest
+		scopes := pricingScopesForLog(logEntry)
+		return p.pricingManager.CalculateCostBreakdown(&schemas.BifrostResponse{
+			PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				PassthroughUsage: &schemas.BifrostPassthroughUsage{
+					MappingCharge: mappingCharge,
+					Cost:          &schemas.BifrostCost{TotalCost: *mappingCharge, AdditionalCost: *mappingCharge},
+				},
+				ExtraFields: extraFields,
+			},
+		}, &scopes), nil
 	}
 
 	resp := buildResponseForRequestType(requestType, usage, extraFields, servedTierFromLog(logEntry))

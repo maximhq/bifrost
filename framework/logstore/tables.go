@@ -490,6 +490,8 @@ type Log struct {
 	Speed        *string `gorm:"type:varchar(32)" json:"speed,omitempty"`         // Anthropic served speed: "fast" / "standard"
 	InferenceGeo *string `gorm:"type:varchar(32)" json:"inference_geo,omitempty"` // Anthropic data residency, e.g. "us"
 
+	MappingCharge *float64 `json:"mapping_charge,omitempty"` // generic relay: its own charge (fee, units, upstream cost) without catalog token pricing
+
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - these will be populated when needed

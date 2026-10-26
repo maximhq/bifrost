@@ -1840,6 +1840,8 @@ var billingScalarColumns = []string{
 	"has_object", "content_hidden",
 	// Served tier: scales every token rate.
 	"service_tier", "speed", "inference_geo",
+	// Generic relay: the catalog provider its tokens re-price under and the charge kept as is.
+	"mapping_charge",
 }
 
 // billingSelectColumns returns the SELECT clause for cost recomputation.
