@@ -6305,3 +6305,67 @@ func TestGemini35ThinkingAndStreamingUsage(t *testing.T) {
 		assert.Equal(t, 2630, deltas2[0].Usage.TotalTokens)
 	})
 }
+
+func BenchmarkGemini3ThinkingAndStreamUsage(b *testing.B) {
+	effort := "medium"
+	budget := 2048
+	summary := "none"
+	chatReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Vertex,
+		Model:    "au.gemini-3.5-flash",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			Reasoning: &schemas.ChatReasoning{
+				Effort:    &effort,
+				MaxTokens: &budget,
+				Summary:   &summary,
+			},
+		},
+	}
+
+	b.Run("ToGeminiChatCompletionRequest", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_, _ = gemini.ToGeminiChatCompletionRequest(nil, chatReq)
+		}
+	})
+
+	chunk1 := &gemini.GenerateContentResponse{
+		ResponseID:   "resp-split-1",
+		ModelVersion: "gemini-3.5-flash",
+		Candidates: []*gemini.Candidate{{
+			Index:        0,
+			FinishReason: gemini.FinishReasonStop,
+			Content: &gemini.Content{
+				Role:  string(gemini.RoleModel),
+				Parts: []*gemini.Part{{Text: "Hello"}},
+			},
+		}},
+	}
+	chunk2 := &gemini.GenerateContentResponse{
+		ResponseID:   "resp-split-1",
+		ModelVersion: "gemini-3.5-flash",
+		Candidates:   []*gemini.Candidate{},
+		UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+			PromptTokenCount:        2500,
+			CachedContentTokenCount: 2000,
+			CandidatesTokenCount:    10,
+			ThoughtsTokenCount:      120,
+			TotalTokenCount:         2630,
+		},
+	}
+
+	b.Run("SplitStreamChunks", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			state := gemini.NewGeminiStreamState()
+			_, _, _ = chunk1.ToBifrostChatCompletionStream(state)
+			_, _, _ = chunk2.ToBifrostChatCompletionStream(state)
+		}
+	})
+}
