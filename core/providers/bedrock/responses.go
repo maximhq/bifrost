@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -4055,9 +4056,12 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 						}
 					} else if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 						// Handle structured output blocks
+						hadToolReference := false
 						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 							if block.Text != nil {
 								resultContent = append(resultContent, tryParseJSONIntoContentBlock(*block.Text))
+							} else if block.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+								hadToolReference = true
 							} else if block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
 								block.ResponsesInputMessageContentBlockImage != nil &&
 								block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
@@ -4102,6 +4106,9 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 									resultContent = append(resultContent, BedrockContentBlock{Document: document})
 								}
 							}
+						}
+						if hadToolReference && len(resultContent) == 0 {
+							resultContent = append(resultContent, BedrockContentBlock{Text: schemas.Ptr("")})
 						}
 					}
 				}
@@ -5301,6 +5308,23 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				}
 			}
 
+			var outputBlocks []schemas.ResponsesMessageContentBlock
+			if slices.ContainsFunc(block.ToolResult.Content, func(c BedrockContentBlock) bool { return c.AnthropicToolReference != nil }) {
+				for _, c := range block.ToolResult.Content {
+					if c.AnthropicToolReference != nil {
+						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
+							Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
+							ToolName: c.AnthropicToolReference,
+						})
+					} else if c.Text != nil {
+						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: c.Text,
+						})
+					}
+				}
+			}
+
 			// Create a copy of the value to avoid range loop variable capture
 			toolResultID := block.ToolResult.ToolUseID
 
@@ -5330,6 +5354,10 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 						ResponsesToolCallOutputStr: &resultContent,
 					},
 				},
+			}
+			if outputBlocks != nil {
+				resultMsg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr = nil
+				resultMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = outputBlocks
 			}
 			// Anthropic's tool_result.is_error normalizes to Status "error" in invoke.go's
 			// UnmarshalJSON; surface it the same way the native Anthropic provider does

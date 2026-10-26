@@ -252,6 +252,7 @@ type BedrockContentBlock struct {
 	// ingress on these json:"-" carriers (#7155).
 	AnthropicToolSearchUse    *BedrockAnthropicToolSearchUse    `json:"-"`
 	AnthropicToolSearchResult *BedrockAnthropicToolSearchResult `json:"-"`
+	AnthropicToolReference    *string                           `json:"-"` // tool_name of a tool_reference inside a tool_result (#8976)
 }
 
 // BedrockAnthropicToolSearchUse is a replayed server_tool_use naming a tool-search
