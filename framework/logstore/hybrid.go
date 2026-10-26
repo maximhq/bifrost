@@ -1223,8 +1223,9 @@ func (h *HybridLogStore) hydrateLogForBilling(ctx context.Context, log *Log) err
 	// the modality payload recovered above — input chars, pages processed, seconds,
 	// image count — and computeOCRCost takes no usage argument at all. Rejecting those
 	// here would report Unpriceable, which claims the inputs are unrecoverable, when
-	// hydration in fact recovered everything pricing reads.
-	if log.TokenUsage == "" && billingPayloadColumnFor(log.Object) == "" {
+	// hydration in fact recovered everything pricing reads. A generic relay row carries its
+	// whole price in mapping_charge, a DB column, and never has tokens to recover.
+	if log.TokenUsage == "" && billingPayloadColumnFor(log.Object) == "" && log.MappingCharge == nil {
 		// The object exists but carries no usage. Nothing to price from, and the
 		// stub is still in place — report rather than let the caller bill it.
 		return fmt.Errorf("hydrated payload has no token_usage")

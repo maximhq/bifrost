@@ -433,3 +433,31 @@ func TestBackfillMakesLaterHydrationFetchFree(t *testing.T) {
 	assert.True(t, dbRow.HasObject, "the row must still reference its offloaded payload")
 	assert.Equal(t, 1, objStore.Len(), "the object must still hold the full payload")
 }
+
+// A generic relay row is priced from its own mapping charge, not from tokens, so an offloaded
+// row with no token_usage must still come back hydrated rather than unpriceable (#9029 review).
+func TestHydrateBillingChunkAcceptsGenericRowWithoutTokens(t *testing.T) {
+	hybrid, inner, _ := newCountingHybrid(t, nil)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	entry := &Log{
+		ID: "generic-fee-1", Timestamp: time.Now().UTC(), Provider: "tavily", Status: "success",
+		Object: "passthrough", IsPassthrough: true, MappingCharge: new(0.012),
+		PassthroughRequestBody:  `{"query":"bifrost"}`,
+		PassthroughResponseBody: `{"results":[]}`,
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForOffload(t, inner, "generic-fee-1")
+
+	result, err := hybrid.SearchLogsForBilling(ctx, SearchFilters{}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, result.Logs, 1)
+
+	hydration, err := hybrid.HydrateBillingChunk(ctx, []*Log{&result.Logs[0]})
+	require.NoError(t, err)
+	assert.Empty(t, hydration.Unpriceable, "a fee-only generic row has everything pricing needs")
+	require.NotNil(t, result.Logs[0].MappingCharge)
+	assert.Equal(t, 0.012, *result.Logs[0].MappingCharge)
+}
