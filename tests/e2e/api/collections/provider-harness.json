@@ -189828,7 +189828,7 @@
     },
     {
       "name": "137. MCP client registration validation (mcp-registration-validation)",
-      "description": "Management-endpoint checks with no live provider involved. POST /api/mcp/client must validate connection_type against the enum (http, sse, stdio) before anything else, and an unauthenticated (auth-bypassed) registration whose target hostname cannot be resolved must be refused rather than handed to the connect path. Both run against the harness profile, which has no admin auth configured. DELETE /api/mcp/client/<id> for an id no client has must answer 404, not 500.",
+      "description": "Management-endpoint checks with no live provider involved. POST /api/mcp/client must validate connection_type against the enum (http, sse, stdio) before anything else, and an unauthenticated (auth-bypassed) registration whose target hostname cannot be resolved must be refused rather than handed to the connect path. Both run against the harness profile, which has no admin auth configured. DELETE /api/mcp/client/<id> for an id no client has must answer 404, not 500. per_user_discovery is refused, on create and update alike, for a shared auth type and for an openapi client.",
       "item": [
         {
           "name": "POST /api/mcp/client · unknown connection_type is rejected with 400",
@@ -189962,6 +189962,261 @@
                 "mcp",
                 "client",
                 "{{mcpClientDeleteUnknownId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] POST /api/mcp/client · per_user_discovery on a shared auth type is rejected with 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// per_user_discovery discovers each caller's tools with their own credential: a shared auth type has none, so the flag is refused before anything is dialed.",
+                  "// A probe the server should refuse but accepted would persist and block later runs with a name conflict: remove it (the assertion below still fails).",
+                  "if (pm.response.code === 200) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=harness_mcp_pud_shared_probe&limit=10', method: 'GET' }, function (err, res) {",
+                  "    if (err || res.code !== 200) { return; }",
+                  "    (res.json().clients || []).forEach(function (c) {",
+                  "      if (c.config && c.config.name === 'harness_mcp_pud_shared_probe') {",
+                  "        pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function () {});",
+                  "      }",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('per_user_discovery on a headers client is a 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"only valid for per-user auth types\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_mcp_pud_shared_probe\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"https://example.com/mcp\",\n  \"auth_type\": \"headers\",\n  \"tools_to_execute\": [\n    \"*\"\n  ],\n  \"per_user_discovery\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] POST /api/mcp/client · per_user_discovery on an openapi client is rejected with 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An openapi client's tools come from its document, the same for every caller, so the flag is refused even with a per-user auth type.",
+                  "// A probe the server should refuse but accepted would persist and block later runs with a name conflict: remove it (the assertion below still fails).",
+                  "if (pm.response.code === 200) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=harness_mcp_pud_openapi_probe&limit=10', method: 'GET' }, function (err, res) {",
+                  "    if (err || res.code !== 200) { return; }",
+                  "    (res.json().clients || []).forEach(function (c) {",
+                  "      if (c.config && c.config.name === 'harness_mcp_pud_openapi_probe') {",
+                  "        pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function () {});",
+                  "      }",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.test('per_user_discovery on an openapi client is a 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include(\"does not apply to openapi clients\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_mcp_pud_openapi_probe\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"per_user_headers\",\n  \"per_user_header_keys\": [\n    \"api_key\"\n  ],\n  \"tools_to_execute\": [\n    \"*\"\n  ],\n  \"per_user_discovery\": true,\n  \"openapi_config\": {\n    \"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"Harness Petstore\\\", \\\"version\\\": \\\"1.0.0\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://petstore3.swagger.io/api/v3\\\"}], \\\"paths\\\": {\\\"/pet/findByStatus\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"listPets\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\",\n    \"base_url\": \"https://petstore3.swagger.io/api/v3\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /api/mcp/client · per_user_discovery update probe creates a shared openapi client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Run-unique identity (timestamp plus a random suffix): harness shards and parallel runs never collide on this client.",
+                  "var run = Date.now() + '_' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('pudUpdateProbeId', 'harness-mcp-pud-update-' + run.replace('_', '-'));",
+                  "pm.collectionVariables.set('pudUpdateProbeName', 'harness_mcp_pud_update_' + run);",
+                  "// A run that stopped before its cleanup leaves its client behind. Remove this probe's own leftovers once they are over an hour old,",
+                  "// which no run still in progress can own.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=harness_mcp_pud_update_&limit=100', method: 'GET' }, function (err, res) {",
+                  "  pm.test('leftover update probe clients listed', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  if (err || res.code !== 200) { return; }",
+                  "  var cutoff = Date.now() - 3600000;",
+                  "  (res.json().clients || []).forEach(function (c) {",
+                  "    var name = (c.config && c.config.name) || '';",
+                  "    var m = /^harness_mcp_pud_update_(\\d{13})(?:_|$)/.exec(name);",
+                  "    if (!m || Number(m[1]) >= cutoff) { return; }",
+                  "    pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function (derr, dres) {",
+                  "      pm.test('leftover update probe client ' + name + ' removed', function () {",
+                  "        pm.expect(derr, String(derr)).to.equal(null);",
+                  "        var gone = dres.code === 404;",
+                  "        pm.expect(dres.code === 200 || gone, 'status ' + dres.code + ': ' + dres.text()).to.equal(true);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('shared openapi client is created', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{pudUpdateProbeId}}\",\n  \"name\": \"{{pudUpdateProbeName}}\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"none\",\n  \"tools_to_execute\": [\n    \"*\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"Harness Petstore\\\", \\\"version\\\": \\\"1.0.0\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://petstore3.swagger.io/api/v3\\\"}], \\\"paths\\\": {\\\"/pet/findByStatus\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"listPets\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\",\n    \"base_url\": \"https://petstore3.swagger.io/api/v3\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] PUT /api/mcp/client/{id} · turning per_user_discovery on for a shared client is rejected with 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The update path accepts the flag too, under the same rule as create: refused for a client with no per-caller credential.",
+                  "pm.test('per_user_discovery on a shared client is a 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('only valid for per-user auth types');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"per_user_discovery\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{pudUpdateProbeId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{pudUpdateProbeId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE /api/mcp/client/{id} · per_user_discovery update probe cleanup deletes the client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('update probe client is deleted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{pudUpdateProbeId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{pudUpdateProbeId}}"
               ]
             }
           }
