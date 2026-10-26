@@ -30,11 +30,11 @@ generic:
       upstream status and body unchanged with the upstream headers, except hop-by-hop headers,
       `Set-Cookie`, `Proxy-Authenticate`, `WWW-Authenticate` and the headers the gateway sets
       itself, which are not relayed. The `400` and `404` responses below are Bifrost's own
-      refusals (path guard, unknown provider, strict routes, a provider mismatch, a duplicate model
+      refusals (path guard, unknown provider, an unmatched route when `skip_route_check` is off, a provider mismatch, a duplicate model
       key, an unmeasurable billed body) and carry
       a Bifrost error; an upstream `400` or `404` is relayed with the upstream's own body, as
       every other upstream status is (see `default`). Every dispatched call runs the plugin pipeline and is logged. The path guard, an unknown
-      provider, a strict-routes miss, a provider mismatch and a duplicate model key are refused
+      provider, an unmatched route when `skip_route_check` is off, a provider mismatch and a duplicate model key are refused
       before dispatch with no log row; an unmeasurable billed body is refused inside the relay and
       logged as an error. With content
       logging on, JSON request bodies and text response bodies are stored, multipart requests are

@@ -388,6 +388,9 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 				if (result.auth.header_name) form.setValue("auth.header_name", result.auth.header_name, { shouldDirty: true });
 				if (result.auth.query_param) form.setValue("auth.query_param", result.auth.query_param, { shouldDirty: true });
 			}
+			// A complete import is the whole API: the list it produced is the allowlist, so a bypass
+			// left on from before would silently relay operations the panel says are refused.
+			if (result.routes.length > 0 && !result.partial) form.setValue("skip_route_check", false, { shouldDirty: true });
 			toast.success(`Imported ${result.routes.length} operations from ${result.title || "the document"}`);
 		} catch (err) {
 			setImported(null);
@@ -619,8 +622,9 @@ export function GenericPassthroughFormFragment({ provider }: Props) {
 							<AccordionContent className="space-y-3 pt-4 pb-0" data-testid="generic-openapi-import-section">
 								<p className="text-muted-foreground text-sm">
 									Import the API&apos;s OpenAPI or Swagger document (paste, upload or fetch it). Its operations become the routes below, its
-									security scheme sets the auth type. Only the routes listed are relayed, so after a partial import (see the warnings) calls
-									to the missing operations are refused until you add them. The document itself is not stored.
+									security scheme sets the auth type, and a complete import switches the route check on, so only the routes listed are
+									relayed. After a partial import (see the warnings) add the missing routes; with the route check on they are refused until
+									you do. The document itself is not stored.
 									{routes.fields.length > 0 && (
 										<span className="text-foreground" data-testid="generic-openapi-import-replace-note">
 											{" "}

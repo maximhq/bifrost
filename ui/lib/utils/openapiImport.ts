@@ -195,7 +195,7 @@ export function importOpenAPI(doc: Doc): OpenAPIImport {
 		if (referenced.length > 0) {
 			result.partial = true;
 			result.warnings.push(
-				`${referenced.join(", ")} ${referenced.length === 1 ? "is" : "are"} defined by $ref, which the import does not resolve; add those routes by hand, or calls to them are refused.`,
+				`${referenced.join(", ")} ${referenced.length === 1 ? "is" : "are"} defined by $ref, which the import does not resolve, so those operations were not imported; add their routes by hand and review the routes list.`,
 			);
 		}
 		if (result.routes.length === 0 && referenced.length === 0)
