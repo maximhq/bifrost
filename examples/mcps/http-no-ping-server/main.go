@@ -17,6 +17,29 @@ import (
 // NoPingMCPServer is an HTTP MCP server that intentionally does not support ping.
 // This demonstrates how to configure servers with is_ping_available=false in Bifrost
 // when your MCP server implementation doesn't support the optional ping method.
+
+// chartTool declares a title and an output schema and answers with structured content plus an image,
+// so results that are not plain text can be checked end to end.
+func chartTool() mcp.Tool {
+	return mcp.NewTool(
+		"chart",
+		mcp.WithDescription("Plot the points and return them with a chart image"),
+		mcp.WithTitleAnnotation("Chart"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithOutputSchema[struct {
+			Points int `json:"points"`
+		}](),
+	)
+}
+
+func chartHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	result := mcp.NewToolResultStructured(map[string]any{"points": 3}, "3 points")
+	// A 1x1 transparent PNG.
+	result.Content = append(result.Content, mcp.NewImageContent("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "image/png"))
+	return result, nil
+}
+
 func main() {
 	// Create MCP server
 	mcpServer := server.NewMCPServer(
@@ -62,6 +85,7 @@ func main() {
 	mcpServer.AddTool(echoTool, echoHandler)
 	mcpServer.AddTool(addTool, addHandler)
 	mcpServer.AddTool(greetTool, greetHandler)
+	mcpServer.AddTool(chartTool(), chartHandler)
 
 	// Create HTTP server using StreamableHTTP transport
 	httpServer := server.NewStreamableHTTPServer(mcpServer)

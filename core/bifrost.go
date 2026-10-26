@@ -4584,18 +4584,18 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 	clientsInConfig := make([]schemas.MCPClient, 0, len(clients))
 
 	for _, client := range clients {
-		tools := make([]schemas.ChatToolFunction, 0, len(client.ToolMap))
+		tools := make([]schemas.MCPClientTool, 0, len(client.ToolMap))
 		for _, tool := range client.ToolMap {
 			if tool.Function != nil {
-				// Create a deep copy (for name) of the tool function to avoid modifying the original
-				toolFunction := schemas.ChatToolFunction{}
-				toolFunction.Name = tool.Function.Name
-				toolFunction.Description = tool.Function.Description
-				toolFunction.Parameters = tool.Function.Parameters
-				toolFunction.Strict = tool.Function.Strict
+				// A deep copy: the caller owns what it gets, annotations, icons and output schema included.
+				tool = schemas.DeepCopyChatTool(tool)
+				listed := schemas.MCPClientTool{ChatToolFunction: *tool.Function, Annotations: tool.Annotations}
+				if tool.MCP != nil {
+					listed.Title, listed.Icons, listed.OutputSchema = tool.MCP.Title, tool.MCP.Icons, tool.MCP.OutputSchema
+				}
 				// Remove the client prefix from the tool name
-				toolFunction.Name = strings.TrimPrefix(toolFunction.Name, client.ExecutionConfig.Name+"-")
-				tools = append(tools, toolFunction)
+				listed.Name = strings.TrimPrefix(listed.Name, client.ExecutionConfig.Name+"-")
+				tools = append(tools, listed)
 			}
 		}
 

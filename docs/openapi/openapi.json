@@ -130286,7 +130286,8 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "Tool function definition",
+              "description": "A tool an MCP client lists, with what its MCP server declares about it",
+              "additionalProperties": false,
               "properties": {
                 "name": {
                   "type": "string"
@@ -130300,13 +130301,76 @@
                 },
                 "strict": {
                   "type": "boolean"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Display name the server gives the tool."
+                },
+                "icons": {
+                  "type": "array",
+                  "description": "Icons the server gives the tool.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "src"
+                    ],
+                    "properties": {
+                      "src": {
+                        "type": "string"
+                      },
+                      "mimeType": {
+                        "type": "string"
+                      },
+                      "sizes": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "theme": {
+                        "type": "string",
+                        "enum": [
+                          "light",
+                          "dark"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "output_schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "JSON Schema of the structured result the tool returns, when the server declares one."
+                },
+                "annotations": {
+                  "type": "object",
+                  "description": "Behavior hints the server gives the tool.",
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "readOnlyHint": {
+                      "type": "boolean"
+                    },
+                    "destructiveHint": {
+                      "type": "boolean"
+                    },
+                    "idempotentHint": {
+                      "type": "boolean"
+                    },
+                    "openWorldHint": {
+                      "type": "boolean"
+                    }
+                  }
                 }
               }
             }
           },
           "resources": {
             "type": "array",
-            "description": "Resources the server lists, as last discovered; empty when it offers none. URIs are the server's own.",
+            "description": "Resources the server lists, as last discovered; empty when it offers none.\nURIs are the server's own.\n",
             "items": {
               "type": "object",
               "additionalProperties": true,
@@ -130440,7 +130504,7 @@
           },
           "prompts": {
             "type": "array",
-            "description": "Prompts the server lists, as last discovered; empty when it offers none. Names are prefixed with the client name, like tools.",
+            "description": "Prompts the server lists, as last discovered; empty when it offers none.\nNames are prefixed with the client name, like tools.\n",
             "items": {
               "type": "object",
               "additionalProperties": true,

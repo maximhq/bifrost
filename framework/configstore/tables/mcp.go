@@ -55,6 +55,8 @@ type TableMCPClient struct {
 	// Per-user OAuth: discovered tools persisted so they survive restart
 	DiscoveredToolsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool
 	ToolNameMappingJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+
+	DiscoveredToolDetailsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.MCPToolDetails, left out of ChatTool's JSON
 	// DiscoveredInstructions is the upstream's initialize `instructions`. Persisted for the
 	// same reason the tools above are: a per-call client holds no connection to re-read it
 	// from, so without this a restart leaves it serving tools with no instructions.
@@ -304,6 +306,9 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 		c.DiscoveredToolsJSON = string(data)
+		if c.DiscoveredToolDetailsJSON, err = EncodeToolDetails(c.DiscoveredTools); err != nil {
+			return err
+		}
 	}
 
 	if c.DiscoveredToolNameMapping != nil {
@@ -508,6 +513,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 	}
+	if c.DiscoveredToolDetailsJSON != "" {
+		var details map[string]schemas.MCPToolDetails
+		if err := json.Unmarshal([]byte(c.DiscoveredToolDetailsJSON), &details); err != nil {
+			return err
+		}
+		schemas.ApplyToolDetails(c.DiscoveredTools, details)
+	}
 	if c.ToolNameMappingJSON != "" {
 		if err := sonic.Unmarshal([]byte(c.ToolNameMappingJSON), &c.DiscoveredToolNameMapping); err != nil {
 			return err
@@ -576,6 +588,16 @@ func (c *TableMCPClient) EncodeDiscoveredLists() error {
 	}
 	c.DiscoveredPromptsJSON, err = marshalListJSON(c.DiscoveredPrompts)
 	return err
+}
+
+// EncodeToolDetails encodes the annotations and metadata of tools for their column; none is "".
+func EncodeToolDetails(tools map[string]schemas.ChatTool) (string, error) {
+	details := schemas.ToolDetails(tools)
+	if details == nil {
+		return "", nil
+	}
+	data, err := json.Marshal(details)
+	return string(data), err
 }
 
 // marshalListJSON encodes a discovered list for its column; nil (the server offers none) is "".

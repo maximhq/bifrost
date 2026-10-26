@@ -2410,6 +2410,10 @@ func (s *RDBConfigStore) UpdateMCPClientDiscovery(ctx context.Context, clientID 
 	if err != nil {
 		return fmt.Errorf("failed to marshal tool_name_mapping: %w", err)
 	}
+	detailsJSON, err := tables.EncodeToolDetails(discovery.Tools)
+	if err != nil {
+		return fmt.Errorf("failed to marshal discovered tool details: %w", err)
+	}
 	// Same encoding the row's BeforeSave uses, so a nil list stays "" either way.
 	listed := &tables.TableMCPClient{
 		DiscoveredResources:         discovery.Resources,
@@ -2431,6 +2435,7 @@ func (s *RDBConfigStore) UpdateMCPClientDiscovery(ctx context.Context, clientID 
 			"discovered_resources_json":          listed.DiscoveredResourcesJSON,
 			"discovered_resource_templates_json": listed.DiscoveredResourceTemplatesJSON,
 			"discovered_prompts_json":            listed.DiscoveredPromptsJSON,
+			"discovered_tool_details_json":       detailsJSON,
 		})
 	if res.Error != nil {
 		return res.Error
@@ -2686,13 +2691,16 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if err != nil {
 			return fmt.Errorf("failed to marshal tool_pricing: %w", err)
 		}
-		discoveredToolsJSON := ""
+		discoveredToolsJSON, discoveredToolDetailsJSON := "", ""
 		if clientConfig.DiscoveredTools != nil {
 			data, marshalErr := json.Marshal(clientConfig.DiscoveredTools)
 			if marshalErr != nil {
 				return fmt.Errorf("failed to marshal discovered_tools: %w", marshalErr)
 			}
 			discoveredToolsJSON = string(data)
+			if discoveredToolDetailsJSON, marshalErr = tables.EncodeToolDetails(clientConfig.DiscoveredTools); marshalErr != nil {
+				return fmt.Errorf("failed to marshal discovered tool details: %w", marshalErr)
+			}
 		}
 		toolNameMappingJSON := ""
 		if clientConfig.DiscoveredToolNameMapping != nil {
@@ -2761,6 +2769,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		updates["tls_config_json"] = tlsConfigJSON
 		if discoveredToolsJSON != "" {
 			updates["discovered_tools_json"] = discoveredToolsJSON
+			updates["discovered_tool_details_json"] = discoveredToolDetailsJSON
 		}
 		if toolNameMappingJSON != "" {
 			updates["tool_name_mapping_json"] = toolNameMappingJSON

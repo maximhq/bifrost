@@ -254,6 +254,27 @@ test.describe("MCP Registry", () => {
       await mcpRegistryPage.closeDetailSheet();
     });
 
+    test("should show a tool's title and output schema", async ({ mcpRegistryPage }) => {
+      const clientData = createHTTPClientData({ name: `tool_metadata_${Date.now()}` });
+      const created = await mcpRegistryPage.createClient(clientData);
+      expect(created).toBe(true);
+      createdClients.push(clientData.name);
+
+      await expect
+        .poll(() => mcpRegistryPage.getClientStatus(clientData.name), { timeout: 30_000 })
+        .toBe("healthy");
+
+      // http-no-ping-server's chart tool is titled "Chart" and declares an output schema.
+      await mcpRegistryPage.viewClientDetails(clientData.name);
+      const sheet = mcpRegistryPage.detailSheet;
+      await sheet.getByTestId("mcpclient-tab-tools").click();
+      await expect(sheet.getByTestId("mcp-tool-title-chart")).toHaveText("Chart");
+      await expect(sheet.getByTestId("mcp-tool-output-schema-chart")).toHaveCount(0);
+      await sheet.getByTestId("mcp-tool-expand-chart").click();
+      await expect(sheet.getByTestId("mcp-tool-output-schema-chart")).toContainText("points");
+      await mcpRegistryPage.closeDetailSheet();
+    });
+
     test("should connect to SSE server and list tools", async ({
       mcpRegistryPage,
     }) => {

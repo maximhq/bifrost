@@ -729,6 +729,93 @@ func TestMCPGateway_NarrowedCallerCannotReachPromptsOrResources(t *testing.T) {
 	}
 }
 
+// chartToolManager serves one tool, "gw-chart", that declares a title, an icon and an output schema,
+// and answers with text, an image and structured content. With {"rewrite": true} a plugin is taken to
+// have rewritten the answer and marked it failed.
+type chartToolManager struct {
+	fakeInstructionsToolManager
+}
+
+func (c *chartToolManager) GetAvailableMCPTools(context.Context) []schemas.ChatTool {
+	return []schemas.ChatTool{{
+		Type:     schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{Name: "gw-chart"},
+		MCP: &schemas.MCPToolMetadata{
+			Title:        "Chart",
+			Icons:        []mcp.Icon{{Src: "https://example.com/chart.png", MIMEType: "image/png"}},
+			OutputSchema: json.RawMessage(`{"type":"object","properties":{"points":{"type":"number"}}}`),
+		},
+	}}
+}
+
+func (c *chartToolManager) ExecuteChatMCPTool(_ context.Context, call *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	upstream := &mcp.CallToolResult{
+		Content:           []mcp.Content{mcp.NewTextContent("3 points"), mcp.NewImageContent("iVBORw0KGgo=", "image/png")},
+		StructuredContent: map[string]any{"points": 3},
+	}
+	text := "3 points"
+	content := &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+		{Type: schemas.ChatContentBlockTypeText, Text: &text},
+		{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
+	}}
+	toolMessage := &schemas.ChatToolMessage{ToolCallID: call.ID}
+	toolMessage.SetMCPResult(upstream, content)
+	if strings.Contains(call.Function.Arguments, "rewrite") {
+		redacted := "[redacted]"
+		content.ContentBlocks[0].Text = &redacted
+		toolMessage.IsError = schemas.Ptr(true)
+	}
+	return &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: content, ChatToolMessage: toolMessage}, nil
+}
+
+// The gateway lists a tool's title, icons and output schema, and answers with the upstream's own result
+// (images and structured content included); a result a plugin rewrote is rebuilt from the message
+// instead, and isError follows the message either way.
+func TestMCPGateway_ToolMetadataAndResultFidelity(t *testing.T) {
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, &chartToolManager{}, nil, nil, nil)
+	require.NoError(t, err)
+	baseURL := startGateway(t, h)
+	for _, version := range []string{mcp.ProtocolVersion20250618, mcp.ProtocolVersion20251125, mcp.ProtocolVersion20260728} {
+		t.Run(version, func(t *testing.T) {
+			ctx := context.Background()
+			tr, err := transport.NewStreamableHTTP(baseURL + "/mcp")
+			require.NoError(t, err)
+			c := client.NewClient(tr, client.WithProtocolVersion(version))
+			require.NoError(t, c.Start(ctx))
+			t.Cleanup(func() { _ = c.Close() })
+			init := mcp.InitializeRequest{}
+			init.Params.ProtocolVersion = version
+			_, err = c.Initialize(ctx, init)
+			require.NoError(t, err)
+
+			tools, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+			require.NoError(t, err)
+			require.Len(t, tools.Tools, 1)
+			listed := tools.Tools[0]
+			assert.Equal(t, "Chart", listed.Title)
+			require.Len(t, listed.Icons, 1)
+			assert.Equal(t, "https://example.com/chart.png", listed.Icons[0].Src)
+			assert.Equal(t, "object", listed.OutputSchema.Type)
+
+			call := mcp.CallToolRequest{}
+			call.Params.Name = "gw-chart"
+			result, err := c.CallTool(ctx, call)
+			require.NoError(t, err)
+			assert.False(t, result.IsError)
+			require.Len(t, result.Content, 2)
+			assert.Equal(t, "image/png", result.Content[1].(mcp.ImageContent).MIMEType)
+			assert.Equal(t, map[string]any{"points": float64(3)}, result.StructuredContent)
+
+			call.Params.Arguments = map[string]any{"rewrite": true}
+			rewritten, err := c.CallTool(ctx, call)
+			require.NoError(t, err)
+			assert.True(t, rewritten.IsError, "a failed result is not reported as a success")
+			assert.Equal(t, "[redacted]", rewritten.Content[0].(mcp.TextContent).Text)
+			assert.Nil(t, rewritten.StructuredContent, "the raw result never reaches the caller once rewritten")
+		})
+	}
+}
+
 // BenchmarkMCPGateway drives the /mcp handler in process: admission, transport and the server,
 // tools only and with upstream prompts and resources served.
 func BenchmarkMCPGateway(b *testing.B) {
@@ -820,4 +907,52 @@ func TestUpstreamError_KeepsUpstreamCodes(t *testing.T) {
 	assert.Equal(t, mcp.INVALID_PARAMS, code(upstreamError(upstream(fmt.Errorf("%w: missing diff", mcp.ErrInvalidParams)), mcp.RESOURCE_NOT_FOUND)))
 	assert.Equal(t, mcp.RESOURCE_NOT_FOUND, code(upstreamError(upstream(fmt.Errorf("%w: fixture://notes/999", mcp.ErrResourceNotFound)), mcp.RESOURCE_NOT_FOUND)))
 	assert.Equal(t, mcp.INTERNAL_ERROR, code(upstreamError(upstream(errors.New("backend down")), mcp.RESOURCE_NOT_FOUND)))
+}
+
+// A result the gateway rebuilds after a plugin edit sends a file as MCP asks: bare base64 in blob, with
+// its media type, even though the tool message carries it as a data URL.
+func TestGatewayToolResult_RebuiltFileIsBareBase64(t *testing.T) {
+	message := &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+		{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("file below (edited)")},
+		{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileData: schemas.Ptr("data:text/plain;base64,SGVsbG8="), Filename: schemas.Ptr("hello.txt"), FileType: schemas.Ptr("text/plain")}},
+		{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileData: schemas.Ptr("data:application/pdf;base64,JVBERi0xLjQK"), Filename: schemas.Ptr("report.pdf")}},
+	}}}
+	result := gatewayToolResult(message, false)
+	require.Len(t, result.Content, 3)
+	for i, want := range []mcp.BlobResourceContents{
+		{URI: "file:///hello.txt", MIMEType: "text/plain", Blob: "SGVsbG8="},
+		{URI: "file:///report.pdf", MIMEType: "application/pdf", Blob: "JVBERi0xLjQK"},
+	} {
+		resource, ok := result.Content[i+1].(mcp.EmbeddedResource)
+		require.True(t, ok, "content %d: %T", i+1, result.Content[i+1])
+		assert.Equal(t, want, resource.Resource)
+	}
+}
+
+// A result the gateway rebuilds for a tool that declares an output schema carries structured content
+// parsed from its JSON text, as MCP requires; other results carry none.
+func TestGatewayToolResult_StructuredContentForDeclaredSchema(t *testing.T) {
+	jsonText := &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"total":3}`)}}
+	assert.Equal(t, map[string]any{"total": float64(3)}, gatewayToolResult(jsonText, true).StructuredContent)
+	assert.Nil(t, gatewayToolResult(jsonText, false).StructuredContent, "no schema, no structured content")
+	plain := &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("[redacted]")}}
+	rewritten := gatewayToolResult(plain, true)
+	assert.Nil(t, rewritten.StructuredContent, "text that is not a JSON object is not invented into one")
+	// A success without the structured content its schema promises is not valid MCP; an error needs none.
+	assert.True(t, rewritten.IsError, "a rewritten result that no longer fits the output schema is an error")
+	require.NotEmpty(t, rewritten.Content)
+	assert.Equal(t, "[redacted]", rewritten.Content[0].(mcp.TextContent).Text, "the rewritten text is kept")
+	assert.False(t, gatewayToolResult(plain, false).IsError, "without a schema, plain text is a normal success")
+}
+
+// A rebuilt result sends audio as MCP asks, bare base64, even when the tool message carries a data URL.
+func TestGatewayToolResult_RebuiltAudioIsBareBase64(t *testing.T) {
+	message := &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+		{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "data:audio/mpeg;base64,SUQz"}},
+		{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "UklGRg==", Format: schemas.Ptr("wav")}},
+	}}}
+	result := gatewayToolResult(message, false)
+	require.Len(t, result.Content, 2)
+	assert.Equal(t, mcp.NewAudioContent("SUQz", "audio/mpeg"), result.Content[0])
+	assert.Equal(t, mcp.NewAudioContent("UklGRg==", "audio/wav"), result.Content[1])
 }

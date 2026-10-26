@@ -289735,6 +289735,326 @@
           }
         }
       ]
+    },
+    {
+      "name": "279. MCP tools carry what their server declares about them (mcp-tool-metadata)",
+      "description": "Bifrost keeps what an upstream MCP server declares about each tool besides its function definition: annotations, title, icons (2025-11-25) and output schema. They are persisted with the discovered tools (annotations were dropped on restore before), listed on GET /api/mcp/clients (title, icons, output_schema, annotations), and served on the /mcp gateway's tools/list. Pre-change the listing carried only name, description, parameters and strict. Tool results now keep images, audio, embedded resources and structured content: as content blocks on the LLM path (providers that cannot take media in a tool result get a placeholder naming it), and unchanged through the /mcp gateway, isError included. Execution is covered by Go tests (TestExecuteTool_MultiModalResultAndToolMetadata, TestMCPGateway_ToolMetadataAndResultFidelity, per-provider tool-result media tests) since the profile's sse_mcp only allows echo, add and greet. Uses the sse_mcp fixture's chart tool (examples/mcps/remote-test-server, mcp-go v0.43.2: annotation title and output schema, no tool-level title or icons); a stale fixture build or an older process on :3012 lists no chart tool. No provider calls; the openai keyword is a harness filter label. Run with FEATURE=mcp-tool-metadata.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai mcp-tool-metadata sse_mcp lists its chart tool's title and output schema",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the chart tool carries the annotations and output schema its server declares', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var mine = (pm.response.json().clients || []).filter(function (c) { return c.config && c.config.name === 'sse_mcp'; })[0];",
+                  "  pm.expect(mine, 'sse_mcp is not registered: ' + pm.response.text()).to.be.an('object');",
+                  "  var chart = (mine.tools || []).filter(function (t) { return t.name === 'chart'; })[0];",
+                  "  pm.expect(chart, 'no chart tool (stale fixture on :3012?): ' + JSON.stringify((mine.tools || []).map(function (t) { return t.name; }))).to.be.an('object');",
+                  "  pm.expect(chart.annotations, 'annotations missing: ' + JSON.stringify(chart)).to.be.an('object');",
+                  "  pm.expect(chart.annotations.title).to.equal('Chart');",
+                  "  pm.expect(chart.output_schema, 'output_schema missing: ' + JSON.stringify(chart)).to.be.an('object');",
+                  "  pm.expect(chart.output_schema.properties, JSON.stringify(chart.output_schema)).to.have.property('points');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients?search=sse_mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "sse_mcp"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini mcp-tool-metadata /v1/responses: a file an MCP tool returned is sent to OpenAI as a data URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a tool output file with bare base64 and file_type reaches OpenAI as a data URL', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected an output array: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('the model read the file the tool returned', function () {",
+                  "  // Only the assistant's text: usage fields such as output_tokens can contain a 3 too.",
+                  "  var answer = (pm.response.json().output || []).reduce(function (acc, item) {",
+                  "    return acc.concat((item.content || []).filter(function (c) { return c.type === 'output_text'; }).map(function (c) { return c.text; }));",
+                  "  }, []).join('\\n');",
+                  "  pm.expect(answer, 'no output_text in: ' + pm.response.text()).to.not.equal('');",
+                  "  pm.expect(answer, answer).to.match(/\\b3\\b|three/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Call report and tell me how many points it lists.\"},{\"type\":\"function_call\",\"call_id\":\"call_mcp_report\",\"name\":\"report\",\"arguments\":\"{}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_mcp_report\",\"output\":[{\"type\":\"input_file\",\"filename\":\"report.pdf\",\"file_type\":\"application/pdf\",\"file_data\":\"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAzMDAgMTAwXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA0NiA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDIwIDUwIFRkIChSZXBvcnQ6IDMgcG9pbnRzKSBUaiBFVAplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMzNyAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQwNwolJUVPRgo=\"}]}],\"max_output_tokens\":200}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini mcp-tool-metadata /v1/responses: a file an MCP tool returned without file_type is sent to OpenAI as a data URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a tool output file with bare base64 and no file_type reaches OpenAI as a data URL', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected an output array: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('the model read the file the tool returned', function () {",
+                  "  // Only the assistant's text: usage fields such as output_tokens can contain a 3 too.",
+                  "  var answer = (pm.response.json().output || []).reduce(function (acc, item) {",
+                  "    return acc.concat((item.content || []).filter(function (c) { return c.type === 'output_text'; }).map(function (c) { return c.text; }));",
+                  "  }, []).join('\\n');",
+                  "  pm.expect(answer, 'no output_text in: ' + pm.response.text()).to.not.equal('');",
+                  "  pm.expect(answer, answer).to.match(/\\b3\\b|three/i);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Call report and tell me how many points it lists.\"},{\"type\":\"function_call\",\"call_id\":\"call_mcp_report\",\"name\":\"report\",\"arguments\":\"{}\"},{\"type\":\"function_call_output\",\"call_id\":\"call_mcp_report\",\"output\":[{\"type\":\"input_file\",\"filename\":\"report.pdf\",\"file_data\":\"JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAzMDAgMTAwXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA0NiA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDIwIDUwIFRkIChSZXBvcnQ6IDMgcG9pbnRzKSBUaiBFVAplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMzNyAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQwNwolJUVPRgo=\"}]}],\"max_output_tokens\":200}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai/gpt-6-luna mcp-tool-metadata /v1/chat/completions with reasoning.mode: audio and a csv in a tool result are named, not sent to Responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// reasoning.mode routes this chat request to the Responses API. A function_call_output there takes no audio and only PDF or",
+                  "// plain-text files, so the tool result's audio and csv must be named; before the fix OpenAI refused the request.",
+                  "pm.test('a chat request routed to Responses with audio and a csv in a tool result is served', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, 'expected choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.choices[0].message, 'expected a message: ' + pm.response.text()).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-luna\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_clip.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_clip\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_clip\",\n            \"arguments\": \"{}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_clip\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Here is the clip and its rows.\"\n        },\n        {\n          \"type\": \"input_audio\",\n          \"input_audio\": {\n            \"data\": \"UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=\",\n            \"format\": \"wav\"\n          }\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"rows.csv\",\n            \"file_data\": \"data:text/csv;base64,YSxiCjEsMgo=\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: OK\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_clip\",\n        \"description\": \"Returns an audio clip and its rows.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {}\n        }\n      }\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"mode\": \"pro\"\n  },\n  \"max_completion_tokens\": 4096\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "281. MCP tool results carry only media every provider reads (mcp-tool-metadata) [SERIAL]",
+      "description": "Split from 279 because it changes shared client config: sse_mcp's fixture tool archive returns text, a PDF, a zip and an SVG, but the harness profile lets sse_mcp run echo, add and greet only. The pre-request script adds archive to sse_mcp's tools_to_execute and the test script restores it, so [SERIAL] keeps parallel shards from seeing the wider list. Needs the remote-test-server fixture rebuilt with the archive tool. Run with FEATURE=mcp-tool-metadata.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai mcp-tool-metadata /v1/mcp/tool/execute?format=responses names a zip and an SVG the tool returned instead of sending them",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The profile lets sse_mcp run echo, add and greet only. Allow archive for this case; the test script restores the list.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients?search=sse_mcp', method: 'GET' }, function (err, res) {",
+                  "  if (err) { throw err; }",
+                  "  var mine = (res.json().clients || []).filter(function (c) { return c.config && c.config.name === 'sse_mcp'; })[0];",
+                  "  if (!mine) { throw new Error('sse_mcp is not registered: ' + res.text()); }",
+                  "  var tools = mine.config.tools_to_execute || [];",
+                  "  pm.collectionVariables.set('archiveClientID', mine.config.client_id);",
+                  "  pm.collectionVariables.set('archiveToolsBefore', JSON.stringify(tools));",
+                  "  if (tools.indexOf('*') !== -1 || tools.indexOf('archive') !== -1) { return; }",
+                  "  pm.sendRequest({",
+                  "    url: pm.variables.get('baseUrl') + '/api/mcp/client/' + mine.config.client_id,",
+                  "    method: 'PUT',",
+                  "    header: { 'Content-Type': 'application/json' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({ tools_to_execute: tools.concat(['archive']) }) }",
+                  "  }, function (putErr, putRes) {",
+                  "    if (putErr) { throw putErr; }",
+                  "    if (putRes.code !== 200) { throw new Error('allowing archive failed: ' + putRes.code + ' ' + putRes.text()); }",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// sse_mcp's archive tool returns text, a PDF, a zip, a text/plain blob and an SVG. A function_call_output carries only what every",
+                  "// Responses provider reads: the PDF stays a file; the zip and the SVG are named, never sent.",
+                  "pm.test('the zip and the SVG are named, the PDF is kept', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200 (a stale fixture build has no archive tool): ' + pm.response.text()).to.equal(200);",
+                  "  var raw = pm.response.text();",
+                  "  pm.expect(raw, 'the zip is named: ' + raw).to.include('[application/zip');",
+                  "  pm.expect(raw, 'the SVG is named: ' + raw).to.include('[image/svg+xml');",
+                  "  pm.expect(raw, 'the zip bytes are not sent: ' + raw).to.not.include('UEsDBAoAAAAAAA==');",
+                  "  pm.expect(raw, 'the PDF stays a file: ' + raw).to.include('input_file');",
+                  "});",
+                  "// An MCP blob is base64 whatever its type: the text file must be a base64 data URL, not bare text/plain file_data a provider reads as raw text.",
+                  "pm.test('the text/plain blob is a base64 data URL of its bytes', function () {",
+                  "  var output = (pm.response.json().output || []);",
+                  "  var file = output.filter(function (b) { return b.type === 'input_file' && b.filename === 'hello.txt'; })[0];",
+                  "  pm.expect(file, 'no hello.txt input_file: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(file.file_data, 'file_data: ' + JSON.stringify(file)).to.equal('data:text/plain;base64,SGVsbG8=');",
+                  "});",
+                  "",
+                  "// Put sse_mcp's tools_to_execute back as the pre-request script found it.",
+                  "var archiveClientID = pm.collectionVariables.get('archiveClientID');",
+                  "var archiveToolsBefore = pm.collectionVariables.get('archiveToolsBefore');",
+                  "if (archiveClientID && archiveToolsBefore) {",
+                  "  pm.sendRequest({",
+                  "    url: pm.variables.get('baseUrl') + '/api/mcp/client/' + archiveClientID,",
+                  "    method: 'PUT',",
+                  "    header: { 'Content-Type': 'application/json' },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({ tools_to_execute: JSON.parse(archiveToolsBefore) }) }",
+                  "  }, function (err, res) {",
+                  "    pm.test(\"sse_mcp's tools_to_execute is restored\", function () {",
+                  "      pm.expect(err, String(err)).to.not.be.ok;",
+                  "      pm.expect(res.code, 'restore failed: ' + res.text()).to.equal(200);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "pm.collectionVariables.unset('archiveClientID');",
+                  "pm.collectionVariables.unset('archiveToolsBefore');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"function_call\",\n  \"call_id\": \"call_archive\",\n  \"name\": \"sse_mcp-archive\",\n  \"arguments\": \"{}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute?format=responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ],
+              "query": [
+                {
+                  "key": "format",
+                  "value": "responses"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
