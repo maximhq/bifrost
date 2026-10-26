@@ -480,7 +480,8 @@ func apiCredentialRequirements(args []string) credentialRequirements {
 	if !ok {
 		return 0
 	}
-	mode := requestedAuthMode(client.ResolveAuthMode(client.AuthAuto, operation.Path), args[2:])
+	defaultAuth, _ := parseAuthMode(operation.Auth)
+	mode := requestedAuthMode(client.ResolveAuthMode(defaultAuth, operation.Path), args[2:])
 	return credentialsForAuthMode(client.ResolveAuthMode(mode, operation.Path))
 }
 

@@ -112,7 +112,10 @@ Two convenience commands have specialized input modes:
 
 ## Complete operation-level access
 
-The generated operation catalog is derived from `docs/openapi/openapi.json`:
+The generated operation catalog combines `docs/openapi/openapi.json` with
+`internal/operations/management.json`, which records audited OSS and Enterprise
+management routes not yet present in public OpenAPI. Use `api list --search`
+to discover their stable operation IDs:
 
 ```bash
 bifrost api list --search virtual --tag "Virtual Keys"
@@ -173,7 +176,18 @@ bifrost configure claude --model anthropic/claude-sonnet-5
 bifrost unconfigure claude
 bifrost configure codex --model openai/gpt-5
 bifrost unconfigure codex
+bifrost configure opencode --model openai/gpt-5
+bifrost unconfigure opencode
+bifrost configure gemini --model gemini/gemini-2.5-pro
+bifrost unconfigure gemini
 ```
+
+All four agents support persistent configuration with a virtual key. Codex embeds
+the key in its custom provider in `config.toml` and preserves `auth.json`; it honors
+`CODEX_HOME`. OpenCode honors `XDG_CONFIG_HOME` and `OPENCODE_CONFIG`, and needs
+a model on first configuration. Gemini uses `settings.json` and `.gemini/.env`;
+a project `.env` can override the user configuration. Short-lived Enterprise SSO
+tokens are never persisted by `configure`.
 
 Restoration receipts are owner-readable only. `unconfigure` refuses to overwrite
 an agent file edited after Bifrost configured it unless `--force` is supplied.
@@ -193,6 +207,19 @@ Repository-standard suite:
 ```bash
 make test-cli
 ```
+
+Compiled CLI integration harness (Python 3.11+, standard library only):
+
+```bash
+make test-cli-integration
+```
+
+This builds the actual binary, runs configuration/reconfiguration/restoration for
+all four agents in isolated homes, checks credentials and permissions, tests
+overwrite refusal and rollback, and invokes every supplemental management
+operation plus named resource commands against a local HTTP fixture. It checks
+real process exit codes and socket traffic without using live provider accounts.
+Native agent inference compatibility remains covered by the separate CLI harness.
 
 Verify that the generated API catalog is current:
 
@@ -479,3 +506,11 @@ unique test names, record each returned ID, and clean up only those IDs with
 directory or user account, followed immediately by `unconfigure` and a byte-for-byte
 comparison of the original files. Paid inference/agent tests should use one
 small model, one short prompt, and serial execution.
+
+Audit registered management routes against both local source checkouts:
+
+```bash
+python3 scripts/auditmanagement.py --oss-root .. --enterprise-root ../../bifrost-enterprise
+```
+
+See [AUDIT.md](AUDIT.md) for coverage, exclusions, and configuration behavior.

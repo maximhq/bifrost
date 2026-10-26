@@ -101,7 +101,7 @@ var all = map[string]Harness{
 		},
 		PreLaunch:         codexPreLaunch,
 		WriteNativeConfig: codexWriteNativeConfig,
-		NativeConfigPath:  "~/.codex/auth.json, ~/.codex/config.toml",
+		NativeConfigPath:  "~/.codex/config.toml",
 	},
 	"gemini": {
 		ID:         "gemini",
@@ -111,10 +111,12 @@ var all = map[string]Harness{
 		VersionArgs: []string{
 			"--version",
 		},
-		BasePath:   "/genai",
-		BaseURLEnv: "GOOGLE_GEMINI_BASE_URL",
-		APIKeyEnv:  "GEMINI_API_KEY",
-		ModelEnv:   "GEMINI_MODEL",
+		WriteNativeConfig: geminiWriteNativeConfig,
+		NativeConfigPath:  "~/.gemini/settings.json and ~/.gemini/.env",
+		BasePath:          "/genai",
+		BaseURLEnv:        "GOOGLE_GEMINI_BASE_URL",
+		APIKeyEnv:         "GEMINI_API_KEY",
+		ModelEnv:          "GEMINI_MODEL",
 		RunArgsForMod: func(model string) []string {
 			if strings.TrimSpace(model) == "" {
 				return nil
@@ -140,7 +142,9 @@ var all = map[string]Harness{
 			}
 			return []string{"--model", opencodeModelRef(model)}
 		},
-		PreLaunch: opencodePreLaunch,
+		PreLaunch:         opencodePreLaunch,
+		WriteNativeConfig: opencodeWriteNativeConfig,
+		NativeConfigPath:  "~/.config/opencode/opencode.json",
 	},
 }
 
@@ -251,7 +255,7 @@ func opencodePreLaunch(baseURL, apiKey, model string) ([]string, func(), error) 
       }
     }
   }
-}`, modelRef, strings.TrimSpace(baseURL), strings.TrimSpace(apiKey), model, model)
+}`, modelRef, openAIBaseURL(baseURL), strings.TrimSpace(apiKey), model, model)
 
 	f, err := os.CreateTemp("", "bifrost-opencode-*.json")
 	if err != nil {

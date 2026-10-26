@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"go/format"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 )
 
 // operation is the catalog representation emitted into Go source.
 type operation struct {
+	Auth        string
 	ID          string
 	Method      string
 	Path        string
@@ -24,10 +26,12 @@ type operation struct {
 }
 
 type openAPIOperation struct {
+	Auth        string   `json:"x-cli-auth"`
 	OperationID string   `json:"operationId"`
 	Summary     string   `json:"summary"`
 	Tags        []string `json:"tags"`
 	Deprecated  bool     `json:"deprecated"`
+	Destructive bool     `json:"x-cli-destructive"`
 }
 
 // openAPIDocument contains the subset of OpenAPI needed for catalog generation.
@@ -54,6 +58,8 @@ var destructiveOperationIDs = map[string]struct{}{
 	"cancelBatch":                         {},
 	"cancelRecalculateCost":               {},
 	"cancelResponse":                      {},
+	"cancelSidekiqJob":                    {},
+	"cancelWarpLogEmbeddingBackfill":      {},
 	"geminiCancelBatch":                   {},
 	"openaiCancelBatch":                   {},
 	"openaiCancelResponse":                {},
@@ -66,6 +72,7 @@ var destructiveOperationIDs = map[string]struct{}{
 // main parses the source document and writes deterministic generated Go code.
 func main() {
 	specPath := flag.String("spec", "", "bundled OpenAPI JSON path")
+	managementPath := flag.String("management", "", "supplemental management operations JSON path")
 	outputPath := flag.String("out", "catalog.gen.go", "generated Go output path")
 	flag.Parse()
 	if strings.TrimSpace(*specPath) == "" {
@@ -78,6 +85,19 @@ func main() {
 	var document openAPIDocument
 	if err := json.Unmarshal(body, &document); err != nil {
 		fatalf("parse OpenAPI document: %v", err)
+	}
+	if *managementPath != "" {
+		body, err := os.ReadFile(*managementPath)
+		if err != nil {
+			fatalf("read management operations: %v", err)
+		}
+		var supplement openAPIDocument
+		if err := json.Unmarshal(body, &supplement); err != nil {
+			fatalf("parse management operations: %v", err)
+		}
+		if err := mergeDocuments(&document, supplement); err != nil {
+			fatalf("merge management operations: %v", err)
+		}
 	}
 	operations, err := collectOperations(document)
 	if err != nil {
@@ -92,10 +112,31 @@ func main() {
 	}
 }
 
+// mergeDocuments rejects duplicate routes rather than silently overriding docs.
+func mergeDocuments(document *openAPIDocument, supplement openAPIDocument) error {
+	if document.Paths == nil {
+		document.Paths = map[string]map[string]openAPIOperation{}
+	}
+	for path, item := range supplement.Paths {
+		if document.Paths[path] == nil {
+			document.Paths[path] = map[string]openAPIOperation{}
+		}
+		for method, operation := range item {
+			if _, exists := document.Paths[path][method]; exists {
+				return fmt.Errorf("duplicate route %s %s", method, path)
+			}
+			document.Paths[path][method] = operation
+		}
+	}
+	return nil
+}
+
 // collectOperations validates operation IDs and returns a stable sorted list.
 func collectOperations(document openAPIDocument) ([]operation, error) {
 	allowedMethods := map[string]bool{"get": true, "post": true, "put": true, "patch": true, "delete": true, "head": true, "options": true}
 	seen := map[string]struct{}{}
+	seenRoutes := map[string]struct{}{}
+	parameters := regexp.MustCompile(`\{[^}]+\}`)
 	operations := make([]operation, 0)
 	for path, pathItem := range document.Paths {
 		for method, source := range pathItem {
@@ -106,6 +147,16 @@ func collectOperations(document openAPIDocument) ([]operation, error) {
 			if !includeInCatalog(path, source) {
 				continue
 			}
+			route := method + " " + parameters.ReplaceAllString(path, "{}")
+			if _, duplicate := seenRoutes[route]; duplicate {
+				return nil, fmt.Errorf("duplicate normalized route %s", route)
+			}
+			seenRoutes[route] = struct{}{}
+			switch source.Auth {
+			case "", "auto", "none", "management", "inference", "agent":
+			default:
+				return nil, fmt.Errorf("invalid auth mode %q for %s", source.Auth, source.OperationID)
+			}
 			if strings.TrimSpace(source.OperationID) == "" {
 				return nil, fmt.Errorf("%s %s has no operationId", strings.ToUpper(method), path)
 			}
@@ -115,9 +166,9 @@ func collectOperations(document openAPIDocument) ([]operation, error) {
 			seen[source.OperationID] = struct{}{}
 			_, explicitlyDestructive := destructiveOperationIDs[source.OperationID]
 			operations = append(operations, operation{
-				ID: source.OperationID, Method: strings.ToUpper(method), Path: path,
+				Auth: source.Auth, ID: source.OperationID, Method: strings.ToUpper(method), Path: path,
 				Summary: source.Summary, Tags: source.Tags, Deprecated: source.Deprecated,
-				Destructive: method == "delete" || explicitlyDestructive,
+				Destructive: method == "delete" || explicitlyDestructive || source.Destructive,
 			})
 		}
 	}
@@ -146,11 +197,14 @@ func render(operations []operation) ([]byte, error) {
 	var buffer bytes.Buffer
 	buffer.WriteString("// Code generated by go generate; DO NOT EDIT.\n\n")
 	buffer.WriteString("package operations\n\n")
-	buffer.WriteString("// Catalog contains every operation in the bundled Bifrost OpenAPI document.\n")
+	buffer.WriteString("// Catalog contains public OpenAPI and supplemental management operations.\n")
 	buffer.WriteString("var Catalog = []Operation{\n")
 	for _, operation := range operations {
 		fmt.Fprintf(&buffer, "{ID: %q, Method: %q, Path: %q, Summary: %q, Tags: %#v, Deprecated: %t",
 			operation.ID, operation.Method, operation.Path, operation.Summary, operation.Tags, operation.Deprecated)
+		if operation.Auth != "" {
+			fmt.Fprintf(&buffer, ", Auth: %q", operation.Auth)
+		}
 		if operation.Destructive {
 			buffer.WriteString(", Destructive: true")
 		}

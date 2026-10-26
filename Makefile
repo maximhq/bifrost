@@ -1928,6 +1928,10 @@ mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|co
 	@$(ECHO) ""
 	@$(ECHO) "$(GREEN)✓ go mod tidy complete$(NC)"
 
+.PHONY: test-cli-integration
+test-cli-integration: ## Build the CLI and test configuration and management commands (Python 3.11+)
+	@cd cli && python3 scripts/testconfigure.py -v
+
 test-cli: install-gotestsum ## Run CLI tests
 	@$(ECHO) "$(GREEN)Running CLI tests...$(NC)"
 	@mkdir -p $(TEST_REPORTS_DIR)

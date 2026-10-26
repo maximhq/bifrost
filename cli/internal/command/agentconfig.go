@@ -43,7 +43,7 @@ type configSnapshot struct {
 // configureHarness explicitly writes reversible native configuration for an agent.
 func (r *Runner) configureHarness(env *environment, args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprint(r.Out, "Usage: bifrost configure <claude|codex> [--model MODEL] [--force]\n")
+		_, err := fmt.Fprint(r.Out, "Usage: bifrost configure <claude|codex|gemini|opencode> [--model MODEL] [--force]\n")
 		return err
 	}
 	agent, ok := harness.Get(args[0])
@@ -78,6 +78,7 @@ func (r *Runner) configureHarness(env *environment, args []string) error {
 	if err != nil {
 		return err
 	}
+	paths = receiptConfigPaths(agent.ID, paths, receipt)
 	reconfiguring := receipt != nil && !receipt.Pending
 	if receipt != nil {
 		if !receiptMatchesManifest(receipt, env.ProfileID, agent.ID, paths) {
@@ -173,7 +174,7 @@ func rollbackReconfigureFailure(attemptSnapshot *configReceipt, writeErr error) 
 // unconfigureHarness restores the exact files captured before explicit configuration.
 func (r *Runner) unconfigureHarness(env *environment, args []string) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprint(r.Out, "Usage: bifrost unconfigure <claude|codex> [--force]\n")
+		_, err := fmt.Fprint(r.Out, "Usage: bifrost unconfigure <claude|codex|gemini|opencode> [--force]\n")
 		return err
 	}
 	agentID := args[0]
@@ -205,6 +206,7 @@ func (r *Runner) unconfigureHarness(env *environment, args []string) error {
 	if err != nil {
 		return err
 	}
+	paths = receiptConfigPaths(agentID, paths, receipt)
 	if !receiptMatchesManifest(receipt, env.ProfileID, agentID, paths) {
 		if !force {
 			return fmt.Errorf("configuration receipt for %s in context %q has a stale file manifest; rerun with --force to discard it without restoring files", agentID, env.ProfileID)
@@ -234,18 +236,7 @@ func (r *Runner) unconfigureHarness(env *environment, args []string) error {
 
 // nativeConfigPaths resolves the exact files changed by persistent agent configuration.
 func nativeConfigPaths(agentID string) ([]string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("resolve home directory: %w", err)
-	}
-	switch agentID {
-	case "claude":
-		return []string{filepath.Join(home, ".claude", "settings.json")}, nil
-	case "codex":
-		return []string{filepath.Join(home, ".codex", "auth.json"), filepath.Join(home, ".codex", "config.toml")}, nil
-	default:
-		return nil, fmt.Errorf("agent %q has no persistent configuration manifest", agentID)
-	}
+	return harness.NativeConfigPaths(agentID)
 }
 
 // agentReceiptPath returns the receipt path for one context and agent pair.
@@ -389,4 +380,17 @@ func loadConfigReceipt(path string) (*configReceipt, error) {
 func sha256Hex(body []byte) string {
 	digest := sha256.Sum256(body)
 	return hex.EncodeToString(digest[:])
+}
+
+// receiptConfigPaths retains the restore contract for older Codex receipts that
+// captured auth.json as well as config.toml. New receipts only capture config.
+func receiptConfigPaths(agent string, paths []string, receipt *configReceipt) []string {
+	if agent != "codex" || receipt == nil || len(paths) != 1 || len(receipt.Files) != 2 {
+		return paths
+	}
+	legacy := []string{filepath.Join(filepath.Dir(paths[0]), "auth.json"), paths[0]}
+	if receipt.Files[0].Path == legacy[0] && receipt.Files[1].Path == legacy[1] {
+		return legacy
+	}
+	return paths
 }

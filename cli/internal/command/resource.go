@@ -110,6 +110,15 @@ var resourceRegistry = map[string]resourceDescriptor{
 		}),
 	},
 	"teams": {Description: "manage governance teams", Actions: withActions(crudActions("/api/governance/teams", "team_id", client.AuthManagement), map[string]resourceAction{
+		"access-profile":                       {Method: http.MethodGet, Path: "/api/governance/teams/{team_id}/access-profile", Auth: client.AuthManagement, Arguments: []string{"team-id"}},
+		"attach-access-profile":                {Method: http.MethodPost, Path: "/api/governance/teams/{team_id}/access-profile", Auth: client.AuthManagement, Arguments: []string{"team-id"}, AcceptsBody: true, NeedsBody: true},
+		"detach-access-profile":                {Method: http.MethodDelete, Path: "/api/governance/teams/{team_id}/access-profile", Auth: client.AuthManagement, Arguments: []string{"team-id"}, Destructive: true},
+		"migrate-access-profile":               {Method: http.MethodPost, Path: "/api/governance/teams/{team_id}/access-profile/migrate", Auth: client.AuthManagement, Arguments: []string{"team-id"}, AcceptsBody: true, NeedsBody: true, Destructive: true},
+		"adopt-virtual-key":                    {Method: http.MethodPost, Path: "/api/governance/teams/{team_id}/access-profile/virtual-keys/{vk_id}", Auth: client.AuthManagement, Arguments: []string{"team-id", "vk-id"}, AcceptsBody: true, NeedsBody: true},
+		"override-access-profile-budget":       {Method: http.MethodPut, Path: "/api/governance/teams/{team_id}/access-profile/budgets/{budget_id}/override", Auth: client.AuthManagement, Arguments: []string{"team-id", "budget-id"}, AcceptsBody: true, NeedsBody: true},
+		"clear-access-profile-budget-override": {Method: http.MethodDelete, Path: "/api/governance/teams/{team_id}/access-profile/budgets/{budget_id}/override", Auth: client.AuthManagement, Arguments: []string{"team-id", "budget-id"}, Destructive: true},
+		"access-profile-limits":                {Method: http.MethodGet, Path: "/api/governance/teams/access-profiles", Auth: client.AuthManagement},
+
 		"members":         {Method: http.MethodGet, Path: "/api/governance/teams/{team_id}/members", Arguments: []string{"team-id"}, Auth: client.AuthManagement},
 		"add-member":      {Method: http.MethodPost, Path: "/api/governance/teams/{team_id}/members", Arguments: []string{"team-id"}, Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
 		"remove-member":   {Method: http.MethodDelete, Path: "/api/governance/teams/{team_id}/members/{user_id}", Arguments: []string{"team-id", "user-id"}, Auth: client.AuthManagement, Destructive: true},
@@ -118,10 +127,24 @@ var resourceRegistry = map[string]resourceDescriptor{
 		"detach-customer": {Method: http.MethodDelete, Path: "/api/governance/teams/{team_id}/customers/{customer_id}", Arguments: []string{"team-id", "customer-id"}, Auth: client.AuthManagement, Destructive: true},
 	})},
 	"customers": {Description: "manage governance customers", Actions: withActions(crudActions("/api/governance/customers", "customer_id", client.AuthManagement), map[string]resourceAction{
+		"access-profile":                       {Method: http.MethodGet, Path: "/api/governance/customers/{customer_id}/access-profile", Auth: client.AuthManagement, Arguments: []string{"customer-id"}},
+		"attach-access-profile":                {Method: http.MethodPost, Path: "/api/governance/customers/{customer_id}/access-profile", Auth: client.AuthManagement, Arguments: []string{"customer-id"}, AcceptsBody: true, NeedsBody: true},
+		"detach-access-profile":                {Method: http.MethodDelete, Path: "/api/governance/customers/{customer_id}/access-profile", Auth: client.AuthManagement, Arguments: []string{"customer-id"}, Destructive: true},
+		"migrate-access-profile":               {Method: http.MethodPost, Path: "/api/governance/customers/{customer_id}/access-profile/migrate", Auth: client.AuthManagement, Arguments: []string{"customer-id"}, AcceptsBody: true, NeedsBody: true, Destructive: true},
+		"adopt-virtual-key":                    {Method: http.MethodPost, Path: "/api/governance/customers/{customer_id}/access-profile/virtual-keys/{vk_id}", Auth: client.AuthManagement, Arguments: []string{"customer-id", "vk-id"}, AcceptsBody: true, NeedsBody: true},
+		"override-access-profile-budget":       {Method: http.MethodPut, Path: "/api/governance/customers/{customer_id}/access-profile/budgets/{budget_id}/override", Auth: client.AuthManagement, Arguments: []string{"customer-id", "budget-id"}, AcceptsBody: true, NeedsBody: true},
+		"clear-access-profile-budget-override": {Method: http.MethodDelete, Path: "/api/governance/customers/{customer_id}/access-profile/budgets/{budget_id}/override", Auth: client.AuthManagement, Arguments: []string{"customer-id", "budget-id"}, Destructive: true},
+		"access-profile-limits":                {Method: http.MethodGet, Path: "/api/governance/customers/access-profiles", Auth: client.AuthManagement},
+
 		"teams":          {Method: http.MethodGet, Path: "/api/governance/customers/{customer_id}/teams", Arguments: []string{"customer-id"}, Auth: client.AuthManagement},
 		"business-units": {Method: http.MethodGet, Path: "/api/governance/customers/{customer_id}/business-units", Arguments: []string{"customer-id"}, Auth: client.AuthManagement},
 	})},
 	"users": {Description: "manage Enterprise users", Actions: map[string]resourceAction{
+		"entity-access-profiles": {Method: http.MethodGet, Path: "/api/governance/users/{user_id}/entity-access-profiles", Auth: client.AuthManagement, Arguments: []string{"user-id"}},
+
+		"me":   {Method: http.MethodGet, Path: "/api/governance/users/me", Auth: client.AuthManagement},
+		"rank": {Method: http.MethodGet, Path: "/api/governance/users/me/rank", Auth: client.AuthManagement},
+
 		"list":           {Method: http.MethodGet, Path: "/api/governance/users", Auth: client.AuthManagement},
 		"get":            {Method: http.MethodGet, Path: "/api/governance/users/{user_id}", Arguments: []string{"user-id"}, Auth: client.AuthManagement},
 		"get-by-email":   {Method: http.MethodGet, Path: "/api/governance/users/email/{email}", Arguments: []string{"email"}, Auth: client.AuthManagement},
@@ -151,6 +174,15 @@ var resourceRegistry = map[string]resourceDescriptor{
 	"budgets":     {Description: "inspect effective governance budgets", Actions: readOnlyListAction("/api/governance/budgets")},
 	"rate-limits": {Description: "inspect effective governance rate limits", Actions: readOnlyListAction("/api/governance/rate-limits")},
 	"business-units": {Description: "manage Enterprise business units", Actions: withActions(crudActions("/api/governance/business-units", "business_unit_id", client.AuthManagement), map[string]resourceAction{
+		"access-profile":                       {Method: http.MethodGet, Path: "/api/governance/business-units/{business_unit_id}/access-profile", Auth: client.AuthManagement, Arguments: []string{"business-unit-id"}},
+		"attach-access-profile":                {Method: http.MethodPost, Path: "/api/governance/business-units/{business_unit_id}/access-profile", Auth: client.AuthManagement, Arguments: []string{"business-unit-id"}, AcceptsBody: true, NeedsBody: true},
+		"detach-access-profile":                {Method: http.MethodDelete, Path: "/api/governance/business-units/{business_unit_id}/access-profile", Auth: client.AuthManagement, Arguments: []string{"business-unit-id"}, Destructive: true},
+		"migrate-access-profile":               {Method: http.MethodPost, Path: "/api/governance/business-units/{business_unit_id}/access-profile/migrate", Auth: client.AuthManagement, Arguments: []string{"business-unit-id"}, AcceptsBody: true, NeedsBody: true, Destructive: true},
+		"adopt-virtual-key":                    {Method: http.MethodPost, Path: "/api/governance/business-units/{business_unit_id}/access-profile/virtual-keys/{vk_id}", Auth: client.AuthManagement, Arguments: []string{"business-unit-id", "vk-id"}, AcceptsBody: true, NeedsBody: true},
+		"override-access-profile-budget":       {Method: http.MethodPut, Path: "/api/governance/business-units/{business_unit_id}/access-profile/budgets/{budget_id}/override", Auth: client.AuthManagement, Arguments: []string{"business-unit-id", "budget-id"}, AcceptsBody: true, NeedsBody: true},
+		"clear-access-profile-budget-override": {Method: http.MethodDelete, Path: "/api/governance/business-units/{business_unit_id}/access-profile/budgets/{budget_id}/override", Auth: client.AuthManagement, Arguments: []string{"business-unit-id", "budget-id"}, Destructive: true},
+		"access-profile-limits":                {Method: http.MethodGet, Path: "/api/governance/business-units/access-profiles", Auth: client.AuthManagement},
+
 		"users":             {Method: http.MethodGet, Path: "/api/governance/business-units/{business_unit_id}/users", Arguments: []string{"business-unit-id"}, Auth: client.AuthManagement},
 		"add-user":          {Method: http.MethodPost, Path: "/api/governance/business-units/{business_unit_id}/users", Arguments: []string{"business-unit-id"}, Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
 		"remove-user":       {Method: http.MethodDelete, Path: "/api/governance/business-units/{business_unit_id}/users/{user_id}", Arguments: []string{"business-unit-id", "user-id"}, Auth: client.AuthManagement, Destructive: true},
@@ -232,6 +264,11 @@ var resourceRegistry = map[string]resourceDescriptor{
 	}},
 	"prompt-deployments": {Description: "manage Enterprise prompt deployment strategies", Actions: crudActions("/api/prompt-repo/deployments", "id", client.AuthManagement)},
 	"logs": {Description: "query and administer inference logs", Actions: map[string]resourceAction{
+		"user-agent-mappings":       {Method: http.MethodGet, Path: "/api/logs/user-agent-mappings", Auth: client.AuthManagement},
+		"create-user-agent-mapping": {Method: http.MethodPost, Path: "/api/logs/user-agent-mappings", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+		"update-user-agent-mapping": {Method: http.MethodPut, Path: "/api/logs/user-agent-mappings/{id}", Auth: client.AuthManagement, Arguments: []string{"id"}, AcceptsBody: true, NeedsBody: true},
+		"delete-user-agent-mapping": {Method: http.MethodDelete, Path: "/api/logs/user-agent-mappings/{id}", Auth: client.AuthManagement, Arguments: []string{"id"}, Destructive: true},
+
 		"list":               {Method: http.MethodGet, Path: "/api/logs", Auth: client.AuthManagement},
 		"get":                {Method: http.MethodGet, Path: "/api/logs/{id}", Arguments: []string{"id"}, Auth: client.AuthManagement},
 		"stats":              {Method: http.MethodGet, Path: "/api/logs/stats", Auth: client.AuthManagement},
@@ -256,6 +293,11 @@ var resourceRegistry = map[string]resourceDescriptor{
 		"delete":      {Method: http.MethodDelete, Path: "/api/mcp-logs", Auth: client.AuthManagement, AcceptsBody: true, Destructive: true},
 	}},
 	"mcp-clients": {Description: "manage MCP client connections", Actions: map[string]resourceAction{
+		"refresh-tools":   {Method: http.MethodPost, Path: "/api/mcp/client/{id}/refresh-tools", Auth: client.AuthManagement, Arguments: []string{"id"}},
+		"reregister":      {Method: http.MethodPost, Path: "/api/mcp/client/{id}/reregister", Auth: client.AuthManagement, Arguments: []string{"id"}},
+		"openapi-spec":    {Method: http.MethodGet, Path: "/api/mcp/client/{id}/openapi-spec", Auth: client.AuthManagement, Arguments: []string{"id"}},
+		"preview-openapi": {Method: http.MethodPost, Path: "/api/mcp/openapi/preview", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+
 		"list":                  {Method: http.MethodGet, Path: "/api/mcp/clients", Auth: client.AuthManagement},
 		"create":                {Method: http.MethodPost, Path: "/api/mcp/client", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
 		"update":                {Method: http.MethodPut, Path: "/api/mcp/client/{id}", Arguments: []string{"id"}, Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
@@ -275,6 +317,8 @@ var resourceRegistry = map[string]resourceDescriptor{
 		"force-sync":  {Method: http.MethodPost, Path: "/api/mcp/library/force-sync", Auth: client.AuthManagement},
 	}},
 	"virtual-mcps": {Description: "manage virtual MCP servers", Actions: withActions(crudActions("/api/mcp/virtual-mcps", "id", client.AuthManagement), map[string]resourceAction{
+		"access-profiles": {Method: http.MethodGet, Path: "/api/mcp/virtual-mcps/{id}/access-profiles", Auth: client.AuthManagement, Arguments: []string{"id"}},
+
 		"attach-key": {Method: http.MethodPost, Path: "/api/mcp/virtual-mcps/{id}/virtual-keys/{vk_id}", Arguments: []string{"id", "vk-id"}, Auth: client.AuthManagement},
 		"detach-key": {Method: http.MethodDelete, Path: "/api/mcp/virtual-mcps/{id}/virtual-keys/{vk_id}", Arguments: []string{"id", "vk-id"}, Auth: client.AuthManagement, Destructive: true},
 	})},
@@ -395,6 +439,112 @@ var resourceRegistry = map[string]resourceDescriptor{
 	"license": {Description: "inspect or upload an Enterprise license", Actions: map[string]resourceAction{
 		"status": {Method: http.MethodGet, Path: "/api/license/status", Auth: client.AuthNone},
 		"upload": {Method: http.MethodPost, Path: "/api/license", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true, RawBody: true, ContentType: "application/octet-stream"},
+	}},
+	"rss-feeds": {Description: "manage RSS sources", Actions: map[string]resourceAction{
+		"list":   {Method: http.MethodGet, Path: "/api/rss/feeds", Auth: client.AuthManagement},
+		"create": {Method: http.MethodPost, Path: "/api/rss/feeds", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+		"update": {Method: http.MethodPut, Path: "/api/rss/feeds/{id}", Auth: client.AuthManagement, Arguments: []string{"id"}, AcceptsBody: true, NeedsBody: true},
+		"delete": {Method: http.MethodDelete, Path: "/api/rss/feeds/{id}", Auth: client.AuthManagement, Arguments: []string{"id"}, Destructive: true},
+	}},
+	"rss": {Description: "inspect feed items and manage RSS settings", Actions: map[string]resourceAction{
+		"items":           {Method: http.MethodGet, Path: "/api/rss/items", Auth: client.AuthManagement},
+		"settings":        {Method: http.MethodGet, Path: "/api/rss/settings", Auth: client.AuthManagement},
+		"update-settings": {Method: http.MethodPut, Path: "/api/rss/settings", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+	}},
+	"jobs": {Description: "inspect and cancel background jobs", Actions: map[string]resourceAction{
+		"list":   {Method: http.MethodGet, Path: "/api/sidekiq/jobs", Auth: client.AuthManagement},
+		"cancel": {Method: http.MethodPost, Path: "/api/sidekiq/jobs/{id}/cancel", Auth: client.AuthManagement, Arguments: []string{"id"}, Destructive: true},
+	}},
+	"agent-gateway": {Description: "manage agent gateway registrations and pushed configs", Actions: map[string]resourceAction{
+		"access-profiles": {Method: http.MethodGet, Path: "/api/agents/{name}/access-profiles", Auth: client.AuthManagement, Arguments: []string{"name"}},
+
+		"list":               {Method: http.MethodGet, Path: "/api/agents", Auth: client.AuthManagement},
+		"create":             {Method: http.MethodPost, Path: "/api/agents", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+		"get":                {Method: http.MethodGet, Path: "/api/agents/{name}", Auth: client.AuthManagement, Arguments: []string{"name"}},
+		"update":             {Method: http.MethodPut, Path: "/api/agents/{name}", Auth: client.AuthManagement, Arguments: []string{"name"}, AcceptsBody: true, NeedsBody: true},
+		"delete":             {Method: http.MethodDelete, Path: "/api/agents/{name}", Auth: client.AuthManagement, Arguments: []string{"name"}, Destructive: true},
+		"inspect":            {Method: http.MethodPost, Path: "/api/agents/inspect", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+		"push-configs":       {Method: http.MethodGet, Path: "/api/agents/push-configs", Auth: client.AuthManagement},
+		"delete-push-config": {Method: http.MethodDelete, Path: "/api/agents/push-configs/{agent}/{task}/{config}", Auth: client.AuthManagement, Arguments: []string{"agent", "task", "config"}, Destructive: true},
+	}},
+	"agent-history": {Description: "inspect agent gateway history", Actions: map[string]resourceAction{
+		"list":       {Method: http.MethodGet, Path: "/api/agents/history", Auth: client.AuthManagement},
+		"get":        {Method: http.MethodGet, Path: "/api/agents/history/{id}", Auth: client.AuthManagement, Arguments: []string{"id"}},
+		"delete":     {Method: http.MethodDelete, Path: "/api/agents/history", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true, Destructive: true},
+		"stats":      {Method: http.MethodGet, Path: "/api/agents/history/stats", Auth: client.AuthManagement},
+		"histogram":  {Method: http.MethodGet, Path: "/api/agents/history/histogram", Auth: client.AuthManagement},
+		"top-agents": {Method: http.MethodGet, Path: "/api/agents/history/top-agents", Auth: client.AuthManagement},
+		"filterdata": {Method: http.MethodGet, Path: "/api/agents/history/filterdata", Auth: client.AuthManagement},
+	}},
+	"adaptive-routing": {Description: "manage Enterprise adaptive routing", Actions: map[string]resourceAction{
+		"get":              {Method: http.MethodGet, Path: "/api/adaptive-routing/config", Auth: client.AuthManagement},
+		"update":           {Method: http.MethodPut, Path: "/api/adaptive-routing/config", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+		"conditions":       {Method: http.MethodGet, Path: "/api/adaptive-routing/conditions", Auth: client.AuthManagement},
+		"clear-conditions": {Method: http.MethodPost, Path: "/api/adaptive-routing/conditions/clear", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true, Destructive: true},
+	}},
+	"adaptive-routing-history": {Description: "inspect Enterprise adaptive routing history", Actions: map[string]resourceAction{
+		"entities": {Method: http.MethodGet, Path: "/api/adaptive-routing/history/entities", Auth: client.AuthManagement},
+		"events":   {Method: http.MethodGet, Path: "/api/adaptive-routing/history/events", Auth: client.AuthManagement},
+		"issues":   {Method: http.MethodGet, Path: "/api/adaptive-routing/history/issues", Auth: client.AuthManagement},
+		"logs":     {Method: http.MethodGet, Path: "/api/adaptive-routing/history/logs", Auth: client.AuthManagement},
+		"nodes":    {Method: http.MethodGet, Path: "/api/adaptive-routing/history/nodes", Auth: client.AuthManagement},
+		"series":   {Method: http.MethodGet, Path: "/api/adaptive-routing/history/series", Auth: client.AuthManagement},
+		"settings": {Method: http.MethodGet, Path: "/api/adaptive-routing/history/settings", Auth: client.AuthManagement},
+		"snapshot": {Method: http.MethodGet, Path: "/api/adaptive-routing/history/snapshot", Auth: client.AuthManagement},
+		"timeline": {Method: http.MethodGet, Path: "/api/adaptive-routing/history/timeline", Auth: client.AuthManagement},
+	}},
+	"budget-requests": {Description: "review Enterprise budget requests", Actions: map[string]resourceAction{
+		"list":    {Method: http.MethodGet, Path: "/api/governance/budget-requests", Auth: client.AuthManagement},
+		"approve": {Method: http.MethodPost, Path: "/api/governance/budget-requests/{request_id}/approve", Auth: client.AuthManagement, Arguments: []string{"request-id"}, AcceptsBody: true, NeedsBody: true},
+		"deny":    {Method: http.MethodPost, Path: "/api/governance/budget-requests/{request_id}/deny", Auth: client.AuthManagement, Arguments: []string{"request-id"}, AcceptsBody: true, NeedsBody: true},
+	}},
+	"my-budget-requests": {Description: "manage personal Enterprise budget requests", Actions: map[string]resourceAction{
+		"list":   {Method: http.MethodGet, Path: "/api/governance/users/me/budget-requests", Auth: client.AuthManagement},
+		"create": {Method: http.MethodPost, Path: "/api/governance/users/me/budget-requests", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+		"cancel": {Method: http.MethodPost, Path: "/api/governance/users/me/budget-requests/{request_id}/cancel", Auth: client.AuthManagement, Arguments: []string{"request-id"}, Destructive: true},
+	}},
+	"org-chart": {Description: "inspect Enterprise organization hierarchy", Actions: map[string]resourceAction{
+		"summary":  {Method: http.MethodGet, Path: "/api/governance/org-chart/summary", Auth: client.AuthManagement},
+		"children": {Method: http.MethodGet, Path: "/api/governance/org-chart/children", Auth: client.AuthManagement},
+		"search":   {Method: http.MethodGet, Path: "/api/governance/org-chart/search", Auth: client.AuthManagement},
+		"cycles":   {Method: http.MethodGet, Path: "/api/governance/org-chart/cycles", Auth: client.AuthManagement},
+	}},
+	"identity-providers": {Description: "manage Enterprise identity providers", Actions: map[string]resourceAction{
+		"list":                    {Method: http.MethodGet, Path: "/api/scim/providers", Auth: client.AuthManagement},
+		"get":                     {Method: http.MethodGet, Path: "/api/scim/providers/{name}", Auth: client.AuthManagement, Arguments: []string{"name"}},
+		"create":                  {Method: http.MethodPost, Path: "/api/scim/providers/{name}", Auth: client.AuthManagement, Arguments: []string{"name"}, AcceptsBody: true, NeedsBody: true},
+		"update":                  {Method: http.MethodPut, Path: "/api/scim/providers/{name}", Auth: client.AuthManagement, Arguments: []string{"name"}, AcceptsBody: true, NeedsBody: true},
+		"delete":                  {Method: http.MethodDelete, Path: "/api/scim/providers/{name}", Auth: client.AuthManagement, Arguments: []string{"name"}, Destructive: true},
+		"verify":                  {Method: http.MethodPost, Path: "/api/scim/providers/{name}/verify", Auth: client.AuthManagement, Arguments: []string{"name"}, AcceptsBody: true, NeedsBody: true},
+		"rotate-token":            {Method: http.MethodPost, Path: "/api/scim/providers/{name}/provisioning-token/rotate", Auth: client.AuthManagement, Arguments: []string{"name"}, Destructive: true},
+		"team-mapping-collisions": {Method: http.MethodPost, Path: "/api/scim/providers/{name}/team-mapping-collisions", Auth: client.AuthManagement, Arguments: []string{"name"}, AcceptsBody: true, NeedsBody: true},
+	}},
+	"provisioning": {Description: "manage Enterprise directory provisioning", Actions: map[string]resourceAction{
+		"filters":                {Method: http.MethodGet, Path: "/api/scim/provision/filters", Auth: client.AuthManagement},
+		"job":                    {Method: http.MethodGet, Path: "/api/scim/provision/jobs/{operation_id}", Auth: client.AuthManagement, Arguments: []string{"operation-id"}},
+		"preview":                {Method: http.MethodPost, Path: "/api/scim/provision/preview", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+		"import":                 {Method: http.MethodPost, Path: "/api/scim/provision/import", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true, Destructive: true},
+		"reconcile":              {Method: http.MethodPost, Path: "/api/scim/provision/reconcile", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true, Destructive: true},
+		"sync":                   {Method: http.MethodPost, Path: "/api/scim/provision/sync", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true, Destructive: true},
+		"sync-business-units":    {Method: http.MethodPost, Path: "/api/scim/provision/sync-business-units", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true, Destructive: true},
+		"sync-teams":             {Method: http.MethodPost, Path: "/api/scim/provision/sync-teams", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true, Destructive: true},
+		"reconcile-preview":      {Method: http.MethodPost, Path: "/api/scim/provision/reconcile/preview", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+		"reconcile-preview-user": {Method: http.MethodPost, Path: "/api/scim/provision/reconcile/preview/user", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+	}},
+	"warp-config": {Description: "manage Warp configuration", Actions: map[string]resourceAction{
+		"get":    {Method: http.MethodGet, Path: "/api/warp/config", Auth: client.AuthManagement},
+		"update": {Method: http.MethodPut, Path: "/api/warp/config", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+	}},
+	"warp-conversations": {Description: "inspect Warp conversations", Actions: map[string]resourceAction{
+		"list":   {Method: http.MethodGet, Path: "/api/warp/conversations", Auth: client.AuthManagement},
+		"get":    {Method: http.MethodGet, Path: "/api/warp/conversations/{id}", Auth: client.AuthManagement, Arguments: []string{"id"}},
+		"delete": {Method: http.MethodDelete, Path: "/api/warp/conversations/{id}", Auth: client.AuthManagement, Arguments: []string{"id"}, Destructive: true},
+	}},
+	"warp-log-index": {Description: "manage Warp log indexing", Actions: map[string]resourceAction{
+		"status":          {Method: http.MethodGet, Path: "/api/warp/log-index/status", Auth: client.AuthManagement},
+		"backfill":        {Method: http.MethodPost, Path: "/api/warp/log-index/backfill", Auth: client.AuthManagement, AcceptsBody: true, NeedsBody: true},
+		"backfill-status": {Method: http.MethodGet, Path: "/api/warp/log-index/backfill/status", Auth: client.AuthManagement},
+		"cancel-backfill": {Method: http.MethodPost, Path: "/api/warp/log-index/backfill/cancel", Auth: client.AuthManagement, Destructive: true},
 	}},
 }
 

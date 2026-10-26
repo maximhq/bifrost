@@ -1612,3 +1612,57 @@ func TestResourcesListWorksOffline(t *testing.T) {
 		t.Fatalf("resources output = %q", outputBuffer.String())
 	}
 }
+
+// TestSupplementalManagementOperationsDispatch covers every audited route with
+// real CLI parsing, parameter escaping, method dispatch and credential selection.
+func TestSupplementalManagementOperationsDispatch(t *testing.T) {
+	body, err := os.ReadFile("../operations/management.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Paths map[string]map[string]struct {
+			ID   string `json:"operationId"`
+			Auth string `json:"x-cli-auth"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(body, &document); err != nil {
+		t.Fatal(err)
+	}
+	for path, item := range document.Paths {
+		for method, operation := range item {
+			t.Run(operation.ID, func(t *testing.T) {
+				calls := 0
+				runner, _, store := newTestRunner(t, testRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+					calls++
+					wantPath := pathParameterPattern.ReplaceAllString(path, "value%2Fpart")
+					if req.Method != strings.ToUpper(method) || req.URL.EscapedPath() != wantPath {
+						t.Fatalf("request = %s %s, want %s %s", req.Method, req.URL.EscapedPath(), strings.ToUpper(method), wantPath)
+					}
+					wantAuth := "Bearer management-secret"
+					if operation.Auth == "agent" {
+						wantAuth = "Bearer agent-secret"
+					}
+					if operation.Auth == "none" {
+						wantAuth = ""
+					}
+					if req.Header.Get("Authorization") != wantAuth {
+						t.Fatalf("incorrect credential mode: %s", operation.Auth)
+					}
+					return jsonResponse(req, `{}`), nil
+				}))
+				store["test:management-key"], store["test:agent-token"], store["test:virtual-key"] = "management-secret", "agent-secret", "inference-secret"
+				args := []string{"api", "call", operation.ID, "--yes", "--body", `{}`, "--output", "raw"}
+				for _, match := range pathParameterPattern.FindAllStringSubmatch(path, -1) {
+					args = append(args, "--param", match[1]+"=value/part")
+				}
+				if err := runner.Run(context.Background(), args); err != nil {
+					t.Fatal(err)
+				}
+				if calls != 1 {
+					t.Fatalf("calls = %d, want 1", calls)
+				}
+			})
+		}
+	}
+}
