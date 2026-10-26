@@ -37,14 +37,24 @@ bifrost teams list
 bifrost users list                 # Enterprise
 bifrost roles list                 # Enterprise
 bifrost logs list --limit 20
+bifrost rss-feeds list
+bifrost jobs list
+bifrost agent-gateway list
+bifrost adaptive-routing get       # Enterprise
+bifrost budget-requests list        # Enterprise
+bifrost identity-providers list     # Enterprise
+bifrost provisioning filters        # Enterprise
 ```
 
 Each resource lists its actions with `bifrost <resource> --help`. Mutations accept `--body JSON` or `--file PATH`. `--dry-run` previews a mutation, and destructive actions require `--yes`.
 
-For endpoints without a resource command, use the bundled OpenAPI catalog or a raw request:
+For endpoints without a resource command, use the operation catalog or a raw request. The catalog combines public OpenAPI
+with audited OSS and Enterprise management routes, including routes not yet
+documented in public OpenAPI:
 
 ```bash
 bifrost api list --search virtual
+bifrost api list --search access-profile
 bifrost api describe getVirtualKey
 bifrost api call getVirtualKey --param vk_id="$VIRTUAL_KEY_ID"
 

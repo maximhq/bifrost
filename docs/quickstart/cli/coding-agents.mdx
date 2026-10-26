@@ -12,8 +12,8 @@ Bifrost CLI starts coding agents with the gateway URL, credential, and model of 
 | --- | --- | --- | --- | --- | --- |
 | Claude Code (`claude`) | `/anthropic` | Yes | Yes | Yes | Automatic, through a temporary token helper |
 | Codex CLI (`codex`) | `/openai/v1` | Yes | Yes | Yes | Restart Codex after the token expires |
-| OpenCode (`opencode`) | `/openai` | Yes | Yes | No | Restart OpenCode after the token expires |
-| Gemini CLI (`gemini`) | `/genai` | No | Yes | No | Not applicable |
+| OpenCode (`opencode`) | `/openai/v1` | Yes | Yes | Yes | Restart OpenCode after the token expires |
+| Gemini CLI (`gemini`) | `/genai` | No | Yes | Yes | Not applicable |
 
 If a harness is not installed, the interactive launcher offers to install it and asks for confirmation first.
 
@@ -50,23 +50,31 @@ Before the harness starts, the CLI prints the endpoint, credential type (`Enterp
 
 ## Persist configuration for direct use
 
-`bifrost configure` writes the Bifrost endpoint, virtual key, and optional model into the harness's own configuration so it works when you run the harness directly. It supports Claude Code and Codex CLI, and requires a virtual key: short-lived SSO tokens are never written to long-lived files.
+`bifrost configure` writes the Bifrost endpoint, virtual key, and optional model into the harness's own configuration so it works when you run the harness directly. It supports all four agents and requires a virtual key: short-lived SSO tokens are never written to long-lived files.
 
 ```bash
 bifrost configure claude --model anthropic/claude-sonnet-4-6
 bifrost configure codex --model openai/gpt-5
+bifrost configure opencode --model openai/gpt-5
+bifrost configure gemini --model gemini/gemini-2.5-pro
 ```
 
 | Harness | Files changed |
 | --- | --- |
 | Claude Code | `~/.claude/settings.json`: `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_AUTH_TOKEN`, model settings; removes `apiKeyHelper` |
-| Codex CLI | `~/.codex/auth.json` and `~/.codex/config.toml` (`model_provider = "bifrost"`) |
+| Codex CLI | `$CODEX_HOME/config.toml` (defaults to `~/.codex/config.toml`): custom `bifrost` provider and virtual key in `experimental_bearer_token`; preserves `auth.json` |
+| OpenCode | `~/.config/opencode/opencode.json` (honors `XDG_CONFIG_HOME`, `OPENCODE_CONFIG`, and existing `.jsonc`): `bifrost` provider, virtual key, and model |
+| Gemini CLI | `~/.gemini/settings.json`: API-key authentication and model; `~/.gemini/.env`: virtual key, gateway URL, and model |
+
+OpenCode requires `--model` on first configuration. Existing JSON settings are merged; comments and formatting may change, and `unconfigure` restores the original bytes. Environment variables and project settings can override these user settings. Gemini loads the first `.env` it finds, so a project `.env` can take precedence over the home configuration.
 
 Before changing anything, the CLI saves a restoration receipt under `~/.bifrost/receipts/`. To undo the change:
 
 ```bash
 bifrost unconfigure claude
 bifrost unconfigure codex
+bifrost unconfigure opencode
+bifrost unconfigure gemini
 ```
 
 `unconfigure` restores the exact files captured before configuration. If you edited a configured file afterwards, `configure` and `unconfigure` refuse to overwrite it; rerun with `--force` to proceed. The receipt contains your original files and the virtual key, so it is written with owner-only permissions.

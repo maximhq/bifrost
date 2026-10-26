@@ -158,7 +158,7 @@ func TestOpencodePreLaunchWritesCustomProviderConfig(t *testing.T) {
 		`"model": "bifrost/gpt-4.1"`,
 		`"bifrost": {`,
 		`"npm": "@ai-sdk/openai-compatible"`,
-		`"baseURL": "https://example.com/openai"`,
+		`"baseURL": "https://example.com/openai/v1"`,
 		`"apiKey": "test-key"`,
 		`"gpt-4.1": {`,
 	} {
@@ -276,6 +276,7 @@ func TestCodexWriteNativeConfigMergesAuthAndTOML(t *testing.T) {
 		t.Fatalf("mkdir codex dir: %v", err)
 	}
 
+	// Pre-existing auth.json should be left untouched.
 	authPath := filepath.Join(dir, "auth.json")
 	initialAuth := `{"auth_mode":"apikey","OPENAI_API_KEY":"stale-key","tokens":{"id_token":"keep-me"}}`
 	if err := os.WriteFile(authPath, []byte(initialAuth), 0o600); err != nil {
@@ -299,31 +300,17 @@ trust_level = "trusted"
 		t.Fatalf("codexWriteNativeConfig() error = %v", err)
 	}
 
-	// auth.json should keep tokens.id_token but flip OPENAI_API_KEY.
+	// auth.json must be unchanged — native configure no longer touches it.
 	authBytes, err := os.ReadFile(authPath)
 	if err != nil {
 		t.Fatalf("read auth.json: %v", err)
 	}
-	var auth map[string]any
-	if err := sonic.Unmarshal(authBytes, &auth); err != nil {
-		t.Fatalf("unmarshal auth.json: %v", err)
-	}
-	if got, _ := auth["OPENAI_API_KEY"].(string); got != "sk-bf-new" {
-		t.Fatalf("auth.OPENAI_API_KEY = %q, want %q", got, "sk-bf-new")
-	}
-	if got, _ := auth["auth_mode"].(string); got != "apikey" {
-		t.Fatalf("auth.auth_mode = %q, want %q", got, "apikey")
-	}
-	tokens, ok := auth["tokens"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected tokens map preserved, got %#v", auth["tokens"])
-	}
-	if got, _ := tokens["id_token"].(string); got != "keep-me" {
-		t.Fatalf("tokens.id_token = %q, want %q", got, "keep-me")
+	if string(authBytes) != initialAuth {
+		t.Fatalf("auth.json was modified; want it left untouched, got:\n%s", authBytes)
 	}
 
-	// config.toml should select a custom Responses provider, preserve
-	// model_reasoning_effort and the [projects.*] table.
+	// config.toml should select a custom Responses provider with the virtual
+	// key inlined, preserve model_reasoning_effort and the [projects.*] table.
 	tomlBytes, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read config.toml: %v", err)
@@ -337,7 +324,7 @@ trust_level = "trusted"
 		`name = "Bifrost"`,
 		`base_url = "http://localhost:8080/openai/v1"`,
 		`wire_api = "responses"`,
-		`env_key = "OPENAI_API_KEY"`,
+		`experimental_bearer_token = "sk-bf-new"`,
 		`requires_openai_auth = false`,
 		`supports_websockets = false`,
 		`[projects."/Users/me/proj"]`,
@@ -347,11 +334,13 @@ trust_level = "trusted"
 			t.Fatalf("expected config.toml to contain %q, got:\n%s", want, got)
 		}
 	}
+	// env_key must not appear — the virtual key is inlined instead.
 	for _, unwanted := range []string{
 		`"http://old.example/openai/v1"`,
 		`"stale-literal-key"`,
 		`"gpt-old"`,
 		`openai_base_url=`,
+		`env_key`,
 	} {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("expected config.toml to no longer contain %q, got:\n%s", unwanted, got)
@@ -367,16 +356,9 @@ func TestCodexWriteNativeConfigCreatesFilesWhenMissing(t *testing.T) {
 		t.Fatalf("codexWriteNativeConfig() error = %v", err)
 	}
 
-	authBytes, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json"))
-	if err != nil {
-		t.Fatalf("read auth.json: %v", err)
-	}
-	var auth map[string]any
-	if err := sonic.Unmarshal(authBytes, &auth); err != nil {
-		t.Fatalf("unmarshal auth.json: %v", err)
-	}
-	if got, _ := auth["OPENAI_API_KEY"].(string); got != "sk-bf-fresh" {
-		t.Fatalf("auth.OPENAI_API_KEY = %q", got)
+	// auth.json should NOT be created — only config.toml is written.
+	if _, err := os.Stat(filepath.Join(home, ".codex", "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected no auth.json to be created, stat err=%v", err)
 	}
 
 	tomlBytes, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
@@ -389,13 +371,17 @@ func TestCodexWriteNativeConfigCreatesFilesWhenMissing(t *testing.T) {
 		`[model_providers.bifrost]`,
 		`base_url = "http://localhost:8080/openai/v1"`,
 		`wire_api = "responses"`,
-		`env_key = "OPENAI_API_KEY"`,
+		`experimental_bearer_token = "sk-bf-fresh"`,
 		`requires_openai_auth = false`,
 		`supports_websockets = false`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected config.toml to contain %q, got:\n%s", want, got)
 		}
+	}
+	// env_key must not appear when using experimental_bearer_token.
+	if strings.Contains(got, `env_key`) {
+		t.Fatalf("did not expect env_key when virtual key is inlined, got:\n%s", got)
 	}
 	if strings.Contains(got, `model =`) {
 		t.Fatalf("did not expect model line when model is empty, got:\n%s", got)
@@ -413,8 +399,17 @@ func TestCodexWriteNativeConfigSkipsAuthForDummyKey(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".codex", "auth.json")); !os.IsNotExist(err) {
 		t.Fatalf("expected no auth.json for dummy key, stat err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".codex", "config.toml")); err != nil {
-		t.Fatalf("expected config.toml to still be written, stat err=%v", err)
+	tomlBytes, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatalf("expected config.toml to still be written: %v", err)
+	}
+	got := string(tomlBytes)
+	// dummy-key should fall back to env_key, not embed the token.
+	if !strings.Contains(got, `env_key = "OPENAI_API_KEY"`) {
+		t.Fatalf("expected env_key fallback for dummy key, got:\n%s", got)
+	}
+	if strings.Contains(got, `experimental_bearer_token`) {
+		t.Fatalf("did not expect experimental_bearer_token for dummy key, got:\n%s", got)
 	}
 }
 
@@ -627,4 +622,124 @@ func envValue(env []string, key string) string {
 		}
 	}
 	return ""
+}
+
+func TestCodexConfigureReplacesNestedAuthentication(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	path := filepath.Join(home, "config.toml")
+	original := "[model_providers.bifrost]\nname = \"Old\"\n[model_providers.bifrost.auth]\ncommand = \"stale-helper\"\n[model_providers.other]\nname = \"Keep\"\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := codexWriteNativeConfig("https://gateway/openai", "virtual-key", "model"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "stale-helper") || !strings.Contains(string(body), "Keep") {
+		t.Fatalf("stale provider auth survived or unrelated config was lost: %s", body)
+	}
+}
+
+func TestNativeJSONConfigPreservesUserSettings(t *testing.T) {
+	for _, agentID := range []string{"opencode", "gemini"} {
+		t.Run(agentID, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("OPENCODE_CONFIG", "")
+			paths, err := NativeConfigPaths(agentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(paths[0]), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(paths[0], []byte(`{"theme":"keep-me", "provider":{"other":{"name":"Other"}},}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			agent, _ := Get(agentID)
+			if err := agent.WriteNativeConfig("https://gateway/openai", "sk-bf-literal", "provider/model"); err != nil {
+				t.Fatal(err)
+			}
+			body, err := os.ReadFile(paths[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(body), "keep-me") || !strings.Contains(string(body), "Other") {
+				t.Fatalf("lost user config: %s", body)
+			}
+			if agentID == "opencode" && (!strings.Contains(string(body), "sk-bf-literal") || !strings.Contains(string(body), "/openai/v1")) {
+				t.Fatalf("missing gateway credential or URL: %s", body)
+			}
+			if agentID == "gemini" {
+				env, err := os.ReadFile(paths[1])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(env), "GEMINI_API_KEY='sk-bf-literal'") || !strings.Contains(string(body), "gemini-api-key") {
+					t.Fatalf("missing Gemini API key authentication")
+				}
+			}
+			if err := os.WriteFile(paths[0], []byte("invalid"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := agent.WriteNativeConfig("https://gateway", "key", "model"); err == nil {
+				t.Fatal("malformed user config was overwritten")
+			}
+		})
+	}
+}
+
+func TestClaudeConfigureRejectsNullSettings(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	paths, err := NativeConfigPaths("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths[0]), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths[0], []byte("null"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Errorf("null config panicked: %v", recovered)
+		}
+	}()
+	if err := claudeWriteNativeConfig("https://gateway", "virtual-key", "model"); err == nil {
+		t.Fatal("null settings accepted")
+	}
+}
+
+func TestOpenCodeConfigureRemovesConflictingAuthHeaders(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("OPENCODE_CONFIG", "")
+	paths, err := NativeConfigPaths("opencode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths[0]), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := `{"provider":{"bifrost":{"options":{"headers":{"Authorization":"Bearer stale-token","x-bf-vk":"old-key","x-custom":"keep-me"}}}}}`
+	if err := os.WriteFile(paths[0], []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := opencodeWriteNativeConfig("https://gateway/openai/v1", "selected-virtual-key", "provider/model"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "stale-token") || strings.Contains(string(body), "old-key") || !strings.Contains(string(body), "keep-me") {
+		t.Fatalf("conflicting auth headers survived or unrelated header lost: %s", body)
+	}
+	if strings.Contains(string(body), "/v1/v1") {
+		t.Fatal("API version duplicated")
+	}
 }
