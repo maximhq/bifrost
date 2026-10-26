@@ -1663,26 +1663,32 @@ PY
     report_result "$workload Azure identity omits connection string" 1
   fi
 
-  for reference in env vault legacy; do
+  for reference in env vault legacy env-only vault-only legacy-only; do
     python3 - "$TMPDIR/values-objstore-azure-inline.yaml" "$TMPDIR/values-objstore-azure-reference.yaml" "$reference" << 'PY'
 import sys, yaml
 values = yaml.safe_load(open(sys.argv[1]))
+reference = sys.argv[3].removesuffix("-only")
 for storage in [values["storage"]["logsStore"]["objectStorage"], values["bifrost"]["auditLogs"]["objectStorage"]]:
     for field, name in [("bucket", "AZURE_CONTAINER"), ("connectionString", "AZURE_STORAGE_CONNECTION_STRING")]:
-        if sys.argv[3] == "legacy":
+        if reference == "legacy":
             storage[field] = {"value": "", "env_var": name, "from_env": True}
         else:
-            storage[field] = {"value": "", "ref": sys.argv[3] + "." + name, "type": sys.argv[3]}
+            storage[field] = {"value": "", "ref": reference + "." + name, "type": reference}
+        if sys.argv[3].endswith("-only"):
+            del storage[field]["value"]
 yaml.safe_dump(values, open(sys.argv[2], "w"))
 PY
     render_config "$TMPDIR/values-objstore-azure-reference.yaml"
     if python3 - "$TMPDIR/config.json" "$reference" << 'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
+reference = sys.argv[2].removesuffix("-only")
 for path in ["logs_store", "audit_logs"]:
     storage = cfg[path]["object_storage"]
     for field, name in [("bucket", "AZURE_CONTAINER"), ("connection_string", "AZURE_STORAGE_CONNECTION_STRING")]:
-        expected = {"value": "", "env_var": name, "from_env": True} if sys.argv[2] == "legacy" else {"value": "", "ref": sys.argv[2] + "." + name, "type": sys.argv[2]}
+        expected = {"value": "", "env_var": name, "from_env": True} if reference == "legacy" else {"value": "", "ref": reference + "." + name, "type": reference}
+        if sys.argv[2].endswith("-only"):
+            del expected["value"]
         assert storage[field] == expected, storage[field]
 PY
     then
@@ -1695,7 +1701,7 @@ done
 
 # Reject invalid Azure authentication before rendering either config path.
 for target in logs audit; do
-  for invalid in missing-auth both-auth empty-endpoint empty-connection empty-container secret-and-inline empty-ref empty-legacy-env inactive-legacy-env; do
+  for invalid in missing-auth both-auth empty-endpoint empty-connection empty-container secret-and-inline empty-ref empty-legacy-env inactive-legacy-env empty-object untyped-ref; do
     python3 - "$TMPDIR/values-objstore-azure-inline.yaml" "$TMPDIR/values-objstore-azure-invalid.yaml" "$target" "$invalid" << 'PY'
 import sys, yaml
 values = yaml.safe_load(open(sys.argv[1]))
@@ -1712,6 +1718,10 @@ elif case == "empty-connection":
     storage["connectionString"] = ""
 elif case == "empty-container":
     storage["bucket"] = ""
+elif case == "empty-object":
+    storage["connectionString"] = {}
+elif case == "untyped-ref":
+    storage["connectionString"] = {"ref": "env.AZURE_STORAGE_CONNECTION_STRING"}
 elif case == "empty-ref":
     storage["connectionString"] = {"value": "", "ref": "", "type": "env"}
 elif case == "empty-legacy-env":

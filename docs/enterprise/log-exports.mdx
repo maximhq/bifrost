@@ -425,9 +425,10 @@ Restart Bifrost after changing storage configuration or credentials. The SDK ref
 
 Changing backends does not move existing data. Before switching:
 
-1. Copy objects with their exact keys, `Content-Type`, `Content-Encoding`, and metadata.
-2. Pause writes or synchronize remaining changes before restarting against the destination.
-3. Check historical payload reads before removing the source.
+1. Keep the destination's `object_storage.prefix` identical to the source. Historical payload lookups use the currently configured prefix, so changing it makes objects copied with their original keys unreadable. For example, retain `bifrost/logs` when migrating from the S3/GCS examples above rather than adopting the Azure example's `bifrost`.
+2. Copy objects with their exact keys, `Content-Type`, `Content-Encoding`, and metadata.
+3. Pause writes or synchronize remaining changes before restarting against the destination.
+4. Check historical payload reads before removing the source.
 
 ### Manual deletes still cascade
 

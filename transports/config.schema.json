@@ -3570,9 +3570,6 @@
                       "type": "boolean"
                     }
                   },
-                  "required": [
-                    "value"
-                  ],
                   "additionalProperties": false
                 }
               ],
@@ -3657,7 +3654,7 @@
           "then": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "region": {
                 "anyOf": [
@@ -3910,7 +3907,7 @@
             "else": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "credentials_json": {
                 "anyOf": [
@@ -5428,10 +5425,13 @@
             "env_var": { "type": "string" },
             "from_env": { "type": "boolean" }
           },
-          "required": ["value"],
           "anyOf": [
-            { "properties": { "value": { "minLength": 1 } } },
-            { "properties": { "ref": { "minLength": 1 } }, "required": ["ref"] },
+            { "properties": { "value": { "minLength": 1 } }, "required": ["value"] },
+            {
+              "properties": { "ref": { "minLength": 1 } },
+              "required": ["ref"],
+              "anyOf": [{ "required": ["type"] }, { "required": ["value"] }]
+            },
             {
               "properties": {
                 "env_var": { "minLength": 1 },
@@ -12529,9 +12529,6 @@
                       "type": "boolean"
                     }
                   },
-                  "required": [
-                    "value"
-                  ],
                   "additionalProperties": false
                 }
               ],
@@ -12562,7 +12559,7 @@
           "then": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "region": {
                 "anyOf": [
@@ -12818,7 +12815,7 @@
             "else": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "credentials_json": {
                 "anyOf": [
