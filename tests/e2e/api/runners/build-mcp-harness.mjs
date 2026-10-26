@@ -432,24 +432,37 @@ const OAS02 = folder("OAS-02 Protected resource metadata", `Setup: mcp_server_au
   ["both", "oauth"].flatMap((mode) => withMode("OAS-02", mode,
     ["", "/mcp", "/mcp/team"].map((suffix) => request("OAS-02", `${mode}: GET /.well-known/oauth-protected-resource${suffix}`, "GET", `/.well-known/oauth-protected-resource${suffix}`, { noAuth: true, asserts: prmChecks() })), OTHER_ISS)));
 
-const OAS03 = folder("OAS-03 Authorization server metadata", `Setup: mcp_server_auth_mode both with issuer_url ${OTHER_ISS} (another origin than the requests).`, withMode("OAS-03", "both", [
-  request("OAS-03", "GET /.well-known/oauth-authorization-server", "GET", "/.well-known/oauth-authorization-server", {
-    noAuth: true,
-    asserts: [A.status(200), O.noStore(), A.custom("issuer, endpoints and supported values", [
-      `var b = pm.response.json(); var iss = ${lit(OTHER_ISS)};`,
-      "pm.expect(b.issuer, 'body: ' + pm.response.text()).to.equal(iss);",
-      "pm.expect(b.authorization_endpoint).to.equal(iss + '/oauth2/authorize');",
-      "pm.expect(b.token_endpoint).to.equal(iss + '/oauth2/token');",
-      "pm.expect(b.registration_endpoint).to.equal(iss + '/oauth2/register');",
-      "pm.expect(b.jwks_uri).to.equal(iss + '/.well-known/jwks.json');",
-      "pm.expect(b.response_types_supported).to.eql(['code']);",
-      "pm.expect(b.grant_types_supported).to.eql(['authorization_code', 'refresh_token']);",
-      "pm.expect(b.code_challenge_methods_supported).to.eql(['S256']);",
-      "pm.expect(b.token_endpoint_auth_methods_supported).to.eql(['none']);",
-      "pm.expect(b.authorization_response_iss_parameter_supported).to.equal(true);",
-    ])],
-  }),
-], OTHER_ISS));
+// asMetadata checks the authorization server metadata served for issuer iss.
+const asMetadata = (iss) => A.custom("issuer, endpoints and supported values", [
+  `var b = pm.response.json(); var iss = ${lit(iss)};`,
+  "pm.expect(b.issuer, 'body: ' + pm.response.text()).to.equal(iss);",
+  "pm.expect(b.authorization_endpoint).to.equal(iss + '/oauth2/authorize');",
+  "pm.expect(b.token_endpoint).to.equal(iss + '/oauth2/token');",
+  "pm.expect(b.registration_endpoint).to.equal(iss + '/oauth2/register');",
+  "pm.expect(b.jwks_uri).to.equal(iss + '/.well-known/jwks.json');",
+  "pm.expect(b.response_types_supported).to.eql(['code']);",
+  "pm.expect(b.grant_types_supported).to.eql(['authorization_code', 'refresh_token']);",
+  "pm.expect(b.code_challenge_methods_supported).to.eql(['S256']);",
+  "pm.expect(b.token_endpoint_auth_methods_supported).to.eql(['none']);",
+  "pm.expect(b.authorization_response_iss_parameter_supported).to.equal(true);",
+]);
+const jwksOneKey = () => A.custom("one RSA signing key, use sig, alg RS256", [
+  "var keys = pm.response.json().keys || [];",
+  "pm.expect(keys.length, 'body: ' + pm.response.text()).to.equal(1);",
+  "pm.expect(keys[0].kty).to.equal('RSA');",
+  "pm.expect(keys[0].use).to.equal('sig');",
+  "pm.expect(keys[0].alg).to.equal('RS256');",
+]);
+const OAS03 = folder("OAS-03 Authorization server metadata", `Setup: mcp_server_auth_mode both, then oauth, each with issuer_url ${OTHER_ISS} (another origin than the requests) and read back from /api/config.`, [
+  readConfig("OAS-03"),
+  ...["both", "oauth"].flatMap((mode) => [
+    setMode("OAS-03", mode, OTHER_ISS),
+    request("OAS-03", `${mode}: /api/config reads back mcp_server_auth_mode ${mode}`, "GET", "/api/config", { asserts: [A.status(200), A.custom(`mcp_server_auth_mode is ${lit(mode)}`, [`pm.expect(pm.response.json().client_config.mcp_server_auth_mode, 'body: ' + pm.response.text()).to.equal(${lit(mode)});`])] }),
+    request("OAS-03", `${mode}: GET /.well-known/oauth-authorization-server`, "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(200), O.noStore(), asMetadata(OTHER_ISS)] }),
+    request("OAS-03", `${mode}: GET /.well-known/jwks.json`, "GET", "/.well-known/jwks.json", { noAuth: true, asserts: [A.status(200), O.noStore(), jwksOneKey()] }),
+  ]),
+  restoreHeaders("OAS-03"),
+]);
 
 // oas06Checks are OAS-06's requests in one mode; clientVar keeps the client registered there.
 const oas06Checks = (p, clientVar) => [
@@ -2253,9 +2266,11 @@ const EP42 = folder("EP-42 Header credentials in oauth mode", `Setup: ${FLEET}; 
   authMode("EP-42", "B", true),
   list("EP-42", "control: both mode, enforcement on: the VK in x-bf-vk", "/mcp", [vkHeader("EP-42", "full")], [A.status(200), toolNamesInList(ALL_TOOLS)]),
   list("EP-42", "control: both mode, enforcement on: the VK as a Bearer token", "/mcp", [bearer(vkVar("EP-42", "full"))], [A.status(200), toolNamesInList(ALL_TOOLS)]),
+  list("EP-42", "control: both mode, enforcement on: the VK in x-api-key", "/mcp", [{ key: "x-api-key", value: vkVar("EP-42", "full") }], [A.status(200), toolNamesInList(ALL_TOOLS)]),
   authMode("EP-42", "O", false),
   list("EP-42", "the VK in x-bf-vk", "/mcp", [vkHeader("EP-42", "full")], [A.status(401), A.msgEquals(OAUTH_MODE_MSG), wwwPresent()]),
   list("EP-42", "the VK as a Bearer token", "/mcp", [bearer(vkVar("EP-42", "full"))], [A.status(401), A.msgEquals(OAUTH_MODE_MSG), wwwPresent()]),
+  list("EP-42", "the VK in x-api-key", "/mcp", [{ key: "x-api-key", value: vkVar("EP-42", "full") }], [A.status(401), A.msgEquals(OAUTH_MODE_MSG), wwwPresent()]),
   restoreConfig("EP-42"), deleteVK("EP-42", "full"), ...fleetTeardown("EP-42"),
 ]);
 
@@ -6494,14 +6509,27 @@ const EP35 = folder("EP-35 `/mcp/{client slug}` serves one client", `Setup: ${FL
   ...fleetTeardown("EP-35"),
 ]);
 
+// modeReadsBack checks GET /api/config reports mode and, outside headers, issuer_url set to the base URL.
+const modeReadsBack = (id, mode) => request(id, `${mode}: /api/config reads back mcp_server_auth_mode ${mode}`, "GET", "/api/config", {
+  asserts: [A.status(200), A.custom(`mcp_server_auth_mode is ${lit(mode)}${mode === "headers" ? "" : ", issuer_url is the base URL"}`, [
+    "var cc = pm.response.json().client_config || {};",
+    `pm.expect(cc.mcp_server_auth_mode, 'body: ' + pm.response.text()).to.equal(${lit(mode)});`,
+    ...(mode === "headers" ? [] : [
+      "var iss = (cc.oauth2_server_config || {}).issuer_url;",
+      "pm.expect(iss !== null && typeof iss === 'object' ? iss.value : iss, 'oauth2_server_config: ' + JSON.stringify(cc.oauth2_server_config)).to.equal(pm.variables.get('base_url'));",
+    ]),
+  ])],
+});
 const EP50 = folder("EP-50 Switching `mcp_server_auth_mode` at runtime", `Setup: ${GRANT_TEXT}; ${BOTH}, temp-token auth on, enforce_auth_on_inference off; a grant gives an access token for the full-access VK. The mode then switches to oauth, headers and back to both with no restart.`, [
   ...fleetGrantSetup("EP-50"), oauthConfig("EP-50", "both"),
   register("EP-50", "ep50_client", LOOPBACK_CB, undefined, REFRESHABLE),
   ...vkGrant("EP-50", "ep50_client", "ep50_f", "the grant"),
   authMode("EP-50", "O", false),
+  modeReadsBack("EP-50", "oauth"),
   rpc("EP-50", "oauth: tools/list with x-bf-vk", listMsg, { headers: [MCP_ACCEPT, fullVK("EP-50")], asserts: [A.status(401)] }),
   mcpWithToken("EP-50", "oauth: tools/list with the access token", "ep50_f_at", [A.status(200)]),
   authMode("EP-50", "H", false),
+  modeReadsBack("EP-50", "headers"),
   mcpWithToken("EP-50", "headers: tools/list with the access token is anonymous", "ep50_f_at", [A.status(200), toolNamesInList(ALL_TOOLS)]),
   authMode("EP-50", "H", true),
   mcpWithToken("EP-50", "headers, enforcement on: the access token is no credential", "ep50_f_at", [A.status(401), A.msgContains("virtual key required to access mcp server")]),
@@ -6512,8 +6540,21 @@ const EP50 = folder("EP-50 Switching `mcp_server_auth_mode` at runtime", `Setup:
   request("EP-50", "headers: /.well-known/oauth-authorization-server", "GET", "/.well-known/oauth-authorization-server", { noAuth: true, asserts: [A.status(404)] }),
   request("EP-50", "headers: /.well-known/oauth-protected-resource/mcp", "GET", "/.well-known/oauth-protected-resource/mcp", { noAuth: true, asserts: [A.status(404)] }),
   tokenReq("EP-50", "headers: /oauth2/token", refreshParams("ep50_f_rt", "ep50_client"), [A.status(404)]),
+  putConfig("EP-50", "setup: headers, issuer_url cleared", ["cc.mcp_server_auth_mode = 'headers';", "cc.oauth2_server_config = { issuer_url: '' };"], [A.status(200)]),
+  request("EP-50", "headers: /api/config reads back no issuer_url", "GET", "/api/config", { asserts: [A.status(200), A.custom("mcp_server_auth_mode is \"headers\" and issuer_url is empty", [
+    "var cc = pm.response.json().client_config || {};",
+    "pm.expect(cc.mcp_server_auth_mode, 'body: ' + pm.response.text()).to.equal('headers');",
+    "var iss = (cc.oauth2_server_config || {}).issuer_url;",
+    "pm.expect((iss !== null && typeof iss === 'object' ? iss.value : iss) || '', 'oauth2_server_config: ' + JSON.stringify(cc.oauth2_server_config)).to.equal('');",
+  ])] }),
   authMode("EP-50", "B", false),
   mcpWithToken("EP-50", "both: tools/list with the access token", "ep50_f_at", [A.status(200)]),
+  modeReadsBack("EP-50", "both"),
+  request("EP-50", "both: /.well-known/oauth-protected-resource is served again", "GET", "/.well-known/oauth-protected-resource", { noAuth: true, asserts: [A.status(200)] }),
+  rpc("EP-50", "both: tools/list with x-bf-vk", listMsg, { headers: [MCP_ACCEPT, fullVK("EP-50")], asserts: [A.status(200), toolNamesInList(ALL_TOOLS)] }),
+  authMode("EP-50", "B", true),
+  rpc("EP-50", "both, enforcement on: tools/list with x-bf-vk", listMsg, { headers: [MCP_ACCEPT, fullVK("EP-50")], asserts: [A.status(200), toolNamesInList(ALL_TOOLS)] }),
+  rpc("EP-50", "both, enforcement on: control: tools/list with no credential", listMsg, { headers: [MCP_ACCEPT], asserts: [A.status(401), wwwPresent()] }),
   ...fleetGrantTeardown("EP-50"),
 ]);
 
