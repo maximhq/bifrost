@@ -1187,6 +1187,7 @@ const (
 	maxPersistedUserAgentLen          = 512
 	maxPersistedAppLen                = 128
 	maxPersistedAgentCorrelationIDLen = 255
+	maxPersistedMCPToolNameLen        = 255 // mcp_tool_logs.tool_name; a resource read's URI is unbounded
 )
 
 // clampString truncates s to at most max bytes. The columns are sized in

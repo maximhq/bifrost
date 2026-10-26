@@ -477,6 +477,30 @@ test.describe("MCP Registry", () => {
       expect(refused.error, "a hidden resource cannot be read").toBeDefined();
     });
 
+    test("should record a prompt read through the gateway in MCP logs as a prompt", async ({ mcpRegistryPage, mcpLogsPage, request, page }) => {
+      const name = await createServedClient(mcpRegistryPage, "served_logged");
+      const got = await mcpRegistryPage.mcpGatewayCall(request, name, "prompts/get", { name: `${name}-${PROMPT}` });
+      expect(got.error, JSON.stringify(got)).toBeUndefined();
+
+      // The log writer flushes in batches, so wait for the row to land.
+      await expect
+        .poll(
+          async () => {
+            const res = await request.get(`/api/mcp-logs?tool_names=${PROMPT}&server_labels=${encodeURIComponent(name)}`);
+            const rows = res.ok() ? ((await res.json()).logs ?? []) : [];
+            return rows.map((row: { method?: string; status: string }) => `${row.method}:${row.status}`);
+          },
+          { timeout: 20_000 },
+        )
+        .toContain("prompts/get:success");
+
+      await page.goto(`/workspace/mcp-logs?server_labels=${encodeURIComponent(name)}`);
+      await expect(mcpLogsPage.logsTable).toBeVisible();
+      await expect(page.getByTestId("mcp-log-read-kind").first()).toHaveText("Prompt");
+      await mcpLogsPage.viewLogDetails(0);
+      await expect(mcpLogsPage.logDetailSheet.getByTestId("mcplogdetails-tool-label")).toHaveText("Prompt");
+    });
+
     test("should show empty states for a server that lists no prompts or resources", async ({ mcpRegistryPage }) => {
       const clientData = createSTDIOClientData({ name: `served_none_${Date.now()}` });
       expect(await mcpRegistryPage.createClient(clientData)).toBe(true);

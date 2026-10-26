@@ -93,7 +93,8 @@ func runGated[T any](m *MCPManager, ctx context.Context, req *schemas.BifrostMCP
 			return nil, err
 		}
 		resp := wrap(result)
-		resp.ExtraFields = schemas.BifrostMCPResponseExtraFields{Latency: time.Since(start).Milliseconds()}
+		// preReq names the server that answered: a read may move to another owner after the pre-hooks.
+		resp.ExtraFields = schemas.BifrostMCPResponseExtraFields{ClientName: preReq.ClientName, Latency: time.Since(start).Milliseconds()}
 		return resp, nil
 	})
 	if bErr != nil || resp == nil {
@@ -196,22 +197,14 @@ func rebindPromptsToClientName(prompts []mcp.Prompt, clientName string) []mcp.Pr
 // prompts, resources and templates its allow-lists expose. A tool filter reaches a client through its
 // "<client>-*" entry or one of its tools, so a server without tools is reached by the wildcard.
 func (m *MCPManager) reachableClients(ctx context.Context) []*schemas.MCPClientState {
-	includeClients, _ := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string)
-	includeTools, narrowed := ctx.Value(schemas.MCPContextKeyIncludeTools).([]string)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	clients := make([]*schemas.MCPClientState, 0, len(m.clientMap))
 	for _, state := range m.clientMap {
+		if !m.reachable(ctx, state) {
+			continue
+		}
 		config := state.ExecutionConfig
-		if config == nil || state.State == schemas.MCPConnectionStateDisabled || !shouldIncludeClient(config.Name, includeClients, m.logger) {
-			continue
-		}
-		if narrowed && !slices.ContainsFunc(includeTools, func(entry string) bool {
-			_, isTool := state.ToolMap[entry]
-			return isTool || entry == config.Name+"-*"
-		}) {
-			continue
-		}
 		stateCopy := *state
 		stateCopy.Prompts = exposed(state.Prompts, config.PromptsToExpose, func(p mcp.Prompt) string { return stripClientPrefix(p.Name, config.Name) })
 		stateCopy.Resources = exposed(state.Resources, config.ResourcesToExpose, resourceURI)
@@ -220,6 +213,24 @@ func (m *MCPManager) reachableClients(ctx context.Context) []*schemas.MCPClientS
 	}
 	sortByName(clients)
 	return clients
+}
+
+// reachable reports whether ctx's include lists let a request reach state: the client is included,
+// and, when the tools are narrowed, one of its tools or its wildcard is listed. Callers hold m.mu.
+func (m *MCPManager) reachable(ctx context.Context, state *schemas.MCPClientState) bool {
+	config := state.ExecutionConfig
+	if config == nil || state.State == schemas.MCPConnectionStateDisabled {
+		return false
+	}
+	includeClients, _ := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string)
+	if !shouldIncludeClient(config.Name, includeClients, m.logger) {
+		return false
+	}
+	includeTools, narrowed := ctx.Value(schemas.MCPContextKeyIncludeTools).([]string)
+	return !narrowed || slices.ContainsFunc(includeTools, func(entry string) bool {
+		_, isTool := state.ToolMap[entry]
+		return isTool || entry == config.Name+"-*"
+	})
 }
 
 // exposed keeps the items allow lists; a nil list exposes everything.
@@ -295,9 +306,10 @@ func (m *MCPManager) GetPrompt(ctx *schemas.BifrostContext, name string, argumen
 		BifrostMCPGetPromptRequest: &schemas.BifrostMCPGetPromptRequest{Name: name, Arguments: arguments},
 	}
 	return runOnClient(m, ctx, req, state,
+		func(clients []*schemas.MCPClientState) *schemas.MCPClientState { return promptOwner(clients, name) },
 		func(ctx context.Context, conn *client.Client, req *schemas.BifrostMCPRequest) (*mcp.GetPromptResult, error) {
 			get := mcp.GetPromptRequest{}
-			get.Params.Name = stripClientPrefix(req.BifrostMCPGetPromptRequest.Name, state.ExecutionConfig.Name)
+			get.Params.Name = stripClientPrefix(req.BifrostMCPGetPromptRequest.Name, req.ClientName)
 			get.Params.Arguments = req.BifrostMCPGetPromptRequest.Arguments
 			return conn.GetPrompt(ctx, get)
 		},
@@ -324,6 +336,7 @@ func (m *MCPManager) ReadResource(ctx *schemas.BifrostContext, uri string) (*mcp
 		BifrostMCPReadResourceRequest: &schemas.BifrostMCPReadResourceRequest{URI: uri},
 	}
 	return runOnClient(m, ctx, req, state,
+		func(clients []*schemas.MCPClientState) *schemas.MCPClientState { return resourceOwner(clients, uri) },
 		func(ctx context.Context, conn *client.Client, req *schemas.BifrostMCPRequest) (*mcp.ReadResourceResult, error) {
 			read := mcp.ReadResourceRequest{}
 			read.Params.URI = req.BifrostMCPReadResourceRequest.URI
@@ -343,14 +356,7 @@ func (m *MCPManager) ReadResource(ctx *schemas.BifrostContext, uri string) (*mcp
 // Complete runs completion/complete on the client that owns the referenced prompt or resource. A
 // reference no reachable client owns, or an upstream without completions, completes to nothing.
 func (m *MCPManager) Complete(ctx *schemas.BifrostContext, params mcp.CompleteParams) (*mcp.CompleteResult, *schemas.BifrostError) {
-	clients := m.reachableClients(ctx)
-	var state *schemas.MCPClientState
-	switch ref := params.Ref.(type) {
-	case mcp.PromptReference:
-		state = promptOwner(clients, ref.Name)
-	case mcp.ResourceReference:
-		state = resourceOwner(clients, ref.URI)
-	}
+	state := completionOwner(m.reachableClients(ctx), params.Ref)
 	if state == nil {
 		return emptyCompletion(), nil
 	}
@@ -360,6 +366,9 @@ func (m *MCPManager) Complete(ctx *schemas.BifrostContext, params mcp.CompletePa
 		BifrostMCPCompleteRequest: &schemas.BifrostMCPCompleteRequest{Params: params},
 	}
 	return runOnClient(m, ctx, req, state,
+		func(clients []*schemas.MCPClientState) *schemas.MCPClientState {
+			return completionOwner(clients, params.Ref)
+		},
 		func(ctx context.Context, conn *client.Client, req *schemas.BifrostMCPRequest) (*mcp.CompleteResult, error) {
 			// mcp-go answers an unknown method on 2026-07-28 with a 404 its client reads as a dead session.
 			if conn.GetServerCapabilities().Completions == nil {
@@ -367,7 +376,7 @@ func (m *MCPManager) Complete(ctx *schemas.BifrostContext, params mcp.CompletePa
 			}
 			complete := mcp.CompleteRequest{Params: req.BifrostMCPCompleteRequest.Params}
 			if ref, ok := complete.Params.Ref.(mcp.PromptReference); ok {
-				ref.Name = stripClientPrefix(ref.Name, state.ExecutionConfig.Name)
+				ref.Name = stripClientPrefix(ref.Name, req.ClientName)
 				complete.Params.Ref = ref
 			}
 			return conn.Complete(ctx, complete)
@@ -386,9 +395,23 @@ func (m *MCPManager) Complete(ctx *schemas.BifrostContext, params mcp.CompletePa
 // runOnClient runs call through the plugin gate on state's connection, acquired after the PreHooks
 // pass as for a tool call, within the tool execution timeout. An auth failure or dead session is
 // recovered like a tool call's; these reads are safe to retry.
-func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, state *schemas.MCPClientState, call func(context.Context, *client.Client, *schemas.BifrostMCPRequest) (T, error), wrap func(T) *schemas.BifrostMCPResponse, unwrap func(*schemas.BifrostMCPResponse) (T, bool)) (T, *schemas.BifrostError) {
+func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, state *schemas.MCPClientState, owner func([]*schemas.MCPClientState) *schemas.MCPClientState, call func(context.Context, *client.Client, *schemas.BifrostMCPRequest) (T, error), wrap func(T) *schemas.BifrostMCPResponse, unwrap func(*schemas.BifrostMCPResponse) (T, bool)) (T, *schemas.BifrostError) {
 	result, ok, bErr := runGated(m, ctx, req, func(gateCtx *schemas.BifrostContext, preReq *schemas.BifrostMCPRequest) (T, error) {
 		var zero T
+		// The owner was picked before the pre-hooks ran; one (governance) may have narrowed access since.
+		// Pick again among what the request can still reach, so a URI two servers expose goes to the
+		// one it is allowed.
+		m.mu.RLock()
+		stillReachable := m.reachable(gateCtx, state)
+		m.mu.RUnlock()
+		if !stillReachable {
+			next := owner(m.reachableClients(gateCtx))
+			if next == nil {
+				return zero, fmt.Errorf("%w: no server this request can reach owns it", ErrNotFound)
+			}
+			state = next
+			preReq.ClientName = next.ExecutionConfig.Name
+		}
 		if state.State == schemas.MCPConnectionStateNeedsReauth {
 			return zero, fmt.Errorf("client %s needs re-authorization (its admin credential expired or was revoked)", state.ExecutionConfig.Name)
 		}
@@ -420,6 +443,17 @@ func runOnClient[T any](m *MCPManager, ctx *schemas.BifrostContext, req *schemas
 		bErr = &schemas.BifrostError{Error: &schemas.ErrorField{Message: req.RequestType.OTelMethodName() + " returned no result"}}
 	}
 	return result, bErr
+}
+
+// completionOwner returns the client owning the prompt or resource ref names, or nil.
+func completionOwner(clients []*schemas.MCPClientState, ref any) *schemas.MCPClientState {
+	switch ref := ref.(type) {
+	case mcp.PromptReference:
+		return promptOwner(clients, ref.Name)
+	case mcp.ResourceReference:
+		return resourceOwner(clients, ref.URI)
+	}
+	return nil
 }
 
 // promptOwner returns the client listing the prefixed prompt name, or nil.

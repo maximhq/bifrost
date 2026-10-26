@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // FlattenToolResultMedia replaces every block keep rejects with a placeholder naming it, for providers
@@ -246,4 +248,84 @@ func base64Size(n int) string {
 		return fmt.Sprintf("%d KB", size>>10)
 	}
 	return fmt.Sprintf("%d bytes", size)
+}
+
+// ResourceContentsForLog returns result's contents with every blob replaced by a placeholder.
+func ResourceContentsForLog(result *mcp.ReadResourceResult) []mcp.ResourceContents {
+	if result == nil {
+		return nil
+	}
+	contents := make([]mcp.ResourceContents, len(result.Contents))
+	for i, content := range result.Contents {
+		contents[i] = resourceContentsForLog(content)
+	}
+	return contents
+}
+
+// PromptForLog returns result with image, audio and blob data replaced by placeholders; result is not mutated.
+func PromptForLog(result *mcp.GetPromptResult) *mcp.GetPromptResult {
+	if result == nil {
+		return nil
+	}
+	logged := *result
+	logged.Messages = make([]mcp.PromptMessage, len(result.Messages))
+	for i, message := range result.Messages {
+		logged.Messages[i] = message
+		logged.Messages[i].Content = contentForLog(message.Content)
+	}
+	return &logged
+}
+
+// contentForLog returns content with its media replaced by placeholders; content is not mutated.
+func contentForLog(content mcp.Content) mcp.Content {
+	switch c := content.(type) {
+	case mcp.ImageContent:
+		c.Data = MediaPlaceholder(c.MIMEType, len(c.Data))
+		return c
+	case mcp.AudioContent:
+		c.Data = MediaPlaceholder(c.MIMEType, len(c.Data))
+		return c
+	case mcp.EmbeddedResource:
+		c.Resource = resourceContentsForLog(c.Resource)
+		return c
+	case mcp.ToolResultContent:
+		nested := make([]mcp.Content, len(c.Content))
+		for i, item := range c.Content {
+			nested[i] = contentForLog(item)
+		}
+		c.Content = nested
+		return c
+	case *mcp.ImageContent:
+		if c != nil {
+			return contentForLog(*c)
+		}
+	case *mcp.AudioContent:
+		if c != nil {
+			return contentForLog(*c)
+		}
+	case *mcp.EmbeddedResource:
+		if c != nil {
+			return contentForLog(*c)
+		}
+	case *mcp.ToolResultContent:
+		if c != nil {
+			return contentForLog(*c)
+		}
+	}
+	return content
+}
+
+func resourceContentsForLog(content mcp.ResourceContents) mcp.ResourceContents {
+	switch blob := content.(type) {
+	case mcp.BlobResourceContents:
+		blob.Blob = MediaPlaceholder(blob.MIMEType, len(blob.Blob))
+		return blob
+	case *mcp.BlobResourceContents:
+		if blob != nil {
+			logged := *blob
+			logged.Blob = MediaPlaceholder(blob.MIMEType, len(blob.Blob))
+			return logged
+		}
+	}
+	return content
 }

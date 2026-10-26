@@ -866,3 +866,83 @@ func TestGetClients_ReturnsOwnedDiscoveryLists(t *testing.T) {
 	assert.Equal(t, "repo", held.ResourceTemplates[0].Name)
 	assert.Equal(t, "docs-review", held.Prompts[0].Name)
 }
+
+// stampingPipeline's pre-hook narrows the request to stamped tools, as governance does for a read.
+type stampingPipeline struct {
+	listGatePipeline
+	tools []string
+}
+
+func (p *stampingPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int) {
+	ctx.SetValue(schemas.MCPContextKeyIncludeTools, p.tools)
+	return req, nil, 0
+}
+
+// A read picks its server before the pre-hooks run; a hook that narrows the request to other servers
+// (governance, for a Go caller that stamped nothing) must stop it before the server is contacted.
+func TestResourcesAndPrompts_ReadRecheckedAfterPreHooksNarrowAccess(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m.pluginPipelineProvider = func() PluginPipeline { return &stampingPipeline{tools: []string{"allowed-search"}} }
+	m.releasePluginPipeline = func(PluginPipeline) {}
+	m.clientMap["allowed-id"] = &schemas.MCPClientState{
+		Name:            "allowed",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "allowed-id", Name: "allowed"},
+		ToolMap:         map[string]schemas.ChatTool{"allowed-search": {}},
+	}
+	m.clientMap["denied-id"] = &schemas.MCPClientState{
+		Name:            "denied",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "denied-id", Name: "denied"},
+		ToolMap:         map[string]schemas.ChatTool{"denied-search": {}},
+		Prompts:         []mcpgo.Prompt{mcpgo.NewPrompt("denied-review")},
+		Resources:       []mcpgo.Resource{mcpgo.NewResource("file:///secret.md", "secret")},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	_, bErr := m.GetPrompt(ctx, "denied-review", nil)
+	require.NotNil(t, bErr)
+	assert.ErrorIs(t, bErr.Error.Error, ErrNotFound, "prompt: %s", bErr.Error.Message)
+	_, bErr = m.ReadResource(ctx, "file:///secret.md")
+	require.NotNil(t, bErr)
+	assert.ErrorIs(t, bErr.Error.Error, ErrNotFound, "resource: %s", bErr.Error.Message)
+}
+
+// servedByPipeline stamps tools in its pre-hook and records which server the response names.
+type servedByPipeline struct {
+	stampingPipeline
+	servedBy string
+}
+
+func (p *servedByPipeline) RunMCPPostHooks(_ *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, err *schemas.BifrostError, _ int) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	if resp != nil {
+		p.servedBy = resp.ExtraFields.ClientName
+	}
+	return resp, err
+}
+
+// Two servers expose the same URI and the request may reach only the second: the read goes to the
+// second instead of failing on the first, and the response names the server that answered.
+func TestResourcesAndPrompts_SharedURIReadGoesToTheReachableServer(t *testing.T) {
+	ts := newToollessUpstream(t, true, false, func(string) bool { return false })
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	require.NoError(t, m.connectToMCPClient(context.Background(), &schemas.MCPClientConfig{
+		ID: "b-id", Name: "b", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"}, NeedsSessionStickiness: schemas.Ptr(true),
+	}))
+	// "a" sorts first and lists the same URI, but the request may not reach it.
+	m.clientMap["a-id"] = &schemas.MCPClientState{
+		Name:            "a",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "a-id", Name: "a"},
+		ToolMap:         map[string]schemas.ChatTool{},
+		Resources:       []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")},
+	}
+	pipeline := &servedByPipeline{stampingPipeline: stampingPipeline{tools: []string{"b-*"}}}
+	m.pluginPipelineProvider = func() PluginPipeline { return pipeline }
+	m.releasePluginPipeline = func(PluginPipeline) {}
+
+	result, bErr := m.ReadResource(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), "file:///handbook.md")
+	require.Nil(t, bErr, "the read the request may make must not fail: %v", bErr)
+	require.Len(t, result.Contents, 1)
+	assert.Equal(t, "# Handbook", result.Contents[0].(mcpgo.TextResourceContents).Text)
+	assert.Equal(t, "b", pipeline.servedBy, "the response names the server that answered")
+}

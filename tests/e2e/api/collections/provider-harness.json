@@ -288622,7 +288622,7 @@
     },
     {
       "name": "277. MCP gateway serves upstream prompts and resources (mcp-gateway-prompts-resources)",
-      "description": "Bifrost's /mcp now serves what upstream MCP servers offer besides tools: prompts (named <client>-<prompt>, like tools), resources and resource templates (the server's own URIs), and completion/complete, each routed to the upstream that owns it through the MCP plugin gate. A caller sees a client's prompts and resources when it may reach that client (include headers, Virtual MCP slugs and virtual keys name the client or one of its tools), narrowed by the client's prompts_to_expose / resources_to_expose allow-lists, so a server without tools is served too. Before, initialize declared no prompts or resources and these methods were unknown. Uses the profile's sse_mcp fixture (examples/mcps/remote-test-server), which offers the review prompt, file:///fixture/handbook.md and fixture://notes/{id} but no completions; a stale fixture build or an older process on port 3012 lists none. No provider calls; the openai keyword is a harness filter label. Run with FEATURE=mcp-gateway-prompts-resources.",
+      "description": "Bifrost's /mcp now serves what upstream MCP servers offer besides tools: prompts (named <client>-<prompt>, like tools), resources and resource templates (the server's own URIs), and completion/complete, each routed to the upstream that owns it through the MCP plugin gate. A caller sees a client's prompts and resources when it may reach that client (include headers, Virtual MCP slugs and virtual keys name the client or one of its tools), narrowed by the client's prompts_to_expose / resources_to_expose allow-lists, so a server without tools is served too. Prompt and resource reads are recorded in MCP logs with their method. Before, initialize declared no prompts or resources and these methods were unknown. Uses the profile's sse_mcp fixture (examples/mcps/remote-test-server), which offers the review prompt, file:///fixture/handbook.md and fixture://notes/{id} but no completions; a stale fixture build or an older process on port 3012 lists none. No provider calls; the openai keyword is a harness filter label. Run with FEATURE=mcp-gateway-prompts-resources.",
       "item": [
         {
           "name": "[EXPECT-200] openai mcp-gateway-prompts-resources initialize declares prompts, resources and completions",
@@ -289348,6 +289348,185 @@
               }
             }
           }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources resources/read is recorded in MCP logs with its method",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Read a per-run URI through the upstream template, then give the log writer (1s batches) time to flush.",
+                  "var uri = 'fixture://notes/logged-' + Date.now();",
+                  "pm.collectionVariables.set('resourceReadURI', uri);",
+                  "pm.collectionVariables.set('resourceReadURIQuery', encodeURIComponent(uri));",
+                  "pm.collectionVariables.set('resourceReadStartedAt', new Date(Date.now() - 1000).toISOString());",
+                  "pm.collectionVariables.set('resourceReadError', 'resources/read did not complete');",
+                  "pm.sendRequest({",
+                  "  url: pm.variables.get('baseUrl') + '/mcp',",
+                  "  method: 'POST',",
+                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18' },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: uri } }) }",
+                  "}, function (err, res) {",
+                  "  var text = res ? res.text() : '';",
+                  "  var payload = null;",
+                  "  try { payload = JSON.parse(text); } catch (e) { var m = /^data: (.*)$/m.exec(text); try { payload = m ? JSON.parse(m[1]) : null; } catch (e2) { payload = null; } }",
+                  "  var ok = !err && res.code === 200 && payload && !payload.error && payload.result && Array.isArray(payload.result.contents);",
+                  "  pm.collectionVariables.set('resourceReadError', ok ? '' : 'resources/read returned no JSON-RPC result: ' + (err || (res.code + ' ' + text)));",
+                  "  setTimeout(function () {}, 3000);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the resources/read call returned a JSON-RPC result', function () {",
+                  "  var readError = pm.collectionVariables.get('resourceReadError');",
+                  "  pm.expect(readError, readError).to.equal('');",
+                  "});",
+                  "pm.test('the resource read from this run is an MCP log row naming the URI, the server and resources/read', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var uri = pm.collectionVariables.get('resourceReadURI');",
+                  "  var startedAt = new Date(pm.collectionVariables.get('resourceReadStartedAt'));",
+                  "  var rows = (pm.response.json().logs || []).filter(function (l) { return l.tool_name === uri && new Date(l.timestamp) >= startedAt; });",
+                  "  pm.expect(rows.length, 'no row for ' + uri + ' since ' + startedAt.toISOString() + ': ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(rows[0].method).to.equal('resources/read');",
+                  "  pm.expect(rows[0].server_label).to.equal('sse_mcp');",
+                  "  pm.expect(rows[0].status, 'row: ' + JSON.stringify(rows[0])).to.equal('success');",
+                  "});",
+                  "['resourceReadURI', 'resourceReadURIQuery', 'resourceReadStartedAt', 'resourceReadError'].forEach(function (k) { pm.collectionVariables.unset(k); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp-logs?tool_names={{resourceReadURIQuery}}&server_labels=sse_mcp&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs"
+              ],
+              "query": [
+                {
+                  "key": "tool_names",
+                  "value": "{{resourceReadURIQuery}}"
+                },
+                {
+                  "key": "server_labels",
+                  "value": "sse_mcp"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources resources/read of a URI with a comma is found by the log filter",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Read a resource whose URI holds a comma, then give the log writer (1s batches) time to flush.",
+                  "pm.collectionVariables.set('commaReadStartedAt', new Date(Date.now() - 1000).toISOString());",
+                  "pm.collectionVariables.set('commaReadError', 'resources/read did not complete');",
+                  "pm.sendRequest({",
+                  "  url: pm.variables.get('baseUrl') + '/mcp',",
+                  "  method: 'POST',",
+                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18' },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: 'file:///fixture/report,2026.md' } }) }",
+                  "}, function (err, res) {",
+                  "  var text = res ? res.text() : '';",
+                  "  var payload = null;",
+                  "  try { payload = JSON.parse(text); } catch (e) { var m = /^data: (.*)$/m.exec(text); try { payload = m ? JSON.parse(m[1]) : null; } catch (e2) { payload = null; } }",
+                  "  var ok = !err && res.code === 200 && payload && !payload.error && payload.result && Array.isArray(payload.result.contents);",
+                  "  pm.collectionVariables.set('commaReadError', ok ? '' : 'resources/read returned no JSON-RPC result (a stale fixture build has no report,2026.md): ' + (err || (res.code + ' ' + text)));",
+                  "  setTimeout(function () {}, 3000);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the resources/read call returned a JSON-RPC result', function () {",
+                  "  var readError = pm.collectionVariables.get('commaReadError');",
+                  "  pm.expect(readError, readError).to.equal('');",
+                  "});",
+                  "// The log filters split tool_names on commas, so the URI is logged with its comma percent-encoded.",
+                  "pm.test('filtering by the logged name finds the read of a URI with a comma', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var startedAt = new Date(pm.collectionVariables.get('commaReadStartedAt'));",
+                  "  var rows = (pm.response.json().logs || []).filter(function (l) { return new Date(l.timestamp) >= startedAt; });",
+                  "  pm.expect(rows.length, 'no row for file:///fixture/report%2C2026.md since ' + startedAt.toISOString() + ': ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(rows[0].tool_name).to.equal('file:///fixture/report%2C2026.md');",
+                  "  pm.expect(rows[0].method).to.equal('resources/read');",
+                  "  pm.expect(rows[0].status, 'row: ' + JSON.stringify(rows[0])).to.equal('success');",
+                  "});",
+                  "['commaReadStartedAt', 'commaReadError'].forEach(function (k) { pm.collectionVariables.unset(k); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp-logs?tool_names=file%3A%2F%2F%2Ffixture%2Freport%252C2026.md&server_labels=sse_mcp&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs"
+              ],
+              "query": [
+                {
+                  "key": "tool_names",
+                  "value": "file%3A%2F%2F%2Ffixture%2Freport%252C2026.md"
+                },
+                {
+                  "key": "server_labels",
+                  "value": "sse_mcp"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            }
+          }
         }
       ]
     },
@@ -289590,6 +289769,92 @@
                   "language": "json"
                 }
               }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-gateway-prompts-resources prompts/get is recorded in MCP logs with its method",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fetch the prompt through the gateway with a per-run argument, then give the log writer (1s batches) time to flush.",
+                  "pm.collectionVariables.set('promptReadStartedAt', new Date(Date.now() - 1000).toISOString());",
+                  "pm.collectionVariables.set('promptReadError', 'prompts/get did not complete');",
+                  "pm.sendRequest({",
+                  "  url: pm.variables.get('baseUrl') + '/mcp',",
+                  "  method: 'POST',",
+                  "  header: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-06-18' },",
+                  "  body: { mode: 'raw', raw: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'prompts/get', params: { name: 'sse_mcp-review', arguments: { diff: 'logged-' + Date.now() } } }) }",
+                  "}, function (err, res) {",
+                  "  var text = res ? res.text() : '';",
+                  "  var payload = null;",
+                  "  try { payload = JSON.parse(text); } catch (e) { var m = /^data: (.*)$/m.exec(text); try { payload = m ? JSON.parse(m[1]) : null; } catch (e2) { payload = null; } }",
+                  "  var ok = !err && res.code === 200 && payload && !payload.error && payload.result && Array.isArray(payload.result.messages);",
+                  "  pm.collectionVariables.set('promptReadError', ok ? '' : 'prompts/get returned no JSON-RPC result: ' + (err || (res.code + ' ' + text)));",
+                  "  setTimeout(function () {}, 3000);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the prompts/get call returned a JSON-RPC result', function () {",
+                  "  var readError = pm.collectionVariables.get('promptReadError');",
+                  "  pm.expect(readError, readError).to.equal('');",
+                  "});",
+                  "pm.test('the prompt read from this run is an MCP log row naming the prompt, the server and prompts/get', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var startedAt = new Date(pm.collectionVariables.get('promptReadStartedAt'));",
+                  "  var rows = (pm.response.json().logs || []).filter(function (l) { return l.method === 'prompts/get' && new Date(l.timestamp) >= startedAt; });",
+                  "  pm.expect(rows.length, 'no prompts/get row since ' + startedAt.toISOString() + ': ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(rows[0].tool_name).to.equal('review');",
+                  "  pm.expect(rows[0].server_label).to.equal('sse_mcp');",
+                  "  pm.expect(rows[0].status, 'row: ' + JSON.stringify(rows[0])).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp-logs?tool_names=review&server_labels=sse_mcp&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp-logs"
+              ],
+              "query": [
+                {
+                  "key": "tool_names",
+                  "value": "review"
+                },
+                {
+                  "key": "server_labels",
+                  "value": "sse_mcp"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
             }
           }
         }
