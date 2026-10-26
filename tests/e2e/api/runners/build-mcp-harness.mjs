@@ -5146,11 +5146,11 @@ const INF14 = folder("INF-14 Auto-inject off", `Setup: ${ALPHA_GREET_LLM}; alpha
 ]);
 
 const systemBlock = (i, name, text) => A.custom(`request ${i + 1} opens with ${name}'s instructions block as a system message`, [REQS, `pm.expect(reqs[${i}].json.messages[0]).to.eql({ role: 'system', content: ${lit(`<mcp_server name="${name}">\n${text}\n</mcp_server>`)} });`]);
-const INF15 = folder("INF-15 Opt-in headers with auto-inject off", `Setup: ${ALPHA_GREET_LLM}; alpha has instructions; mcp_disable_auto_tool_inject true; one chat with x-bf-mcp-include-clients alpha, then one with x-bf-mcp-include-tools alpha-echo.`, [
+const INF15 = folder("INF-15 Opt-in headers with auto-inject off", `Setup: alpha (echo, add, greet, hidden) registered as client alpha, auth none, per call, tools_to_execute ["echo", "add", "greet"], tools_to_auto_execute ["echo"]; ${LLM_TEXT}; alpha has instructions; mcp_disable_auto_tool_inject true; chats with x-bf-mcp-include-clients alpha, with x-bf-mcp-include-tools alpha-echo and with neither; a Responses request with x-bf-mcp-include-clients alpha; an agent loop with x-bf-mcp-include-clients alpha (turn 1 calls alpha-echo, turn 2 answers "done"); the config is read back after the restore.`, [
   readConfig("INF-15"),
-  ...freshServer("INF-15", "alpha", ["echo", "add", "greet"]),
+  ...freshServer("INF-15", "alpha", ["echo", "add", "greet", "hidden"]),
   setInstructions("INF-15", "alpha", "Alpha instructions", lit("Alpha instructions")),
-  alphaClient("INF-15", {}),
+  alphaClient("INF-15", { tools_to_execute: ["echo", "add", "greet"], tools_to_auto_execute: ["echo"] }),
   putConfig("INF-15", "setup: mcp_disable_auto_tool_inject true", ["cc.mcp_disable_auto_tool_inject = true;"], [A.status(200)]),
   request("INF-15", "control: the config reads mcp_disable_auto_tool_inject true", "GET", "/api/config", { asserts: [A.status(200), A.custom("client_config.mcp_disable_auto_tool_inject is true", ["pm.expect(pm.response.json().client_config.mcp_disable_auto_tool_inject, 'body: ' + pm.response.text()).to.equal(true);"])] }),
   llmScript("INF-15", "inf15", TEXT_OK),
@@ -5158,8 +5158,20 @@ const INF15 = folder("INF-15 Opt-in headers with auto-inject off", `Setup: ${ALP
   infChat("INF-15", "chat with include-tools alpha-echo", "inf15", [A.status(200)], { headers: [inc("tools", "alpha-echo")] }),
   infChat("INF-15", "control: chat with no include header", "inf15", [A.status(200)]),
   llmCaptured("INF-15", "all alpha tools plus instructions, then only alpha-echo; nothing without a header", "inf15", [reqCount(3), toolsAre(0, ALPHA3), systemBlock(0, "alpha", "Alpha instructions"), toolsAre(1, ["alpha-echo"]), toolsAre(2, []), noInstructions(2)]),
+  llmScript("INF-15", "inf15-r", TEXT_OK),
+  infResponses("INF-15", "Responses request with include-clients alpha", "inf15-r", [A.status(200)], { headers: [inc("clients", "alpha")] }),
+  llmCaptured("INF-15", "Responses: all alpha tools and the instructions block", "inf15-r", [reqCount(1), toolsAre(0, ALPHA3),
+    A.custom("instructions carry alpha's block", [REQS, `pm.expect(reqs[0].json.instructions, JSON.stringify(reqs[0].json)).to.include(${lit('<mcp_server name="alpha">\nAlpha instructions\n</mcp_server>')});`])]),
+  llmScript("INF-15", "inf15-a", { turns: [{ tool_calls: [{ id: "a1", name: "alpha-echo", arguments: { text: "hi" } }] }, { text: "done" }] }),
+  infChat("INF-15", "agent loop with include-clients alpha", "inf15-a", [A.status(200), A.custom("content is \"done\" and there are no tool_calls", ["var m = pm.response.json().choices[0].message;", "pm.expect(m.content, 'body: ' + pm.response.text()).to.equal('done');", "pm.expect(m.tool_calls || []).to.eql([]);"])], { headers: [inc("clients", "alpha")] }),
+  llmCaptured("INF-15", "agent loop: two model requests; turn 2 has a1's echo", "inf15-a", [reqCount(2), A.custom("turn 2 has a tool message for a1 with the echo", [REQS, "var tm = {}; (reqs[1].json.messages || []).forEach(function (m) { if (m.role === 'tool') { tm[m.tool_call_id] = m.content; } });", `pm.expect(tm.a1, JSON.stringify(reqs[1].json.messages)).to.equal(${lit('echo:{"text":"hi"}')});`])]),
+  mockGet("INF-15", "alpha", "alpha ran echo once", [callsIs("echo", 1)]),
   alphaGreetTeardown("INF-15"),
   restoreConfig("INF-15"),
+  request("INF-15", "the config reads back the original mcp_disable_auto_tool_inject", "GET", "/api/config", { asserts: [A.status(200), A.custom("mcp_disable_auto_tool_inject is the value read at the start", [
+    "var orig = JSON.parse(pm.collectionVariables.get('client_config')).mcp_disable_auto_tool_inject;",
+    "pm.expect(pm.response.json().client_config.mcp_disable_auto_tool_inject, 'body: ' + pm.response.text()).to.equal(orig);",
+  ])] }),
 ]);
 
 const INF16 = folder("INF-16 Header narrowing with auto-inject on", `Setup: ${ALPHA_GREET_LLM}; plus beta (zz, aa) as client beta; alpha and beta both have instructions; chats with x-bf-mcp-include-clients beta, x-bf-mcp-include-tools alpha-*, and x-bf-mcp-include-clients empty.`, [
@@ -5572,6 +5584,29 @@ const LOG08 = folder("LOG-08 Agent mode over two turns", `Setup: ${AGENT_TEXT(["
 
 // ================================================================ provider-injected tools on the mock LLM
 
+// readProviderAs keeps a provider's network, concurrency and custom provider settings in <provider>_provider; putProviderField writes the
+// provider back with one more field, which the update applies on its own (fields a PUT leaves out stay as they are).
+const readProviderAs = (id, provider) => request(id, `setup: read the ${provider} provider`, "GET", `/api/providers/${provider}`, {
+  asserts: [A.status(200)],
+  extraTests: [`var p = pm.response.json(); pm.collectionVariables.set(${lit(provider + "_provider")}, JSON.stringify({ network_config: p.network_config, concurrency_and_buffer_size: p.concurrency_and_buffer_size, custom_provider_config: p.custom_provider_config }));`],
+});
+const putProviderField = (id, title, provider, field, value) => request(id, title, "PUT", `/api/providers/${provider}`, {
+  raw: "{{provider_body}}", asserts: [A.status(200)],
+  pre: [`var p = JSON.parse(pm.collectionVariables.get(${lit(provider + "_provider")}));`, `p[${lit(field)}] = ${lit(value)};`, "pm.variables.set('provider_body', JSON.stringify(p));"],
+});
+const injectedTools = (id, provider, tools) => request(id, `${provider} reports its injected_tools`, "GET", `/api/providers/${provider}`, {
+  asserts: [A.status(200), A.custom(`injected_tools are ${lit(tools)}`, [`pm.expect(pm.response.json().injected_tools, 'body: ' + pm.response.text()).to.eql(${lit(tools)});`])],
+});
+// routingRule creates a global routing rule matched by header h: v, and keeps its id in <var>.
+const routingRule = (id, v, rule) => request(id, `setup: routing rule "${rule.name}"`, "POST", "/api/governance/routing-rules", {
+  body: { enabled: true, scope: "global", ...rule }, asserts: [A.status(200)],
+  extraTests: [`var b = pm.response.json(); pm.collectionVariables.set(${lit(v)}, (b.rule || b).id);`],
+});
+const deleteRule = (id, v) => request(id, "teardown: delete the routing rule", "DELETE", `/api/governance/routing-rules/{{${v}}}`, { asserts: [A.status(200)] });
+const hdr = (name, v) => A.custom(`${name} is ${lit(v)}`, [`pm.expect(pm.response.headers.get(${lit(name)}), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(${lit(v)});`]);
+// SSE parses a stream's data lines into events (ES5).
+const SSE = "var events = []; pm.response.text().split('\\n').forEach(function (l) { if (l.indexOf('data: {') === 0) { events.push(JSON.parse(l.slice(6))); } });";
+
 // A provider's injected_tools expose one MCP tool to the model under a name of the provider's choosing, and Bifrost
 // runs the model's calls to it itself. Each test sets openai's injected_tools by reading the provider and writing it
 // back with them, and clears them the same way at the end.
@@ -5591,12 +5626,23 @@ const injectedSetup = (id, tools = ["search", "echo"], over = {}) => [
 ];
 const injectedTeardown = (id) => [putInjected(id, "teardown: clear openai's injected_tools", []), agentTeardown(id)];
 const SEARCH_CALL = { tool_calls: [llmCall("w1", "web_search", { text: "q" })] };
+// EVERY_FN_WEB_SEARCH checks every chat request of a loop declares one function web_search and no alpha-search.
+const EVERY_FN_WEB_SEARCH = A.custom("every request declares one function web_search and no alpha-search", [REQS,
+  "reqs.forEach(function (r, i) { var t = (r.json.tools || []).filter(function (x) { return x.function && x.function.name === 'web_search'; }); pm.expect(t.length, 'request ' + (i + 1) + ': ' + JSON.stringify(r.json.tools)).to.equal(1); pm.expect(t[0].type).to.equal('function'); pm.expect(r.tools, 'request ' + (i + 1)).to.not.include('alpha-search'); });",
+]);
 const SEARCH_RESULT = `search:${JSON.stringify({ text: "q" })}`;
 
 const INF60 = folder("INF-60 Provider-injected tool, chat loop", `Setup: ${INJ_TEXT}; turn 1 calls web_search, turn 2 answers "answer".`, [
-  ...injectedSetup("INF-60"),
+  readProvider("INF-60"),
+  ...freshServer("INF-60", "alpha", ["search", "echo"]),
+  alphaClient("INF-60"),
+  llmScript("INF-60", "inf60-off", TEXT_OK),
+  infPost("INF-60", "control: before the injection, a chat with web_search_options", "/v1/chat/completions", chatBody("inf60-off", { web_search_options: {} }), [A.status(200)]),
+  llmCaptured("INF-60", "control: web_search_options reaches the model", "inf60-off", [reqCount(1), A.custom("the request carries web_search_options", [REQS, "pm.expect(reqs[0].json, JSON.stringify(reqs[0].json)).to.have.property('web_search_options');"])]),
+  putInjected("INF-60", "setup: openai injects alpha's search as web_search", WEB_SEARCH),
   llmScript("INF-60", "inf60", { turns: [SEARCH_CALL, { text: "answer" }] }),
-  infPost("INF-60", "chat", "/v1/chat/completions", chatBody("inf60", {}), [A.status(200), chatContent("answer"), toolCallNames([]), A.custom("the client never sees web_search", ["pm.expect(pm.response.text()).to.not.include('web_search');"])]),
+  injectedTools("INF-60", "openai", WEB_SEARCH),
+  infPost("INF-60", "chat", "/v1/chat/completions", chatBody("inf60", { web_search_options: {} }), [A.status(200), chatContent("answer"), toolCallNames([]), finishIs("stop"), A.custom("the client never sees web_search", ["pm.expect(pm.response.text()).to.not.include('web_search');"])]),
   llmCaptured("INF-60", "turn 1 has function web_search and not alpha-search; turn 2 has the result", "inf60", [reqCount(2),
     A.custom("turn 1 declares function web_search and no alpha-search", [REQS,
       "var t = reqs[0].json.tools.filter(function (x) { return x.function && x.function.name === 'web_search'; });",
@@ -5605,6 +5651,7 @@ const INF60 = folder("INF-60 Provider-injected tool, chat loop", `Setup: ${INJ_T
       "pm.expect(reqs[0].tools).to.not.include('alpha-search');",
     ]),
     A.custom("turn 2 has the search result for w1", [REQS, TOOL_MSGS(1), `pm.expect(tm.w1, JSON.stringify(reqs[1].json.messages)).to.equal(${lit(SEARCH_RESULT)});`]),
+    A.custom("no request carries web_search_options", [REQS, "reqs.forEach(function (r) { pm.expect(r.json, 'request').to.not.have.property('web_search_options'); });"]), EVERY_FN_WEB_SEARCH,
   ]),
   mockGet("INF-60", "alpha", "alpha ran search once", [callsIs("search", 1)]),
   ...injectedTeardown("INF-60"),
@@ -5649,7 +5696,7 @@ const INF63 = folder("INF-63 Injected tool fails open", `Setup: ${INJ_TEXT}; alp
 const INF64 = folder("INF-64 Injected tools on streams", `Setup: ${INJ_TEXT}; a streamed chat with stream_options.include_usage; turn 1 calls web_search (10 and 5 tokens), turn 2 answers "answer" (20 and 7 tokens).`, [
   ...injectedSetup("INF-64"),
   llmScript("INF-64", "inf64", { turns: [{ ...SEARCH_CALL, usage: { input: 10, output: 5 } }, { text: "answer", usage: { input: 20, output: 7 } }] }),
-  infPost("INF-64", "streamed chat", "/v1/chat/completions", chatBody("inf64", { stream: true, stream_options: { include_usage: true }, ...{} }), [A.status(200), A.custom("one stream: no web_search delta, one terminal chunk, usage for both turns", [
+  infPost("INF-64", "streamed chat", "/v1/chat/completions", chatBody("inf64", { stream: true, stream_options: { include_usage: true }, ...{ web_search_options: {} } }), [A.status(200), A.custom("one stream: no web_search delta, one terminal chunk, usage for both turns", [
     "var text = pm.response.text();",
     "pm.expect(text, 'stream').to.not.include('web_search');",
     "var finals = 0, usages = [];",
@@ -5659,8 +5706,39 @@ const INF64 = folder("INF-64 Injected tools on streams", `Setup: ${INJ_TEXT}; a 
     "pm.expect(usages[0].prompt_tokens).to.equal(30);",
     "pm.expect(usages[0].completion_tokens).to.equal(12);",
     "pm.expect(usages[0].total_tokens).to.equal(42);",
-  ])]),
+  ]), A.custom("every chunk carries one non-empty stream id", [SSE, "var ids = {}; events.forEach(function (e) { pm.expect(e.id, JSON.stringify(e)).to.be.a('string').and.not.equal(''); ids[e.id] = true; });", "pm.expect(Object.keys(ids), JSON.stringify(Object.keys(ids))).to.have.length(1);"]),
+  A.custom("the streamed text is \"answer\"", [SSE, "var text = ''; events.forEach(function (e) { (e.choices || []).forEach(function (c) { if (c.delta && c.delta.content) { text += c.delta.content; } }); });", "pm.expect(text, pm.response.text()).to.equal('answer');"])]),
+  llmCaptured("INF-64", "chat stream: turn 1 declares function web_search, not alpha-search; no request carries web_search_options", "inf64", [reqCount(2),
+    A.custom("turn 1 declares function web_search and no alpha-search", [REQS,
+      "var t = reqs[0].json.tools.filter(function (x) { return x.function && x.function.name === 'web_search'; });",
+      "pm.expect(t.length, JSON.stringify(reqs[0].json.tools)).to.equal(1);",
+      "pm.expect(t[0].type).to.equal('function');",
+      "pm.expect(reqs[0].tools).to.not.include('alpha-search');",
+    ]),
+    A.custom("no request carries web_search_options", [REQS, "reqs.forEach(function (r) { pm.expect(r.json, 'request').to.not.have.property('web_search_options'); });"]),
+    EVERY_FN_WEB_SEARCH,
+  ]),
   mockGet("INF-64", "alpha", "alpha ran search once", [callsIs("search", 1)]),
+  llmScript("INF-64", "inf64-r", { turns: [{ ...SEARCH_CALL, usage: { input: 10, output: 5 } }, { text: "answer", usage: { input: 20, output: 7 } }] }),
+  infResponses("INF-64", "streamed Responses request with native web_search", "inf64-r", [A.status(200), A.custom("one created and one completed event, gapless sequence numbers, no function_call event, the answer, usage for both turns", [SSE,
+    "var created = 0, completed = [], text = '';",
+    "events.forEach(function (e, i) {",
+    "  pm.expect(e.sequence_number, JSON.stringify(e)).to.equal(i);",
+    "  pm.expect(String(e.type), JSON.stringify(e)).to.not.include('function_call');",
+    "  pm.expect(String((e.item && e.item.type) || ''), JSON.stringify(e)).to.not.match(/^function_call/);",
+    "  if (e.type === 'response.created') { created++; }",
+    "  if (e.type === 'response.completed') { completed.push(e.response); }",
+    "  if (e.type === 'response.output_text.delta') { text += e.delta; }",
+    "});",
+    "pm.expect(created).to.equal(1);",
+    "pm.expect(completed.length).to.equal(1);",
+    "pm.expect(text).to.equal('answer');",
+    "pm.expect(completed[0].usage.input_tokens).to.equal(30);",
+    "pm.expect(completed[0].usage.output_tokens).to.equal(12);",
+    "(completed[0].output || []).forEach(function (o) { pm.expect(String(o.type)).to.not.match(/^function_call/); });",
+  ])], { body: { stream: true, tools: [{ type: "web_search" }] } }),
+  llmCaptured("INF-64", "Responses stream: turn 1 declares the injected web_search, not the native one", "inf64-r", [reqCount(2), toolsInclude(0, "web_search"), A.custom("no request declares the native web_search or alpha-search", [REQS, "reqs.forEach(function (r, i) { pm.expect(r.tools, 'request ' + (i + 1)).to.not.include('type:web_search'); pm.expect(r.tools, 'request ' + (i + 1)).to.not.include('alpha-search'); });"])]),
+  mockGet("INF-64", "alpha", "alpha ran search twice", [callsIs("search", 2)]),
   ...injectedTeardown("INF-64"),
 ]);
 
@@ -5678,6 +5756,203 @@ const INF65 = folder("INF-65 Injected tool and client allow-lists", `Setup: ${LL
 
 const ONLY = process.env.TESTS ? new Set(process.env.TESTS.split(",").map((r) => r.trim())) : null;
 const pick = (tests) => (ONLY ? tests.filter((t) => ONLY.has(t.name.split(" ")[0])) : tests);
+// ---------------------------------------------------------------- tests moved from the provider harness
+const ANTH_THINKING = (callId) => ({ raw: { status: 200, content_type: "application/json", body: JSON.stringify({
+  id: "msg_inf67", type: "message", role: "assistant", model: "mock-model",
+  content: [{ type: "thinking", thinking: "T1 thought", signature: "sig-1" }, { type: "tool_use", id: callId, name: "alpha-echo", input: { text: "hi" } }],
+  stop_reason: "tool_use", stop_sequence: null, usage: { input_tokens: 10, output_tokens: 5 },
+}) } });
+const INF67 = folder("INF-67 Reasoning from the tool-calling turn reaches the client", `Setup: ${AGENT_TEXT(["echo"])}; anthropic/mock-model with reasoning on; turn 1 answers with a thinking block "T1 thought" and a call to alpha-echo, turn 2 answers "done".`, [
+  ...agentSetup("INF-67", ["echo"]),
+  llmScript("INF-67", "inf67", { turns: [ANTH_THINKING("k1"), { text: "done" }] }),
+  infPost("INF-67", "chat", "/v1/chat/completions", { model: "anthropic/mock-model", max_tokens: 2048, reasoning: { max_tokens: 1024 }, messages: [userMsg("inf67")] }, [A.status(200), chatContent("done"), toolCallNames([]),
+    A.custom("the final message's reasoning carries turn 1's thinking", ["var m = pm.response.json().choices[0].message;", "pm.expect(m.reasoning || '', 'body: ' + pm.response.text()).to.include('T1 thought');"])]),
+  llmScript("INF-67", "inf67-r", { turns: [ANTH_THINKING("k2"), { text: "done" }] }),
+  infPost("INF-67", "Responses request", "/v1/responses", { model: "anthropic/mock-model", max_output_tokens: 2048, reasoning: { effort: "low", max_tokens: 1024 }, input: `${marker("inf67-r")} hi` }, [A.status(200),
+    A.custom("a reasoning item with turn 1's thinking comes before the final message, and no function_call item", [
+      "var out = pm.response.json().output || []; var types = out.map(function (o) { return o.type; });",
+      "var r = types.indexOf('reasoning'); var m = types.lastIndexOf('message');",
+      "pm.expect(r, 'types: ' + JSON.stringify(types)).to.be.at.least(0);",
+      "pm.expect(m, 'types: ' + JSON.stringify(types)).to.be.above(r);",
+      "pm.expect(JSON.stringify(out[r]), 'reasoning item').to.include('T1 thought');",
+      "types.forEach(function (t) { pm.expect(String(t)).to.not.match(/^function_call/); });",
+    ])]),
+  llmCaptured("INF-67", "two model requests for the chat", "inf67", [reqCount(2)]),
+  llmCaptured("INF-67", "two model requests for the Responses request", "inf67-r", [reqCount(2)]),
+  agentTeardown("INF-67"),
+]);
+
+const INF68 = folder("INF-68 Requested model across a tool turn", `Setup: ${AGENT_TEXT(["echo"])}; a routing rule matched by x-inf68: rewrite sends the request to openai/mock-model; the chat asks for openai/inf68-alias; turn 1 calls alpha-echo, turn 2 answers "done".`, [
+  ...agentSetup("INF-68", ["echo"]),
+  routingRule("INF-68", "inf68_rule", { name: "inf68 rewrite", cel_expression: '"x-inf68" in headers && headers["x-inf68"] == "rewrite"', targets: [{ provider: "openai", model: "mock-model", weight: 1 }] }),
+  llmScript("INF-68", "inf68", { turns: [{ tool_calls: [llmCall("q1", "alpha-echo")] }, { text: "done" }] }),
+  infPost("INF-68", "chat", "/v1/chat/completions", { model: "openai/inf68-alias", messages: [userMsg("inf68")] }, [A.status(200), chatContent("done"),
+    hdr("x-bifrost-routing-info-model", "mock-model"), hdr("x-bifrost-routing-info-requested-model", "inf68-alias"), hdr("x-bifrost-routing-info-requested-provider", "openai"),
+    A.custom("routing_info has model mock-model and requested_model inf68-alias", ["var ri = (pm.response.json().extra_fields || {}).routing_info || {};", "pm.expect(ri.model, 'body: ' + pm.response.text()).to.equal('mock-model');", "pm.expect(ri.requested_model).to.equal('inf68-alias');"]),
+  ], { headers: [{ key: "x-inf68", value: "rewrite" }] }),
+  llmCaptured("INF-68", "both turns go to mock-model", "inf68", [reqCount(2), A.custom("each request names mock-model", [REQS, "pm.expect(reqs.map(function (r) { return r.json.model; })).to.eql(['mock-model', 'mock-model']);"])]),
+  deleteRule("INF-68", "inf68_rule"),
+  agentTeardown("INF-68"),
+]);
+
+const INF69 = folder("INF-69 A provider-only fallback serves every turn", `Setup: ${AGENT_TEXT(["echo"])}; a routing rule matched by x-inf69: fallback sends the request to openai/inf69-primary with the provider-only fallback "anthropic/"; the primary answers 500; on the fallback, turn 1 calls alpha-echo and turn 2 answers "done".`, [
+  ...agentSetup("INF-69", ["echo"]),
+  routingRule("INF-69", "inf69_rule", { name: "inf69 fallback", cel_expression: '"x-inf69" in headers && headers["x-inf69"] == "fallback"', targets: [{ provider: "openai", model: "inf69-primary", weight: 1 }], fallbacks: ["anthropic/"] }),
+  llmScript("INF-69", "inf69", { turns: [{ error: { status: 500, message: "primary down" } }, { tool_calls: [llmCall("f1", "alpha-echo")] }, { text: "done" }] }),
+  infPost("INF-69", "chat", "/v1/chat/completions", chatBody("inf69"), [A.status(200), chatContent("done"),
+    hdr("x-bifrost-routing-info-is-fallback", "true"), hdr("x-bifrost-fallback-index", "1"), hdr("x-bifrost-routing-info-provider", "anthropic"), hdr("x-bifrost-routing-info-model", "mock-model"),
+  ], { headers: [{ key: "x-inf69", value: "fallback" }] }),
+  llmCaptured("INF-69", "the primary once, then the fallback for both turns", "inf69", [reqCount(3), A.custom("openai inf69-primary, then anthropic mock-model twice", [REQS, "pm.expect(reqs.map(function (r) { return r.format + ' ' + r.json.model; })).to.eql(['openai.chat inf69-primary', 'anthropic.messages mock-model', 'anthropic.messages mock-model']);"])]),
+  deleteRule("INF-69", "inf69_rule"),
+  agentTeardown("INF-69"),
+]);
+
+// MARKED lists the text of every block a captured request marks with cache_control (ES5).
+const MARKED = (i) => `var marked = []; JSON.stringify(reqs[${i}].json, function (k, v) { if (v && typeof v === 'object' && v.cache_control) { marked.push(String(v.text || '')); } return v; });`;
+const INF70 = folder("INF-70 Prompt-cache points skip the MCP instructions", `Setup: ${ALPHA_GREET_LLM}; alpha has instructions; chats to anthropic/claude-sonnet-4-6, a model that supports prompt caching; anthropic's prompt_cache auto_inject on (ttl 1h), then off with cache_control_injection_points [index -1], [role user, index 1], [index 99] and [no role or index].`, [
+  readProviderAs("INF-70", "anthropic"),
+  ...freshServer("INF-70", "alpha", ["echo", "add", "greet"]),
+  setInstructions("INF-70", "alpha", "Alpha instructions", lit("Alpha instructions")),
+  alphaClient("INF-70"),
+  putProviderField("INF-70", "setup: anthropic prompt_cache auto_inject on", "anthropic", "prompt_cache", { auto_inject: true, ttl: "1h" }),
+  llmScript("INF-70", "inf70-auto", TEXT_OK),
+  infPost("INF-70", "auto: chat with a caller system prompt", "/v1/chat/completions", { model: "anthropic/claude-sonnet-4-6", max_tokens: 16, messages: [{ role: "system", content: "[pc] caller-sys" }, userMsg("inf70-auto", "caller-user")] }, [A.status(200)]),
+  llmCaptured("INF-70", "auto: one marker, on the caller system prompt, none on the instructions", "inf70-auto", [reqCount(1), A.custom("exactly one marked block, the caller's system prompt, and the request carries the instructions block", [REQS, MARKED(0),
+    "pm.expect(JSON.stringify(reqs[0].json), 'request').to.include('mcp_server');",
+    "pm.expect(marked.length, JSON.stringify(marked)).to.equal(1);",
+    "pm.expect(marked[0]).to.include('caller-sys');",
+    "pm.expect(marked[0]).to.not.include('mcp_server');",
+  ])]),
+  putProviderField("INF-70", "setup: anthropic prompt_cache with four injection points", "anthropic", "prompt_cache", { auto_inject: false, ttl: "1h", cache_control_injection_points: [{ location: "message", index: -1 }, { location: "message", role: "user", index: 1 }, { location: "message", index: 99 }, { location: "message" }] }),
+  llmScript("INF-70", "inf70-edge", TEXT_OK),
+  infPost("INF-70", "points: chat with four caller messages", "/v1/chat/completions", { model: "anthropic/claude-sonnet-4-6", max_tokens: 16, messages: [{ role: "system", content: "[pc] ed-sys" }, userMsg("inf70-edge", "ed-idx1-user"), { role: "assistant", content: "Hi." }, { role: "user", content: "ed-last" }] }, [A.status(200)]),
+  llmCaptured("INF-70", "points: the last and the first user message are marked, the instructions are not", "inf70-edge", [reqCount(1), A.custom("the request carries the instructions block; exactly two marked blocks, ed-last and ed-idx1-user, neither the instructions", [REQS, MARKED(0),
+    "pm.expect(JSON.stringify(reqs[0].json), 'request').to.include('mcp_server');",
+    "pm.expect(marked.length, JSON.stringify(marked)).to.equal(2);",
+    "pm.expect(marked.join(' || ')).to.include('ed-last');",
+    "pm.expect(marked.join(' || ')).to.include('ed-idx1-user');",
+    "pm.expect(marked.join(' || ')).to.not.include('mcp_server');",
+  ])]),
+  putProviderField("INF-70", "teardown: clear anthropic's prompt_cache", "anthropic", "prompt_cache", null),
+  alphaGreetTeardown("INF-70"),
+]);
+
+const INF71 = folder("INF-71 Injected web_search on the Anthropic route", `Setup: ${LLM_TEXT}; alpha (search, echo) registered as client alpha, per call, tools_to_execute ["*"]; anthropic's injected_tools expose alpha's search as web_search; the request on /anthropic declares the native web_search_20250305 tool with tool_choice any; turn 1 calls web_search, turn 2 answers "answer".`, [
+  readProviderAs("INF-71", "anthropic"),
+  ...freshServer("INF-71", "alpha", ["search", "echo"]),
+  alphaClient("INF-71"),
+  putProviderField("INF-71", "setup: anthropic injects alpha's search as web_search", "anthropic", "injected_tools", WEB_SEARCH),
+  injectedTools("INF-71", "anthropic", WEB_SEARCH),
+  llmScript("INF-71", "inf71", { turns: [SEARCH_CALL, { text: "answer" }] }),
+  request("INF-71", "Anthropic messages request", "POST", "/anthropic/v1/messages", { noAuth: true, noCookies: true, body: { model: "mock-model", max_tokens: 300, tool_choice: { type: "any" }, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 2 }], messages: [userMsg("inf71")] }, asserts: [A.status(200),
+    A.custom("only the answer text, end_turn, no tool blocks", ["var b = pm.response.json();", "pm.expect(b.content, 'body: ' + pm.response.text()).to.eql([{ type: 'text', text: 'answer' }]);", "pm.expect(b.stop_reason).to.equal('end_turn');"])] }),
+  llmCaptured("INF-71", "both turns declare web_search as a tool with a schema, not web_search_20250305 or alpha-search", "inf71", [reqCount(2), A.custom("each request: one web_search tool with an input_schema; no web_search_20250305 and no alpha-search", [REQS,
+    "reqs.forEach(function (r, i) {",
+    "  var t = (r.json.tools || []).filter(function (x) { return x.name === 'web_search'; });",
+    "  pm.expect(t.length, 'request ' + (i + 1) + ': ' + JSON.stringify(r.json.tools)).to.equal(1);",
+    "  pm.expect(t[0].input_schema, JSON.stringify(t[0])).to.be.an('object');",
+    "  pm.expect(JSON.stringify(r.json.tools)).to.not.include('web_search_20250305');",
+    "  pm.expect(r.tools).to.not.include('alpha-search');",
+    "});",
+  ])]),
+  mockGet("INF-71", "alpha", "alpha ran search once", [callsIs("search", 1)]),
+  putProviderField("INF-71", "teardown: clear anthropic's injected_tools", "anthropic", "injected_tools", []),
+  agentTeardown("INF-71"),
+]);
+
+// ALIAS exposes alpha's search to the model as lighthouse_lookup.
+const ALIAS = [{ name: "lighthouse_lookup", mcp_client_name: "alpha", tool_name: "search" }];
+const LOOKUP_CALL = (callId) => ({ tool_calls: [llmCall(callId, "lighthouse_lookup", { text: "q" })] });
+const aliasSetup = (id, tools = ALIAS) => [readProvider(id), ...freshServer(id, "alpha", ["search", "echo"]), alphaClient(id), putInjected(id, `setup: openai injects ${tools.map((t) => `alpha's ${t.tool_name} as ${t.name}`).join(" and ")}`, tools)];
+const CLIENT_LOOKUP = { type: "function", function: { name: "lighthouse_lookup", description: "CLIENT-DEFINED", parameters: { type: "object", properties: { q: { type: "string" } } } } };
+const noFunctionCallOut = A.custom("one message whose text is \"answer\", and no function_call or function_call_output item", [
+  "var out = pm.response.json().output || [];",
+  "out.forEach(function (o) { pm.expect(String(o.type), 'body: ' + pm.response.text()).to.not.match(/^function_call/); });",
+  "var msgs = out.filter(function (o) { return o.type === 'message'; });",
+  "pm.expect(msgs.length, 'body: ' + pm.response.text()).to.equal(1);",
+  "pm.expect((msgs[0].content || []).filter(function (c) { return c.type === 'output_text'; }).map(function (c) { return c.text; }).join('')).to.equal('answer');",
+]);
+const INF72 = folder("INF-72 An injected alias replaces a client tool of the same name", `Setup: ${LLM_TEXT}; alpha (search, echo) registered as client alpha, per call, tools_to_execute ["*"]; openai's injected_tools expose alpha's search as lighthouse_lookup; turn 1 calls lighthouse_lookup, turn 2 answers "answer".`, [
+  ...aliasSetup("INF-72"),
+  injectedTools("INF-72", "openai", ALIAS),
+  llmScript("INF-72", "inf72-c", { turns: [LOOKUP_CALL("l1"), { text: "answer" }] }),
+  infPost("INF-72", "chat that declares its own lighthouse_lookup", "/v1/chat/completions", chatBody("inf72-c", { tools: [CLIENT_LOOKUP], tool_choice: "required" }), [A.status(200), chatContent("answer"), toolCallNames([])]),
+  llmCaptured("INF-72", "chat: lighthouse_lookup declared once, without the client's definition; turn 2 has the search result", "inf72-c", [reqCount(2), A.custom("one lighthouse_lookup, no CLIENT-DEFINED, no alpha-search", [REQS,
+    "pm.expect(reqs[0].tools.filter(function (n) { return n === 'lighthouse_lookup'; }).length, JSON.stringify(reqs[0].tools)).to.equal(1);",
+    "pm.expect(reqs[0].tools).to.not.include('alpha-search');",
+    "pm.expect(JSON.stringify(reqs[0].json.tools)).to.not.include('CLIENT-DEFINED');",
+  ]), A.custom("turn 2 has the search result for l1", [REQS, TOOL_MSGS(1), `pm.expect(tm.l1, JSON.stringify(reqs[1].json.messages)).to.equal(${lit(SEARCH_RESULT)});`])]),
+  llmScript("INF-72", "inf72-r", { turns: [LOOKUP_CALL("l2"), { text: "answer" }] }),
+  infResponses("INF-72", "Responses request with native web_search and a forced lighthouse_lookup", "inf72-r", [A.status(200), noFunctionCallOut], { body: { tools: [{ type: "web_search" }], tool_choice: { type: "function", name: "lighthouse_lookup" } } }),
+  llmCaptured("INF-72", "Responses: the native web_search is kept beside lighthouse_lookup", "inf72-r", [reqCount(2), toolsInclude(0, "type:web_search"), toolsInclude(0, "lighthouse_lookup"), A.custom("no alpha-search", [REQS, "pm.expect(reqs[0].tools).to.not.include('alpha-search');"])]),
+  mockGet("INF-72", "alpha", "alpha ran search twice", [callsIs("search", 2)]),
+  ...injectedTeardown("INF-72"),
+]);
+
+const PREFIXED_FN = { type: "function", function: { name: "alpha-search", description: "Search", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } } };
+const PREFIXED_RFN = { type: "function", name: "alpha-search", description: "Search", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } };
+const choiceNames = (i, expr) => A.custom(`turn 1's tool_choice names lighthouse_lookup and alpha-search is not declared`, [REQS, `var c = JSON.stringify(reqs[${i}].json.tool_choice);`, "pm.expect(c, 'tool_choice').to.include('lighthouse_lookup');", "pm.expect(c).to.not.include('alpha-search');", `pm.expect(reqs[${i}].tools).to.not.include('alpha-search');`]);
+const INF73 = folder("INF-73 Tool choices follow the injected alias", `Setup: as INF-72; each request names alpha's prefixed tool alpha-search (or a custom lighthouse_lookup) in its tool_choice; turn 1 calls lighthouse_lookup, turn 2 answers "answer".`, [
+  ...aliasSetup("INF-73"),
+  ...[
+    ["chat forced choice on alpha-search", "inf73-a", "chat", { tools: [PREFIXED_FN], tool_choice: { type: "function", function: { name: "alpha-search" } } }],
+    ["Responses forced choice on alpha-search", "inf73-b", "responses", { tools: [PREFIXED_RFN], tool_choice: { type: "function", name: "alpha-search" } }],
+    ["chat allowed_tools naming alpha-search", "inf73-c", "chat", { tools: [PREFIXED_FN], tool_choice: { type: "allowed_tools", allowed_tools: { mode: "required", tools: [{ type: "function", function: { name: "alpha-search" } }] } } }],
+    ["Responses allowed_tools naming alpha-search", "inf73-d", "responses", { tools: [PREFIXED_RFN], tool_choice: { type: "allowed_tools", mode: "required", tools: [{ type: "function", name: "alpha-search" }] } }],
+  ].flatMap(([title, key, surface, over]) => [
+    llmScript("INF-73", key, { turns: [LOOKUP_CALL(key.slice(-1) + "1"), { text: "answer" }] }),
+    surface === "chat"
+      ? infPost("INF-73", title, "/v1/chat/completions", chatBody(key, over), [A.status(200), chatContent("answer"), toolCallNames([])])
+      : infResponses("INF-73", title, key, [A.status(200), noFunctionCallOut], { body: over }),
+    llmCaptured("INF-73", `${title}: the upstream choice names lighthouse_lookup`, key, [reqCount(2), choiceNames(0)]),
+  ]),
+  llmScript("INF-73", "inf73-e", { turns: [LOOKUP_CALL("e1"), { text: "answer" }] }),
+  infResponses("INF-73", "Responses custom lighthouse_lookup with a custom choice", "inf73-e", [A.status(200), noFunctionCallOut], { body: { tools: [{ type: "custom", name: "lighthouse_lookup", description: "CLIENT-DEFINED" }], tool_choice: { type: "custom", name: "lighthouse_lookup" } } }),
+  llmCaptured("INF-73", "custom choice: a function choice for lighthouse_lookup, and no custom tool", "inf73-e", [reqCount(2), A.custom("tool_choice is a function choice for lighthouse_lookup; no custom tool, no CLIENT-DEFINED", [REQS,
+    "var c = reqs[0].json.tool_choice;",
+    "pm.expect(c && c.type, JSON.stringify(c)).to.equal('function');",
+    "pm.expect(c.name).to.equal('lighthouse_lookup');",
+    "pm.expect(JSON.stringify(reqs[0].json.tools)).to.not.include('CLIENT-DEFINED');",
+    "pm.expect(JSON.stringify(reqs[0].json.tools)).to.not.include('\"type\":\"custom\"');",
+  ])]),
+  mockGet("INF-73", "alpha", "alpha ran search once per case", [callsIs("search", 5)]),
+  ...injectedTeardown("INF-73"),
+]);
+
+const ALIAS_PAIR = [...ALIAS, { name: "alpha-search", mcp_client_name: "alpha", tool_name: "echo" }];
+const INF74 = folder("INF-74 A choice naming a configured alias keeps it", `Setup: ${LLM_TEXT}; alpha (search, echo) registered as client alpha, per call, tools_to_execute ["*"]; openai's injected_tools expose alpha's search as lighthouse_lookup and alpha's echo as alpha-search; tool_choice names alpha-search; turn 1 calls alpha-search, turn 2 answers "answer".`, [
+  ...aliasSetup("INF-74", ALIAS_PAIR),
+  llmScript("INF-74", "inf74-c", { turns: [{ tool_calls: [llmCall("m1", "alpha-search", { text: "MARK" })] }, { text: "answer" }] }),
+  infPost("INF-74", "chat forcing alpha-search", "/v1/chat/completions", chatBody("inf74-c", { tool_choice: { type: "function", function: { name: "alpha-search" } } }), [A.status(200), chatContent("answer"), toolCallNames([])]),
+  llmCaptured("INF-74", "chat: the choice stays alpha-search and turn 2 has echo's result", "inf74-c", [reqCount(2),
+    A.custom("tool_choice is the function alpha-search", [REQS, "pm.expect(reqs[0].json.tool_choice, JSON.stringify(reqs[0].json.tool_choice)).to.eql({ type: 'function', function: { name: 'alpha-search' } });"]),
+    A.custom("turn 2 has echo's result for m1", [REQS, TOOL_MSGS(1), `pm.expect(tm.m1, JSON.stringify(reqs[1].json.messages)).to.equal(${lit(ECHO_RESULT("MARK"))});`])]),
+  llmScript("INF-74", "inf74-r", { turns: [{ tool_calls: [llmCall("m2", "alpha-search", { text: "MARK" })] }, { text: "answer" }] }),
+  infResponses("INF-74", "Responses forcing alpha-search", "inf74-r", [A.status(200), noFunctionCallOut], { body: { tool_choice: { type: "function", name: "alpha-search" } } }),
+  llmCaptured("INF-74", "Responses: the choice stays alpha-search and turn 2 has echo's result", "inf74-r", [reqCount(2),
+    A.custom("tool_choice is the function alpha-search", [REQS, "pm.expect(reqs[0].json.tool_choice, JSON.stringify(reqs[0].json.tool_choice)).to.eql({ type: 'function', name: 'alpha-search' });"]),
+    A.custom("turn 2 has echo's result for m2", [REQS, "var fo = {}; (reqs[1].json.input || []).forEach(function (it) { if (it && it.type === 'function_call_output') { fo[it.call_id] = it.output; } });", `pm.expect(fo.m2, JSON.stringify(reqs[1].json.input)).to.equal(${lit(ECHO_RESULT("MARK"))});`]),
+  ]),
+  mockGet("INF-74", "alpha", "alpha ran echo twice and search never", [callsIs("echo", 2), callsIs("search", 0)]),
+  ...injectedTeardown("INF-74"),
+]);
+
+const INF75 = folder("INF-75 An unavailable first injected entry keeps native web search", `Setup: ${LLM_TEXT}; provider inf75, declared in config.json as an openai custom provider on the mock LLM, with injected_tools web_search to inf75's no_such_tool and then web_search to inf75's search (config.json lets duplicates load); client inf75-c, declared in config.json on fleet server inf75 (search, echo), auth none, per call, tools_to_execute ["*"]; Responses requests declare the native web_search tool and send x-bf-mcp-include-clients "" so ordinary MCP injection adds nothing; as controls, a request without that header, and inf75 given only the second entry.`, [
+  ...freshServer("INF-75", "inf75", ["search", "echo"]),
+  request("INF-75", "setup: refresh inf75-c's tools", "POST", "/api/mcp/client/inf75-c/refresh-tools", { asserts: [A.status(200)] }),
+  injectedTools("INF-75", "inf75", [{ name: "web_search", mcp_client_name: "inf75", tool_name: "no_such_tool" }, { name: "web_search", mcp_client_name: "inf75", tool_name: "search" }]),
+  llmScript("INF-75", "inf75-inj", TEXT_OK),
+  infResponses("INF-75", "control: Responses request with native web_search and no include header", "inf75-inj", [A.status(200)], { body: { model: "inf75/mock-model", tools: [{ type: "web_search" }] } }),
+  llmCaptured("INF-75", "control: without the header, ordinary injection declares inf75-search", "inf75-inj", [reqCount(1), toolsInclude(0, "inf75-search")]),
+  llmScript("INF-75", "inf75", TEXT_OK),
+  infResponses("INF-75", "Responses request with native web_search", "inf75", [A.status(200)], { body: { model: "inf75/mock-model", tools: [{ type: "web_search" }] }, headers: [inc("clients", "")] }),
+  llmCaptured("INF-75", "the native web_search is kept; no function web_search and no inf75-search", "inf75", [reqCount(1), toolsInclude(0, "type:web_search"), A.custom("no function web_search and no inf75-search", [REQS, "pm.expect(reqs[0].tools).to.not.include('web_search');", "pm.expect(reqs[0].tools).to.not.include('inf75-search');"])]),
+  readProviderAs("INF-75", "inf75"),
+  putProviderField("INF-75", "control: inf75 keeps only the web_search entry on inf75's search", "inf75", "injected_tools", [{ name: "web_search", mcp_client_name: "inf75", tool_name: "search" }]),
+  llmScript("INF-75", "inf75-on", TEXT_OK),
+  infResponses("INF-75", "control: Responses request with native web_search", "inf75-on", [A.status(200)], { body: { model: "inf75/mock-model", tools: [{ type: "web_search" }] }, headers: [inc("clients", "")] }),
+  llmCaptured("INF-75", "control: with an available entry the function web_search replaces the native tool", "inf75-on", [reqCount(1), toolsInclude(0, "web_search"), A.custom("no native web_search and no inf75-search", [REQS, "pm.expect(reqs[0].tools).to.not.include('type:web_search');", "pm.expect(reqs[0].tools).to.not.include('inf75-search');"])]),
+]);
 
 const section = (name, description, tests) => folder(name, description, pick(tests));
 
@@ -7113,7 +7388,7 @@ const collection = {
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS30, OAS31, OAS32, OAS33, OAS34, OAS36, OAS38]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET21, SET22]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV11, GOV12, GOV15, GOV16, GOV17, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV31, GOV32, GOV33, GOV34, GOV35, GOV38]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF05, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF05, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF67, INF68, INF69, INF70, INF71, INF72, INF73, INF74, INF75]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB13, LIB14, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL14, FAIL16, FAIL18, FAIL19]),

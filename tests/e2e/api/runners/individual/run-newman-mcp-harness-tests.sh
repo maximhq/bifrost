@@ -245,7 +245,8 @@ write_config() {
     { "client_id": "adm68-h", "name": "adm68_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm68/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tools_to_execute": ["*"] },
     { "client_id": "adm86-h", "name": "adm86_h", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-key"], "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
     { "client_id": "adm86-o", "name": "adm86_o", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86o/mcp", "auth_type": "per_user_oauth", "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
-    { "client_id": "adm86-c", "name": "adm86_c", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "headers", "headers": { "x-key": "good" }, "tool_sync_interval": "5s", "tools_to_execute": ["*"] }
+    { "client_id": "adm86-c", "name": "adm86_c", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/adm86h/mcp", "auth_type": "headers", "headers": { "x-key": "good" }, "tool_sync_interval": "5s", "tools_to_execute": ["*"] },
+    { "client_id": "inf75-c", "name": "inf75", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/inf75/mcp", "auth_type": "none", "tools_to_execute": ["*"] }
   ] },
   "providers": {
     "openai": { "keys": [{ "name": "openai-mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],
@@ -254,6 +255,10 @@ write_config() {
       "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/anthropic", "max_retries": 0, "default_request_timeout_in_seconds": 30 } },
     "gemini": { "keys": [{ "name": "gemini-mock", "value": "mock-gemini-key", "models": ["*"], "weight": 1 }],
       "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/genai/v1beta", "max_retries": 0, "default_request_timeout_in_seconds": 30 } },
+    "inf75": { "keys": [{ "name": "inf75-mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],
+      "custom_provider_config": { "base_provider_type": "openai", "is_key_less": false },
+      "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/openai", "max_retries": 0, "default_request_timeout_in_seconds": 30 },
+      "injected_tools": [{ "name": "web_search", "mcp_client_name": "inf75", "tool_name": "no_such_tool" }, { "name": "web_search", "mcp_client_name": "inf75", "tool_name": "search" }] },
     "bedrock": { "keys": [{ "name": "bedrock-mock", "value": "mock-bedrock-token", "models": ["*"], "weight": 1,
         "bedrock_key_config": { "region": "us-east-1", "endpoints": { "runtime": "127.0.0.1:$CHAOS_TLS_PORT",
           "control_plane": "127.0.0.1:$CHAOS_TLS_PORT", "mantle": "127.0.0.1:$CHAOS_TLS_PORT" } } }],

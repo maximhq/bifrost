@@ -2605,8 +2605,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			say "$(GREEN)Modalities: all (no filter)$(NC)"; \
 		fi; \
 	fi; \
-	: "The profile's sse_mcp client (localhost:3012) serves the injected web_search tool."; \
-	: "Without it injection fails open and every injected-web-search row fails, so start the"; \
+	: "The profile's sse_mcp client (localhost:3012) serves the tools the MCP tests call."; \
+	: "Without it those tests fail, so start the"; \
 	: "examples/mcps/remote-test-server fixture before the gateway resolves its MCP clients."; \
 	MCP_FIXTURE_STARTED=0; \
 	if nc -z localhost 3012 2>/dev/null; then \
@@ -2655,7 +2655,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	if curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
 		say "$(GREEN)Bifrost already running at $$BASE_URL_VAL$(NC)"; \
 		if [ "$$MCP_FIXTURE_STARTED" = "1" ]; then \
-			say "$(YELLOW)The MCP test server started after this gateway booted, so its sse_mcp client may still be disconnected; restart the gateway if injected-web-search rows fail.$(NC)"; \
+			say "$(YELLOW)The MCP test server started after this gateway booted, so its sse_mcp client may still be disconnected; restart the gateway if MCP tests fail.$(NC)"; \
 		fi; \
 	else \
 		say "$(YELLOW)Bifrost not running - launching 'make dev' (APP_DIR=$$APP_DIR_VAL) in background...$(NC)"; \
