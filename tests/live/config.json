@@ -72,6 +72,26 @@
         "base_url": "http://127.0.0.1:9411",
         "default_request_timeout_in_seconds": 60
       }
+    },
+    "azure": {
+      "keys": [
+        {
+          "name": "fake-azure",
+          "value": "fake-azure-key",
+          "weight": 1,
+          "models": ["gpt-live-1", "gpt-5.6-luna"],
+          "aliases": {
+            "gpt-live-1": {"model_id": "live-voice-deployment", "model_name": "gpt-live-1"},
+            "gpt-5.6-luna": {"model_id": "live-luna-deployment", "model_name": "gpt-5.6-luna"}
+          },
+          "azure_key_config": {
+            "endpoint": "http://127.0.0.1:9411"
+          }
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 60
+      }
     }
   },
   "config_store": {

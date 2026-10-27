@@ -303,6 +303,31 @@ func TestLiveMeterSumsBackendUsageWhileRefused(t *testing.T) {
 	assert.Equal(t, 220, backend.Usage.TotalTokens)
 }
 
+// TestLiveMeterFailStartOnlyBeforeTheSessionExists: an error ends the session only while the
+// provider has not created it; a WebRTC session exists from its create response on.
+func TestLiveMeterFailStartOnlyBeforeTheSessionExists(t *testing.T) {
+	t.Parallel()
+	refused := newRealtimeWireBifrostError(400, "unsupported_feature", "Stored Live sessions are not available yet.")
+
+	created := &fakeLiveRunner{}
+	meter := newTestLiveMeter(created)
+	require.Nil(t, meter.admit("gpt-live-1", ""))
+	require.NoError(t, meter.setProviderSessionID("live_1"))
+	assert.False(t, meter.failStart(refused), "an error on a created session is not a startup failure")
+	_, posts, _ := created.snapshot()
+	assert.Empty(t, posts, "the session goes on")
+
+	notCreated := &fakeLiveRunner{}
+	meter = newTestLiveMeter(notCreated)
+	require.Nil(t, meter.admit("gpt-live-1", ""))
+	assert.True(t, meter.failStart(refused))
+	_, posts, _ = notCreated.snapshot()
+	require.Len(t, posts, 1)
+	require.NotNil(t, posts[0].err)
+	assert.Equal(t, "Stored Live sessions are not available yet.", posts[0].err.Error.Message)
+	assert.True(t, posts[0].end)
+}
+
 func TestLiveMeterFailedDelegationClosesItsUnitWithTheError(t *testing.T) {
 	t.Parallel()
 

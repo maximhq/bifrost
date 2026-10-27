@@ -3,6 +3,7 @@ package governance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -13,6 +14,7 @@ import (
 	"github.com/tidwall/gjson"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -1194,10 +1196,23 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	// no model anywhere is marked so the model gate can refuse it under a restricted access. The
 	// limits each body model settles are kept: usage is charged against the request's own pass,
 	// so a body model's limit that pass does not settle would be checked and never charged.
+	//
+	// A server tool that names a model of its own (Anthropic's advisor) has the provider run that
+	// model on the key's behalf within the same request, so it is a body model just the same.
 	var bodyModelLimits map[string]string // limit id -> the body model that settled it
-	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
-		bodyModels := passthroughBodyModels(req)
-		evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
+	isPassthrough := req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest
+	toolModels := serverToolModels(req)
+	if isPassthrough || len(toolModels) > 0 {
+		var bodyModels []string
+		if isPassthrough {
+			bodyModels = passthroughBodyModels(req)
+			evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
+		}
+		for _, toolModel := range toolModels {
+			if !slices.Contains(bodyModels, toolModel) {
+				bodyModels = append(bodyModels, toolModel)
+			}
+		}
 		resourceNamed := p.namesModelsAsResources(provider)
 		for _, bodyModel := range bodyModels {
 			if resourceNamed {
@@ -1294,6 +1309,143 @@ func refuseUnchargedBodyModelLimits(ctx *schemas.BifrostContext, bodyModelLimits
 		Error: &schemas.ErrorField{Message: fmt.Sprintf("the request body names models with budgets or rate limits of their own (%s) that one request cannot be charged against; send one model per request",
 			strings.Join(models, ", "))},
 	}}
+}
+
+// serverToolModels returns every distinct model the request's server tools name: the "model" of an
+// advisor tool (Anthropic Messages, /v1/responses and the Go SDK all arrive as Responses requests).
+// Every place a tool can ride to the provider is read, not only the parsed tools: ExtraParams
+// "tools" (merged onto the wire when extra-params passthrough is on), a raw request body (sent
+// verbatim when raw forwarding is on, and only set then), a passthrough body, and inline batch
+// items. JSON is walked key by key so a duplicated or escaped "tools", "type" or "model" key names
+// every model a provider's parser could pick. A provider prefix ("anthropic/<id>") is dropped the
+// way the provider drops it before forwarding. A request without such a tool allocates nothing.
+func serverToolModels(req *schemas.BifrostRequest) []string {
+	var models []string
+	add := func(m string) {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			return
+		}
+		if prefixProvider, bare := schemas.ParseModelString(m, ""); prefixProvider != "" {
+			m = bare
+		}
+		if !slices.Contains(models, m) {
+			// m may view a request body read without a copy (see jsonView); keep a copy of its own.
+			models = append(models, strings.Clone(m))
+		}
+	}
+	if rr := req.ResponsesRequest; rr != nil {
+		if rr.Params != nil {
+			for i := range rr.Params.Tools {
+				if advisor := rr.Params.Tools[i].ResponsesToolAdvisor; advisor != nil {
+					add(advisor.Model)
+				}
+			}
+			addToolsValueModels(rr.Params.ExtraParams["tools"], add)
+		}
+		addBodyToolModels(rr.RawRequestBody, add)
+	}
+	if cr := req.ChatRequest; cr != nil {
+		if cr.Params != nil {
+			addToolsValueModels(cr.Params.ExtraParams["tools"], add)
+		}
+		addBodyToolModels(cr.RawRequestBody, add)
+	}
+	if req.PassthroughRequest != nil {
+		addBodyToolModels(req.PassthroughRequest.Body, add)
+	}
+	if br := req.BatchCreateRequest; br != nil {
+		for i := range br.Requests {
+			addToolsValueModels(br.Requests[i].Body["tools"], add)
+			addToolsValueModels(br.Requests[i].Params["tools"], add)
+		}
+		if len(br.RawRequestBody) > 0 {
+			forEachKey(gjson.Parse(jsonView(br.RawRequestBody)), "requests", func(items gjson.Result) {
+				items.ForEach(func(_, item gjson.Result) bool {
+					forEachKey(item, "params", func(params gjson.Result) { addToolArrayModels(params, add) })
+					forEachKey(item, "body", func(body gjson.Result) { addToolArrayModels(body, add) })
+					return true
+				})
+			})
+		}
+	}
+	return models
+}
+
+// addToolsValueModels adds the advisor models of a decoded "tools" value (ExtraParams, a batch
+// item), whatever Go shape it arrived in, by reading the JSON it will be sent as.
+func addToolsValueModels(tools any, add func(string)) {
+	var raw []byte
+	switch v := tools.(type) {
+	case nil:
+		return
+	case json.RawMessage:
+		raw = v
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		var err error
+		if raw, err = schemas.Marshal(v); err != nil {
+			return
+		}
+	}
+	addToolListModels(gjson.Parse(jsonView(raw)), add)
+}
+
+// addBodyToolModels adds the advisor models of a JSON request body's "tools" arrays.
+func addBodyToolModels(body []byte, add func(string)) {
+	if len(body) > 0 {
+		addToolArrayModels(gjson.Parse(jsonView(body)), add)
+	}
+}
+
+// jsonView returns body as a string without copying it, for a read-only gjson scan that finishes
+// before the hook returns; any string kept from the scan is cloned.
+func jsonView(body []byte) string {
+	return unsafe.String(unsafe.SliceData(body), len(body))
+}
+
+// addToolArrayModels adds the advisor models of every "tools" array of object.
+func addToolArrayModels(object gjson.Result, add func(string)) {
+	forEachKey(object, "tools", func(tools gjson.Result) { addToolListModels(tools, add) })
+}
+
+// addToolListModels adds the models of each advisor tool in a tools array.
+func addToolListModels(tools gjson.Result, add func(string)) {
+	if !tools.IsArray() {
+		return
+	}
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		isAdvisor := false
+		forEachKey(tool, "type", func(t gjson.Result) {
+			if t.Type == gjson.String && strings.HasPrefix(t.Str, "advisor") {
+				isAdvisor = true
+			}
+		})
+		if isAdvisor {
+			forEachKey(tool, "model", func(m gjson.Result) {
+				if m.Type == gjson.String {
+					add(m.Str)
+				}
+			})
+		}
+		return true
+	})
+}
+
+// forEachKey calls fn with the value of every member of object named name, duplicates included.
+func forEachKey(object gjson.Result, name string, fn func(gjson.Result)) {
+	if !object.IsObject() {
+		return
+	}
+	object.ForEach(func(key, value gjson.Result) bool {
+		if key.Str == name {
+			fn(value)
+		}
+		return true
+	})
 }
 
 // passthroughBodyModels returns every distinct model a passthrough body names: the "model" of a

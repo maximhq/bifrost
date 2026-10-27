@@ -12090,7 +12090,7 @@
       "get": {
         "operationId": "connectRealtime",
         "summary": "Realtime API WebSocket",
-        "description": "Opens a bidirectional WebSocket session to a realtime-capable provider\n(e.g. OpenAI Realtime, Azure Realtime preview). Bifrost proxies the upstream\nsocket and applies governance, observability, and key selection on connect.\n\nThe target model is provided via the `model` query parameter (or `deployment`\nfor Azure-style routes). The OpenAI SDK sends the API key over the\n`openai-insecure-api-key.<key>` WebSocket subprotocol; Bifrost extracts it and\ntreats it the same as a Bearer header.\n\nInference auth applies — Bearer/Basic/Virtual Key/API Key headers are all\naccepted, plus the subprotocol form above.\n",
+        "description": "Opens a bidirectional WebSocket session to a realtime-capable provider\n(e.g. OpenAI Realtime, Azure Realtime preview, Bedrock Nova Sonic). Bifrost proxies\nthe upstream session and applies governance, observability, and key selection on connect.\n\nThe target model is provided via the `model` query parameter (or `deployment`\nfor Azure-style routes). The OpenAI SDK sends the API key over the\n`openai-insecure-api-key.<key>` WebSocket subprotocol; Bifrost extracts it and\ntreats it the same as a Bearer header.\n\nInference auth applies — Bearer/Basic/Virtual Key/API Key headers are all\naccepted, plus the subprotocol form above.\n",
         "tags": [
           "Realtime"
         ],
@@ -104664,7 +104664,7 @@
             }
           },
           "400": {
-            "description": "The time range is invalid - `end_time` must be after `start_time`.",
+            "description": "The request body is malformed JSON, `start_time` or `end_time` is\nmissing or not an RFC3339 timestamp, or the time range is invalid -\n`end_time` must be after `start_time`.\n",
             "content": {
               "application/json": {
                 "schema": {
@@ -127589,7 +127589,7 @@
                   },
                   "decisions": {
                     "type": "boolean",
-                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                    "description": "Decision requests via /v1/decisions. A typesafe or openai base serves them natively; other bases emulate them through the Responses API only when the compat plugin's convert_decision_to_responses is enabled, and otherwise return unsupported_operation"
                   },
                   "speech": {
                     "type": "boolean"
@@ -127863,7 +127863,7 @@
                   },
                   "decisions": {
                     "type": "boolean",
-                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                    "description": "Decision requests via /v1/decisions. A typesafe or openai base serves them natively; other bases emulate them through the Responses API only when the compat plugin's convert_decision_to_responses is enabled, and otherwise return unsupported_operation"
                   },
                   "speech": {
                     "type": "boolean"
@@ -128095,7 +128095,7 @@
                   },
                   "decisions": {
                     "type": "boolean",
-                    "description": "Decision requests via /v1/decisions. A typesafe base serves them natively; other bases emulate them through the Responses API"
+                    "description": "Decision requests via /v1/decisions. A typesafe or openai base serves them natively; other bases emulate them through the Responses API only when the compat plugin's convert_decision_to_responses is enabled, and otherwise return unsupported_operation"
                   },
                   "speech": {
                     "type": "boolean"

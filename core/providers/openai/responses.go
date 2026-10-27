@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 
@@ -560,7 +561,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
@@ -574,6 +575,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// additional_tools items are lifted to the top level so the tools inside them get
 	// the same rewrite; the item's tools live in raw bytes that are not rewritten in place.
 	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
+	developerAsSystem := !caps.SupportsDeveloperRole(true)
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
 	keepConfigurationUpdate := supportsConfigurationUpdateItem(ctx, bifrostReq.Provider)
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
@@ -599,6 +601,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				continue
 			}
 			message.OutputConfig = nil
+		}
+		// Role is swapped for a new pointer, so the caller's message keeps "developer".
+		if developerAsSystem && (message.Type == nil || *message.Type == schemas.ResponsesMessageTypeMessage) &&
+			message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleDeveloper {
+			message.Role = new(schemas.ResponsesInputMessageRoleSystem)
 		}
 		// First, check if message has compaction/fallback content blocks and rewrite them
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
@@ -924,6 +931,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			messages = append(messages, message)
 		}
 	}
+	if !caps.SupportsMidConversationSystem(true) {
+		messages = inlineResponsesMidConversationSystem(messages)
+	}
 	// Targets that speak prompt_cache_breakpoint need the caching intent translated
 	// out of cache_control, which their serializer would otherwise strip.
 	// Match on the BASE provider, not the key the request arrived under. A custom
@@ -1162,6 +1172,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
+	}
+
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableStore) == true {
+		req.Store = new(false)
+		if _, ok := req.ExtraParams["store"]; ok {
+			req.ExtraParams = maps.Clone(req.ExtraParams)
+			req.ExtraParams["store"] = false
+		}
 	}
 
 	if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagement {

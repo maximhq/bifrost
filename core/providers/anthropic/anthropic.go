@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -732,6 +733,10 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 			if converted := ConvertAnthropicUsageToBifrostUsage(&usageToProcess.Iterations[i]); converted != nil {
 				usage.Iterations[i] = *converted
 			}
+		}
+		// Mirrored so a stream cut before its final chunk still bills the advisor passes.
+		if billedUsage != nil {
+			billedUsage.Iterations = slices.Clone(usage.Iterations)
 		}
 	}
 	usageToProcess = billableAnthropicUsage(usageToProcess)

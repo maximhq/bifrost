@@ -391,6 +391,8 @@ func TestClearCtxForFallback(t *testing.T) {
 		schemas.BifrostContextKeyStreamBodyExhausted,
 		schemas.BifrostContextKeyStreamParkedAfterFinish,
 		schemas.BifrostContextKeySupportsAssistantPrefill,
+		// Set by a provider configured with disable_store for its own attempt only.
+		schemas.BifrostContextKeyDisableStore,
 		// Set by the Bedrock InvokeModel stream path; a fallback to a plain-SSE
 		// provider must not inherit the AWS event-stream reader (#6825).
 		schemas.BifrostContextKeySSEReaderFactory,

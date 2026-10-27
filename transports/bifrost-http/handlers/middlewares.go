@@ -256,6 +256,20 @@ func (c *CorsMiddleware) UpdateConfig(config *lib.Config) {
 	c.config.Store(newCorsMiddlewareConfig(config))
 }
 
+// logRequestTarget is the request target for the access log with an api-key query value redacted: the
+// Azure Voice Live JavaScript SDK always sends its key, a virtual key here, in the query string. The
+// parsed names are checked, so a percent-encoded api-key name is redacted too.
+func logRequestTarget(ctx *fasthttp.RequestCtx) string {
+	uri := ctx.RequestURI()
+	if bytes.IndexByte(uri, '?') < 0 || !ctx.QueryArgs().Has("api-key") {
+		return string(uri)
+	}
+	var args fasthttp.Args
+	ctx.QueryArgs().CopyTo(&args)
+	args.Set("api-key", schemas.RedactedAttrValue)
+	return string(ctx.Request.URI().PathOriginal()) + "?" + args.String()
+}
+
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
 func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
@@ -282,7 +296,7 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					}
 					logBuilder := logger.LogHTTPRequest(level, "request completed").
 						Str("http.method", string(ctx.Method())).
-						Str("http.target", string(ctx.RequestURI())).
+						Str("http.target", logRequestTarget(ctx)).
 						Int("http.status_code", statusCode).
 						Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
 						Str("http.remote_addr", ctx.RemoteAddr().String()).
