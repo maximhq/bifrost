@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -92,8 +93,9 @@ func TokenExchangeMinter(cfg TokenExchangeConfig, hc *http.Client) Minter[string
 	}
 }
 
-// readSubjectToken opens the file through os.OpenInRoot, so neither ".." nor a symlink can
-// leave the allowed directory; links that stay inside it, as projected tokens do, are followed.
+// readSubjectToken opens the file inside an os.Root, so neither ".." nor a symlink can leave the
+// allowed directory; links that stay inside it, as projected tokens do, are followed. O_NONBLOCK
+// keeps a FIFO from blocking the open, which would hold the credential's cache lock forever.
 func readSubjectToken(path string) (string, error) {
 	dir, err := schemas.SubjectTokenDir(path)
 	if err != nil {
@@ -103,11 +105,19 @@ func readSubjectToken(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("subject_token_file could not be read: %w", err)
 	}
-	f, err := os.OpenInRoot(dir, rel)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return "", fmt.Errorf("subject_token_file could not be read: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", fmt.Errorf("subject_token_file could not be read: %w", err)
 	}
 	defer func() { _ = f.Close() }()
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("subject_token_file is not a regular file")
+	}
 	data, err := io.ReadAll(io.LimitReader(f, maxSubjectTokenBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("subject_token_file could not be read: %w", err)

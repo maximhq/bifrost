@@ -219,6 +219,14 @@ func postTokenRequest(ctx context.Context, hc *http.Client, tokenURL string, for
 
 // postToken scrubs the submitted values from any error the endpoint returns.
 func postToken(ctx context.Context, hc *http.Client, tokenURL string, body []byte, contentType string, submitted []string) (string, time.Time, *schemas.BifrostError) {
+	if contentType == "application/x-www-form-urlencoded" {
+		// An endpoint may echo a value as it arrived, form-encoded.
+		for _, v := range submitted {
+			if encoded := url.QueryEscape(v); encoded != v {
+				submitted = append(submitted, encoded)
+			}
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(body))
 	if err != nil {
 		return "", time.Time{}, configurationError("oauth token request could not be built: " + err.Error())

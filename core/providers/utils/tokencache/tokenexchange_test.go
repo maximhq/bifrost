@@ -261,6 +261,21 @@ func TestTokenExchangeMinter(t *testing.T) {
 		assert.Contains(t, bErr.Error.Message, "requires the "+schemas.SubjectTokenDirsEnv)
 	})
 
+	t.Run("a form-encoded echo of the subject token is scrubbed too", func(t *testing.T) {
+		es := newExchangeServer(t)
+		es.status = http.StatusBadRequest
+		es.body = `{"error":"invalid_request","error_description":"bad subject_token=opaque%2Bsecret%2Fvalue"}`
+		file := filepath.Join(tokenDir(t), "token")
+		writeSubjectToken(t, file, "opaque+secret/value")
+		mint := TokenExchangeMinter(TokenExchangeConfig{TokenURL: es.URL, SubjectTokenFile: file}, authClient(t))
+
+		_, bErr := mint(context.Background(), nil)
+		require.NotNil(t, bErr)
+		assert.Contains(t, bErr.Error.Message, "invalid_request")
+		assert.NotContains(t, bErr.Error.Message, "opaque%2Bsecret%2Fvalue")
+		assert.NotContains(t, bErr.Error.Message, "opaque+secret/value")
+	})
+
 	for _, encoding := range []schemas.OAuthRequestEncoding{schemas.OAuthRequestEncodingForm, schemas.OAuthRequestEncodingJSON} {
 		t.Run(string(encoding)+": an endpoint error never echoes the subject token", func(t *testing.T) {
 			es := newExchangeServer(t)
