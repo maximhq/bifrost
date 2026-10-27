@@ -355,7 +355,7 @@ Input: messages,
 **Type:** `time.Duration` (header value: duration string like `"5m"` or `"90s"`, or seconds as integer)
 **Required:** No
 
-Bound the total duration of a single request or stream, end to end. Arms once per call, including every configured fallback attempt -- a request that falls back to N other providers is still bound by the same declared deadline, not N times it. Applies to both streaming and non-streaming requests.
+Bound the total duration of a single request or stream, end to end. Arms once per call, including every configured fallback attempt -- a request that falls back to N other providers is still bound by the same declared deadline, not N times it. The same holds for MCP agent mode: tool execution and every later model turn share the one deadline. Applies to both streaming and non-streaming requests.
 
 Independent of any per-chunk stream-idle timeout: setting one does not imply or stretch the other. A caller who wants both a total budget and a tighter idle tolerance sets both headers. A caller who only sets `x-bf-request-timeout` keeps the server's configured stream idle timeout. A caller who only sets `x-bf-stream-idle-timeout` has no total deadline, because an unset `x-bf-request-timeout` arms no timer.
 

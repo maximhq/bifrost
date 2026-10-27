@@ -87,6 +87,64 @@ func TestArmRequestTimeout_StopPreventsFiring(t *testing.T) {
 	}
 }
 
+// TestArmRequestTimeout_NestedArmKeepsOuterBudget covers the MCP agent loop:
+// ChatCompletionRequest arms once, then each turn's handleRequest arms again on
+// the same ctx. The inner call must not start a fresh full-length timer, and
+// stopping it must not stop the outer one, or tool execution and later turns
+// could run past the caller's declared deadline.
+func TestArmRequestTimeout_NestedArmKeepsOuterBudget(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, 100*time.Millisecond)
+
+	stopOuter, armed := armRequestTimeout(ctx)
+	if !armed {
+		t.Fatal("outer arm must report armed")
+	}
+	defer stopOuter()
+
+	time.Sleep(60 * time.Millisecond)
+	stopInner, innerArmed := armRequestTimeout(ctx)
+	if !innerArmed {
+		t.Fatal("a nested arm must still report armed so streams get wrapped")
+	}
+	stopInner()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(90 * time.Millisecond):
+		t.Fatal("outer deadline did not fire on schedule: the nested arm restarted or stopped the budget")
+	}
+	fired, _ := ctx.Value(schemas.BifrostContextKeyRequestTimeoutFired).(bool)
+	if !fired {
+		t.Fatal("fired sentinel must be set by the outer timer")
+	}
+}
+
+// TestArmRequestTimeout_StopReleasesNesting verifies a caller context reused
+// for a later, sequential request gets a live timer again: the outer stop
+// must clear the nesting marker rather than leave every later arm a no-op.
+func TestArmRequestTimeout_StopReleasesNesting(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyRequestTimeout, 30*time.Millisecond)
+
+	stopFirst, _ := armRequestTimeout(ctx)
+	stopFirst()
+
+	stopSecond, armed := armRequestTimeout(ctx)
+	if !armed {
+		t.Fatal("second arm must report armed")
+	}
+	defer stopSecond()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("second request ran without a timer: the first stop did not clear the nesting marker")
+	}
+}
+
 // TestArmRequestTimeout_DerivedContextDoesNotCancelSharedRoot verifies the
 // handleRequest/handleStreamRequest nil-ctx fix: deriving a fresh
 // per-request context from the shared root (schemas.NewBifrostContext(root,

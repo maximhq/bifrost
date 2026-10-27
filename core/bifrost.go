@@ -1045,6 +1045,16 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx *schemas.BifrostContext, req *
 		ctx = bifrost.ctx
 	}
 
+	// One x-bf-request-timeout budget for the whole call, agent tool
+	// execution and later turns included; each turn's handleRequest nests
+	// under this arm instead of starting a fresh timer.
+	ctx, ownedCtx := resolveRequestContext(ctx, bifrost.ctx)
+	if ownedCtx != nil {
+		defer ownedCtx.Cancel()
+	}
+	stopRequestTimeout, _ := armRequestTimeout(ctx)
+	defer stopRequestTimeout()
+
 	response, err := bifrost.makeChatCompletionRequest(ctx, req)
 	if err != nil {
 		return nil, err
@@ -1146,6 +1156,14 @@ func (bifrost *Bifrost) ResponsesRequest(ctx *schemas.BifrostContext, req *schem
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+
+	// One budget for the whole call, agent turns included; see ChatCompletionRequest.
+	ctx, ownedCtx := resolveRequestContext(ctx, bifrost.ctx)
+	if ownedCtx != nil {
+		defer ownedCtx.Cancel()
+	}
+	stopRequestTimeout, _ := armRequestTimeout(ctx)
+	defer stopRequestTimeout()
 
 	response, err := bifrost.makeResponsesRequest(ctx, req)
 	if err != nil {

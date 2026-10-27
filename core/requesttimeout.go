@@ -47,6 +47,9 @@ func resolveRequestContext(ctx *schemas.BifrostContext, root *schemas.BifrostCon
 	return root, nil
 }
 
+// requestTimeoutArmedKey marks a ctx whose request-timeout timer is live.
+type requestTimeoutArmedKey struct{}
+
 // armRequestTimeout arms a timer for the total request/stream deadline
 // declared via the x-bf-request-timeout header (schemas.BifrostContextKeyRequestTimeout),
 // if any, and returns a stop function that must be called exactly once when
@@ -67,16 +70,27 @@ func resolveRequestContext(ctx *schemas.BifrostContext, root *schemas.BifrostCon
 // ConvertToBifrostContext), before any plugin hook has run -- WithPluginScope
 // wrapping only happens later, when core calls into an individual plugin's
 // hook method -- so ctx.Cancel() here needs no Root() indirection.
+//
+// Calls nest: while a timer armed on ctx is live, a further call on the same
+// ctx returns a no-op stop and armed=true instead of arming a second, fresh
+// timer. The MCP agent loop depends on this: ChatCompletionRequest and
+// ResponsesRequest arm once around the whole call, and each turn's
+// handleRequest inside it must not restart the caller's budget.
 func armRequestTimeout(ctx *schemas.BifrostContext) (stop func(), armed bool) {
 	d, _ := ctx.Value(schemas.BifrostContextKeyRequestTimeout).(time.Duration)
 	if d <= 0 {
 		return func() {}, false
 	}
+	if outer, _ := ctx.Value(requestTimeoutArmedKey{}).(bool); outer {
+		return func() {}, true
+	}
+	ctx.SetValue(requestTimeoutArmedKey{}, true)
 	timer := time.AfterFunc(d, func() {
 		ctx.SetValue(schemas.BifrostContextKeyRequestTimeoutFired, true)
 		ctx.Cancel()
 	})
 	return func() {
+		ctx.SetValue(requestTimeoutArmedKey{}, false)
 		timer.Stop()
 	}, true
 }
