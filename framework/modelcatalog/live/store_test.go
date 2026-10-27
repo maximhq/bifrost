@@ -14,11 +14,11 @@ const (
 )
 
 func upsertFiltered(s *Store, p schemas.ModelProvider, keyID string, models []string) {
-	s.Upsert(p, keyID, false, models)
+	s.Upsert(p, keyID, false, models, nil)
 }
 
 func upsertUnfiltered(s *Store, p schemas.ModelProvider, keyID string, models []string) {
-	s.Upsert(p, keyID, true, models)
+	s.Upsert(p, keyID, true, models, nil)
 }
 
 func TestUpsertAndReadFiltered(t *testing.T) {
@@ -194,7 +194,7 @@ func TestRetainKeysIsRaceFreeUnderConcurrentAccess(t *testing.T) {
 				keyID := keyIDs[i%len(keyIDs)]
 				switch g % 4 {
 				case 0:
-					s.Upsert(p, keyID, i%2 == 0, []string{"model-a", "model-b"})
+					s.Upsert(p, keyID, i%2 == 0, []string{"model-a", "model-b"}, nil)
 				case 1:
 					// Alternate the retained set so entries are constantly
 					// being pruned and repopulated underneath the readers.
@@ -219,7 +219,7 @@ func TestRetainKeysIsRaceFreeUnderConcurrentAccess(t *testing.T) {
 
 	// Sanity check that the store is still coherent rather than merely
 	// race-free: a final retain must leave a readable, well-formed view.
-	s.Upsert(openai, "k1", false, []string{"model-a"})
+	s.Upsert(openai, "k1", false, []string{"model-a"}, nil)
 	s.RetainKeys(openai, map[string]struct{}{"k1": {}})
 	if got := s.ModelsForProvider(openai); !slices.Equal(got, []string{"model-a"}) {
 		t.Fatalf("store incoherent after concurrent access: %v", got)
@@ -274,7 +274,7 @@ func TestSnapshotIsDefensiveCopy(t *testing.T) {
 func TestUpsertCopiesInputSlice(t *testing.T) {
 	s := New(nil)
 	input := []string{"gpt-4o"}
-	s.Upsert(openai, "k1", false, input)
+	s.Upsert(openai, "k1", false, input, nil)
 
 	input[0] = "MUTATED"
 
@@ -307,7 +307,7 @@ func TestUpsertIfCurrentAcceptsUnchangedGeneration(t *testing.T) {
 	s := New(nil)
 	gen := s.Generation(openai)
 
-	if !s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+	if !s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, nil, gen) {
 		t.Fatal("UpsertIfCurrent reported a dropped write with no intervening invalidation")
 	}
 	if got := s.ModelsForProvider(openai); !slices.Equal(got, []string{"gpt-4o"}) {
@@ -329,7 +329,7 @@ func TestUpsertIfCurrentDropsWriteAfterInvalidate(t *testing.T) {
 
 	s.Invalidate(openai, "k1") // key deleted while the fetch is in flight
 
-	if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+	if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, nil, gen) {
 		t.Fatal("UpsertIfCurrent committed a result fetched before the key was invalidated")
 	}
 	if got := s.ModelsForProvider(openai); len(got) != 0 {
@@ -347,7 +347,7 @@ func TestInvalidateBumpsGenerationWithNoCachedEntry(t *testing.T) {
 
 	s.Invalidate(openai, "k1") // nothing cached for k1 yet
 
-	if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+	if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, nil, gen) {
 		t.Fatal("UpsertIfCurrent committed after an Invalidate that happened to delete nothing")
 	}
 }
@@ -370,7 +370,7 @@ func TestInvalidateProviderAndRetainKeysBumpGeneration(t *testing.T) {
 
 			tt.invalidate(s)
 
-			if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+			if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, nil, gen) {
 				t.Fatalf("UpsertIfCurrent committed a fetch that predates %s", tt.name)
 			}
 		})
@@ -387,7 +387,7 @@ func TestGenerationIsPerProvider(t *testing.T) {
 
 	s.Invalidate(openai, "k1")
 
-	if !s.UpsertIfCurrent(anthropic, "k1", false, []string{"claude-sonnet"}, gen) {
+	if !s.UpsertIfCurrent(anthropic, "k1", false, []string{"claude-sonnet"}, nil, gen) {
 		t.Fatal("an OpenAI invalidation dropped an Anthropic commit")
 	}
 	if got := s.ModelsForProvider(anthropic); !slices.Equal(got, []string{"claude-sonnet"}) {
@@ -407,7 +407,7 @@ func TestGenerationSurvivesProviderRemoval(t *testing.T) {
 	upsertFiltered(s, openai, "k1", []string{"o1"})
 	s.InvalidateProvider(openai) // ...and re-added, then reloaded
 
-	if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+	if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, nil, gen) {
 		t.Fatal("a pre-removal fetch committed after the provider was recreated")
 	}
 }
@@ -417,7 +417,7 @@ func TestGenerationSurvivesProviderRemoval(t *testing.T) {
 func TestUpsertIfCurrentCopiesInputSlice(t *testing.T) {
 	s := New(nil)
 	input := []string{"gpt-4o"}
-	s.UpsertIfCurrent(openai, "k1", false, input, s.Generation(openai))
+	s.UpsertIfCurrent(openai, "k1", false, input, nil, s.Generation(openai))
 
 	input[0] = "MUTATED"
 
@@ -446,7 +446,7 @@ func TestConcurrentInvalidateAndGuardedUpsertAreRaceFree(t *testing.T) {
 					s.Invalidate(openai, "k1")
 					continue
 				}
-				s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen)
+				s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, nil, gen)
 				_ = s.ModelsForProvider(openai)
 			}
 		}(i)

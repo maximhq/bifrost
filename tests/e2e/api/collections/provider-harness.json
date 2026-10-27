@@ -286610,6 +286610,258 @@
           }
         }
       ]
+    },
+    {
+      "name": "282. Newest models per provider (models-newest)",
+      "description": "Pins GET /api/models/newest, which lists each requested provider's newest models ordered by the `created` time the provider reported in list-models, read from the live model cache without polling the provider. The listed and unfiltered cases check per-provider limit, uniqueness, non-increasing `created`, and a non-zero time on the top model (OpenAI reports `created` in Unix seconds on every model). The unfiltered case pins that `unfiltered=true` reads times from the unfiltered cache entries, so a model hidden from the filtered entry does not rank with created 0. The 400 cases pin input validation for the limit bound (1..50) and the required providers parameter. No case makes an LLM call.",
+      "item": [
+        {
+          "name": "openai models-newest lists the newest models by provider created time",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200); });",
+                  "var models = (body && body.models) || [];",
+                  "pm.test('lists 1 to 2 openai models', function () {",
+                  "  pm.expect(body && Array.isArray(body.models), 'models array missing: ' + pm.response.text()).to.eql(true);",
+                  "  pm.expect(models.length, 'model count: ' + pm.response.text()).to.be.within(1, 2);",
+                  "  models.forEach(function (m) { pm.expect(m.provider, 'provider: ' + JSON.stringify(m)).to.eql('openai'); });",
+                  "});",
+                  "pm.test('model names are unique', function () {",
+                  "  var seen = {};",
+                  "  models.forEach(function (m) { pm.expect(seen[m.name], 'duplicate: ' + m.name).to.not.eql(true); seen[m.name] = true; });",
+                  "});",
+                  "pm.test('created is non-increasing', function () {",
+                  "  for (var i = 1; i < models.length; i++) {",
+                  "    pm.expect(models[i].created, 'out of order: ' + pm.response.text()).to.be.at.most(models[i - 1].created);",
+                  "  }",
+                  "});",
+                  "pm.test('newest model carries the provider-reported created time', function () {",
+                  "  pm.expect(models.length && models[0].created, 'created missing on top model: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/newest?providers=openai&limit=2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "newest"
+              ],
+              "query": [
+                {
+                  "key": "providers",
+                  "value": "openai"
+                },
+                {
+                  "key": "limit",
+                  "value": "2"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai custom provider models-newest unfiltered ranks allowlist-hidden models by their unfiltered created time",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls: a run-scoped provider whose key allows one model, so the filtered cache entry hides the rest ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-newest-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "var name = PREFIX + 'run-' + Date.now();",
+                  "// A failed provider creation leaves the listing pointed at a provider that does not exist, so the case fails loudly.",
+                  "pm.collectionVariables.set('newestUnfilteredProvider', PREFIX + 'setup-failed');",
+                  "call('GET', '/api/providers', null, function (r0, j0) {",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, function () { sweep(); }); }",
+                  "    call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) {",
+                  "      if (!expectOk('setup: created run-scoped provider', res)) { return; }",
+                  "      // Recorded before the key, so cleanup deletes the provider even when key creation fails.",
+                  "      pm.collectionVariables.set('newestUnfilteredProvider', name);",
+                  "      var key = { name: name + '-key', value: 'env.OPENAI_API_KEY', weight: 1, models: ['gpt-4o-mini'] };",
+                  "      call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', key, function (res2) {",
+                  "        expectOk('setup: created key allowing only gpt-4o-mini', res2);",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var name = pm.collectionVariables.get('newestUnfilteredProvider');",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = null; try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var models = (body && body.models) || [];",
+                  "pm.test('lists 3 models for the run-scoped provider', function () {",
+                  "  pm.expect(models.length, 'model count: ' + pm.response.text()).to.eql(3);",
+                  "  models.forEach(function (m) { pm.expect(m.provider, 'provider: ' + JSON.stringify(m)).to.eql(name); });",
+                  "});",
+                  "pm.test('lists models the key allowlist hides from the filtered entry', function () {",
+                  "  pm.expect(models.some(function (m) { return m.name !== 'gpt-4o-mini'; }), pm.response.text()).to.eql(true);",
+                  "});",
+                  "pm.test('every model carries its unfiltered created time (pre-fix: hidden models read 0 from the filtered entry)', function () {",
+                  "  models.forEach(function (m) { pm.expect(m.created, 'created missing: ' + JSON.stringify(m)).to.be.above(0); });",
+                  "});",
+                  "pm.test('created is non-increasing', function () {",
+                  "  for (var i = 1; i < models.length; i++) {",
+                  "    pm.expect(models[i].created, 'out of order: ' + pm.response.text()).to.be.at.most(models[i - 1].created);",
+                  "  }",
+                  "});",
+                  "if (name && name.indexOf('setup-failed') === -1) {",
+                  "  pm.sendRequest({ url: BASE + '/api/providers/' + encodeURIComponent(name), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: run-scoped provider deleted', function () {",
+                  "      pm.expect(err, String(err)).to.eql(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/newest?providers={{newestUnfilteredProvider}}&unfiltered=true&limit=3",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "newest"
+              ],
+              "query": [
+                {
+                  "key": "providers",
+                  "value": "{{newestUnfilteredProvider}}"
+                },
+                {
+                  "key": "unfiltered",
+                  "value": "true"
+                },
+                {
+                  "key": "limit",
+                  "value": "3"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai models-newest rejects a limit above 50",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(400); });",
+                  "pm.test('names the rejected parameter', function () { pm.expect(pm.response.text()).to.include(\"limit must be between 1 and 50\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/newest?providers=openai&limit=51",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "newest"
+              ],
+              "query": [
+                {
+                  "key": "providers",
+                  "value": "openai"
+                },
+                {
+                  "key": "limit",
+                  "value": "51"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai models-newest requires the providers parameter",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () { pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(400); });",
+                  "pm.test('names the rejected parameter', function () { pm.expect(pm.response.text()).to.include(\"providers query parameter is required\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/models/newest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "newest"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
