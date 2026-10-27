@@ -4444,14 +4444,6 @@ func extraParamsHasSafeguards(extraParams map[string]interface{}) bool {
 	}
 }
 
-// withHeaderRequestMetadata applies x-bf-bedrock-metadata-* headers to a built Converse request.
-func withHeaderRequestMetadata(ctx *schemas.BifrostContext, bedrockReq *BedrockConverseRequest, err error) (providerUtils.RequestBodyWithExtraParams, error) {
-	if err == nil {
-		applyHeaderRequestMetadata(ctx, bedrockReq)
-	}
-	return bedrockReq, err
-}
-
 func chatUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) bool {
 	if request == nil || request.Params == nil {
 		return false

@@ -1451,20 +1451,36 @@ func applyHeaderRequestMetadata(ctx *schemas.BifrostContext, bedrockReq *Bedrock
 			keys = append(keys, key)
 		}
 	}
+	if len(keys) == 0 {
+		return
+	}
 	slices.Sort(keys)
+	// The body map can belong to the caller, so header entries go into a copy.
+	metadata := maps.Clone(bedrockReq.RequestMetadata)
+	if metadata == nil {
+		metadata = make(map[string]string, len(keys))
+	}
 	for _, key := range keys {
-		if len(bedrockReq.RequestMetadata) >= maxRequestMetadataEntries {
-			return
+		if len(metadata) >= maxRequestMetadataEntries {
+			break
 		}
 		value := headers[requestMetadataHeaderPrefix+key]
-		if _, exists := bedrockReq.RequestMetadata[key]; exists || !requestMetadataPattern.MatchString(key) || !requestMetadataPattern.MatchString(value) {
+		if _, exists := metadata[key]; exists || !requestMetadataPattern.MatchString(key) || !requestMetadataPattern.MatchString(value) {
 			continue
 		}
-		if bedrockReq.RequestMetadata == nil {
-			bedrockReq.RequestMetadata = make(map[string]string)
-		}
-		bedrockReq.RequestMetadata[key] = value
+		metadata[key] = value
 	}
+	if len(metadata) > 0 {
+		bedrockReq.RequestMetadata = metadata
+	}
+}
+
+// withHeaderRequestMetadata applies x-bf-bedrock-metadata-* headers to a built Converse request.
+func withHeaderRequestMetadata(ctx *schemas.BifrostContext, bedrockReq *BedrockConverseRequest, err error) (providerUtils.RequestBodyWithExtraParams, error) {
+	if err == nil {
+		applyHeaderRequestMetadata(ctx, bedrockReq)
+	}
+	return bedrockReq, err
 }
 
 func setOutputConfigField(fields *schemas.OrderedMap, key string, value any) {
