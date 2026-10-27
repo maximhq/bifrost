@@ -5091,12 +5091,13 @@ const jsonSchemaFormatKey = "format"
 type ToolSchemaPolicy struct {
 	NormalizeNULEscape bool     // rewrite `\0` to `\x00` in patterns
 	StripLookaround    bool     // remove lookaround assertions from patterns
+	DropPattern        bool     // remove the pattern keyword outright
 	StringFormats      []string // formats a non-numeric schema may keep; nil keeps every format
 }
 
 // IsZero reports whether the policy leaves every schema untouched.
 func (p ToolSchemaPolicy) IsZero() bool {
-	return !p.NormalizeNULEscape && !p.StripLookaround && p.StringFormats == nil
+	return !p.NormalizeNULEscape && !p.StripLookaround && !p.DropPattern && p.StringFormats == nil
 }
 
 // rewritePattern applies the policy's regex rewrites, returning pattern unchanged
@@ -5148,6 +5149,9 @@ func normalizeSchemaEntry(key string, value, typ any, p ToolSchemaPolicy, names 
 		switch key {
 		case jsonSchemaPatternKey:
 			if pattern, ok := value.(string); ok {
+				if p.DropPattern {
+					return value, false, true
+				}
 				if rewritten := p.rewritePattern(pattern); rewritten != pattern {
 					return rewritten, true, false
 				}
@@ -5286,7 +5290,9 @@ func ApplyToolSchemaPolicy(params *schemas.ToolFunctionParameters, p ToolSchemaP
 	}
 
 	if params.Pattern != nil {
-		if rewritten := p.rewritePattern(*params.Pattern); rewritten != *params.Pattern {
+		if p.DropPattern {
+			edit().Pattern = nil
+		} else if rewritten := p.rewritePattern(*params.Pattern); rewritten != *params.Pattern {
 			edit().Pattern = &rewritten
 		}
 	}
