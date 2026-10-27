@@ -2458,6 +2458,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusBadRequest, "per_user_header_keys contains duplicate entries")
 				return
 			}
+			if msg, refused := perUserHeaderCredentialConflict(prepared.schemes, prepared.config.SecurityCredentials, req.PerUserHeaderKeys); refused {
+				SendError(ctx, fasthttp.StatusBadRequest, msg)
+				return
+			}
 		}
 	}
 
@@ -3257,7 +3261,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// Tool names are shortened to fit beside the client name, so a rename is
 	// validated too: it can change the names the tool lists must match.
 	renamed := req.Name != nil && *req.Name != existingConfig.Name
-	if existingConfig.ConnectionType == schemas.MCPConnectionTypeOpenAPI && (req.OpenAPIConfig != nil || req.ToolsToExecute != nil || req.ToolsToAutoExecute != nil || renamed) {
+	// A per_user_headers client's stored credentials are checked against its
+	// per-user header keys, so a key edit is validated too when it stores any.
+	perUserKeysEdited := req.PerUserHeaderKeys != nil && existingConfig.AuthType == schemas.MCPAuthTypePerUserHeaders &&
+		existingConfig.OpenAPIConfig != nil && len(existingConfig.OpenAPIConfig.SecurityCredentials) > 0
+	if existingConfig.ConnectionType == schemas.MCPConnectionTypeOpenAPI && (req.OpenAPIConfig != nil || req.ToolsToExecute != nil || req.ToolsToAutoExecute != nil || renamed || perUserKeysEdited) {
 		if msg, refused := requestSpecFileRefusal(req.OpenAPIConfig); refused {
 			SendError(ctx, fasthttp.StatusBadRequest, msg)
 			return
@@ -3284,6 +3292,16 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		if unknown := unknownOpenAPITools(resolvedToolsToAutoExecute, prepared.toolNames); len(unknown) > 0 {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: the spec defines no tool named %s", strings.Join(unknown, ", ")))
 			return
+		}
+		if existingConfig.AuthType == schemas.MCPAuthTypePerUserHeaders {
+			perUserKeys := existingConfig.PerUserHeaderKeys
+			if req.PerUserHeaderKeys != nil {
+				perUserKeys = *req.PerUserHeaderKeys
+			}
+			if msg, refused := perUserHeaderCredentialConflict(prepared.schemes, prepared.config.SecurityCredentials, perUserKeys); refused {
+				SendError(ctx, fasthttp.StatusBadRequest, msg)
+				return
+			}
 		}
 		if req.OpenAPIConfig != nil {
 			resolvedOpenAPIConfig = prepared.config

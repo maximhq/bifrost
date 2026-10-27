@@ -4918,17 +4918,21 @@ const deleteIfPresent = (id, clientId) => request(id, `teardown: delete client $
 });
 const CONN27 = folder("CONN-27 OpenAPI per_user_headers with spec credentials is refused", `Setup: admin credentials; fleet server conn27 with a REST surface; ${PETS_TEXT}, with an apiKey scheme KeyAuth sent in header X-Key, and the credential k-admin for it.`, [
   ...freshServer("CONN-27", "conn27", ["echo_tool"]),
-  createExpect("CONN-27", "create a per_user_headers OpenAPI client with security_credentials", oasClient("conn27u-c", "conn27u", "conn27", { auth_type: "per_user_headers", per_user_header_keys: ["x-key"] }, { spec: PETS_KEY, security_credentials: CONN27_CRED }), [A.skip(A.status(400))]),
-  request("CONN-27", "no per_user_headers client with security_credentials was created", "GET", "/api/mcp/clients?server=conn27u-c", { asserts: [A.status(200), A.skip(A.custom("no client is returned", ["pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);"]))] }),
+  createExpect("CONN-27", "create a per_user_headers OpenAPI client with security_credentials", oasClient("conn27u-c", "conn27u", "conn27", { auth_type: "per_user_headers", per_user_header_keys: ["x-key"] }, { spec: PETS_KEY, security_credentials: CONN27_CRED }), [A.status(400)]),
+  request("CONN-27", "no per_user_headers client with security_credentials was created", "GET", "/api/mcp/clients?server=conn27u-c", { asserts: [A.status(200), A.custom("no client is returned", ["pm.expect(pm.response.json().clients, 'body: ' + pm.response.text()).to.eql([]);"])] }),
   deleteIfPresent("CONN-27", "conn27u-c"),
   createExpect("CONN-27", "control: create an auth_type none OpenAPI client with the same security_credentials", oasClient("conn27n-c", "conn27n", "conn27", {}, { spec: PETS_KEY, security_credentials: CONN27_CRED }), [A.status(200)]),
   request("CONN-27", "control: PUT security_credentials onto the auth_type none client", "PUT", "/api/mcp/client/conn27n-c", { body: { openapi_config: { security_credentials: CONN27_CRED } }, asserts: [A.status(200)] }),
   createClient("CONN-27", oasClient("conn27p-c", "conn27p", "conn27", { auth_type: "per_user_headers", per_user_header_keys: ["x-key"] }, { spec: PETS_KEY }), "setup: create a per_user_headers OpenAPI client without security_credentials"),
   request("CONN-27", "control: PUT openapi_config with only its base_url onto the per_user_headers client", "PUT", "/api/mcp/client/conn27p-c", { body: { openapi_config: { base_url: REST("conn27") } }, asserts: [A.status(200)] }),
-  request("CONN-27", "PUT security_credentials onto the per_user_headers client", "PUT", "/api/mcp/client/conn27p-c", { body: { openapi_config: { security_credentials: CONN27_CRED } }, asserts: [A.skip(A.status(400))] }),
-  getClient("CONN-27", "conn27p-c", "the per_user_headers client keeps no security_credentials", [A.skip(A.custom("openapi_config has no security_credentials", ["var oc = pm.response.json().clients[0].config.openapi_config || {};", "pm.expect(Object.keys(oc.security_credentials || {}), 'body: ' + pm.response.text()).to.eql([]);"]))]),
+  request("CONN-27", "PUT security_credentials onto the per_user_headers client", "PUT", "/api/mcp/client/conn27p-c", { body: { openapi_config: { security_credentials: CONN27_CRED } }, asserts: [A.status(400)] }),
+  getClient("CONN-27", "conn27p-c", "the per_user_headers client keeps no security_credentials", [A.custom("openapi_config has no security_credentials", ["var oc = pm.response.json().clients[0].config.openapi_config || {};", "pm.expect(Object.keys(oc.security_credentials || {}), 'body: ' + pm.response.text()).to.eql([]);"])]),
+  createExpect("CONN-27", "control: create a per_user_headers OpenAPI client storing KeyAuth while callers supply x-other", oasClient("conn27m-c", "conn27m", "conn27", { auth_type: "per_user_headers", per_user_header_keys: ["x-other"] }, { spec: PETS_KEY, security_credentials: CONN27_CRED }), [A.status(200)]),
+  request("CONN-27", "PUT per_user_header_keys adding x-key onto the client storing KeyAuth", "PUT", "/api/mcp/client/conn27m-c", { body: { per_user_header_keys: ["x-other", "x-key"] }, asserts: [A.status(400)] }),
+  getClient("CONN-27", "conn27m-c", "that client keeps per_user_header_keys [\"x-other\"]", [A.custom("per_user_header_keys is [\"x-other\"]", ["pm.expect(pm.response.json().clients[0].config.per_user_header_keys, 'body: ' + pm.response.text()).to.eql(['x-other']);"])]),
   deleteClient("CONN-27", "conn27n-c"),
   deleteClient("CONN-27", "conn27p-c"),
+  deleteClient("CONN-27", "conn27m-c"),
 ]);
 
 // ================================================================ the MCP library against the mock's HTTP catalog
