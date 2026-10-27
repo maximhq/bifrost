@@ -368,17 +368,23 @@ func (c *CorsMiddleware) UpdateConfig(config *lib.Config) {
 	c.config.Store(newCorsMiddlewareConfig(config))
 }
 
-// logRequestTarget is the request target for the access log with an api-key query value redacted: the
-// Azure Voice Live JavaScript SDK always sends its key, a virtual key here, in the query string. The
-// parsed names are checked, so a percent-encoded api-key name is redacted too.
+// logRequestTarget is the request target for the access log with api-key and key query values redacted: the
+// Azure Voice Live JavaScript SDK always sends its key, a virtual key here, as api-key, and a Gemini Live
+// client may send its own as key. The parsed names are checked, so a percent-encoded name is redacted too.
 func logRequestTarget(ctx *fasthttp.RequestCtx) string {
 	uri := ctx.RequestURI()
-	if bytes.IndexByte(uri, '?') < 0 || !ctx.QueryArgs().Has("api-key") {
+	if bytes.IndexByte(uri, '?') < 0 || (!ctx.QueryArgs().Has("api-key") && !ctx.QueryArgs().Has("key")) {
 		return string(uri)
 	}
+	// Args.Set would replace only the first of a repeated name, so every pair is rebuilt.
 	var args fasthttp.Args
-	ctx.QueryArgs().CopyTo(&args)
-	args.Set("api-key", schemas.RedactedAttrValue)
+	for name, value := range ctx.QueryArgs().All() {
+		if string(name) == "api-key" || string(name) == "key" {
+			args.AddBytesK(name, schemas.RedactedAttrValue)
+			continue
+		}
+		args.AddBytesKV(name, value)
+	}
 	return string(ctx.Request.URI().PathOriginal()) + "?" + args.String()
 }
 
@@ -1408,6 +1414,9 @@ func buildRealtimeTransportPathSet() map[string]struct{} {
 		paths[path] = struct{}{}
 	}
 	for _, path := range integrations.OpenAIRealtimeWebRTCCallsPaths("/openai") {
+		paths[path] = struct{}{}
+	}
+	for _, path := range integrations.GenAIRealtimePaths("/genai") {
 		paths[path] = struct{}{}
 	}
 	return paths
