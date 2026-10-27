@@ -441,6 +441,10 @@ func (h *OAuth2ConsentHandler) resolveVKIdentity(ctx *fasthttp.RequestCtx, vkVal
 	if !vk.IsActiveValue() {
 		return "", "", clientConsentError("virtual key is inactive")
 	}
+	// An expired key is refused everywhere else; a grant minted from it would outlive the expiry.
+	if vk.IsExpiredAt(time.Now()) {
+		return "", "", clientConsentError("virtual key has expired")
+	}
 	// During a rotation cooldown the lookup also resolves the key's previous value, so
 	// direct calls keep working while clients switch over. Consent mints a new grant
 	// that outlives the cooldown, so it needs the key's current value.
