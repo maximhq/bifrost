@@ -5248,3 +5248,75 @@ func TestA2ARawCaptureContentPolicy(t *testing.T) {
 		}
 	}
 }
+
+// Media an MCP tool returned is logged as a placeholder, never as its base64: for a Chat result whose
+// text is not JSON, and for a Responses result, which keeps images and files for the model.
+func TestPostMCPHookLogsToolMediaAsPlaceholders(t *testing.T) {
+	const payload = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+	text, imageURL := "3 points", "data:image/png;base64,"+payload
+	for _, tc := range []struct {
+		name        string
+		requestType schemas.MCPRequestType
+		resp        *schemas.BifrostMCPResponse
+	}{
+		{"chat", schemas.MCPRequestTypeChatToolCall, &schemas.BifrostMCPResponse{ChatMessage: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: &text},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageURL}},
+			}},
+		}}},
+		{"responses", schemas.MCPRequestTypeResponsesToolCall, &schemas.BifrostMCPResponse{ResponsesMessage: &schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("call-chart"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+					{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: &text},
+					{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &imageURL}},
+				}},
+			},
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			logID := "mcp-media-" + tc.name
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-"+logID)
+			ctx.SetValue(schemas.BifrostContextKeyMCPLogID, logID)
+			toolName := "docs-chart"
+			if _, _, err := plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+				RequestType: tc.requestType,
+				ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+					Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`},
+				},
+			}); err != nil {
+				t.Fatalf("PreMCPHook() error = %v", err)
+			}
+			tc.resp.ExtraFields = schemas.BifrostMCPResponseExtraFields{MCPRequestType: tc.requestType, ClientName: "docs", ToolName: "chart"}
+			if _, _, err := plugin.PostMCPHook(ctx, tc.resp, nil); err != nil {
+				t.Fatalf("PostMCPHook() error = %v", err)
+			}
+			if err := plugin.Cleanup(); err != nil {
+				t.Fatalf("Cleanup() error = %v", err)
+			}
+			logEntry, err := store.FindMCPToolLog(context.Background(), logID)
+			if err != nil {
+				t.Fatalf("FindMCPToolLog() error = %v", err)
+			}
+			logged, err := json.Marshal(logEntry.ResultParsed)
+			if err != nil {
+				t.Fatalf("marshal result: %v", err)
+			}
+			if strings.Contains(string(logged), payload) {
+				t.Fatalf("the logged result carries the image's base64: %s", logged)
+			}
+			if !strings.Contains(string(logged), "returned by the tool, not shown") || !strings.Contains(string(logged), text) {
+				t.Fatalf("the logged result must keep the text and name the image: %s", logged)
+			}
+		})
+	}
+}

@@ -58,6 +58,7 @@ import { Check, ChevronDown, ChevronRight, Copy, Info, Plus, Trash2 } from "luci
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { MCPClientCredentialSection, MCPClientSessionsSection } from "./mcpClientCredentialSection";
+import { MCPToolIconImage } from "./mcpToolIcon";
 import { MCPExposeList, type MCPExposeItem } from "./mcpExposeList";
 import {
 	applyParsedPreview,
@@ -2135,16 +2136,25 @@ export default function MCPClientSheet({
 																					type="button"
 																					className="hover:bg-muted flex h-8 w-8 items-center justify-center rounded-md transition-colors"
 																					onClick={() => toggleToolExpanded(tool.name)}
+																					data-testid={`mcp-tool-expand-${tool.name}`}
 																				>
 																					{isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
 																				</button>
 																			</TableCell>
 																			<TableCell className="max-w-[300px]">
-																				<div className="min-w-0">
-																					<div className="text-foreground truncate text-sm font-medium">{tool.name}</div>
-																					{tool.description && (
-																						<p className="text-muted-foreground mt-0.5 truncate text-xs">{tool.description}</p>
-																					)}
+																				<div className="flex min-w-0 items-start gap-2">
+																					<MCPToolIconImage tool={tool} />
+																					<div className="min-w-0">
+																						<div className="text-foreground truncate text-sm font-medium" data-testid={`mcp-tool-title-${tool.name}`}>
+																							{tool.title || tool.annotations?.title || tool.name}
+																						</div>
+																						{(tool.title || tool.annotations?.title) && (tool.title || tool.annotations?.title) !== tool.name && (
+																							<div className="text-muted-foreground truncate font-mono text-xs">{tool.name}</div>
+																						)}
+																						{tool.description && (
+																							<p className="text-muted-foreground mt-0.5 truncate text-xs">{tool.description}</p>
+																						)}
+																					</div>
 																				</div>
 																			</TableCell>
 																			<TableCell className="text-center">
@@ -2243,6 +2253,26 @@ export default function MCPClientSheet({
 																							/>
 																						) : (
 																							<div className="text-muted-foreground text-sm">No parameters defined</div>
+																						)}
+																						{tool.output_schema && (
+																							<div data-testid={`mcp-tool-output-schema-${tool.name}`}>
+																								<div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">Output Schema</div>
+																								<CodeEditor
+																									className="z-0 w-full rounded-sm border"
+																									shouldAdjustInitialHeight={true}
+																									maxHeight={300}
+																									wrap={true}
+																									code={JSON.stringify(tool.output_schema, null, 2)}
+																									lang="json"
+																									readonly={true}
+																									options={{
+																										scrollBeyondLastLine: false,
+																										collapsibleBlocks: true,
+																										lineNumbers: "off",
+																										alwaysConsumeMouseWheel: false,
+																									}}
+																								/>
+																							</div>
 																						)}
 																					</div>
 																				</td>

@@ -5283,6 +5283,57 @@ func TestMigrationAddOAuthIssuerBindingColumnsBoundsLockWait(t *testing.T) {
 	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
 }
 
+// TestMigrationAddMCPClientDiscoveredToolDetailsColumn adds the column on a table created without it,
+// keeps existing rows, and is a no-op on a re-run.
+func TestMigrationAddMCPClientDiscoveredToolDetailsColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE config_mcp_clients (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id VARCHAR(255) NOT NULL UNIQUE)").Error)
+	require.NoError(t, db.Exec("INSERT INTO config_mcp_clients (client_id) VALUES ('existing')").Error)
+	for range 2 {
+		require.NoError(t, migrationAddMCPClientDiscoveredToolDetailsColumn(context.Background(), db, testMigrationLogger))
+	}
+	require.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, "discovered_tool_details_json"))
+	var count int64
+	require.NoError(t, db.Table("config_mcp_clients").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
+// TestMigrationAddMCPClientDiscoveredToolDetailsColumnBoundsLockWait pins that on postgres the migration
+// gives up on a held config_mcp_clients lock (lock_not_available, which the startup retry handles)
+// instead of queueing every later MCP client query behind it.
+func TestMigrationAddMCPClientDiscoveredToolDetailsColumnBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE config_mcp_clients (id SERIAL PRIMARY KEY, client_id VARCHAR(255) NOT NULL UNIQUE)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	// A long reader's ACCESS SHARE lock conflicts with the ACCESS EXCLUSIVE lock ALTER TABLE needs.
+	_, err = reader.ExecContext(ctx, "SELECT * FROM config_mcp_clients")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddMCPClientDiscoveredToolDetailsColumn(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
 // TestA2ARawCaptureSettingMigration defaults existing deployments to capture disabled.
 func TestA2ARawCaptureSettingMigration(t *testing.T) {
 	db := setupTestDB(t)

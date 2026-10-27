@@ -8097,6 +8097,49 @@ func TestSetMCPDiscoveryChangeCallback_ReachesLazyManager(t *testing.T) {
 	}
 }
 
+// listedToolsManager serves one client whose tool the test holds on to.
+type listedToolsManager struct {
+	mcp.MCPManagerInterface
+	state schemas.MCPClientState
+}
+
+// GetClients returns the held client state as the manager would.
+func (m *listedToolsManager) GetClients() []schemas.MCPClientState {
+	return []schemas.MCPClientState{m.state}
+}
+
+// TestGetMCPClients_ListedToolsAreOwned: a caller that edits a listed tool's annotations, icons or
+// output schema must not change the tool the manager serves.
+func TestGetMCPClients_ListedToolsAreOwned(t *testing.T) {
+	held := schemas.ChatTool{
+		Type:        schemas.ChatToolTypeFunction,
+		Function:    &schemas.ChatToolFunction{Name: "docs-search"},
+		Annotations: &schemas.MCPToolAnnotations{Title: "Search"},
+		MCP: &schemas.MCPToolMetadata{
+			Icons:        []mcpgo.Icon{{Src: "https://example.com/search.png"}},
+			OutputSchema: json.RawMessage(`{"type":"object"}`),
+		},
+	}
+	manager := &listedToolsManager{state: schemas.MCPClientState{
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "docs-id", Name: "docs"},
+		ToolMap:         map[string]schemas.ChatTool{"docs-search": held},
+	}}
+	b := &Bifrost{MCPManager: manager}
+
+	clients, err := b.GetMCPClients()
+	if err != nil {
+		t.Fatalf("GetMCPClients: %v", err)
+	}
+	listed := clients[0].Tools[0]
+	listed.Annotations.Title = "edited"
+	listed.Icons[0].Src = "edited"
+	listed.OutputSchema[0] = '['
+
+	if held.Annotations.Title != "Search" || held.MCP.Icons[0].Src != "https://example.com/search.png" || string(held.MCP.OutputSchema) != `{"type":"object"}` {
+		t.Fatalf("editing a listed tool changed the served one: annotations %q, icon %q, schema %s", held.Annotations.Title, held.MCP.Icons[0].Src, held.MCP.OutputSchema)
+	}
+}
+
 // TestSetMCPInProcessServerFactory_RacesLazyManagerCreation: the HTTP transport
 // registers the openapi factory after Init, while a request may be lazily
 // creating the MCP manager. Whichever wins, the manager that ends up serving

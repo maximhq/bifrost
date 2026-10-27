@@ -334,6 +334,27 @@ export interface MCPClientCredential {
 	updated_at: string;
 }
 
+export interface MCPToolIcon {
+	src: string;
+	mimeType?: string;
+	sizes?: string[];
+	theme?: string;
+}
+
+// A tool as an MCP client lists it, with what its MCP server declares about it.
+export interface MCPClientTool extends ToolFunction {
+	title?: string;
+	icons?: MCPToolIcon[];
+	output_schema?: Record<string, unknown>;
+	annotations?: {
+		title?: string;
+		readOnlyHint?: boolean;
+		destructiveHint?: boolean;
+		idempotentHint?: boolean;
+		openWorldHint?: boolean;
+	};
+}
+
 // A prompt, resource or resource template an MCP server lists. Prompt names carry the client prefix.
 export interface MCPPrompt {
 	name: string;
@@ -360,7 +381,7 @@ export interface MCPResourceTemplate {
 
 export interface MCPClient {
 	config: MCPClientConfig;
-	tools: ToolFunction[];
+	tools: MCPClientTool[];
 	prompts?: MCPPrompt[];
 	resources?: MCPResource[];
 	resource_templates?: MCPResourceTemplate[];

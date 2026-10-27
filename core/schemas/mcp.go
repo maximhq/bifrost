@@ -1422,11 +1422,119 @@ type MCPClientConnectionInfo struct {
 // It is returned by GetMCPClients() method in bifrost.
 type MCPClient struct {
 	Config      *MCPClientConfig      `json:"config"`                 // Tool filtering settings
-	Tools       []ChatToolFunction    `json:"tools"`                  // Available tools
+	Tools       []MCPClientTool       `json:"tools"`                  // Available tools
 	State       MCPConnectionState    `json:"state"`                  // Connection state
 	LastFailure *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy
 
 	Resources         []mcp.Resource         `json:"resources,omitempty"`
 	ResourceTemplates []mcp.ResourceTemplate `json:"resource_templates,omitempty"`
 	Prompts           []mcp.Prompt           `json:"prompts,omitempty"`
+}
+
+// SetMCPResult keeps the MCP server's own result beside content, the message content Bifrost made from
+// it, so the /mcp gateway can pass the result through unchanged.
+func (m *ChatToolMessage) SetMCPResult(result *mcp.CallToolResult, content *ChatMessageContent) {
+	m.mcpResult = result
+	if content != nil && len(content.ContentBlocks) == 0 && content.ContentStr != nil {
+		m.mcpResultText, m.mcpResultIsText = *content.ContentStr, true
+		return
+	}
+	m.mcpResultContent = toolContentFields(content)
+}
+
+// MCPResult returns the MCP server's own result while content still matches what Bifrost made from it,
+// so a plugin's rewrite (a redaction, say) never leaks the original.
+func (m *ChatToolMessage) MCPResult(content *ChatMessageContent) *mcp.CallToolResult {
+	if m == nil || m.mcpResult == nil {
+		return nil
+	}
+	if m.mcpResultIsText {
+		if content == nil || len(content.ContentBlocks) != 0 || content.ContentStr == nil || *content.ContentStr != m.mcpResultText {
+			return nil
+		}
+		return m.mcpResult
+	}
+	if !slices.Equal(toolContentFields(content), m.mcpResultContent) {
+		return nil
+	}
+	return m.mcpResult
+}
+
+// toolContentFields lists the strings content carries. Copying and comparing unchanged strings copies
+// no data, so this stays cheap for media.
+func toolContentFields(content *ChatMessageContent) []string {
+	if content == nil {
+		return nil
+	}
+	// Presence is recorded apart from the value, so an unset field and a set one never compare equal.
+	value := func(s *string) string {
+		if s == nil {
+			return "0"
+		}
+		return "1" + *s
+	}
+	fields := make([]string, 0, 1+5*len(content.ContentBlocks))
+	fields = append(fields, value(content.ContentStr))
+	for _, block := range content.ContentBlocks {
+		fields = append(fields, string(block.Type), value(block.Text))
+		switch {
+		case block.ImageURLStruct != nil:
+			fields = append(fields, block.ImageURLStruct.URL)
+		case block.InputAudio != nil:
+			fields = append(fields, block.InputAudio.Data, value(block.InputAudio.Format))
+		case block.File != nil:
+			fields = append(fields, value(block.File.FileData), value(block.File.FileURL), value(block.File.Filename), value(block.File.FileType))
+		}
+	}
+	return fields
+}
+
+// MCPClientTool is a tool as an MCP client lists it: its function definition plus what the MCP
+// server declared about it.
+type MCPClientTool struct {
+	ChatToolFunction
+	Title        string              `json:"title,omitempty"`
+	Icons        []mcp.Icon          `json:"icons,omitempty"`
+	OutputSchema json.RawMessage     `json:"output_schema,omitempty"`
+	Annotations  *MCPToolAnnotations `json:"annotations,omitempty"`
+}
+
+// MCPToolMetadata is what an MCP tool declares besides its function definition and annotations.
+// Bifrost-internal: never sent to providers.
+type MCPToolMetadata struct {
+	Title        string          `json:"title,omitempty"`
+	Icons        []mcp.Icon      `json:"icons,omitempty"`
+	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
+}
+
+// MCPToolDetails is a discovered tool's annotations and metadata, persisted beside the tool because
+// ChatTool's JSON leaves both out.
+type MCPToolDetails struct {
+	Annotations *MCPToolAnnotations `json:"annotations,omitempty"`
+	Metadata    *MCPToolMetadata    `json:"metadata,omitempty"`
+}
+
+// ToolDetails returns, by name, the annotations and metadata of the tools that carry any.
+func ToolDetails(tools map[string]ChatTool) map[string]MCPToolDetails {
+	var details map[string]MCPToolDetails
+	for name, tool := range tools {
+		if tool.Annotations == nil && tool.MCP == nil {
+			continue
+		}
+		if details == nil {
+			details = make(map[string]MCPToolDetails)
+		}
+		details[name] = MCPToolDetails{Annotations: tool.Annotations, Metadata: tool.MCP}
+	}
+	return details
+}
+
+// ApplyToolDetails sets the annotations and metadata of each named tool in tools.
+func ApplyToolDetails(tools map[string]ChatTool, details map[string]MCPToolDetails) {
+	for name, detail := range details {
+		if tool, ok := tools[name]; ok {
+			tool.Annotations, tool.MCP = detail.Annotations, detail.Metadata
+			tools[name] = tool
+		}
+	}
 }

@@ -1077,6 +1077,54 @@ ChatToolFunction:
     strict:
       type: boolean
 
+MCPClientTool:
+  type: object
+  description: A tool an MCP client lists, with what its MCP server declares about it
+  additionalProperties: false
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+    parameters:
+      type: object
+      additionalProperties: true
+    strict:
+      type: boolean
+    title:
+      type: string
+      description: Display name the server gives the tool.
+    icons:
+      type: array
+      description: Icons the server gives the tool.
+      items:
+        type: object
+        additionalProperties: false
+        required: [src]
+        properties:
+          src: { type: string }
+          mimeType: { type: string }
+          sizes:
+            type: array
+            items: { type: string }
+          theme:
+            type: string
+            enum: [light, dark]
+    output_schema:
+      type: object
+      additionalProperties: true
+      description: JSON Schema of the structured result the tool returns, when the server declares one.
+    annotations:
+      type: object
+      description: Behavior hints the server gives the tool.
+      additionalProperties: false
+      properties:
+        title: { type: string }
+        readOnlyHint: { type: boolean }
+        destructiveHint: { type: boolean }
+        idempotentHint: { type: boolean }
+        openWorldHint: { type: boolean }
+
 MCPVKConfigResponse:
   type: object
   description: Per-virtual-key tool access configuration as returned in list/get responses
@@ -1105,7 +1153,7 @@ MCPClient:
     tools:
       type: array
       items:
-        $ref: '#/ChatToolFunction'
+        $ref: '#/MCPClientTool'
     resources:
       type: array
       description: |

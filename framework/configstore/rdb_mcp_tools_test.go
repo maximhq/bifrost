@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -277,6 +278,73 @@ func TestUpdateMCPClientConfig_KeepsSavedSnapshot(t *testing.T) {
 	assert.Len(t, row.DiscoveredResourceTemplates, 1)
 	assert.Len(t, row.DiscoveredPrompts, 1)
 	assert.Equal(t, "Use the handbook first.", row.DiscoveredInstructions)
+}
+
+// A discovered tool's annotations, title, icons and output schema are left out of ChatTool's JSON,
+// so they are stored beside it and restored with it.
+func TestUpdateMCPClientDiscovery_ToolDetailsRoundTrip(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, s.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "details-client", Name: "weather", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	tool := schemas.ChatTool{
+		Type:        schemas.ChatToolTypeFunction,
+		Function:    &schemas.ChatToolFunction{Name: "weather-forecast"},
+		Annotations: &schemas.MCPToolAnnotations{ReadOnlyHint: schemas.Ptr(true)},
+		MCP: &schemas.MCPToolMetadata{
+			Title:        "Forecast",
+			Icons:        []mcp.Icon{{Src: "https://example.com/sun.png"}},
+			OutputSchema: json.RawMessage(`{"type":"object","properties":{"temp":{"type":"number"}}}`),
+		},
+	}
+	require.NoError(t, s.UpdateMCPClientDiscovery(ctx, "details-client", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"weather-forecast": tool}}))
+
+	row, err := s.GetMCPClientByID(ctx, "details-client")
+	require.NoError(t, err)
+	restored := row.DiscoveredTools["weather-forecast"]
+	require.NotNil(t, restored.MCP)
+	assert.Equal(t, "Forecast", restored.MCP.Title)
+	assert.Equal(t, "https://example.com/sun.png", restored.MCP.Icons[0].Src)
+	assert.JSONEq(t, string(tool.MCP.OutputSchema), string(restored.MCP.OutputSchema))
+	require.NotNil(t, restored.Annotations)
+	assert.True(t, *restored.Annotations.ReadOnlyHint, "annotations survive a restart too")
+
+	// A full save (BeforeSave) keeps them as well.
+	require.NoError(t, s.DB().Save(row).Error)
+	row, err = s.GetMCPClientByID(ctx, "details-client")
+	require.NoError(t, err)
+	assert.Equal(t, "Forecast", row.DiscoveredTools["weather-forecast"].MCP.Title)
+}
+
+// A full config update that carries discovered tools stores their details too, so an edit made through
+// the API never leaves the details of the previous discovery behind.
+func TestUpdateMCPClientConfig_StoresToolDetails(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, s.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "edited-client", Name: "weather", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	tool := func(title string) map[string]schemas.ChatTool {
+		return map[string]schemas.ChatTool{"weather-forecast": {
+			Type:     schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{Name: "weather-forecast"},
+			MCP:      &schemas.MCPToolMetadata{Title: title},
+		}}
+	}
+	require.NoError(t, s.UpdateMCPClientDiscovery(ctx, "edited-client", &schemas.MCPDiscovery{Tools: tool("Forecast")}))
+
+	row, err := s.GetMCPClientByID(ctx, "edited-client")
+	require.NoError(t, err)
+	row.DiscoveredTools = tool("Forecast v2")
+	require.NoError(t, s.UpdateMCPClientConfig(ctx, "edited-client", row))
+
+	row, err = s.GetMCPClientByID(ctx, "edited-client")
+	require.NoError(t, err)
+	require.NotNil(t, row.DiscoveredTools["weather-forecast"].MCP)
+	assert.Equal(t, "Forecast v2", row.DiscoveredTools["weather-forecast"].MCP.Title)
 }
 
 // The prompts and resources allow-lists keep nil (expose all) apart from [] (expose none) through

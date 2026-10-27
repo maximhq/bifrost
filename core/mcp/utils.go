@@ -19,6 +19,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/sjson"
 )
 
 // computeDiscoveryHash hashes a discovery so an identical rediscovery does not re-fire the change
@@ -30,6 +31,11 @@ func computeDiscoveryHash(discovery *schemas.MCPDiscovery) string {
 	}
 	h.Write([]byte{0}) // separator so {"a":"b"} tools + {} mapping can't collide with {} tools + {"a":"b"} mapping
 	if data, err := json.Marshal(discovery.ToolNameMapping); err == nil {
+		h.Write(data)
+	}
+	h.Write([]byte{0})
+	// ChatTool's JSON leaves annotations and metadata out.
+	if data, err := json.Marshal(schemas.ToolDetails(discovery.Tools)); err == nil {
 		h.Write(data)
 	}
 	// Hashed too, so a change to only these still fires the callback.
@@ -1086,65 +1092,45 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 			},
 		},
 		Annotations: annotations,
+		MCP:         toolMetadata(mcpTool),
 	}
 }
 
-// extractTextFromMCPResponse extracts text content from an MCP tool response.
-func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName string) string {
-	if toolResponse == nil {
-		return fmt.Sprintf("MCP tool '%s' executed successfully", toolName)
-	}
-
-	var result strings.Builder
-	for _, contentBlock := range toolResponse.Content {
-		// Handle typed content
-		switch content := contentBlock.(type) {
-		case mcp.TextContent:
-			result.WriteString(content.Text)
-		case mcp.ImageContent:
-			result.WriteString(fmt.Sprintf("[Image Response: %s, MIME: %s]\n", content.Data, content.MIMEType))
-		case mcp.AudioContent:
-			result.WriteString(fmt.Sprintf("[Audio Response: %s, MIME: %s]\n", content.Data, content.MIMEType))
-		case mcp.EmbeddedResource:
-			result.WriteString(fmt.Sprintf("[Embedded Resource Response: %s]\n", content.Type))
-		default:
-			// Fallback: try to extract from map structure
-			if jsonBytes, err := schemas.MarshalSorted(contentBlock); err == nil {
-				var contentMap map[string]interface{}
-				if json.Unmarshal(jsonBytes, &contentMap) == nil {
-					if text, ok := contentMap["text"].(string); ok {
-						result.WriteString(fmt.Sprintf("[Text Response: %s]\n", text))
-						continue
-					}
-				}
-				// Final fallback: serialize as JSON
-				result.WriteString(string(jsonBytes))
-			}
+// toolMetadata is the title, icons and output schema mcpTool declares, or nil when it declares none.
+func toolMetadata(mcpTool *mcp.Tool) *schemas.MCPToolMetadata {
+	outputSchema := mcpTool.RawOutputSchema
+	if outputSchema == nil && declaresOutputSchema(mcpTool.OutputSchema) {
+		outputSchema, _ = json.Marshal(mcpTool.OutputSchema)
+		// mcp-go writes "type": "" when none is set.
+		if mcpTool.OutputSchema.Type == "" && mcpTool.OutputSchema.Types == nil {
+			outputSchema, _ = sjson.DeleteBytes(outputSchema, "type")
 		}
 	}
-
-	if result.Len() > 0 {
-		return strings.TrimSpace(result.String())
+	if mcpTool.Title == "" && len(mcpTool.Icons) == 0 && outputSchema == nil {
+		return nil
 	}
-	return fmt.Sprintf("MCP tool '%s' executed successfully", toolName)
+	return &schemas.MCPToolMetadata{Title: mcpTool.Title, Icons: mcpTool.Icons, OutputSchema: outputSchema}
 }
 
-// createToolResponseMessage creates a tool response message with the execution result.
-// isError carries the MCP protocol's own tool-failure signal (mcp.CallToolResult.IsError),
-// which reports that the tool ran and failed -- distinct from a transport-level error.
-func createToolResponseMessage(toolCall schemas.ChatAssistantMessageToolCall, responseText string, isError bool) *schemas.ChatMessage {
-	toolMsg := &schemas.ChatToolMessage{
-		ToolCallID: toolCall.ID,
-	}
-	if isError {
-		toolMsg.IsError = schemas.Ptr(true)
-	}
+// declaresOutputSchema reports whether any part of the output schema is set; type is optional.
+func declaresOutputSchema(schema mcp.ToolOutputSchema) bool {
+	return schema.Type != "" || schema.Types != nil || schema.Properties != nil || len(schema.Required) > 0 ||
+		schema.AdditionalProperties != nil || schema.Defs != nil || len(schema.AdditionalFields) > 0
+}
 
+// createToolResponseMessage is the tool message for an MCP result, marked failed when the server says so.
+func createToolResponseMessage(toolCall schemas.ChatAssistantMessageToolCall, result *mcp.CallToolResult, toolName string) *schemas.ChatMessage {
+	content := toolResultContent(result, toolName)
+	toolMsg := &schemas.ChatToolMessage{ToolCallID: toolCall.ID}
+	if result != nil {
+		if result.IsError {
+			toolMsg.IsError = schemas.Ptr(true)
+		}
+		toolMsg.SetMCPResult(result, content)
+	}
 	return &schemas.ChatMessage{
-		Role: schemas.ChatMessageRoleTool,
-		Content: &schemas.ChatMessageContent{
-			ContentStr: &responseText,
-		},
+		Role:            schemas.ChatMessageRoleTool,
+		Content:         content,
 		ChatToolMessage: toolMsg,
 	}
 }

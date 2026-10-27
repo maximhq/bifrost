@@ -3265,3 +3265,47 @@ func TestOpenAIResponsesRequest_MarshalJSON_HistoryOutputTextDoesNotGainNullLogP
 		t.Fatalf("annotations must stay an array, got %q. block=%s", ann.Raw, block.Raw)
 	}
 }
+
+// A file a tool returned reaches OpenAI as a data URL: function_call_output has no file_type, and bare
+// base64 in file_data is rejected, exactly as for a file in an input message.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputFileBecomesDataURL(t *testing.T) {
+	pdf := "JVBERi0xLjQK" // "%PDF-1.4\n"
+	for _, fileType := range []*string{schemas.Ptr("application/pdf"), nil} {
+		name := "without file_type"
+		if fileType != nil {
+			name = "with file_type"
+		}
+		t.Run(name, func(t *testing.T) { assertFunctionCallOutputFileIsDataURL(t, pdf, fileType) })
+	}
+}
+
+func assertFunctionCallOutputFileIsDataURL(t *testing.T, pdf string, fileType *string) {
+	t.Helper()
+	input := &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_report"),
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+						ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+							FileData: schemas.Ptr(pdf), FileType: fileType, Filename: schemas.Ptr("report.pdf"),
+						},
+					}}},
+				},
+			},
+		},
+	}
+	jsonBytes, err := input.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	raw := string(jsonBytes)
+	if !strings.Contains(raw, `"file_data":"data:application/pdf;base64,`+pdf+`"`) {
+		t.Fatalf("file_data must be a data URL; raw=%s", raw)
+	}
+	if strings.Contains(raw, "file_type") {
+		t.Fatalf("file_type must not reach OpenAI; raw=%s", raw)
+	}
+}

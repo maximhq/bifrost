@@ -581,6 +581,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_discovered_resources_prompts_columns"}, run: migrationAddMCPClientDiscoveredResourcesPromptsColumns},
 	{IDs: []string{"add_mcp_client_expose_lists_columns"}, run: migrationAddMCPClientExposeListsColumns},
 	{IDs: []string{"add_oauth_issuer_binding_columns"}, run: migrationAddOAuthIssuerBindingColumns},
+	{IDs: []string{"add_mcp_client_discovered_tool_details_column"}, run: migrationAddMCPClientDiscoveredToolDetailsColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16770,6 +16771,31 @@ func migrationAddOAuthIssuerBindingColumns(ctx context.Context, db *gorm.DB, log
 				}
 			}
 			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddMCPClientDiscoveredToolDetailsColumn adds the column that persists discovered tools'
+// annotations, titles, icons and output schemas. Existing rows fill it at their next discovery.
+func migrationAddMCPClientDiscoveredToolDetailsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_discovered_tool_details_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "discovered_tool_details_json")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableMCPClient{}, "discovered_tool_details_json")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

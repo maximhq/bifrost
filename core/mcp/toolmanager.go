@@ -723,7 +723,7 @@ func (m *ToolsManager) ExecuteTool(
 		if chatResult == nil {
 			return nil, fmt.Errorf("chat result cannot be nil for ResponsesToolCall request type")
 		}
-		responsesMessage := chatResult.ToResponsesToolMessage()
+		responsesMessage := schemas.ToolResultForResponses(chatResult).ToResponsesToolMessage()
 		if responsesMessage == nil {
 			return nil, fmt.Errorf("failed to convert tool result to Responses format")
 		}
@@ -863,14 +863,8 @@ func (m *ToolsManager) executeToolInternal(
 			retryResponse, recovered, budgetExhausted := m.attemptCallFailureRecovery(recoveryCtx, toolName, callRequest, executionConfig, toolExecutionTimeout)
 			recoveryExhaustedBudget = budgetExhausted
 			if recovered {
-				responseText := extractTextFromMCPResponse(retryResponse, toolName)
-				// Mirrors the non-retry success path below: the retry's own
-				// IsError is the upstream server reporting a failed execution
-				// over an otherwise-successful call, and must reach the model
-				// as a failure the same way, not be silently swallowed just
-				// because the retry itself succeeded at the transport level.
-				retryIsToolError := retryResponse != nil && retryResponse.IsError
-				return createToolResponseMessage(*toolCall, responseText, retryIsToolError), executionConfig.Name, sanitizedToolName, nil
+				// Mirrors the non-retry success path below, IsError included.
+				return createToolResponseMessage(*toolCall, retryResponse, toolName), executionConfig.Name, sanitizedToolName, nil
 			}
 		}
 
@@ -893,15 +887,7 @@ func (m *ToolsManager) executeToolInternal(
 		return nil, "", "", fmt.Errorf("MCP tool call failed for %s: %v: %w", toolName, callErr, ErrMCPToolCallFailed)
 	}
 
-	// Extract text from MCP response
-	responseText := extractTextFromMCPResponse(toolResponse, toolName)
-
-	// Create tool response message. toolResponse.IsError is the server reporting a
-	// failed execution over a successful call, so it must reach the model as a
-	// failure rather than as ordinary result text. toolResponse is nil-checked for
-	// the same reason extractTextFromMCPResponse checks it above.
-	isToolError := toolResponse != nil && toolResponse.IsError
-	return createToolResponseMessage(*toolCall, responseText, isToolError), executionConfig.Name, sanitizedToolName, nil
+	return createToolResponseMessage(*toolCall, toolResponse, toolName), executionConfig.Name, sanitizedToolName, nil
 }
 
 // attemptCallFailureRecovery reacts to a live tool call that failed for a

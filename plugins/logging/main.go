@@ -305,6 +305,25 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 	entry.ApplyGovernanceContext(ctx)
 }
 
+// responsesToolResultWithoutMedia is message with each image, file and audio block of its tool output
+// replaced by a placeholder naming it; message itself is never mutated.
+func responsesToolResultWithoutMedia(message *schemas.ResponsesMessage) *schemas.ResponsesMessage {
+	if message.ResponsesToolMessage == nil || message.ResponsesToolMessage.Output == nil {
+		return message
+	}
+	flattened, changed := schemas.FlattenResponsesToolResultMedia(message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+	if !changed {
+		return message
+	}
+	output := *message.ResponsesToolMessage.Output
+	output.ResponsesFunctionToolCallOutputBlocks = flattened
+	toolMessage := *message.ResponsesToolMessage
+	toolMessage.Output = &output
+	copied := *message
+	copied.ResponsesToolMessage = &toolMessage
+	return &copied
+}
+
 func applyMCPCorrelationFieldsToEntry(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog) {
 	if ctx == nil || entry == nil {
 		return
@@ -3636,20 +3655,19 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		// stored when it is also visible.
 		if contentVisible {
 			var result interface{}
+			// Media a tool returned is logged as a placeholder, not as base64.
 			if resp.ChatMessage != nil {
-				if resp.ChatMessage.Content != nil && resp.ChatMessage.Content.ContentStr != nil {
-					contentStr := *resp.ChatMessage.Content.ContentStr
+				message := *resp.ChatMessage
+				message.Content = schemas.FlattenToolResultMedia(resp.ChatMessage.Content, nil)
+				result = &message
+				if message.Content != nil && message.Content.ContentStr != nil {
 					var parsedContent interface{}
-					if err := sonic.Unmarshal([]byte(contentStr), &parsedContent); err == nil {
+					if err := sonic.Unmarshal([]byte(*message.Content.ContentStr), &parsedContent); err == nil {
 						result = parsedContent
-					} else {
-						result = resp.ChatMessage
 					}
-				} else {
-					result = resp.ChatMessage
 				}
 			} else if resp.ResponsesMessage != nil {
-				result = resp.ResponsesMessage
+				result = responsesToolResultWithoutMedia(resp.ResponsesMessage)
 			}
 			if result != nil {
 				entry.ResultParsed = result

@@ -988,7 +988,7 @@ func pendingOAuthConfigToRequest(cfg *schemas.OAuth2Config) *OAuthConfigRequest 
 // MCPClientResponse represents the response structure for MCP clients
 type MCPClientResponse struct {
 	Config    *schemas.MCPClientConfig   `json:"config"`
-	Tools     []schemas.ChatToolFunction `json:"tools"`
+	Tools     []schemas.MCPClientTool    `json:"tools"`
 	State     schemas.MCPConnectionState `json:"state"`
 	VKConfigs []MCPVKConfigResponse      `json:"vk_configs"`
 
@@ -1809,7 +1809,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		sharedToken := sharedTokenByClientID[dbClient.ClientID]
 		credential := mcpClientCredentialResponse(clientConfig.AuthType, adminToken, adminCred, sharedToken)
 		if connectedClient, exists := connectedClientsMap[clientConfig.ID]; exists {
-			sortedTools := make([]schemas.ChatToolFunction, len(connectedClient.Tools))
+			sortedTools := make([]schemas.MCPClientTool, len(connectedClient.Tools))
 			copy(sortedTools, connectedClient.Tools)
 			sort.Slice(sortedTools, func(i, j int) bool {
 				return sortedTools[i].Name < sortedTools[j].Name
@@ -1841,7 +1841,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		} else {
 			resp := MCPClientResponse{
 				Config:     redactedConfig,
-				Tools:      []schemas.ChatToolFunction{},
+				Tools:      []schemas.MCPClientTool{},
 				State:      schemas.MCPConnectionStateError,
 				VKConfigs:  vkConfigs,
 				Credential: credential,
