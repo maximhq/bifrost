@@ -69,12 +69,14 @@ export default function OverviewTab({ hasAccess }: OverviewTabProps) {
 	const [triggerModelHistogram] = useLazyGetLogsModelHistogramQuery();
 	const [triggerProviderKeys] = useLazyGetProviderKeysQuery();
 
+	// The totals cover the same model providers as the rows, so a generic relay's traffic never
+	// shows up in a summary no row explains.
 	useEffect(() => {
-		if (!hasAccess) return;
+		if (!hasAccess || !providers || providers.length === 0) return;
 		const now = new Date().toISOString();
 		const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-		triggerGlobalStats({ filters: { start_time: dayAgo, end_time: now } });
-	}, [hasAccess, triggerGlobalStats]);
+		triggerGlobalStats({ filters: { providers: providers.map((p) => p.name), start_time: dayAgo, end_time: now } });
+	}, [hasAccess, providers, triggerGlobalStats]);
 
 	useEffect(() => {
 		if (!providers || providers.length === 0) return;
