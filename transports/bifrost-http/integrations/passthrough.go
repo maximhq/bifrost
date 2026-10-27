@@ -144,22 +144,31 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 	})
 }
 
+// chatGPTUpstreamURL is the ChatGPT backend, the only OpenAI upstream that accepts a caller's ChatGPT sign-in token.
+const chatGPTUpstreamURL = "https://chatgpt.com"
+
 // NewChatGPTPassthroughRouter creates a passthrough router for /chatgpt_passthrough.
-// Restricted to the Codex responses endpoint only — this is not a general-purpose
+// Restricted to the Codex model list and responses endpoints, the two routes Codex calls
+// through a gateway when users sign in with ChatGPT; this is not a general-purpose
 // ChatGPT backend proxy.
 func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
 	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider:    schemas.OpenAI,
-		UpstreamURL: "https://chatgpt.com",
+		UpstreamURL: chatGPTUpstreamURL,
 		// The Codex endpoint owns an event stream even when a WebSocket bridge
 		// omits the HTTP stream flag. Relay incrementally without changing its body.
 		StreamingPath: func(method, path string) bool {
 			return method == fasthttp.MethodPost && path == "/backend-api/codex/responses"
 		},
+		// The model list names and runs no model; each responses turn is still checked against the model allowlist.
+		ModelFreePath: func(method, path string) bool {
+			return method == fasthttp.MethodGet && path == "/backend-api/codex/models"
+		},
 		StripPrefix: []string{
 			"/chatgpt_passthrough",
 		},
 		AllowedRoutes: []PassthroughRoute{
+			{Method: fasthttp.MethodGet, Path: "/chatgpt_passthrough/backend-api/codex/models"},
 			{Method: fasthttp.MethodPost, Path: "/chatgpt_passthrough/backend-api/codex/responses"},
 		},
 	})

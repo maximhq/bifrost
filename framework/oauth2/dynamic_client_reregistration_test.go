@@ -784,3 +784,49 @@ func TestOAuthLoopbackProviderFollowsPrivateTargetAllowlist(t *testing.T) {
 		})
 	}
 }
+
+// TestInitiateOAuthFlowResourceFromDiscovery pins which resource indicator the
+// authorize URL and the stored oauth config carry after discovery: never one a
+// protected resource metadata document names for a different server, and an
+// administrator's explicit resource always wins.
+func TestInitiateOAuthFlowResourceFromDiscovery(t *testing.T) {
+	otherAS := newOtherAuthServer(t)
+	s := newResourceMetadataServer(t, func(s *resourceMetadataServer) {
+		s.advertised = map[string]any{
+			"resource":              "https://other-mcp.example/mcp",
+			"authorization_servers": []string{otherAS.URL},
+		}
+	})
+
+	cases := []struct {
+		name         string
+		resource     string
+		wantResource string
+	}{
+		{name: "non-matching discovered resource is not sent", resource: "", wantResource: ""},
+		{name: "explicit resource wins", resource: "https://admin-chosen.example/mcp", wantResource: "https://admin-chosen.example/mcp"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, store := newDCRProvider(t)
+			ctx := context.Background()
+			initiation, err := provider.InitiateOAuthFlow(ctx, &schemas.OAuth2Config{
+				ClientID:    schemas.NewSecretVar("client-id"),
+				RedirectURI: dcrRedirectURI,
+				ServerURL:   s.server.URL + "/mcp",
+				Resource:    tc.resource,
+			})
+			require.NoError(t, err)
+
+			authorizeURL, err := url.Parse(initiation.AuthorizeURL)
+			require.NoError(t, err)
+			require.Equal(t, s.server.URL+"/authorize", authorizeURL.Scheme+"://"+authorizeURL.Host+authorizeURL.Path)
+			require.Equal(t, tc.wantResource, authorizeURL.Query().Get("resource"))
+
+			stored, err := store.GetOauthConfigByID(ctx, initiation.OauthConfigID)
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			require.Equal(t, tc.wantResource, stored.Resource)
+		})
+	}
+}

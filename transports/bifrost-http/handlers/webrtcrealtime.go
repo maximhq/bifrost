@@ -325,11 +325,15 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 		return
 	}
 
-	// Resolve model alias so the provider receives the actual model identifier.
+	// Resolve model alias so the provider receives the actual model identifier, and keep the
+	// alias on the context for its per-alias overrides.
+	aliases := authKey.Aliases
 	if selectedKey != nil {
-		model = selectedKey.Aliases.Resolve(model)
-	} else {
-		model = authKey.Aliases.Resolve(model)
+		aliases = selectedKey.Aliases
+	}
+	if aliasConfig := aliases.ResolveConfig(model); aliasConfig != nil {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: model, Config: aliasConfig})
+		model = aliasConfig.ModelID
 	}
 
 	if transcriptionSession {
@@ -777,6 +781,7 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 		schemas.BifrostContextKeyGovernancePluginName,
 		schemas.BifrostContextKeySelectedKeyID,
 		schemas.BifrostContextKeySelectedKeyName,
+		schemas.BifrostContextKeyResolvedAlias,
 		schemas.BifrostContextKeyIsEnterprise,
 		schemas.BifrostContextKeyRoutingEnginesUsed,
 		schemas.BifrostContextKeyRoutingEngineLogs,

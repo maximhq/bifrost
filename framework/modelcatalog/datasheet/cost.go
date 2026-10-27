@@ -213,16 +213,18 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 	input := costInput{usage: usage, audioSeconds: usage.AudioSeconds}
 	input.tier = tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
 
-	return s.computeCostFromInput(
-		input,
-		schemas.RoutingInfo{
-			Provider:                provider,
-			Model:                   model,
-			ServerSideFallbackModel: usage.ServerSideFallbackModel,
-		},
-		normalizeStreamRequestType(requestType),
-		lookupScopes,
-	)
+	routingInfo := schemas.RoutingInfo{
+		Provider:                provider,
+		Model:                   model,
+		ServerSideFallbackModel: usage.ServerSideFallbackModel,
+	}
+	requestType = normalizeStreamRequestType(requestType)
+	cost := s.computeCostFromInput(input, routingInfo, requestType, lookupScopes)
+	// A Responses stream cut after message_delta still owes the advisor passes that delta reported.
+	if requestType == schemas.ResponsesRequest && len(usage.Iterations) > 0 {
+		cost = cost.Add(s.calculateAdvisorIterationCost(usage.Iterations, routingInfo, input.tier, lookupScopes))
+	}
+	return cost
 }
 
 // CalculateGuardrailCost computes judge cost when no parent response is available.
@@ -571,7 +573,73 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes)
 	}
 
-	return s.computeCostFromInput(input, routingInfo, requestType, scopes)
+	cost := s.computeCostFromInput(input, routingInfo, requestType, scopes)
+	if requestType == schemas.ResponsesRequest {
+		if iterations := usageIterations(result); len(iterations) > 0 {
+			cost = cost.Add(s.calculateAdvisorIterationCost(iterations, routingInfo, input.tier, scopes))
+		}
+	}
+	return cost
+}
+
+// advisorIterationType marks the usage.iterations[] entry of an Anthropic advisor pass: a sub-inference
+// on the advisor tool's model, billed at that model's rates and reported only in the iterations list.
+// The top-level usage mirrors the executor passes alone, so these are added to it, never folded twice.
+const advisorIterationType = "advisor_message"
+
+// usageIterations returns the per-pass usage breakdown a response carries, or nil.
+func usageIterations(result *schemas.BifrostResponse) []schemas.ResponsesResponseUsage {
+	switch {
+	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+		return result.ResponsesResponse.Usage.Iterations
+	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
+		return result.ResponsesStreamResponse.Response.Usage.Iterations
+	case result.PassthroughResponse != nil && result.PassthroughResponse.PassthroughUsage != nil:
+		return result.PassthroughResponse.PassthroughUsage.Iterations
+	}
+	return nil
+}
+
+// calculateAdvisorIterationCost prices each advisor pass at the model that ran it, with the request's
+// fast mode, data residency and time-of-day scaling. The executor's service tier is not applied:
+// Priority Tier is a per-model commitment that does not extend to the advisor, and an iteration
+// reports no tier of its own. An advisor model with no pricing is priced at the request's own model
+// rather than as free: an estimate that may understate an expensive advisor, but never drops the
+// pass from the bill. The flat per-request surcharge is not charged again per pass.
+func (s *Store) calculateAdvisorIterationCost(iterations []schemas.ResponsesResponseUsage, routingInfo schemas.RoutingInfo, tier serviceTier, scopes LookupScopes) *schemas.BifrostCost {
+	tier = serviceTier{isFast: tier.isFast, inferenceGeoUS: tier.inferenceGeoUS}
+	var total *schemas.BifrostCost
+	for i := range iterations {
+		it := &iterations[i]
+		if it.Type == nil || *it.Type != advisorIterationType {
+			continue
+		}
+		var pricing *configstoreTables.TableModelPricing
+		var advisorModel string
+		if it.Model != nil {
+			advisorModel = *it.Model
+		}
+		if advisorModel != "" {
+			pricing = s.resolvePricing(schemas.RoutingInfo{Provider: routingInfo.Provider, Model: advisorModel}, schemas.ResponsesRequest, scopes)
+		}
+		if pricing == nil {
+			if s.logger != nil {
+				s.logger.Debug("no pricing for advisor model %q on %s, pricing its pass at %s", advisorModel, routingInfo.Provider, routingInfo.Model)
+			}
+			pricing = s.resolvePricing(routingInfo, schemas.ResponsesRequest, scopes)
+		}
+		if pricing == nil {
+			continue
+		}
+		usage := responsesUsageToBifrostUsage(it)
+		usage.Cost = nil // a pass is priced from its tokens, never from a provider-reported total
+		cost := computeTextCost(pricing, usage, tier)
+		if m, ok := offPeakMultiplier(pricing, scopes.BilledAt); ok {
+			scaleUsageCost(cost, m)
+		}
+		total = total.Add(cost)
+	}
+	return total
 }
 
 // calculateAzureModelRouterCost bills the Model Router deployment's own
@@ -1265,6 +1333,14 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 // A negative rate is the datasheet's marker for a model with no fixed price
 // (e.g. openrouter/typesafe/jev-router at -1), so it is left unpriced rather
 // than billed as a negative cost.
+//
+// Prompt-cache reads and writes, which the prompt tokens include, are priced
+// as computeTextCost prices them: OpenAI bills a decision's cached tokens at
+// the model's standard prompt-caching rates. Beside a decision rate, which is
+// flat, the cache rates are the row's flat ones, and a row without a cache
+// rate bills those tokens at the decision rate rather than the chat rate. A
+// decision without cached tokens costs, and reports, exactly what it did
+// before cache pricing.
 func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
 	if usage == nil {
 		return nil
@@ -1281,9 +1357,50 @@ func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *sc
 	if inputRate < 0 || outputRate < 0 {
 		return nil
 	}
-	inputCost := float64(usage.PromptTokens) * inputRate
 	outputCost := float64(usage.CompletionTokens) * outputRate
-	return newInputOutputCost(inputCost, outputCost)
+
+	// Clamp cached token counts as computeTextCost does, so a malformed
+	// payload never bills more cached tokens than the prompt holds.
+	cachedReadTokens, cachedWriteTokens, cachedWriteTokensAbove1hr := 0, 0, 0
+	if details := usage.PromptTokensDetails; details != nil {
+		cachedReadTokens = min(max(details.CachedReadTokens, 0), usage.PromptTokens)
+		cachedWriteTokens = min(max(details.CachedWriteTokens, 0), usage.PromptTokens-cachedReadTokens)
+		if details.CachedWriteTokenDetails != nil {
+			cachedWriteTokensAbove1hr = min(max(details.CachedWriteTokenDetails.CachedWriteTokens1h, 0), cachedWriteTokens)
+		}
+	}
+	if cachedReadTokens == 0 && cachedWriteTokens == 0 {
+		return newInputOutputCost(float64(usage.PromptTokens)*inputRate, outputCost)
+	}
+
+	cacheReadRate := tieredCacheReadInputTokenRate(pricing, tierTokens, tier)
+	cacheWriteRate := tieredCacheCreationInputTokenRate(pricing, tierTokens, tier)
+	cacheWriteAbove1hrRate := tieredCacheCreationInputAbove1hrTokenRate(pricing, tierTokens, tier)
+	if pricing.InputCostPerTokenDecisions != nil {
+		// A decision rate is flat across the context window, and so are the
+		// cache rates billed beside it; the tiered helpers would fall back to
+		// the chat input rate, so a missing cache rate falls back to the
+		// decision rate instead.
+		cacheReadRate, cacheWriteRate = inputRate, inputRate
+		if pricing.CacheReadInputTokenCost != nil {
+			cacheReadRate = *pricing.CacheReadInputTokenCost
+		}
+		if pricing.CacheCreationInputTokenCost != nil {
+			cacheWriteRate = *pricing.CacheCreationInputTokenCost
+		}
+		cacheWriteAbove1hrRate = cacheWriteRate
+		if pricing.CacheCreationInputTokenCostAbove1hr != nil {
+			cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hr
+		}
+	}
+
+	inputDetails := &schemas.InputCostDetails{
+		TextCost:        float64(usage.PromptTokens-cachedReadTokens-cachedWriteTokens) * inputRate,
+		CachedReadCost:  float64(cachedReadTokens) * cacheReadRate,
+		CachedWriteCost: float64(cachedWriteTokens-cachedWriteTokensAbove1hr)*cacheWriteRate + float64(cachedWriteTokensAbove1hr)*cacheWriteAbove1hrRate,
+	}
+	inputCost := inputDetails.TextCost + inputDetails.CachedReadCost + inputDetails.CachedWriteCost
+	return newInputOutputCostWithDetails(inputCost, outputCost, inputDetails, nil)
 }
 
 // newInputOutputCost builds a BifrostCost from separate input and output costs,

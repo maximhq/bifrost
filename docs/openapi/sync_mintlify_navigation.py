@@ -54,6 +54,7 @@ SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "GenAI Integration",
             "Bedrock Integration",
             "Cohere Integration",
+            "Azure Integration",
             "Cursor Integration",
             "LiteLLM Integration",
             "LangChain Integration",

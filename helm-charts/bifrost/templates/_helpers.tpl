@@ -1228,6 +1228,12 @@ false
 {{- if $os.compress }}
 {{- $_ := set $osConfig "compress" true }}
 {{- end }}
+{{- if hasKey $os "format" }}
+{{- $_ := set $osConfig "format" $os.format }}
+{{- end }}
+{{- if hasKey $os "compression" }}
+{{- $_ := set $osConfig "compression" $os.compression }}
+{{- end }}
 {{- if eq $os.type "s3" }}
 {{- if $os.region }}
 {{- $_ := set $osConfig "region" $os.region }}
@@ -1272,6 +1278,16 @@ false
 {{- $_ := set $osConfig "credentials_json" "env.BIFROST_OBJECT_STORAGE_CREDENTIALS_JSON" }}
 {{- else if $os.credentialsJson }}
 {{- $_ := set $osConfig "credentials_json" $os.credentialsJson }}
+{{- end }}
+{{- end }}
+{{- if eq $os.type "azure" }}
+{{- if hasKey $os "endpoint" }}
+{{- $_ := set $osConfig "endpoint" $os.endpoint }}
+{{- end }}
+{{- if $os.existingSecret }}
+{{- $_ := set $osConfig "connection_string" "env.BIFROST_OBJECT_STORAGE_CONNECTION_STRING" }}
+{{- else if hasKey $os "connectionString" }}
+{{- $_ := set $osConfig "connection_string" $os.connectionString }}
 {{- end }}
 {{- end }}
 {{- $_ := set (index $config "logs_store") "object_storage" $osConfig }}
@@ -2215,6 +2231,14 @@ false
 {{- end }}
 {{- if $aos.credentialsJson }}
 {{- $_ := set $aosConfig "credentials_json" $aos.credentialsJson }}
+{{- end }}
+{{- end }}
+{{- if eq $aos.type "azure" }}
+{{- if hasKey $aos "endpoint" }}
+{{- $_ := set $aosConfig "endpoint" $aos.endpoint }}
+{{- end }}
+{{- if hasKey $aos "connectionString" }}
+{{- $_ := set $aosConfig "connection_string" $aos.connectionString }}
 {{- end }}
 {{- end }}
 {{- $_ := set $auditLogs "object_storage" $aosConfig }}

@@ -118,6 +118,8 @@ export const azureKeyConfigSchema = z
 		client_secret: secretVarSchema.optional(),
 		tenant_id: secretVarSchema.optional(),
 		scopes: z.array(z.string()).optional(),
+		use_speech_endpoints: z.boolean().optional(),
+		use_voice_live_endpoints: z.boolean().optional(),
 	})
 	.refine((data) => isSecretVarSet(data.endpoint), {
 		message: "Endpoint is required",
@@ -655,6 +657,8 @@ const aliasConfigObjectSchema = z.object({
 	api_version: z.string().optional(),
 	anthropic_version: z.string().optional(),
 	endpoint: secretVarSchema.optional(),
+	use_speech_endpoints: z.boolean().optional(),
+	use_voice_live_endpoints: z.boolean().optional(),
 	// Shared per-alias project override (Vertex / Bedrock / Bedrock Mantle)
 	project_id: secretVarSchema.optional(),
 	// Vertex overrides
