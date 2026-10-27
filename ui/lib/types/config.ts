@@ -64,6 +64,8 @@ export interface AliasConfig {
 	api_version?: string;
 	anthropic_version?: string;
 	endpoint?: SecretVar;
+	use_speech_endpoints?: boolean;
+	use_voice_live_endpoints?: boolean;
 	// Shared per-alias project override (Vertex GCP project; Bedrock / Bedrock Mantle
 	// project sent via OpenAI-Project / anthropic-workspace-id). Kept top-level in Go
 	// so the flat project_id key doesn't collide across embedded sub-configs.
@@ -71,12 +73,19 @@ export interface AliasConfig {
 	// Vertex overrides
 	project_number?: SecretVar;
 	force_single_region?: boolean;
+	vertex_endpoint?: VertexEndpoint;
 	// Bedrock overrides
 	inference_profile_arn?: SecretVar;
 	// Replicate overrides
 	use_deployments_endpoint?: boolean;
 	use_anthropic_endpoints?: boolean;
 	use_openai_endpoints?: boolean;
+}
+
+export interface VertexEndpoint {
+	endpoint_id: string;
+	format: "openai_chat";
+	method?: "raw_predict" | "chat_completions";
 }
 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
@@ -86,6 +95,8 @@ export interface AzureKeyConfig {
 	client_secret?: SecretVar;
 	tenant_id?: SecretVar;
 	scopes?: string[];
+	use_speech_endpoints?: boolean;
+	use_voice_live_endpoints?: boolean;
 }
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
@@ -94,6 +105,8 @@ export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	client_secret: { value: "", ref: "" },
 	tenant_id: { value: "", ref: "" },
 	scopes: [],
+	use_speech_endpoints: false,
+	use_voice_live_endpoints: false,
 } as const satisfies Required<AzureKeyConfig>;
 
 // VertexAWSWorkloadIdentityConfig matching Go's schemas.VertexAWSWorkloadIdentityConfig:
@@ -492,6 +505,8 @@ export type RequestType =
 	| "container_file_retrieve"
 	| "container_file_content"
 	| "container_file_delete"
+	| "passthrough"
+	| "passthrough_stream"
 	| "websocket_responses"
 	| "realtime"
 	| "live";
@@ -532,6 +547,8 @@ export interface AllowedRequests {
 	video_delete: boolean;
 	video_list: boolean;
 	video_remix: boolean;
+	passthrough?: boolean;
+	passthrough_stream?: boolean;
 	websocket_responses: boolean;
 	realtime: boolean;
 	live?: boolean;
@@ -580,6 +597,18 @@ export interface InjectedTool {
 	tool_name: string;
 }
 
+// PassthroughRouteRule allows the routes that match path; empty methods match any method.
+export interface PassthroughRouteRule {
+	methods?: string[];
+	path: string;
+}
+
+// PassthroughPolicy limits the routes a provider's passthrough endpoint forwards. Absent
+// means every route on a built-in provider and none on a custom one; an empty list means none.
+export interface PassthroughPolicy {
+	allowed_routes: PassthroughRouteRule[];
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
@@ -593,6 +622,7 @@ export interface ModelProviderConfig {
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
 	injected_tools?: InjectedTool[] | null;
+	passthrough?: PassthroughPolicy | null;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -624,6 +654,7 @@ export interface AddProviderRequest {
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
 	injected_tools?: InjectedTool[] | null;
+	passthrough?: PassthroughPolicy | null;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -639,6 +670,7 @@ export interface UpdateProviderRequest {
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
 	injected_tools?: InjectedTool[] | null;
+	passthrough?: PassthroughPolicy | null;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}
@@ -857,6 +889,10 @@ export interface CoreConfig {
 	// Restrict provider objects (files, batches, containers, live sessions, ...) to the
 	// virtual key that created them.
 	enforce_vk_object_ownership: boolean;
+	// Enterprise: a user's first access profile does not create a virtual key for them.
+	skip_access_profile_user_virtual_key_creation?: boolean;
+	// Enterprise: losing the last access profile does not delete the user's virtual keys.
+	skip_access_profile_user_virtual_key_deletion?: boolean;
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
 	routing_chain_max_depth: number;
@@ -919,6 +955,8 @@ export const DefaultCoreConfig: CoreConfig = {
 	hide_deleted_virtual_keys_in_filters: false,
 	delete_expired_virtual_keys: false,
 	enforce_vk_object_ownership: true,
+	skip_access_profile_user_virtual_key_creation: false,
+	skip_access_profile_user_virtual_key_deletion: false,
 	hidden_request_types: [],
 	routing_chain_max_depth: 10,
 };

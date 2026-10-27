@@ -103,3 +103,60 @@ func TestDiscovery_ResponsesAreNotCacheable(t *testing.T) {
 		assert.Equal(t, "no-store", string(ctx.Response.Header.Peek("Cache-Control")), "document %d", i)
 	}
 }
+
+// TestDiscovery_ASMetadataExtensions checks an extension can add to the
+// authorization server metadata, and that nothing changes without one.
+func TestDiscovery_ASMetadataExtensions(t *testing.T) {
+	store := &mockOAuth2Store{}
+	h := NewOAuth2DiscoveryHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false))
+	h.SetExtensions(fakeGrantExtension{grantType: "urn:test:grant"})
+	ctx := &fasthttp.RequestCtx{}
+	h.handleASMetadata(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &doc))
+	assert.Equal(t, []any{"authorization_code", "refresh_token", "urn:test:grant"}, doc["grant_types_supported"])
+}
+
+// TestDiscovery_ExtensionOnlyServer checks that with MCP OAuth off, an active
+// extension keeps the authorization server metadata and keys up, advertising
+// only its own grants and no MCP login endpoints, while /mcp's protected
+// resource metadata stays off; with the extension off, or no pinned issuer,
+// nothing is served.
+func TestDiscovery_ExtensionOnlyServer(t *testing.T) {
+	key, _ := newTestSigningKey(t)
+	store := &mockOAuth2Store{signingKey: key}
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := NewOAuth2DiscoveryHandler(cfg)
+	h.SetExtensions(fakeGrantExtension{grantType: "urn:test:grant"})
+
+	as := &fasthttp.RequestCtx{}
+	h.handleASMetadata(as)
+	require.Equal(t, fasthttp.StatusOK, as.Response.StatusCode())
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(as.Response.Body(), &doc))
+	assert.Equal(t, []any{"urn:test:grant"}, doc["grant_types_supported"])
+	assert.Equal(t, testIssuer+"/oauth2/token", doc["token_endpoint"])
+	assert.NotContains(t, doc, "authorization_endpoint")
+	assert.NotContains(t, doc, "registration_endpoint")
+	jwks := &fasthttp.RequestCtx{}
+	h.handleJWKS(jwks)
+	assert.Equal(t, fasthttp.StatusOK, jwks.Response.StatusCode())
+	prm := &fasthttp.RequestCtx{}
+	h.handlePRM(prm)
+	assert.Equal(t, fasthttp.StatusNotFound, prm.Response.StatusCode(), "/mcp does not take Bifrost tokens with MCP OAuth off")
+
+	issuer := cfg.ClientConfig.OAuth2ServerConfig.IssuerURL
+	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = nil
+	unpinned := &fasthttp.RequestCtx{}
+	h.handleASMetadata(unpinned)
+	assert.Equal(t, fasthttp.StatusNotFound, unpinned.Response.StatusCode(), "never served on a Host-derived issuer")
+	cfg.ClientConfig.OAuth2ServerConfig.IssuerURL = issuer
+
+	h.SetExtensions(fakeGrantExtension{grantType: "urn:test:grant", off: true})
+	for name, serve := range map[string]func(*fasthttp.RequestCtx){"metadata": h.handleASMetadata, "jwks": h.handleJWKS} {
+		ctx := &fasthttp.RequestCtx{}
+		serve(ctx)
+		assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), name)
+	}
+}

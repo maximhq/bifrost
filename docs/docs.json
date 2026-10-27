@@ -217,7 +217,8 @@
                   "mcp/auth/per-user-headers",
                   "mcp/auth/oauth",
                   "mcp/auth/per-user-oauth",
-                  "mcp/auth/token-exchange"
+                  "mcp/auth/token-exchange",
+                  "mcp/auth/cross-app-access"
                 ]
               },
               "mcp/sessions",
@@ -1559,6 +1560,9 @@
                   "POST /api/warp/log-index/backfill",
                   "GET /api/warp/log-index/backfill/status",
                   "POST /api/warp/log-index/backfill/cancel",
+                  "POST /api/warp/log-index/topics",
+                  "GET /api/warp/log-index/topics/status",
+                  "POST /api/warp/log-index/topics/cancel",
                   "POST /api/warp/chat",
                   "GET /api/warp/log-index/status",
                   "GET /api/warp/conversations",

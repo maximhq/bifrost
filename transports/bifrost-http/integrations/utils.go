@@ -2,6 +2,8 @@ package integrations
 
 import (
 	"bytes"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -471,17 +473,31 @@ func isAnthropicOAuthBearer(authHeader string) bool {
 	return strings.HasPrefix(strings.ToLower(authHeader), "bearer sk-ant-oat")
 }
 
-// isJWTBearer reports whether the Authorization header value carries a JWT bearer
-// token (three dot-separated segments, first one a base64url JSON header starting
-// with "eyJ"), e.g. ChatGPT/Codex OAuth access tokens. Plain "Bearer sk-..." API
-// keys and Bifrost virtual keys do not match.
-func isJWTBearer(authHeader string) bool {
+// chatGPTTokenIssuer is the issuer of the access tokens ChatGPT sign-in gives Codex.
+const chatGPTTokenIssuer = "https://auth.openai.com"
+
+// isChatGPTBearer reports whether the Authorization header value carries a ChatGPT sign-in
+// token: a JWT (three dot-separated segments, the first a base64url JSON header starting with
+// "eyJ") whose issuer is auth.openai.com. The issuer is read without verification, since
+// chatgpt.com verifies the token; the check only keeps other JWTs, such as a user's
+// identity-provider token, from being sent there. API keys and virtual keys do not match.
+func isChatGPTBearer(authHeader string) bool {
 	const prefix = "bearer "
 	if len(authHeader) <= len(prefix) || !strings.EqualFold(authHeader[:len(prefix)], prefix) {
 		return false
 	}
 	parts := strings.Split(strings.TrimSpace(authHeader[len(prefix):]), ".")
-	return len(parts) == 3 && strings.HasPrefix(parts[0], "eyJ") && parts[1] != "" && parts[2] != ""
+	if len(parts) != 3 || !strings.HasPrefix(parts[0], "eyJ") || parts[1] == "" || parts[2] == "" {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return false
+	}
+	var claims struct {
+		Issuer string `json:"iss"`
+	}
+	return sonic.Unmarshal(payload, &claims) == nil && claims.Issuer == chatGPTTokenIssuer
 }
 
 // resolveLargePayloadMetadata returns metadata from the sync context key,
@@ -536,11 +552,16 @@ func getProviderFromHeader(ctx *fasthttp.RequestCtx, defaultProvider schemas.Mod
 	return schemas.ModelProvider(providerHeader)
 }
 
+// errPassthroughNotEnabled marks a custom provider that has not opted in to HTTP passthrough.
+var errPassthroughNotEnabled = errors.New("passthrough is not enabled")
+
 // getPassthroughProvider resolves the provider for a passthrough request from the
 // x-model-provider header, falling back to defaultProvider when the header is absent. On the
 // catch-all passthrough routes the header picks which key pool and upstream a caller-shaped
-// path is dispatched to, so it must match the route's resolved provider before anything is looked up.
-func getPassthroughProvider(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) (schemas.ModelProvider, error) {
+// path is dispatched to, so it must name the route's resolved provider or, when allowCustom is
+// set, a custom provider that speaks the same wire format and opted in with a passthrough policy.
+// Any other provider would receive a path shaped for a different API.
+func getPassthroughProvider(ctx *fasthttp.RequestCtx, store lib.HandlerStore, defaultProvider schemas.ModelProvider, allowCustom bool) (schemas.ModelProvider, error) {
 	providerHeader := string(ctx.Request.Header.Peek("x-model-provider"))
 	if providerHeader == "" {
 		return defaultProvider, nil
@@ -548,10 +569,19 @@ func getPassthroughProvider(ctx *fasthttp.RequestCtx, defaultProvider schemas.Mo
 	if !schemas.IsKnownProvider(providerHeader) {
 		return "", fmt.Errorf("unknown provider %q in x-model-provider header", providerHeader)
 	}
-	if schemas.ModelProvider(providerHeader) != defaultProvider {
-		return "", fmt.Errorf("provider does not match the passthrough route: expected %s", defaultProvider)
+	provider := schemas.ModelProvider(providerHeader)
+	if provider == defaultProvider {
+		return provider, nil
 	}
-	return schemas.ModelProvider(providerHeader), nil
+	if allowCustom {
+		if base, enabled, ok := store.GetCustomProviderPassthrough(provider); ok && base == defaultProvider {
+			if !enabled {
+				return "", fmt.Errorf("%w for provider %s; configure its passthrough allowed routes", errPassthroughNotEnabled, provider)
+			}
+			return provider, nil
+		}
+	}
+	return "", fmt.Errorf("provider does not match the passthrough route: expected %s or a custom provider based on it", defaultProvider)
 }
 
 func RegisterKVDecoders(store *kvstore.Store) {

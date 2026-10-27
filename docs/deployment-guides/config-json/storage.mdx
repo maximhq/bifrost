@@ -9,7 +9,7 @@ Bifrost persists two types of data - **config** (providers, virtual keys, govern
 | Store | Purpose | Backends |
 |-------|---------|---------|
 | `config_store` | Provider configs, virtual keys, governance rules | SQLite, PostgreSQL |
-| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL, ClickHouse + optional S3/GCS offload |
+| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL, ClickHouse + optional S3/GCS/Azure Blob offload |
 | `vector_store` | Semantic response caching | Weaviate, Redis, Valkey, Qdrant, Pinecone |
 
 <Note>
@@ -335,6 +335,15 @@ Set `matview_refresh_interval` (Go duration string) to slow down refreshes when 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `matview_refresh_interval` | `"1m"` | How often to refresh dashboard materialized views. Accepts any Go duration string (`"1m"`, `"5m"`, `"1h"`); positive values below `5s` are clamped up to `5s`. Set `"off"` or a zero duration (`"0s"`) to disable matview maintenance entirely. |
+| `matview_refresh_timeout` | 5x the interval, at least `"5m"` | Maximum time for one refresh pass (min `30s`, max `30m`). The database also enforces it, so a pass started by a pod that was killed still stops shortly after this time. A pass that times out leaves the views intact but staler. If passes keep timing out, Bifrost logs an error: raise this value or turn maintenance off. |
+| `matview_refresh_temp_file_limit` | unset | Caps the temp files each Postgres process running a materialized view statement may write (Postgres `temp_file_limit`, for example `"10GB"`). Size it so that the cap times the parallel workers plus one stays well under the free space on the volume that holds temp files. A refresh over a very large `logs` table can spill tens of GB, and a full disk fails every query on the server. A refresh that hits the cap fails and the view keeps its previous contents. A first build that hits the cap fails too: Bifrost logs a warning, and that pod's dashboard queries read the raw tables until it restarts. The database role needs superuser or `GRANT SET ON PARAMETER temp_file_limit TO <role>`; without it the cap is skipped with a warning. |
+
+When a pod stops (restart, scale-down, eviction), it cancels its running refresh and releases the refresh lock before exiting. If the Bifrost process is killed without warning (for example `SIGKILL` or an OOM kill), PostgreSQL notices the closed connection within about 10 seconds and stops the statement, which frees the lock for other replicas. Two cases take longer:
+
+- **The whole node disappears.** No close reaches the database, so it learns the connection is gone only when TCP keepalives fail (PostgreSQL `tcp_keepalives_idle`, `tcp_keepalives_interval`, `tcp_keepalives_count`; the OS default can be hours).
+- **The database server cannot run connection checks** (PostgreSQL supports them on Linux, macOS, illumos and BSD, not on Windows). Bifrost logs a warning once and keeps the other limits.
+
+In both cases a refresh still stops shortly after `matview_refresh_timeout`, because the database enforces that limit itself. The first build of the views has no time limit, since it can legitimately run long on a large `logs` table, so in these cases it runs until it finishes or hits `matview_refresh_temp_file_limit`. Once the statement ends, the database closes the session after one minute idle, which frees the refresh lock for other replicas.
 
 **Notes**
 
@@ -381,7 +390,7 @@ Upgrading to a release **without** this pause (for example 2.2.x to 2.3.0) on a 
 
 ### Object Storage for Logs
 
-Offload LLM request/response logs and MCP tool logs from the database to S3 or GCS. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
+Offload LLM request/response logs and MCP tool logs from the database to S3, GCS, or Azure Blob Storage. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
 
 #### AWS S3
 
@@ -453,7 +462,7 @@ The IAM user or role needs the following permissions on your bucket:
 | `bucket` | S3 bucket name (supports `env.` prefix) |
 | `prefix` | Key prefix for stored objects (default: `"bifrost"`) |
 | `compress` | Legacy gzip switch, same as `"compression": "gzip"` (default: `false`) |
-| `format` | Payload object format: `json` (default) or `parquet` (S3 only). See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) |
+| `format` | Payload object format: `json` (default) or `parquet` (S3 and Azure). See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) |
 | `compression` | `none`, `gzip`, `snappy` or `zstd`. JSON allows `none` or `gzip` (whole object); Parquet uses it as the page codec (default `snappy`) |
 | `region` | AWS region |
 | `access_key_id` | AWS access key ID (omit for default credential chain) |
@@ -518,6 +527,39 @@ Omit `credentials_json` to use Application Default Credentials (Workload Identit
 |-------|-------------|
 | `project_id` | GCP project ID (supports `env.` prefix) |
 | `credentials_json` | Service account JSON or path - omit for ADC |
+
+#### Azure Blob Storage
+
+Create the container before starting Bifrost. Set `bucket` to the container name, not the storage account name.
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": { "path": "/app/data/logs.db" },
+    "object_storage": {
+      "type": "azure",
+      "bucket": "bifrost-logs",
+      "endpoint": "https://myaccount.blob.core.windows.net",
+      "prefix": "bifrost",
+      "compress": true
+    }
+  }
+}
+```
+
+`endpoint` uses `DefaultAzureCredential`: managed identity, workload identity, or a service principal configured through `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`. These credentials are separate from Azure model-provider credentials.
+
+For connection-string authentication, replace `endpoint` with `"connection_string": "env.AZURE_STORAGE_CONNECTION_STRING"`. Set only one. `bucket`, `endpoint`, and `connection_string` accept environment or vault references and must resolve to nonempty values.
+
+Grant **Storage Blob Data Contributor** on the container, or equivalent read/write/list/delete permissions. Blob index-tag permissions are not needed.
+
+Azure supports JSON/gzip and Parquet for logs, and also stores skills files. See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) for format options.
+
+<Warning>
+Restart after changing storage configuration or credentials; identity tokens refresh automatically. Apply lifecycle expiry only to log paths, not `skills/`. Before switching stores, copy existing objects with their keys and content headers intact. See [Azure operations](/enterprise/log-exports#azure-operations).
+</Warning>
 
 #### MinIO (Self-Hosted)
 

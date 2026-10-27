@@ -452,6 +452,12 @@ false
 {{- if hasKey .Values.bifrost.client "deleteExpiredVirtualKeys" }}
 {{- $_ := set $client "delete_expired_virtual_keys" .Values.bifrost.client.deleteExpiredVirtualKeys }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "skipAccessProfileUserVirtualKeyCreation" }}
+{{- $_ := set $client "skip_access_profile_user_virtual_key_creation" .Values.bifrost.client.skipAccessProfileUserVirtualKeyCreation }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "skipAccessProfileUserVirtualKeyDeletion" }}
+{{- $_ := set $client "skip_access_profile_user_virtual_key_deletion" .Values.bifrost.client.skipAccessProfileUserVirtualKeyDeletion }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "vkRotationCooldown" }}
 {{- $_ := set $client "vk_rotation_cooldown" .Values.bifrost.client.vkRotationCooldown }}
 {{- end }}
@@ -1151,6 +1157,9 @@ false
 {{- if .Values.storage.logsStore.matviewRefreshTimeout }}
 {{- $_ := set $pgConfig "matview_refresh_timeout" .Values.storage.logsStore.matviewRefreshTimeout }}
 {{- end }}
+{{- if .Values.storage.logsStore.matviewRefreshTempFileLimit }}
+{{- $_ := set $pgConfig "matview_refresh_temp_file_limit" .Values.storage.logsStore.matviewRefreshTempFileLimit }}
+{{- end }}
 {{- if .Values.storage.logsStore.migrationMatviewCancelAfter }}
 {{- $_ := set $pgConfig "migration_matview_cancel_after" .Values.storage.logsStore.migrationMatviewCancelAfter }}
 {{- end }}
@@ -1219,6 +1228,12 @@ false
 {{- if $os.compress }}
 {{- $_ := set $osConfig "compress" true }}
 {{- end }}
+{{- if hasKey $os "format" }}
+{{- $_ := set $osConfig "format" $os.format }}
+{{- end }}
+{{- if hasKey $os "compression" }}
+{{- $_ := set $osConfig "compression" $os.compression }}
+{{- end }}
 {{- if eq $os.type "s3" }}
 {{- if $os.region }}
 {{- $_ := set $osConfig "region" $os.region }}
@@ -1263,6 +1278,16 @@ false
 {{- $_ := set $osConfig "credentials_json" "env.BIFROST_OBJECT_STORAGE_CREDENTIALS_JSON" }}
 {{- else if $os.credentialsJson }}
 {{- $_ := set $osConfig "credentials_json" $os.credentialsJson }}
+{{- end }}
+{{- end }}
+{{- if eq $os.type "azure" }}
+{{- if hasKey $os "endpoint" }}
+{{- $_ := set $osConfig "endpoint" $os.endpoint }}
+{{- end }}
+{{- if $os.existingSecret }}
+{{- $_ := set $osConfig "connection_string" "env.BIFROST_OBJECT_STORAGE_CONNECTION_STRING" }}
+{{- else if hasKey $os "connectionString" }}
+{{- $_ := set $osConfig "connection_string" $os.connectionString }}
 {{- end }}
 {{- end }}
 {{- $_ := set (index $config "logs_store") "object_storage" $osConfig }}
@@ -1471,6 +1496,16 @@ false
 {{- with $client.tokenExchange.clientSecret }}{{- $_ := set $te "client_secret" . }}{{- end }}
 {{- with $client.tokenExchange.authorizationServerUrl }}{{- $_ := set $te "authorization_server_url" . }}{{- end }}
 {{- with $client.tokenExchange.scopes }}{{- $_ := set $te "scopes" . }}{{- end }}
+{{- with $client.tokenExchange.profile }}{{- $_ := set $te "profile" . }}{{- end }}
+{{- with $client.tokenExchange.resource }}{{- $_ := set $te "resource" . }}{{- end }}
+{{- with $client.tokenExchange.resourceTokenEndpoint }}{{- $_ := set $te "resource_token_endpoint" . }}{{- end }}
+{{- with $client.tokenExchange.resourceClientId }}{{- $_ := set $te "resource_client_id" . }}{{- end }}
+{{- with $client.tokenExchange.resourceClientSecret }}{{- $_ := set $te "resource_client_secret" . }}{{- end }}
+{{- with $client.tokenExchange.resourcePrivateKey }}{{- $_ := set $te "resource_private_key" . }}{{- end }}
+{{- with $client.tokenExchange.resourceKeyId }}{{- $_ := set $te "resource_key_id" . }}{{- end }}
+{{- with $client.tokenExchange.resourceSigningAlgorithm }}{{- $_ := set $te "resource_signing_algorithm" . }}{{- end }}
+{{- with $client.tokenExchange.resourceAssertionAudience }}{{- $_ := set $te "resource_assertion_audience" . }}{{- end }}
+{{- with $client.tokenExchange.resourceClientAuthMethod }}{{- $_ := set $te "resource_client_auth_method" . }}{{- end }}
 {{- $_ := set $cc "token_exchange" $te }}
 {{- end }}
 {{- if hasKey $client "isPingAvailable" }}
@@ -2196,6 +2231,14 @@ false
 {{- end }}
 {{- if $aos.credentialsJson }}
 {{- $_ := set $aosConfig "credentials_json" $aos.credentialsJson }}
+{{- end }}
+{{- end }}
+{{- if eq $aos.type "azure" }}
+{{- if hasKey $aos "endpoint" }}
+{{- $_ := set $aosConfig "endpoint" $aos.endpoint }}
+{{- end }}
+{{- if hasKey $aos "connectionString" }}
+{{- $_ := set $aosConfig "connection_string" $aos.connectionString }}
 {{- end }}
 {{- end }}
 {{- $_ := set $auditLogs "object_storage" $aosConfig }}

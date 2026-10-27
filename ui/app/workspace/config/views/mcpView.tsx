@@ -1,6 +1,7 @@
 import PageTitle from "@/components/pageTitle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
@@ -14,6 +15,7 @@ import { SecretVar } from "@/lib/types/schemas";
 import { isSecretVarSet } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
+import { Link } from "@tanstack/react-router";
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -29,12 +31,16 @@ export default function MCPView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
+	const issuerURL = config?.oauth2_server_config?.issuer_url;
+	// An env or vault issuer names its reference whether or not it resolved.
+	const issuerRef = issuerURL?.type === "env" || issuerURL?.type === "vault" ? issuerURL.ref?.trim() : "";
 
 	// The "require identity-provider login" toggle is enterprise-only and only
 	// meaningful when an identity provider is configured — the backend ignores
 	// disable_vk_identity otherwise, so surfacing it would be a no-op. The SCIM
-	// query is skipped (and stubbed to []) in OSS builds.
-	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE });
+	// query is skipped (and stubbed to []) in OSS builds, and without UserProvisioning:View.
+	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
+	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE || !hasUserProvisioningAccess });
 	const idpConfigured = !!scimProviders?.some((p) => (p as { enabled?: boolean }).enabled);
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
@@ -80,7 +86,6 @@ export default function MCPView() {
 	const hasChanges = useMemo(() => {
 		if (!config) return false;
 		const clientURLChanged = !secretVarEquals(localConfig.mcp_external_client_url, config.mcp_external_client_url);
-		const issuerURLChanged = !secretVarEquals(localConfig.oauth2_server_config?.issuer_url, config.oauth2_server_config?.issuer_url);
 		return (
 			localConfig.mcp_agent_depth !== config.mcp_agent_depth ||
 			localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout ||
@@ -94,7 +99,6 @@ export default function MCPView() {
 			!stringListEquals(localConfig.mcp_oauth_private_allowlist, config.mcp_oauth_private_allowlist) ||
 			clientURLChanged ||
 			(localConfig.mcp_server_auth_mode ?? "headers") !== (config.mcp_server_auth_mode ?? "headers") ||
-			issuerURLChanged ||
 			(localConfig.oauth2_server_config?.auth_code_ttl ?? 300) !== (config.oauth2_server_config?.auth_code_ttl ?? 300) ||
 			(localConfig.oauth2_server_config?.access_token_ttl ?? 600) !== (config.oauth2_server_config?.access_token_ttl ?? 600) ||
 			(localConfig.oauth2_server_config?.disable_vk_identity ?? false) !== (config.oauth2_server_config?.disable_vk_identity ?? false) ||
@@ -192,13 +196,6 @@ export default function MCPView() {
 				oauth2_server_config: value === "oauth" ? prev.oauth2_server_config : { ...prev.oauth2_server_config, disable_vk_identity: false },
 			}));
 		}
-	}, []);
-
-	const handleIssuerURLChange = useCallback((value: SecretVar) => {
-		setLocalConfig((prev) => ({
-			...prev,
-			oauth2_server_config: { ...prev.oauth2_server_config, issuer_url: value },
-		}));
 	}, []);
 
 	const handleAuthCodeTTLChange = useCallback((value: string) => {
@@ -299,7 +296,7 @@ export default function MCPView() {
 			}
 
 			if (oauthModeActive && !isSecretVarSet(localConfig.oauth2_server_config?.issuer_url)) {
-				toast.error("Issuer URL is required when MCP auth mode is OAuth or Both.");
+				toast.error("Issuer URL is required when MCP auth mode is OAuth or Both. Set it in Settings > Security first.");
 				return;
 			}
 
@@ -667,25 +664,43 @@ export default function MCPView() {
 								<div className="mt-4 space-y-4 border-t pt-4">
 									<p className="text-sm font-medium">OAuth2 Server Settings</p>
 
-									{/* Issuer URL */}
-									<div className="space-y-1.5">
-										<label htmlFor="oauth2-issuer-url" className="text-sm font-medium">
+									{/* Issuer URL: shared by MCP OAuth and Cross App Access, so it is edited under Security. */}
+									<div className="space-y-1.5" data-testid="oauth2-issuer-url-summary">
+										<p className="text-sm font-medium">
 											Issuer URL <span className="text-destructive">*</span>
-										</label>
-										<p className="text-muted-foreground text-sm">
-											Stable public URL advertised in discovery documents and embedded as the <code className="text-xs">iss</code> claim in
-											every JWT. Required in OAuth and Both modes: Bifrost never derives the issuer from the request{" "}
-											<code className="text-xs">Host</code> header, because that header is caller-controlled. Supports env var syntax (e.g.{" "}
-											<code className="text-xs">env.BIFROST_ISSUER_URL</code>).
 										</p>
-										<SecretVarInput
-											id="oauth2-issuer-url"
-											data-testid="oauth2-issuer-url-input"
-											placeholder="https://bifrost.example.com or env.BIFROST_ISSUER_URL"
-											value={localConfig.oauth2_server_config?.issuer_url}
-											onChange={handleIssuerURLChange}
-											disabled={!hasSettingsUpdateAccess}
-										/>
+										<p className="text-muted-foreground text-sm">
+											Required in OAuth and Both modes.{" "}
+											{/* The API returns an env or vault issuer resolved; it is a public URL, so it is shown as is,
+											    next to the reference it comes from, as the Security editor shows it. */}
+											{issuerURL?.value?.trim() ? (
+												<code className="text-xs" data-testid="oauth2-issuer-url-value">
+													{issuerURL.value.trim()}
+												</code>
+											) : issuerRef ? (
+												<span className="text-destructive" data-testid="oauth2-issuer-url-unresolved">
+													Not resolved.
+												</span>
+											) : (
+												<span className="text-destructive">Not set.</span>
+											)}{" "}
+											{issuerRef && (
+												<Badge
+													variant={issuerURL?.type === "vault" ? "warning" : "success"}
+													className="whitespace-nowrap"
+													data-testid="oauth2-issuer-url-ref"
+												>
+													{issuerRef}
+												</Badge>
+											)}{" "}
+											<Link
+												to="/workspace/config/security"
+												className="text-primary underline"
+												data-testid="oauth2-issuer-url-security-link"
+											>
+												Edit in Settings &gt; Security
+											</Link>
+										</p>
 									</div>
 
 									{/* Token TTLs */}

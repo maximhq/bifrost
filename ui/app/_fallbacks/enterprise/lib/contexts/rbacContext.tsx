@@ -58,6 +58,7 @@ export enum RbacOperation {
 	Reveal = "Reveal",
 	Download = "Download",
 	CreateStandalone = "CreateStandalone",
+	ViewAs = "ViewAs",
 }
 
 interface RbacContextType {

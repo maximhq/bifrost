@@ -17,7 +17,7 @@ import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import { getErrorMessage } from "@/lib/store";
 import { useCancelRecalculateCostJobMutation, useGetRecalculateCostStatusQuery } from "@/lib/store/apis/logsApi";
 import { getActiveTempToken } from "@/lib/store/apis/tempToken";
-import type { LogFilters as LogFiltersType, RecalcJobStatus } from "@/lib/types/logs";
+import type { LogEntry, LogFilters as LogFiltersType, RecalcJobStatus } from "@/lib/types/logs";
 import {
 	formatLogSearchInput,
 	isLogIdSearch,
@@ -27,9 +27,10 @@ import {
 } from "@/lib/utils/logSearch";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { getRangeForPeriod, TIME_PERIODS, withPeriodTimezone } from "@/lib/utils/timeRange";
-import { Calculator, ChevronDown, ListTree, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
+import { Calculator, ChevronDown, Download, ListTree, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { LogsExportDialog } from "./logsExportDialog";
 import { RecalculateCostDialog, type RecalculateCostMode } from "./recalculateCostDialog";
 
 // One id for the whole recalculation lifecycle, so the start / progress / cancelling
@@ -68,6 +69,9 @@ interface LogsHeaderViewProps {
 	columnLabels: Record<string, string>;
 	onToggleColumnVisibility: (id: string) => void;
 	onResetColumns: () => void;
+	currentPageLogs?: LogEntry[];
+	sortBy?: string;
+	order?: string;
 }
 
 export function LogsHeaderView({
@@ -88,9 +92,13 @@ export function LogsHeaderView({
 	columnLabels,
 	onToggleColumnVisibility,
 	onResetColumns,
+	currentPageLogs = [],
+	sortBy = "timestamp",
+	order = "desc",
 }: LogsHeaderViewProps) {
 	const [openMoreActionsPopover, setOpenMoreActionsPopover] = useState(false);
 	const [recalcDialogOpen, setRecalcDialogOpen] = useState(false);
+	const [exportDialogOpen, setExportDialogOpen] = useState(false);
 	// Id of the recalculation job to track. Setting it starts polling via the query
 	// hook below; clearing it (on a terminal status) stops the polling.
 	const [activeRecalcJobId, setActiveRecalcJobId] = useState<string | null>(null);
@@ -442,6 +450,23 @@ export function LogsHeaderView({
 					onPeriodChange(periodValue, from, to);
 				}}
 			/>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<Button
+						data-testid="logs-export-btn"
+						variant="outline"
+						size="sm"
+						className="h-7.5"
+						onClick={() => setExportDialogOpen(true)}
+						aria-label="Export CSV"
+					>
+						<Download className="h-4 w-4" />
+						<span className="hidden @5xl/logs-header:inline">Export CSV</span>
+					</Button>
+				</TooltipTrigger>
+				<TooltipContent sideOffset={6}>Export CSV</TooltipContent>
+			</Tooltip>
+
 			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
 				<PopoverTrigger asChild>
 					<Button variant="outline" size="sm" className="h-7.5 w-7.5" aria-label="More actions">
@@ -451,6 +476,19 @@ export function LogsHeaderView({
 				<PopoverContent className="bg-accent w-[250px] p-2" align="end">
 					<Command>
 						<CommandList>
+							<CommandItem
+								className="hover:bg-accent/50 cursor-pointer"
+								onSelect={() => {
+									setOpenMoreActionsPopover(false);
+									setExportDialogOpen(true);
+								}}
+							>
+								<Download className="text-muted-foreground size-4" />
+								<div className="flex flex-col">
+									<span className="text-sm">Export CSV</span>
+									<span className="text-muted-foreground text-xs">Download matching logs as CSV</span>
+								</div>
+							</CommandItem>
 							{/* While a job runs this doubles as the cancel control, so the run can
 							    still be stopped if the progress toast was dismissed. */}
 							<CommandItem
@@ -501,6 +539,17 @@ export function LogsHeaderView({
 				filters={filters}
 				totalLogs={totalLogs}
 				onConfirm={handleRecalculateCosts}
+			/>
+
+			<LogsExportDialog
+				open={exportDialogOpen}
+				onOpenChange={setExportDialogOpen}
+				filters={filters}
+				currentPageLogs={currentPageLogs}
+				totalLogs={totalLogs}
+				sortBy={sortBy}
+				order={order}
+				grouped={grouped}
 			/>
 		</div>
 	);

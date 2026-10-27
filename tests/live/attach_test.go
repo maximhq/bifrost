@@ -74,6 +74,24 @@ func TestAttach_SidebandSteersAWebRTCSession(t *testing.T) {
 	assert.Equal(t, "webrtc", row.Get("live_session.transport").Str)
 }
 
+// An Azure session's sideband names its provider on the bare route and attaches on the resource.
+func TestAttach_AzureSidebandAttachesOnTheResource(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	vk := createVirtualKey(t, virtualKeySpec{provider: "azure"})
+	session := sessionFor(t, "azure/"+voiceModel, backendModel, nil)
+	primary := openLive(t, webrtcTransport, clientOptions{headers: vkHeaders(vk), session: session})
+	s := fake.WaitSession(t, session["instructions"].(string))
+	s.WaitConnections(t, 1)
+
+	sideband, status, err := dialLive(t, "/v1/live/sessions/"+s.ID()+"/attach?provider=azure", vkHeaders(vk))
+	require.NoError(t, err, "HTTP %d", status)
+	s.WaitConnections(t, 2)
+	assert.Equal(t, s.ID(), sideband.WaitFor("session.started").Get("session.id").Str)
+	assert.Equal(t, []string{"api-key fake-azure-key"}, s.SidebandAuths(), "the sideband is opened with the resource's api-key")
+	primary.CloseSession()
+}
+
 func TestAttach_SidebandUpdateIsCheckedAgainstTheKey(t *testing.T) {
 	requireFake(t)
 	t.Parallel()

@@ -7042,6 +7042,17 @@ func streamHoldsStartupEvents(ctx *schemas.BifrostContext, providerKey schemas.M
 		schemas.IsOpenAIModelFamily(ctx, model) || providerUtils.AttemptAbortFromContext(ctx) != nil
 }
 
+// readyHeldStreamCommit runs once per stream attempt, on the chunk that commits it. When a
+// plugin holds the stream, the pause/resume gate buffers that chunk and the retry loop's
+// first-chunk check never sees it, so the transport cannot commit the response or start
+// heartbeats; marking the watch ready lets the gate signal the check instead. An ungated stream
+// pays only the gated lookup.
+func readyHeldStreamCommit(ctx *schemas.BifrostContext) {
+	if gated, _ := ctx.Value(schemas.BifrostContextKeyStreamGated).(bool); gated {
+		ctx.ReadyStreamCommitWatch()
+	}
+}
+
 func executeRequestWithRetries[T any](
 	ctx *schemas.BifrostContext,
 	config *schemas.ProviderConfig,
@@ -7457,7 +7468,6 @@ func executeRequestWithRetries[T any](
 			}
 		}
 
-		// Attempt the request
 		result, bifrostError = requestHandler(currentKey)
 
 		// Detect errors carried inside HTTP 200 streams before returning success.
@@ -7759,6 +7769,10 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 	if baseProvider == schemas.Anthropic {
 		return
 	}
+	if baseProvider == schemas.Vertex && schemas.GetVertexEndpoint(ctx) != nil {
+		disableAnthropicPassthrough(ctx)
+		return
+	}
 	if (baseProvider == schemas.Vertex ||
 		baseProvider == schemas.Azure ||
 		baseProvider == schemas.BedrockMantle) &&
@@ -7799,6 +7813,11 @@ func clearGenAIPassthroughForNonGoogleProvider(ctx *schemas.BifrostContext, base
 		return
 	}
 	if baseProvider == schemas.Gemini {
+		return
+	}
+	if baseProvider == schemas.Vertex && schemas.GetVertexEndpoint(ctx) != nil {
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+		ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
 		return
 	}
 	if baseProvider == schemas.Vertex &&
@@ -8003,6 +8022,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 
 		bifrost.endCoreSpan(workerSetupSpan)
+
+		// Before key acquisition, so a refused route never touches a key or the upstream.
+		if config.Passthrough != nil && (req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest) &&
+			!passthroughRouteAllowed(config.Passthrough, req.BifrostRequest.PassthroughRequest) {
+			bifrost.sendWorkerError(req, newPassthroughRouteNotAllowedError(provider.GetProviderKey(), req.RequestType, req.BifrostRequest.PassthroughRequest))
+			continue
+		}
 
 		var keys []schemas.Key
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
@@ -8297,7 +8323,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
-					startup.ObserveResult(ctx, resp, bifrostErr)
+					if startup.ObserveResult(ctx, resp, bifrostErr) {
+						readyHeldStreamCommit(ctx)
+					}
 					return resp, bifrostErr
 				}
 				// Store a finalizer callback to create aggregated post-hook spans at stream end.
@@ -10735,7 +10763,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	}
 
 	// SkipKeySelection: the caller's OAuth token is the credential — return empty pool, no rotation.
-	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(baseProviderType) {
+	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(baseProviderType, requestType) {
 		return []schemas.Key{}, false, nil
 	}
 

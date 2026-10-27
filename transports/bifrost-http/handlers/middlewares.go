@@ -256,6 +256,20 @@ func (c *CorsMiddleware) UpdateConfig(config *lib.Config) {
 	c.config.Store(newCorsMiddlewareConfig(config))
 }
 
+// logRequestTarget is the request target for the access log with an api-key query value redacted: the
+// Azure Voice Live JavaScript SDK always sends its key, a virtual key here, in the query string. The
+// parsed names are checked, so a percent-encoded api-key name is redacted too.
+func logRequestTarget(ctx *fasthttp.RequestCtx) string {
+	uri := ctx.RequestURI()
+	if bytes.IndexByte(uri, '?') < 0 || !ctx.QueryArgs().Has("api-key") {
+		return string(uri)
+	}
+	var args fasthttp.Args
+	ctx.QueryArgs().CopyTo(&args)
+	args.Set("api-key", schemas.RedactedAttrValue)
+	return string(ctx.Request.URI().PathOriginal()) + "?" + args.String()
+}
+
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
 func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
@@ -282,7 +296,7 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					}
 					logBuilder := logger.LogHTTPRequest(level, "request completed").
 						Str("http.method", string(ctx.Method())).
-						Str("http.target", string(ctx.RequestURI())).
+						Str("http.target", logRequestTarget(ctx)).
 						Int("http.status_code", statusCode).
 						Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
 						Str("http.remote_addr", ctx.RemoteAddr().String()).
@@ -336,7 +350,7 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 
 	// SetupTokenHeader is sent by the dashboard on every call while the OSS setup lock is
 	// active, so a UI served from another origin must be able to preflight it.
-	allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", SetupTokenHeader}
+	allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", "X-Bifrost-View-As", SetupTokenHeader}
 	if slices.Contains(cfg.allowedHeaders, "*") {
 		if credentialed {
 			// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
@@ -750,6 +764,7 @@ func TransportPreAuthInterceptorMiddleware(config *lib.Config) schemas.BifrostHT
 			for key, value := range bifrostCtx.GetUserValues() {
 				ctx.SetUserValue(key, value)
 			}
+			retainRealtimeTurnValues(ctx, bifrostCtx)
 			next(ctx)
 		}
 	}
@@ -816,6 +831,7 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			for key, value := range bifrostCtx.GetUserValues() {
 				ctx.SetUserValue(key, value)
 			}
+			retainRealtimeTurnValues(ctx, bifrostCtx)
 			next(ctx)
 
 			deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)

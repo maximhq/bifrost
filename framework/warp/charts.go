@@ -254,7 +254,7 @@ func timeSeriesPoints(ctx context.Context, deps *ToolDeps, filters *logstore.Sea
 	if interval != "hour" {
 		bucket = 86400
 	}
-	if span := filters.EndTime.Sub(*filters.StartTime).Seconds(); span/float64(bucket) > MaxHistogramBuckets {
+	if histogramBucketCount(*filters.StartTime, *filters.EndTime, bucket) > MaxHistogramBuckets {
 		if interval == "hour" {
 			return nil, fmt.Errorf(`interval "hour" over this range makes more than %d points; use interval "day" or a shorter range`, MaxHistogramBuckets)
 		}

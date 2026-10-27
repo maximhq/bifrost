@@ -269,10 +269,12 @@ const (
 	MCPContextKeyIncludeClients BifrostContextKey = "mcp-include-clients" // Context key for whitelist client filtering
 	MCPContextKeyIncludeTools   BifrostContextKey = "mcp-include-tools"   // Context key for whitelist tool filtering (Note: toolName should be in "clientName-toolName" format for individual tools, or "clientName-*" for wildcard)
 
-	// BifrostContextKeyGovernanceDisableContentLogging is the resolved virtual key's own content-logging
-	// decision (bool): true forces content off, false forces it on for the log store, absent means inherit
-	// client.disable_content_logging. It sits between the client flag and the x-bf-disable-content-logging
-	// header in precedence. Set by the bifrost governance plugin - DO NOT SET THIS MANUALLY.
+	// BifrostContextKeyGovernanceDisableContentLogging is governance's content-logging decision for the
+	// request (bool): the resolved virtual key's own, or that of a project the request is scoped to,
+	// which overrides the key's in both directions. True forces content off, false forces it on for the
+	// log store, absent means inherit client.disable_content_logging. It sits between the client flag and
+	// the x-bf-disable-content-logging header in precedence. Set by the bifrost governance plugin - DO NOT
+	// SET THIS MANUALLY.
 	BifrostContextKeyGovernanceDisableContentLogging BifrostContextKey = "bifrost-governance-disable-content-logging"
 
 	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"                 // string (to store the selected key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
@@ -301,6 +303,7 @@ const (
 	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"             // time.Duration (per-chunk idle timeout for streaming)
 	BifrostContextKeyStreamFirstTokenTimeout             BifrostContextKey = "bifrost-stream-first-token-timeout"      // time.Duration (TTFT deadline for streaming requests: an attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. Set by the routing plugin or an SDK caller)
 	BifrostContextKeyStreamAttemptAbort                  BifrostContextKey = "bifrost-stream-attempt-abort"            // *providerUtils.AttemptAbort (set by bifrost for one stream attempt with a first-token deadline - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyStreamCommitWatch                   BifrostContextKey = "bifrost-stream-commit-watch"             // bool (set by bifrost when a held stream attempt produces its first output; consumed by the pause/resume gate - DO NOT SET THIS MANUALLY)
 	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"              // bool (will pass an empty key to the provider)
 	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                   // map[string][]string
 	BifrostContextKeyPassthroughHeaders                  BifrostContextKey = "bifrost-anthropic-passthrough-headers"   // map[string][]string (the caller's raw request headers, captured for Anthropic OAuth passthrough where their token is the upstream credential; ONLY the Anthropic provider may forward these — every other provider authenticates with its own configured credentials. Reserved: set by the transport, never by a plugin)
@@ -379,6 +382,7 @@ const (
 	BifrostContextKeyRealtimeProviderSessionID           BifrostContextKey = "bifrost-realtime-provider-session-id"             // string
 	BifrostContextKeyRealtimeSource                      BifrostContextKey = "bifrost-realtime-source"                          // string ("ei" or "lm")
 	BifrostContextKeyRealtimeEventType                   BifrostContextKey = "bifrost-realtime-event-type"                      // string
+	BifrostContextKeyRealtimeConnectionID                BifrostContextKey = "bifrost-realtime-connection-id"                   // string; transport-owned connection ID
 	BifrostContextKeyRealtimeTransport                   BifrostContextKey = "bifrost-realtime-transport"                       // string ("websocket" or "webrtc")
 	BifrostContextKeyA2ADownstreamTransport              BifrostContextKey = "bifrost-a2a-downstream-transport"                 // string (A2A binding accepted by the gateway)
 	BifrostContextKeyA2ARequestOrigin                    BifrostContextKey = "bifrost-a2a-request-origin"                       // string (absolute HTTP origin used to reach the Agent Gateway)
@@ -454,6 +458,7 @@ const (
 	BifrostContextKeyCompatForceReasoningOnlyToResponses BifrostContextKey = "bifrost-compat-reasoning-only-to-responses" // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatConvertDecisionToResponses    BifrostContextKey = "bifrost-compat-decision-to-responses"       // bool (per-request override from x-bf-compat header)
 	BifrostContextKeySupportsAssistantPrefill            BifrostContextKey = "bifrost-supports-assistant-prefill"         // bool (set by compat plugin) - if model supports assistant prefill
+	BifrostContextKeyDisableStore                        BifrostContextKey = "bifrost-disable-store"                      // bool (set by the provider for its attempt) - forces store=false on the converted OpenAI-compatible chat or Responses request
 	BifrostContextKeyCompatDroppedParams                 BifrostContextKey = "bifrost-compat-dropped-params"              // []string (set by compat plugin) - params stripped from the request because the model catalog did not allowlist them; read back in PostLLMHook to populate extra_fields.dropped_compat_plugin_params
 	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history
 	BifrostContextKeyDimensions                          BifrostContextKey = "bifrost-dimensions"                         // map[string]string (set by HTTP transport from x-bf-dim-* headers) BifrostContextKeyDimensions holds per-request key/value dimensions supplied via x-bf-dim-<key> request headers. These dimensions are forwarded to internal logs (as metadata)
@@ -2087,6 +2092,18 @@ type BifrostStreamChunk struct {
 	*BifrostPassthroughResponse
 	*BifrostError
 }
+
+// streamCommitMarker is the sentinel returned by StreamCommitMarker. It carries no payload.
+var streamCommitMarker = &BifrostStreamChunk{}
+
+// StreamCommitMarker returns the sentinel chunk the pause/resume gate sends when a plugin
+// holds a stream whose upstream has already produced valid output. The first-chunk check
+// treats it as the stream having started, so the transport commits its response and starts
+// heartbeats while the plugin keeps the content buffered, and never forwards it to consumers.
+func StreamCommitMarker() *BifrostStreamChunk { return streamCommitMarker }
+
+// IsStreamCommitMarker reports whether chunk is the StreamCommitMarker sentinel.
+func IsStreamCommitMarker(chunk *BifrostStreamChunk) bool { return chunk == streamCommitMarker }
 
 // MarshalJSON implements custom JSON marshaling for BifrostStreamChunk.
 // This ensures that only the non-nil embedded struct is marshaled,

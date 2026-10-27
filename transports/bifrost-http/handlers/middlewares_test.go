@@ -89,7 +89,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")) != "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD" {
 				t.Errorf("Access-Control-Allow-Methods header not set correctly")
 			}
-			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-Setup-Token" {
+			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-View-As, X-Bifrost-Setup-Token" {
 				t.Errorf("Access-Control-Allow-Headers header not set correctly")
 			}
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != "true" {
@@ -2098,7 +2098,7 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	handler(ctx)
 
 	// Check default headers are set
-	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-Setup-Token"
+	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID, X-Bifrost-View-As, X-Bifrost-Setup-Token"
 	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
 	if actualHeaders != expectedHeaders {
 		t.Errorf("Expected Access-Control-Allow-Headers to be %s, got %s", expectedHeaders, actualHeaders)
@@ -4074,6 +4074,107 @@ func responseHeadersTestConfig(t *testing.T, plugins ...schemas.BasePlugin) *lib
 	return config
 }
 
+// TestTransportRealtimeTurnMetadata verifies the actual HTTP plugin middleware
+// exposes opt-in metadata to the session snapshot while excluding ordinary values.
+func TestTransportRealtimeTurnMetadata(t *testing.T) {
+	type metadataKey uint8
+	const userKey metadataKey = 0
+	const requestOnlyKey metadataKey = 1
+	const preAuthKey metadataKey = 2
+	preAuthPlugin := &fakePreAuthPlugin{
+		name: "realtime-pre-auth-metadata",
+		hook: func(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			ctx.SetValueForRealtimeTurns(preAuthKey, "pre-auth")
+			return nil, nil
+		},
+	}
+	plugin := &fakeResponseHeadersPlugin{
+		name: "realtime-metadata",
+		hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+			return nil
+		},
+		preHook: func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			ctx.SetValueForRealtimeTurns(userKey, req.CaseInsensitiveHeaderLookup("X-Example-User-ID"))
+			ctx.SetValue(requestOnlyKey, "request-only")
+			return nil, nil
+		},
+	}
+	var snapshot map[any]any
+	config := responseHeadersTestConfig(t, preAuthPlugin, plugin)
+	handler := TransportPreAuthInterceptorMiddleware(config)(TransportInterceptorMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		snapshot = snapshotRealtimeMiddlewareValues(ctx)
+		requestCtx, requestCancel := lib.ConvertToBifrostContext(ctx, testWSHandlerStore{})
+		defer requestCancel()
+		relay, cancel := newRealtimeRelayContext(requestCtx)
+		defer cancel()
+		if relay.Value(userKey) != "test-alice" || relay.Value(preAuthKey) != "pre-auth" || relay.Value(requestOnlyKey) != nil {
+			t.Fatal("WebRTC relay lost opt-in metadata or inherited request-only values")
+		}
+	}))
+	ctx := preAuthTestCtx()
+	ctx.Request.SetRequestURI("/v1/realtime?model=openai/test-model")
+	ctx.Request.Header.Set("X-Example-User-ID", "test-alice")
+	handler(ctx)
+	if snapshot[userKey] != "test-alice" || snapshot[preAuthKey] != "pre-auth" || snapshot[requestOnlyKey] != nil {
+		t.Fatalf("session snapshot = %v", snapshot)
+	}
+}
+
+// TestTransportRealtimeTurnMetadataLaterWrites reconciles pre-auth opt-ins with later writes and clears.
+func TestTransportRealtimeTurnMetadataLaterWrites(t *testing.T) {
+	type metadataKey uint8
+	const userKey metadataKey = 0
+	const requestOnlyKey metadataKey = 1
+	for _, mode := range []string{"overwrite", "nil", "clear", "untouched"} {
+		t.Run(mode, func(t *testing.T) {
+			preAuth := &fakePreAuthPlugin{name: "mark", hook: func(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+				ctx.SetValueForRealtimeTurns(userKey, "pre-auth")
+				return nil, nil
+			}}
+			plugin := &fakeResponseHeadersPlugin{name: "update", hook: func(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+				return nil
+			}, preHook: func(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+				switch mode {
+				case "overwrite":
+					ctx.SetValue(userKey, "transport")
+				case "nil":
+					ctx.SetValue(userKey, nil)
+				case "clear":
+					ctx.ClearValue(userKey)
+				}
+				ctx.SetValue(requestOnlyKey, "request-only")
+				return nil, nil
+			}}
+			config := responseHeadersTestConfig(t, preAuth, plugin)
+			called := false
+			handler := TransportPreAuthInterceptorMiddleware(config)(TransportInterceptorMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+				called = true
+				var want any
+				if mode == "overwrite" {
+					want = "transport"
+				} else if mode == "untouched" {
+					want = "pre-auth"
+				}
+				snapshot := snapshotRealtimeMiddlewareValues(ctx)
+				value, exists := snapshot[userKey]
+				assert.True(t, exists)
+				assert.Equal(t, want, value)
+				_, exists = snapshot[requestOnlyKey]
+				assert.False(t, exists, "ordinary new keys must stay request-local")
+				requestCtx, cancel := lib.ConvertToBifrostContext(ctx, testWSHandlerStore{})
+				defer cancel()
+				relay, relayCancel := newRealtimeRelayContext(requestCtx)
+				defer relayCancel()
+				assert.Equal(t, want, relay.Value(userKey))
+			}))
+			ctx := preAuthTestCtx()
+			ctx.Request.SetRequestURI("/v1/realtime?model=openai/test-model")
+			handler(ctx)
+			assert.True(t, called)
+		})
+	}
+}
+
 func TestTransportResponseHeadersHook_NonStreaming(t *testing.T) {
 	var gotStatus int
 	var gotPath string
@@ -5251,5 +5352,32 @@ func TestTracingMiddleware_CapturesTraceState(t *testing.T) {
 	// No traceparent means no parent to rebuild, so a lone tracestate is not stored.
 	if got := run(map[string]string{"tracestate": traceState}); got != "" {
 		t.Errorf("tracestate stored with no traceparent: %q", got)
+	}
+}
+
+// TestLogRequestTargetRedactsAPIKeyQuery pins that a key sent in the query string never reaches the access log,
+// including under a percent-encoded name.
+func TestLogRequestTargetRedactsAPIKeyQuery(t *testing.T) {
+	for uri, want := range map[string]string{
+		"/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime-vl&api-key=sk-bf-secret": "/voice-live/realtime?api-version=2026-07-15&model=gpt-realtime-vl&api-key=REDACTED",
+		"/v1/chat/completions?stream=true":                                  "/v1/chat/completions?stream=true",
+		"/voice-live/realtime?%61pi-key=sk-bf-secret&model=gpt-realtime-vl": "/voice-live/realtime?api-key=REDACTED&model=gpt-realtime-vl",
+		"/azure/voice-live/realtime?api%2Dkey=sk-bf-secret":                 "/azure/voice-live/realtime?api-key=REDACTED",
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(uri)
+		if got := logRequestTarget(ctx); got != want {
+			t.Errorf("logRequestTarget(%q) = %q, want %q", uri, got, want)
+		}
+	}
+}
+
+// BenchmarkLogRequestTarget measures the access log target on a request without a query string, the common case.
+func BenchmarkLogRequestTarget(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = logRequestTarget(ctx)
 	}
 }

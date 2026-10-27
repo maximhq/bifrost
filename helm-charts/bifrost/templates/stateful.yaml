@@ -201,6 +201,13 @@ spec:
                   name: {{ .Values.storage.logsStore.objectStorage.existingSecret }}
                   key: {{ .Values.storage.logsStore.objectStorage.credentialsJsonKey | default "credentials-json" }}
             {{- end }}
+            {{- if eq .Values.storage.logsStore.objectStorage.type "azure" }}
+            - name: BIFROST_OBJECT_STORAGE_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.logsStore.objectStorage.existingSecret }}
+                  key: {{ .Values.storage.logsStore.objectStorage.connectionStringKey | default "connection-string" }}
+            {{- end }}
             {{- end }}
             {{- /* Maxim API key from existing secret */ -}}
             {{- if and .Values.bifrost.plugins.maxim.enabled .Values.bifrost.plugins.maxim.secretRef .Values.bifrost.plugins.maxim.secretRef.name }}

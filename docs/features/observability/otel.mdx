@@ -1423,7 +1423,7 @@ Use the [Maxim Plugin](./maxim) for:
 
 Agent Gateway operations are exported through the same OTel profiles as LLM and MCP calls. Each A2A operation becomes a client span with `bifrost.a2a.operation.name`, the agent name, status, timing, and available task and conversation IDs. Protocol methods also carry `a2a.method.name`; gateway-owned operations such as `push_delivery` use the Bifrost operation name. Streaming status and artifact updates appear as span events.
 
-Structured request and response content uses `gen_ai.input.messages` and `gen_ai.output.messages`. Returned tasks, artifacts, and accumulated streaming output are represented in that content. Profile-level `disable_content_logging`, virtual-key content suppression, `disable_root_span_content`, and `excluded_attributes` apply to A2A exports too. Disabling content leaves operation metadata available.
+Structured request and response content uses `gen_ai.input.messages` and `gen_ai.output.messages`. Returned tasks, artifacts, and accumulated streaming output are represented in that content. Profile-level `disable_content_logging`, virtual-key or project content suppression, `disable_root_span_content`, and `excluded_attributes` apply to A2A exports too. Disabling content leaves operation metadata available.
 
 Raw HTTP bodies require both Agent Gateway raw capture and the profile's `export_raw_payloads`. Enabling capture alone does not export raw bodies. gRPC operations retain structured content but do not have raw HTTP capture.
 

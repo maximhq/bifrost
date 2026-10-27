@@ -93,12 +93,21 @@ func dbForUpdate(db *gorm.DB) *gorm.DB {
 // clientConfigAdvisoryLockKey serializes config_client writers across replicas; 1000001 is the configstore migration lock.
 const clientConfigAdvisoryLockKey = 1000002
 
-// lockClientConfigRow takes a transaction-scoped advisory lock so a concurrent DELETE+CREATE of config_client cannot hide metadata_json from the carry-forward read.
+// lockClientConfigRow serializes config_client writers for the rest of the transaction so a
+// concurrent DELETE+CREATE cannot hide metadata_json from the carry-forward read. Postgres takes a
+// transaction-scoped advisory lock. SQLite has no row locks: its transactions start as readers, and
+// a reader that later writes after another connection committed is refused at once with "database
+// is locked" (the busy timeout is not applied to that upgrade). A no-op write as the first statement
+// takes the write lock up front, where the busy timeout does apply.
 func lockClientConfigRow(tx *gorm.DB) error {
-	if tx.Dialector.Name() != "postgres" {
+	switch tx.Dialector.Name() {
+	case "postgres":
+		return tx.Exec("SELECT pg_advisory_xact_lock(?)", clientConfigAdvisoryLockKey).Error
+	case "sqlite":
+		return tx.Exec("UPDATE config_client SET id = id WHERE 1 = 0").Error
+	default:
 		return nil
 	}
-	return tx.Exec("SELECT pg_advisory_xact_lock(?)", clientConfigAdvisoryLockKey).Error
 }
 
 // lockBudgetOwner locks the owning governance parent before mutating a budget row.
@@ -219,6 +228,8 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 
 	if key.AzureKeyConfig != nil {
 		dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+		dbKey.AzureUseSpeechEndpoints = &key.AzureKeyConfig.UseSpeechEndpoints
+		dbKey.AzureUseVoiceLiveEndpoints = &key.AzureKeyConfig.UseVoiceLiveEndpoints
 	}
 
 	if key.VertexKeyConfig != nil {
@@ -325,6 +336,8 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		HideDeletedVirtualKeysInFilters:           config.HideDeletedVirtualKeysInFilters,
 		DeleteExpiredVirtualKeys:                  config.DeleteExpiredVirtualKeys,
 		EnforceVKObjectOwnership:                  config.EnforceVKObjectOwnership,
+		SkipAccessProfileUserVirtualKeyCreation:   config.SkipAccessProfileUserVirtualKeyCreation,
+		SkipAccessProfileUserVirtualKeyDeletion:   config.SkipAccessProfileUserVirtualKeyDeletion,
 		HiddenRequestTypes:                        config.HiddenRequestTypes,
 		RoutingChainMaxDepth:                      config.RoutingChainMaxDepth,
 		MCPExternalClientURL:                      mcpExternalURLToString(config.MCPExternalClientURL),
@@ -626,39 +639,41 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 			ForceReasoningOnlyModelsToResponses: dbConfig.CompatForceReasoningOnlyModelsToResponses,
 			ConvertDecisionToResponses:          dbConfig.CompatConvertDecisionToResponses,
 		},
-		MCPAgentDepth:                         dbConfig.MCPAgentDepth,
-		MCPMaxInstructionsPerClient:           dbConfig.MCPMaxInstructionsPerClient,
-		MCPMaxInstructionsTotal:               dbConfig.MCPMaxInstructionsTotal,
-		MCPCodeModeLimits:                     dbConfig.MCPCodeModeLimits,
-		MCPOAuthPrivateAllowlist:              dbConfig.MCPOAuthPrivateAllowlist,
-		A2APrivateAllowlist:                   dbConfig.A2APrivateAllowlist,
-		MCPToolExecutionTimeout:               dbConfig.MCPToolExecutionTimeout,
-		MCPCodeModeBindingLevel:               dbConfig.MCPCodeModeBindingLevel,
-		MCPToolSyncInterval:                   dbConfig.MCPToolSyncInterval,
-		MCPDisableAutoToolInject:              dbConfig.MCPDisableAutoToolInject,
-		MCPEnableTempTokenAuth:                dbConfig.MCPEnableTempTokenAuth,
-		AsyncJobResultTTL:                     dbConfig.AsyncJobResultTTL,
-		RequiredHeaders:                       dbConfig.RequiredHeaders,
-		LoggingHeaders:                        dbConfig.LoggingHeaders,
-		WhitelistedRoutes:                     dbConfig.WhitelistedRoutes,
-		HideDeletedVirtualKeysInFilters:       dbConfig.HideDeletedVirtualKeysInFilters,
-		DeleteExpiredVirtualKeys:              dbConfig.DeleteExpiredVirtualKeys,
-		EnforceVKObjectOwnership:              dbConfig.EnforceVKObjectOwnership,
-		HiddenRequestTypes:                    dbConfig.HiddenRequestTypes,
-		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
-		MCPExternalClientURL:                  schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
-		SkillsExternalClientURL:               schemas.NewSecretVar(dbConfig.SkillsExternalClientURL),
-		A2AStoreRawRequestResponse:            dbConfig.A2AStoreRawRequestResponse,
-		A2AExternalClientURL:                  schemas.NewSecretVar(dbConfig.A2AExternalClientURL),
-		HeaderFilterConfig:                    dbConfig.HeaderFilterConfig,
-		AllowPerRequestContentStorageOverride: dbConfig.AllowPerRequestContentStorageOverride,
-		AllowPerRequestRawOverride:            dbConfig.AllowPerRequestRawOverride,
-		AllowDirectKeys:                       dbConfig.AllowDirectKeys,
-		VKRotationCooldown:                    schemas.Duration(dbConfig.VKRotationCooldownNS),
-		MCPServerAuthMode:                     dbConfig.MCPServerAuthMode,
-		OAuth2ServerConfig:                    dbConfig.OAuth2ServerConfig,
-		WebhookConfig:                         dbConfig.WebhookConfig,
-		ConfigHash:                            dbConfig.ConfigHash,
+		MCPAgentDepth:                           dbConfig.MCPAgentDepth,
+		MCPMaxInstructionsPerClient:             dbConfig.MCPMaxInstructionsPerClient,
+		MCPMaxInstructionsTotal:                 dbConfig.MCPMaxInstructionsTotal,
+		MCPCodeModeLimits:                       dbConfig.MCPCodeModeLimits,
+		MCPOAuthPrivateAllowlist:                dbConfig.MCPOAuthPrivateAllowlist,
+		A2APrivateAllowlist:                     dbConfig.A2APrivateAllowlist,
+		MCPToolExecutionTimeout:                 dbConfig.MCPToolExecutionTimeout,
+		MCPCodeModeBindingLevel:                 dbConfig.MCPCodeModeBindingLevel,
+		MCPToolSyncInterval:                     dbConfig.MCPToolSyncInterval,
+		MCPDisableAutoToolInject:                dbConfig.MCPDisableAutoToolInject,
+		MCPEnableTempTokenAuth:                  dbConfig.MCPEnableTempTokenAuth,
+		AsyncJobResultTTL:                       dbConfig.AsyncJobResultTTL,
+		RequiredHeaders:                         dbConfig.RequiredHeaders,
+		LoggingHeaders:                          dbConfig.LoggingHeaders,
+		WhitelistedRoutes:                       dbConfig.WhitelistedRoutes,
+		HideDeletedVirtualKeysInFilters:         dbConfig.HideDeletedVirtualKeysInFilters,
+		DeleteExpiredVirtualKeys:                dbConfig.DeleteExpiredVirtualKeys,
+		EnforceVKObjectOwnership:                dbConfig.EnforceVKObjectOwnership,
+		SkipAccessProfileUserVirtualKeyCreation: dbConfig.SkipAccessProfileUserVirtualKeyCreation,
+		SkipAccessProfileUserVirtualKeyDeletion: dbConfig.SkipAccessProfileUserVirtualKeyDeletion,
+		HiddenRequestTypes:                      dbConfig.HiddenRequestTypes,
+		RoutingChainMaxDepth:                    dbConfig.RoutingChainMaxDepth,
+		MCPExternalClientURL:                    schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
+		SkillsExternalClientURL:                 schemas.NewSecretVar(dbConfig.SkillsExternalClientURL),
+		A2AStoreRawRequestResponse:              dbConfig.A2AStoreRawRequestResponse,
+		A2AExternalClientURL:                    schemas.NewSecretVar(dbConfig.A2AExternalClientURL),
+		HeaderFilterConfig:                      dbConfig.HeaderFilterConfig,
+		AllowPerRequestContentStorageOverride:   dbConfig.AllowPerRequestContentStorageOverride,
+		AllowPerRequestRawOverride:              dbConfig.AllowPerRequestRawOverride,
+		AllowDirectKeys:                         dbConfig.AllowDirectKeys,
+		VKRotationCooldown:                      schemas.Duration(dbConfig.VKRotationCooldownNS),
+		MCPServerAuthMode:                       dbConfig.MCPServerAuthMode,
+		OAuth2ServerConfig:                      dbConfig.OAuth2ServerConfig,
+		WebhookConfig:                           dbConfig.WebhookConfig,
+		ConfigHash:                              dbConfig.ConfigHash,
 	}, nil
 }
 
@@ -780,6 +795,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			OpenAIConfig:             providerConfig.OpenAIConfig,
 			PromptCache:              providerConfig.PromptCache,
 			InjectedTools:            providerConfig.InjectedTools,
+			Passthrough:              providerConfig.Passthrough,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
@@ -850,6 +866,8 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			// Handle Azure config
 			if key.AzureKeyConfig != nil {
 				dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+				dbKey.AzureUseSpeechEndpoints = &key.AzureKeyConfig.UseSpeechEndpoints
+				dbKey.AzureUseVoiceLiveEndpoints = &key.AzureKeyConfig.UseVoiceLiveEndpoints
 			}
 
 			// Handle Vertex config
@@ -1071,6 +1089,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
 	dbProvider.PromptCache = configCopy.PromptCache
 	dbProvider.InjectedTools = configCopy.InjectedTools
+	dbProvider.Passthrough = configCopy.Passthrough
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -1145,6 +1164,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
 			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+			dbKey.AzureUseSpeechEndpoints = &key.AzureKeyConfig.UseSpeechEndpoints
+			dbKey.AzureUseVoiceLiveEndpoints = &key.AzureKeyConfig.UseVoiceLiveEndpoints
 		}
 
 		// Handle Vertex config
@@ -1270,6 +1291,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		OpenAIConfig:             configCopy.OpenAIConfig,
 		PromptCache:              configCopy.PromptCache,
 		InjectedTools:            configCopy.InjectedTools,
+		Passthrough:              configCopy.Passthrough,
 		ConfigHash:               configCopy.ConfigHash,
 	}
 	// Create the provider
@@ -1310,6 +1332,8 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
 			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+			dbKey.AzureUseSpeechEndpoints = &key.AzureKeyConfig.UseSpeechEndpoints
+			dbKey.AzureUseVoiceLiveEndpoints = &key.AzureKeyConfig.UseVoiceLiveEndpoints
 		}
 		// Handle Vertex config
 		if key.VertexKeyConfig != nil {
@@ -1454,6 +1478,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			OpenAIConfig:             dbProvider.OpenAIConfig,
 			PromptCache:              dbProvider.PromptCache,
 			InjectedTools:            dbProvider.InjectedTools,
+			Passthrough:              dbProvider.Passthrough,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
 			Description:              dbProvider.Description,
@@ -1490,6 +1515,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		OpenAIConfig:             dbProvider.OpenAIConfig,
 		PromptCache:              dbProvider.PromptCache,
 		InjectedTools:            dbProvider.InjectedTools,
+		Passthrough:              dbProvider.Passthrough,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,

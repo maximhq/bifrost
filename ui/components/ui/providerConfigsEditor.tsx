@@ -6,6 +6,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { ProviderIconType } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Info } from "lucide-react";
 import { useEffect, useMemo } from "react";
 
@@ -69,11 +70,20 @@ export function ProviderConfigsEditor({
 	onManageProviders,
 	error,
 }: ProviderConfigsEditorProps) {
-	const { data: providersData, isLoading: isLoadingProviders, isError: isProvidersError } = useGetProvidersQuery();
-	const { data: keysData } = useGetAllKeysQuery();
+	// Configured providers need ModelProvider:View and provider keys VirtualKeys:View. Without
+	// one the lookup is skipped: the add dropdown falls back to the static provider catalog, and
+	// the cards treat keys as unknown, the same as a failed load.
+	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
+	const hasKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
+	const {
+		data: providersData,
+		isLoading: isLoadingProviders,
+		isError: isProvidersError,
+	} = useGetProvidersQuery(undefined, { skip: !hasProvidersAccess });
+	const { data: keysData } = useGetAllKeysQuery(undefined, { skip: !hasKeysAccess });
 	const availableProviders = providersData || [];
-	// null = the keys query is still loading or failed (the card keeps its key
-	// control visible); [] = loaded, none exist.
+	// null = the keys query is still loading, failed or not permitted (the card keeps
+	// its key control visible); [] = loaded, none exist.
 	const availableKeys = keysData ?? null;
 
 	const handleAddProvider = (providerName: string) => {
@@ -117,10 +127,10 @@ export function ProviderConfigsEditor({
 	// management, so it never competes with a real provider for the first row.
 	const manageProvidersOption = useMemo(
 		() =>
-			onManageProviders && !hasUnconfiguredProviders && !isLoadingProviders && !isProvidersError
+			onManageProviders && hasProvidersAccess && !hasUnconfiguredProviders && !isLoadingProviders && !isProvidersError
 				? [{ value: MANAGE_PROVIDERS_VALUE, label: "No providers left to configure. Click to add" }]
 				: undefined,
-		[onManageProviders, hasUnconfiguredProviders, isLoadingProviders, isProvidersError],
+		[onManageProviders, hasProvidersAccess, hasUnconfiguredProviders, isLoadingProviders, isProvidersError],
 	);
 
 	return (
@@ -175,6 +185,7 @@ export function ProviderConfigsEditor({
 			<div className="flex gap-2">
 				<ProviderSelector
 					mode="add"
+					source={hasProvidersAccess ? "configured" : "catalog"}
 					className="flex-1"
 					data-testid={`${testIdPrefix}-provider-select`}
 					placeholder="Select a provider to add"
