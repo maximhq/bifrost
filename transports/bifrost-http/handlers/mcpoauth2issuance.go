@@ -546,9 +546,9 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	// bf_sub liveness check: for VK-mode tokens, verify the VK still exists
-	// and is active. A deleted or disabled VK should not be able to silently
-	// obtain new access tokens via refresh. A transient lookup failure must stay
+	// bf_sub liveness check: for VK-mode tokens, verify the VK still exists,
+	// is active and has not expired. A deleted, disabled or expired VK should not
+	// be able to silently obtain new access tokens via refresh. A transient lookup failure must stay
 	// retriable (server_error) — only a missing/inactive VK invalidates the grant.
 	if schemas.MCPAuthMode(rt.BfMode) == schemas.MCPAuthModeVK && h.store.ConfigStore != nil {
 		vk, vkErr := h.store.ConfigStore.GetVirtualKey(ctx, rt.BfSub)
@@ -558,6 +558,10 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		}
 		if errors.Is(vkErr, configstore.ErrNotFound) || vk == nil || !vk.IsActiveValue() {
 			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "virtual key is no longer active")
+			return
+		}
+		if vk.IsExpiredAt(time.Now()) {
+			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "virtual key has expired")
 			return
 		}
 	}
