@@ -40,7 +40,8 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	}
 
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
+	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	caps := schemas.ResolveModelCaps(baseProvider, capModel)
 
 	openaiReq := &OpenAIChatRequest{
 		Model:    bifrostReq.Model,
@@ -133,14 +134,14 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	// sent down the strip-only default.
 	// The request stays in the provider's default mode: see
 	// responsesIsOpenAIFamilyBreakpointTarget for why Bifrost never sets explicit mode.
-	if chatUsesPromptCacheBreakpoints(caps, schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel) {
+	if chatUsesPromptCacheBreakpoints(caps, baseProvider, capModel) {
 		ceiling := promptCacheBreakpointCeiling(ctx, true, openaiReq.ChatParameters.PromptCacheOptions, openaiReq.ExtraParams)
 		openaiReq.Messages = applyChatCacheBreakpoints(openaiReq.Messages, ceiling)
 	}
 
 	// OpenRouter forwards cache_control verbatim to Claude, which rejects more than four
 	// markers outright, so clamp the same way the direct Anthropic path does.
-	if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.OpenRouter && schemas.IsAnthropicModel(capModel) {
+	if baseProvider == schemas.OpenRouter && schemas.IsAnthropicModel(capModel) {
 		clampOpenRouterCacheControl(openaiReq, maxResponsesCacheBreakpoints)
 	}
 
@@ -254,11 +255,18 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.ChatParameters.Prediction = prediction
 		return openaiReq
 	default:
+		// The worker marks aliases of standard hosts as non-custom. Resolve
+		// host compatibility by the configured base without changing routing.
+		if baseProvider == schemas.OpenAI || baseProvider == schemas.Azure {
+			openaiReq.normalizeReasoningEffort(caps)
+			openaiReq.stripUnsupportedSamplingParams(caps)
+			return openaiReq
+		}
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
 			// A custom provider reports its own name, so a DeepSeek-based one lands here
 			// and still needs the json_schema downgrade DeepSeek's endpoint requires.
-			if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.DeepSeek {
+			if baseProvider == schemas.DeepSeek {
 				openaiReq.downgradeJSONSchemaToJSONObject()
 			}
 			return openaiReq
