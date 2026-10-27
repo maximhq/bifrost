@@ -618,6 +618,17 @@ func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, d
 		return s.checkStoredVectorDimension(ctx, className, dimension)
 	}
 
+	// Keep every property in the storage schema, but disable inverted
+	// indexes on payload-only fields when the caller annotates filter fields.
+	// Unannotated schemas keep their existing filtering/search defaults.
+	hasFilterableProperties := false
+	for _, prop := range properties {
+		if prop.Filterable {
+			hasFilterableProperties = true
+			break
+		}
+	}
+
 	// Create properties
 	weaviateProperties := []*models.Property{}
 	for name, prop := range properties {
@@ -633,11 +644,20 @@ func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, d
 			dataType = []string{"string[]"}
 		}
 
-		weaviateProperties = append(weaviateProperties, &models.Property{
+		property := &models.Property{
 			Name:        name,
 			DataType:    dataType,
 			Description: prop.Description,
-		})
+		}
+		if hasFilterableProperties && !prop.Filterable {
+			property.IndexFilterable = new(false)
+			if prop.DataType == VectorStorePropertyTypeString || prop.DataType == VectorStorePropertyTypeStringArray {
+				// A searchable text index can also serve filters, so disabling
+				// only indexFilterable would still index the full response.
+				property.IndexSearchable = new(false)
+			}
+		}
+		weaviateProperties = append(weaviateProperties, property)
 	}
 
 	// Create class schema with all fields we need

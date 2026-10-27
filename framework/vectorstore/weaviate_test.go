@@ -2,6 +2,12 @@ package vectorstore
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"maps"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,9 +15,175 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/weaviate/weaviate-go-client/v5/weaviate"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/filters"
 	"github.com/weaviate/weaviate/entities/models"
 )
+
+type weaviateIndexPolicyTransport struct {
+	existing bool
+	classes  []*models.Class
+}
+
+func (transport *weaviateIndexPolicyTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	statusCode, body := http.StatusOK, `{}`
+	switch {
+	case request.URL.Path == "/v1/.well-known/ready":
+	case request.URL.Path == "/v1/meta":
+		body = `{"version":"1.32.4"}`
+	case request.Method == http.MethodGet && request.URL.Path == "/v1/schema/IndexPolicy":
+		if transport.existing {
+			body = `{"class":"IndexPolicy"}`
+		} else {
+			statusCode = http.StatusNotFound
+		}
+	case request.Method == http.MethodGet && request.URL.Path == "/v1/objects":
+		body = `{"objects":[{"class":"IndexPolicy","vector":[1,0,0]}]}`
+	case request.Method == http.MethodPost && request.URL.Path == "/v1/schema":
+		class := &models.Class{}
+		if err := json.NewDecoder(request.Body).Decode(class); err != nil {
+			return nil, err
+		}
+		transport.classes = append(transport.classes, class)
+	default:
+		return nil, fmt.Errorf("unexpected Weaviate request %s %s", request.Method, request.URL.Path)
+	}
+	return &http.Response{StatusCode: statusCode, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+}
+
+func TestWeaviateStore_CreateNamespaceIndexPolicy(t *testing.T) {
+	mixed := map[string]VectorStoreProperties{
+		"label":         {DataType: VectorStorePropertyTypeString, Filterable: true},
+		"count":         {DataType: VectorStorePropertyTypeInteger, Filterable: true},
+		"flag":          {DataType: VectorStorePropertyTypeBoolean, Filterable: true},
+		"tags":          {DataType: VectorStorePropertyTypeStringArray, Filterable: true},
+		"response":      {DataType: VectorStorePropertyTypeString},
+		"stream_chunks": {DataType: VectorStorePropertyTypeStringArray},
+		"expires_at":    {DataType: VectorStorePropertyTypeInteger},
+		"payload_flag":  {DataType: VectorStorePropertyTypeBoolean},
+	}
+	legacy := maps.Clone(mixed)
+	allFilterable := maps.Clone(mixed)
+	for field, prop := range legacy {
+		prop.Filterable = false
+		legacy[field] = prop
+		prop.Filterable = true
+		allFilterable[field] = prop
+	}
+	for _, tt := range []struct {
+		name       string
+		properties map[string]VectorStoreProperties
+		selective  bool
+	}{
+		{"mixed", mixed, true},
+		{"all filterable", allFilterable, true},
+		{"legacy", legacy, false},
+		{"nil", nil, false},
+	} {
+		for _, existing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/existing=%t", tt.name, existing), func(t *testing.T) {
+				transport := &weaviateIndexPolicyTransport{existing: existing}
+				client, err := weaviate.NewClient(weaviate.Config{Scheme: "http", Host: "unused", ConnectionClient: &http.Client{Transport: transport}})
+				require.NoError(t, err)
+				store := &WeaviateStore{client: client, logger: bifrost.NewDefaultLogger(schemas.LogLevelError)}
+				require.NoError(t, store.CreateNamespace(context.Background(), "IndexPolicy", 3, tt.properties))
+				if existing {
+					assert.Empty(t, transport.classes, "existing class indexing is left untouched")
+					return
+				}
+				require.Len(t, transport.classes, 1)
+				class := transport.classes[0]
+				assert.Equal(t, "IndexPolicy", class.Class)
+				assert.Equal(t, "hnsw", class.VectorIndexType)
+				assert.Equal(t, "none", class.Vectorizer)
+				require.Len(t, class.Properties, len(tt.properties), "payload-only properties must still be declared for storage/projection")
+				for _, property := range class.Properties {
+					definition := tt.properties[property.Name]
+					if tt.selective && !definition.Filterable {
+						require.NotNil(t, property.IndexFilterable, property.Name)
+						assert.False(t, *property.IndexFilterable, property.Name)
+						if definition.DataType == VectorStorePropertyTypeString || definition.DataType == VectorStorePropertyTypeStringArray {
+							require.NotNil(t, property.IndexSearchable, property.Name)
+							assert.False(t, *property.IndexSearchable, property.Name)
+						}
+					} else {
+						assert.Nil(t, property.IndexFilterable, "preserve default filter index on %s", property.Name)
+						assert.Nil(t, property.IndexSearchable, "preserve existing keyword search semantics on %s", property.Name)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestWeaviateStore_FilterablePayloadRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Weaviate integration test in short mode")
+	}
+	setup := NewTestSetup(t)
+	t.Cleanup(func() { setup.Cleanup(t) })
+	ctx := setup.ctx
+	className := "IndexPolicy" + strings.ReplaceAll(generateUUID(), "-", "")
+	t.Cleanup(func() { assert.NoError(t, setup.Store.DeleteNamespace(context.Background(), className)) })
+	properties := map[string]VectorStoreProperties{
+		"cache_key":     {DataType: VectorStorePropertyTypeString, Filterable: true},
+		"owned":         {DataType: VectorStorePropertyTypeBoolean, Filterable: true},
+		"count":         {DataType: VectorStorePropertyTypeInteger, Filterable: true},
+		"response":      {DataType: VectorStorePropertyTypeString},
+		"stream_chunks": {DataType: VectorStorePropertyTypeStringArray},
+		"expires_at":    {DataType: VectorStorePropertyTypeInteger},
+	}
+	require.NoError(t, setup.Store.CreateNamespace(ctx, className, 3, properties))
+	class, err := setup.Store.client.Schema().ClassGetter().WithClassName(className).Do(ctx)
+	require.NoError(t, err)
+	for _, property := range class.Properties {
+		require.NotNil(t, property.IndexFilterable)
+		assert.Equal(t, properties[property.Name].Filterable, *property.IndexFilterable, property.Name)
+		if !properties[property.Name].Filterable && property.IndexSearchable != nil {
+			assert.False(t, *property.IndexSearchable, property.Name)
+		}
+	}
+	id := generateUUID()
+	response := strings.Repeat("stored response, not a search term ", 128)
+	metadata := map[string]interface{}{
+		"cache_key": "tenant-a", "owned": true, "count": 7,
+		"response": response, "stream_chunks": []string{"first chunk", "second chunk"}, "expires_at": 1234567890,
+	}
+	require.NoError(t, setup.Store.Add(ctx, className, id, []float32{1, 0, 0}, metadata))
+	queries := []Query{
+		{Field: "cache_key", Operator: QueryOperatorEqual, Value: "tenant-a"},
+		{Field: "owned", Operator: QueryOperatorEqual, Value: true},
+		{Field: "count", Operator: QueryOperatorGreaterThan, Value: 5},
+	}
+	projection := []string{"response", "stream_chunks", "expires_at", "cache_key"}
+	var results []SearchResult
+	require.Eventually(t, func() bool {
+		results, err = setup.Store.GetNearest(ctx, className, []float32{1, 0, 0}, queries, projection, 0.8, 1)
+		return err == nil && len(results) == 1
+	}, 5*time.Second, 20*time.Millisecond)
+	assert.Equal(t, response, results[0].Properties["response"])
+	assert.Equal(t, []interface{}{"first chunk", "second chunk"}, results[0].Properties["stream_chunks"])
+	assert.Equal(t, float64(1234567890), results[0].Properties["expires_at"])
+	all, _, err := setup.Store.GetAll(ctx, className, queries, projection, nil, 10)
+	require.NoError(t, err)
+	require.Len(t, all, 1)
+	assert.Equal(t, response, all[0].Properties["response"])
+	require.NoError(t, setup.Store.CreateNamespace(ctx, className, 3, properties))
+	reopened, err := setup.Store.client.Schema().ClassGetter().WithClassName(className).Do(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, class.Properties, reopened.Properties)
+	queries[0].Value = "tenant-b"
+	results, err = setup.Store.GetNearest(ctx, className, []float32{1, 0, 0}, queries, projection, 0.8, 1)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+	queries[0].Value = "tenant-a"
+	_, err = setup.Store.DeleteAll(ctx, className, queries)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		results, _, err = setup.Store.GetAll(ctx, className, queries, projection, nil, 10)
+		return err == nil && len(results) == 0
+	}, 5*time.Second, 20*time.Millisecond)
+}
 
 // Test constants
 const (
