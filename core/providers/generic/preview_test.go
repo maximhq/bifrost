@@ -27,6 +27,27 @@ func TestPreviewUsage(t *testing.T) {
 	}
 	textract := UsagePreviewInput{Method: "POST", Path: "/", RequestContentType: "application/x-amz-json-1.1", RequestBody: `{}`, ResponseContentType: "application/x-amz-json-1.1", ResponseBody: `{"DocumentMetadata":{"Pages":7}}`}
 
+	t.Run("a streamed reply priced by its size is billed like a buffered one", func(t *testing.T) {
+		sized := &schemas.GenericProviderConfig{
+			Usage:  &schemas.GenericUsageConfig{CostPerRequest: schemas.Ptr(0.5), UnitsSource: schemas.GenericUnitsFromResponse, UnitsMeasure: schemas.GenericUnitsBodyBytes, CostPerUnit: schemas.Ptr(0.001)},
+			Routes: []schemas.GenericRouteConfig{{Method: "POST", Path: "/tts", Stream: schemas.Ptr(true)}},
+		}
+		out, err := PreviewUsage(sized, nil, UsagePreviewInput{Method: "POST", Path: "/tts", RequestBody: `{"text":"hi"}`, ResponseContentType: "audio/mpeg", ResponseBody: "ID3\x00\x00binary"}, false)
+		require.NoError(t, err)
+		require.True(t, out.Streams)
+		require.NotNil(t, out.Units)
+		assert.InDelta(t, 11, *out.Units, 0, "every forwarded byte")
+		assert.InDelta(t, 0.5+0.011, out.Cost, 1e-9)
+
+		sized.Usage.UnitsMeasure = schemas.GenericUnitsBodyChars
+		sse := "data: {\"delta\":\"h\xc3\xa9\"}\n\ndata: [DONE]\n\n"
+		out, err = PreviewUsage(sized, nil, UsagePreviewInput{Method: "POST", Path: "/tts", RequestBody: `{}`, ResponseContentType: "text/event-stream", ResponseBody: sse}, false)
+		require.NoError(t, err)
+		require.True(t, out.Streams)
+		require.NotNil(t, out.Units)
+		assert.InDelta(t, float64(len(sse)-1), *out.Units, 0, "runes of the whole SSE body, the two-byte é counted once")
+	})
+
 	t.Run("header picks the operation's rate", func(t *testing.T) {
 		in := textract
 		in.Headers = map[string]string{"X-Amz-Target": "Textract.AnalyzeDocument"}

@@ -178,8 +178,19 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, extraHeaders map[string]sc
 	if usage.billsUnits() && usage.unitsSource == schemas.GenericUnitsFromRequest && !fields.hasUnits {
 		out.Notes = append(out.Notes, "no quantity could be read from the request body with measure "+string(usage.unitsMeasure)+noPath(usage))
 	}
+	// A reply priced by its size is counted as the relay forwards it, so a stream bills what the
+	// buffered relay would bill for the same bytes; the preview measures the whole sample body.
+	streamSize := func() {
+		if !usage.wholeBodyResponse() {
+			return
+		}
+		units, _ := usage.measureUnits(in.ResponseContentType, respBody)
+		fields.merge(usageFields{units: units, hasUnits: true})
+		out.Notes = append(out.Notes, fmt.Sprintf("the streamed reply is billed by its size: %s counted as it is forwarded", string(usage.unitsMeasure)))
+	}
 	if out.Streams && !isEventStream(in.ResponseContentType) {
-		out.Notes = append(out.Notes, "a non-SSE stream is forwarded unread: nothing is taken from the response body")
+		out.Notes = append(out.Notes, "a non-SSE stream is forwarded unread: nothing is taken from the response body but its size")
+		streamSize()
 	} else if out.Streams && isEventStream(in.ResponseContentType) {
 		// The relay frames an SSE reply and reads only the events that carry a mapped field, each
 		// field keeping the last value reported; the preview reads the sample the same way.
@@ -195,6 +206,7 @@ func PreviewUsage(cfg *schemas.GenericProviderConfig, extraHeaders map[string]sc
 			}
 		}
 		out.Notes = append(out.Notes, fmt.Sprintf("SSE response: %d events, %d carried a mapped usage field; each field keeps the last value reported", len(events), carried))
+		streamSize()
 		if usage.ignoreUpstreamCost && usage.costPath != "" {
 			out.Notes = append(out.Notes, "the upstream-reported cost is ignored: ignore_provider_cost is on for this provider")
 		}
