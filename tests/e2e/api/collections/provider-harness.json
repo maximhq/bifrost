@@ -285859,6 +285859,267 @@
           ]
         }
       ]
+    },
+    {
+      "name": "280. Bedrock Request Metadata Headers (PR #9189)",
+      "description": "x-bf-bedrock-metadata-<key> request headers must reach the outgoing Bedrock Converse requestMetadata without x-bf-passthrough-extra-params, so routes that try another provider first never forward them there. Cases pin the neutral Chat Completions and Responses routes, the Anthropic messages route, and body precedence on the PydanticAI route, where an extra_params requestMetadata value beats the header for the same key.",
+      "item": [
+        {
+          "name": "bedrock/{{bedrockModel}} chat completions request metadata headers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('header metadata reaches Bedrock', function () {",
+                  "  pm.expect(rr, 'outgoing raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.requestMetadata).to.deep.equal({'tenant-slug':'test-tenant','trace-id':'test-trace'});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-bedrock-metadata-tenant-slug",
+                "value": "test-tenant"
+              },
+              {
+                "key": "x-bf-bedrock-metadata-trace-id",
+                "value": "test-trace"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/{{bedrockModel}} responses request metadata headers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('header metadata reaches Bedrock', function () {",
+                  "  pm.expect(rr, 'outgoing raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.requestMetadata).to.deep.equal({'tenant-slug':'test-tenant','trace-id':'test-trace'});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-bedrock-metadata-tenant-slug",
+                "value": "test-tenant"
+              },
+              {
+                "key": "x-bf-bedrock-metadata-trace-id",
+                "value": "test-trace"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"max_output_tokens\": 32,\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/{{bedrockModel}} anthropic request metadata headers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('header metadata reaches Bedrock', function () {",
+                  "  pm.expect(rr, 'outgoing raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.requestMetadata).to.deep.equal({'tenant-slug':'test-tenant','trace-id':'test-trace'});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-bedrock-metadata-tenant-slug",
+                "value": "test-tenant"
+              },
+              {
+                "key": "x-bf-bedrock-metadata-trace-id",
+                "value": "test-trace"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/{{bedrockModel}} pydanticai request metadata headers body value wins",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "pm.test('header metadata reaches Bedrock', function () {",
+                  "  pm.expect(rr, 'outgoing raw_request missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.requestMetadata).to.deep.equal({'tenant-slug':'body-tenant','trace-id':'test-trace'});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-bedrock-metadata-tenant-slug",
+                "value": "test-tenant"
+              },
+              {
+                "key": "x-bf-bedrock-metadata-trace-id",
+                "value": "test-trace"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/{{bedrockModel}}\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with OK.\"\n    }\n  ],\n  \"extra_params\": {\n    \"requestMetadata\": {\n      \"tenant-slug\": \"body-tenant\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
