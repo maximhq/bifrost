@@ -1,1 +1,2 @@
 - chore: upgraded Go to 1.27.3
+- [fix]: OpenAI passthrough with a caller ChatGPT/Codex token no longer swaps in a stored OpenAI API key, which the ChatGPT backend refused with api_key_not_supported; key selection is skipped for OpenAI passthrough the way it already was for Claude Code on Anthropic

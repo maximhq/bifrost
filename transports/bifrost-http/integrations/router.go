@@ -557,6 +557,7 @@ type PassthroughConfig struct {
 	// these method+path pairs instead of forwarding every request under StripPrefix.
 	AllowedRoutes []PassthroughRoute
 	StreamingPath func(method, path string) bool // optional: decides which requests stream, replacing the generic markers
+	ModelFreePath func(method, path string) bool // optional: requests that run no model, so model allowlists are skipped
 }
 
 // streams reports whether a passthrough request is served by the streaming handler. When the provider
@@ -3653,7 +3654,8 @@ func applyPassthroughCallerAuth(bifrostCtx *schemas.BifrostContext, safeHeaders 
 	case schemas.Anthropic:
 		forward = isAnthropicOAuthBearer(authHeader)
 	case schemas.OpenAI:
-		forward = isJWTBearer(authHeader)
+		// Only the ChatGPT backend takes a caller token, and only one ChatGPT issued; everything else keeps the stored key.
+		forward = upstreamURL == chatGPTUpstreamURL && isChatGPTBearer(authHeader)
 	}
 	if !forward {
 		return
@@ -3728,6 +3730,9 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
+	if cfg.ModelFreePath != nil && cfg.ModelFreePath(string(ctx.Method()), path) {
+		bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
+	}
 	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), string(ctx.URI().QueryString())))
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{

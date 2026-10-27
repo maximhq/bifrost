@@ -275238,7 +275238,7 @@
     },
     {
       "name": "257. OpenAI ChatGPT Codex passthrough stream dispatch",
-      "description": "Server regression for Codex native responses routed through /chatgpt_passthrough. Requires openaiKey to contain a valid ChatGPT subscription access token, not an OpenAI API key. Input is intentionally invalid so ChatGPT rejects without generating output. Synthetic cases: original Edge logs did not retain raw request or response payloads. Both cases must take passthrough_stream, retain native upstream 400 errors, and never fall back to a normal inference request or operator key. Authentication, policy, rate-limit and upstream failures must fail, not skip.",
+      "description": "Server regression for Codex native responses routed through /chatgpt_passthrough. Requires openaiKey to contain a valid ChatGPT subscription access token, not an OpenAI API key. Input is intentionally invalid so ChatGPT rejects without generating output. Synthetic cases: original Edge logs did not retain raw request or response payloads. The two responses cases must take passthrough_stream and retain native upstream 400 errors. The model list case Codex sends with ChatGPT sign-in must reach the ChatGPT backend through unary passthrough. No case may fall back to a normal inference request or operator key. Authentication, policy, rate-limit and upstream failures must fail, not skip.",
       "item": [
         {
           "name": "257.1 OpenAI ChatGPT Codex passthrough stream omitted [EXPECT-400]",
@@ -275358,6 +275358,176 @@
                   "pm.test(\"Codex uses streaming passthrough dispatch\", function () {",
                   "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough_stream\");",
                   "  pm.expect(pm.response.headers.get(\"x-bifrost-passthrough-path\"), pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "257.3 OpenAI ChatGPT Codex passthrough model list",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{chatgptAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/models?client_version=0.160.0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "client_version",
+                  "value": "0.160.0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Needs a ChatGPT sign-in token (CHATGPT_ACCESS_TOKEN); an OpenAI API key never takes the caller-token path.",
+                  "if (!pm.variables.get('chatgptAccessToken')) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Codex model list is forwarded to the ChatGPT backend\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().models, pm.response.text()).to.be.an(\"array\").that.is.not.empty;",
+                  "});",
+                  "pm.test(\"Codex model list uses unary passthrough dispatch\", function () {",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough\");",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-passthrough-path\"), pm.response.text()).to.equal(\"/backend-api/codex/models\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "257.4 OpenAI ChatGPT Codex passthrough forwards caller token without direct key [EXPECT-400]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{chatgptAccessToken}}"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.5\",\n  \"store\": false,\n  \"input\": 42\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Needs a ChatGPT sign-in token (CHATGPT_ACCESS_TOKEN); an OpenAI API key never takes the caller-token path.",
+                  "if (!pm.variables.get('chatgptAccessToken')) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ChatGPT token reaches the backend instead of the operator key\", function () {",
+                  "  pm.expect(pm.response.text(), \"an operator API key replaced the caller's ChatGPT token\").to.not.include(\"api_key_not_supported\");",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test(\"Codex uses streaming passthrough dispatch\", function () {",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough_stream\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "257.5 OpenAI passthrough keeps the stored key when the caller sends a JWT",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeW50aGV0aWMifQ.signature"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "models"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"A caller JWT on the OpenAI API passthrough does not replace the stored key\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().data, pm.response.text()).to.be.an(\"array\").that.is.not.empty;",
+                  "});",
+                  "pm.test(\"OpenAI API model list uses unary passthrough dispatch\", function () {",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough\");",
                   "});"
                 ]
               }
