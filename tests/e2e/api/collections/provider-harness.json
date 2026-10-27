@@ -282985,6 +282985,274 @@
           }
         }
       ]
+    },
+    {
+      "name": "276. Azure Blob storage skill files [PREVIEW]",
+      "description": "Account-scoped prerequisites: start an Azure-configured gateway with logs_store.object_storage.type=azure, a writable container, and valid server-side credentials; set include_preview=1 (INCLUDE_PREVIEW=1 in the harness runner). This folder validates client paths after Azure startup; it does not establish credentials or modify the default paid provider profile. Run all rows in order with PROVIDER=azure FEATURE=\"Azure Blob storage\". GET /api/config must report connected object storage, and created Unicode text and binary dataurl files must persist storage_key references without DB blob_id fallback. Exact served bytes, owned skill deletion, and a 404 after deletion pin the lifecycle. Only the uniquely named skill created here is deleted; no global orphan cleanup is performed.",
+      "item": [
+        {
+          "name": "[PREVIEW] Azure Blob storage: connected objectstore precondition",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('azureBlobStorageConnected');",
+                  "pm.collectionVariables.unset('azureBlobStorageSkillId');",
+                  "pm.collectionVariables.unset('azureBlobStorageSkillName');",
+                  "pm.collectionVariables.unset('azureBlobStorageDeleted');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Blob storage gateway has connected object storage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.is_object_storage_connected, 'requires an Azure-configured gateway: ' + pm.response.text()).to.equal(true);",
+                  "  pm.collectionVariables.set('azureBlobStorageConnected', '1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] Azure Blob storage: create skill with Unicode text and binary dataurl files",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('azureBlobStorageSkillId');",
+                  "pm.collectionVariables.unset('azureBlobStorageDeleted');",
+                  "pm.collectionVariables.set('azureBlobStorageSkillName', 'azure-blob-storage-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "// Capture only our newly created skill before assertions so cleanup still runs if a file assertion fails.",
+                  "if (body && body.skill && body.skill.name === pm.collectionVariables.get('azureBlobStorageSkillName') && body.skill.id) {",
+                  "  pm.collectionVariables.set('azureBlobStorageSkillId', body.skill.id);",
+                  "}",
+                  "pm.test('Azure Blob storage creates object-backed files without DB fallback', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.collectionVariables.get('azureBlobStorageConnected'), 'connected objectstore precondition must run first: ' + pm.response.text()).to.equal('1');",
+                  "  pm.expect(body, 'expected JSON: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.skill.name, pm.response.text()).to.equal(pm.collectionVariables.get('azureBlobStorageSkillName'));",
+                  "  pm.expect(body.skill.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.skill.files, pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  var expected = { 'reference/unicode.txt': 'text', 'assets/bytes.bin': 'dataurl' };",
+                  "  body.skill.files.forEach(function (file) {",
+                  "    pm.expect(expected, pm.response.text()).to.have.property(file.path);",
+                  "    pm.expect(file.source_type, pm.response.text()).to.equal(expected[file.path]);",
+                  "    pm.expect(file.storage_key, 'missing object storage reference: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "    pm.expect(file, 'DB blob fallback is forbidden: ' + pm.response.text()).to.not.have.property('blob_id');",
+                  "    delete expected[file.path];",
+                  "  });",
+                  "  pm.expect(Object.keys(expected), pm.response.text()).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{azureBlobStorageSkillName}}\",\n  \"description\": \"Owned Azure Blob storage harness skill\",\n  \"skill_md_body\": \"Use only for the Azure Blob storage harness lifecycle.\",\n  \"version\": \"1.0.0\",\n  \"files\": [\n    {\n      \"path\": \"reference/unicode.txt\",\n      \"source_type\": \"text\",\n      \"content\": \"Azure Blob storage: café, 日本語\\nSecond line.\\n\",\n      \"mime_type\": \"text/plain; charset=utf-8\"\n    },\n    {\n      \"path\": \"assets/bytes.bin\",\n      \"source_type\": \"dataurl\",\n      \"dataurl\": \"data:application/octet-stream;base64,AAECAwQFf4D+/w==\",\n      \"mime_type\": \"application/octet-stream\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/skills",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "skills"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] Azure Blob storage: serve exact Unicode text",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Blob storage preserves exact UTF-8 text', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.collectionVariables.get('azureBlobStorageSkillId'), 'create must succeed first: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.text(), 'unexpected text bytes: ' + pm.response.text()).to.equal(\"Azure Blob storage: café, 日本語\\nSecond line.\\n\");",
+                  "  pm.expect(Buffer.from(pm.response.stream).toString('hex'), 'unexpected UTF-8 bytes: ' + pm.response.text()).to.equal(Buffer.from(\"Azure Blob storage: café, 日本語\\nSecond line.\\n\", 'utf8').toString('hex'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/skills/serve/{{azureBlobStorageSkillName}}/files/reference/unicode.txt",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "serve",
+                "{{azureBlobStorageSkillName}}",
+                "files",
+                "reference",
+                "unicode.txt"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] Azure Blob storage: serve exact binary dataurl bytes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Blob storage preserves NUL and non-UTF-8 binary bytes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.collectionVariables.get('azureBlobStorageSkillId'), 'create must succeed first: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(Buffer.from(pm.response.stream).toString('hex'), 'unexpected binary bytes: ' + pm.response.text()).to.equal('0001020304057f80feff');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/skills/serve/{{azureBlobStorageSkillName}}/files/assets/bytes.bin",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "serve",
+                "{{azureBlobStorageSkillName}}",
+                "files",
+                "assets",
+                "bytes.bin"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] Azure Blob storage: delete owned skill and files",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Blob storage deletes only the skill created by this lifecycle', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.collectionVariables.get('azureBlobStorageSkillId'), 'create must succeed first: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.json().message, pm.response.text()).to.equal('skill deleted successfully');",
+                  "  pm.collectionVariables.set('azureBlobStorageDeleted', '1');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/skills/{{azureBlobStorageSkillId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "{{azureBlobStorageSkillId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-404] Azure Blob storage: deleted skill content is missing",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure Blob storage never serves content after owned skill deletion', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(404);",
+                  "  pm.expect(pm.collectionVariables.get('azureBlobStorageSkillId'), 'create must succeed first: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.collectionVariables.get('azureBlobStorageDeleted'), 'owned skill deletion must succeed first: ' + pm.response.text()).to.equal('1');",
+                  "  pm.expect(pm.response.text(), 'expected missing skill error: ' + pm.response.text()).to.include(pm.collectionVariables.get('azureBlobStorageSkillName')).and.include('not found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/skills/serve/{{azureBlobStorageSkillName}}/files/reference/unicode.txt",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "skills",
+                "serve",
+                "{{azureBlobStorageSkillName}}",
+                "files",
+                "reference",
+                "unicode.txt"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -9,7 +9,7 @@ Bifrost persists two types of data - **config** (providers, virtual keys, govern
 | Store | Purpose | Backends |
 |-------|---------|---------|
 | `config_store` | Provider configs, virtual keys, governance rules | SQLite, PostgreSQL |
-| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL, ClickHouse + optional S3/GCS offload |
+| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL, ClickHouse + optional S3/GCS/Azure Blob offload |
 | `vector_store` | Semantic response caching | Weaviate, Redis, Valkey, Qdrant, Pinecone |
 
 <Note>
@@ -390,7 +390,7 @@ Upgrading to a release **without** this pause (for example 2.2.x to 2.3.0) on a 
 
 ### Object Storage for Logs
 
-Offload LLM request/response logs and MCP tool logs from the database to S3 or GCS. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
+Offload LLM request/response logs and MCP tool logs from the database to S3, GCS, or Azure Blob Storage. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
 
 #### AWS S3
 
@@ -462,7 +462,7 @@ The IAM user or role needs the following permissions on your bucket:
 | `bucket` | S3 bucket name (supports `env.` prefix) |
 | `prefix` | Key prefix for stored objects (default: `"bifrost"`) |
 | `compress` | Legacy gzip switch, same as `"compression": "gzip"` (default: `false`) |
-| `format` | Payload object format: `json` (default) or `parquet` (S3 only). See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) |
+| `format` | Payload object format: `json` (default) or `parquet` (S3 and Azure). See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) |
 | `compression` | `none`, `gzip`, `snappy` or `zstd`. JSON allows `none` or `gzip` (whole object); Parquet uses it as the page codec (default `snappy`) |
 | `region` | AWS region |
 | `access_key_id` | AWS access key ID (omit for default credential chain) |
@@ -527,6 +527,39 @@ Omit `credentials_json` to use Application Default Credentials (Workload Identit
 |-------|-------------|
 | `project_id` | GCP project ID (supports `env.` prefix) |
 | `credentials_json` | Service account JSON or path - omit for ADC |
+
+#### Azure Blob Storage
+
+Create the container before starting Bifrost. Set `bucket` to the container name, not the storage account name.
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": { "path": "/app/data/logs.db" },
+    "object_storage": {
+      "type": "azure",
+      "bucket": "bifrost-logs",
+      "endpoint": "https://myaccount.blob.core.windows.net",
+      "prefix": "bifrost",
+      "compress": true
+    }
+  }
+}
+```
+
+`endpoint` uses `DefaultAzureCredential`: managed identity, workload identity, or a service principal configured through `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`. These credentials are separate from Azure model-provider credentials.
+
+For connection-string authentication, replace `endpoint` with `"connection_string": "env.AZURE_STORAGE_CONNECTION_STRING"`. Set only one. `bucket`, `endpoint`, and `connection_string` accept environment or vault references and must resolve to nonempty values.
+
+Grant **Storage Blob Data Contributor** on the container, or equivalent read/write/list/delete permissions. Blob index-tag permissions are not needed.
+
+Azure supports JSON/gzip and Parquet for logs, and also stores skills files. See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) for format options.
+
+<Warning>
+Restart after changing storage configuration or credentials; identity tokens refresh automatically. Apply lifecycle expiry only to log paths, not `skills/`. Before switching stores, copy existing objects with their keys and content headers intact. See [Azure operations](/enterprise/log-exports#azure-operations).
+</Warning>
 
 #### MinIO (Self-Hosted)
 

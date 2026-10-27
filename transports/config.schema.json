@@ -3529,13 +3529,14 @@
         },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
+          "description": "Optional object storage for offloading LLM and MCP log payloads. When configured, full payloads are stored in S3/GCS/Azure Blob while the DB keeps lightweight index data. MCP log rows keep dashboard/table fields plus a 200-character input preview.",
           "properties": {
             "type": {
               "type": "string",
               "enum": [
                 "s3",
-                "gcs"
+                "gcs",
+                "azure"
               ],
               "description": "Object storage backend type"
             },
@@ -3569,13 +3570,10 @@
                       "type": "boolean"
                     }
                   },
-                  "required": [
-                    "value"
-                  ],
                   "additionalProperties": false
                 }
               ],
-              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
+              "description": "Bucket name, or Azure Blob container name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
             },
             "prefix": {
               "type": "string",
@@ -3593,7 +3591,7 @@
                 "json",
                 "parquet"
               ],
-              "description": "Encoding of offloaded log payload objects. json writes {id}.json.gz objects; parquet writes single-row {id}.parquet files (one UTF8 column per payload field) readable by Athena, Spark and DuckDB. Objects written before a format change stay readable. parquet is supported on s3 only. Default: json",
+              "description": "Encoding of offloaded log payload objects. json writes {id}.json.gz objects; parquet writes single-row {id}.parquet files (one UTF8 column per payload field) readable by Athena, Spark and DuckDB. Objects written before a format change stay readable. parquet is supported on s3 and azure. Default: json",
               "default": "json"
             },
             "compression": {
@@ -3656,7 +3654,7 @@
           "then": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "region": {
                 "anyOf": [
@@ -3904,9 +3902,12 @@
             "additionalProperties": false
           },
           "else": {
+            "if": { "properties": { "type": { "const": "azure" } } },
+            "then": { "$ref": "#/$defs/azure_object_storage" },
+            "else": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "credentials_json": {
                 "anyOf": [
@@ -4029,6 +4030,7 @@
               "compression": true
             },
             "additionalProperties": false
+            }
           }
         },
         "object_storage_exclude_request_types": {
@@ -5410,6 +5412,64 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "azure_storage_secret": {
+      "description": "A nonempty literal, env.VAR_NAME reference, or structured secret reference.",
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "properties": {
+            "value": { "type": "string" },
+            "ref": { "type": "string" },
+            "type": { "type": "string", "enum": ["plain_text", "env", "vault"] },
+            "env_var": { "type": "string" },
+            "from_env": { "type": "boolean" }
+          },
+          "anyOf": [
+            { "properties": { "value": { "minLength": 1 } }, "required": ["value"] },
+            {
+              "properties": { "ref": { "minLength": 1 } },
+              "required": ["ref"],
+              "anyOf": [{ "required": ["type"] }, { "required": ["value"] }]
+            },
+            {
+              "properties": {
+                "env_var": { "minLength": 1 },
+                "from_env": { "const": true }
+              },
+              "required": ["env_var", "from_env"]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "azure_object_storage": {
+      "type": "object",
+      "description": "Azure Blob Storage. Supply a connection string, or a Blob service endpoint to use DefaultAzureCredential (including workload identity). Authentication is independent of inference-provider credentials.",
+      "properties": {
+        "type": { "const": "azure" },
+        "bucket": { "$ref": "#/$defs/azure_storage_secret" },
+        "prefix": true,
+        "compress": true,
+        "format": true,
+        "compression": true,
+        "endpoint": {
+          "$ref": "#/$defs/azure_storage_secret",
+          "description": "Azure Blob service URL for DefaultAzureCredential authentication. Mutually exclusive with connection_string. Supports env var and structured secret references."
+        },
+        "connection_string": {
+          "$ref": "#/$defs/azure_storage_secret",
+          "description": "Azure Storage connection string. Mutually exclusive with endpoint. Supports env var and structured secret references."
+        }
+      },
+      "required": ["type", "bucket"],
+      "oneOf": [
+        { "required": ["endpoint"], "not": { "required": ["connection_string"] } },
+        { "required": ["connection_string"], "not": { "required": ["endpoint"] } }
+      ],
+      "additionalProperties": false
+    },
     "warp_config": {
       "type": "object",
       "description": "Warp settings (the dashboard's Settings > Warp page): the models Warp runs on, its behaviour and limits, log search, and topics. Takes the same body as PUT /api/warp/config and goes through the same validation and vector namespace provisioning. An omitted embedding, search or topic field keeps its stored value; every other omitted field takes its default, and additional_models is replaced whole. Under source_of_truth \"split\" it is applied when new or changed and dashboard edits are kept otherwise; under \"config.json\" it is applied on every startup. Omit to manage Warp from the dashboard. The warp feature flag (feature_flags.flags.warp) is separate.",
@@ -12499,13 +12559,14 @@
         },
         "object_storage": {
           "type": "object",
-          "description": "Optional object storage for archiving audit events to S3/GCS. Setting this enables archival; there is no separate on/off flag. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as one or more JSONL part objects plus a manifest listing them: {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/part-00000.jsonl[.gz] and .../manifest.json[.gz]. Read the manifest to enumerate a window and ignore any object it does not list. The database remains the source of truth and archival never deletes rows (retention_days handles that independently). In a cluster only one node archives a given window. Archival is going-forward only; existing rows are not backfilled. See archive_interval, archive_grace_period and archive_max_object_bytes to tune it.",
+          "description": "Optional object storage for archiving audit events to S3/GCS/Azure Blob. Setting this enables archival; there is no separate on/off flag. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as one or more JSONL part objects plus a manifest listing them: {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/part-00000.jsonl[.gz] and .../manifest.json[.gz]. Read the manifest to enumerate a window and ignore any object it does not list. The database remains the source of truth and archival never deletes rows (retention_days handles that independently). In a cluster only one node archives a given window. Archival is going-forward only; existing rows are not backfilled. See archive_interval, archive_grace_period and archive_max_object_bytes to tune it.",
           "properties": {
             "type": {
               "type": "string",
               "enum": [
                 "s3",
-                "gcs"
+                "gcs",
+                "azure"
               ],
               "description": "Object storage backend type"
             },
@@ -12539,13 +12600,10 @@
                       "type": "boolean"
                     }
                   },
-                  "required": [
-                    "value"
-                  ],
                   "additionalProperties": false
                 }
               ],
-              "description": "Bucket name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
+              "description": "Bucket name, or Azure Blob container name. Supports env var reference (e.g. env.S3_BUCKET) or a structured secret reference."
             },
             "prefix": {
               "type": "string",
@@ -12572,7 +12630,7 @@
           "then": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "region": {
                 "anyOf": [
@@ -12818,9 +12876,17 @@
             "additionalProperties": false
           },
           "else": {
+            "if": { "properties": { "type": { "const": "azure" } } },
+            "then": {
+              "allOf": [
+                { "$ref": "#/$defs/azure_object_storage" },
+                { "properties": { "format": false, "compression": false } }
+              ]
+            },
+            "else": {
             "properties": {
               "type": true,
-              "bucket": true,
+              "bucket": { "required": ["value"] },
               "prefix": true,
               "credentials_json": {
                 "anyOf": [
@@ -12936,6 +13002,7 @@
               "compress": true
             },
             "additionalProperties": false
+            }
           }
         }
       },

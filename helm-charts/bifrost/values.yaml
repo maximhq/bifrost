@@ -1740,8 +1740,8 @@ bifrost:
     # archiveGracePeriod: "15m"     # Delay before a window closes, to absorb clock skew (< archiveInterval)
     # archiveMaxObjectBytes: 134217728  # Roll a new part at this many uncompressed bytes (128MiB; ~2x peak mem when compress: true)
     # objectStorage:
-    #   type: s3        # Options: s3, gcs
-    #   bucket: ""      # Bucket name
+    #   type: s3        # Options: s3, gcs, azure
+    #   bucket: ""      # Bucket name, or Azure Blob container name
     #   prefix: bifrost # Base key path (audit-logs/ is appended under it)
     #   compress: false # Enable gzip compression for stored objects
     #
@@ -1757,6 +1757,11 @@ bifrost:
     #   # GCS configuration (when type is gcs)
     #   projectId: ""
     #   credentialsJson: ""   # Service account JSON, omit for default credentials
+    #
+    #   # Azure configuration (when type is azure): choose exactly one auth mode
+    #   # endpoint: "https://mystorageaccount.blob.core.windows.net" # DefaultAzureCredential / workload identity
+    #   # connectionString: "env.AZURE_AUDIT_STORAGE_CONNECTION_STRING" # Alternative; omit endpoint
+    #   # Inject this env var using bifrost.providerSecrets or extraEnv; provider credentials are not reused
 
   # Large payload optimization - streams large payloads without full materialization
   # largePayloadOptimization:
@@ -1945,14 +1950,16 @@ storage:
     objectStorageExcludeRequestTypes: []
 
     # Object storage for offloading large log payloads (optional)
-    # When enabled, request/response payloads are stored in S3/GCS
+    # When enabled, request/response payloads are stored in S3/GCS/Azure Blob
     # while the DB keeps only lightweight index data for fast analytics.
     objectStorage:
       enabled: false
-      # type: s3        # Options: s3, gcs
-      # bucket: ""      # Bucket name
+      # type: s3        # Options: s3, gcs, azure
+      # bucket: ""      # Bucket name, or Azure Blob container name
       # prefix: bifrost # Key prefix for stored objects
       # compress: false  # Enable gzip compression for stored objects
+      # format: json      # json or parquet (parquet supported on s3/azure)
+      # compression: gzip # json: none/gzip; parquet: none/gzip/snappy/zstd
 
       # S3 configuration (when type is s3)
       # region: us-east-1
@@ -1966,6 +1973,12 @@ storage:
       # GCS configuration (when type is gcs)
       # projectId: ""
       # credentialsJson: ""  # Service account JSON, omit for default credentials
+
+      # Azure configuration (when type is azure): choose exactly one auth mode
+      # endpoint: "https://mystorageaccount.blob.core.windows.net" # DefaultAzureCredential / workload identity
+      # connectionString: "env.AZURE_STORAGE_CONNECTION_STRING" # Alternative; omit endpoint
+      # existingSecret: "bifrost-azure-storage" # Alternative to inline connectionString; omit endpoint
+      # connectionStringKey: "connection-string" # Secret key (defaults to connection-string)
 
 # PostgreSQL configuration (when any store uses postgres)
 postgresql:

@@ -5286,16 +5286,19 @@
             },
             "objectStorage": {
               "type": "object",
-              "description": "Optional object storage for archiving audit events to S3/GCS. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as JSONL part objects plus a manifest at {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/. The database remains the source of truth; archival never deletes rows (retentionDays handles that independently).",
+              "description": "Optional object storage for archiving audit events to S3/GCS/Azure Blob. A background job periodically copies audit events from the database, one closed time window at a time, writing each window as JSONL part objects plus a manifest at {prefix}/audit-logs/YYYY/MM/DD/{start}-{end}/. The database remains the source of truth; archival never deletes rows (retentionDays handles that independently).",
               "properties": {
                 "type": {
                   "type": "string",
-                  "enum": ["s3", "gcs"],
+                  "enum": ["s3", "gcs", "azure"],
                   "description": "Object storage backend type"
                 },
                 "bucket": {
-                  "type": "string",
-                  "description": "Bucket name"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Bucket name, or Azure Blob container name; Azure accepts structured secret references"
                 },
                 "prefix": {
                   "type": "string",
@@ -5312,8 +5315,15 @@
                   "description": "AWS region (S3 only)"
                 },
                 "endpoint": {
-                  "type": "string",
-                  "description": "Custom S3-compatible endpoint for MinIO/R2 (S3 only)"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Custom S3-compatible endpoint, or Azure Blob service URL for DefaultAzureCredential authentication"
+                },
+                "connectionString": {
+                  "$ref": "#/$defs/azureStorageSecret",
+                  "description": "Azure Storage connection string; mutually exclusive with endpoint. Supports env var and structured secret references"
                 },
                 "accessKeyId": {
                   "type": "string",
@@ -5345,7 +5355,37 @@
                   "description": "GCP service account credentials JSON or file path; omit for Application Default Credentials (GCS only)"
                 }
               },
-              "required": ["type", "bucket"]
+              "required": ["type", "bucket"],
+              "allOf": [
+                {
+                  "if": { "properties": { "type": { "const": "azure" } }, "required": ["type"] },
+                  "then": {
+                    "properties": {
+                      "region": false,
+                      "accessKeyId": false,
+                      "secretAccessKey": false,
+                      "sessionToken": false,
+                      "roleArn": false,
+                      "forcePathStyle": false,
+                      "projectId": false,
+                      "credentialsJson": false,
+                      "bucket": { "$ref": "#/$defs/azureStorageSecret" },
+                      "endpoint": { "$ref": "#/$defs/azureStorageSecret" }
+                    },
+                    "oneOf": [
+                      { "required": ["endpoint"], "not": { "required": ["connectionString"] } },
+                      { "required": ["connectionString"], "not": { "required": ["endpoint"] } }
+                    ]
+                  },
+                  "else": {
+                    "properties": {
+                      "bucket": { "type": "string" },
+                      "endpoint": { "type": "string" },
+                      "connectionString": false
+                    }
+                  }
+                }
+              ]
             }
           }
         },
@@ -5964,10 +6004,14 @@
                 },
                 "type": {
                   "type": "string",
-                  "enum": ["s3", "gcs"]
+                  "enum": ["s3", "gcs", "azure"]
                 },
                 "bucket": {
-                  "type": "string"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Bucket name, or Azure Blob container name; Azure accepts structured secret references"
                 },
                 "prefix": {
                   "type": "string"
@@ -5975,11 +6019,35 @@
                 "compress": {
                   "type": "boolean"
                 },
+                "format": {
+                  "type": "string",
+                  "enum": ["json", "parquet"],
+                  "default": "json",
+                  "description": "Encoding of offloaded log payload objects; parquet is supported on s3 and azure"
+                },
+                "compression": {
+                  "type": "string",
+                  "enum": ["none", "gzip", "snappy", "zstd"],
+                  "description": "JSON whole-object compression (none/gzip), or Parquet page codec (none/gzip/snappy/zstd); defaults to none for JSON (gzip when compress is true), snappy for Parquet"
+                },
                 "region": {
                   "type": "string"
                 },
                 "endpoint": {
-                  "type": "string"
+                  "anyOf": [
+                    { "type": "string" },
+                    { "$ref": "#/$defs/azureStorageSecret", "type": "object" }
+                  ],
+                  "description": "Custom S3-compatible endpoint, or Azure Blob service URL for DefaultAzureCredential authentication"
+                },
+                "connectionString": {
+                  "$ref": "#/$defs/azureStorageSecret",
+                  "description": "Azure Storage connection string; mutually exclusive with endpoint and existingSecret"
+                },
+                "connectionStringKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Kubernetes Secret key containing the Azure Storage connection string (default: connection-string)"
                 },
                 "accessKeyId": {
                   "type": "string"
@@ -6021,6 +6089,53 @@
                   "type": "string"
                 }
               },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": { "type": { "const": "azure" }, "enabled": { "const": true } },
+                    "required": ["type", "enabled"]
+                  },
+                  "then": {
+                    "properties": {
+                      "region": false,
+                      "accessKeyId": false,
+                      "secretAccessKey": false,
+                      "sessionToken": false,
+                      "roleArn": false,
+                      "forcePathStyle": false,
+                      "projectId": false,
+                      "credentialsJson": false,
+                      "bucket": { "$ref": "#/$defs/azureStorageSecret" },
+                      "endpoint": { "$ref": "#/$defs/azureStorageSecret" },
+                      "existingSecret": { "type": "string", "minLength": 1 }
+                    },
+                    "oneOf": [
+                      { "required": ["endpoint"], "not": { "anyOf": [{ "required": ["connectionString"] }, { "required": ["existingSecret"] }] } },
+                      { "required": ["connectionString"], "not": { "anyOf": [{ "required": ["endpoint"] }, { "required": ["existingSecret"] }] } },
+                      { "required": ["existingSecret"], "not": { "anyOf": [{ "required": ["endpoint"] }, { "required": ["connectionString"] }] } }
+                    ]
+                  }
+                },
+                {
+                  "if": { "properties": { "type": { "enum": ["s3", "gcs"] } }, "required": ["type"] },
+                  "then": {
+                    "properties": { "bucket": { "type": "string" }, "endpoint": { "type": "string" }, "connectionString": false, "connectionStringKey": false }
+                  }
+                },
+                {
+                  "if": {
+                    "anyOf": [
+                      { "not": { "required": ["format"] } },
+                      { "properties": { "format": { "const": "json" } }, "required": ["format"] }
+                    ]
+                  },
+                  "then": { "properties": { "compression": { "enum": ["none", "gzip"] } } }
+                },
+                {
+                  "if": { "properties": { "type": { "const": "gcs" } }, "required": ["type"] },
+                  "then": { "properties": { "format": { "const": "json" } } }
+                }
+              ],
               "if": {
                 "properties": {
                   "enabled": {
@@ -6641,6 +6756,38 @@
     }
   },
   "$defs": {
+    "azureStorageSecret": {
+      "description": "A nonempty literal, env.VAR_NAME reference, or structured secret reference",
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "properties": {
+            "value": { "type": "string" },
+            "ref": { "type": "string" },
+            "type": { "type": "string", "enum": ["plain_text", "env", "vault"] },
+            "env_var": { "type": "string" },
+            "from_env": { "type": "boolean" }
+          },
+          "anyOf": [
+            { "properties": { "value": { "minLength": 1 } }, "required": ["value"] },
+            {
+              "properties": { "ref": { "minLength": 1 } },
+              "required": ["ref"],
+              "anyOf": [{ "required": ["type"] }, { "required": ["value"] }]
+            },
+            {
+              "properties": {
+                "env_var": { "minLength": 1 },
+                "from_env": { "const": true }
+              },
+              "required": ["env_var", "from_env"]
+            }
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "otelEndpoint": {
       "type": "string",
       "description": "OpenTelemetry endpoint URL or host:port. Supports env.VAR_NAME prefix for environment variable substitution.",
