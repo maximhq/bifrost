@@ -120,6 +120,7 @@ type ClientConfig struct {
 	MCPToolExecutionTimeout                 int                                   `json:"mcp_tool_execution_timeout"`                    // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel                 string                                `json:"mcp_code_mode_binding_level"`                   // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                     int                                   `json:"mcp_tool_sync_interval"`                        // Global tool sync interval in minutes (default: 10, 0 = built-in default)
+	MCPMaxProtocolVersion                   string                                `json:"mcp_max_protocol_version,omitempty"`            // Global cap on the MCP protocol version offered to upstreams ("" or "auto" = newest)
 	MCPDisableAutoToolInject                bool                                  `json:"mcp_disable_auto_tool_inject"`                  // When true, MCP tools are not injected into requests by default
 	MCPEnableTempTokenAuth                  bool                                  `json:"mcp_enable_temp_token_auth"`                    // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
 	HeaderFilterConfig                      *tables.GlobalHeaderFilterConfig      `json:"header_filter_config,omitempty"`                // Global header filtering configuration for x-bf-eh-* headers
@@ -2145,6 +2146,11 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		} else {
 			hash.Write([]byte("needs_session_stickiness:false"))
 		}
+	}
+
+	// Only a set value contributes, so existing hashes are unchanged.
+	if m.MaxProtocolVersion != "" {
+		hash.Write([]byte("max_protocol_version:" + m.MaxProtocolVersion))
 	}
 
 	// Hash PerUserHeaderKeys (sorted for deterministic hashing) so edits to

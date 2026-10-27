@@ -45643,6 +45643,17 @@
                             "minimum": 0,
                             "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
+                          "max_protocol_version": {
+                            "type": "string",
+                            "enum": [
+                              "",
+                              "auto",
+                              "2026-07-28",
+                              "2025-11-25",
+                              "2025-06-18"
+                            ],
+                            "description": "Newest MCP protocol version Bifrost offers this server; the server can\nstill negotiate an older one. \"auto\" uses the newest version Bifrost\nsupports. Omitted or \"\" follows the global mcp_max_protocol_version. Ignored for\nopenapi servers.\n"
+                          },
                           "tool_execution_timeout": {
                             "type": "integer",
                             "minimum": 0,
@@ -45933,6 +45944,17 @@
                             "minimum": 0,
                             "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
                           },
+                          "max_protocol_version": {
+                            "type": "string",
+                            "enum": [
+                              "",
+                              "auto",
+                              "2026-07-28",
+                              "2025-11-25",
+                              "2025-06-18"
+                            ],
+                            "description": "Newest MCP protocol version Bifrost offers this server; the server can\nstill negotiate an older one. \"auto\" uses the newest version Bifrost\nsupports. Omitted or \"\" follows the global mcp_max_protocol_version. Ignored for\nopenapi servers.\n"
+                          },
                           "tool_execution_timeout": {
                             "type": "integer",
                             "minimum": 0,
@@ -46222,6 +46244,17 @@
                             "type": "integer",
                             "minimum": 0,
                             "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
+                          },
+                          "max_protocol_version": {
+                            "type": "string",
+                            "enum": [
+                              "",
+                              "auto",
+                              "2026-07-28",
+                              "2025-11-25",
+                              "2025-06-18"
+                            ],
+                            "description": "Newest MCP protocol version Bifrost offers this server; the server can\nstill negotiate an older one. \"auto\" uses the newest version Bifrost\nsupports. Omitted or \"\" follows the global mcp_max_protocol_version. Ignored for\nopenapi servers.\n"
                           },
                           "tool_execution_timeout": {
                             "type": "integer",
@@ -46532,6 +46565,17 @@
                             "type": "integer",
                             "minimum": 0,
                             "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config.\n"
+                          },
+                          "max_protocol_version": {
+                            "type": "string",
+                            "enum": [
+                              "",
+                              "auto",
+                              "2026-07-28",
+                              "2025-11-25",
+                              "2025-06-18"
+                            ],
+                            "description": "Newest MCP protocol version Bifrost offers this server; the server can\nstill negotiate an older one. \"auto\" uses the newest version Bifrost\nsupports. Omitted or \"\" follows the global mcp_max_protocol_version. Ignored for\nopenapi servers.\n"
                           },
                           "tool_execution_timeout": {
                             "type": "integer",
@@ -46864,6 +46908,17 @@
                     "type": "integer",
                     "minimum": 0,
                     "description": "Per-client tool-list sync interval in minutes. 0 falls back to the\nglobal mcp_tool_sync_interval client config.\n"
+                  },
+                  "max_protocol_version": {
+                    "type": "string",
+                    "enum": [
+                      "",
+                      "auto",
+                      "2026-07-28",
+                      "2025-11-25",
+                      "2025-06-18"
+                    ],
+                    "description": "Newest MCP protocol version Bifrost offers this server. \"\" follows the\nglobal mcp_max_protocol_version client config; \"auto\" uses the newest\nversion Bifrost supports. Omitted keeps the current value. A change\nreconnects the server at the new version.\n"
                   },
                   "tool_execution_timeout": {
                     "type": "integer",
@@ -126687,6 +126742,17 @@
                 "minimum": 0,
                 "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it. When 0 or unset, a 10-minute default applies.\n"
               },
+              "mcp_max_protocol_version": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "auto",
+                  "2026-07-28",
+                  "2025-11-25",
+                  "2025-06-18"
+                ],
+                "description": "Newest MCP protocol version Bifrost offers MCP servers; a server can still negotiate an older one. \"auto\" uses the newest version Bifrost supports. Applies to servers whose own max_protocol_version is \"\". An empty value (nothing stored) behaves as \"auto\". On update, omitting it or sending \"\" keeps the stored value. Deployments upgraded with existing MCP servers start at \"2025-06-18\"; fresh installs start on \"auto\". A change reconnects affected servers at the new version.\n"
+              },
               "mcp_code_mode_binding_level": {
                 "type": "string",
                 "description": "Binding level for MCP code mode"
@@ -127216,6 +127282,17 @@
                 "type": "integer",
                 "minimum": 0,
                 "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it. When 0 or unset, a 10-minute default applies.\n"
+              },
+              "mcp_max_protocol_version": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "auto",
+                  "2026-07-28",
+                  "2025-11-25",
+                  "2025-06-18"
+                ],
+                "description": "Newest MCP protocol version Bifrost offers MCP servers; a server can still negotiate an older one. \"auto\" uses the newest version Bifrost supports. Applies to servers whose own max_protocol_version is \"\". An empty value (nothing stored) behaves as \"auto\". On update, omitting it or sending \"\" keeps the stored value. Deployments upgraded with existing MCP servers start at \"2025-06-18\"; fresh installs start on \"auto\". A change reconnects affected servers at the new version.\n"
               },
               "mcp_code_mode_binding_level": {
                 "type": "string",
@@ -130398,6 +130475,17 @@
             "readOnly": true,
             "default": false,
             "description": "Server-set. True when the client was registered over the management API\nwith no admin credential check (dashboard auth unconfigured). Every\nconnection to the MCP server (initial, reconnect, per-call) must then\nresolve to a public address. Ignored in create/update request bodies\nand never cleared once set.\n"
+          },
+          "max_protocol_version": {
+            "type": "string",
+            "enum": [
+              "",
+              "auto",
+              "2026-07-28",
+              "2025-11-25",
+              "2025-06-18"
+            ],
+            "description": "Newest MCP protocol version Bifrost offers this server. \"\" follows the\nglobal mcp_max_protocol_version client config; \"auto\" uses the newest\nversion Bifrost supports.\n"
           }
         }
       },

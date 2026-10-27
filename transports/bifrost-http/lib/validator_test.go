@@ -3002,6 +3002,32 @@ func TestSchemaMCPToolSyncInterval(t *testing.T) {
 	})
 }
 
+// max_protocol_version is accepted globally (mcp) and per client, limited to the supported values.
+func TestSchemaMCPMaxProtocolVersion(t *testing.T) {
+	compiled := compileSchema(t)
+	config := func(global, client string) string {
+		return fmt.Sprintf(`{
+			"mcp": {
+				"max_protocol_version": %s,
+				"client_configs": [
+					{"name": "example", "connection_type": "http", "connection_string": "https://example.com/mcp", "max_protocol_version": %s}
+				]
+			}
+		}`, global, client)
+	}
+	for _, v := range []string{`"auto"`, `"2026-07-28"`, `"2025-11-25"`, `"2025-06-18"`} {
+		if err := validateConfig(t, compiled, config(v, v)); err != nil {
+			t.Errorf("max_protocol_version %s should be valid, got: %v", v, err)
+		}
+	}
+	if err := validateConfig(t, compiled, config(`"2024-11-05"`, `"auto"`)); err == nil {
+		t.Error("an unsupported global max_protocol_version must be rejected")
+	}
+	if err := validateConfig(t, compiled, config(`"auto"`, `"latest"`)); err == nil {
+		t.Error("an unsupported per-client max_protocol_version must be rejected")
+	}
+}
+
 func TestSchemaMCPClientEndpointSlug(t *testing.T) {
 	schema := loadSchema(t)
 

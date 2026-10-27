@@ -262,6 +262,14 @@ MCPClientCreateRequestBase:
       description: |
         Per-client tool-list sync interval in minutes. 0 (or omitted) falls back
         to the global mcp_tool_sync_interval client config.
+    max_protocol_version:
+      type: string
+      enum: ["", "auto", "2026-07-28", "2025-11-25", "2025-06-18"]
+      description: |
+        Newest MCP protocol version Bifrost offers this server; the server can
+        still negotiate an older one. "auto" uses the newest version Bifrost
+        supports. Omitted or "" follows the global mcp_max_protocol_version. Ignored for
+        openapi servers.
     tool_execution_timeout:
       type: integer
       minimum: 0
@@ -718,6 +726,14 @@ MCPClientUpdateRequest:
       description: |
         Per-client tool-list sync interval in minutes. 0 falls back to the
         global mcp_tool_sync_interval client config.
+    max_protocol_version:
+      type: string
+      enum: ["", "auto", "2026-07-28", "2025-11-25", "2025-06-18"]
+      description: |
+        Newest MCP protocol version Bifrost offers this server. "" follows the
+        global mcp_max_protocol_version client config; "auto" uses the newest
+        version Bifrost supports. Omitted keeps the current value. A change
+        reconnects the server at the new version.
     tool_execution_timeout:
       type: integer
       minimum: 0
@@ -991,6 +1007,13 @@ MCPClientConfig:
         connection to the MCP server (initial, reconnect, per-call) must then
         resolve to a public address. Ignored in create/update request bodies
         and never cleared once set.
+    max_protocol_version:
+      type: string
+      enum: ["", "auto", "2026-07-28", "2025-11-25", "2025-06-18"]
+      description: |
+        Newest MCP protocol version Bifrost offers this server. "" follows the
+        global mcp_max_protocol_version client config; "auto" uses the newest
+        version Bifrost supports.
 
 ChatToolFunction:
   type: object

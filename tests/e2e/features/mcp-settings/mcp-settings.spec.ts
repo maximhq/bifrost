@@ -280,4 +280,45 @@ test.describe('MCP Settings', () => {
       expect(saved?.allowed_redirect_uris ?? []).toEqual([])
     })
   })
+
+  test.describe('Max protocol version', () => {
+    // Both tests rewrite the shared global cap, so they must not interleave.
+    test.describe.configure({ mode: 'serial' })
+    let original: string
+
+    test.beforeEach(async ({ request }) => {
+      original = ((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version as string | undefined) || 'auto'
+    })
+
+    test.afterEach(async ({ request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: original })
+    })
+
+    test('should save a global max protocol version and show it after reload', async ({ mcpSettingsPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: 'auto' })
+      await mcpSettingsPage.goto()
+      await expect(mcpSettingsPage.maxProtocolVersionSelect).toContainText('Auto (latest)')
+
+      await mcpSettingsPage.selectMaxProtocolVersion('2025-06-18')
+      await expect(mcpSettingsPage.saveBtn).toBeEnabled()
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+      expect((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version).toBe('2025-06-18')
+
+      await mcpSettingsPage.goto()
+      await expect(mcpSettingsPage.maxProtocolVersionSelect).toContainText('2025-06-18')
+      await expect(mcpSettingsPage.saveBtn).toBeDisabled()
+    })
+
+    test('should keep the global cap when another setting is saved', async ({ mcpSettingsPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: '2025-11-25' })
+      await mcpSettingsPage.goto()
+      const depth = await mcpSettingsPage.maxAgentDepthInput.inputValue()
+      await mcpSettingsPage.maxAgentDepthInput.fill(String(Number(depth) + 1))
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+      expect((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version).toBe('2025-11-25')
+      await coreConfigApi.updateClientConfig(request, { mcp_agent_depth: Number(depth) })
+    })
+  })
 })

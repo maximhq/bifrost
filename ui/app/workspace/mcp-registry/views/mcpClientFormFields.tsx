@@ -48,6 +48,7 @@ import {
 	type OpenAPICredentialField,
 	type OpenAPISourceMode,
 } from "./mcpClientOpenApiUtils";
+import { MaxProtocolVersionSelect } from "./maxProtocolVersionSelect";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreviewPanel";
 import { OpenAPISpecSource } from "./openApiSpecSource";
@@ -553,6 +554,8 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 			: ["*"],
 		// Extra headers only ride on the network transports.
 		allowed_extra_headers: isStdio ? undefined : parseArrayFromText(satellites.allowedExtraHeadersText),
+		// An openapi server is synthesized in process; there is no protocol to negotiate.
+		max_protocol_version: isOpenAPI ? undefined : data.max_protocol_version,
 	};
 }
 
@@ -895,6 +898,35 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 								)}
 							/>
 						)}
+					{!isOpenAPI && (
+						<FormField
+							control={control}
+							name="max_protocol_version"
+							render={({ field }) => (
+								<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+									<div className="flex items-center gap-2">
+										<FormLabel>Max Protocol Version</FormLabel>
+										<TooltipProvider>
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+												</TooltipTrigger>
+												<TooltipContent className="max-w-xs">
+													<p>
+														Newest MCP protocol version Bifrost offers this server. Pick an earlier version if the server misbehaves on the
+														latest one.
+													</p>
+												</TooltipContent>
+											</Tooltip>
+										</TooltipProvider>
+									</div>
+									<FormControl>
+										<MaxProtocolVersionSelect value={field.value} onChange={field.onChange} />
+									</FormControl>
+								</FormItem>
+							)}
+						/>
+					)}
 				</div>
 			</div>
 

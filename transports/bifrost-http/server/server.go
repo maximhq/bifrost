@@ -1661,6 +1661,12 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 		if err := s.Client.UpdateMCPToolSyncInterval(syncInterval); err != nil {
 			logger.Warn("failed to sync MCP tool sync interval during client config reload: %v", err)
 		}
+		if s.Config.MCPConfig != nil {
+			s.Config.MCPConfig.MaxProtocolVersion = s.Config.ClientConfig.MCPMaxProtocolVersion
+		}
+		if err := s.Client.UpdateMCPMaxProtocolVersion(s.Config.ClientConfig.MCPMaxProtocolVersion); err != nil {
+			logger.Warn("failed to sync MCP max protocol version during client config reload: %v", err)
+		}
 	}
 	return nil
 }

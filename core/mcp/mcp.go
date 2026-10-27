@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/mcp/credstore"
@@ -52,6 +53,8 @@ type MCPManager struct {
 	inProcessServerFactory schemas.InProcessServerFactory     // Builds synthesized servers (openapi clients); nil = unsupported
 	perCallConns           sync.Map                           // Client ID → *perCallConn, shared by that client's per-call connections
 	perCallConnsMu         sync.Mutex                         // Serializes building a perCallConn on a miss
+	maxProtocolVersion     atomic.Value                       // Global max protocol version (string); see ResolveMaxProtocolVersion
+	pendingRenegotiation   sync.Map                           // client ID -> struct{}: a protocol version change not yet applied to its connection
 
 	// Plugin pipeline access for connect/ping/list_tools hooks. nil-safe — gates short-circuit
 	// to the underlying op when no pipeline is configured. Also used by ToolsManager for the
@@ -198,6 +201,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 		credStore:              credStore,
 		inProcessServerFactory: config.InProcessServerFactory,
 	}
+	manager.maxProtocolVersion.Store(config.MaxProtocolVersion)
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
 	var pluginPipelineProvider func() PluginPipeline
 	var releasePluginPipeline func(pipeline PluginPipeline)

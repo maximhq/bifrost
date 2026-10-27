@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -239,6 +240,8 @@ type MCPConfig struct {
 	ClientConfigs     []*MCPClientConfig    `json:"client_configs,omitempty"`      // Per-client execution configurations
 	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
+	// MaxProtocolVersion caps the MCP protocol version offered to upstreams ("" or "auto" = newest supported).
+	MaxProtocolVersion string `json:"max_protocol_version,omitempty"`
 
 	// VirtualMCPs are Virtual MCP definitions declared in config.json: named bundles of tools from one
 	// or more MCP clients, served at /mcp/<endpoint_slug> and assignable to virtual keys. Reconciled
@@ -509,6 +512,30 @@ type MCPServerInstructions struct {
 	Instructions string `json:"instructions"`
 	// MaxLength is this server's own byte cap; 0 defers to the global one.
 	MaxLength int `json:"max_length,omitempty"`
+}
+
+// MCP protocol versions an upstream connection can be capped at.
+const (
+	MCPMaxProtocolVersionAuto  = "auto" // newest version Bifrost supports
+	MCPProtocolVersion20260728 = mcp.ProtocolVersion20260728
+	MCPProtocolVersion20251125 = mcp.ProtocolVersion20251125
+	MCPProtocolVersion20250618 = mcp.ProtocolVersion20250618
+)
+
+// MCPMaxProtocolVersions lists the values a max protocol version can be set to, newest first.
+var MCPMaxProtocolVersions = []string{MCPMaxProtocolVersionAuto, MCPProtocolVersion20260728, MCPProtocolVersion20251125, MCPProtocolVersion20250618}
+
+// IsValidMCPMaxProtocolVersion reports whether v is "" (use the default) or one of MCPMaxProtocolVersions.
+func IsValidMCPMaxProtocolVersion(v string) bool {
+	return v == "" || slices.Contains(MCPMaxProtocolVersions, v)
+}
+
+// ValidateMCPMaxProtocolVersion rejects a value IsValidMCPMaxProtocolVersion does not accept, naming field.
+func ValidateMCPMaxProtocolVersion(field, v string) error {
+	if IsValidMCPMaxProtocolVersion(v) {
+		return nil
+	}
+	return fmt.Errorf("%s must be one of %s, got %q", field, strings.Join(MCPMaxProtocolVersions, ", "), v)
 }
 
 // MCPAuthType defines the authentication type for MCP connections
@@ -825,6 +852,7 @@ type MCPClientConfig struct {
 	NeedsSessionStickiness *bool              `json:"needs_session_stickiness,omitempty"`
 	RequirePublicTarget    bool               `json:"require_public_target,omitempty"`   // Server-set: registered without admin auth, so every dial must resolve to a public address
 	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global; negative values are rejected)
+	MaxProtocolVersion     string             `json:"max_protocol_version,omitempty"`    // Per-client cap on the MCP protocol version ("" = use global, "auto" = newest supported)
 	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
 	MaxInstructionsLength  int                `json:"max_instructions_length,omitempty"` // Per-client override for the forwarded instruction byte cap (0 = use global from tool_manager_config)
 	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`            // Tool pricing for each tool (cost per execution)

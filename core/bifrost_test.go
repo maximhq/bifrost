@@ -8032,6 +8032,33 @@ func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
 	}
 }
 
+// TestUpdateMCPMaxProtocolVersion_LikeOtherGlobalMCPSettings: the global cap arrives through MCPConfig
+// and is hot-reloaded on the running manager, like the tool sync interval; without a manager the
+// update is refused, and an unsupported value is refused either way.
+func TestUpdateMCPMaxProtocolVersion_LikeOtherGlobalMCPSettings(t *testing.T) {
+	without, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer without.Shutdown()
+	if err := without.UpdateMCPMaxProtocolVersion(schemas.MCPProtocolVersion20250618); err == nil {
+		t.Fatal("without an MCP manager the update must be refused, as UpdateMCPToolSyncInterval is")
+	}
+
+	with, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger(),
+		MCPConfig: &schemas.MCPConfig{MaxProtocolVersion: schemas.MCPProtocolVersion20250618}})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer with.Shutdown()
+	if err := with.UpdateMCPMaxProtocolVersion("latest"); err == nil {
+		t.Fatal("an unsupported version must be refused")
+	}
+	if err := with.UpdateMCPMaxProtocolVersion(schemas.MCPProtocolVersion20251125); err != nil {
+		t.Fatalf("updating the running manager's cap: %v", err)
+	}
+}
+
 // TestSetMCPInProcessServerFactory_RacesLazyManagerCreation: the HTTP transport
 // registers the openapi factory after Init, while a request may be lazily
 // creating the MCP manager. Whichever wins, the manager that ends up serving

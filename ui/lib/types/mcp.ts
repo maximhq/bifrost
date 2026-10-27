@@ -282,6 +282,7 @@ export interface MCPClientConfig {
 	// public address. Never cleared once set.
 	require_public_target?: boolean;
 	tool_pricing?: Record<string, number>;
+	max_protocol_version?: string; // Per-client cap on the MCP protocol version ("" = use global, "auto" = newest)
 	// Per-client override (0 = use global). API returns NANOSECONDS
 	// (Go time.Duration), while updates send minutes — convert with
 	// toolSyncIntervalToMinutes before showing or resending this value.
@@ -383,6 +384,7 @@ export interface CreateMCPClientRequest {
 	// Only meaningful when connection_type === "http". See MCPClientConfig's
 	// field doc for the full contract.
 	needs_session_stickiness?: boolean;
+	max_protocol_version?: string; // omitted or "" = follow the global setting, "auto" = newest supported
 	// Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allowed_extra_headers?: string[];
 }
@@ -435,6 +437,7 @@ export interface UpdateMCPClientRequest {
 	needs_session_stickiness?: boolean;
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global)
+	max_protocol_version?: string; // "" = use global, "auto" = newest
 	tool_execution_timeout?: number; // Per-client tool execution timeout in seconds (0 = use global)
 	max_instructions_length?: number; // Per-client cap on forwarded instructions in bytes (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.

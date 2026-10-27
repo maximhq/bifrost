@@ -77,6 +77,7 @@ import {
 	type OpenAPICredentialField,
 	type OpenAPISourceMode
 } from "./mcpClientOpenApiUtils";
+import { MaxProtocolVersionSelect } from "./maxProtocolVersionSelect";
 import { ConnectionFailureBlock } from "./mcpConnectionFailure";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreviewPanel";
@@ -211,6 +212,7 @@ export default function MCPClientSheet({
 
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
+	const globalMaxProtocolVersion = bifrostConfig?.client_config?.mcp_max_protocol_version || "auto";
 	const globalToolExecutionTimeout = bifrostConfig?.client_config?.mcp_tool_execution_timeout ?? 30;
 	const globalMaxInstructionsLength = bifrostConfig?.client_config?.mcp_max_instructions_per_client || 4096;
 	// External base URL + copy for the read-only endpoint the client is served at (/mcp/<slug>).
@@ -520,6 +522,7 @@ export default function MCPClientSheet({
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+			max_protocol_version: (mcpClient.config.max_protocol_version ?? "") as MCPClientUpdateSchema["max_protocol_version"],
 			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			max_instructions_length: mcpClient.config.max_instructions_length ?? 0,
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
@@ -595,6 +598,7 @@ export default function MCPClientSheet({
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+			max_protocol_version: (mcpClient.config.max_protocol_version ?? "") as MCPClientUpdateSchema["max_protocol_version"],
 			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			max_instructions_length: mcpClient.config.max_instructions_length ?? 0,
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
@@ -865,6 +869,7 @@ export default function MCPClientSheet({
 					// interval set in config.json, so echoing the field back on an
 					// unrelated edit would silently rewrite it.
 					tool_sync_interval: form.formState.dirtyFields.tool_sync_interval ? (data.tool_sync_interval ?? 0) : undefined,
+					max_protocol_version: form.formState.dirtyFields.max_protocol_version ? (data.max_protocol_version ?? "") : undefined,
 					tool_execution_timeout: data.tool_execution_timeout ?? 0,
 					max_instructions_length: data.max_instructions_length ?? 0,
 					allowed_extra_headers: data.allowed_extra_headers,
@@ -1455,6 +1460,38 @@ export default function MCPClientSheet({
 														);
 													}}
 												/>
+												{!isOpenAPIClient && (
+													<FormField
+														control={form.control}
+														name="max_protocol_version"
+														render={({ field }) => (
+															<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+																<div className="flex flex-col items-start gap-0.5">
+																	<div className="flex items-start gap-2">
+																		<FormLabel>Max Protocol Version</FormLabel>
+																		<TooltipProvider>
+																			<Tooltip>
+																				<TooltipTrigger asChild>
+																					<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																				</TooltipTrigger>
+																				<TooltipContent className="max-w-xs">
+																					<p>
+																						Newest MCP protocol version Bifrost offers this server. Changing it reconnects the server at the
+																						new version.
+																					</p>
+																				</TooltipContent>
+																			</Tooltip>
+																		</TooltipProvider>
+																	</div>
+																	{field.value === "" && <p className="text-muted-foreground text-xs">Using global setting</p>}
+																</div>
+																<FormControl>
+																	<MaxProtocolVersionSelect value={field.value ?? ""} onChange={field.onChange} globalValue={globalMaxProtocolVersion} />
+																</FormControl>
+															</FormItem>
+														)}
+													/>
+												)}
 												<FormField
 													control={form.control}
 													name="tool_execution_timeout"

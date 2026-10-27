@@ -287790,6 +287790,552 @@
           ]
         }
       ]
+    },
+    {
+      "name": "274. MCP max protocol version setting (mcp-max-protocol-version) [SERIAL]",
+      "description": "The MCP max protocol version caps the protocol revision Bifrost offers upstream MCP servers (auto, 2026-07-28, 2025-11-25, 2025-06-18), globally (client_config.mcp_max_protocol_version) and per server (max_protocol_version). These cases pin the API contract: an unsupported value is refused with 400 on both endpoints, a global value persists, a config save that omits the field keeps the stored cap (so an upgrade's 2025-06-18 pin is never lifted by a caller unaware of it), and a server created without the field follows the global setting. Negotiation itself is covered by Go tests (TestMaxProtocolVersion_*): the harness MCP fixture only speaks 2025-06-18. The folder reads the stored value first and restores it last (an empty original is restored as auto, which means the same); an interrupted run can leave 2025-11-25 in place and one harness_maxproto_* client behind. No provider calls; the openai keyword is a harness filter label. Run with FEATURE=mcp-max-protocol-version.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai mcp-max-protocol-version read current config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"reads the stored client config\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  pm.collectionVariables.set('maxProtocolVersionClientConfig', JSON.stringify(cc));",
+                  "  pm.collectionVariables.set('maxProtocolVersionOriginal', cc.mcp_max_protocol_version || 'auto');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai mcp-max-protocol-version PUT /api/config rejects an unsupported version",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('maxProtocolVersionClientConfig'));",
+                  "cc.mcp_max_protocol_version = 'latest';",
+                  "pm.variables.set('maxProtocolVersionBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"an unsupported global max protocol version is refused\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('mcp_max_protocol_version');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{maxProtocolVersionBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-max-protocol-version PUT /api/config sets 2025-11-25",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('maxProtocolVersionClientConfig'));",
+                  "cc.mcp_max_protocol_version = '2025-11-25';",
+                  "pm.variables.set('maxProtocolVersionBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the global cap is accepted\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{maxProtocolVersionBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-max-protocol-version the global cap persists",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the global cap is stored\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var v = pm.response.json().client_config.mcp_max_protocol_version;",
+                  "  pm.expect(v, 'stored mcp_max_protocol_version: ' + pm.response.text()).to.equal('2025-11-25');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-max-protocol-version PUT /api/config without the field",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('maxProtocolVersionClientConfig'));",
+                  "delete cc.mcp_max_protocol_version;",
+                  "pm.variables.set('maxProtocolVersionBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a save that omits the field is accepted\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{maxProtocolVersionBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-max-protocol-version omitting the field keeps the cap",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a caller unaware of the field never lifts the cap\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var v = pm.response.json().client_config.mcp_max_protocol_version;",
+                  "  pm.expect(v, 'stored mcp_max_protocol_version: ' + pm.response.text()).to.equal('2025-11-25');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai mcp-max-protocol-version POST /api/mcp/client rejects an unsupported version",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"an unsupported per-client max protocol version is refused before dialing\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('max_protocol_version');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness_max_protocol_version_invalid\",\"connection_type\":\"http\",\"connection_string\":\"http://127.0.0.1:9/mcp\",\"auth_type\":\"none\",\"max_protocol_version\":\"2024-11-05\"}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-max-protocol-version provision a client without the field on the SSE fixture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('maxProtocolVersionClient', 'harness_maxproto_' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the client registers against the SSE fixture\", function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{maxProtocolVersionClient}}\",\"connection_type\":\"sse\",\"connection_string\":\"http://localhost:3012/sse\",\"auth_type\":\"none\"}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-max-protocol-version a new client follows the global setting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a client created without the field follows the global setting\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "  var name = pm.collectionVariables.get('maxProtocolVersionClient');",
+                  "  var mine = (pm.response.json().clients || []).filter(function (c) { return c.config && c.config.name === name; })[0];",
+                  "  pm.expect(mine, 'this run\\'s client is not listed: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.collectionVariables.set('maxProtocolVersionClientId', mine.config.client_id);",
+                  "  pm.expect(mine.config.max_protocol_version || '', 'a new client must follow the global setting: ' + pm.response.text()).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients?search={{maxProtocolVersionClient}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "{{maxProtocolVersionClient}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-max-protocol-version remove the client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"cleanup removes this run's client\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{maxProtocolVersionClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{maxProtocolVersionClientId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-max-protocol-version restore the original global cap",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('maxProtocolVersionClientConfig'));",
+                  "cc.mcp_max_protocol_version = pm.collectionVariables.get('maxProtocolVersionOriginal');",
+                  "pm.variables.set('maxProtocolVersionBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"the original setting is restored\", function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{maxProtocolVersionBody}}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

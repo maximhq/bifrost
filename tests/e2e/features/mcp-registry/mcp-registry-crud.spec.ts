@@ -6,6 +6,7 @@ import {
   createSTDIOClientData,
 } from "./mcp-registry.data";
 import { expectListLoadError } from "../../core/utils/test-helpers";
+import { coreConfigApi } from "../../core/actions/api";
 
 const hasSSEHeaders = Boolean(process.env.MCP_SSE_HEADERS);
 
@@ -149,6 +150,79 @@ test.describe("MCP Registry", () => {
       // Client should not exist
       const exists = await mcpRegistryPage.clientExists(testName);
       expect(exists).toBe(false);
+    });
+  });
+
+  test.describe("Max Protocol Version", () => {
+    test("should create a client with a max protocol version and switch it to the global setting", async ({
+      mcpRegistryPage,
+      request,
+    }) => {
+      const clientData = createHTTPClientData({
+        name: `capped_${Date.now()}`,
+        maxProtocolVersion: "2025-06-18",
+      });
+      const stored = () => mcpRegistryPage.storedMaxProtocolVersion(request, clientData.name);
+
+      const created = await mcpRegistryPage.createClient(clientData);
+      expect(created).toBe(true);
+      createdClients.push(clientData.name);
+      expect(await stored()).toBe("2025-06-18");
+
+      await mcpRegistryPage.editClient(clientData.name, { maxProtocolVersion: "global" });
+      expect(await stored()).toBe("");
+    });
+
+    test("should default a new client to the global setting", async ({ mcpRegistryPage }) => {
+      await mcpRegistryPage.createBtn.click();
+      await expect(mcpRegistryPage.sheet).toBeVisible();
+      await expect(mcpRegistryPage.sheet.getByTestId("mcp-client-max-protocol-version-select")).toContainText("Use global setting");
+      // The form label must target the select, not the wrapper.
+      await expect(mcpRegistryPage.sheet.getByLabel("Max Protocol Version", { exact: true })).toHaveAttribute(
+        "data-testid",
+        "mcp-client-max-protocol-version-select",
+      );
+      await mcpRegistryPage.closeSheet();
+    });
+
+    test.describe("following the global setting", () => {
+      // Rewrites the shared global cap, so these must not interleave with each other.
+      test.describe.configure({ mode: "serial" });
+      let originalGlobal: string;
+
+      test.beforeEach(async ({ request, mcpRegistryPage }) => {
+        originalGlobal =
+          ((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version as string | undefined) || "auto";
+        await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: "2025-11-25" });
+        // The outer beforeEach loaded the page with the previous global.
+        await mcpRegistryPage.goto();
+      });
+
+      test.afterEach(async ({ request }) => {
+        await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: originalGlobal });
+      });
+
+      test("should create a client that follows the global setting when none is picked", async ({
+        mcpRegistryPage,
+        request,
+      }) => {
+        const clientData = createHTTPClientData({ name: `follows_global_${Date.now()}` });
+
+        const created = await mcpRegistryPage.createClient(clientData);
+        expect(created).toBe(true);
+        createdClients.push(clientData.name);
+
+        expect(
+          await mcpRegistryPage.storedMaxProtocolVersion(request, clientData.name),
+          "a new client has no cap of its own",
+        ).toBe("");
+
+        await mcpRegistryPage.viewClientDetails(clientData.name);
+        await expect(mcpRegistryPage.detailSheet.getByTestId("mcp-client-max-protocol-version-select")).toContainText(
+          "Use global setting (2025-11-25)",
+        );
+        await mcpRegistryPage.closeDetailSheet();
+      });
     });
   });
 
