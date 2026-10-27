@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -22,4 +23,32 @@ func TestCountRunesAcrossChunks(t *testing.T) {
 		got += int64(utf8.RuneCount(carry[:carryLen]))
 		assert.Equal(t, want, got, "chunk size %d", size)
 	}
+}
+
+// The per-chunk cost of billing a stream by size: one add for bytes, a rune scan only when a route
+// bills characters. Run with -benchmem; neither path allocates.
+func BenchmarkCountRunes(b *testing.B) {
+	b.Run("ascii_4k", func(b *testing.B) {
+		ascii := make([]byte, 4096)
+		for i := range ascii {
+			ascii[i] = 'a'
+		}
+		var carry [utf8.UTFMax]byte
+		carryLen := 0
+		b.SetBytes(int64(len(ascii)))
+		b.ReportAllocs()
+		for b.Loop() {
+			countRunes(ascii, &carry, &carryLen)
+		}
+	})
+	b.Run("multibyte_4k", func(b *testing.B) {
+		chunk := []byte(strings.Repeat("héllo wörld € ", 4096/len("héllo wörld € ")))
+		var carry [utf8.UTFMax]byte
+		carryLen := 0
+		b.SetBytes(int64(len(chunk)))
+		b.ReportAllocs()
+		for b.Loop() {
+			countRunes(chunk, &carry, &carryLen)
+		}
+	})
 }

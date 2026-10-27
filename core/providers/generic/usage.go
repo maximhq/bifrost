@@ -151,7 +151,7 @@ func (u resolvedUsage) measureUnits(contentType string, body []byte) (float64, b
 		// What per-character APIs bill (Azure Speech counts characters of the SSML): runes, not
 		// bytes, so multi-byte text is not over-counted. Any content type, invalid UTF-8 counts
 		// byte-wise as Go does.
-		return float64(utf8.RuneCount(body)), true
+		return float64(providerUtils.RuneCount(body)), true
 	default:
 		if !looksJSON(contentType, body) {
 			return 0, false

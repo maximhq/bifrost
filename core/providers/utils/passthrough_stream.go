@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -67,7 +68,7 @@ func countRunes(chunk []byte, carry *[utf8.UTFMax]byte, carryLen *int) int64 {
 		if !utf8.FullRune(carry[:*carryLen]) {
 			return 0 // the chunk ended inside the same rune
 		}
-		runes += int64(utf8.RuneCount(carry[:*carryLen]))
+		runes += int64(RuneCount(carry[:*carryLen]))
 		*carryLen = 0
 		chunk = chunk[need:]
 	}
@@ -80,9 +81,19 @@ func countRunes(chunk []byte, carry *[utf8.UTFMax]byte, carryLen *int) int64 {
 			break
 		}
 	}
-	runes += int64(utf8.RuneCount(chunk[:end]))
+	runes += int64(RuneCount(chunk[:end]))
 	*carryLen = copy(carry[:], chunk[end:])
 	return runes
+}
+
+// RuneCount counts the UTF-8 runes in b exactly as utf8.RuneCount does, without the string copy
+// that utf8.RuneCount takes on its non-ASCII path (one allocation the size of the input, per call;
+// per chunk on a stream).
+func RuneCount(b []byte) int {
+	if len(b) == 0 {
+		return 0
+	}
+	return utf8.RuneCountInString(unsafe.String(unsafe.SliceData(b), len(b)))
 }
 
 // utfSeqLen is the byte length a UTF-8 lead byte announces; an invalid lead is one byte.
@@ -253,7 +264,7 @@ func streamPassthrough(
 		finalize := func() {
 			if success && params.FinalUsage != nil {
 				if carryLen > 0 {
-					bodyRunes += int64(utf8.RuneCount(carry[:carryLen]))
+					bodyRunes += int64(RuneCount(carry[:carryLen]))
 					carryLen = 0
 				}
 				if u := params.FinalUsage(bodyBytes, bodyRunes); u != nil {
