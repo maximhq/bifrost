@@ -153,11 +153,22 @@ fallbacks and non-OpenAI models do not apply on this path. Use the
 [virtual key setup](#configure-codex-manually-with-a-virtual-key) for those.
 </Note>
 
-The virtual key's governance still applies. Bifrost checks each turn's model
-against the key's allowed models, and budgets and rate limits count the usage
-ChatGPT reports. The model list request names no model, so a key that allows
-only some OpenAI models can still load the picker. Picking a model the key does
-not allow fails on the first turn.
+By default Bifrost logs this traffic but does not govern it. The ChatGPT plan
+pays for these requests and enforces its own usage limits, so a Bifrost budget
+on top would cap spending that never shows up on your provider bill. Each
+request is logged with its user, tokens and estimated cost. Model allowlists,
+budgets and rate limits are skipped, and a signed-in user needs no access
+profile. Bifrost still refuses a virtual key that doesn't exist or was revoked,
+and a user whose access profiles have all expired or been turned off.
+
+To govern this traffic like any other inference, turn on **Govern Codex Traffic
+Signed In With ChatGPT** under **Settings > Security**, or set
+`client.govern_chatgpt_sign_in` to `true` in `config.json`. Bifrost then checks
+each turn's model against the key's allowed models, and budgets and rate limits
+count the usage ChatGPT reports. The model list request names no model, so a
+key that allows only some OpenAI models can still load the picker. Picking a
+model the key does not allow fails on the first turn. The change applies on the
+next request without a restart.
 
 The ChatGPT token stands in for a Bifrost provider key, so no OpenAI key is
 picked for these requests. Limits set on a provider key, key weights and the
@@ -176,9 +187,9 @@ set on the app process itself.
 
 Bifrost Enterprise also supports the guide's native gateway OAuth option. Each
 person signs in to your identity provider from Codex, so requests are
-attributed to them and their user budgets, rate limits and access profile
-apply. No virtual key is needed, and the token expires and refreshes like any
-other sign-in.
+attributed to them in the logs. With `client.govern_chatgpt_sign_in` on, their
+access profile, user budgets and rate limits apply as well. No virtual key is
+needed, and the token expires and refreshes like any other sign-in.
 
 Codex runs the whole sign-in against your identity provider. Bifrost takes no
 part in it and only validates the token Codex sends afterwards, against the

@@ -1762,9 +1762,12 @@ func (codexPassthroughAccount) GetConfigForProvider(schemas.ModelProvider) (*sch
 
 // codexPassthroughReceipt witnesses the real router-to-core request before an explicit synthetic policy denial.
 type codexPassthroughReceipt struct {
-	request          *schemas.BifrostRequest
-	skipKeySelection bool
-	skipModelCheck   bool
+	request             *schemas.BifrostRequest
+	skipKeySelection    bool
+	skipModelCheck      bool
+	skipProviderCheck   bool
+	skipSpendingChecks  bool
+	admitUngrantedUsers bool
 }
 
 // GetName identifies the isolated test plugin.
@@ -1784,6 +1787,9 @@ func (p *codexPassthroughReceipt) PreLLMHook(ctx *schemas.BifrostContext, req *s
 	p.request = &snapshot
 	p.skipKeySelection, _ = ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
 	p.skipModelCheck, _ = ctx.Value(schemas.BifrostContextKeySkipModelCheck).(bool)
+	p.skipProviderCheck, _ = ctx.Value(schemas.BifrostContextKeySkipProviderCheck).(bool)
+	p.skipSpendingChecks, _ = ctx.Value(schemas.BifrostContextKeySkipBudgetAndRateLimits).(bool)
+	p.admitUngrantedUsers, _ = ctx.Value(schemas.BifrostContextKeyAdmitUngrantedUser).(bool)
 	status := 403
 	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "synthetic policy denial"}}}, nil
 }
@@ -1803,7 +1809,7 @@ func TestChatGPTPassthroughStreamsWithoutBodyFlag(t *testing.T) {
 			require.NoError(t, err)
 			defer client.Shutdown()
 			r := router.New()
-			NewChatGPTPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+			NewChatGPTPassthroughRouter(client, &mockHandlerStore{governChatGPTSignIn: true}, nil, &testLogger{}).RegisterRoutes(r)
 			body := `{"model":"gpt-5.5","input":[],"future":9007199254740993` + flag + `}`
 			var ctx fasthttp.RequestCtx
 			ctx.Request.Header.SetMethod("POST")
@@ -1860,6 +1866,33 @@ func TestChatGPTPassthroughForwardsCodexModelList(t *testing.T) {
 	require.NotContains(t, req.SafeHeaders, "cookie")
 }
 
+// TestChatGPTPassthroughGovernanceFollowsSetting covers client.govern_chatgpt_sign_in: off by default,
+// a responses turn is admitted without a permit and skips every allowlist and limit; on, none of that is skipped.
+func TestChatGPTPassthroughGovernanceFollowsSetting(t *testing.T) {
+	for _, governed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("governed=%v", governed), func(t *testing.T) {
+			plugin := &codexPassthroughReceipt{}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger()})
+			require.NoError(t, err)
+			defer client.Shutdown()
+			r := router.New()
+			NewChatGPTPassthroughRouter(client, &mockHandlerStore{governChatGPTSignIn: governed}, nil, &testLogger{}).RegisterRoutes(r)
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/responses")
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.Header.Set("Authorization", "Bearer eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.signature")
+			ctx.Request.SetBodyString(`{"model":"gpt-5.5","input":[]}`)
+			r.Handler(&ctx)
+			require.NotNil(t, plugin.request)
+			require.Equal(t, !governed, plugin.admitUngrantedUsers)
+			require.Equal(t, !governed, plugin.skipModelCheck)
+			require.Equal(t, !governed, plugin.skipProviderCheck)
+			require.Equal(t, !governed, plugin.skipSpendingChecks)
+		})
+	}
+}
+
 // BenchmarkChatGPTPassthroughStreamDecision measures the route predicate without touching provider execution.
 func BenchmarkChatGPTPassthroughStreamDecision(b *testing.B) {
 	cfg := NewChatGPTPassthroughRouter(nil, nil, nil, &testLogger{}).passthroughCfg
@@ -1875,6 +1908,22 @@ func BenchmarkChatGPTPassthroughModelFreeDecision(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = cfg.ModelFreePath("POST", "/backend-api/codex/responses")
+	}
+}
+
+// BenchmarkChatGPTPassthroughUngovernedDecision measures the governance branch each ChatGPT passthrough request runs, with the setting off and on.
+func BenchmarkChatGPTPassthroughUngovernedDecision(b *testing.B) {
+	for _, governed := range []bool{false, true} {
+		b.Run(fmt.Sprintf("governed=%v", governed), func(b *testing.B) {
+			cfg := NewChatGPTPassthroughRouter(nil, &mockHandlerStore{governChatGPTSignIn: governed}, nil, &testLogger{}).passthroughCfg
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				if cfg.Ungoverned != nil && cfg.Ungoverned() {
+					markPassthroughUngoverned(bifrostCtx)
+				}
+			}
+		})
 	}
 }
 
