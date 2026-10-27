@@ -629,6 +629,20 @@ func migrationClickHouseWarpTopicTables(ctx context.Context, db *gorm.DB, cluste
 	return clickhouseReconcileTTL(ctx, db, "warp_topic_unmatched", cluster, chLogsTTL(retentionDays), logger)
 }
 
+// migrationClickHouseWarpVectorDeletesTable creates the record of deleted logs
+// whose Warp vector could not be removed. It has no TTL: a row goes when its
+// retry succeeds, and expiring it would leave the vector behind.
+func migrationClickHouseWarpVectorDeletesTable(ctx context.Context, db *gorm.DB, cluster string, _ int, logger schemas.Logger) error {
+	logger.Info("[logstore] clickhouse: creating table warp_vector_deletes")
+	if err := clickhouseCreateTable(ctx, db, &WarpVectorDelete{}, chTableOpts{
+		table:   "warp_vector_deletes",
+		orderBy: "log_id",
+	}, cluster); err != nil {
+		return fmt.Errorf("clickhouse: create warp_vector_deletes table: %w", err)
+	}
+	return clickhouseReconcileColumns(ctx, db, &WarpVectorDelete{}, "warp_vector_deletes", cluster, logger)
+}
+
 // clickhouseMigrationSteps lists the per-table migrations in execution order,
 // mirroring logstoreMigrationSteps for the SQL stores.
 var clickhouseMigrationSteps = []clickhouseMigrationStep{
@@ -640,6 +654,7 @@ var clickhouseMigrationSteps = []clickhouseMigrationStep{
 	migrationClickHouseWarpConversationTables,
 	migrationClickHouseUserAgentMappingsTable,
 	migrationClickHouseWarpTopicTables,
+	migrationClickHouseWarpVectorDeletesTable,
 }
 
 // triggerClickHouseMigrations runs all registered ClickHouse table migrations

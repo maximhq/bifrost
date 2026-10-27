@@ -246,6 +246,14 @@ func oauthAllowlistedProxySelector(next func(*http.Request) (*url.URL, error), a
 	}
 }
 
+// NewAdminConfiguredHTTPClient returns a client for an endpoint an authenticated
+// administrator configured (such as a trusted identity provider's JWKS): the MCP
+// OAuth chain's proxy handling and SSRF guard, honoring the private-target
+// allowlist. Build one per request so allowlist changes apply immediately.
+func NewAdminConfiguredHTTPClient(timeout time.Duration) *http.Client {
+	return newOAuthDiscoveryHTTPClient(withRequirePublicTarget(context.Background(), false), timeout)
+}
+
 // newOAuthDiscoveryHTTPClient returns a client for the OAuth chain whose
 // transport applies the destination policy recorded on ctx (see
 // requirePublicTargetFrom).
@@ -499,7 +507,7 @@ func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string,
 func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string) (*OAuthMetadata, error) {
 	for _, issuer := range authServers {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Fetching metadata from authorization server: %s", issuer))
-		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer)
+		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer, hasAuthorizationEndpoint)
 		if err == nil && metadata != nil {
 			logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully fetched metadata from: %s", issuer))
 			return metadata, nil
@@ -509,9 +517,17 @@ func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string)
 	return nil, fmt.Errorf("failed to fetch metadata from any authorization server")
 }
 
+// hasAuthorizationEndpoint accepts metadata an interactive sign-in can use.
+func hasAuthorizationEndpoint(m *OAuthMetadata) bool { return m.AuthorizationURL != "" }
+
+// hasTokenEndpoint accepts metadata a token-endpoint-only grant, such as
+// redeeming an ID-JAG, can use: a server that only does that may publish no
+// authorization endpoint.
+func hasTokenEndpoint(m *OAuthMetadata) bool { return m.TokenURL != "" }
+
 // fetchSingleAuthServerMetadata tries multiple well-known endpoints for a single authorization server
-// Implements RFC 8414 discovery
-func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMetadata, error) {
+// and returns the first document usable accepts. Implements RFC 8414 discovery
+func fetchSingleAuthServerMetadata(ctx context.Context, issuer string, usable func(*OAuthMetadata) bool) (*OAuthMetadata, error) {
 	base, path := splitURL(issuer)
 	if base == "" {
 		return nil, fmt.Errorf("invalid issuer URL: %s", issuer)
@@ -555,8 +571,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 			}
 
 			if err := json.Unmarshal(bodyBytes, &metadata); err == nil {
-				// Validate that we got at least authorization_endpoint
-				if metadata.AuthorizationURL != "" {
+				if usable(&metadata) {
 					logger.Debug(fmt.Sprintf("[OAuth Discovery] Valid metadata found at: %s", candidateURL))
 					return &metadata, nil
 				}

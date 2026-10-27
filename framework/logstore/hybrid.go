@@ -2492,6 +2492,12 @@ func (h *HybridLogStore) UpsertWarpTopicAssignments(ctx context.Context, assignm
 	return h.inner.UpsertWarpTopicAssignments(ctx, assignments)
 }
 
+// DeleteWarpTopicAssignmentsUnmatchedSince removes the rows filed under no
+// topic at or after since.
+func (h *HybridLogStore) DeleteWarpTopicAssignmentsUnmatchedSince(ctx context.Context, since time.Time) error {
+	return h.inner.DeleteWarpTopicAssignmentsUnmatchedSince(ctx, since)
+}
+
 // DeleteWarpTopicAssignments removes the given requests' assignments.
 func (h *HybridLogStore) DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error {
 	return h.inner.DeleteWarpTopicAssignments(ctx, logIDs)
@@ -2536,6 +2542,21 @@ func (h *HybridLogStore) CountWarpTopicUnmatched(ctx context.Context, embeddingS
 // DeleteWarpTopicUnmatched removes requests from the pool.
 func (h *HybridLogStore) DeleteWarpTopicUnmatched(ctx context.Context, logIDs []string) error {
 	return h.inner.DeleteWarpTopicUnmatched(ctx, logIDs)
+}
+
+// AddWarpVectorDeletes records deleted logs whose vector delete failed.
+func (h *HybridLogStore) AddWarpVectorDeletes(ctx context.Context, rows []WarpVectorDelete) error {
+	return h.inner.AddWarpVectorDeletes(ctx, rows)
+}
+
+// ListWarpVectorDeletes returns up to limit pending vector deletes.
+func (h *HybridLogStore) ListWarpVectorDeletes(ctx context.Context, limit int) ([]WarpVectorDelete, error) {
+	return h.inner.ListWarpVectorDeletes(ctx, limit)
+}
+
+// DeleteWarpVectorDeletes removes the rows of logs whose vector is gone.
+func (h *HybridLogStore) DeleteWarpVectorDeletes(ctx context.Context, logIDs []string) error {
+	return h.inner.DeleteWarpVectorDeletes(ctx, logIDs)
 }
 
 // PruneWarpTopicUnmatched bounds the pool by age and by count.

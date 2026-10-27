@@ -76,6 +76,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { parseAsBoolean, parseAsString, useQueryState } from "nuqs";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
+import { FallbackChainBanner, FallbackChainTimeline, useFallbackChain } from "../views/fallbackChain";
 import CollapsibleBox from "../views/collapsibleBox";
 import ImageView from "../views/imageView";
 import LogChatMessageView, { LogChatFileBlockView } from "../views/logChatMessageView";
@@ -834,6 +835,7 @@ export function LogDetailView({
 	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
 	const complexityRouting = deriveComplexityRouting(log);
+	const fallbackChain = useFallbackChain(log);
 	// A downstream build can draw its own routing record at the top of the Routing tab.
 	const RoutingPanel = getLogRoutingPanel();
 	const isPassthrough = isPassthroughLog(log);
@@ -1136,6 +1138,7 @@ export function LogDetailView({
 				</div>
 			</div>
 			<div className="flex flex-col gap-4 px-4 pb-4 md:px-8 md:pb-8">
+				{fallbackChain && <FallbackChainBanner chain={fallbackChain} currentId={log.id} onOpenLog={onOpenLog} />}
 				<div className="border-border rounded-sm border">
 					<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
 						<div className="min-w-0 flex-1">
@@ -3264,6 +3267,7 @@ export function LogDetailView({
 					</TabsContent>
 
 					<TabsContent value="routing" className="space-y-3">
+						{fallbackChain && <FallbackChainTimeline chain={fallbackChain} currentId={log.id} onOpenLog={onOpenLog} />}
 						{RoutingPanel && <RoutingPanel log={log} />}
 						{log.attempt_trail && log.attempt_trail.length > 1 && (
 							<CollapsibleBox

@@ -13,6 +13,7 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -544,10 +545,10 @@ type MCPTokenExchangeConfig struct {
 	// clients. Ignored when UseIdPCredentials is true. Supports env./vault.
 	// references.
 	ClientSecret *SecretVar `json:"client_secret,omitempty"`
-	// UseIdPCredentials, when true, performs the exchange using the SSO
-	// login application's own client ID/secret (from the deployment's
-	// configured identity-provider integration) instead of ClientID /
-	// ClientSecret above, which are then ignored. Some providers require
+	// UseIdPCredentials, when true (implied by the id_jag profile), performs
+	// the exchange using the SSO login application's own client ID/secret
+	// (from the deployment's configured identity-provider integration)
+	// instead of ClientID / ClientSecret above, which are then ignored. Some providers require
 	// this: Microsoft Entra ID's on-behalf-of grant only accepts an
 	// assertion whose audience matches the exchanging application, and
 	// Bifrost's own SSO login flow always requests a token self-audienced
@@ -572,6 +573,136 @@ type MCPTokenExchangeConfig struct {
 	// correct for providers with a single tenant-wide token endpoint (Entra,
 	// Auth0).
 	AuthorizationServerURL *string `json:"authorization_server_url,omitempty"`
+
+	// Profile selects how the upstream token is obtained: "" (direct) has the
+	// identity provider issue it; any other value is performed by a
+	// TokenExchangeProfile registered for that name. See IsIDJAG.
+	Profile string `json:"profile,omitempty"`
+	// The fields below configure the id_jag profile.
+	Resource              string     `json:"resource,omitempty"`                // resource indicator sent to the IdP; omitted when empty
+	ResourceTokenEndpoint *string    `json:"resource_token_endpoint,omitempty"` // upstream AS token endpoint; default discovered
+	ResourceClientID      *SecretVar `json:"resource_client_id,omitempty"`      // Bifrost's client at the upstream AS
+	ResourceClientSecret  *SecretVar `json:"resource_client_secret,omitempty"`  // omit for a public client
+	// private_key_jwt at the upstream AS instead of a secret
+	ResourcePrivateKey       *SecretVar `json:"resource_private_key,omitempty"`       // PEM RSA or EC key signing the client assertion
+	ResourceKeyID            string     `json:"resource_key_id,omitempty"`            // kid header of the client assertion
+	ResourceSigningAlgorithm string     `json:"resource_signing_algorithm,omitempty"` // default RS256; see OAuthSigningAlgorithms
+	// Assertion aud; default the upstream token endpoint (Okta, Entra). Set the issuer for servers that require it.
+	ResourceAssertionAudience string `json:"resource_assertion_audience,omitempty"`
+	// How resource_client_secret is sent: client_secret_basic or client_secret_post; empty follows discovery, else Basic.
+	ResourceClientAuthMethod string `json:"resource_client_auth_method,omitempty"`
+}
+
+// Values of MCPTokenExchangeConfig.ResourceClientAuthMethod.
+const (
+	ResourceClientAuthBasic = "client_secret_basic"
+	ResourceClientAuthPost  = "client_secret_post"
+)
+
+// Token-exchange profiles (MCPTokenExchangeConfig.Profile).
+const (
+	TokenExchangeProfileDirect = ""
+	TokenExchangeProfileIDJAG  = "id_jag"
+)
+
+// IsIDJAG reports whether the config uses the Cross App Access (ID-JAG)
+// profile: the identity provider issues an identity assertion for Audience,
+// which the upstream's own authorization server exchanges for its token with
+// the jwt-bearer grant.
+func (c *MCPTokenExchangeConfig) IsIDJAG() bool {
+	return c != nil && c.Profile == TokenExchangeProfileIDJAG
+}
+
+// ExchangesAsSSOApplication reports whether leg one authenticates as the SSO
+// login application. Always true for id_jag: the identity provider accepts the
+// user's sign-in token only from the app it was issued to, so a dedicated
+// exchange application cannot work there.
+func (c *MCPTokenExchangeConfig) ExchangesAsSSOApplication() bool {
+	return c != nil && (c.UseIdPCredentials || c.IsIDJAG())
+}
+
+// ResourceTokenEndpointURL returns the trimmed resource_token_endpoint, or ""
+// when unset.
+func (c *MCPTokenExchangeConfig) ResourceTokenEndpointURL() string {
+	if c == nil || c.ResourceTokenEndpoint == nil {
+		return ""
+	}
+	return strings.TrimSpace(*c.ResourceTokenEndpoint)
+}
+
+// ValidateProfile checks the profile name and the fields the id_jag profile
+// needs. The direct profile's own requirements are validated by callers.
+func (c *MCPTokenExchangeConfig) ValidateProfile() error {
+	if c == nil {
+		return nil
+	}
+	switch c.Profile {
+	case TokenExchangeProfileDirect:
+		return nil
+	case TokenExchangeProfileIDJAG:
+		if strings.TrimSpace(c.ResourceClientID.GetValue()) == "" && !c.ResourceClientID.IsFromSecret() {
+			return fmt.Errorf("token_exchange.resource_client_id is required for the id_jag profile")
+		}
+		if endpoint := c.ResourceTokenEndpointURL(); endpoint != "" && !IsHTTPSOrLoopbackURL(endpoint) {
+			return fmt.Errorf("token_exchange.resource_token_endpoint must be an https URL")
+		}
+		return c.validateResourceClientAuth()
+	}
+	return fmt.Errorf("token_exchange.profile must be empty or %q", TokenExchangeProfileIDJAG)
+}
+
+// UsesResourcePrivateKey reports whether Bifrost authenticates to the upstream
+// authorization server with private_key_jwt rather than a client secret.
+func (c *MCPTokenExchangeConfig) UsesResourcePrivateKey() bool {
+	return c != nil && (strings.TrimSpace(c.ResourcePrivateKey.GetValue()) != "" || c.ResourcePrivateKey.IsFromSecret())
+}
+
+// validateResourceClientAuth checks the upstream client authentication: a
+// secret or a private key, never both, and key settings only with a key.
+func (c *MCPTokenExchangeConfig) validateResourceClientAuth() error {
+	hasSecret := strings.TrimSpace(c.ResourceClientSecret.GetValue()) != "" || c.ResourceClientSecret.IsFromSecret()
+	if c.UsesResourcePrivateKey() {
+		if hasSecret {
+			return fmt.Errorf("token_exchange: set either resource_client_secret or resource_private_key, not both")
+		}
+		if c.ResourceClientAuthMethod != "" {
+			return fmt.Errorf("token_exchange.resource_client_auth_method applies to resource_client_secret, not resource_private_key")
+		}
+	} else if c.ResourceKeyID != "" || c.ResourceSigningAlgorithm != "" || c.ResourceAssertionAudience != "" {
+		return fmt.Errorf("token_exchange.resource_key_id, resource_signing_algorithm and resource_assertion_audience require resource_private_key")
+	}
+	switch c.ResourceClientAuthMethod {
+	case "", ResourceClientAuthBasic, ResourceClientAuthPost:
+	default:
+		return fmt.Errorf("token_exchange.resource_client_auth_method must be empty, %q or %q", ResourceClientAuthBasic, ResourceClientAuthPost)
+	}
+	if c.ResourceClientAuthMethod != "" && !hasSecret {
+		return fmt.Errorf("token_exchange.resource_client_auth_method requires resource_client_secret")
+	}
+	if aud := strings.TrimSpace(c.ResourceAssertionAudience); aud != "" && !IsHTTPSOrLoopbackURL(aud) {
+		return fmt.Errorf("token_exchange.resource_assertion_audience must be an https URL")
+	}
+	if alg := c.ResourceSigningAlgorithm; alg != "" && !slices.Contains(OAuthSigningAlgorithms, alg) {
+		return fmt.Errorf("token_exchange.resource_signing_algorithm must be one of %s", strings.Join(OAuthSigningAlgorithms, ", "))
+	}
+	return nil
+}
+
+// IsHTTPSOrLoopbackURL reports whether raw is an https URL, or plain http on a
+// loopback host for local testing. It checks only the URL: whether the host may
+// be dialed is decided by the OAuth client's private-target guard.
+func IsHTTPSOrLoopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || u.User != nil {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		return isLoopbackHost(u.Hostname())
+	}
+	return false
 }
 
 // DiffersFrom reports whether resolved's fields differ from c's, comparing
@@ -609,6 +740,14 @@ func (c *MCPTokenExchangeConfig) DiffersFrom(resolved *MCPTokenExchangeConfig) b
 		resolvedURL = *resolved.AuthorizationServerURL
 	}
 	if existingURL != resolvedURL {
+		return true
+	}
+	if c.Profile != resolved.Profile || c.Resource != resolved.Resource ||
+		!c.ResourceClientID.Equals(resolved.ResourceClientID) || !c.ResourceClientSecret.Equals(resolved.ResourceClientSecret) ||
+		!c.ResourcePrivateKey.Equals(resolved.ResourcePrivateKey) || c.ResourceKeyID != resolved.ResourceKeyID ||
+		c.ResourceSigningAlgorithm != resolved.ResourceSigningAlgorithm ||
+		c.ResourceAssertionAudience != resolved.ResourceAssertionAudience || c.ResourceClientAuthMethod != resolved.ResourceClientAuthMethod ||
+		c.ResourceTokenEndpointURL() != resolved.ResourceTokenEndpointURL() {
 		return true
 	}
 	existingScopes := slices.Clone(c.Scopes)

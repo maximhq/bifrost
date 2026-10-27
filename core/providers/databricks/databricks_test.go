@@ -1627,10 +1627,178 @@ func TestDatabricksDecisionSendsAIDecideBody(t *testing.T) {
 	}
 }
 
+// databricksSystemOneResponseBody is a Unity Gateway systemone reply for
+// newDatabricksDecisionRequest: Typesafe's answers map, the model as the gateway reports
+// it, and usage. The shape is as returned live; the values are synthetic.
+const databricksSystemOneResponseBody = `{"model":"databricks-openjev-qwen35-4b","answers":{
+	"escalate":{"type":"noul","noul":0.83},
+	"team":{"type":"choice","choice":"engineering","confidence":0.99,"probabilities":{"billing":0.0,"engineering":1.0}},
+	"severity":{"type":"score","score":1.82,"confidence":0.82,"legend":{"0":"Minor","1":"Major","2":"Critical"},"probabilities":{"0":0.02,"1":0.14,"2":0.84}}
+},"usage":{"input_tokens":66,"output_tokens":0}}`
+
+// TestDatabricksDecisionSendsSystemOneBody pins the System One call: an OpenJev model goes
+// to the workspace's Unity Gateway /ai-gateway/typesafe/v1/systemone with the PAT, the body
+// is Typesafe's systemone request with the Unity Catalog name as the model, a text-only
+// request carries no images header, and the reply's answers and usage are read as Typesafe's.
+func TestDatabricksDecisionSendsSystemOneBody(t *testing.T) {
+	t.Parallel()
+
+	type capturedRequest struct {
+		path, auth, images string
+		body               []byte
+	}
+	// The handler runs on the server's goroutine, so the request is handed over on a channel.
+	captured := make(chan capturedRequest, 1)
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		captured <- capturedRequest{path: r.URL.Path, auth: r.Header.Get("Authorization"), images: r.Header.Get("TypeSafe-Danger-Zone-Images"), body: body}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(databricksSystemOneResponseBody))
+	})
+
+	request := newDatabricksDecisionRequest(schemas.DecisionInput{Text: schemas.Ptr("Checkout is down for every customer.")})
+	request.Model = "system.ai.openjev-qwen35-4b"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bErr := provider.Decision(ctx, newDatabricksDecisionKey(t, server), request)
+	if bErr != nil {
+		t.Fatalf("Decision returned an error: %v", bErr.Error)
+	}
+	sent := <-captured
+
+	if sent.path != "/ai-gateway/typesafe/v1/systemone" {
+		t.Errorf("path = %q, want /ai-gateway/typesafe/v1/systemone", sent.path)
+	}
+	if sent.auth != "Bearer dapi-secret-token" {
+		t.Errorf("Authorization = %q, want the PAT as Bearer", sent.auth)
+	}
+	if sent.images != "" {
+		t.Errorf("TypeSafe-Danger-Zone-Images = %q, want none on a text-only request", sent.images)
+	}
+	var gotBody, wantBody map[string]any
+	if err := json.Unmarshal(sent.body, &gotBody); err != nil {
+		t.Fatalf("decode sent body: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{
+		"model": "system.ai.openjev-qwen35-4b",
+		"state": "Checkout is down for every customer.",
+		"questions": {
+			"escalate": {"type": "noul", "instructions": "Does this ticket need escalation?"},
+			"team": {"type": "choice", "instructions": "Which team should handle this ticket?", "criteria": {"billing": "Charges and refunds", "engineering": "Bugs and outages"}},
+			"severity": {"type": "score", "instructions": "How severe is this incident?", "criteria": ["Minor", "Major", "Critical"]}
+		}
+	}`), &wantBody); err != nil {
+		t.Fatalf("decode want body: %v", err)
+	}
+	if !reflect.DeepEqual(gotBody, wantBody) {
+		t.Errorf("sent body = %s, want Typesafe's systemone request with the Unity Catalog model", sent.body)
+	}
+
+	if len(resp.Answers) != 3 {
+		t.Fatalf("answers = %+v, want 3", resp.Answers)
+	}
+	if p := resp.Answers[0].Probability; p == nil || *p != 0.83 {
+		t.Errorf("escalate probability = %v, want 0.83", p)
+	}
+	if c := resp.Answers[1].Choice; c == nil || c.Str == nil || *c.Str != "engineering" {
+		t.Errorf("team choice = %+v, want engineering", c)
+	}
+	if s := resp.Answers[2].Score; s == nil || *s != 1.82 {
+		t.Errorf("severity score = %v, want 1.82", s)
+	}
+	if resp.Usage == nil || resp.Usage.PromptTokens != 66 {
+		t.Errorf("usage = %+v, want 66 input tokens", resp.Usage)
+	}
+}
+
+// TestDatabricksDecisionSystemOneSendsImagesByReference pins images on a System One model:
+// an image part with an id reaches the gateway as a Typesafe asset, and the request carries
+// Typesafe's images header, which Jev requires (live, Jev 1.14.0 rejects images without it).
+func TestDatabricksDecisionSystemOneSendsImagesByReference(t *testing.T) {
+	t.Parallel()
+
+	type capturedRequest struct {
+		images string
+		body   []byte
+	}
+	captured := make(chan capturedRequest, 1)
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		captured <- capturedRequest{images: r.Header.Get("TypeSafe-Danger-Zone-Images"), body: body}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"jev-1.14.0","answers":{"red":{"type":"noul","noul":0.99}},"usage":{"input_tokens":1066,"output_tokens":54}}`))
+	})
+
+	request := &schemas.BifrostDecisionRequest{
+		Provider: schemas.Databricks,
+		Model:    "system.ai.typesafeai-jev-1-14-0",
+		Input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("The photo is img1.")},
+			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("img1"), Data: []byte("\x89PNG\r\n\x1a\nIMG")},
+		}}}}},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("red"), Instructions: schemas.NewDecisionText("Is img1 mostly red?")}},
+	}
+	resp, bErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newDatabricksDecisionKey(t, server), request)
+	if bErr != nil {
+		t.Fatalf("Decision returned an error: %v", bErr.Error)
+	}
+	sent := <-captured
+
+	if sent.images != "true" {
+		t.Errorf("TypeSafe-Danger-Zone-Images = %q, want true on a request with an image", sent.images)
+	}
+	var gotBody, wantBody map[string]any
+	if err := json.Unmarshal(sent.body, &gotBody); err != nil {
+		t.Fatalf("decode sent body: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{
+		"model": "system.ai.typesafeai-jev-1-14-0",
+		"state": "The photo is img1.",
+		"assets": {"img1": {"type": "image", "format": "png", "data_base64": "iVBORw0KGgpJTUc="}},
+		"questions": {"red": {"type": "noul", "instructions": "Is img1 mostly red?"}}
+	}`), &wantBody); err != nil {
+		t.Fatalf("decode want body: %v", err)
+	}
+	if !reflect.DeepEqual(gotBody, wantBody) {
+		t.Errorf("sent body = %s, want the image as a Typesafe asset", sent.body)
+	}
+	if len(resp.Answers) != 1 {
+		t.Fatalf("answers = %+v, want 1", resp.Answers)
+	}
+	if p := resp.Answers[0].Probability; p == nil || *p != 0.99 {
+		t.Errorf("red probability = %v, want 0.99", p)
+	}
+}
+
+// TestDatabricksDecisionSystemOnePassesDatabricksErrors pins that the Unity Gateway's own
+// error reaches the caller as Databricks sent it: status, error_code and message. The body is
+// as captured live for a score question with 11 levels.
+func TestDatabricksDecisionSystemOnePassesDatabricksErrors(t *testing.T) {
+	t.Parallel()
+
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"error_code":"INTERNAL_ERROR","message":"Bad Request"}`))
+	})
+
+	request := newDatabricksDecisionRequest(schemas.DecisionInput{Text: schemas.Ptr("hi")})
+	request.Model = "system.ai.openjev-qwen35-4b"
+	_, bErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newDatabricksDecisionKey(t, server), request)
+	if bErr == nil {
+		t.Fatal("expected an error")
+	}
+	if bErr.StatusCode == nil || *bErr.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("status = %v, want 422", bErr.StatusCode)
+	}
+	if bErr.Error == nil || bErr.Error.Code == nil || *bErr.Error.Code != "INTERNAL_ERROR" || bErr.Error.Message != "Bad Request" {
+		t.Errorf("error = %+v, want Databricks' INTERNAL_ERROR and message", bErr.Error)
+	}
+}
+
 // TestDatabricksDecisionRejectsLocally pins the requests answered without calling Databricks:
 // a model other than ai_decide is unsupported (compat emulates it), an empty input is a 400
 // because ai_decide answers a null state with no answers, and an image part is a 400 because
-// ai_decide reads it as JSON text.
+// ai_decide, like a System One model's systemone endpoint, reads it as JSON text.
 func TestDatabricksDecisionRejectsLocally(t *testing.T) {
 	t.Parallel()
 
@@ -1645,9 +1813,10 @@ func TestDatabricksDecisionRejectsLocally(t *testing.T) {
 		input      schemas.DecisionInput
 		wantStatus int
 	}{
-		"serving endpoint model": {model: "databricks-claude-sonnet-4", input: schemas.DecisionInput{Text: schemas.Ptr("hi")}},
-		"empty input":            {model: "ai_decide", wantStatus: http.StatusBadRequest},
-		"image part":             {model: "ai_decide", input: image, wantStatus: http.StatusBadRequest},
+		"serving endpoint model":           {model: "databricks-claude-sonnet-4", input: schemas.DecisionInput{Text: schemas.Ptr("hi")}},
+		"empty input":                      {model: "ai_decide", wantStatus: http.StatusBadRequest},
+		"image part":                       {model: "ai_decide", input: image, wantStatus: http.StatusBadRequest},
+		"image part on a System One model": {model: "system.ai.openjev-qwen35-4b", input: image, wantStatus: http.StatusBadRequest},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

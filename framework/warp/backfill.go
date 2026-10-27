@@ -75,7 +75,7 @@ type BackfillJobMeta struct {
 	Clustered  int `json:"clustered,omitempty"`
 	Assigned   int `json:"assigned,omitempty"`
 	Unassigned int `json:"unassigned,omitempty"`
-	// Capped is set when the window held more requests than one run takes in.
+	// Capped is set when a run stopped at a read limit; default runs have none.
 	Capped bool `json:"capped,omitempty"`
 	// MergedByName counts clusters joined after naming because they were
 	// given the same name as another.
