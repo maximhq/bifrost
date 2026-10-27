@@ -383,8 +383,8 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	// The access-profile user key settings are plain bools that default to false, so a JSON null would
 	// decode as false and silently hand user key creation or deletion back to access profiles. Refuse
-	// it; omit the field to keep the stored value.
-	for _, field := range []string{"skip_access_profile_user_virtual_key_creation", "skip_access_profile_user_virtual_key_deletion"} {
+	// it; omit the field to keep the stored value. govern_chatgpt_sign_in is refused the same way.
+	for _, field := range []string{"skip_access_profile_user_virtual_key_creation", "skip_access_profile_user_virtual_key_deletion", "govern_chatgpt_sign_in"} {
 		if raw, present := clientConfigFields[field]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 			SendError(ctx, fasthttp.StatusBadRequest, field+" must be true or false")
 			return
@@ -874,6 +874,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if _, present := clientConfigFields["skip_access_profile_user_virtual_key_deletion"]; present {
 		updatedConfig.SkipAccessProfileUserVirtualKeyDeletion = payload.ClientConfig.SkipAccessProfileUserVirtualKeyDeletion
+	}
+	// Copied only when sent, so a partial save doesn't silently stop governing ChatGPT sign-in traffic.
+	if _, present := clientConfigFields["govern_chatgpt_sign_in"]; present {
+		updatedConfig.GovernChatGPTSignIn = payload.ClientConfig.GovernChatGPTSignIn
 	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally

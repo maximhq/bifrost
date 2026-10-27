@@ -74,6 +74,7 @@ type TableClientConfig struct {
 	MCPExternalClientURL                    string                         `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"`         // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers
 	SkillsExternalClientURL                 string                         `gorm:"type:varchar(512)" json:"skills_external_client_url,omitempty"`      // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
 	A2AStoreRawRequestResponse              bool                           `gorm:"column:a2a_store_raw_request_response;default:false" json:"a2a_store_raw_request_response"`
+	GovernChatGPTSignIn                     bool                           `gorm:"column:govern_chatgpt_sign_in;default:false" json:"govern_chatgpt_sign_in"`
 	A2AExternalClientURL                    string                         `gorm:"type:varchar(512)" json:"a2a_external_client_url,omitempty"`      // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs
 	WhitelistedRoutesJSON                   string                         `gorm:"type:text" json:"-"`                                              // JSON serialized []string
 	AllowPerRequestContentStorageOverride   bool                           `gorm:"default:false" json:"allow_per_request_content_storage_override"` // Allow per-request override for content storage (e.g. long-term vs ephemeral)
