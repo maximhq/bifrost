@@ -13563,7 +13563,7 @@
     },
     "generic_usage_config": {
       "type": "object",
-      "description": "Maps a relayed request/response onto usage and cost with gjson paths. Only the fields set are read: a field left empty reads nothing. Negative numbers are ignored",
+      "description": "Maps a relayed request/response onto usage and cost with gjson paths. Only the fields set are read. On the provider, a field left empty reads nothing; on a route, an empty field inherits the provider's value and reads nothing only when it is still empty after that (a route cannot switch a provider path off by leaving it blank). Negative numbers are ignored",
       "properties": {
         "model_path": {
           "type": "string",

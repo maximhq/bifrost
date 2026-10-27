@@ -212,7 +212,7 @@ Detection order: the matching route's `stream` flag, then `streaming.paths`, the
 | `headers` | Request headers that must also match: header name (case-insensitive) to value glob, e.g. `{"X-Amz-Target": "Textract.Get*"}`. For APIs that send every operation to one path and name it in a header |
 | `billable` | `false` relays the call without counting or charging it (status polls, listings); `true` counts it. Unset keeps the method default: only `POST` is billable |
 | `stream` | Forces the streaming (`true`) or buffered (`false`) relay for this route |
-| `usage` | Field-by-field override of the provider `usage` mapping |
+| `usage` | Field-by-field override of the provider `usage` mapping: a field the route leaves empty inherits the provider's value (so a route cannot switch off a provider `cost_path` by leaving it blank); a field reads nothing only when it is still empty after inheritance |
 | `job` | Makes the route the start of a provider-side job that is billed once it completes; see below |
 
 The first matching route wins, so list the specific operation before its catch-all. A request matching no route uses the provider defaults and the method default for billing, so listing every operation of an API as routes (for example from an OpenAPI import) does not start charging its polls and listings.
