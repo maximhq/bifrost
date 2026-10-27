@@ -35,6 +35,42 @@ func (store *filterableFieldStore) GetNearest(ctx context.Context, namespace str
 	return store.VectorStore.GetNearest(ctx, namespace, vector, queries, fields, threshold, limit)
 }
 
+func filterableFieldTestInputs(storeType vectorstore.VectorStoreType, namespace string) (*Config, []float64) {
+	dimension := 3
+	if storeType == vectorstore.VectorStoreTypePinecone {
+		// Pinecone namespaces share the preconfigured test index's dimension;
+		// other backends create their own small collections for this test.
+		dimension = getDefaultTestConfig().Dimension
+	}
+	embedding := make([]float64, dimension)
+	embedding[0] = 1
+	return &Config{Provider: schemas.OpenAI, EmbeddingModel: "test-embedding", Dimension: dimension, VectorStoreNamespace: namespace}, embedding
+}
+
+func TestSemanticCache_FilterableFieldContractDimensions(t *testing.T) {
+	for _, tc := range []struct {
+		storeType vectorstore.VectorStoreType
+		dimension int
+	}{
+		{vectorstore.VectorStoreTypeChromem, 3},
+		{vectorstore.VectorStoreTypeRedis, 3},
+		{vectorstore.VectorStoreTypeWeaviate, 3},
+		{vectorstore.VectorStoreTypeQdrant, 3},
+		{vectorstore.VectorStoreTypePinecone, getDefaultTestConfig().Dimension},
+	} {
+		t.Run(string(tc.storeType), func(t *testing.T) {
+			config, embedding := filterableFieldTestInputs(tc.storeType, "CacheIndexPolicy")
+			require.Equal(t, tc.dimension, config.Dimension)
+			require.Len(t, embedding, tc.dimension)
+			assert.Equal(t, "CacheIndexPolicy", config.VectorStoreNamespace)
+			assert.Equal(t, float64(1), embedding[0])
+			for _, value := range embedding[1:] {
+				assert.Zero(t, value, "the fixture must remain a unit vector")
+			}
+		})
+	}
+}
+
 func TestSemanticCache_FilterableFieldContract(t *testing.T) {
 	backends := []struct {
 		name   string
@@ -71,11 +107,12 @@ func TestSemanticCache_FilterableFieldContract(t *testing.T) {
 			namespace := "CacheIndexPolicy" + strings.ReplaceAll(uuid.NewString(), "-", "")
 			t.Cleanup(func() { assert.NoError(t, store.DeleteNamespace(context.Background(), namespace)) })
 			initPlugin := func() *Plugin {
-				llmPlugin, err := Init(ctx, &Config{Provider: schemas.OpenAI, EmbeddingModel: "test-embedding", Dimension: 3, VectorStoreNamespace: namespace}, logger, store)
+				config, embedding := filterableFieldTestInputs(backend.typeID, namespace)
+				llmPlugin, err := Init(ctx, config, logger, store)
 				require.NoError(t, err)
 				plugin := llmPlugin.(*Plugin)
 				plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-					return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0, 0}}}}}, nil
+					return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: embedding}}}}, nil
 				})
 				t.Cleanup(func() { assert.NoError(t, plugin.Cleanup()) })
 				return plugin
